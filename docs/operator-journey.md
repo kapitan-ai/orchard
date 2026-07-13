@@ -295,21 +295,22 @@ Implementation PRs should validate these budgets on supported release hardware a
 
 ### First Recommended Implementation Slice
 
-The next product-code PR should implement the first narrow Section 3 BEAM Peer Grant tracer.
-It should remain CLI-first and cover one Controller and one Node Agent with real separate BEAM nodes and real TLS distribution.
+The first narrow Section 3 BEAM Peer Grant tracer (task 3.2) is now implemented at the source-development level.
+It remains CLI-first and covers one Controller and one Node Agent with real separate BEAM nodes and real TLS distribution, driven in source dev through `bin/source-dev-peer-grant` (see `docs/local-dev.md`).
 
 The tracer starts from the certificate-backed `registered` Node delivered by PR #87.
 It proves that no grant exists before admission, admission authorizes one exact pair grant, the Node retrieves it over gRPC/mTLS, the Runtime Endpoint target derives from trusted inventory without a static product target, and a BEAM status observation advances `admitted -> active`.
-It must also prove wrong certificate, wrong BEAM name, wrong pair secret, wrong generation, missing, expired, and revoked grant failures, active disconnection on revocation, deterministic delivery retry, visible transport state, and no automatic gRPC Runtime Endpoint fallback.
+It also proves wrong certificate, wrong BEAM name, wrong pair secret, wrong generation, missing, expired, and revoked grant failures, deterministic delivery retry, visible transport state, and no automatic gRPC Runtime Endpoint fallback.
+Connected-peer revocation while the Node is otherwise current, with proof of complete disconnection, remains in the task 3.3 future slice.
 
 The tracer deliberately excludes Active/Standby failover, automated normal rotation, Controller Certificate and authorization-root rotation, multi-Node issuance, app UI, model distribution, dynamic address roaming, external Runtime Endpoints, and any claim of per-function BEAM sandboxing.
-The root-owned packaged, separate-release, restart and reconnection, and two-Mac journey remains a later acceptance gate rather than evidence supplied by this contract workstream.
+Only source-development single-Mac evidence is claimed; the root-owned packaged, separate-release, restart and reconnection, and two-Mac journey remains a later acceptance gate rather than evidence supplied by this contract workstream.
 
 ### Contract Impact
 
 PR #87 completed the Section 2 secure enrollment implementation while preserving the packaged acceptance gap above.
 ADR 0012 selects the hard-to-reverse production BEAM identity and authorization mechanism required before Section 3 implementation.
 `SPEC.md` now defines Node Certificates as durable identity, BEAM Peer Grants as exact pair authorization, separate Active/Standby grants, trusted inventory targets, explicit rotation and revocation, the high-trust BEAM boundary, and the retained gRPC/mTLS roles.
-The active OpenSpec package carries the first implementation tracer and later Section 3 lifecycle acceptance without implementing them in this contract workstream.
+The active OpenSpec package now records the completed first implementation tracer (task 3.2) at source-development level and keeps later Section 3 lifecycle acceptance explicit and unimplemented in this contract workstream.
 
 No tactical `docs/DESIGN.md` update is needed until the app-guided setup slice defines reusable onboarding, progress, and recovery components.
