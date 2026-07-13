@@ -54,7 +54,7 @@ defmodule Orchard.Node.Identity do
       with true <- is_binary(root) and root != "",
            {:ok, identity} <-
              loader.load_registered_identity(root, require_controller_certificate: true),
-           :ok <- ensure_configured_identity_matches!(runtime[:node_id], identity.node_id) do
+           :ok <- configured_identity_matches(runtime[:node_id], identity.node_id) do
         {:ok, {identity.node_id, Keyword.put(runtime, :node_id, identity.node_id)}}
       else
         {:error, reason} -> {:error, reason}
@@ -92,6 +92,14 @@ defmodule Orchard.Node.Identity do
 
   defp ensure_configured_identity_matches!(_configured, _persisted) do
     raise "Configured Node id does not match the registered Runtime TLS identity"
+  end
+
+  defp configured_identity_matches(nil, _node_id), do: :ok
+  defp configured_identity_matches("", _node_id), do: :ok
+  defp configured_identity_matches(node_id, node_id), do: :ok
+
+  defp configured_identity_matches(_configured, _persisted) do
+    {:error, :configured_node_id_mismatch}
   end
 
   @doc false

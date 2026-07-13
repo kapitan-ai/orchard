@@ -246,7 +246,14 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
 
     response = response(delivery)
 
-    assert {:ok, installed} = BeamPeerGrantClient.install_response(root, identity, response)
+    assert {:ok, installed} =
+             BeamPeerGrantClient.install_response(
+               root,
+               identity,
+               delivery.node_beam_name,
+               response
+             )
+
     assert installed.encoded_secret == delivery.encoded_secret
 
     assert {:ok, ^installed} =

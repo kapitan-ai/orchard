@@ -112,6 +112,28 @@ defmodule Orchard.RuntimeTransportTest do
                  end
   end
 
+  test "SPEC.md §7.5.0 production grants reject a public control host at config time", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST must be a private non-loopback IPv4 address/,
+                 fn ->
+                   read_controller_config!(support_root, %{
+                     "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                     "ORCHARD_BEAM_NODE_NAME" =>
+                       "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+                     "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+                     "ORCHARD_BEAM_PEER_GRANT_MODE" => "distributed",
+                     "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" =>
+                       Path.join(support_root, "controller-launch.json"),
+                     "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "203.0.113.10",
+                     "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+                     "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" =>
+                       Path.join(support_root, "beam-authorization-root")
+                   })
+                 end
+  end
+
   test "SPEC 10.7: ORCHARD_TRANSPORT_MODE=plain_http_localhost wins over legacy TLS envs", %{
     support_root: support_root
   } do

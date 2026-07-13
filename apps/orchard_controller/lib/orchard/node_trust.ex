@@ -58,8 +58,9 @@ defmodule Orchard.NodeTrust do
          {:ok, material} <- Store.load_current(root),
          :ok <- ensure_material_matches(material, identity, authority),
          :ok <- validate_signing_bindings(material, attrs),
-         {:ok, certificate} <- sign_node_certificate(material, attrs) do
-      {:ok, certificate_result(material, certificate)}
+         {:ok, certificate} <- sign_node_certificate(material, attrs),
+         {:ok, identifier} <- controller_certificate_identifier(material) do
+      {:ok, certificate_result(material, certificate, identifier)}
     else
       _reason -> {:error, :node_certificate_issuance_failed}
     end
@@ -74,9 +75,9 @@ defmodule Orchard.NodeTrust do
     )
   end
 
-  defp certificate_result(material, certificate) do
+  defp certificate_result(material, certificate, identifier) do
     Map.merge(certificate, %{
-      controller_certificate_identifier: controller_certificate_identifier(material),
+      controller_certificate_identifier: identifier,
       controller_certificate_fingerprint: material.controller_certificate_fingerprint,
       controller_certificate_pem: material.controller_certificate_pem,
       controller_id: material.controller_id,
@@ -88,8 +89,9 @@ defmodule Orchard.NodeTrust do
   end
 
   defp controller_certificate_identifier(material) do
-    {:ok, certificate} = CertificateIdentity.from_pem(material.controller_certificate_pem)
-    "serial:#{certificate.serial}"
+    with {:ok, certificate} <- CertificateIdentity.from_pem(material.controller_certificate_pem) do
+      {:ok, "serial:#{certificate.serial}"}
+    end
   end
 
   @spec public_material(keyword()) ::

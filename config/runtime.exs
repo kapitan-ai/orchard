@@ -132,6 +132,13 @@ loopback_ip? = fn
   _other -> false
 end
 
+private_ipv4? = fn
+  {10, _b, _c, _d} -> true
+  {172, b, _c, _d} when b in 16..31 -> true
+  {192, 168, _c, _d} -> true
+  _other -> false
+end
+
 loopback_listen_host? = fn host ->
   case :inet.parse_address(String.to_charlist(host)) do
     {:ok, ip_tuple} -> loopback_ip?.(ip_tuple)
@@ -849,7 +856,7 @@ if config_env() == :prod do
               control_host
             )
 
-          if loopback_ip?.(control_ip) do
+          if loopback_ip?.(control_ip) or not private_ipv4?.(control_ip) do
             raise "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST must be a private non-loopback IPv4 address"
           end
 

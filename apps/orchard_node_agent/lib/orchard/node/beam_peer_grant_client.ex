@@ -24,7 +24,7 @@ defmodule Orchard.Node.BeamPeerGrantClient do
          {:ok, response} <- retrieve(transport, target, credential, request),
          true <- response_matches_request?(response, request),
          true <- response.node_beam_name == node_beam_name do
-      install_response(root, identity, response)
+      install_response(root, identity, node_beam_name, response)
     else
       false -> {:error, :beam_peer_credential_mismatch}
       {:error, reason} -> {:error, reason}
@@ -46,12 +46,17 @@ defmodule Orchard.Node.BeamPeerGrantClient do
       response.controller_id == request.controller_id
   end
 
-  @spec install_response(String.t(), map(), RetrieveBeamPeerGrantResponse.t()) ::
+  @spec install_response(String.t(), map(), String.t(), RetrieveBeamPeerGrantResponse.t()) ::
           {:ok, BeamPeerGrantStore.stored_grant()} | {:error, atom()}
-  def install_response(root, identity, %RetrieveBeamPeerGrantResponse{} = response)
-      when is_binary(root) and is_map(identity) do
+  def install_response(
+        root,
+        identity,
+        node_beam_name,
+        %RetrieveBeamPeerGrantResponse{} = response
+      )
+      when is_binary(root) and is_map(identity) and is_binary(node_beam_name) do
     with {:ok, delivery} <- normalize_response(response) do
-      BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+      BeamPeerGrantStore.install(root, identity, delivery, node_beam_name)
     end
   end
 

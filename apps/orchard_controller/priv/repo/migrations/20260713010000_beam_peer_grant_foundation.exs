@@ -84,6 +84,9 @@ defmodule Orchard.Repo.Migrations.BeamPeerGrantFoundation do
       timestamps(type: :utc_datetime_usec)
     end
 
+    create(index(:beam_peer_grants, [:node_id]))
+    create(index(:beam_peer_grants, [:controller_id]))
+
     create(
       unique_index(
         :beam_peer_grants,
@@ -132,8 +135,7 @@ defmodule Orchard.Repo.Migrations.BeamPeerGrantFoundation do
 
     create(
       constraint(:beam_peer_grants, :beam_peer_grants_cutover,
-        check:
-          "cutover_at IS NULL OR (cutover_at >= not_before_at AND cutover_at <= expires_at)"
+        check: "cutover_at IS NULL OR (cutover_at >= not_before_at AND cutover_at <= expires_at)"
       )
     )
   end
