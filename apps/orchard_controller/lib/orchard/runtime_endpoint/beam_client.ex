@@ -52,11 +52,26 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
          :ok <- validate_production_target_provenance(target),
          {:ok, authorization} <- BeamPeerGrants.authorize_target(target, opts),
          :ok <- validate_beam_target(config, target, opts),
-         {:ok, node} <- target_node(target, authorization, opts),
-         :ok <- ensure_connected(node, opts) do
-      finish_connect(node, target, authorization, opts)
+         {:ok, node} <- target_node(target, authorization, opts) do
+      establish_connection(node, target, authorization, opts)
     end
   end
+
+  defp establish_connection(node, target, authorization, opts) do
+    case ensure_connected(node, opts) do
+      :ok ->
+        finish_connect(node, target, authorization, opts)
+
+      {:error, _reason} = error ->
+        scrub_installed_peer(node, authorization, opts)
+        error
+    end
+  end
+
+  defp scrub_installed_peer(node, authorization, opts) when not is_nil(authorization),
+    do: invalidate_peer(node, opts)
+
+  defp scrub_installed_peer(_node, nil, _opts), do: :ok
 
   @impl true
   def disconnect(%__MODULE__{}), do: :ok

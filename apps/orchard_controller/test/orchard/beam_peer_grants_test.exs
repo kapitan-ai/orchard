@@ -1145,6 +1145,47 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert_received {:peer_disconnected, ^peer}
   end
 
+  test "SPEC.md §7.5.0 connect scrubs the installed cookie when Distribution never connects",
+       %{
+         trust_root: trust_root,
+         authorization_root: authorization_root
+       } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    controller_name = target.metadata.controller_beam_name
+    [_service, listen_host] = String.split(controller_name, "@", parts: 2)
+
+    Application.put_env(:orchard_controller, :runtime_endpoint,
+      beam: [
+        enabled: true,
+        node_name: controller_name,
+        cookie_file: nil,
+        admitted_services: [],
+        allowed_cidrs: [],
+        listen_host: listen_host
+      ]
+    )
+
+    caller = self()
+
+    assert {:error, :beam_node_unavailable} =
+             BeamClient.connect(target,
+               current_node: String.to_atom(controller_name),
+               connector: fn _node -> {:error, :beam_node_unavailable} end,
+               cookie_setter: fn node, cookie ->
+                 send(caller, {:peer_cookie_set, node, cookie})
+                 true
+               end,
+               disconnect: fn node ->
+                 send(caller, {:peer_disconnected, node})
+                 true
+               end
+             )
+
+    peer = String.to_atom(target.address)
+    assert_received {:peer_cookie_set, ^peer, :orchard_expired_peer_grant}
+    assert_received {:peer_disconnected, ^peer}
+  end
+
   test "SPEC.md §7.5.0 activation probe accepts the production BEAM client", %{
     trust_root: trust_root,
     authorization_root: authorization_root
