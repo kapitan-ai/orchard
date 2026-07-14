@@ -449,6 +449,60 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert private_mode(lock_path) == 0o600
   end
 
+  test "SPEC.md §7.5.0 install uses baseline macOS lockf arguments" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-lockf-args-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    wrapper = Path.join(root, "lockf-wrapper")
+    args_path = wrapper <> ".args"
+
+    File.write!(
+      wrapper,
+      """
+      #!/bin/sh
+      printf '%s\n' "$@" > "${0}.args"
+      for argument in "$@"; do
+        if [ "$argument" = "-w" ]; then
+          exit 64
+        fi
+      done
+      exec /usr/bin/lockf "$@"
+      """
+    )
+
+    File.chmod!(wrapper, 0o700)
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:ok, ^delivery} =
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               delivery,
+               delivery.node_beam_name,
+               lock_command: wrapper
+             )
+
+    arguments = args_path |> File.read!() |> String.split("\n", trim: true)
+    refute "-w" in arguments
+
+    assert arguments == [
+             "-k",
+             "-s",
+             "-t",
+             "5",
+             Path.join([root, "beam-peer-grants", ".install.lock"]),
+             "/bin/cat"
+           ]
+  end
+
   test "SPEC.md §7.5.0 restart rejects a stored secret that no longer matches its hash" do
     root =
       Path.join(

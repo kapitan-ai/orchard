@@ -32,7 +32,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     with {:ok, grant} <- validate_grant(identity, delivery, expected_node_name),
          :ok <- ensure_current(grant, current_time(opts)),
          {:ok, store_root, expected_uid} <- prepare_store(root, opts) do
-      with_store_lock(store_root, expected_uid, fn ->
+      with_store_lock(store_root, expected_uid, opts, fn ->
         install_under_lock(store_root, grant, expected_uid, opts)
       end)
     end
@@ -254,10 +254,11 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp with_store_lock(store_root, expected_uid, operation) do
+  defp with_store_lock(store_root, expected_uid, opts, operation) do
     lock_path = Path.join(store_root, @lock_directory)
+    lock_command = Keyword.get(opts, :lock_command, @lock_command)
 
-    with {:ok, lock_port} <- acquire_store_lock(lock_path, expected_uid) do
+    with {:ok, lock_port} <- acquire_store_lock(lock_path, expected_uid, lock_command) do
       try do
         operation.()
       after
@@ -266,9 +267,9 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp acquire_store_lock(lock_path, expected_uid) do
+  defp acquire_store_lock(lock_path, expected_uid, lock_command) do
     with :ok <- validate_lock_candidate(lock_path, expected_uid),
-         {:ok, lock_port} <- open_lock_port(lock_path) do
+         {:ok, lock_port} <- open_lock_port(lock_path, lock_command) do
       finish_lock_acquisition(lock_port, lock_path, expected_uid)
     else
       {:error, _reason} -> {:error, :beam_peer_grant_store_invalid}
@@ -295,10 +296,10 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp open_lock_port(lock_path) do
+  defp open_lock_port(lock_path, lock_command) do
     port =
       Port.open(
-        {:spawn_executable, @lock_command},
+        {:spawn_executable, lock_command},
         [
           :binary,
           :exit_status,
@@ -309,7 +310,6 @@ defmodule Orchard.Node.BeamPeerGrantStore do
               [
                 "-k",
                 "-s",
-                "-w",
                 "-t",
                 Integer.to_string(@lock_timeout_seconds),
                 lock_path,
