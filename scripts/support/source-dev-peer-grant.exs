@@ -97,7 +97,8 @@ defmodule Orchard.SourceDevPeerGrant do
   defp ensure_private_directory!(path) do
     case File.lstat(path) do
       {:ok, stat} ->
-        unless stat.type == :directory and Bitwise.band(stat.mode, 0o777) == 0o700 do
+        unless stat.type == :directory and Bitwise.band(stat.mode, 0o777) == 0o700 and
+                 stat.uid == running_uid!() do
           raise "peer-grant state directory is invalid"
         end
 
@@ -107,6 +108,25 @@ defmodule Orchard.SourceDevPeerGrant do
 
       {:error, _reason} ->
         raise "peer-grant state directory is invalid"
+    end
+  end
+
+  defp running_uid! do
+    probe =
+      Path.join(
+        System.tmp_dir!(),
+        ".orchard-source-dev-peer-grant-owner-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    try do
+      with :ok <- File.write(probe, "", [:exclusive]),
+           {:ok, %{type: :regular, uid: uid}} <- File.lstat(probe) do
+        uid
+      else
+        _other -> raise "peer-grant state directory is invalid"
+      end
+    after
+      File.rm(probe)
     end
   end
 
