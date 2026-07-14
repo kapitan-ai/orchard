@@ -55,7 +55,7 @@ defmodule Orchard.Node.Identity do
            {:ok, identity} <-
              loader.load_registered_identity(root, require_controller_certificate: true),
            :ok <- configured_identity_matches(runtime[:node_id], identity.node_id) do
-        {:ok, {identity.node_id, Keyword.put(runtime, :node_id, identity.node_id)}}
+        {:ok, {identity.node_id, put_identity(runtime, identity)}}
       else
         {:error, reason} -> {:error, reason}
         _other -> {:error, :node_runtime_tls_identity_invalid}
@@ -73,16 +73,20 @@ defmodule Orchard.Node.Identity do
 
       {:ok, identity} ->
         ensure_configured_identity_matches!(runtime[:node_id], identity.node_id)
-
-        updated =
-          runtime
-          |> Keyword.put(:node_id, identity.node_id)
-          |> Keyword.put(:runtime_tls_identity, identity)
-
-        {identity.node_id, updated}
+        {identity.node_id, put_identity(runtime, identity)}
 
       {:error, reason} ->
         raise "Node Runtime TLS identity invalid: #{reason}"
+    end
+  end
+
+  defp put_identity(runtime, identity) do
+    runtime = Keyword.put(runtime, :node_id, identity.node_id)
+
+    if Keyword.get(runtime, :grpc_security, :plaintext_compatibility) == :mutual_tls do
+      Keyword.put(runtime, :runtime_tls_identity, identity)
+    else
+      runtime
     end
   end
 

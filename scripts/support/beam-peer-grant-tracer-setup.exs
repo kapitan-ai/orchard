@@ -250,7 +250,9 @@ defmodule Orchard.BeamPeerGrantTracerSetup do
   end
 
   defp write_private!(path, contents, mode \\ 0o600) do
-    File.write!(path, contents, [:binary, :exclusive])
+    File.open!(path, [:write, :exclusive, :binary]) |> File.close()
+    File.chmod!(path, 0o600)
+    File.write!(path, contents, [:binary])
     File.chmod!(path, mode)
     path
   end

@@ -8,8 +8,9 @@ SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchard-beam-legacy-connect.XXXXXX")"
 EPMD_PORT="${ORCHARD_BEAM_LEGACY_EPMD_PORT:-$((45000 + $$ % 1000))}"
 NODE_DIST_PORT="${ORCHARD_BEAM_LEGACY_NODE_DIST_PORT:-$((53000 + $$ % 500))}"
 CONTROLLER_DIST_PORT="${ORCHARD_BEAM_LEGACY_CONTROLLER_DIST_PORT:-$((54000 + $$ % 500))}"
-COOKIE="orchard_legacy_first_connect_$$_${RANDOM}"
+COOKIE="orchard_legacy_$(head -c 30 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 COOKIE_FILE="$SMOKE_ROOT/beam.cookie"
+COOKIE_HOME="$SMOKE_ROOT/cookie-home"
 NODE_NAME="orchard_node_agent@127.0.0.1"
 CONTROLLER_NAME="orchard_controller@127.0.0.1"
 NODE_PID=""
@@ -42,17 +43,24 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$REPO_ROOT"
+ELIXIR_BIN="$(mise which elixir)"
+ELIXIR_BIN_DIR="$(dirname "$ELIXIR_BIN")"
 chmod 700 "$SMOKE_ROOT"
 printf '%s\n' "$COOKIE" > "$COOKIE_FILE"
 chmod 600 "$COOKIE_FILE"
+mkdir -p "$COOKIE_HOME"
+chmod 700 "$COOKIE_HOME"
+printf '%s' "$COOKIE" > "$COOKIE_HOME/.erlang.cookie"
+chmod 400 "$COOKIE_HOME/.erlang.cookie"
 
 ERL_EPMD_ADDRESS=127.0.0.1 ERL_EPMD_PORT="$EPMD_PORT" mise exec -- epmd -daemon
 
+HOME="$COOKIE_HOME" \
+PATH="$ELIXIR_BIN_DIR:$PATH" \
 ERL_EPMD_ADDRESS=127.0.0.1 \
 ERL_EPMD_PORT="$EPMD_PORT" \
-mise exec -- elixir \
+"$ELIXIR_BIN" \
   --name "$NODE_NAME" \
-  --cookie "$COOKIE" \
   --erl "-kernel inet_dist_listen_min $NODE_DIST_PORT inet_dist_listen_max $NODE_DIST_PORT" \
   --no-halt \
   >"$SMOKE_ROOT/node.log" 2>&1 &
@@ -79,6 +87,8 @@ if (( ready != 1 )); then
   exit 1
 fi
 
+HOME="$COOKIE_HOME" \
+PATH="$ELIXIR_BIN_DIR:$PATH" \
 ERL_EPMD_ADDRESS=127.0.0.1 \
 ERL_EPMD_PORT="$EPMD_PORT" \
 MIX_ENV=dev \
@@ -88,9 +98,8 @@ ORCHARD_RUNTIME_ENDPOINT_TARGETS="$NODE_NAME" \
 ORCHARD_BEAM_PEER_GRANTS_ENABLED=false \
 ORCHARD_BEAM_NODE_NAME="$CONTROLLER_NAME" \
 ORCHARD_BEAM_COOKIE_FILE="$COOKIE_FILE" \
-mise exec -- elixir \
+"$ELIXIR_BIN" \
   --name "$CONTROLLER_NAME" \
-  --cookie "$COOKIE" \
   --erl "-kernel inet_dist_listen_min $CONTROLLER_DIST_PORT inet_dist_listen_max $CONTROLLER_DIST_PORT" \
   -S mix run --no-start \
   "$SCRIPT_DIR/support/beam-legacy-first-connect-smoke.exs"

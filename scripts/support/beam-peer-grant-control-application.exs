@@ -10,6 +10,7 @@ defmodule Orchard.BeamPeerGrantControlApplication do
 
   def run([root, ipv4]) do
     :ok = BeamPeerGrantControlFiles.validate_root(root)
+    validate_private_ipv4!(ipv4)
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     trust_root = required_env!("ORCHARD_NODE_TRUST_ROOT")
     identity_root = required_env!("ORCHARD_NODE_IDENTITY_ROOT")
@@ -132,8 +133,21 @@ defmodule Orchard.BeamPeerGrantControlApplication do
 
   defp write_env!(path, values) do
     contents = Enum.map_join(values, "\n", fn {key, value} -> "#{key}=#{shell_quote(value)}" end)
-    File.write!(path, contents <> "\n", [:exclusive])
+    File.open!(path, [:write, :exclusive]) |> File.close()
     File.chmod!(path, 0o600)
+    File.write!(path, contents <> "\n")
+  end
+
+  defp validate_private_ipv4!(ipv4) do
+    private =
+      case :inet.parse_ipv4_address(String.to_charlist(ipv4)) do
+        {:ok, {10, _b, _c, _d}} -> true
+        {:ok, {172, b, _c, _d}} when b in 16..31 -> true
+        {:ok, {192, 168, _c, _d}} -> true
+        _other -> false
+      end
+
+    unless private, do: raise("control application requires a private IPv4 address")
   end
 
   defp required_env!(name) do
