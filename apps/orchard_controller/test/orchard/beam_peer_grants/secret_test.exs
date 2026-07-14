@@ -36,6 +36,16 @@ defmodule Orchard.BeamPeerGrants.SecretTest do
     end)
   end
 
+  test "SPEC.md §7.5.0 rejects non-DateTime grant timestamps" do
+    root = :binary.copy(<<7>>, 32)
+    scope = complete_scope()
+
+    for field <- [:issued_at, :not_before_at, :cutover_at, :expires_at] do
+      assert {:error, :beam_peer_grant_scope_invalid} =
+               Secret.derive(Map.put(scope, field, "2026-07-13T08:00:00Z"), root)
+    end
+  end
+
   defp complete_scope do
     %{
       contract_version: 1,

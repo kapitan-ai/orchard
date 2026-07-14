@@ -82,6 +82,10 @@ defmodule Orchard.BeamPeerGrants.Secret do
 
   defp canonical_value(:cutover_at, nil), do: {:ok, ""}
 
+  defp canonical_value(field, _value)
+       when field in [:issued_at, :not_before_at, :cutover_at, :expires_at],
+       do: {:error, :beam_peer_grant_scope_invalid}
+
   defp canonical_value(_field, value) when is_binary(value) and value != "", do: {:ok, value}
   defp canonical_value(_field, _value), do: {:error, :beam_peer_grant_scope_invalid}
 
