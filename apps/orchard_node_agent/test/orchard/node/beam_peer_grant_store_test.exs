@@ -351,6 +351,104 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert {:ok, ^delivery} = Task.await(second)
   end
 
+  test "SPEC.md §7.5.0 a child BEAM cannot sweep an active publisher temporary" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-child-publisher-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    parent = self()
+
+    first =
+      Task.async(fn ->
+        BeamPeerGrantStore.install(
+          root,
+          identity,
+          delivery,
+          delivery.node_beam_name,
+          remove_file: fn temporary ->
+            send(parent, {:child_test_publisher_cleanup, self(), temporary})
+
+            receive do
+              :continue_cleanup -> File.rm(temporary)
+            end
+          end
+        )
+      end)
+
+    assert_receive {:child_test_publisher_cleanup, first_pid, temporary}
+    assert File.exists?(temporary)
+
+    ready_path = Path.join(root, "child-ready")
+    result_path = Path.join(root, "child-result")
+
+    payload =
+      {root, identity, delivery, delivery.node_beam_name, ready_path, result_path}
+      |> :erlang.term_to_binary()
+      |> Base.url_encode64(padding: false)
+
+    child =
+      Task.async(fn ->
+        System.cmd(
+          "elixir",
+          child_elixir_args(payload),
+          stderr_to_stdout: true
+        )
+      end)
+
+    wait_until(fn -> File.exists?(ready_path) end)
+    Process.sleep(250)
+    refute File.exists?(result_path)
+    assert File.exists?(temporary)
+
+    send(first_pid, :continue_cleanup)
+    assert {:ok, ^delivery} = Task.await(first)
+    assert {_output, 0} = Task.await(child, 5_000)
+
+    assert {:ok, ^delivery} =
+             result_path
+             |> File.read!()
+             |> :erlang.binary_to_term([:safe])
+  end
+
+  test "SPEC.md §7.5.0 install reuses a lock file left by a dead BEAM OS process" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-dead-lock-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:ok, ^delivery} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    lock_path = Path.join([root, "beam-peer-grants", ".install.lock"])
+    File.write!(lock_path, "99999999\ndead-owner-token\n")
+    File.chmod!(lock_path, 0o600)
+
+    install =
+      Task.async(fn ->
+        BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+      end)
+
+    assert {:ok, ^delivery} = Task.await(install, 1_000)
+    assert File.exists?(lock_path)
+    assert private_mode(lock_path) == 0o600
+  end
+
   test "SPEC.md §7.5.0 restart rejects a stored secret that no longer matches its hash" do
     root =
       Path.join(
@@ -754,4 +852,39 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     {:ok, stat} = File.stat(path)
     band(stat.mode, 0o777)
   end
+
+  defp child_elixir_args(payload) do
+    code_paths =
+      :code.get_path()
+      |> Enum.map(&List.to_string/1)
+      |> Enum.flat_map(&["-pa", &1])
+
+    script = """
+    [payload] = System.argv()
+
+    {root, identity, delivery, node_name, ready_path, result_path} =
+      payload
+      |> Base.url_decode64!(padding: false)
+      |> :erlang.binary_to_term([:safe])
+
+    File.write!(ready_path, "ready")
+    result = Orchard.Node.BeamPeerGrantStore.install(root, identity, delivery, node_name)
+    File.write!(result_path, :erlang.term_to_binary(result))
+    """
+
+    code_paths ++ ["-e", script, "--", payload]
+  end
+
+  defp wait_until(condition, attempts \\ 100)
+
+  defp wait_until(condition, attempts) when attempts > 0 do
+    if condition.() do
+      :ok
+    else
+      Process.sleep(20)
+      wait_until(condition, attempts - 1)
+    end
+  end
+
+  defp wait_until(_condition, 0), do: flunk("condition not reached before timeout")
 end

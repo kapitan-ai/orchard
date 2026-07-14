@@ -13,6 +13,10 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   @directory_mode 0o700
   @file_mode 0o600
+  @lock_command "/usr/bin/lockf"
+  @lock_directory ".install.lock"
+  @lock_marker "orchard-peer-grant-lock-ready\n"
+  @lock_timeout_seconds 5
   @store_directory "beam-peer-grants"
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
   @secret_pattern ~r/\A[A-Za-z0-9_-]{43}\z/
@@ -28,7 +32,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     with {:ok, grant} <- validate_grant(identity, delivery, expected_node_name),
          :ok <- ensure_current(grant, current_time(opts)),
          {:ok, store_root, expected_uid} <- prepare_store(root, opts) do
-      with_store_lock(store_root, fn ->
+      with_store_lock(store_root, expected_uid, fn ->
         install_under_lock(store_root, grant, expected_uid, opts)
       end)
     end
@@ -250,13 +254,104 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp with_store_lock(store_root, operation) do
-    lock = {{__MODULE__, store_root}, self()}
+  defp with_store_lock(store_root, expected_uid, operation) do
+    lock_path = Path.join(store_root, @lock_directory)
 
-    case :global.trans(lock, operation, [node()]) do
-      :aborted -> {:error, :beam_peer_grant_store_invalid}
-      result -> result
+    with {:ok, lock_port} <- acquire_store_lock(lock_path, expected_uid) do
+      try do
+        operation.()
+      after
+        release_store_lock!(lock_port)
+      end
     end
+  end
+
+  defp acquire_store_lock(lock_path, expected_uid) do
+    with :ok <- validate_lock_candidate(lock_path, expected_uid),
+         {:ok, lock_port} <- open_lock_port(lock_path) do
+      finish_lock_acquisition(lock_port, lock_path, expected_uid)
+    else
+      {:error, _reason} -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp finish_lock_acquisition(lock_port, lock_path, expected_uid) do
+    with :ok <- await_lock(lock_port),
+         :ok <- File.chmod(lock_path, @file_mode),
+         :ok <- validate_file(lock_path, expected_uid) do
+      {:ok, lock_port}
+    else
+      _other ->
+        close_lock_port(lock_port)
+        {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp validate_lock_candidate(lock_path, expected_uid) do
+    case File.lstat(lock_path) do
+      {:ok, %{type: :regular, uid: ^expected_uid}} -> :ok
+      {:error, :enoent} -> :ok
+      _other -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp open_lock_port(lock_path) do
+    port =
+      Port.open(
+        {:spawn_executable, @lock_command},
+        [
+          :binary,
+          :exit_status,
+          :use_stdio,
+          :stderr_to_stdout,
+          args:
+            Enum.map(
+              [
+                "-k",
+                "-s",
+                "-w",
+                "-t",
+                Integer.to_string(@lock_timeout_seconds),
+                lock_path,
+                "/bin/cat"
+              ],
+              &String.to_charlist/1
+            )
+        ]
+      )
+
+    if Port.command(port, @lock_marker) do
+      {:ok, port}
+    else
+      {:error, :beam_peer_grant_store_invalid}
+    end
+  rescue
+    _error -> {:error, :beam_peer_grant_store_invalid}
+  end
+
+  defp await_lock(lock_port) do
+    receive do
+      {^lock_port, {:data, @lock_marker}} -> :ok
+      {^lock_port, {:data, _output}} -> {:error, :beam_peer_grant_store_invalid}
+      {^lock_port, {:exit_status, _status}} -> {:error, :beam_peer_grant_store_invalid}
+    after
+      (@lock_timeout_seconds + 1) * 1_000 -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp release_store_lock!(lock_port) do
+    case Port.info(lock_port) do
+      nil -> raise "peer grant store lock process exited unexpectedly"
+      _info -> Port.close(lock_port)
+    end
+  end
+
+  defp close_lock_port(lock_port) do
+    Port.close(lock_port)
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   defp install_under_lock(store_root, grant, expected_uid, opts) do
