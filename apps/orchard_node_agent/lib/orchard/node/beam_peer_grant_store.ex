@@ -29,13 +29,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
          :ok <- ensure_current(grant, current_time(opts)),
          {:ok, store_root, expected_uid} <- prepare_store(root, opts) do
       with_store_lock(store_root, fn ->
-        with :ok <- sweep_stale_temporaries(store_root, expected_uid, opts),
-             :ok <- ensure_current(grant, current_time(opts)),
-             path = grant_path(store_root, grant.controller_id),
-             {:ok, stored, source} <- publish_or_load(path, grant, expected_uid, opts),
-             :ok <- sync_directory(store_root, opts) do
-          finish_install(path, stored, source, expected_uid, opts)
-        end
+        install_under_lock(store_root, grant, expected_uid, opts)
       end)
     end
   rescue
@@ -265,6 +259,16 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
+  defp install_under_lock(store_root, grant, expected_uid, opts) do
+    with :ok <- sweep_stale_temporaries(store_root, expected_uid, opts),
+         :ok <- ensure_current(grant, current_time(opts)),
+         path = grant_path(store_root, grant.controller_id),
+         {:ok, stored, source} <- publish_or_load(path, grant, expected_uid, opts),
+         :ok <- sync_directory(store_root, opts) do
+      finish_install(path, stored, source, expected_uid, opts)
+    end
+  end
+
   defp sweep_stale_temporaries(store_root, expected_uid, opts) do
     remove_file = Keyword.get(opts, :remove_file, &File.rm/1)
 
@@ -272,15 +276,20 @@ defmodule Orchard.Node.BeamPeerGrantStore do
       {:ok, entries} ->
         entries
         |> Enum.filter(&Regex.match?(@temporary_pattern, &1))
-        |> Enum.reduce_while(:ok, fn entry, :ok ->
-          case remove_stale_temporary(Path.join(store_root, entry), expected_uid, remove_file) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
+        |> Enum.reduce_while(
+          :ok,
+          &sweep_stale_entry(&1, &2, store_root, expected_uid, remove_file)
+        )
 
       _other ->
         {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp sweep_stale_entry(entry, :ok, store_root, expected_uid, remove_file) do
+    case remove_stale_temporary(Path.join(store_root, entry), expected_uid, remove_file) do
+      :ok -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
     end
   end
 

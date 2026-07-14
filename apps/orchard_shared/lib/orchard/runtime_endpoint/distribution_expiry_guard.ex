@@ -56,24 +56,29 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
     if DateTime.compare(state.now.(), state.expires_at) == :lt do
       {:noreply, schedule_check(state)}
     else
-      cookie_result = safe_call(state.cookie_setter, [state.peer, @expired_cookie])
-      _disconnect_result = safe_call(state.disconnect, [state.peer])
-      stop_result = safe_call(state.stop_distribution, [])
-
-      if cookie_result == true and stop_result == :ok do
-        {:noreply, %{state | expired?: true}}
-      else
-        watchdog_result =
-          safe_call(&start_halt_watchdog/2, [state.hard_stop, state.shutdown_grace_ms])
-
-        if watchdog_result != :ok do
-          _hard_stop_result = safe_call(state.hard_stop, [])
-        end
-
-        _fail_closed_result = safe_call(state.fail_closed, [])
-        {:noreply, %{state | expired?: true}}
-      end
+      expire_distribution(state)
     end
+  end
+
+  defp expire_distribution(state) do
+    cookie_result = safe_call(state.cookie_setter, [state.peer, @expired_cookie])
+    _disconnect_result = safe_call(state.disconnect, [state.peer])
+    stop_result = safe_call(state.stop_distribution, [])
+    finish_expiry(cookie_result, stop_result, state)
+  end
+
+  defp finish_expiry(true, :ok, state), do: {:noreply, %{state | expired?: true}}
+
+  defp finish_expiry(_cookie_result, _stop_result, state) do
+    watchdog_result =
+      safe_call(&start_halt_watchdog/2, [state.hard_stop, state.shutdown_grace_ms])
+
+    if watchdog_result != :ok do
+      _hard_stop_result = safe_call(state.hard_stop, [])
+    end
+
+    _fail_closed_result = safe_call(state.fail_closed, [])
+    {:noreply, %{state | expired?: true}}
   end
 
   defp schedule_check(state) do
