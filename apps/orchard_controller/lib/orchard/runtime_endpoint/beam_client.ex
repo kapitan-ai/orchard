@@ -66,6 +66,15 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
         scrub_installed_peer(node, authorization, opts)
         error
     end
+  rescue
+    _error -> connection_failure(node, authorization, opts)
+  catch
+    _kind, _reason -> connection_failure(node, authorization, opts)
+  end
+
+  defp connection_failure(node, authorization, opts) do
+    scrub_installed_peer(node, authorization, opts)
+    {:error, :beam_peer_grant_authorization_unavailable}
   end
 
   defp scrub_installed_peer(node, authorization, opts) when not is_nil(authorization),

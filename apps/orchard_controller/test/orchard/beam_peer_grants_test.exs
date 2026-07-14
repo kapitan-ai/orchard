@@ -1166,6 +1166,112 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert_received {:peer_disconnected, ^peer}
   end
 
+  test "SPEC.md §7.5.0 connect scrubs the peer when final authorization raises", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {grant, target} = active_grant_target!(trust_root, authorization_root)
+    controller_name = target.metadata.controller_beam_name
+    [_service, listen_host] = String.split(controller_name, "@", parts: 2)
+
+    Application.put_env(:orchard_controller, :runtime_endpoint,
+      beam: [
+        enabled: true,
+        node_name: controller_name,
+        cookie_file: nil,
+        admitted_services: [],
+        allowed_cidrs: [],
+        listen_host: listen_host
+      ]
+    )
+
+    Process.put(:final_authorization_failure, false)
+    caller = self()
+
+    assert {:error, :beam_peer_grant_authorization_unavailable} =
+             BeamClient.connect(target,
+               current_node: String.to_atom(controller_name),
+               test_database_now: fn ->
+                 if Process.get(:final_authorization_failure) do
+                   raise "authorization store failed"
+                 else
+                   grant.not_before_at
+                 end
+               end,
+               connector: fn node ->
+                 send(caller, {:peer_connected, node})
+                 Process.put(:final_authorization_failure, true)
+                 :ok
+               end,
+               cookie_setter: fn node, cookie ->
+                 send(caller, {:peer_cookie_set, node, cookie})
+                 true
+               end,
+               disconnect: fn node ->
+                 send(caller, {:peer_disconnected, node})
+                 true
+               end
+             )
+
+    peer = String.to_atom(target.address)
+    assert_received {:peer_connected, ^peer}
+    assert_received {:peer_cookie_set, ^peer, :orchard_expired_peer_grant}
+    assert_received {:peer_disconnected, ^peer}
+  end
+
+  test "SPEC.md §7.5.0 connect scrubs the peer when final authorization exits", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {grant, target} = active_grant_target!(trust_root, authorization_root)
+    controller_name = target.metadata.controller_beam_name
+    [_service, listen_host] = String.split(controller_name, "@", parts: 2)
+
+    Application.put_env(:orchard_controller, :runtime_endpoint,
+      beam: [
+        enabled: true,
+        node_name: controller_name,
+        cookie_file: nil,
+        admitted_services: [],
+        allowed_cidrs: [],
+        listen_host: listen_host
+      ]
+    )
+
+    Process.put(:final_authorization_exit, false)
+    caller = self()
+
+    assert {:error, :beam_peer_grant_authorization_unavailable} =
+             BeamClient.connect(target,
+               current_node: String.to_atom(controller_name),
+               test_database_now: fn ->
+                 if Process.get(:final_authorization_exit) do
+                   exit(:authorization_store_failed)
+                 else
+                   grant.not_before_at
+                 end
+               end,
+               connector: fn node ->
+                 send(caller, {:peer_connected, node})
+                 Process.put(:final_authorization_exit, true)
+                 :ok
+               end,
+               cookie_setter: fn node, cookie ->
+                 send(caller, {:peer_cookie_set, node, cookie})
+                 true
+               end,
+               disconnect: fn node ->
+                 send(caller, {:peer_disconnected, node})
+                 true
+               end
+             )
+
+    peer = String.to_atom(target.address)
+    assert_received {:peer_connected, ^peer}
+    assert_received {:peer_cookie_set, ^peer, :orchard_expired_peer_grant}
+    assert_received {:peer_disconnected, ^peer}
+  end
+
   test "SPEC.md §7.5.0 connect scrubs the installed cookie when Distribution never connects",
        %{
          trust_root: trust_root,
