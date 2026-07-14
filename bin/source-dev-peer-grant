@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# bin/source-dev-peer-grant — Source-dev, single-Mac BEAM Peer Grant tracer.
+# bin/source-dev-peer-grant - Source-dev, single-Mac BEAM Peer Grant tracer.
 # Drives one Controller and one Node through certificate-scoped grant delivery
-# and cookie-free TLS 1.3 Distribution across these subcommands:
+# and TLS 1.3 Distribution without a shared cluster cookie across these subcommands:
 #   controller-control | node-retrieve | node-preflight | controller-preflight
 #   | node-run | controller-run
 # It exports the helper-managed toggles ORCHARD_SOURCE_DEV_NO_COMPILE,

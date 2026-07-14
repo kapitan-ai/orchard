@@ -1,9 +1,15 @@
+Code.require_file(Path.join(__DIR__, "beam-peer-grant-control-files.exs"))
+
 defmodule Orchard.BeamPeerGrantControlApplication do
   alias Orchard.{BeamPeerGrants, NodeEnrollments, Nodes, NodeTrust, Repo}
+  alias Orchard.BeamPeerGrantControlFiles
   alias Orchard.NodeEnrollment.PKI
   alias OrchardCLI.NodeIdentity.Store
 
+  @stop_timeout_ms 120_000
+
   def run([root, ipv4]) do
+    :ok = BeamPeerGrantControlFiles.validate_root(root)
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     trust_root = required_env!("ORCHARD_NODE_TRUST_ROOT")
     identity_root = required_env!("ORCHARD_NODE_IDENTITY_ROOT")
@@ -96,9 +102,14 @@ defmodule Orchard.BeamPeerGrantControlApplication do
       "NODE_NAME" => grant.node_beam_name
     })
 
-    File.write!(Path.join(root, "control.ready"), "ready\n")
-    File.chmod!(Path.join(root, "control.ready"), 0o600)
-    wait_for_stop(Path.join(root, "control.stop"))
+    :ok = BeamPeerGrantControlFiles.publish_ready(Path.join(root, "control.ready"))
+
+    :ok =
+      BeamPeerGrantControlFiles.wait_for_stop(
+        Path.join(root, "control.stop"),
+        @stop_timeout_ms
+      )
+
     :ok = Application.stop(:orchard_controller)
   end
 
@@ -123,15 +134,6 @@ defmodule Orchard.BeamPeerGrantControlApplication do
     contents = Enum.map_join(values, "\n", fn {key, value} -> "#{key}=#{shell_quote(value)}" end)
     File.write!(path, contents <> "\n", [:exclusive])
     File.chmod!(path, 0o600)
-  end
-
-  defp wait_for_stop(path) do
-    if File.exists?(path) do
-      :ok
-    else
-      Process.sleep(50)
-      wait_for_stop(path)
-    end
   end
 
   defp required_env!(name) do

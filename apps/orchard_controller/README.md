@@ -31,7 +31,7 @@ This README is orientation only. Normative behavior lives in
 
 Run all-in-one source dev from the umbrella root with `mise exec -- bin/dev`.
 Use `mise exec -- bin/dev-controller` only for split-role controller work.
-Use `mise exec -- bin/source-dev-peer-grant` for the experimental certificate-scoped, cookie-free BEAM Peer Grant tracer.
+Use `mise exec -- bin/source-dev-peer-grant` for the experimental certificate-scoped BEAM Peer Grant tracer with no shared cluster cookie.
 For setup, BEAM or gRPC split-role flows, and validation commands, see
 [`../../docs/local-dev.md`](../../docs/local-dev.md) and
 [`../../docs/tooling.md`](../../docs/tooling.md).
