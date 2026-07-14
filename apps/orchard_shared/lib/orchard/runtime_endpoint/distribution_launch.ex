@@ -113,6 +113,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
          :ok <- validate_peer_names(attrs),
          true <- is_struct(value(attrs, :not_before_at), DateTime),
          true <- is_struct(value(attrs, :expires_at), DateTime),
+         :ok <- validate_window(value(attrs, :not_before_at), value(attrs, :expires_at)),
          :ok <- validate_file(optfile_path, owner),
          {:ok, digest} <- digest_file(optfile_path) do
       {:ok,
@@ -148,6 +149,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
          :ok <- validate_peer_names(encoded),
          {:ok, not_before_at, 0} <- DateTime.from_iso8601(value(encoded, :not_before_at)),
          {:ok, expires_at, 0} <- DateTime.from_iso8601(value(encoded, :expires_at)),
+         :ok <- validate_window(not_before_at, expires_at),
          optfile_path when is_binary(optfile_path) <- value(encoded, :optfile_path),
          true <- Path.type(optfile_path) == :absolute,
          :ok <- validate_file(optfile_path, owner),
@@ -178,6 +180,10 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
   defp decode_role("controller"), do: {:ok, :controller}
   defp decode_role("node_agent"), do: {:ok, :node_agent}
   defp decode_role(_role), do: {:error, :invalid_role}
+
+  defp validate_window(%DateTime{} = not_before_at, %DateTime{} = expires_at) do
+    if DateTime.before?(not_before_at, expires_at), do: :ok, else: {:error, :invalid_window}
+  end
 
   defp validate_peer_names(manifest) do
     with :ok <-

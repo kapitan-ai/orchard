@@ -84,6 +84,38 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunchTest do
              DistributionLaunch.write(manifest_path, abbreviated)
   end
 
+  test "SPEC.md §7.5.0 refuses to publish an empty grant validity window" do
+    {root, manifest_path, attrs} = launch_fixture()
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    assert {:error, :beam_distribution_launch_contract_invalid} =
+             DistributionLaunch.write(manifest_path, %{
+               attrs
+               | expires_at: attrs.not_before_at
+             })
+
+    refute File.exists?(manifest_path)
+  end
+
+  test "SPEC.md §7.5.0 refuses to load an empty grant validity window" do
+    {root, manifest_path, attrs} = launch_fixture()
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    assert :ok = DistributionLaunch.write(manifest_path, attrs)
+
+    encoded = manifest_path |> File.read!() |> Jason.decode!()
+
+    encoded
+    |> Map.put("expires_at", encoded["not_before_at"])
+    |> Jason.encode!()
+    |> then(&File.write!(manifest_path, &1))
+
+    File.chmod!(manifest_path, 0o600)
+
+    assert {:error, :beam_distribution_launch_contract_invalid} =
+             DistributionLaunch.load(manifest_path)
+  end
+
   defp launch_fixture do
     root =
       Path.join(
