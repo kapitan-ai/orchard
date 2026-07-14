@@ -7,6 +7,9 @@ set -euo pipefail
 # Use ORCHARD_RUNTIME_ENDPOINT_TARGETS for BEAM Runtime Endpoint targets.
 # Use ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc with ORCHARD_RUNTIME_CLIENT_TARGETS
 # for gRPC compatibility targets.
+# ORCHARD_SOURCE_DEV_SKIP_DB_SETUP=1 skips DB create/migrate and
+# ORCHARD_SOURCE_DEV_NO_COMPILE=1 skips compilation; both are set by the
+# bin/source-dev-peer-grant tracer and are not normally exported by hand.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

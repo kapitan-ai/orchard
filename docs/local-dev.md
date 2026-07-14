@@ -726,9 +726,9 @@ Env surface:
 | `ORCHARD_BEAM_NODE_NAME` | _(required)_ | Long BEAM node name for the current role. In grant mode the node-agent service must be `orchard_node_agent_<32-hex>@<ipv4-literal>`. |
 
 `ORCHARD_BEAM_PEER_GRANTS_ENABLED`, `ORCHARD_BEAM_PEER_GRANT_MODE`
-(`grant_control` or `distributed`), and `ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST`
-are set by the helper per subcommand and normally do not need to be exported by
-hand.
+(`grant_control` or `distributed`), `ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST`,
+and `ORCHARD_BEAM_SSL_DIST_OPTFILE` are set by the helper per subcommand and
+normally do not need to be exported by hand.
 Peer-grant mode requires `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`; the helper
 sets it.
 

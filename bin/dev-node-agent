@@ -7,6 +7,8 @@ set -euo pipefail
 # For BEAM Runtime Endpoint testing, set ORCHARD_BEAM_NODE_NAME with the host's IPv4 address.
 # For gRPC compatibility testing, set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc and
 # ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 on LAN/Tailscale worker hosts.
+# ORCHARD_SOURCE_DEV_NO_COMPILE=1 skips compilation; it is set by the
+# bin/source-dev-peer-grant tracer and is not normally exported by hand.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

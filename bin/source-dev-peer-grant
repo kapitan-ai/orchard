@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# bin/source-dev-peer-grant — Source-dev, single-Mac BEAM Peer Grant tracer.
+# Drives one Controller and one Node through certificate-scoped grant delivery
+# and cookie-free TLS 1.3 Distribution across these subcommands:
+#   controller-control | node-retrieve | node-preflight | controller-preflight
+#   | node-run | controller-run
+# It exports the helper-managed toggles ORCHARD_SOURCE_DEV_NO_COMPILE,
+# ORCHARD_SOURCE_DEV_SKIP_DB_SETUP, and ORCHARD_BEAM_SSL_DIST_OPTFILE for the
+# run subcommands. See the "Source-dev BEAM Peer Grant tracer" section in
+# docs/local-dev.md for the full env surface and usage.
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
