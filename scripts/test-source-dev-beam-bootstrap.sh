@@ -378,6 +378,32 @@ STAT
 chmod +x "$FAKE_NON_OCTAL_STAT_DIR/stat"
 assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must be owner-only' "$TMP_ROOT/d3-non-octal-stat.out" \
   run_helper controller "$TMP_ROOT/repo-d3-non-octal-stat" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam PATH="$FAKE_NON_OCTAL_STAT_DIR:/usr/bin:/bin:/usr/sbin:/sbin" ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE"
+FAKE_FOREIGN_OWNER_STAT_DIR="$TMP_ROOT/fake-foreign-owner-stat-bin"
+mkdir -p "$FAKE_FOREIGN_OWNER_STAT_DIR"
+cat > "$FAKE_FOREIGN_OWNER_STAT_DIR/stat" <<'STAT'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}:${2:-}" in
+  -c:%a|-f:%Lp)
+    printf '600\n'
+    ;;
+  -c:%u|-f:%u)
+    printf '%s\n' "$FAKE_FOREIGN_UID"
+    ;;
+  *)
+    exec /usr/bin/stat "$@"
+    ;;
+esac
+STAT
+chmod +x "$FAKE_FOREIGN_OWNER_STAT_DIR/stat"
+if env -i \
+    PATH="$FAKE_FOREIGN_OWNER_STAT_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FAKE_FOREIGN_UID="$(( $(id -u) + 1 ))" \
+    bash -c 'source "$1"; orchard_source_dev_beam_cookie_is_owner_only "$2"' \
+      bash "$HELPER" "$STRICT_COOKIE"; then
+  echo "expected owner-only validation to reject a foreign uid" >&2
+  exit 1
+fi
 assert_succeeds "$TMP_ROOT/d4.out" run_helper controller "$TMP_ROOT/repo-d4" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE"
 assert_grep "cookie=$STRICT_COOKIE" "$TMP_ROOT/d4.out"
 assert_no_grep 'fixture-cookie' "$TMP_ROOT/d4.out"

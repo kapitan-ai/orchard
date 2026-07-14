@@ -630,17 +630,22 @@ orchard_source_dev_beam_validate_owner_only_file() {
 
 orchard_source_dev_beam_cookie_is_owner_only() {
   local cookie_file="$1"
-  local mode
+  local mode owner_uid running_uid
 
-  if mode="$(stat -c '%a' "$cookie_file" 2>/dev/null)"; then
+  if mode="$(stat -c '%a' "$cookie_file" 2>/dev/null)" &&
+    owner_uid="$(stat -c '%u' "$cookie_file" 2>/dev/null)"; then
     :
-  elif mode="$(stat -f '%Lp' "$cookie_file" 2>/dev/null)"; then
+  elif mode="$(stat -f '%Lp' "$cookie_file" 2>/dev/null)" &&
+    owner_uid="$(stat -f '%u' "$cookie_file" 2>/dev/null)"; then
     :
   else
     return 1
   fi
 
   [[ "$mode" =~ ^[0-7]+$ ]] || return 1
+  [[ "$owner_uid" =~ ^[0-9]+$ ]] || return 1
+  running_uid="$(id -u)" || return 1
+  [[ "$owner_uid" == "$running_uid" ]] || return 1
   mode="00$mode"
   [[ "${mode: -2}" == "00" ]]
 }
