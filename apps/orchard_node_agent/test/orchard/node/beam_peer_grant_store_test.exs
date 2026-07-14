@@ -503,7 +503,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
            ]
   end
 
-  test "SPEC.md §7.5.0 install returns the published grant when the lock process exits before teardown" do
+  test "SPEC.md §7.5.0 install fails closed when the lock process exits before teardown" do
     root =
       Path.join(
         System.tmp_dir!(),
@@ -532,7 +532,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     identity = identity()
     delivery = delivery(identity)
 
-    assert {:ok, ^delivery} =
+    assert {:error, :beam_peer_grant_store_invalid} =
              BeamPeerGrantStore.install(
                root,
                identity,
@@ -543,6 +543,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
 
     grant_path = Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"])
     assert File.exists?(grant_path)
+
+    assert {:ok, ^delivery} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
   end
 
   test "SPEC.md §7.5.0 restart rejects a stored secret that no longer matches its hash" do
