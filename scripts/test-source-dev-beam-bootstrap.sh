@@ -409,6 +409,12 @@ assert_grep "cookie=$STRICT_COOKIE" "$TMP_ROOT/d4.out"
 assert_no_grep 'fixture-cookie' "$TMP_ROOT/d4.out"
 
 # E: BEAM node names must be role-appropriate long names with IPv4-literal hosts.
+if env -i PATH="/bin:/usr/sbin:/sbin" \
+    bash -c 'source "$1"; orchard_source_dev_beam_is_ipv4_literal "10.08.0.1"' \
+      bash "$HELPER"; then
+  echo "expected the no-Python IPv4 fallback to reject a leading-zero octet" >&2
+  exit 1
+fi
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME must be a long BEAM node name' "$TMP_ROOT/e1.out" \
   run_helper controller "$TMP_ROOT/repo-e1" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IPv4 literal' "$TMP_ROOT/e2.out" \

@@ -281,7 +281,10 @@ PY
     local IFS='.'
     local part
     for part in $host; do
-      if (( part > 255 )); then
+      if [[ ${#part} -gt 1 && "$part" == 0* ]]; then
+        return 1
+      fi
+      if (( 10#$part > 255 )); then
         return 1
       fi
     done
