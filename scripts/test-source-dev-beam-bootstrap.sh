@@ -436,9 +436,9 @@ assert_succeeds "$TMP_ROOT/e4-exact.out" \
 assert_grep 'node=orchard_node_agent@127.0.0.1' "$TMP_ROOT/e4-exact.out"
 assert_fails_with 'node-agent BEAM node service must be exactly orchard_node_agent' "$TMP_ROOT/e4-suffix.out" \
   run_helper node_agent "$TMP_ROOT/repo-e4-suffix" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent_dev@127.0.0.1
-assert_succeeds "$TMP_ROOT/e4-peer-grant.out" \
+assert_fails_with 'ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST must point to an absolute existing regular non-symlink file' \
+  "$TMP_ROOT/e4-peer-grant.out" \
   run_helper node_agent "$TMP_ROOT/repo-e4-peer-grant" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR=/protected/peer-grant.json ORCHARD_BEAM_NODE_NAME=orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20
-assert_grep 'node=orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20' "$TMP_ROOT/e4-peer-grant.out"
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME service contains invalid characters' "$TMP_ROOT/e5-space.out" \
   run_helper controller "$TMP_ROOT/repo-e5-space" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME='orchard_controller bad@127.0.0.1'
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME service contains invalid characters' "$TMP_ROOT/e5-slash.out" \

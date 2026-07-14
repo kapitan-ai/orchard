@@ -66,7 +66,7 @@ orchard_source_dev_beam_bootstrap() {
   local peer_grant_launch=0
   if [[ "$role" == "controller" && "$peer_grants_enabled" == "1" && "$peer_grant_mode" == "distributed" ]]; then
     peer_grant_launch=1
-  elif [[ "$role" == "node_agent" && -n "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" && -n "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}" ]]; then
+  elif [[ "$role" == "node_agent" && -n "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" ]]; then
     peer_grant_launch=1
   fi
 
