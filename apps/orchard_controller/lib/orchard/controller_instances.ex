@@ -102,8 +102,7 @@ defmodule Orchard.ControllerInstances do
       :certificate_fingerprint_sha256,
       :canonical_beam_name,
       :beam_authorization_root_id,
-      :authorization_root_custody_ref,
-      :status
+      :authorization_root_custody_ref
     ]
   end
 

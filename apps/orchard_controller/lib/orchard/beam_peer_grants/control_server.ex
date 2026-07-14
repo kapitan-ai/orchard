@@ -7,8 +7,12 @@ defmodule Orchard.BeamPeerGrants.ControlServer do
 
   use GRPC.Server, service: Orchard.Cluster.V1.ControllerPeerGrantService.Service
 
+  require Logger
+
   alias Orchard.BeamPeerGrants
   alias Orchard.Cluster.V1.{RetrieveBeamPeerGrantRequest, RetrieveBeamPeerGrantResponse}
+
+  @opaque_rejection "permission_denied"
 
   @spec retrieve_beam_peer_grant(RetrieveBeamPeerGrantRequest.t(), GRPC.Server.Stream.t()) ::
           RetrieveBeamPeerGrantResponse.t()
@@ -66,6 +70,7 @@ defmodule Orchard.BeamPeerGrants.ControlServer do
   defp format_datetime(nil), do: ""
 
   defp reject(reason) do
-    raise GRPC.RPCError, status: :permission_denied, message: Atom.to_string(reason)
+    Logger.debug("beam peer grant retrieval rejected: #{inspect(reason)}")
+    raise GRPC.RPCError, status: :permission_denied, message: @opaque_rejection
   end
 end
