@@ -116,12 +116,14 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
          :ok <- validate_window(value(attrs, :not_before_at), value(attrs, :expires_at)),
          :ok <- validate_file(optfile_path, owner),
          {:ok, digest} <- digest_file(optfile_path) do
+      manifest_fields =
+        @string_fields ++ [:generation, :contract_version, :not_before_at, :expires_at]
+
       {:ok,
-       attrs
-       |> Map.new(fn {key, val} -> {normalize_key(key), val} end)
-       |> Map.take(
-         @string_fields ++ [:generation, :contract_version, :not_before_at, :expires_at]
-       )
+       manifest_fields
+       |> Enum.reduce(%{}, fn field, manifest ->
+         Map.put(manifest, field, value(attrs, field))
+       end)
        |> Map.merge(%{
          schema_version: @schema_version,
          role: role,
@@ -353,9 +355,6 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
 
   defp valid_positive_integer?(value), do: is_integer(value) and value > 0
   defp nonempty?(value), do: is_binary(value) and value != ""
-
-  defp normalize_key(key) when is_atom(key), do: key
-  defp normalize_key(key) when is_binary(key), do: String.to_existing_atom(key)
 
   defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

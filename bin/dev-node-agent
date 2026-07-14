@@ -67,9 +67,9 @@ echo "==> Worker executable: ${ORCHARD_WORKER_EXECUTABLE}"
 cd "$REPO_ROOT/apps/orchard_node_agent"
 if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" == "beam" ]]; then
   if [[ "${ORCHARD_SOURCE_DEV_NO_COMPILE:-0}" == "1" ]]; then
-    exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix run --no-compile --no-halt
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix run --no-compile --no-halt
   else
-    exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix run --no-halt
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix run --no-halt
   fi
 else
   exec iex -S mix run --no-halt

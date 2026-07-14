@@ -23,6 +23,19 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunchTest do
     refute File.read!(manifest_path) =~ "authorization_root_bytes"
   end
 
+  test "SPEC.md §7.5.0 persists the validated field value when a string-keyed twin is present" do
+    {root, manifest_path, attrs} = launch_fixture()
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    poisoned = Map.put(attrs, "grant_id", "99999999-9999-4999-8999-999999999999")
+
+    assert :ok = DistributionLaunch.write(manifest_path, poisoned)
+    assert {:ok, manifest} = DistributionLaunch.load(manifest_path)
+
+    assert manifest.grant_id == attrs.grant_id
+    refute File.read!(manifest_path) =~ "99999999-9999-4999-8999-999999999999"
+  end
+
   test "SPEC.md §7.5.0 verifies the running VM against the exact launch contract" do
     {root, manifest_path, attrs} = launch_fixture()
     on_exit(fn -> File.rm_rf!(root) end)

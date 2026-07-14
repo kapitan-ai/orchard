@@ -637,8 +637,8 @@ defmodule Orchard.Nodes do
 
   Transport failure reasons:
   - `{:connect_failed, _}` - gRPC channel could not be established
-  - `:node_unavailable` - node not reachable
-  - `:node_timeout` - probe or RPC timed out
+  - `:node_unavailable` / `:beam_node_unavailable` - node not reachable
+  - `:node_timeout` / `:beam_node_timeout` - probe or RPC timed out
 
   Returns:
   - `{:ok, %Node{}}` when health was updated
@@ -2591,5 +2591,7 @@ defmodule Orchard.Nodes do
   defp transport_failure_reason?({:connect_failed, _reason}), do: true
   defp transport_failure_reason?(:node_unavailable), do: true
   defp transport_failure_reason?(:node_timeout), do: true
+  defp transport_failure_reason?(:beam_node_unavailable), do: true
+  defp transport_failure_reason?(:beam_node_timeout), do: true
   defp transport_failure_reason?(_reason), do: false
 end

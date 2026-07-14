@@ -66,9 +66,9 @@ fi
 cd "$REPO_ROOT/apps/orchard_controller"
 if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" == "beam" ]]; then
   if [[ "${ORCHARD_SOURCE_DEV_NO_COMPILE:-0}" == "1" ]]; then
-    exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix phx.server --no-compile
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix phx.server --no-compile
   else
-    exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix phx.server
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix phx.server
   fi
 else
   exec iex -S mix phx.server

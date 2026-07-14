@@ -9,6 +9,8 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   import Bitwise, only: [band: 2]
 
+  require Logger
+
   alias Orchard.RuntimeEndpoint.BeamNodeName
 
   @directory_mode 0o700
@@ -262,7 +264,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
       try do
         operation.()
       after
-        release_store_lock!(lock_port)
+        release_store_lock(lock_port)
       end
     end
   end
@@ -339,11 +341,16 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp release_store_lock!(lock_port) do
+  defp release_store_lock(lock_port) do
     case Port.info(lock_port) do
-      nil -> raise "peer grant store lock process exited unexpectedly"
-      _info -> Port.close(lock_port)
+      nil ->
+        Logger.warning("peer grant store lock process exited before teardown")
+
+      _info ->
+        close_lock_port(lock_port)
     end
+
+    :ok
   end
 
   defp close_lock_port(lock_port) do

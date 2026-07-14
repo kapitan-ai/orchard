@@ -150,6 +150,27 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
     assert failure.code == "node_timeout"
   end
 
+  test "from_transport_reason beam_node_unavailable -> runtime_unavailable" do
+    failure = ModelLoadFailure.from_transport_reason(:beam_node_unavailable)
+    assert failure.category == :runtime_unavailable
+  end
+
+  test "from_transport_reason beam_target_unknown -> runtime_unavailable" do
+    failure = ModelLoadFailure.from_transport_reason(:beam_target_unknown)
+    assert failure.category == :runtime_unavailable
+  end
+
+  test "from_transport_reason beam_node_timeout -> timeout" do
+    failure = ModelLoadFailure.from_transport_reason(:beam_node_timeout)
+    assert failure.category == :timeout
+  end
+
+  test "from_transport_reason beam_rpc_failed -> internal rpc error" do
+    failure = ModelLoadFailure.from_transport_reason(:beam_rpc_failed)
+    assert failure.category == :internal
+    assert failure.code == "rpc_error"
+  end
+
   test "from_transport_reason unexpected_placement_state -> internal" do
     failure =
       ModelLoadFailure.from_transport_reason(

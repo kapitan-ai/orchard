@@ -3974,6 +3974,50 @@ defmodule Orchard.NodesTest do
       assert marked.health == :degraded
     end
 
+    test ":beam_node_unavailable is classified as transport failure" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.73",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.73", 9444),
+                 :beam_node_unavailable,
+                 observed_at
+               )
+
+      assert marked.health == :degraded
+    end
+
+    test ":beam_node_timeout is classified as transport failure" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.74",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.74", 9444),
+                 :beam_node_timeout,
+                 observed_at
+               )
+
+      assert marked.health == :degraded
+    end
+
     test "SPEC.md §5.5 transport failure clears stale queue capacity sources" do
       QueueManager.reset()
 
