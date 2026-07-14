@@ -2427,6 +2427,20 @@ service ClusterMembershipService {
 }
 ```
 
+The certificate-authenticated control path that delivers and recovers the BEAM
+Peer Grant already created during admission (§7.5.0) is a distinct
+Controller-side service defined in `proto/cluster/v1/peer_grant.proto`. It only
+returns the exact authorized grant; it never mints authority, and lost
+responses SHALL re-return the same authorized generation after identity,
+certificate, admission, generation, and expiry are revalidated.
+
+```proto
+service ControllerPeerGrantService {
+  rpc RetrieveBeamPeerGrant(RetrieveBeamPeerGrantRequest)
+      returns (RetrieveBeamPeerGrantResponse);
+}
+```
+
 #### 7.5.2 Node-side service
 
 `NodeRuntimeService` is the current gRPC Compatibility Adapter service for Runtime Endpoint operations.
