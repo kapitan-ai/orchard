@@ -26,13 +26,17 @@ defmodule Orchard.Node.BeamPeerGrantStore do
       when is_binary(root) and is_map(identity) and is_map(delivery) and
              is_binary(expected_node_name) and is_list(opts) do
     with {:ok, grant} <- validate_grant(identity, delivery, expected_node_name),
-         :ok <- ensure_current(grant),
-         {:ok, store_root, expected_uid} <- prepare_store(root, opts),
-         :ok <- sweep_stale_temporaries(store_root, expected_uid),
-         path = grant_path(store_root, grant.controller_id),
-         {:ok, stored} <- publish_or_load(path, grant, expected_uid),
-         :ok <- sync_directory(store_root, opts) do
-      {:ok, stored}
+         :ok <- ensure_current(grant, current_time(opts)),
+         {:ok, store_root, expected_uid} <- prepare_store(root, opts) do
+      with_store_lock(store_root, fn ->
+        with :ok <- sweep_stale_temporaries(store_root, expected_uid, opts),
+             :ok <- ensure_current(grant, current_time(opts)),
+             path = grant_path(store_root, grant.controller_id),
+             {:ok, stored, source} <- publish_or_load(path, grant, expected_uid, opts),
+             :ok <- sync_directory(store_root, opts) do
+          finish_install(path, stored, source, expected_uid, opts)
+        end
+      end)
     end
   rescue
     _error -> {:error, :beam_peer_grant_store_invalid}
@@ -252,32 +256,51 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp sweep_stale_temporaries(store_root, expected_uid) do
+  defp with_store_lock(store_root, operation) do
+    lock = {{__MODULE__, store_root}, self()}
+
+    case :global.trans(lock, operation, [node()]) do
+      :aborted -> {:error, :beam_peer_grant_store_invalid}
+      result -> result
+    end
+  end
+
+  defp sweep_stale_temporaries(store_root, expected_uid, opts) do
+    remove_file = Keyword.get(opts, :remove_file, &File.rm/1)
+
     case File.ls(store_root) do
       {:ok, entries} ->
         entries
         |> Enum.filter(&Regex.match?(@temporary_pattern, &1))
-        |> Enum.each(&remove_stale_temporary(Path.join(store_root, &1), expected_uid))
-
-        :ok
+        |> Enum.reduce_while(:ok, fn entry, :ok ->
+          case remove_stale_temporary(Path.join(store_root, entry), expected_uid, remove_file) do
+            :ok -> {:cont, :ok}
+            {:error, _reason} = error -> {:halt, error}
+          end
+        end)
 
       _other ->
         {:error, :beam_peer_grant_store_invalid}
     end
   end
 
-  defp remove_stale_temporary(path, expected_uid) do
+  defp remove_stale_temporary(path, expected_uid, remove_file) do
     case File.lstat(path) do
-      {:ok, %{type: :regular, uid: ^expected_uid}} -> File.rm(path)
-      _other -> :ok
+      {:ok, %{type: :regular, uid: ^expected_uid}} -> normalize_remove(remove_file.(path))
+      {:error, :enoent} -> :ok
+      _other -> {:error, :beam_peer_grant_store_invalid}
     end
   end
 
-  defp publish_or_load(path, grant, expected_uid) do
+  defp normalize_remove(:ok), do: :ok
+  defp normalize_remove({:error, :enoent}), do: :ok
+  defp normalize_remove(_other), do: {:error, :beam_peer_grant_store_invalid}
+
+  defp publish_or_load(path, grant, expected_uid, opts) do
     case load_existing(path, expected_uid) do
-      {:ok, ^grant} -> {:ok, grant}
+      {:ok, ^grant} -> {:ok, grant, :existing}
       {:ok, _other} -> {:error, :beam_peer_grant_store_conflict}
-      {:error, :beam_peer_grant_missing} -> publish(path, grant, expected_uid)
+      {:error, :beam_peer_grant_missing} -> publish(path, grant, expected_uid, opts)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -293,29 +316,67 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp publish(path, grant, expected_uid) do
+  defp publish(path, grant, expected_uid, opts) do
     temporary = path <> ".tmp-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+    remove_file = Keyword.get(opts, :remove_file, &File.rm/1)
 
-    with :ok <- write_private_file(temporary, encode_persisted(grant), expected_uid),
-         :ok <- File.ln(temporary, path) do
-      File.rm(temporary)
-      {:ok, grant}
-    else
-      {:error, :eexist} ->
-        File.rm(temporary)
-        load_after_publish_race(path, grant, expected_uid)
-
-      _other ->
-        File.rm(temporary)
-        {:error, :beam_peer_grant_store_invalid}
+    case write_private_file(temporary, encode_persisted(grant), expected_uid) do
+      :ok -> link_and_cleanup(temporary, path, grant, expected_uid, remove_file)
+      {:error, _reason} -> cleanup_failed_publish(temporary, remove_file)
     end
+  end
+
+  defp link_and_cleanup(temporary, path, grant, expected_uid, remove_file) do
+    case File.ln(temporary, path) do
+      :ok ->
+        with :ok <- normalize_remove(remove_file.(temporary)) do
+          {:ok, grant, :published}
+        end
+
+      {:error, :eexist} ->
+        with :ok <- normalize_remove(remove_file.(temporary)) do
+          load_after_publish_race(path, grant, expected_uid)
+        end
+
+      {:error, _reason} ->
+        cleanup_failed_publish(temporary, remove_file)
+    end
+  end
+
+  defp cleanup_failed_publish(temporary, remove_file) do
+    _result = normalize_remove(remove_file.(temporary))
+    {:error, :beam_peer_grant_store_invalid}
   end
 
   defp load_after_publish_race(path, grant, expected_uid) do
     case load_existing(path, expected_uid) do
-      {:ok, ^grant} -> {:ok, grant}
+      {:ok, ^grant} -> {:ok, grant, :existing}
       {:ok, _other} -> {:error, :beam_peer_grant_store_conflict}
       {:error, _reason} -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp finish_install(path, grant, source, expected_uid, opts) do
+    case ensure_current(grant, current_time(opts)) do
+      :ok ->
+        {:ok, grant}
+
+      {:error, _reason} = error ->
+        rollback_expired_publish(error, path, source, expected_uid, opts)
+    end
+  end
+
+  defp rollback_expired_publish(error, _path, :existing, _expected_uid, _opts), do: error
+
+  defp rollback_expired_publish(error, path, :published, expected_uid, opts) do
+    remove_file = Keyword.get(opts, :remove_file, &File.rm/1)
+
+    with :ok <- validate_file(path, expected_uid),
+         :ok <- normalize_remove(remove_file.(path)),
+         :ok <- sync_directory(Path.dirname(path), opts) do
+      error
+    else
+      _other -> {:error, :beam_peer_grant_store_invalid}
     end
   end
 
@@ -440,6 +501,13 @@ defmodule Orchard.Node.BeamPeerGrantStore do
       :ok
     else
       {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp current_time(opts) do
+    case Keyword.get(opts, :now) do
+      now when is_function(now, 0) -> now.()
+      _other -> DateTime.utc_now()
     end
   end
 

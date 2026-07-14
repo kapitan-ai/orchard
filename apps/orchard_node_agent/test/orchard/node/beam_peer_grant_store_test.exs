@@ -136,6 +136,73 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert File.exists?(Path.join(store_root, "#{identity.controller_id}.json"))
   end
 
+  test "SPEC.md §7.5.0 install fails closed when plaintext temporary cleanup fails" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-sweep-failure-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:ok, _stored} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    orphan =
+      Path.join([
+        root,
+        "beam-peer-grants",
+        "#{identity.controller_id}.json.tmp-fedcba9876543210"
+      ])
+
+    File.write!(orphan, "plaintext-secret")
+    File.chmod!(orphan, 0o600)
+
+    assert {:error, :beam_peer_grant_store_invalid} =
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               delivery,
+               delivery.node_beam_name,
+               remove_file: fn ^orphan -> {:error, :eacces} end
+             )
+
+    assert File.exists?(orphan)
+  end
+
+  test "SPEC.md §7.5.0 install fails closed when published temporary cleanup fails" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-publish-cleanup-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:error, :beam_peer_grant_store_invalid} =
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               delivery,
+               delivery.node_beam_name,
+               remove_file: fn _temporary -> {:error, :eacces} end
+             )
+
+    store_root = Path.join(root, "beam-peer-grants")
+
+    assert Enum.any?(File.ls!(store_root), &String.contains?(&1, ".json.tmp-"))
+  end
+
   test "SPEC.md §7.5.0 rejects an abbreviated IPv4 in a delivered grant name" do
     root =
       Path.join(
@@ -234,6 +301,56 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert {:ok, ^delivery} = BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
   end
 
+  test "SPEC.md §7.5.0 concurrent install cannot sweep an active publisher temporary" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-active-publisher-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    parent = self()
+
+    first =
+      Task.async(fn ->
+        BeamPeerGrantStore.install(
+          root,
+          identity,
+          delivery,
+          delivery.node_beam_name,
+          remove_file: fn temporary ->
+            send(parent, {:publisher_cleanup, self(), temporary})
+
+            receive do
+              :continue_cleanup -> File.rm(temporary)
+            end
+          end
+        )
+      end)
+
+    assert_receive {:publisher_cleanup, first_pid, temporary}
+    assert File.exists?(temporary)
+
+    second =
+      Task.async(fn ->
+        result = BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+        send(parent, {:second_installer_finished, result})
+        result
+      end)
+
+    refute_receive {:second_installer_finished, _result}, 100
+    assert File.exists?(temporary)
+
+    send(first_pid, :continue_cleanup)
+    assert {:ok, ^delivery} = Task.await(first)
+    assert {:ok, ^delivery} = Task.await(second)
+  end
+
   test "SPEC.md §7.5.0 restart rejects a stored secret that no longer matches its hash" do
     root =
       Path.join(
@@ -288,6 +405,76 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
              BeamPeerGrantStore.install(root, identity, expired, expired.node_beam_name)
 
     refute File.exists?(Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"]))
+  end
+
+  test "SPEC.md §7.5.0 a grant expiring before publication is never persisted" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-prepublish-expiry-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    calls = :atomics.new(1, signed: false)
+
+    now = fn ->
+      case :atomics.add_get(calls, 1, 1) do
+        1 -> delivery.not_before_at
+        _later -> delivery.expires_at
+      end
+    end
+
+    assert {:error, :beam_peer_grant_expired} =
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               delivery,
+               delivery.node_beam_name,
+               now: now
+             )
+
+    refute File.exists?(Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"]))
+  end
+
+  test "SPEC.md §7.5.0 a newly published grant expiring before return is removed" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-final-expiry-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    calls = :atomics.new(1, signed: false)
+
+    now = fn ->
+      case :atomics.add_get(calls, 1, 1) do
+        call when call <= 2 -> delivery.not_before_at
+        _later -> delivery.expires_at
+      end
+    end
+
+    assert {:error, :beam_peer_grant_expired} =
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               delivery,
+               delivery.node_beam_name,
+               now: now
+             )
+
+    store_root = Path.join(root, "beam-peer-grants")
+    refute File.exists?(Path.join(store_root, "#{identity.controller_id}.json"))
+    refute Enum.any?(File.ls!(store_root), &String.contains?(&1, ".json.tmp-"))
   end
 
   test "SPEC.md §7.5.0 installs the certificate-authenticated control response owner-only" do
