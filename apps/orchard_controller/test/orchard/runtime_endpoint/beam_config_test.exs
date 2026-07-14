@@ -80,6 +80,24 @@ defmodule Orchard.RuntimeEndpoint.BeamConfigTest do
     assert config.allowed_cidrs == ["10.0.0.0/24"]
   end
 
+  test "SPEC.md §7.5.0 peer-grant config does not require a shared cookie or static target lists" do
+    assert {:ok, config} =
+             BeamConfig.validate_peer_grant_enabled(
+               enabled: true,
+               node_name: Atom.to_string(@controller_node),
+               cookie_file: nil,
+               admitted_services: [],
+               allowed_cidrs: [],
+               listen_host: "10.0.0.5"
+             )
+
+    assert config.enabled
+    assert config.authorization_mode == :peer_grant
+
+    target = beam_target("orchard_node_agent_550e8400e29b41d4a716446655440000@10.0.0.42")
+    assert :ok = BeamConfig.validate_target(config, target, current_node: @controller_node)
+  end
+
   test "SPEC.md §7.5 target guardrails enforce current node identity" do
     config = enabled_config!()
     target = beam_target("orchard_node_agent@10.0.0.42")

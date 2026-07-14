@@ -6,11 +6,37 @@ defmodule Orchard.Application do
   require Logger
 
   alias Orchard.API.Endpoint
+
+  alias Orchard.BeamPeerGrants.{
+    ControllerInitializer,
+    ControllerStartupVerifier,
+    ControlListener
+  }
+
   alias Orchard.Licensing
+  alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
   alias Orchard.SentryContext
 
   @impl true
   def start(_type, _args) do
+    with :ok <- validate_peer_grant_mode(Node.self()) do
+      start_supervisor()
+    end
+  end
+
+  @doc """
+  Verifies that the grant-control phase has no BEAM Distribution identity.
+  """
+  @spec validate_peer_grant_mode(node()) :: :ok | {:error, atom()}
+  def validate_peer_grant_mode(current_node) do
+    if peer_grant_control_mode?() and current_node != :nonode@nohost do
+      {:error, :beam_grant_control_requires_nondistributed_vm}
+    else
+      :ok
+    end
+  end
+
+  defp start_supervisor do
     case Orchard.SentryLogger.install_handler() do
       :ok ->
         :ok
@@ -21,17 +47,24 @@ defmodule Orchard.Application do
 
     attach_startup_license_context()
 
-    children =
-      []
-      |> maybe_add_repo()
-      |> maybe_add_inference_stack()
-      |> add_pubsub_and_coordinator()
-      |> maybe_add_endpoint()
-
-    Supervisor.start_link(children,
+    Supervisor.start_link(child_specs(),
       strategy: :one_for_one,
       name: Orchard.Supervisor
     )
+  end
+
+  @doc """
+  Returns the configured Controller supervision children in startup order.
+  """
+  @spec child_specs() :: [Supervisor.child_spec() | module() | {module(), term()}]
+  def child_specs do
+    []
+    |> maybe_add_repo()
+    |> maybe_add_peer_grant_stack()
+    |> maybe_add_activation_probe()
+    |> maybe_add_inference_stack()
+    |> add_pubsub_and_coordinator()
+    |> maybe_add_endpoint()
   end
 
   @impl true
@@ -85,8 +118,7 @@ defmodule Orchard.Application do
       children ++
         [
           Orchard.Repo,
-          Orchard.NodeEnrollments.PendingPublicationReconciler,
-          Orchard.RuntimeEndpoint.ActivationProbe
+          Orchard.NodeEnrollments.PendingPublicationReconciler
         ]
     else
       children
@@ -94,13 +126,81 @@ defmodule Orchard.Application do
   end
 
   defp maybe_add_inference_stack(children) do
-    children ++
-      [
-        {GRPC.Client.Supervisor, []},
-        Orchard.Tokenizer.CompatibilityCache,
-        Orchard.Tokenizer.TelemetryCounters,
-        Orchard.Inference
+    if peer_grant_control_mode?() do
+      children
+    else
+      children ++
+        [
+          {GRPC.Client.Supervisor, []},
+          Orchard.Tokenizer.CompatibilityCache,
+          Orchard.Tokenizer.TelemetryCounters,
+          Orchard.Inference
+        ]
+    end
+  end
+
+  defp maybe_add_peer_grant_stack(children) do
+    config = Application.get_env(:orchard_controller, :beam_peer_grants, [])
+
+    if Keyword.get(config, :enabled, false) do
+      listener_opts = Keyword.get(config, :control_listener, [])
+      trust = Application.get_env(:orchard_controller, :node_trust, [])
+
+      initializer_opts = [
+        private_ipv4: Keyword.get(listener_opts, :host),
+        node_trust_root: Keyword.get(trust, :root),
+        authorization_root_path: Keyword.get(config, :authorization_root_path)
       ]
+
+      children
+      |> Kernel.++([{ControllerInitializer, initializer_opts}])
+      |> maybe_add_controller_startup_verifier(config)
+      |> maybe_add_controller_expiry_guard(config)
+      |> Kernel.++([{ControlListener, listener_opts}])
+    else
+      children
+    end
+  end
+
+  defp maybe_add_controller_startup_verifier(children, config) do
+    if Keyword.get(config, :mode, :distributed) == :distributed do
+      verifier = Keyword.get(config, :startup_verifier, ControllerStartupVerifier)
+
+      verifier_opts =
+        config
+        |> Keyword.delete(:enabled)
+        |> Keyword.delete(:mode)
+        |> Keyword.delete(:control_listener)
+        |> Keyword.delete(:expiry_guard)
+        |> Keyword.delete(:startup_verifier)
+
+      children ++ [{verifier, verifier_opts}]
+    else
+      children
+    end
+  end
+
+  defp maybe_add_controller_expiry_guard(children, config) do
+    if Keyword.get(config, :mode, :distributed) == :distributed do
+      expiry_guard = Keyword.get(config, :expiry_guard, DistributionExpiryGuard)
+      children ++ [{expiry_guard, Keyword.take(config, [:manifest_path])}]
+    else
+      children
+    end
+  end
+
+  defp maybe_add_activation_probe(children) do
+    if Application.get_env(:orchard_controller, :start_repo, true) and
+         not peer_grant_control_mode?() do
+      children ++ [Orchard.RuntimeEndpoint.ActivationProbe]
+    else
+      children
+    end
+  end
+
+  defp peer_grant_control_mode? do
+    config = Application.get_env(:orchard_controller, :beam_peer_grants, [])
+    Keyword.get(config, :enabled, false) and Keyword.get(config, :mode) == :grant_control
   end
 
   defp add_pubsub_and_coordinator(children) do

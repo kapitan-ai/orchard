@@ -34,6 +34,7 @@ defmodule Orchard.Nodes.Node do
     field(:hostname, :string)
     field(:display_name, :string)
     field(:advertise_addr, :string)
+    field(:canonical_beam_name, :string)
     field(:rpc_port, :integer)
     field(:connect_host, :string)
     field(:connect_port, :integer)
@@ -84,6 +85,7 @@ defmodule Orchard.Nodes.Node do
       :hostname,
       :display_name,
       :advertise_addr,
+      :canonical_beam_name,
       :rpc_port,
       :connect_host,
       :connect_port,

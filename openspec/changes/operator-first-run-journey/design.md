@@ -29,12 +29,12 @@ Those target pieces are not all implemented.
 
 ## Non-Goals
 
-- No product implementation belongs in this change.
+- Product implementation beyond the first narrow Section 3 task 3.2 tracer does not belong in this change.
 - This change does not make Node Admission implicit.
 - This change does not make Runtime Endpoint observation a trust proof.
 - This change does not change the packaged BEAM-first direction.
-- This change selects but does not implement the node-bound production BEAM identity and authorization design.
-- This change does not enter Section 3 product implementation.
+- This change implements only the one-Controller/one-Node task 3.2 tracer of the node-bound production BEAM identity and authorization design.
+- This change does not enter the remaining Section 3 custody, connected-peer revocation, rotation, operational-surface, Active/Standby, packaging, or two-Mac slices.
 - This change does not promise model transfer time independent of artifact size or network throughput.
 
 ## Decision 1: Use One Three-Layer Journey Document
@@ -432,7 +432,7 @@ ADR 0011 and `SPEC.md` §11.9 define `orchardctl cluster init` as credential-onl
 This change resolves the contradiction by requiring explicit separate node-trust initialization or admin import.
 
 ADR 0012 and `SPEC.md` §7.5 and §10.6 now select the production BEAM Peer Grant model and close the previously deferred Section 3 identity and authorization decision.
-The OpenSpec requirements and tasks define the first narrow implementation tracer without entering Section 3 product code.
+The OpenSpec requirements and tasks now include the completed first narrow Section 3 product-code tracer while keeping every broader hardening and acceptance slice explicit and unchecked.
 No `docs/DESIGN.md` change is needed before app-guided setup defines reusable UI patterns.
 
 ## External Grounding

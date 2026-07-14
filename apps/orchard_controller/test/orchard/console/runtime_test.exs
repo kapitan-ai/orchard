@@ -1055,7 +1055,7 @@ defmodule OrchardConsole.RuntimeTest do
 
       stub_client(
         target_responses: %{
-          {:beam, :"orchard_node_agent@127.0.0.1"} => [
+          {:beam, "orchard_node_agent@127.0.0.1"} => [
             connect: {:ok, :source_dev_beam_ch},
             status:
               {:ok,

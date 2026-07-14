@@ -95,6 +95,12 @@ defmodule Orchard.Inference.ModelLoadFailure do
     }
   end
 
+  def from_transport_reason(:beam_node_unavailable),
+    do: from_transport_reason(:node_unavailable)
+
+  def from_transport_reason(:beam_target_unknown),
+    do: from_transport_reason(:node_unavailable)
+
   def from_transport_reason(:node_timeout) do
     %__MODULE__{
       category: :timeout,
@@ -102,6 +108,11 @@ defmodule Orchard.Inference.ModelLoadFailure do
       message: "model load request to node timed out"
     }
   end
+
+  def from_transport_reason(:beam_node_timeout), do: from_transport_reason(:node_timeout)
+
+  def from_transport_reason(:beam_rpc_failed),
+    do: from_transport_reason({:rpc_error, :beam_rpc_failed})
 
   def from_transport_reason({:unexpected_placement_state, placement_state}) do
     %__MODULE__{

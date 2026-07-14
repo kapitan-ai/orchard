@@ -1,6 +1,7 @@
 defmodule Orchard.RuntimeEndpoint.BeamClientTest do
-  use ExUnit.Case, async: false
+  use Orchard.DataCase, async: false
 
+  alias Orchard.Inference
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{BeamClient, ModelRef, Observation, Operation, Target}
 
@@ -8,9 +9,13 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
   setup do
     previous_config = Application.get_env(:orchard_controller, :runtime_endpoint)
+    previous_grants = Application.get_env(:orchard_controller, :beam_peer_grants)
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
     on_exit(fn ->
       restore_runtime_endpoint_config(previous_config)
+      restore_peer_grant_config(previous_grants)
+      Application.put_env(:orchard_controller, :inference, previous_inference)
     end)
 
     :ok
@@ -70,7 +75,105 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     }
 
     assert {:ok, %BeamClient{target: %Target{address: address}}} = BeamClient.connect(target)
-    assert address == node()
+    assert address == Atom.to_string(node())
+  end
+
+  test "SPEC.md §7.5.0 unknown BEAM names use the stable operator failure" do
+    target = Target.beam(@node_id, address: "orchard_node_agent_missing@10.0.0.20")
+
+    assert {:error, :beam_target_unknown} = BeamClient.connect(target)
+  end
+
+  test "SPEC.md §7.5.0 production BEAM rejects a static target before connection" do
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: true)
+    put_peer_grant_beam_config()
+
+    target =
+      Target.beam(@node_id,
+        address: Atom.to_string(node()),
+        metadata: %{server_module: Server}
+      )
+
+    assert {:error, :beam_target_not_in_trusted_inventory} = BeamClient.connect(target)
+  end
+
+  test "SPEC.md §7.5.0 source dev cannot bypass peer-grant BEAM guardrails" do
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: true)
+    Application.put_env(:orchard_controller, :runtime_endpoint, [])
+
+    target = Target.beam(@node_id, address: Atom.to_string(node()))
+
+    assert {:error, :beam_distribution_disabled} = BeamClient.connect(target)
+  end
+
+  test "SPEC.md §7.5.0 claimed inventory provenance without a grant fails closed" do
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: true)
+    put_peer_grant_beam_config()
+
+    target =
+      Target.beam(@node_id,
+        address: Atom.to_string(node()),
+        metadata: %{
+          source: :trusted_node_inventory,
+          server_module: Server
+        }
+      )
+
+    assert {:error, :beam_peer_grant_missing} = BeamClient.connect(target)
+  end
+
+  test "SPEC.md §7.5.0 fabricated grant provenance fails closed" do
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: true)
+    put_peer_grant_beam_config()
+
+    target =
+      Target.beam(@node_id,
+        address: Atom.to_string(node()),
+        metadata: %{
+          grant_id: "7caf0b96-8fe3-467a-b072-f36906f5a670",
+          source: :trusted_node_inventory,
+          server_module: Server
+        }
+      )
+
+    assert {:error, :beam_peer_grant_missing} = BeamClient.connect(target)
+  end
+
+  test "SPEC.md §7.5.0 production grants never default to gRPC compatibility" do
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: true)
+
+    inference =
+      :orchard_controller
+      |> Application.fetch_env!(:inference)
+      |> Keyword.delete(:runtime_endpoint_client_impl)
+
+    Application.put_env(:orchard_controller, :inference, inference)
+
+    assert Inference.runtime_endpoint_client() == BeamClient
+  end
+
+  test "SPEC.md §7.5.0 production grant mode validates without a shared cookie" do
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: true)
+
+    put_beam_config(
+      enabled: true,
+      node_name: "orchard_controller_550e8400e29b41d4a716446655440000@10.0.0.5",
+      cookie_file: nil,
+      admitted_services: [],
+      allowed_cidrs: [],
+      listen_host: "10.0.0.5"
+    )
+
+    target =
+      Target.beam(@node_id,
+        address: "orchard_node_agent_550e8400e29b41d4a716446655440000@10.0.0.42",
+        metadata: %{
+          grant_id: "7caf0b96-8fe3-467a-b072-f36906f5a670",
+          source: :trusted_node_inventory
+        }
+      )
+
+    assert {:error, :beam_peer_grant_missing} = BeamClient.connect(target)
   end
 
   test "SPEC.md §7.5 enabled config applies guardrails before local BEAM RPC" do
@@ -155,6 +258,19 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
              BeamClient.score_prefix_cache(target, request, [])
   end
 
+  test "SPEC.md §7.5.0 unavailable BEAM peers use the stable operator failure" do
+    target = Target.beam(@node_id, address: :definitely_missing@localhost)
+
+    connection = %BeamClient{
+      authenticated_peer: nil,
+      node: :definitely_missing@localhost,
+      server_module: Server,
+      target: target
+    }
+
+    assert {:error, :beam_node_unavailable} = BeamClient.status(connection, timeout: 100)
+  end
+
   test "local BEAM server startup failures send dispatcher-safe completion" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
     target = Target.beam(@node_id, address: node(), metadata: %{server_module: RaisingServer})
@@ -170,8 +286,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
     assert {:ok, stream_ref} = BeamClient.execute_inference(connection, request, owner: self())
 
-    assert_receive {:runtime_endpoint_done, ^stream_ref,
-                    {:error, {:beam_rpc_error, :remote_error}}}
+    assert_receive {:runtime_endpoint_done, ^stream_ref, {:error, :beam_rpc_failed}}
   end
 
   test "prefix-cache scoring fails open when a local BEAM server raises" do
@@ -194,11 +309,30 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     Application.put_env(:orchard_controller, :runtime_endpoint, beam: config)
   end
 
+  defp put_peer_grant_beam_config do
+    put_beam_config(
+      enabled: true,
+      node_name: "orchard_controller_550e8400e29b41d4a716446655440000@10.0.0.5",
+      cookie_file: nil,
+      admitted_services: [],
+      allowed_cidrs: [],
+      listen_host: "10.0.0.5"
+    )
+  end
+
   defp restore_runtime_endpoint_config(nil) do
     Application.delete_env(:orchard_controller, :runtime_endpoint)
   end
 
   defp restore_runtime_endpoint_config(config) do
     Application.put_env(:orchard_controller, :runtime_endpoint, config)
+  end
+
+  defp restore_peer_grant_config(nil) do
+    Application.delete_env(:orchard_controller, :beam_peer_grants)
+  end
+
+  defp restore_peer_grant_config(config) do
+    Application.put_env(:orchard_controller, :beam_peer_grants, config)
   end
 end

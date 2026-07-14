@@ -27,6 +27,7 @@ This README is orientation only. Normative behavior lives in
 
 Use `mise exec -- bin/dev-node-agent` for source-dev worker hosts.
 For default BEAM split-role testing, configure `ORCHARD_BEAM_NODE_NAME` when overriding the role default and use the shared cookie surface documented in local-dev.
+For the experimental certificate-scoped BEAM Peer Grant tracer with no shared cluster cookie, use `mise exec -- bin/source-dev-peer-grant` as documented in local-dev.
 For gRPC split-role compatibility testing, set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`, configure `ORCHARD_NODE_AGENT_LISTEN_HOST`, and configure the controller's `ORCHARD_RUNTIME_CLIENT_TARGETS`.
 For setup and validation commands, see [`../../docs/local-dev.md`](../../docs/local-dev.md)
 and [`../../docs/tooling.md`](../../docs/tooling.md).

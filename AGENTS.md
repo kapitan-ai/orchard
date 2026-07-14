@@ -319,6 +319,13 @@ Use `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`,
 `ORCHARD_RUNTIME_CLIENT_TARGETS=<worker-ip>:50071` only for the gRPC compatibility
 opt-out path.
 
+`mise exec -- bin/source-dev-peer-grant` drives the experimental
+one-Controller/one-Node BEAM Peer Grant tracer (certificate-bound scoped grants,
+certificate-authenticated grant delivery, owner-only Node custody, and TLS 1.3
+Distribution launch without the shared cookie). It is source-development only;
+the packaged and two-Mac paths still use the shared-cookie first cut above. See
+the "Source-dev BEAM Peer Grant tracer" section in `docs/local-dev.md`.
+
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars

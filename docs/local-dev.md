@@ -683,6 +683,62 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 > Use it only on trusted networks such as Tailscale or a private LAN.
 > Source-dev gRPC has no TLS, so rely on the private network for wire encryption.
 
+### Source-dev BEAM Peer Grant tracer (experimental)
+
+`bin/source-dev-peer-grant` drives the narrow one-Controller, one-Node BEAM Peer
+Grant tracer described by ADR 0012 and `SPEC.md` §7.5 and §10.6.
+It exercises certificate-bound scoped grants, certificate-authenticated grant
+delivery, owner-only custody, and TLS 1.3 Distribution launch without the legacy
+shared cookie.
+It is a source-development-only path; root-owned packaged and two-Mac acceptance
+remain future work, and the packaged runbook above still uses the shared-cookie
+first cut.
+
+The helper refuses `ORCHARD_BEAM_COOKIE_FILE`, `ORCHARD_RUNTIME_ENDPOINT_TARGETS`,
+and `ORCHARD_RUNTIME_CLIENT_TARGETS`, because peer-grant Distribution derives its
+authorization and targets from the grant descriptor and trusted inventory rather
+than from static cookie or target overrides.
+There is no silent gRPC fallback; the gRPC/mTLS control path is used only for the
+explicit grant-delivery step.
+
+Subcommands:
+
+| Subcommand | Role | Purpose |
+|------------|------|---------|
+| `controller-control` | controller | Start the controller in `grant_control` mode so it serves the certificate-authenticated grant-delivery control listener. |
+| `node-retrieve` | node-agent | Retrieve the scoped grant over gRPC/mTLS and persist it under owner-only custody. |
+| `node-preflight` | node-agent | Prepare the node's TLS Distribution launch manifest and `ssl-dist` optfile from the stored grant. |
+| `controller-preflight` | controller | Prepare the controller's TLS Distribution launch from the grant descriptor. |
+| `node-run` | node-agent | Start `bin/dev-node-agent` with distributed BEAM using the prepared manifest and optfile. |
+| `controller-run` | controller | Start `bin/dev-controller` in `distributed` mode using the prepared manifest and optfile. |
+
+Env surface:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHARD_BEAM_PEER_GRANT_STATE_ROOT` | `tmp/dev/beam-peer-grant` | Owner-only (`0700`) root for per-role launch manifests, `ssl-dist` optfiles, and grant state. |
+| `ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST` | _(required, controller)_ | Private, non-loopback IPv4 address the grant-delivery control listener binds. |
+| `ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT` | _(required, controller)_ | Port for the grant-delivery control listener. |
+| `ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH` | _(required, controller)_ | Path to the Controller-local BEAM Authorization Root that derives pair-secret material. |
+| `ORCHARD_NODE_TRUST_ROOT` | _(required, controller preflight/run)_ | Controller node-trust root used by the distributed controller preflight and run; conventionally `tmp/dev/node-trust` in source dev. |
+| `ORCHARD_NODE_IDENTITY_ROOT` | _(required, node)_ | Owner-only node identity root holding the Node key, Node Certificate, and stored grant; conventionally `tmp/dev/config/node-identity` in source dev. |
+| `ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR` | _(required, node; controller preflight)_ | Path to the grant descriptor that binds the exact Controller-to-Node pair. |
+| `ORCHARD_BEAM_NODE_NAME` | _(required)_ | Long BEAM node name for the current role. In grant mode the node-agent service must be `orchard_node_agent_<32-hex>@<ipv4-literal>` and the distributed controller service must be `orchard_controller_<32-hex>@<ipv4-literal>`. |
+
+`ORCHARD_BEAM_PEER_GRANTS_ENABLED`, `ORCHARD_BEAM_PEER_GRANT_MODE`
+(`grant_control` or `distributed`), `ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST`,
+and `ORCHARD_BEAM_SSL_DIST_OPTFILE` are set by the helper per subcommand and
+normally do not need to be exported by hand.
+Peer-grant mode requires `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`; the helper
+sets it.
+
+The tracer and its supporting flows are validated by
+`scripts/test-beam-peer-grant-tracer.sh`,
+`scripts/test-beam-peer-grant-application-smoke.sh`,
+`scripts/test-beam-peer-grant-expiry-smoke.sh`,
+`scripts/test-beam-legacy-first-connect-smoke.sh`, and
+`scripts/test-source-dev-beam-bootstrap.sh`.
+
 ## Testing
 
 ```bash

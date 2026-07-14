@@ -11,6 +11,7 @@ defmodule Orchard.NodeTrust do
   alias Orchard.Nodes.{ClusterIdentity, TrustAuthority}
   alias Orchard.NodeTrust.{PKI, Store}
   alias Orchard.Repo
+  alias Orchard.TransportTLS.CertificateIdentity
 
   @advisory_lock_name "orchard.node_trust.initialize"
 
@@ -57,8 +58,9 @@ defmodule Orchard.NodeTrust do
          {:ok, material} <- Store.load_current(root),
          :ok <- ensure_material_matches(material, identity, authority),
          :ok <- validate_signing_bindings(material, attrs),
-         {:ok, certificate} <- sign_node_certificate(material, attrs) do
-      {:ok, certificate_result(material, certificate)}
+         {:ok, certificate} <- sign_node_certificate(material, attrs),
+         {:ok, identifier} <- controller_certificate_identifier(material) do
+      {:ok, certificate_result(material, certificate, identifier)}
     else
       _reason -> {:error, :node_certificate_issuance_failed}
     end
@@ -73,14 +75,23 @@ defmodule Orchard.NodeTrust do
     )
   end
 
-  defp certificate_result(material, certificate) do
+  defp certificate_result(material, certificate, identifier) do
     Map.merge(certificate, %{
+      controller_certificate_identifier: identifier,
+      controller_certificate_fingerprint: material.controller_certificate_fingerprint,
+      controller_certificate_pem: material.controller_certificate_pem,
       controller_id: material.controller_id,
       controller_uri_san: material.controller_uri_san,
       runtime_ca_certificate_pem: material.ca_certificate_pem,
       runtime_trust_spki_sha256: material.ca_spki_fingerprint,
       trust_authority_id: material.trust_authority_id
     })
+  end
+
+  defp controller_certificate_identifier(material) do
+    with {:ok, certificate} <- CertificateIdentity.from_pem(material.controller_certificate_pem) do
+      {:ok, "serial:#{certificate.serial}"}
+    end
   end
 
   @spec public_material(keyword()) ::
@@ -109,6 +120,24 @@ defmodule Orchard.NodeTrust do
       {:ok, runtime_client_generation(generation.material, generation)}
     else
       _other -> {:error, :node_runtime_tls_identity_invalid}
+    end
+  end
+
+  @doc """
+  Returns the Controller generation only when it can serve the Peer Grant mTLS listener.
+  """
+  @spec peer_grant_runtime_generation_paths(keyword()) ::
+          {:ok, runtime_client_generation()}
+          | {:error, :beam_controller_identity_upgrade_required}
+  def peer_grant_runtime_generation_paths(opts \\ []) when is_list(opts) do
+    with {:ok, generation} <- runtime_client_generation_paths(opts),
+         {:ok, certificate_pem} <- File.read(generation.certfile),
+         {:ok, certificate} <- CertificateIdentity.from_pem(certificate_pem),
+         true <- :server_auth in certificate.extended_key_usages,
+         true <- :client_auth in certificate.extended_key_usages do
+      {:ok, generation}
+    else
+      _other -> {:error, :beam_controller_identity_upgrade_required}
     end
   end
 

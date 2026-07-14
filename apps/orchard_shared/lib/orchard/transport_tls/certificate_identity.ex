@@ -48,14 +48,18 @@ defmodule Orchard.TransportTLS.CertificateIdentity do
   )
 
   @subject_alt_name_oid {2, 5, 29, 17}
+  @extended_key_usage_oid {2, 5, 29, 37}
+  @server_auth_oid {1, 3, 6, 1, 5, 5, 7, 3, 1}
+  @client_auth_oid {1, 3, 6, 1, 5, 5, 7, 3, 2}
 
-  @enforce_keys [:serial, :fingerprint, :uri_sans]
-  defstruct [:serial, :fingerprint, :uri_sans]
+  @enforce_keys [:serial, :fingerprint, :uri_sans, :extended_key_usages]
+  defstruct [:serial, :fingerprint, :uri_sans, :extended_key_usages]
 
   @type t :: %__MODULE__{
           serial: String.t(),
           fingerprint: String.t(),
-          uri_sans: [String.t()]
+          uri_sans: [String.t()],
+          extended_key_usages: [atom() | tuple()]
         }
 
   @spec from_pem(String.t()) :: {:ok, t()} | {:error, :invalid_certificate_identity}
@@ -147,12 +151,14 @@ defmodule Orchard.TransportTLS.CertificateIdentity do
     extensions = otp_tbs_certificate(tbs, :extensions)
 
     with true <- is_integer(serial) and serial > 0,
-         {:ok, uri_sans} <- uri_sans(extensions) do
+         {:ok, uri_sans} <- uri_sans(extensions),
+         {:ok, extended_key_usages} <- extended_key_usages(extensions) do
       {:ok,
        %__MODULE__{
          serial: Integer.to_string(serial),
          fingerprint: fingerprint(der),
-         uri_sans: uri_sans
+         uri_sans: uri_sans,
+         extended_key_usages: extended_key_usages
        }}
     else
       _other -> {:error, :invalid_certificate_identity}
@@ -172,6 +178,24 @@ defmodule Orchard.TransportTLS.CertificateIdentity do
   end
 
   defp uri_sans(_extensions), do: {:error, :invalid_certificate_identity}
+
+  defp extended_key_usages(extensions) when is_list(extensions) do
+    usages =
+      case Enum.find(extensions, &(extension(&1, :extnID) == @extended_key_usage_oid)) do
+        nil -> []
+        usage_extension -> extension(usage_extension, :extnValue)
+      end
+
+    if is_list(usages) do
+      {:ok, Enum.map(usages, &normalize_extended_key_usage/1)}
+    else
+      {:error, :invalid_certificate_identity}
+    end
+  end
+
+  defp normalize_extended_key_usage(@server_auth_oid), do: :server_auth
+  defp normalize_extended_key_usage(@client_auth_oid), do: :client_auth
+  defp normalize_extended_key_usage(oid), do: oid
 
   defp normalize_uri_sans(entries) when is_list(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn

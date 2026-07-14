@@ -7,6 +7,9 @@ set -euo pipefail
 # Use ORCHARD_RUNTIME_ENDPOINT_TARGETS for BEAM Runtime Endpoint targets.
 # Use ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc with ORCHARD_RUNTIME_CLIENT_TARGETS
 # for gRPC compatibility targets.
+# ORCHARD_SOURCE_DEV_SKIP_DB_SETUP=1 skips DB create/migrate and
+# ORCHARD_SOURCE_DEV_NO_COMPILE=1 skips compilation; both are set by the
+# bin/source-dev-peer-grant tracer and are not normally exported by hand.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -48,9 +51,11 @@ if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" != "beam" ]]; then
 fi
 
 # Bootstrap dev database. The controller owns the schema.
-echo "==> Ensuring dev database..."
-mix ecto.create --quiet
-mix ecto.migrate --quiet
+if [[ "${ORCHARD_SOURCE_DEV_SKIP_DB_SETUP:-0}" != "1" ]]; then
+  echo "==> Ensuring dev database..."
+  mix ecto.create --quiet
+  mix ecto.migrate --quiet
+fi
 
 # Start the source-dev controller.
 echo "==> Starting Orchard dev controller (role: controller)"
@@ -60,7 +65,11 @@ if [[ -n "${ORCHARD_RUNTIME_CLIENT_TARGETS:-}" ]]; then
 fi
 cd "$REPO_ROOT/apps/orchard_controller"
 if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" == "beam" ]]; then
-  exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix phx.server
+  if [[ "${ORCHARD_SOURCE_DEV_NO_COMPILE:-0}" == "1" ]]; then
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix phx.server --no-compile
+  else
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix phx.server
+  fi
 else
   exec iex -S mix phx.server
 fi

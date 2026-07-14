@@ -160,7 +160,7 @@ defmodule Orchard.RuntimeEndpoint.Target do
             "beam target address must be a valid node name, got: #{inspect(address)}"
     end
 
-    String.to_atom(address)
+    address
   end
 
   defp normalize_beam_address(address) do
@@ -170,6 +170,7 @@ defmodule Orchard.RuntimeEndpoint.Target do
 
   defp default_beam_id(node_id, _address) when is_binary(node_id), do: "beam:#{node_id}"
   defp default_beam_id(nil, address) when is_atom(address), do: "beam:#{Atom.to_string(address)}"
+  defp default_beam_id(nil, address) when is_binary(address), do: "beam:#{address}"
 
   defp valid_beam_node_name?(address) do
     byte_size(address) in 3..255 and

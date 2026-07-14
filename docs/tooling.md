@@ -157,7 +157,7 @@ mise exec -- mix proto.gen.worker
   pinned `protoc-gen-elixir` escript. Install the escript through the pinned
   Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
 - `mix proto.gen` generates Elixir controller ↔ node-agent cluster modules from
-  `proto/cluster/v1/{common,events,runtime}.proto` into
+  `proto/cluster/v1/{common,events,peer_grant,runtime}.proto` into
   `apps/orchard_shared/lib/cluster/v1/`.
 - `mix proto.gen.worker` generates Python bindings for the shared cluster protos
   and `native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto`

@@ -32,15 +32,29 @@ defmodule Orchard.Config.SourceDevBeamTest do
              ) == [
                %{
                  transport: :beam,
-                 address: "orchard_node_agent@127.0.0.1",
+                 address: :"orchard_node_agent@127.0.0.1",
                  metadata: %{source_dev: true}
                },
                %{
                  transport: :beam,
-                 address: "orchard_node_agent@10.0.0.2",
+                 address: :"orchard_node_agent@10.0.0.2",
                  metadata: %{source_dev: true}
                }
              ]
+    end
+
+    test "bounds legacy BEAM target atom materialization" do
+      targets =
+        Enum.map_join(1..65, ",", fn octet ->
+          "orchard_node_agent@10.0.0.#{octet}"
+        end)
+
+      assert_raise RuntimeError, ~r/at most 64 BEAM targets/, fn ->
+        SourceDevBeam.controller_beam_targets!(
+          targets,
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+        )
+      end
     end
 
     test "rejects hostname target hosts" do
@@ -177,6 +191,27 @@ defmodule Orchard.Config.SourceDevBeamTest do
                        targets
                      )
                    end
+    end
+  end
+
+  describe "peer_grant_guardrail_config!/1" do
+    test "derives canonical peer-grant guardrails without a shared cookie or static targets" do
+      assert SourceDevBeam.peer_grant_guardrail_config!(
+               "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10"
+             ) == [
+               enabled: true,
+               node_name: "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+               cookie_file: nil,
+               listen_host: "10.0.0.10",
+               admitted_services: [],
+               allowed_cidrs: []
+             ]
+    end
+
+    test "rejects a legacy Controller service name in peer-grant mode" do
+      assert_raise RuntimeError, ~r/peer-grant Controller service must be canonical/, fn ->
+        SourceDevBeam.peer_grant_guardrail_config!("orchard_controller@10.0.0.10")
+      end
     end
   end
 end

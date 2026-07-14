@@ -12,6 +12,8 @@ defmodule Orchard.Nodes do
 
   require Logger
 
+  alias Orchard.BeamPeerGrants
+  alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.ControlPlane
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
@@ -173,17 +175,7 @@ defmodule Orchard.Nodes do
 
   defp trusted_runtime_endpoint_targets_for_states(states) do
     if repo_available?() do
-      targets =
-        Node
-        |> join(:inner, [node], enrollment in Enrollment, on: enrollment.node_id == node.id)
-        |> where([node, _enrollment], node.state in ^states)
-        |> where([_node, enrollment], enrollment.state == :consumed)
-        |> where([_node, enrollment], enrollment.certificate_issuance_outcome == :issued)
-        |> where([_node, enrollment], not is_nil(enrollment.certificate_identifier))
-        |> order_by([node, _enrollment], asc: node.id)
-        |> select([node, enrollment], {node, enrollment})
-        |> Repo.all()
-        |> Enum.flat_map(&trusted_runtime_endpoint_target/1)
+      targets = trusted_runtime_endpoint_targets(states)
 
       {:ok, targets}
     else
@@ -191,6 +183,57 @@ defmodule Orchard.Nodes do
     end
   rescue
     _ -> {:error, :node_inventory_unavailable}
+  end
+
+  defp trusted_runtime_endpoint_targets(states) do
+    if BeamPeerGrants.production_enabled?() do
+      trusted_beam_runtime_endpoint_targets(states)
+    else
+      trusted_grpc_runtime_endpoint_targets(states)
+    end
+  end
+
+  defp trusted_grpc_runtime_endpoint_targets(states) do
+    Node
+    |> join(:inner, [node], enrollment in Enrollment, on: enrollment.node_id == node.id)
+    |> where([node, _enrollment], node.state in ^states)
+    |> where([_node, enrollment], enrollment.state == :consumed)
+    |> where([_node, enrollment], enrollment.certificate_issuance_outcome == :issued)
+    |> where([_node, enrollment], not is_nil(enrollment.certificate_identifier))
+    |> order_by([node, _enrollment], asc: node.id)
+    |> select([node, enrollment], {node, enrollment})
+    |> Repo.all()
+    |> Enum.flat_map(&trusted_runtime_endpoint_target/1)
+  end
+
+  defp trusted_beam_runtime_endpoint_targets(states) do
+    now = DateTime.utc_now()
+
+    Node
+    |> join(:inner, [node], enrollment in Enrollment, on: enrollment.node_id == node.id)
+    |> join(:inner, [node, _enrollment], grant in Orchard.BeamPeerGrants.Grant,
+      on: grant.node_id == node.id
+    )
+    |> join(:inner, [_node, _enrollment, grant], controller in ControllerInstance,
+      on: controller.id == grant.controller_id
+    )
+    |> where([node, _enrollment, _grant, _controller], node.state in ^states)
+    |> where([_node, enrollment, _grant, _controller], enrollment.state == :consumed)
+    |> where(
+      [_node, enrollment, _grant, _controller],
+      enrollment.certificate_issuance_outcome == :issued
+    )
+    |> where([_node, _enrollment, _grant, controller], controller.status == :operational)
+    |> where([_node, _enrollment, grant, _controller], grant.state == :active)
+    |> where([_node, _enrollment, grant, _controller], grant.not_before_at <= ^now)
+    |> where([_node, _enrollment, grant, _controller], grant.expires_at > ^now)
+    |> order_by([node, _enrollment, grant, _controller],
+      asc: node.id,
+      asc: grant.generation
+    )
+    |> select([node, enrollment, grant, _controller], {node, enrollment, grant})
+    |> Repo.all()
+    |> Enum.flat_map(&trusted_beam_runtime_endpoint_target/1)
   end
 
   @spec unreachable_threshold_ms() :: pos_integer()
@@ -342,10 +385,17 @@ defmodule Orchard.Nodes do
           Target.t(),
           map() | struct(),
           DateTime.t(),
-          AuthenticatedPeer.t()
+          AuthenticatedPeer.t(),
+          keyword()
         ) ::
           {:ok, Node.t()} | :noop
-  def observe_authenticated_status(target, status_response, observed_at, peer_identity) do
+  def observe_authenticated_status(
+        target,
+        status_response,
+        observed_at,
+        peer_identity,
+        opts \\ []
+      ) do
     with true <- repo_available?(),
          :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
          {:ok, peer_identity} <- normalize_authenticated_peer_identity(peer_identity),
@@ -355,7 +405,7 @@ defmodule Orchard.Nodes do
       handle_observation_result(
         target,
         observed_at,
-        execute_authenticated_observe(target, observation, peer_identity),
+        execute_authenticated_observe(target, observation, peer_identity, opts),
         status_response,
         []
       )
@@ -443,34 +493,39 @@ defmodule Orchard.Nodes do
   def admit_node(node_id, attrs \\ %{}, opts \\ []) do
     attrs = normalize_attrs(attrs)
 
-    Repo.transaction(fn ->
-      with {:ok, node} <- lock_node(node_id),
-           :ok <- ensure_node_admittable(node, attrs),
-           {:ok, candidate} <- get_or_create_candidate_for_node(node),
-           {:ok, admitted_node} <- update_node_state(node, :admitted),
-           {:ok, admitted_candidate} <- update_candidate_category(candidate, :admitted),
-           {:ok, audit_log} <-
-             insert_admission_audit_log(
-               "node_admission.admitted",
-               admitted_candidate,
-               admission_audit_payload(admitted_candidate, attrs),
-               opts
-             ),
-           {:ok, decision} <-
-             insert_admission_decision(
-               admitted_candidate,
-               :admitted,
-               nil,
-               audit_log,
-               attrs,
-               opts
-             ) do
-        {:ok, %{node: admitted_node, decision: decision, audit_log: audit_log}}
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> unwrap_transaction_result()
+    with :ok <- ControlPlane.authorize_write_path(:node_admission) do
+      Repo.transaction(fn -> admit_node_locked(node_id, attrs, opts) end)
+      |> unwrap_transaction_result()
+    end
+  end
+
+  defp admit_node_locked(node_id, attrs, opts) do
+    with {:ok, node} <- BeamPeerGrants.lock_initial_admission_node(node_id, opts),
+         :ok <- ensure_node_admittable(node, attrs),
+         {:ok, candidate} <- get_or_create_candidate_for_node(node),
+         {:ok, {node, grants}} <- BeamPeerGrants.issue_initial_for_admission(node, opts),
+         {:ok, admitted_node} <- update_node_state(node, :admitted),
+         {:ok, admitted_candidate} <- update_candidate_category(candidate, :admitted),
+         {:ok, audit_log} <-
+           insert_admission_audit_log(
+             "node_admission.admitted",
+             admitted_candidate,
+             admission_audit_payload(admitted_candidate, attrs),
+             opts
+           ),
+         {:ok, decision} <-
+           insert_admission_decision(
+             admitted_candidate,
+             :admitted,
+             nil,
+             audit_log,
+             attrs,
+             opts
+           ) do
+      {:ok, %{node: admitted_node, decision: decision, audit_log: audit_log, grants: grants}}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   @doc """
@@ -582,8 +637,8 @@ defmodule Orchard.Nodes do
 
   Transport failure reasons:
   - `{:connect_failed, _}` - gRPC channel could not be established
-  - `:node_unavailable` - node not reachable
-  - `:node_timeout` - probe or RPC timed out
+  - `:node_unavailable` / `:beam_node_unavailable` - node not reachable
+  - `:node_timeout` / `:beam_node_timeout` - probe or RPC timed out
 
   Returns:
   - `{:ok, %Node{}}` when health was updated
@@ -1121,7 +1176,44 @@ defmodule Orchard.Nodes do
       {:noop, :constraint_conflict}
   end
 
-  defp execute_authenticated_observe(target, observation, peer_identity) do
+  defp execute_authenticated_observe(
+         %Target{transport: :beam} = target,
+         observation,
+         peer_identity,
+         opts
+       ) do
+    Repo.transaction(fn ->
+      with %BeamPeerGrants.Grant{} = grant <-
+             lock_authenticated_beam_grant(target, peer_identity),
+           :ok <- run_lock_observer(opts, :grant),
+           %Node{} = node <- lock_authenticated_node(peer_identity.node_id),
+           :ok <- run_lock_observer(opts, :node),
+           %Enrollment{} = enrollment <- lock_authenticated_enrollment(peer_identity),
+           :ok <- run_lock_observer(opts, :enrollment),
+           %ControllerInstance{} = controller <-
+             lock_authenticated_controller(grant.controller_id),
+           :ok <- run_lock_observer(opts, :controller),
+           {:ok, _authorization} <- BeamPeerGrants.authorize_target(target, opts),
+           :ok <- ensure_authenticated_enrollment(enrollment, peer_identity),
+           :ok <- ensure_authenticated_node(node, observation, peer_identity),
+           :ok <- ensure_authenticated_beam_target(target, node, enrollment, grant, controller),
+           true <- authenticated_healthy_observation?(observation),
+           true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
+           :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation),
+           :ok <- BeamPeerGrants.ensure_active_grant_current(grant.id, opts) do
+        update_authenticated_beam_observation(node, observation, grant.id, opts)
+      else
+        _reason -> Repo.rollback(:authenticated_observation_rejected)
+      end
+    end)
+    |> authenticated_observe_result()
+  rescue
+    error in Ecto.ConstraintError ->
+      Logger.debug("Authenticated node observation conflicted: #{inspect(error.constraint)}")
+      {:noop, :constraint_conflict}
+  end
+
+  defp execute_authenticated_observe(target, observation, peer_identity, _opts) do
     Repo.transaction(fn ->
       with %Enrollment{} = enrollment <- lock_authenticated_enrollment(peer_identity),
            %Node{} = node <- lock_authenticated_node(peer_identity.node_id),
@@ -1136,15 +1228,15 @@ defmodule Orchard.Nodes do
         _reason -> Repo.rollback(:authenticated_observation_rejected)
       end
     end)
-    |> case do
-      {:ok, node} -> {:ok, node}
-      {:error, reason} -> {:noop, reason}
-    end
+    |> authenticated_observe_result()
   rescue
     error in Ecto.ConstraintError ->
       Logger.debug("Authenticated node observation conflicted: #{inspect(error.constraint)}")
       {:noop, :constraint_conflict}
   end
+
+  defp authenticated_observe_result({:ok, node}), do: {:ok, node}
+  defp authenticated_observe_result({:error, reason}), do: {:noop, reason}
 
   defp load_conflicting_nodes(observation) do
     Node
@@ -1244,11 +1336,7 @@ defmodule Orchard.Nodes do
 
   defp update_authenticated_observation(%Node{} = node, observation) do
     node
-    |> Node.changeset(
-      observation
-      |> Map.delete(:id)
-      |> Map.put(:state, authenticated_observed_state(node))
-    )
+    |> authenticated_observation_changeset(observation)
     |> Repo.update()
     |> case do
       {:ok, updated} -> updated
@@ -1256,8 +1344,73 @@ defmodule Orchard.Nodes do
     end
   end
 
+  defp update_authenticated_beam_observation(%Node{} = node, observation, grant_id, opts) do
+    changeset = authenticated_observation_changeset(node, observation)
+
+    if changeset.valid? do
+      updates = Map.put(changeset.changes, :updated_at, DateTime.utc_now())
+      current_grant = current_active_grant_query(grant_id, opts)
+
+      query =
+        Node
+        |> where([candidate], candidate.id == ^node.id)
+        |> where([candidate], exists(subquery(current_grant)))
+
+      case Repo.update_all(query, set: Map.to_list(updates)) do
+        {1, _rows} -> Repo.get!(Node, node.id)
+        _other -> Repo.rollback(:authenticated_observation_rejected)
+      end
+    else
+      Repo.rollback(:authenticated_observation_rejected)
+    end
+  end
+
+  defp authenticated_observation_changeset(node, observation) do
+    observation = preserve_beam_connection_inventory(node, observation)
+
+    Node.changeset(
+      node,
+      observation
+      |> Map.delete(:id)
+      |> Map.put(:state, authenticated_observed_state(node))
+    )
+  end
+
   defp authenticated_observed_state(%Node{state: :admitted}), do: :active
   defp authenticated_observed_state(%Node{state: state}), do: state
+
+  defp current_active_grant_query(grant_id, opts) do
+    BeamPeerGrants.Grant
+    |> where([grant], grant.id == ^grant_id)
+    |> where([grant], grant.state == :active)
+    |> current_grant_window(opts)
+    |> select([grant], 1)
+  end
+
+  defp current_grant_window(query, opts) do
+    case Keyword.get(opts, :test_database_now) do
+      database_now when is_function(database_now, 0) ->
+        now = database_now.()
+
+        query
+        |> where([grant], grant.not_before_at <= ^now)
+        |> where([grant], grant.expires_at > ^now)
+
+      nil ->
+        query
+        |> where([grant], fragment("? <= clock_timestamp()", grant.not_before_at))
+        |> where([grant], fragment("? > clock_timestamp()", grant.expires_at))
+    end
+  end
+
+  defp preserve_beam_connection_inventory(node, %{endpoint_transport: :beam} = observation) do
+    Map.merge(observation, %{
+      connect_host: node.connect_host,
+      connect_port: node.connect_port
+    })
+  end
+
+  defp preserve_beam_connection_inventory(_node, observation), do: observation
 
   defp upsert_observed_admission_candidate(observation) do
     attrs = observed_candidate_attrs(observation)
@@ -1984,6 +2137,40 @@ defmodule Orchard.Nodes do
     end
   end
 
+  defp trusted_beam_runtime_endpoint_target(
+         {%Node{} = node, %Enrollment{} = enrollment, %Orchard.BeamPeerGrants.Grant{} = grant}
+       ) do
+    with true <- is_binary(node.canonical_beam_name) and node.canonical_beam_name != "",
+         true <- grant.node_beam_name == node.canonical_beam_name,
+         true <- grant.node_id == node.id,
+         {:ok, certificate} <- enrollment_certificate_binding(enrollment),
+         true <- grant.node_certificate_identifier == certificate.certificate_identifier,
+         true <-
+           grant.node_certificate_fingerprint_sha256 == certificate.certificate_fingerprint do
+      [
+        Target.beam(node.id,
+          address: node.canonical_beam_name,
+          metadata:
+            Map.merge(certificate, %{
+              authorization: runtime_target_authorization(node.state),
+              beam_authorization_root_id: grant.beam_authorization_root_id,
+              controller_beam_name: grant.controller_beam_name,
+              controller_certificate_fingerprint_sha256:
+                grant.controller_certificate_fingerprint_sha256,
+              controller_certificate_identifier: grant.controller_certificate_identifier,
+              controller_id: grant.controller_id,
+              enrollment_id: enrollment.id,
+              generation: grant.generation,
+              grant_id: grant.id,
+              source: :trusted_node_inventory
+            })
+        )
+      ]
+    else
+      _other -> []
+    end
+  end
+
   defp runtime_target_authorization(:admitted), do: :activation_probe
   defp runtime_target_authorization(:active), do: :inference_dispatch
 
@@ -2074,6 +2261,27 @@ defmodule Orchard.Nodes do
     |> Repo.one()
   end
 
+  defp lock_authenticated_beam_grant(target, peer) do
+    grant_id = metadata_value(target.metadata, :grant_id)
+
+    BeamPeerGrants.Grant
+    |> where([grant], grant.id == ^grant_id)
+    |> where([grant], grant.node_id == ^peer.node_id)
+    |> where([grant], grant.state == :active)
+    |> where([grant], fragment("? <= clock_timestamp()", grant.not_before_at))
+    |> where([grant], fragment("? > clock_timestamp()", grant.expires_at))
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp lock_authenticated_controller(controller_id) do
+    ControllerInstance
+    |> where([controller], controller.id == ^controller_id)
+    |> where([controller], controller.status == :operational)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
   defp ensure_authenticated_enrollment(
          %Enrollment{node_id: node_id, state: :consumed, certificate_issuance_outcome: :issued} =
            enrollment,
@@ -2099,8 +2307,23 @@ defmodule Orchard.Nodes do
 
   defp ensure_authenticated_node(_node, _observation, _peer_identity), do: :error
 
+  defp ensure_authenticated_beam_target(target, node, enrollment, grant, controller) do
+    case trusted_beam_runtime_endpoint_target({node, enrollment, grant}) do
+      [expected] ->
+        if controller.id == grant.controller_id and
+             target_identity(expected) == target_identity(target) do
+          :ok
+        else
+          :error
+        end
+
+      _other ->
+        :error
+    end
+  end
+
   defp ensure_authenticated_target(%Target{} = target, node, enrollment) do
-    case trusted_runtime_endpoint_target({node, enrollment}) do
+    case authenticated_expected_targets(target, node, enrollment) do
       [expected] ->
         if target_identity(expected) == target_identity(target), do: :ok, else: :error
 
@@ -2110,6 +2333,10 @@ defmodule Orchard.Nodes do
   end
 
   defp ensure_authenticated_target(_target, _node, _enrollment), do: :error
+
+  defp authenticated_expected_targets(%Target{}, node, enrollment) do
+    trusted_runtime_endpoint_target({node, enrollment})
+  end
 
   defp target_identity(%Target{} = target) do
     metadata = target.metadata
@@ -2125,7 +2352,14 @@ defmodule Orchard.Nodes do
       metadata_value(metadata, :certificate_serial),
       metadata_value(metadata, :certificate_fingerprint),
       metadata_value(metadata, :node_uri_san),
-      metadata_value(metadata, :runtime_trust_spki_sha256)
+      metadata_value(metadata, :runtime_trust_spki_sha256),
+      metadata_value(metadata, :grant_id),
+      metadata_value(metadata, :generation),
+      metadata_value(metadata, :controller_id),
+      metadata_value(metadata, :controller_beam_name),
+      metadata_value(metadata, :controller_certificate_identifier),
+      metadata_value(metadata, :controller_certificate_fingerprint_sha256),
+      metadata_value(metadata, :beam_authorization_root_id)
     }
   end
 
@@ -2315,6 +2549,13 @@ defmodule Orchard.Nodes do
     Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
   end
 
+  defp run_lock_observer(opts, lock_name) do
+    case Keyword.get(opts, :test_lock_observer) do
+      observer when is_function(observer, 1) -> observer.(lock_name)
+      _other -> :ok
+    end
+  end
+
   defp target_transport(%Target{transport: :grpc_compat}), do: :grpc
   defp target_transport(%Target{transport: :beam}), do: :beam
   defp target_transport(_target), do: :grpc
@@ -2350,5 +2591,7 @@ defmodule Orchard.Nodes do
   defp transport_failure_reason?({:connect_failed, _reason}), do: true
   defp transport_failure_reason?(:node_unavailable), do: true
   defp transport_failure_reason?(:node_timeout), do: true
+  defp transport_failure_reason?(:beam_node_unavailable), do: true
+  defp transport_failure_reason?(:beam_node_timeout), do: true
   defp transport_failure_reason?(_reason), do: false
 end

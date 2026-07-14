@@ -175,6 +175,63 @@ defmodule OrchardCLI.NodeIdentityStoreSecurityTest do
     end
   end
 
+  test "SPEC.md §7.5.0 registered identity retains exact Controller certificate scope", %{
+    root: root,
+    trust: trust
+  } do
+    prepared = prepare_case(Path.join(root, "controller-certificate-scope"), trust)
+    response = redeem!(prepared)
+
+    assert is_binary(response["controller_certificate_identifier"])
+    assert response["controller_certificate_identifier"] != ""
+
+    assert response["controller_certificate_fingerprint"] ==
+             trust.controller_certificate_fingerprint
+
+    assert {:ok, _registered} =
+             Store.finalize(prepared.identity_root, prepared.identity, response)
+
+    assert {:ok, material} = Store.load_current(prepared.identity_root)
+
+    assert material.controller_certificate_identifier ==
+             response["controller_certificate_identifier"]
+
+    assert material.controller_certificate_fingerprint ==
+             response["controller_certificate_fingerprint"]
+  end
+
+  test "legacy registered identity remains loadable for explicit compatibility mode", %{
+    root: root,
+    trust: trust
+  } do
+    prepared = prepare_case(Path.join(root, "legacy-registered-identity"), trust)
+    response = redeem!(prepared)
+
+    assert {:ok, _registered} =
+             Store.finalize(prepared.identity_root, prepared.identity, response)
+
+    generation_root = generation_root(prepared.identity_root)
+    metadata_path = Path.join(generation_root, "metadata.json")
+
+    metadata =
+      metadata_path
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.drop([
+        "controller_certificate_identifier",
+        "controller_certificate_fingerprint"
+      ])
+
+    File.write!(metadata_path, Jason.encode!(metadata))
+    File.rm!(Path.join(generation_root, "controller-certificate.pem"))
+
+    assert {:ok, legacy} = Store.load_current(prepared.identity_root)
+    assert legacy.state == "registered"
+    assert legacy.controller_certificate_identifier == nil
+    assert legacy.controller_certificate_fingerprint == nil
+    assert legacy.controller_certificate_pem == nil
+  end
+
   defp prepare_case(root, trust) do
     now = DateTime.utc_now()
     expires_at = DateTime.add(now, 3_600, :second)

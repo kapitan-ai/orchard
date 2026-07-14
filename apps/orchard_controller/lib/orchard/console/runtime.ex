@@ -592,7 +592,13 @@ defmodule OrchardConsole.Runtime do
   defp error_snapshot_for(:node_unavailable),
     do: error_snapshot(:unavailable, "node_unavailable", "node runtime is unavailable")
 
+  defp error_snapshot_for(:beam_node_unavailable),
+    do: error_snapshot(:unavailable, "node_unavailable", "node runtime is unavailable")
+
   defp error_snapshot_for(:node_timeout),
+    do: error_snapshot(:timeout, "node_timeout", "node status request timed out")
+
+  defp error_snapshot_for(:beam_node_timeout),
     do: error_snapshot(:timeout, "node_timeout", "node status request timed out")
 
   defp error_snapshot_for(:beam_distribution_unavailable),
@@ -611,13 +617,13 @@ defmodule OrchardConsole.Runtime do
         "BEAM distribution is disabled"
       )
 
-  defp error_snapshot_for(:unknown_beam_node),
+  defp error_snapshot_for(:beam_target_unknown),
     do: error_snapshot(:unavailable, "unknown_beam_node", "BEAM node is unavailable")
 
   defp error_snapshot_for({:unsupported_transport, _transport}),
     do: error_snapshot(:error, "unsupported_runtime_transport", "node status request failed")
 
-  defp error_snapshot_for({:beam_rpc_error, _reason}),
+  defp error_snapshot_for(:beam_rpc_failed),
     do: error_snapshot(:error, "beam_rpc_error", "node status request failed")
 
   defp error_snapshot_for({:rpc_error, status, _message}) when is_atom(status),

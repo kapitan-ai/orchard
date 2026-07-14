@@ -5,10 +5,11 @@ defmodule Orchard.Inference do
 
   use Supervisor
 
+  alias Orchard.BeamPeerGrants
   alias Orchard.Inference.{CacheAffinity, QueueManager}
   alias Orchard.Nodes
   alias Orchard.Requests.Supervisor, as: RequestsSupervisor
-  alias Orchard.RuntimeEndpoint.Target
+  alias Orchard.RuntimeEndpoint.{BeamClient, GrpcCompatibilityClient, Target}
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(init_arg \\ []) do
@@ -230,13 +231,18 @@ defmodule Orchard.Inference do
   @doc """
   Returns the configured Runtime Endpoint client adapter.
 
-  Defaults to the gRPC compatibility adapter.
-  Set `:runtime_endpoint_client_impl` to `Orchard.RuntimeEndpoint.BeamClient`
-  only with explicit Runtime Endpoint targets.
+  Production BEAM Peer Grant mode always selects the BEAM adapter and cannot
+  silently downgrade to gRPC compatibility.
+  Outside that mode, the configured adapter wins and gRPC remains the explicit
+  compatibility default.
   """
   @spec runtime_endpoint_client() :: module()
   def runtime_endpoint_client do
-    config()[:runtime_endpoint_client_impl] || Orchard.RuntimeEndpoint.GrpcCompatibilityClient
+    if BeamPeerGrants.production_enabled?() do
+      BeamClient
+    else
+      config()[:runtime_endpoint_client_impl] || GrpcCompatibilityClient
+    end
   end
 
   @doc """

@@ -167,7 +167,7 @@ gRPC compatibility fallback:
 Explicit deferrals:
 
 - BEAM cookie provisioning is operator-managed in this phase and must produce a root-owned mode `0600` file.
-- The production BEAM credential model is now defined by `SPEC.md` §7.5 and ADR 0012 as Node Certificates plus scoped BEAM Peer Grants; its implementation and packaged acceptance remain future work, and the shared BEAM cookie in this first cut must not be treated as Node identity.
+- The production BEAM credential model is now defined by `SPEC.md` §7.5 and ADR 0012 as Node Certificates plus scoped BEAM Peer Grants; a source-development one-Controller/one-Node tracer exists (`bin/source-dev-peer-grant`, see `docs/local-dev.md`), but its packaged implementation and acceptance remain future work, and the shared BEAM cookie in this first cut must not be treated as Node identity. The packaged runtime config recognizes the peer-grant variables (`ORCHARD_BEAM_PEER_GRANTS_ENABLED`, `ORCHARD_BEAM_PEER_GRANT_MODE`, `ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST`/`ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT`, `ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH`, `ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST`, and `ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR`), but they default off and remain experimental and unsupported for packaged installs. Leave `ORCHARD_BEAM_PEER_GRANTS_ENABLED` unset on packaged hosts; they are intentionally omitted from the operator env-var tables above until packaged acceptance lands.
 - Managed Postgres is unavailable in this build.
 
 ## Install Role Selection

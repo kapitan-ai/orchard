@@ -9,13 +9,19 @@ defmodule OrchardCLI.DevScriptsTest do
     node_agent = File.read!(Path.join(@repo_root, "bin/dev-node-agent"))
 
     assert controller =~ "cd \"$REPO_ROOT/apps/orchard_controller\""
-    assert controller =~ "exec iex \"${ORCHARD_BEAM_IEX_ARGS[@]}\" -S mix phx.server"
+
+    assert controller =~
+             ~s(exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix phx.server)
+
     assert controller =~ "exec iex -S mix phx.server"
     refute controller =~ "apps/orchard_node_agent"
     refute controller =~ "mix run --no-halt"
 
     assert node_agent =~ "cd \"$REPO_ROOT/apps/orchard_node_agent\""
-    assert node_agent =~ "exec iex \"${ORCHARD_BEAM_IEX_ARGS[@]}\" -S mix run --no-halt"
+
+    assert node_agent =~
+             ~s(exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix run --no-halt)
+
     assert node_agent =~ "exec iex -S mix run --no-halt"
 
     assert dev =~ "exec iex -S mix phx.server"

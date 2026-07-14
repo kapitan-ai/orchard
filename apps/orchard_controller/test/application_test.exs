@@ -8,6 +8,7 @@ defmodule OrchardApplicationTest do
       start_repo: Application.get_env(:orchard_controller, :start_repo, true),
       start_endpoint: Application.get_env(:orchard_controller, :start_endpoint, true),
       enable_db_checks: Application.get_env(:orchard_controller, :enable_db_checks, true),
+      beam_peer_grants: Application.get_env(:orchard_controller, :beam_peer_grants),
       sentry_dsn: Application.get_env(:sentry, :dsn)
     }
 
@@ -19,6 +20,7 @@ defmodule OrchardApplicationTest do
     Application.put_env(:orchard_controller, :start_repo, false)
     Application.put_env(:orchard_controller, :start_endpoint, false)
     Application.put_env(:orchard_controller, :enable_db_checks, false)
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: false)
 
     on_exit(fn ->
       stop_controller_app()
@@ -26,6 +28,7 @@ defmodule OrchardApplicationTest do
       Application.put_env(:orchard_controller, :start_repo, previous_env.start_repo)
       Application.put_env(:orchard_controller, :start_endpoint, previous_env.start_endpoint)
       Application.put_env(:orchard_controller, :enable_db_checks, previous_env.enable_db_checks)
+      restore_app_env(:orchard_controller, :beam_peer_grants, previous_env.beam_peer_grants)
       Application.put_env(:sentry, :dsn, previous_env.sentry_dsn)
       remove_sentry_handler()
 
@@ -56,6 +59,113 @@ defmodule OrchardApplicationTest do
     assert is_pid(Process.whereis(Orchard.Inference))
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
     assert is_pid(Process.whereis(OrchardConsole.ModelHubDownloadCoordinator))
+  end
+
+  test "SPEC.md §7.5.0 production grants add the configured control listener child" do
+    listener = [host: "10.0.0.10", port: 50_072]
+
+    Application.put_env(:orchard_controller, :beam_peer_grants,
+      enabled: true,
+      mode: :distributed,
+      manifest_path: "/protected/controller-launch.json",
+      control_listener: listener
+    )
+
+    child_specs = Orchard.Application.child_specs()
+
+    assert {Orchard.BeamPeerGrants.ControllerInitializer, initializer} =
+             Enum.find(
+               child_specs,
+               &match?({Orchard.BeamPeerGrants.ControllerInitializer, _}, &1)
+             )
+
+    assert initializer[:private_ipv4] == listener[:host]
+
+    assert {Orchard.BeamPeerGrants.ControllerStartupVerifier, verifier} =
+             Enum.find(
+               child_specs,
+               &match?({Orchard.BeamPeerGrants.ControllerStartupVerifier, _}, &1)
+             )
+
+    assert verifier[:manifest_path] == "/protected/controller-launch.json"
+
+    assert {Orchard.RuntimeEndpoint.DistributionExpiryGuard, expiry_guard} =
+             Enum.find(
+               child_specs,
+               &match?({Orchard.RuntimeEndpoint.DistributionExpiryGuard, _}, &1)
+             )
+
+    assert expiry_guard == [manifest_path: "/protected/controller-launch.json"]
+    assert {Orchard.BeamPeerGrants.ControlListener, listener} in child_specs
+
+    assert Enum.find_index(
+             child_specs,
+             &match?({Orchard.BeamPeerGrants.ControllerInitializer, _}, &1)
+           ) <
+             Enum.find_index(
+               child_specs,
+               &match?({Orchard.BeamPeerGrants.ControllerStartupVerifier, _}, &1)
+             )
+
+    assert Enum.find_index(
+             child_specs,
+             &match?({Orchard.BeamPeerGrants.ControllerStartupVerifier, _}, &1)
+           ) <
+             Enum.find_index(
+               child_specs,
+               &match?({Orchard.RuntimeEndpoint.DistributionExpiryGuard, _}, &1)
+             )
+
+    assert Enum.find_index(
+             child_specs,
+             &match?({Orchard.RuntimeEndpoint.DistributionExpiryGuard, _}, &1)
+           ) <
+             Enum.find_index(
+               child_specs,
+               &match?({Orchard.BeamPeerGrants.ControlListener, _}, &1)
+             )
+
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: false)
+
+    refute Enum.any?(Orchard.Application.child_specs(), fn
+             {Orchard.BeamPeerGrants.ControllerInitializer, _opts} -> true
+             {Orchard.BeamPeerGrants.ControlListener, _opts} -> true
+             _other -> false
+           end)
+  end
+
+  test "SPEC.md §7.5.0 controller startup fails closed when its grant listener is invalid" do
+    Application.put_env(:orchard_controller, :beam_peer_grants,
+      enabled: true,
+      control_listener: [host: "127.0.0.1", port: 50_072]
+    )
+
+    assert {:error, {:orchard_controller, _reason}} =
+             Application.ensure_all_started(:orchard_controller)
+
+    refute is_pid(Process.whereis(Orchard.Supervisor))
+  end
+
+  test "SPEC.md §7.5.0 grant-control mode is non-distributed and starts no runtime dispatch" do
+    Application.put_env(:orchard_controller, :beam_peer_grants,
+      enabled: true,
+      mode: :grant_control,
+      control_listener: [host: "10.0.0.10", port: 50_072]
+    )
+
+    assert :ok = Orchard.Application.validate_peer_grant_mode(:nonode@nohost)
+
+    assert {:error, :beam_grant_control_requires_nondistributed_vm} =
+             Orchard.Application.validate_peer_grant_mode(:orchard_controller@localhost)
+
+    children = Orchard.Application.child_specs()
+    refute Orchard.Inference in children
+    refute Orchard.RuntimeEndpoint.ActivationProbe in children
+
+    refute Enum.any?(children, fn
+             {Orchard.BeamPeerGrants.ControllerStartupVerifier, _opts} -> true
+             _other -> false
+           end)
   end
 
   test "test environment uses deterministic endpoint config defaults" do
@@ -158,6 +268,9 @@ defmodule OrchardApplicationTest do
       {:error, {:not_started, :orchard_controller}} -> :ok
     end
   end
+
+  defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
 
   defp test_runtime_client_target do
     [host: "127.0.0.1", port: test_node_agent_port()]

@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bin/source-dev-peer-grant - Source-dev, single-Mac BEAM Peer Grant tracer.
+# Drives one Controller and one Node through certificate-scoped grant delivery
+# and TLS 1.3 Distribution without a shared cluster cookie across these subcommands:
+#   controller-control | node-retrieve | node-preflight | controller-preflight
+#   | node-run | controller-run
+# It exports the helper-managed toggles ORCHARD_SOURCE_DEV_NO_COMPILE,
+# ORCHARD_SOURCE_DEV_SKIP_DB_SETUP, and ORCHARD_BEAM_SSL_DIST_OPTFILE for the
+# run subcommands. See the "Source-dev BEAM Peer Grant tracer" section in
+# docs/local-dev.md for the full env surface and usage.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+command_name="${1:-}"
+STATE_ROOT="${ORCHARD_BEAM_PEER_GRANT_STATE_ROOT:-$REPO_ROOT/tmp/dev/beam-peer-grant}"
+export ORCHARD_BEAM_PEER_GRANT_STATE_ROOT="$STATE_ROOT"
+export MIX_ENV=dev
+
+require_env() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "error: $name is required" >&2
+    exit 64
+  fi
+}
+
+reject_legacy_authorization() {
+  if [[ -n "${ORCHARD_BEAM_COOKIE_FILE+x}" ]]; then
+    echo "error: ORCHARD_BEAM_COOKIE_FILE is forbidden for peer-grant Distribution" >&2
+    exit 64
+  fi
+
+  if [[ -n "${ORCHARD_RUNTIME_ENDPOINT_TARGETS:-}" ]]; then
+    echo "error: ORCHARD_RUNTIME_ENDPOINT_TARGETS is forbidden for peer-grant Distribution" >&2
+    exit 64
+  fi
+
+  if [[ -n "${ORCHARD_RUNTIME_CLIENT_TARGETS:-}" ]]; then
+    echo "error: ORCHARD_RUNTIME_CLIENT_TARGETS is forbidden for peer-grant Distribution" >&2
+    exit 64
+  fi
+}
+
+prepare_controller_env() {
+  require_env ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST
+  require_env ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT
+  require_env ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH
+  export ORCHARD_BEAM_PEER_GRANTS_ENABLED=true
+  export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+  export ORCHARD_SOURCE_DEV_ROLE=controller
+  export ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$STATE_ROOT/controller/launch.json"
+}
+
+prepare_node_env() {
+  require_env ORCHARD_NODE_IDENTITY_ROOT
+  require_env ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR
+  require_env ORCHARD_BEAM_NODE_NAME
+  unset ORCHARD_BEAM_PEER_GRANTS_ENABLED
+  unset ORCHARD_BEAM_PEER_GRANT_MODE
+  export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+  export ORCHARD_SOURCE_DEV_ROLE=node_agent
+  export ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$STATE_ROOT/node_agent/launch.json"
+}
+
+run_preflight() {
+  mise exec -- mix run --no-start \
+    "$REPO_ROOT/scripts/support/source-dev-peer-grant.exs" \
+    "$1"
+}
+
+case "$command_name" in
+  controller-control)
+    reject_legacy_authorization
+    prepare_controller_env
+    export ORCHARD_BEAM_PEER_GRANT_MODE=grant_control
+    exec "$REPO_ROOT/bin/dev-controller"
+    ;;
+
+  node-retrieve)
+    reject_legacy_authorization
+    prepare_node_env
+    run_preflight node-retrieve
+    ;;
+
+  node-preflight)
+    reject_legacy_authorization
+    prepare_node_env
+    run_preflight node-preflight
+    ;;
+
+  controller-preflight)
+    reject_legacy_authorization
+    prepare_controller_env
+    require_env ORCHARD_NODE_TRUST_ROOT
+    require_env ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR
+    require_env ORCHARD_BEAM_NODE_NAME
+    export ORCHARD_BEAM_PEER_GRANT_MODE=distributed
+    run_preflight controller-preflight
+    ;;
+
+  node-run)
+    reject_legacy_authorization
+    prepare_node_env
+    export ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$STATE_ROOT/node_agent/launch.json"
+    export ORCHARD_BEAM_SSL_DIST_OPTFILE="$STATE_ROOT/node_agent/ssl-dist.conf"
+    export ORCHARD_SOURCE_DEV_NO_COMPILE=1
+    exec "$REPO_ROOT/bin/dev-node-agent"
+    ;;
+
+  controller-run)
+    reject_legacy_authorization
+    prepare_controller_env
+    require_env ORCHARD_NODE_TRUST_ROOT
+    require_env ORCHARD_BEAM_NODE_NAME
+    export ORCHARD_BEAM_PEER_GRANT_MODE=distributed
+    export ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$STATE_ROOT/controller/launch.json"
+    export ORCHARD_BEAM_SSL_DIST_OPTFILE="$STATE_ROOT/controller/ssl-dist.conf"
+    export ORCHARD_SOURCE_DEV_NO_COMPILE=1
+    export ORCHARD_SOURCE_DEV_SKIP_DB_SETUP=1
+    exec "$REPO_ROOT/bin/dev-controller"
+    ;;
+
+  *)
+    echo "usage: bin/source-dev-peer-grant {controller-control|node-retrieve|node-preflight|controller-preflight|node-run|controller-run}" >&2
+    exit 64
+    ;;
+esac

@@ -11,6 +11,7 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
   alias Orchard.RuntimeEndpoint.Target
 
   defstruct enabled: false,
+            authorization_mode: :legacy_shared_cookie,
             node_name: nil,
             cookie_file: nil,
             listen_host: nil,
@@ -19,6 +20,7 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
 
   @type t :: %__MODULE__{
           enabled: boolean(),
+          authorization_mode: :legacy_shared_cookie | :peer_grant,
           node_name: String.t() | nil,
           cookie_file: String.t() | nil,
           listen_host: String.t() | nil,
@@ -68,10 +70,35 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
     end
   end
 
+  @spec validate_peer_grant_enabled(keyword() | map()) :: {:ok, t()} | {:error, error()}
+  def validate_peer_grant_enabled(config \\ config()) do
+    attrs = attrs_map(config)
+
+    if enabled?(attrs) do
+      validate_peer_grant_attrs(attrs)
+    else
+      {:error, :beam_distribution_disabled}
+    end
+  end
+
   @spec validate_target(t(), Target.t(), keyword()) :: :ok | {:error, target_error()}
   def validate_target(config, target, opts \\ [])
 
   def validate_target(%__MODULE__{enabled: false}, _target, _opts), do: :ok
+
+  def validate_target(
+        %__MODULE__{enabled: true, authorization_mode: :peer_grant} = config,
+        %Target{transport: :beam} = target,
+        opts
+      ) do
+    current_node = Keyword.get(opts, :current_node, node())
+
+    with :ok <- require_current_node(config, current_node),
+         {:ok, service, host} <- beam_service_host(target.address),
+         :ok <- require_peer_grant_service(service) do
+      require_private_ipv4(host)
+    end
+  end
 
   def validate_target(
         %__MODULE__{enabled: true} = config,
@@ -104,6 +131,27 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
     case errors do
       [] -> {:ok, struct_from_attrs(attrs)}
       _ -> {:error, {:invalid_beam_distribution_config, Enum.reverse(errors)}}
+    end
+  end
+
+  defp validate_peer_grant_attrs(attrs) do
+    errors =
+      []
+      |> require_non_empty(attrs, :node_name, :missing_node_name)
+      |> require_restricted_listen_host(attrs)
+
+    case errors do
+      [] ->
+        {:ok,
+         %__MODULE__{
+           enabled: true,
+           authorization_mode: :peer_grant,
+           node_name: string_value(attrs, :node_name),
+           listen_host: string_value(attrs, :listen_host)
+         }}
+
+      _other ->
+        {:error, {:invalid_beam_distribution_config, Enum.reverse(errors)}}
     end
   end
 
@@ -152,6 +200,23 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
       :ok
     else
       {:error, :beam_target_service_not_admitted}
+    end
+  end
+
+  defp require_peer_grant_service(service) do
+    if Regex.match?(~r/\Aorchard_node_agent_[0-9a-f]{32}\z/, service) do
+      :ok
+    else
+      {:error, :beam_target_service_not_admitted}
+    end
+  end
+
+  defp require_private_ipv4(host) do
+    case parse_ip(host) do
+      {:ok, {10, _b, _c, _d}} -> :ok
+      {:ok, {172, b, _c, _d}} when b in 16..31 -> :ok
+      {:ok, {192, 168, _c, _d}} -> :ok
+      _other -> {:error, :beam_target_outside_allowed_cidrs}
     end
   end
 

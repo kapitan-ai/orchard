@@ -11,7 +11,8 @@ This directory owns the controller ↔ node-agent cluster RPC contract. It does
 not own the node-agent ↔ worker runtime contract; that lives under
 `../../../native/orchard_worker_mlx/proto/`.
 
-`common.proto`, `events.proto`, and `runtime.proto` are active generated inputs.
+`common.proto`, `events.proto`, `peer_grant.proto`, and `runtime.proto` are
+active generated inputs.
 `membership.proto` is present for the future cluster-join lifecycle slice but is
 excluded from the current generation aliases until that contract is implemented.
 
@@ -64,6 +65,7 @@ protoc \
   --elixir_out=plugins=grpc,package_prefix=Orchard:apps/orchard_shared/lib \
   proto/cluster/v1/common.proto \
   proto/cluster/v1/events.proto \
+  proto/cluster/v1/peer_grant.proto \
   proto/cluster/v1/runtime.proto
 ```
 

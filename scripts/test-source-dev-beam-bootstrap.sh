@@ -202,6 +202,120 @@ assert_mode 600 "$COOKIE_C2"
 assert_files_equal "$COOKIE_C2" "$REPO_C2/tmp/dev/beam-home/controller/.erlang.cookie"
 assert_files_equal "$COOKIE_C2" "$REPO_C2/tmp/dev/beam-home/node_agent/.erlang.cookie"
 
+# C3: peer-grant launch uses exact TLS Distribution args and no shared cookie path.
+GRANT_ROOT="$TMP_ROOT/grant-launch"
+mkdir -p "$GRANT_ROOT"
+chmod 700 "$GRANT_ROOT"
+printf '{}\n' > "$GRANT_ROOT/controller-launch.json"
+printf '[].\n' > "$GRANT_ROOT/controller-ssl-dist.conf"
+chmod 600 "$GRANT_ROOT/controller-launch.json" "$GRANT_ROOT/controller-ssl-dist.conf"
+
+assert_succeeds "$TMP_ROOT/c3-controller.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@10.0.0.10
+
+assert_grep 'cookie=unset' "$TMP_ROOT/c3-controller.out"
+assert_grep '-proto_dist inet_tls' "$TMP_ROOT/c3-controller.out"
+assert_grep "-ssl_dist_optfile $GRANT_ROOT/controller-ssl-dist.conf" "$TMP_ROOT/c3-controller.out"
+
+GRANT_SPACE_ROOT="$TMP_ROOT/grant launch"
+mkdir -p "$GRANT_SPACE_ROOT"
+printf '[].\n' > "$GRANT_SPACE_ROOT/controller-ssl-dist.conf"
+chmod 600 "$GRANT_SPACE_ROOT/controller-ssl-dist.conf"
+assert_fails_with 'ORCHARD_BEAM_SSL_DIST_OPTFILE must not contain whitespace or control characters' \
+  "$TMP_ROOT/c3-controller-space-optfile.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-space-optfile" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_SPACE_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@10.0.0.10
+
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-noncanonical.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-noncanonical" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_fails_with 'peer-grant node-agent BEAM node service must be orchard_node_agent_<node-id>' \
+  "$TMP_ROOT/c3-node-uppercase.out" \
+  run_helper node_agent "$TMP_ROOT/repo-c3-node-uppercase" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR=/protected/peer-grant.json \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_node_agent_Cccccccccccc4ccc8ccccccccccccccc@10.0.0.20
+
+assert_fails_with 'peer-grant BEAM node host must be a private non-loopback RFC1918 IPv4 literal' \
+  "$TMP_ROOT/c3-controller-loopback.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-loopback" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@127.0.0.1
+
+assert_fails_with 'peer-grant BEAM node host must be a private non-loopback RFC1918 IPv4 literal' \
+  "$TMP_ROOT/c3-controller-public.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-public" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@203.0.113.10
+
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-truthy.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-truthy" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=1 \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-default-mode.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-default-mode" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-trimmed-mode.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-trimmed-mode" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=' distributed ' \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_succeeds "$TMP_ROOT/c3-controller-truthy-grant-control.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-truthy-grant-control" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=YES \
+    ORCHARD_BEAM_PEER_GRANT_MODE=grant_control \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@203.0.113.10
+assert_grep 'beam peer-grant control phase (Distribution disabled)' \
+  "$TMP_ROOT/c3-controller-truthy-grant-control.out"
+assert_grep 'args=' "$TMP_ROOT/c3-controller-truthy-grant-control.out"
+assert_no_grep '--name' "$TMP_ROOT/c3-controller-truthy-grant-control.out"
+
 # D: explicit cookie files must exist, be non-empty, and owner-only.
 MISSING_COOKIE="$TMP_ROOT/missing.cookie"
 assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must point to an existing regular file' "$TMP_ROOT/d1.out" \
@@ -264,11 +378,43 @@ STAT
 chmod +x "$FAKE_NON_OCTAL_STAT_DIR/stat"
 assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must be owner-only' "$TMP_ROOT/d3-non-octal-stat.out" \
   run_helper controller "$TMP_ROOT/repo-d3-non-octal-stat" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam PATH="$FAKE_NON_OCTAL_STAT_DIR:/usr/bin:/bin:/usr/sbin:/sbin" ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE"
+FAKE_FOREIGN_OWNER_STAT_DIR="$TMP_ROOT/fake-foreign-owner-stat-bin"
+mkdir -p "$FAKE_FOREIGN_OWNER_STAT_DIR"
+cat > "$FAKE_FOREIGN_OWNER_STAT_DIR/stat" <<'STAT'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}:${2:-}" in
+  -c:%a|-f:%Lp)
+    printf '600\n'
+    ;;
+  -c:%u|-f:%u)
+    printf '%s\n' "$FAKE_FOREIGN_UID"
+    ;;
+  *)
+    exec /usr/bin/stat "$@"
+    ;;
+esac
+STAT
+chmod +x "$FAKE_FOREIGN_OWNER_STAT_DIR/stat"
+if env -i \
+    PATH="$FAKE_FOREIGN_OWNER_STAT_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FAKE_FOREIGN_UID="$(( $(id -u) + 1 ))" \
+    bash -c 'source "$1"; orchard_source_dev_beam_cookie_is_owner_only "$2"' \
+      bash "$HELPER" "$STRICT_COOKIE"; then
+  echo "expected owner-only validation to reject a foreign uid" >&2
+  exit 1
+fi
 assert_succeeds "$TMP_ROOT/d4.out" run_helper controller "$TMP_ROOT/repo-d4" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE"
 assert_grep "cookie=$STRICT_COOKIE" "$TMP_ROOT/d4.out"
 assert_no_grep 'fixture-cookie' "$TMP_ROOT/d4.out"
 
 # E: BEAM node names must be role-appropriate long names with IPv4-literal hosts.
+if env -i PATH="/bin:/usr/sbin:/sbin" \
+    bash -c 'source "$1"; orchard_source_dev_beam_is_ipv4_literal "10.08.0.1"' \
+      bash "$HELPER"; then
+  echo "expected the no-Python IPv4 fallback to reject a leading-zero octet" >&2
+  exit 1
+fi
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME must be a long BEAM node name' "$TMP_ROOT/e1.out" \
   run_helper controller "$TMP_ROOT/repo-e1" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IPv4 literal' "$TMP_ROOT/e2.out" \
@@ -290,6 +436,9 @@ assert_succeeds "$TMP_ROOT/e4-exact.out" \
 assert_grep 'node=orchard_node_agent@127.0.0.1' "$TMP_ROOT/e4-exact.out"
 assert_fails_with 'node-agent BEAM node service must be exactly orchard_node_agent' "$TMP_ROOT/e4-suffix.out" \
   run_helper node_agent "$TMP_ROOT/repo-e4-suffix" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent_dev@127.0.0.1
+assert_fails_with 'ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST must point to an absolute existing regular non-symlink file' \
+  "$TMP_ROOT/e4-peer-grant.out" \
+  run_helper node_agent "$TMP_ROOT/repo-e4-peer-grant" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR=/protected/peer-grant.json ORCHARD_BEAM_NODE_NAME=orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME service contains invalid characters' "$TMP_ROOT/e5-space.out" \
   run_helper controller "$TMP_ROOT/repo-e5-space" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME='orchard_controller bad@127.0.0.1'
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME service contains invalid characters' "$TMP_ROOT/e5-slash.out" \
@@ -417,5 +566,19 @@ assert_succeeds "$TMP_ROOT/j-node.out" \
 assert_grep '-S mix run --no-halt' "$TMP_ROOT/j-node-iex.log"
 assert_no_grep '--name' "$TMP_ROOT/j-node-iex.log"
 assert_no_grep '--erl' "$TMP_ROOT/j-node-iex.log"
+
+# K: peer-grant commands reject every legacy or compatibility authorization input.
+assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE is forbidden for peer-grant Distribution' \
+  "$TMP_ROOT/k-cookie.out" \
+  env ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE" \
+    "$REPO_ROOT/bin/source-dev-peer-grant" node-retrieve
+assert_fails_with 'ORCHARD_RUNTIME_ENDPOINT_TARGETS is forbidden for peer-grant Distribution' \
+  "$TMP_ROOT/k-static-targets.out" \
+  env ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@10.0.0.20 \
+    "$REPO_ROOT/bin/source-dev-peer-grant" node-retrieve
+assert_fails_with 'ORCHARD_RUNTIME_CLIENT_TARGETS is forbidden for peer-grant Distribution' \
+  "$TMP_ROOT/k-grpc-targets.out" \
+  env ORCHARD_RUNTIME_CLIENT_TARGETS=10.0.0.20:50071 \
+    "$REPO_ROOT/bin/source-dev-peer-grant" node-retrieve
 
 printf 'source-dev BEAM bootstrap tests passed\n'

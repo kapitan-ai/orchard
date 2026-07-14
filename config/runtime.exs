@@ -132,6 +132,13 @@ loopback_ip? = fn
   _other -> false
 end
 
+private_ipv4? = fn
+  {10, _b, _c, _d} -> true
+  {172, b, _c, _d} when b in 16..31 -> true
+  {192, 168, _c, _d} -> true
+  _other -> false
+end
+
 loopback_listen_host? = fn host ->
   case :inet.parse_address(String.to_charlist(host)) do
     {:ok, ip_tuple} -> loopback_ip?.(ip_tuple)
@@ -689,15 +696,21 @@ if config_env() == :prod do
 
     %{
       transport: :beam,
-      address: "#{service}@#{host}",
+      address: String.to_atom("#{service}@#{host}"),
       metadata: %{packaged: true}
     }
   end
 
+  max_legacy_beam_targets = 64
+
   beam_targets = fn env_name, required? ->
-    targets =
-      env_csv.(env_name, [])
-      |> Enum.map(&beam_target.(&1, env_name))
+    segments = env_csv.(env_name, [])
+
+    if length(segments) > max_legacy_beam_targets do
+      raise "#{env_name} supports at most #{max_legacy_beam_targets} BEAM targets"
+    end
+
+    targets = Enum.map(segments, &beam_target.(&1, env_name))
 
     if required? and targets == [] do
       raise "#{env_name} must include at least one BEAM target when ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam"
@@ -750,8 +763,15 @@ if config_env() == :prod do
         end
 
       :node_agent ->
-        unless service == "orchard_node_agent" do
-          raise "ORCHARD_BEAM_NODE_NAME node-agent BEAM node service must be exactly orchard_node_agent"
+        grant_descriptor = env_optional_string.("ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR")
+
+        valid_service? =
+          if grant_descriptor,
+            do: String.match?(service, ~r/^orchard_node_agent_[0-9a-f]{32}$/),
+            else: service == "orchard_node_agent"
+
+        unless valid_service? do
+          raise "ORCHARD_BEAM_NODE_NAME node-agent BEAM node service is invalid for the selected authorization mode"
         end
     end
 
@@ -787,22 +807,108 @@ if config_env() == :prod do
       runtime_endpoint_transport_mode =
         runtime_endpoint_transport.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT", :beam)
 
-      runtime_endpoint_targets =
-        case runtime_endpoint_transport_mode do
-          :beam -> beam_targets.("ORCHARD_RUNTIME_ENDPOINT_TARGETS", true)
-          :grpc -> []
+      beam_peer_grants_enabled? =
+        env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+
+      beam_peer_grant_mode =
+        if beam_peer_grants_enabled? do
+          case env_optional_string.("ORCHARD_BEAM_PEER_GRANT_MODE") do
+            "grant_control" ->
+              :grant_control
+
+            "distributed" ->
+              :distributed
+
+            nil ->
+              raise "ORCHARD_BEAM_PEER_GRANT_MODE is required when production grants are enabled"
+
+            other ->
+              raise "ORCHARD_BEAM_PEER_GRANT_MODE must be grant_control|distributed, got: #{other}"
+          end
         end
 
-      runtime_endpoint_inference_config =
-        case runtime_endpoint_targets do
-          [] ->
-            []
+      if beam_peer_grants_enabled? and runtime_endpoint_transport_mode != :beam do
+        raise "ORCHARD_BEAM_PEER_GRANTS_ENABLED requires BEAM Runtime Endpoint transport"
+      end
 
-          targets ->
+      runtime_endpoint_targets =
+        case runtime_endpoint_transport_mode do
+          :beam ->
+            beam_targets.(
+              "ORCHARD_RUNTIME_ENDPOINT_TARGETS",
+              not beam_peer_grants_enabled?
+            )
+
+          :grpc ->
+            []
+        end
+
+      beam_peer_grants_config =
+        if beam_peer_grants_enabled? do
+          control_host =
+            env_optional_string.("ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST") ||
+              raise "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST is required when production grants are enabled"
+
+          control_ip =
+            parse_beam_ipv4.(
+              control_host,
+              "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST",
+              control_host
+            )
+
+          if loopback_ip?.(control_ip) or not private_ipv4?.(control_ip) do
+            raise "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST must be a private non-loopback IPv4 address"
+          end
+
+          control_port =
+            env_optional_string.("ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT") ||
+              raise "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT is required when production grants are enabled"
+
+          authorization_root_path =
+            env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
+              raise "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH is required when production grants are enabled"
+
+          manifest_path =
+            case beam_peer_grant_mode do
+              :distributed ->
+                env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST") ||
+                  raise "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST is required in distributed mode"
+
+              :grant_control ->
+                nil
+            end
+
+          [
+            enabled: true,
+            mode: beam_peer_grant_mode,
+            authorization_root_path: authorization_root_path,
+            manifest_path: manifest_path,
+            cookie_file: nil,
+            static_targets: [],
+            control_listener: [
+              host: control_host,
+              port: env_port.("ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT", control_port)
+            ]
+          ]
+        else
+          [enabled: false]
+        end
+
+      config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
+
+      runtime_endpoint_inference_config =
+        case {runtime_endpoint_transport_mode, runtime_endpoint_targets} do
+          {:beam, []} ->
+            [runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient]
+
+          {:beam, targets} ->
             [
               runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
               runtime_endpoint_targets: targets
             ]
+
+          {:grpc, _targets} ->
+            []
         end
 
       runtime_client_targets =
@@ -823,9 +929,35 @@ if config_env() == :prod do
             ]
         end
 
-      if runtime_endpoint_transport_mode == :beam do
-        config :orchard_controller, :runtime_endpoint,
-          beam: local_beam_config.(:controller, runtime_endpoint_targets)
+      if runtime_endpoint_transport_mode == :beam and
+           (not beam_peer_grants_enabled? or beam_peer_grant_mode == :distributed) do
+        beam_config = local_beam_config.(:controller, runtime_endpoint_targets)
+
+        beam_config =
+          if beam_peer_grants_enabled? do
+            {service, _host} =
+              beam_service_host.(
+                Keyword.fetch!(beam_config, :node_name),
+                "ORCHARD_BEAM_NODE_NAME"
+              )
+
+            unless String.match?(service, ~r/^orchard_controller_[0-9a-f]{32}$/) do
+              raise "ORCHARD_BEAM_NODE_NAME peer-grant Controller service must be canonical orchard_controller_<controller-id>"
+            end
+
+            [
+              enabled: true,
+              node_name: Keyword.fetch!(beam_config, :node_name),
+              cookie_file: nil,
+              listen_host: Keyword.fetch!(beam_config, :listen_host),
+              admitted_services: [],
+              allowed_cidrs: []
+            ]
+          else
+            beam_config
+          end
+
+        config :orchard_controller, :runtime_endpoint, beam: beam_config
       end
 
       # --- Console configuration ---
@@ -1227,12 +1359,46 @@ if config_env() == :prod do
 
       node_agent_listen_host = System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
 
+      node_identity_root =
+        System.get_env("ORCHARD_NODE_IDENTITY_ROOT") ||
+          Path.join([orchard_support_root, "config", "node-identity"])
+
+      beam_peer_grant_descriptor =
+        env_optional_string.("ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR")
+
+      beam_peer_grant_node_name =
+        if beam_peer_grant_descriptor do
+          env_optional_string.("ORCHARD_BEAM_NODE_NAME") ||
+            raise "ORCHARD_BEAM_NODE_NAME is required when a BEAM Peer Grant descriptor is configured"
+        end
+
+      beam_distribution_launch_manifest =
+        if beam_peer_grant_descriptor do
+          env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST") ||
+            raise "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST is required when a BEAM Peer Grant descriptor is configured"
+        end
+
+      if beam_peer_grant_descriptor && node_runtime_endpoint_transport == :grpc do
+        raise "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR requires BEAM Runtime Endpoint transport"
+      end
+
       if grpc_security == :plaintext_compatibility and
            not loopback_listen_host?.(node_agent_listen_host) do
         raise "ORCHARD_NODE_AGENT_LISTEN_HOST=#{node_agent_listen_host} exposes an unauthenticated plaintext gRPC runtime endpoint on a non-loopback interface; set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc for mutual TLS or bind the node agent to a loopback host"
       end
 
       config :orchard_node_agent,
+        beam_peer_grants:
+          if(beam_peer_grant_descriptor,
+            do: [
+              enabled: true,
+              identity_root: node_identity_root,
+              descriptor_path: beam_peer_grant_descriptor,
+              node_beam_name: beam_peer_grant_node_name,
+              manifest_path: beam_distribution_launch_manifest
+            ],
+            else: [enabled: false]
+          ),
         runtime:
           Keyword.merge(
             default_node_runtime.(orchard_support_root),
@@ -1240,9 +1406,7 @@ if config_env() == :prod do
             node_identity_path:
               System.get_env("ORCHARD_NODE_IDENTITY_PATH") ||
                 Path.join([orchard_support_root, "data", "node-id"]),
-            node_identity_root:
-              System.get_env("ORCHARD_NODE_IDENTITY_ROOT") ||
-                Path.join([orchard_support_root, "config", "node-identity"]),
+            node_identity_root: node_identity_root,
             grpc_security: grpc_security,
             display_name: System.get_env("ORCHARD_NODE_DISPLAY_NAME"),
             listen_address: [
