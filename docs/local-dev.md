@@ -723,7 +723,7 @@ Env surface:
 | `ORCHARD_NODE_TRUST_ROOT` | `tmp/dev/node-trust` | Controller node-trust root used by the distributed controller preflight and run. |
 | `ORCHARD_NODE_IDENTITY_ROOT` | `tmp/dev/config/node-identity` | Owner-only node identity root holding the Node key, Node Certificate, and stored grant. |
 | `ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR` | _(required, node; controller preflight)_ | Path to the grant descriptor that binds the exact Controller-to-Node pair. |
-| `ORCHARD_BEAM_NODE_NAME` | _(required)_ | Long BEAM node name for the current role. In grant mode the node-agent service must be `orchard_node_agent_<32-hex>@<ipv4-literal>`. |
+| `ORCHARD_BEAM_NODE_NAME` | _(required)_ | Long BEAM node name for the current role. In grant mode the node-agent service must be `orchard_node_agent_<32-hex>@<ipv4-literal>` and the distributed controller service must be `orchard_controller_<32-hex>@<ipv4-literal>`. |
 
 `ORCHARD_BEAM_PEER_GRANTS_ENABLED`, `ORCHARD_BEAM_PEER_GRANT_MODE`
 (`grant_control` or `distributed`), `ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST`,
