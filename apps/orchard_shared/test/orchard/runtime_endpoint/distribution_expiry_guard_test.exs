@@ -110,6 +110,38 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
     GenServer.stop(pid)
   end
 
+  test "SPEC.md §7.5.0 hard-stop watchdog survives expiry-guard shutdown" do
+    test_pid = self()
+    now = ~U[2026-07-13 08:00:00.000000Z]
+
+    manifest = %{
+      role: :controller,
+      controller_id: @controller_id,
+      node_id: @node_id,
+      controller_beam_name: @controller_name,
+      node_beam_name: @node_name,
+      expires_at: now
+    }
+
+    assert {:ok, pid} =
+             DistributionExpiryGuard.start_link(
+               name: :independent_watchdog_expiry_guard,
+               manifest_path: "/protected/launch.json",
+               launch_loader: fn _path -> {:ok, manifest} end,
+               now: fn -> now end,
+               cookie_setter: fn _peer, _replacement -> false end,
+               disconnect: fn _peer -> false end,
+               stop_distribution: fn -> {:error, :not_alive} end,
+               fail_closed: fn -> send(test_pid, :application_stopped) end,
+               shutdown_grace_ms: 25,
+               hard_stop: fn -> send(test_pid, :independent_hard_stop) end
+             )
+
+    assert_receive :application_stopped
+    GenServer.stop(pid)
+    assert_receive :independent_hard_stop, 500
+  end
+
   test "SPEC.md §7.5.0 repeated expired restarts reuse one bounded cleanup cookie" do
     test_pid = self()
     now = ~U[2026-07-13 08:00:00.000000Z]

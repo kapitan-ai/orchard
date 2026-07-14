@@ -8,7 +8,6 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
   alias Orchard.RuntimeEndpoint.{BeamNodeName, DistributionLaunch}
 
   @expired_cookie :orchard_expired_peer_grant
-  @cleanup_retry_ms 1_000
   @max_timer_ms :timer.hours(24)
   @shutdown_grace_ms 1_000
 
@@ -28,7 +27,6 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
          %DateTime{} = expires_at <- value(manifest, :expires_at) do
       state = %{
         cookie_setter: Keyword.get(opts, :cookie_setter, &Node.set_cookie/2),
-        cleanup_retry_ms: Keyword.get(opts, :cleanup_retry_ms, @cleanup_retry_ms),
         disconnect: Keyword.get(opts, :disconnect, &Node.disconnect/1),
         expired?: false,
         expires_at: expires_at,
@@ -54,12 +52,6 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
   @impl true
   def handle_info(:check_expiry, %{expired?: true} = state), do: {:noreply, state}
 
-  def handle_info(:force_halt, state) do
-    _hard_stop_result = safe_call(state.hard_stop, [])
-    Process.send_after(self(), :check_expiry, state.cleanup_retry_ms)
-    {:noreply, state}
-  end
-
   def handle_info(:check_expiry, state) do
     if DateTime.compare(state.now.(), state.expires_at) == :lt do
       {:noreply, schedule_check(state)}
@@ -71,9 +63,15 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
       if cookie_result == true and stop_result == :ok do
         {:noreply, %{state | expired?: true}}
       else
+        watchdog_result =
+          safe_call(&start_halt_watchdog/2, [state.hard_stop, state.shutdown_grace_ms])
+
+        if watchdog_result != :ok do
+          _hard_stop_result = safe_call(state.hard_stop, [])
+        end
+
         _fail_closed_result = safe_call(state.fail_closed, [])
-        Process.send_after(self(), :force_halt, state.shutdown_grace_ms)
-        {:noreply, state}
+        {:noreply, %{state | expired?: true}}
       end
     end
   end
@@ -115,6 +113,16 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
     _error -> :error
   catch
     _kind, _reason -> :error
+  end
+
+  defp start_halt_watchdog(hard_stop, shutdown_grace_ms) do
+    {:ok, _pid} =
+      Task.start(fn ->
+        Process.sleep(shutdown_grace_ms)
+        safe_call(hard_stop, [])
+      end)
+
+    :ok
   end
 
   defp fail_closed, do: System.stop(1)
