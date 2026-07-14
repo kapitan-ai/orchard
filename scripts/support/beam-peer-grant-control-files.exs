@@ -64,9 +64,8 @@ defmodule Orchard.BeamPeerGrantControlFiles do
 
   defp write_ready(io, path) do
     with :ok <- File.chmod(path, 0o600),
-         :ok <- IO.binwrite(io, "ready\n"),
-         :ok <- :file.sync(io) do
-      :ok
+         :ok <- IO.binwrite(io, "ready\n") do
+      :file.sync(io)
     end
   end
 

@@ -1,8 +1,8 @@
 Code.require_file(Path.join(__DIR__, "beam-peer-grant-control-files.exs"))
 
 defmodule Orchard.BeamPeerGrantControlApplication do
-  alias Orchard.{BeamPeerGrants, NodeEnrollments, Nodes, NodeTrust, Repo}
   alias Orchard.BeamPeerGrantControlFiles
+  alias Orchard.{BeamPeerGrants, NodeEnrollments, Nodes, NodeTrust, Repo}
   alias Orchard.NodeEnrollment.PKI
   alias OrchardCLI.NodeIdentity.Store
 
