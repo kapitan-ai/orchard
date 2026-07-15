@@ -898,7 +898,7 @@ Effective readiness rules for future hosted routing:
 * the registry tool `execution_mode` SHALL be `:server_hostable`
 * the node SHALL advertise matching static hosted-tool capability for the same `tool://<name>@<version>`
 * the node lifecycle state SHALL be `active`
-* node health SHALL be `healthy`
+* node health SHALL be `healthy` or `degraded`
 * the Runtime Endpoint Observation SHALL be fresh under Orchard's existing freshness thresholds
 * dynamic readiness for that tool SHALL exist and have `ready = true`
 
@@ -1318,6 +1318,7 @@ score =
   + residency_bonus
   + mem_bonus
   + load_bonus
+  + health_bonus
   + warmth_bonus
   - swap_penalty
 ```
@@ -1345,6 +1346,11 @@ Where:
 
   * `100 - floor(100 * active_requests / node_max_concurrency)`
 
+* `health_bonus`
+
+  * 30 if `healthy`
+  * 0 if `degraded`
+
 * `warmth_bonus`
 
   * 20 if same model used on node in last 5 minutes
@@ -1362,21 +1368,22 @@ Tie-break order:
 
 The score/bonus model above is the broader M4 scheduling contract. The current bounded Phase 4C/4E implementation uses the late tie-break order below and does not introduce threshold-based memory admission or request rejection.
 
-Controller-side cache-affinity, safe-tokenization capable-worker preference, Phase 4D tie-only scoring, and memory-admission ranking for the bounded current implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load position:
+Controller-side cache-affinity, safe-tokenization capable-worker preference, Phase 4D tie-only scoring, and memory-admission ranking for the bounded current implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load/health position:
 
 1. loaded model already present
 2. lower active request count for the requested placement when valid matching Placement Capacity is available, otherwise lower endpoint aggregate `active_request_count`
-3. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
-4. historical cache-affinity match from recent completed placements, when cache affinity is enabled
-5. safe-tokenization capable-worker preference, only when `tokenizer_safe_mode_prefer_capable=true`, `tokenizer_safe_mode` is not `:off`, and the live status probe reports `supports_prompt_token_ids=true`
-6. explicit memory-headroom observation, only when `memory_admission.enabled=true` and the candidate's matching `RuntimeMemoryBudget` has `status_code = "ok"` and `headroom_available = true`
-7. lexicographically smaller `node_id`
+3. healthier node (`healthy` before `degraded`)
+4. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
+5. historical cache-affinity match from recent completed placements, when cache affinity is enabled
+6. safe-tokenization capable-worker preference, only when `tokenizer_safe_mode_prefer_capable=true`, `tokenizer_safe_mode` is not `:off`, and the live status probe reports `supports_prompt_token_ids=true`
+7. explicit memory-headroom observation, only when `memory_admission.enabled=true` and the candidate's matching `RuntimeMemoryBudget` has `status_code = "ok"` and `headroom_available = true`
+8. lexicographically smaller `node_id`
 
 Default Phase 4D runtime behavior remains observe-only (`prefix_cache_scoring.ranking_mode = :observe_only`) and rank-neutral.
 
-When `prefix_cache_scoring.enabled=true`, `cache_affinity.enabled=true`, `cache_affinity.live_fingerprint_match_enabled=true`, and `prefix_cache_scoring.ranking_mode = :tie_only`, the scheduler MAY apply one bounded conditional score step immediately before step 7, only for the leading rank-equivalence group where steps 1–6 are equal and only deterministic `node_id` differs. Candidate scoring in this conditional step is capped at 2 (incumbent + challenger). The challenger MAY be promoted only when challenger score normalizes to `status_code = "ok"` with `resident_fingerprint_match = true` and `score_tier = "resident_fingerprint"`, and the incumbent score is comparable `ok` non-resident (`status_code = "ok"`, `resident_fingerprint_match = false`, and `score_tier` is `"no_match"` or `"recent_fingerprint_only"`). Any non-`ok`, timeout, unsupported, unavailable, `model_not_loaded`, `invalid_request`, missing, malformed, contradictory, or transport-failure score outcome for either candidate SHALL preserve base order fail-open and deterministic `node_id` fallback.
+When `prefix_cache_scoring.enabled=true`, `cache_affinity.enabled=true`, `cache_affinity.live_fingerprint_match_enabled=true`, and `prefix_cache_scoring.ranking_mode = :tie_only`, the scheduler MAY apply one bounded conditional score step immediately before step 8, only for the leading rank-equivalence group where steps 1–7 are equal and only deterministic `node_id` differs. Candidate scoring in this conditional step is capped at 2 (incumbent + challenger). The challenger MAY be promoted only when challenger score normalizes to `status_code = "ok"` with `resident_fingerprint_match = true` and `score_tier = "resident_fingerprint"`, and the incumbent score is comparable `ok` non-resident (`status_code = "ok"`, `resident_fingerprint_match = false`, and `score_tier` is `"no_match"` or `"recent_fingerprint_only"`). Any non-`ok`, timeout, unsupported, unavailable, `model_not_loaded`, `invalid_request`, missing, malformed, contradictory, or transport-failure score outcome for either candidate SHALL preserve base order fail-open and deterministic `node_id` fallback.
 
-A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after eligibility and before historical affinity. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
+A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
 
 ### 5.8 Scheduling algorithm
 
@@ -2251,12 +2258,13 @@ Response example:
       "node_id": "node-2",
       "eligible": true,
       "tier": "loaded",
-      "score": 812,
+      "score": 842,
       "components": {
         "pool_bonus": 200,
         "residency_bonus": 500,
         "mem_bonus": 72,
         "load_bonus": 40,
+        "health_bonus": 30,
         "warmth_bonus": 20,
         "swap_penalty": 20
       },
