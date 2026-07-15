@@ -33,7 +33,8 @@ This refines `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, and §7.5.3.
 #### Scenario: Multiple placement lanes share one Node bound
 - **WHEN** multiple placement lanes on one Node each report spare capacity
 - **THEN** every dispatch grant serializes acquisition of one aggregate Node claim
-- **AND** no new allocation causes their combined allocation to exceed the shared authority decision's available slots
+- **AND** under `f11_enforcing` no new allocation causes combined Controller-accounted Allocation to exceed Effective Dispatch Limit
+- **AND** under `legacy_pre_cutover` every grant requires freshly recomputed positive temporary available slots and serialized temporary-claim acquisition
 
 #### Scenario: Placement is tighter than aggregate authority
 - **WHEN** the shared authority decision has positive available slots but the requested Placement Capacity is exhausted
