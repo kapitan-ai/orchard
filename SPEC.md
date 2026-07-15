@@ -288,9 +288,21 @@ Each single-controller or Active/Standby Controller instance SHALL have a durabl
 * BEAM Authorization Root custody reference, never the root value
 * instance status
 * first-enrolled and last-seen timestamps
+* running Orchard version
+* supported dispatch-capacity contract version, indivisible all-consumers-ready declaration, and capability observation timestamp
 
 Controller-instance identity is durable cluster truth.
 Advisory-lock leadership is transient and SHALL NOT be conflated with Controller-instance identity.
+
+Every non-retired Controller instance SHALL atomically publish its running Orchard version, supported dispatch-capacity contract version, `dispatch_capacity_consumers_ready`, and capability observation timestamp at boot and on each Controller membership heartbeat.
+The supervised `Orchard.ControllerMembership` owner SHALL emit that heartbeat every `10000` ms and update `last_seen_at` plus the complete capability tuple in one write.
+Heartbeat failure SHALL be retried without reporting fresh capability evidence, and evidence older than the freshness threshold SHALL remain stale until a successful complete write.
+`dispatch_capacity_consumers_ready = true` SHALL declare that MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation all use the shared evaluation as one indivisible contract-versioned capability.
+For F11, Controller capability is compatible only when `dispatch_capacity_contract_version` exactly equals the locked singleton row's `required_contract_version` and `dispatch_capacity_consumers_ready` is true.
+Supporting multiple contract versions in one Controller requires a future explicit supported-version-set contract and SHALL NOT be inferred from greater-than-or-equal comparison.
+Missing evidence, version `0`, a false readiness declaration, or evidence older than `controller_capability_freshness_threshold_ms` SHALL block enforcement cutover for any non-retired Controller instance.
+The default Controller capability freshness threshold SHALL be `30000` ms.
+An obsolete or permanently unavailable Controller SHALL be explicitly retired through `POST /ops/v1/controllers/:controller_id/retire` before it can be excluded from cutover preflight.
 
 Leader controller behavior:
 
@@ -629,6 +641,7 @@ A node record SHALL include:
 * lifecycle state
 * current health
 * last heartbeat timestamp
+* durable dispatch capacity policy after Node Admission
 
 A Node's canonical production BEAM node name SHALL be null until validated private IPv4 inventory is recorded.
 Node Admission SHALL NOT authorize a Peer Grant, and no production Runtime Endpoint target or `admitted -> active` BEAM authorization SHALL proceed, while that canonical name is absent or unvalidated.
@@ -691,7 +704,8 @@ decommissioning -> removed
 * `registered -> admitted`
 
   * trigger: Admin API action
-  * conditions: inventory captured, trust established, pool assigned, required policy inputs supplied
+  * conditions: inventory captured, trust established, pool assigned, and required policy inputs supplied
+  * effect: atomically persist an explicit Controller Dispatch Ceiling and approval provenance before the lifecycle transition; when the administrator omits the value, persist the explicit default `1`; before enforcement cutover the policy state is `approved_explicit`, and after enforcement cutover it is `enforcing`
 
 * `admitted -> active`
 
@@ -869,11 +883,13 @@ Compatibility and defaulting rules:
 * current `RuntimePrefixCacheStatus.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
 * aggregate `active_request_count` on a Runtime Endpoint Observation, and on the current gRPC compatibility `StatusResponse`, SHALL report active runtime requests across the endpoint node
-* `max_concurrency` on the current gRPC compatibility `StatusResponse` SHALL report the aggregate runtime request capacity enforced by the node agent; omitted or zero values SHALL be treated conservatively as endpoint node capacity `1` by schedulers
+* `max_concurrency` on the current gRPC compatibility `StatusResponse` SHALL report the Node-owned Runtime Concurrency Enforcement Limit
+* an omitted or zero compatibility-protocol `max_concurrency` MAY normalize to Runtime Concurrency Enforcement Limit `1` only for an explicitly unmanaged source-development or compatibility target
+* an omitted, zero, malformed, unavailable, or stale Runtime Concurrency Enforcement Limit for an admitted production Node SHALL yield Effective Dispatch Limit `0`
 * absent or empty Placement Capacity on a Runtime Endpoint Observation, including absent or empty `runtime_model_placements` on the current gRPC compatibility `StatusResponse`, SHALL mean no explicit per-placement capacity observation is available
 * absent or empty Placement Capacity SHALL NOT be treated as a status-probe error
-* Placement Capacity entries SHALL report controller-observed capacity for loaded Model Placements using model reference, active request count, and max concurrency; `max_concurrency <= 0`, malformed entries, duplicate matching entries, or non-matching entries SHALL be treated as unknown capacity
-* valid per-placement capacity SHALL NOT prove endpoint eligibility when known aggregate node-level `active_request_count >= max_concurrency`
+* Placement Capacity entries SHALL report Node-owned capacity for loaded Model Placements through Runtime Endpoint Observations using model reference, active request count, and max concurrency; `max_concurrency <= 0`, malformed entries, duplicate matching entries, or non-matching entries SHALL be treated as unknown capacity
+* valid per-placement capacity SHALL NOT prove endpoint eligibility when the shared authority decision has no positive available slots; under `f11_enforcing`, this means Dispatch Headroom is `0`
 * unknown Placement Capacity SHALL NOT prove scheduler eligibility for an already-active endpoint; `Orchard.Scheduler.MultiNode` MAY keep a matching loaded-model active candidate eligible only when exactly one valid matching Placement Capacity entry reports `active_request_count < max_concurrency`
 
 Effective readiness rules for future hosted routing:
@@ -882,9 +898,161 @@ Effective readiness rules for future hosted routing:
 * the registry tool `execution_mode` SHALL be `:server_hostable`
 * the node SHALL advertise matching static hosted-tool capability for the same `tool://<name>@<version>`
 * the node lifecycle state SHALL be `active`
-* node health SHALL be `healthy` or `degraded`
+* node health SHALL be `healthy`
 * the Runtime Endpoint Observation SHALL be fresh under Orchard's existing freshness thresholds
 * dynamic readiness for that tool SHALL exist and have `ready = true`
+
+### 4.6.2 Controller dispatch capacity authority
+
+Every admitted production Node SHALL have one durable Controller dispatch capacity policy.
+For this contract, the production cohort begins only when Node Admission commits; a registered but unadmitted Node is enrolled inventory but is not yet a dispatch-policy subject.
+The operational cohort ends only when lifecycle `removed`, trust revocation, and the removal audit commit durably.
+A removed Node's policy remains historical evidence but is excluded from capacity evaluation, operator-approval blockers, Controller compatibility cutover preflight, and zero-occupancy quiescence.
+Any later re-enrollment SHALL pass a new Node Admission and persist policy under the then-current phase.
+Except for the bounded pre-F11 cohort while its policy state is `shadow_legacy`, that policy SHALL contain a non-negative Controller Dispatch Ceiling and an explicit policy state.
+The bounded `shadow_legacy` record SHALL deliberately contain a null ceiling, SHALL be distinct from a missing policy record, and SHALL never authorize the new production capacity semantics.
+The Controller Dispatch Ceiling is Controller-owned policy and SHALL NOT be inferred, copied, or backfilled from runtime telemetry.
+New Node Admission SHALL persist a Controller Dispatch Ceiling in the same transaction as admission, using an explicit value supplied by the administrator or the explicit default `1`.
+The cluster SHALL persist one durable dispatch-capacity enforcement phase with values `pre_cutover` and `enforcing`.
+The admission transaction SHALL lock and read that phase rather than infer cutover from policy rows, Controller version, transport, or cluster occupancy.
+While the phase is `pre_cutover`, new admission SHALL write `approved_explicit`; while the phase is `enforcing`, new admission SHALL write `enforcing` directly because every semantic consumer is already enforcing the shared evaluation.
+An explicit Controller Dispatch Ceiling of `0` is valid policy and, while the authority decision is `f11_enforcing`, prevents new Controller allocations without changing Node Lifecycle State or forcibly cancelling accepted, running, or streaming work solely because of the policy value.
+While the phase is `pre_cutover`, an approved ceiling including `0` is not yet allocation authority, and admission or mutation previews SHALL expose `controller_dispatch_ceiling_not_yet_enforcing`.
+A missing policy record, or a missing ceiling outside the bounded `shadow_legacy` exception, is an integrity failure and SHALL yield Effective Dispatch Limit `0`.
+A permanent null value meaning runtime-managed capacity is prohibited.
+
+The Runtime Concurrency Enforcement Limit is the Node-owned dynamic aggregate limit that the Node Agent enforces locally.
+The Controller SHALL treat a Runtime Endpoint capacity observation as fresh only while both the trusted Node heartbeat and the capacity observation remain within the scheduler freshness threshold.
+For an admitted production Node, the Controller SHALL compute:
+
+```text
+effective_dispatch_limit =
+  if trusted_identity
+     and lifecycle_state == active
+     and node_health == healthy
+     and heartbeat_is_scheduler_fresh
+     and capacity_observation_is_scheduler_fresh
+     and dispatch_capacity_enforcement_phase == enforcing
+     and controller_dispatch_policy_state == enforcing
+     and controller_dispatch_ceiling_is_valid
+     and runtime_concurrency_enforcement_limit_is_valid
+  then min(runtime_concurrency_enforcement_limit, controller_dispatch_ceiling)
+  else 0
+
+dispatch_headroom =
+  max(effective_dispatch_limit - controller_accounted_allocation, 0)
+```
+
+Dispatch Headroom SHALL authorize only acquisition of a new allocation.
+Dispatch revalidation of a recognized pre-acceptance allocation SHALL NOT require positive Dispatch Headroom after counting that same allocation a second time.
+Instead, the shared evaluation SHALL serialize revalidation with allocation changes, exclude only the current recognized allocation from the allocation operand, and allow execution only when the resulting value is positive and every non-allocation gate still passes.
+An allocation held during connection or model loading is pre-acceptance work and is not grandfathered across a ceiling reduction.
+A request already accepted by the Node, running, or streaming SHALL NOT be forcibly cancelled solely because the Controller Dispatch Ceiling is lowered.
+
+The shared evaluation SHALL take the durable cluster enforcement phase as an explicit input.
+While the phase is `pre_cutover`, a `shadow_legacy` or `approved_explicit` policy SHALL return counterfactual Effective Dispatch Limit and Dispatch Headroom `0` plus an explicit `legacy_pre_cutover` decision that preserves the named legacy capacity behavior for every semantic consumer.
+The `legacy_pre_cutover` decision is temporary migration behavior, SHALL NOT be presented as Effective Dispatch Limit or Dispatch Headroom, and SHALL NOT create durable policy from telemetry.
+The shared evaluator SHALL calculate the temporary decision centrally as follows:
+
+```text
+legacy_pre_cutover_limit =
+  if fresh runtime max_concurrency is a positive integer
+  then max_concurrency
+  else 1
+
+legacy_pre_cutover_reported_allocation =
+  if fresh aggregate active_request_count is a non-negative integer
+  then active_request_count
+  else 0
+
+legacy_pre_cutover_claimed_allocation =
+  count(unique non-released Controller-local temporary legacy claims)
+
+legacy_pre_cutover_available_slots =
+  max(
+    legacy_pre_cutover_limit
+      - legacy_pre_cutover_reported_allocation
+      - legacy_pre_cutover_claimed_allocation,
+    0
+  )
+```
+
+The temporary decision SHALL authorize new work only when trusted identity, lifecycle `active`, health `healthy` or `degraded`, scheduler-fresh heartbeat and Runtime Endpoint Observation, pool, format, memory, placement, and breaker gates pass and `legacy_pre_cutover_available_slots` is positive.
+All five semantic consumers SHALL use the decision and its centrally calculated available slots without independently interpreting runtime concurrency.
+Acquisition of a temporary legacy claim SHALL serialize across every placement and queue lane for the Node so concurrent consumers cannot spend the same temporary slot.
+The claim SHALL begin before connection or model loading, remain attached to the logical request through accepted, running, and streaming work, and release exactly once on terminal completion, cancellation, pre-acceptance failure, or before retrying another Node.
+Pre-acceptance legacy revalidation SHALL exclude only the current recognized temporary claim from the claimed-allocation operand and SHALL retain the claim through Node acceptance.
+The reported allocation plus temporary-claim calculation is deliberately conservative when Runtime Endpoint telemetry also observes Controller work.
+Queue-source and lane contributions are scheduling hints only; every grant SHALL still acquire the serialized temporary legacy claim before dispatch.
+Controller-accounted Allocation MAY be tracked counterfactually before cutover but SHALL NOT replace reported allocation or the separate temporary-claim bound.
+The frozen missing or malformed aggregate-active-count normalization to `0` is limited to this temporary branch and is the explicit malformed aggregate active-count follow-up outside F11 enforcement scope.
+While the phase is `enforcing`, only an `enforcing` policy MAY produce a non-zero Effective Dispatch Limit.
+A `pre_cutover` phase with an `enforcing` policy, or an `enforcing` phase with `shadow_legacy` or `approved_explicit`, is an integrity mismatch and SHALL fail closed for new allocation and expose `dispatch_capacity_phase_policy_mismatch`.
+
+Controller-accounted Allocation SHALL count unique, non-released, Node-scoped logical allocations owned by the current Active Controller.
+Queued requests, unassigned queue grants, configured base lane capacity, Node-reported active request counts, and Placement Capacity telemetry SHALL NOT count as Controller-accounted Allocation.
+One request SHALL acquire at most one allocation on a Node before model loading or execution, retain it through dispatch and running work, and release it exactly once before retrying another Node or after cancellation, pre-acceptance failure, or terminal completion.
+Acquisition of the final unit of Dispatch Headroom SHALL be serialized so two concurrent requests cannot both claim it.
+This F11 accounting contract is Controller-local and SHALL NOT be represented as a durable dispatch permit, leader epoch, Node-verifiable token, crash-recoverable reservation ledger, or proof of actual Node occupancy.
+
+The Active Controller SHALL provide one Controller-local cluster transition barrier and one Controller-local acceptance gate per admitted production Node.
+Node policy mutation SHALL serialize through that Node's acceptance gate.
+Final dispatch revalidation SHALL acquire the same acceptance gate and hold it continuously from the final shared evaluation through either Node acceptance or pre-acceptance failure.
+If dispatch holds the gate first, Node acceptance linearizes before a later ceiling mutation and the accepted work may drain naturally.
+If policy mutation holds the gate first, later revalidation SHALL observe the new ceiling and phase before execution.
+Enforcement cutover SHALL use the cluster transition barrier and every Node acceptance gate in stable order so no temporary legacy claim or pre-acceptance handoff can cross the phase change.
+These gates define one live Active Controller's F11 linearization boundary and are not a substitute for M7 leadership fencing or durable dispatch permits.
+
+One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, durable enforcement phase, policy state, normalized target management class, explicit legacy-pre-cutover or F11-enforcing decision, eligibility, and stable reason codes.
+`Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node observation queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation SHALL consume that evaluation without re-deriving the formulas or defaulting missing production policy to `1`.
+Transport selection SHALL NOT classify capacity authority.
+An admitted production Node remains governed by this contract over BEAM, gRPC compatibility, or a static target reference.
+Every normalized Runtime Endpoint target descriptor SHALL carry `capacity_management_class` with one of `production_managed`, `unmanaged_source_development`, or `unmanaged_compatibility`.
+The Controller SHALL resolve trusted admitted production inventory before applying configured classification, and an inventory match SHALL force `production_managed` regardless of a conflicting unmanaged declaration.
+`unmanaged_source_development` SHALL be accepted only from Controller-owned source-development configuration while the Controller runs in source-development mode.
+`unmanaged_compatibility` SHALL be accepted only from an explicitly enabled Controller-owned compatibility target configuration that does not resolve to admitted production inventory.
+The classification SHALL NOT come from Node telemetry, transport type, address shape, probe outcome, or adapter fallback.
+Absent, malformed, conflicting, or unresolved classification SHALL fail closed for production dispatch with no legacy normalization.
+Only a valid explicitly classified unmanaged source-development or compatibility target MAY retain legacy capacity behavior, and failure to resolve a production-managed target SHALL NOT downgrade it to that exception.
+
+Placement Capacity remains Node-owned and MAY further reduce capacity for one Model Placement.
+For each placement, allocatable capacity SHALL be bounded by both that Placement Capacity and the shared authority decision's available slots.
+While the decision is `f11_enforcing`, acquisition of new Controller-accounted Allocations across every placement and queue lane for one Node SHALL NOT cause the total to exceed its Effective Dispatch Limit.
+While the decision is `legacy_pre_cutover`, the temporary centrally calculated legacy slots plus serialized temporary claims remain the aggregate bound and Effective Dispatch Limit remains counterfactual `0`.
+A ceiling reduction MAY temporarily leave accepted, running, or streaming allocations above the new Effective Dispatch Limit while they drain naturally, but no new allocation may increase that total.
+Configured base queue capacity and source-scoped lane capacity govern queue flow only and SHALL NOT create production dispatch authority.
+
+While the authority decision is `f11_enforcing`, lowering a Controller Dispatch Ceiling SHALL affect new allocation and pre-acceptance revalidation immediately, SHALL NOT forcibly cancel accepted, running, or streaming work solely because of the reduction, and SHALL leave Dispatch Headroom at `0` while Controller-accounted Allocation is greater than or equal to the lowered Effective Dispatch Limit.
+Accepted, running, and streaming work SHALL finish naturally, and new allocation MAY resume only after Dispatch Headroom becomes positive.
+Pre-acceptance work that no longer passes serialized held-allocation revalidation SHALL release its allocation exactly once and requeue or fail under the existing contract.
+While the authority decision is `f11_enforcing`, raising a Controller Dispatch Ceiling SHALL create no allocation by itself, SHALL remain bounded by the current Runtime Concurrency Enforcement Limit and all other eligibility gates, and MAY wake queued work only after shared capacity re-evaluation.
+
+Existing Nodes SHALL migrate through policy states `shadow_legacy`, `approved_explicit`, and `enforcing` in that order.
+`shadow_legacy` SHALL apply only to non-removed production Nodes whose Node Admission committed before the F11 expand migration, identified by durable `admitted_at` or equivalent admission history, and SHALL be a temporary counterfactual observation state, not a steady-state authority mode.
+During `shadow_legacy`, the present policy record's intentionally absent ceiling computes counterfactual Effective Dispatch Limit `0` while named legacy behavior continues temporarily and mismatch diagnostics remain non-authoritative.
+Operator approval SHALL persist an explicit ceiling, actor, timestamp, and reason before advancing the policy to `approved_explicit`.
+No Node SHALL enter `enforcing` until every named capacity consumer uses the shared evaluation.
+Enforcement cutover SHALL run under the migration advisory lock and one Postgres transaction that locks the cluster-wide phase, verifies every non-removed admitted production Node has approved policy, verifies fresh compatible all-consumers-ready evidence for every non-retired Controller instance, advances approved policies, records cutover actor, time, reason, and required contract version, and changes the phase to `enforcing`.
+Before that transaction, cutover SHALL enter a visible `quiescing` operation under the Controller-local cluster transition barrier, refuse new temporary legacy claims, and allow existing temporary claims and accepted work to finish without forced cancellation.
+Cutover SHALL proceed only after every non-removed admitted production Node has zero live temporary legacy claims and a new scheduler-fresh aggregate Runtime Endpoint Observation reporting `active_request_count = 0`.
+Excluding a removed tombstone SHALL require durable lifecycle `removed`, revoked trust, and the existing successful removal audit; no other lifecycle state or unreachable Node gains an implicit exclusion.
+Cutover SHALL then acquire every Node acceptance gate in stable order, revalidate quiescence and every other precondition, and hold those gates through transaction commit and local phase publication.
+Cutover SHALL NOT adopt live legacy work into Controller-accounted Allocation or infer any durable policy from telemetry.
+If quiescence times out, evidence becomes stale, or any precondition fails, Orchard SHALL leave phase and policies unchanged, reopen legacy dispatch, and expose the blocker.
+If any precondition or write fails, neither the phase nor any policy transition SHALL commit.
+At enforcement cutover, every otherwise eligible non-removed admitted production Node SHALL have an operator-approved ceiling and advance atomically to `enforcing`, or fail closed with Effective Dispatch Limit `0`.
+After enforcement cutover, each new admission SHALL persist an `enforcing` explicit policy in the admission transaction and SHALL fail closed if that write or its audit record fails.
+Every Controller SHALL read the durable phase at boot, readiness, Active-role acquisition, admission mutation, and dispatch evaluation.
+A Controller that cannot enforce the marker's required contract version SHALL fail readiness and refuse admission and dispatch after cutover rather than treating the cluster as `pre_cutover`.
+The migration SHALL NOT assign existing Nodes a ceiling of `1`, infer a ceiling from telemetry, or treat a missing policy record as legacy state.
+
+Operator diagnostics SHALL expose durable enforcement phase, policy state, normalized target management class, authority decision, Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, the relevant observation time, and stable reason codes.
+While the decision is `legacy_pre_cutover`, diagnostics SHALL additionally expose `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state as temporary non-authoritative migration evidence and SHALL keep Effective Dispatch Limit and Dispatch Headroom at `0`.
+Stable capacity reason codes SHALL include `node_health_degraded`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_not_yet_enforcing`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_pre_cutover_legacy`, `dispatch_capacity_phase_policy_mismatch`, `dispatch_capacity_cutover_quiescing`, `dispatch_capacity_cutover_occupancy_not_zero`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
+The term `Admitted Capacity` SHALL NOT be used for any of these concepts.
+
+Durable dispatch permits, leadership epochs and dispatch fencing, crash or handover reservation recovery, and compromised-node occupancy integrity are M7-aligned follow-ups outside F11.
+Malformed aggregate active-count handling, production probe-failure direct scheduling fallback, queue-source expiry and reservation provenance, and configured-base versus live-capacity provenance are separate follow-ups outside F11.
 
 ### 4.7 Pool model
 
@@ -1067,23 +1235,24 @@ Scheduler wake-up triggers:
 
 Queue lane capacity SHALL be the configured base lane capacity plus live capacity sources.
 Valid loaded-placement observations MAY add source-scoped capacity for the matching model/version lane.
-Eligible cold/no-placement node observations MAY add conservative source-scoped capacity for queued model/version lanes, bounded by aggregate node concurrency and by one unreserved cold slot per lane per node observation.
+Eligible cold/no-placement node observations MAY add conservative source-scoped capacity for queued model/version lanes, bounded by the shared authority decision's available slots and by one unreserved cold slot per lane per node observation.
 Live capacity source refreshes SHALL be allowed to wake queued requests without a new admission event.
 Stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed node and placement observations SHALL NOT inflate queue admission capacity and SHALL clear any stale capacity source owned by that node or target.
 BEAM Runtime Endpoint observations MAY refresh queue capacity only when the target resolves back to the same persisted node identity; address-only or mismatched BEAM observations SHALL NOT publish queue capacity.
 Runtime Endpoint Admission Candidates SHALL NOT publish queue lane capacity.
 Queue lane capacity SHALL come only from trusted active Nodes or Runtime Endpoints resolved to trusted active Nodes.
+Configured base lane capacity and live capacity sources SHALL NOT authorize production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
 
 ### 5.5 Eligibility filter
 
 A node is eligible only if all conditions are true:
 
 * node state = `active`
-* node health in `{healthy, degraded}`
+* node health = `healthy`, or node health in `{healthy, degraded}` while the shared capacity authority decision is `legacy_pre_cutover`
 * pool is allowed by routing policy
 * model format is supported by node runtime
 * node has enough memory headroom
-* node concurrency not exceeded
+* the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom
 * model placement concurrency not exceeded
 * no placement/node circuit breaker suppresses dispatch
 
@@ -1108,13 +1277,13 @@ Eligibility condition:
 available_memory_bytes >= required_bytes
 ```
 
-Endpoint node concurrency is not exceeded only when the live Runtime Endpoint Observation reports aggregate `active_request_count < max_concurrency`.
-If aggregate `max_concurrency` is omitted or zero, schedulers SHALL interpret endpoint node capacity as `1`.
+Endpoint node concurrency is not exceeded only when the shared capacity evaluation returns `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with Dispatch Headroom greater than `0`.
+Under `f11_enforcing`, a degraded, unhealthy, unreachable, non-Active, untrusted, scheduler-stale, or policy-missing admitted production Node SHALL have Effective Dispatch Limit `0` and SHALL be ineligible for new work.
 Model placement concurrency is evaluated independently through valid matching Placement Capacity.
 Both endpoint-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.
 Scheduler decisions MAY include `queue_lane_capacity` when live loaded-placement capacity or eligible cold Runtime Endpoint capacity leaves room for the requested lane.
-Loaded candidate contribution SHALL be constrained by both requested-placement capacity and aggregate endpoint capacity.
-Cold candidate contribution SHALL count only candidates with remaining aggregate endpoint capacity.
+Loaded candidate contribution SHALL be constrained by both requested-placement capacity and the shared authority decision's available slots.
+Cold candidate contribution SHALL count only candidates whose shared authority decision has positive available slots.
 Omitted `queue_lane_capacity` means the controller queue must use its conservative configured capacity.
 
 ### 5.6 Candidate tiers
@@ -1149,7 +1318,6 @@ score =
   + residency_bonus
   + mem_bonus
   + load_bonus
-  + health_bonus
   + warmth_bonus
   - swap_penalty
 ```
@@ -1177,11 +1345,6 @@ Where:
 
   * `100 - floor(100 * active_requests / node_max_concurrency)`
 
-* `health_bonus`
-
-  * 30 if `healthy`
-  * 0 if `degraded`
-
 * `warmth_bonus`
 
   * 20 if same model used on node in last 5 minutes
@@ -1199,22 +1362,21 @@ Tie-break order:
 
 The score/bonus model above is the broader M4 scheduling contract. The current bounded Phase 4C/4E implementation uses the late tie-break order below and does not introduce threshold-based memory admission or request rejection.
 
-Controller-side cache-affinity, safe-tokenization capable-worker preference, Phase 4D tie-only scoring, and memory-admission ranking for the bounded current implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load/health position:
+Controller-side cache-affinity, safe-tokenization capable-worker preference, Phase 4D tie-only scoring, and memory-admission ranking for the bounded current implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load position:
 
 1. loaded model already present
 2. lower active request count for the requested placement when valid matching Placement Capacity is available, otherwise lower endpoint aggregate `active_request_count`
-3. healthier node (`healthy` before `degraded`)
-4. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
-5. historical cache-affinity match from recent completed placements, when cache affinity is enabled
-6. safe-tokenization capable-worker preference, only when `tokenizer_safe_mode_prefer_capable=true`, `tokenizer_safe_mode` is not `:off`, and the live status probe reports `supports_prompt_token_ids=true`
-7. explicit memory-headroom observation, only when `memory_admission.enabled=true` and the candidate's matching `RuntimeMemoryBudget` has `status_code = "ok"` and `headroom_available = true`
-8. lexicographically smaller `node_id`
+3. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
+4. historical cache-affinity match from recent completed placements, when cache affinity is enabled
+5. safe-tokenization capable-worker preference, only when `tokenizer_safe_mode_prefer_capable=true`, `tokenizer_safe_mode` is not `:off`, and the live status probe reports `supports_prompt_token_ids=true`
+6. explicit memory-headroom observation, only when `memory_admission.enabled=true` and the candidate's matching `RuntimeMemoryBudget` has `status_code = "ok"` and `headroom_available = true`
+7. lexicographically smaller `node_id`
 
 Default Phase 4D runtime behavior remains observe-only (`prefix_cache_scoring.ranking_mode = :observe_only`) and rank-neutral.
 
-When `prefix_cache_scoring.enabled=true`, `cache_affinity.enabled=true`, `cache_affinity.live_fingerprint_match_enabled=true`, and `prefix_cache_scoring.ranking_mode = :tie_only`, the scheduler MAY apply one bounded conditional score step immediately before step 8, only for the leading rank-equivalence group where steps 1–7 are equal and only deterministic `node_id` differs. Candidate scoring in this conditional step is capped at 2 (incumbent + challenger). The challenger MAY be promoted only when challenger score normalizes to `status_code = "ok"` with `resident_fingerprint_match = true` and `score_tier = "resident_fingerprint"`, and the incumbent score is comparable `ok` non-resident (`status_code = "ok"`, `resident_fingerprint_match = false`, and `score_tier` is `"no_match"` or `"recent_fingerprint_only"`). Any non-`ok`, timeout, unsupported, unavailable, `model_not_loaded`, `invalid_request`, missing, malformed, contradictory, or transport-failure score outcome for either candidate SHALL preserve base order fail-open and deterministic `node_id` fallback.
+When `prefix_cache_scoring.enabled=true`, `cache_affinity.enabled=true`, `cache_affinity.live_fingerprint_match_enabled=true`, and `prefix_cache_scoring.ranking_mode = :tie_only`, the scheduler MAY apply one bounded conditional score step immediately before step 7, only for the leading rank-equivalence group where steps 1–6 are equal and only deterministic `node_id` differs. Candidate scoring in this conditional step is capped at 2 (incumbent + challenger). The challenger MAY be promoted only when challenger score normalizes to `status_code = "ok"` with `resident_fingerprint_match = true` and `score_tier = "resident_fingerprint"`, and the incumbent score is comparable `ok` non-resident (`status_code = "ok"`, `resident_fingerprint_match = false`, and `score_tier` is `"no_match"` or `"recent_fingerprint_only"`). Any non-`ok`, timeout, unsupported, unavailable, `model_not_loaded`, `invalid_request`, missing, malformed, contradictory, or transport-failure score outcome for either candidate SHALL preserve base order fail-open and deterministic `node_id` fallback.
 
-A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
+A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after eligibility and before historical affinity. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
 
 ### 5.8 Scheduling algorithm
 
@@ -1245,11 +1407,13 @@ schedule(req):
 Dispatch sequence:
 
 1. reserve request in request FSM (`scheduled`)
-2. if placement not `loaded`, call `EnsureModelLoaded`
-3. re-check node freshness after load
-4. call `ExecuteInference`
-5. wait for `accepted`
-6. transition request to `running`
+2. resolve trusted production identity and consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots
+3. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
+4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
+5. if revalidation fails, release the allocation exactly once and requeue or fail under the existing queue deadline and public error contract
+6. call `ExecuteInference`
+7. wait for `accepted` while retaining the Node acceptance gate, or treat failure before `accepted` as pre-acceptance failure
+8. after `accepted`, release the acceptance gate, retain the allocation or temporary legacy claim through terminal completion, and transition request to `running`
 
 Retry rule:
 
@@ -1975,6 +2139,11 @@ POST   /ops/v1/nodes/:node_id/uncordon
 POST   /ops/v1/nodes/:node_id/drain
 POST   /ops/v1/nodes/:node_id/maintenance
 POST   /ops/v1/nodes/:node_id/resume
+GET    /ops/v1/controllers
+POST   /ops/v1/controllers/:controller_id/retire
+GET    /ops/v1/nodes/:node_id/dispatch-capacity-policy
+PATCH  /ops/v1/nodes/:node_id/dispatch-capacity-policy
+POST   /ops/v1/dispatch-capacity/enforcement-cutover
 GET    /ops/v1/requests/:request_id
 POST   /ops/v1/requests/:request_id/cancel
 POST   /ops/v1/requests/:request_id/retry
@@ -1996,6 +2165,24 @@ Warnings are advisory and MAY require confirmation.
 Consequence codes describe expected effects accepted only through explicit parameters or confirmation requirements.
 Confirmation requirements are explicit acknowledgements or typed values and MUST NOT bypass blockers.
 Action execution SHALL revalidate permissions, leadership and write-path availability, lifecycle state, health, active request count when relevant, and blockers at mutation time.
+
+Dispatch-capacity policy reads SHALL require a cluster-scoped `operator` or `admin` RoleBinding.
+Dispatch-capacity policy mutation and enforcement cutover SHALL require a cluster-scoped `admin` RoleBinding and SHALL be leader-only writes.
+Controller-instance reads SHALL require cluster `operator` or `admin`.
+`POST /ops/v1/controllers/:controller_id/retire` SHALL require cluster `admin`, Active leadership, a non-empty reason, `expected_updated_at`, side-effect-free Action Preview, and typed Controller ID confirmation.
+Retirement SHALL be blocked for the current Active Controller, a Controller that still holds the leadership lock, or the last non-retired Controller instance.
+Execution SHALL revalidate identity, status, optimistic concurrency, and leadership, set status `retired`, and persist a cluster-scoped audit event atomically.
+Only this explicit audited retirement state SHALL exclude a Controller instance from dispatch-capacity cutover capability preflight.
+`PATCH /ops/v1/nodes/:node_id/dispatch-capacity-policy` SHALL accept a non-negative `controller_dispatch_ceiling`, a non-empty `reason`, an optimistic concurrency value such as `expected_updated_at`, `dry_run`, and any confirmation required by its Action Preview.
+Before cutover, that mutation SHALL approve a `shadow_legacy` policy as `approved_explicit` or update an existing `approved_explicit` ceiling; after cutover, it SHALL update an `enforcing` ceiling without changing the policy state.
+The mutation SHALL revalidate authorization, Active leadership, the durable enforcement phase, Node Admission evidence, current policy version, and the non-negative ceiling inside the write transaction.
+Its Action Preview SHALL expose prior and proposed ceilings, policy state, current Controller-accounted Allocation, projected Effective Dispatch Limit and Dispatch Headroom when evidence is available, blockers, warnings, consequence codes, and confirmation requirements.
+Before cutover, the preview SHALL warn `controller_dispatch_ceiling_not_yet_enforcing` and SHALL NOT claim that the approved ceiling, including `0`, changes temporary legacy allocation.
+Under `f11_enforcing`, a reduction below Controller-accounted Allocation SHALL require an explicit `capacity_reduction_drain` confirmation and SHALL state that accepted, running, and streaming work drains naturally while new and pre-acceptance work is blocked or revalidated.
+`POST /ops/v1/dispatch-capacity/enforcement-cutover` SHALL accept a non-empty reason, `dry_run`, the expected durable phase, `expected_required_contract_version`, and typed cutover confirmation.
+The submitted expected version SHALL equal the locked singleton row's required contract version and SHALL NOT change it during cutover.
+Its Action Preview SHALL list every missing or unapproved admitted production Node, every non-retired Controller with missing, stale, incompatible, or all-consumers-not-ready capability evidence, and the exact policies that would advance.
+Successful approval, ceiling change, and enforcement cutover SHALL persist a cluster-scoped audit event in the same transaction as the authoritative mutation.
 
 `POST /ops/v1/support-bundles` SHALL produce the `orchard.support_bundle.v2` format for cluster-management evidence.
 Support Bundle v2 SHALL include bundle format, generated time, Orchard version, scope, included sections, omitted sections, redaction manifest, max log bytes, and relevant SPEC references.
@@ -2064,13 +2251,12 @@ Response example:
       "node_id": "node-2",
       "eligible": true,
       "tier": "loaded",
-      "score": 842,
+      "score": 812,
       "components": {
         "pool_bonus": 200,
         "residency_bonus": 500,
         "mem_bonus": 72,
         "load_bonus": 40,
-        "health_bonus": 30,
         "warmth_bonus": 20,
         "swap_penalty": 20
       },
@@ -2098,7 +2284,7 @@ Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and
 Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
 Rejected candidates SHALL include at least one stable rejection reason code.
 Skipped candidates SHALL be represented in `skipped_candidates` outside the rejected-candidate list and SHALL include at least one stable skip reason code.
-The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, and `unknown_capacity`.
+The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_degraded`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, `unknown_capacity`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_phase_policy_mismatch`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
 The initial scheduler skip vocabulary SHALL include `lower_tier_not_considered`, `not_scored_after_selection`, `not_applicable_to_request`, and `candidate_limit_reached`.
 Queue-waitable capacity outcomes SHALL preserve whether the wait reason is live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
 Scored candidates SHALL be listed in the scheduler's actual selection ranking order.
@@ -2162,6 +2348,8 @@ POST   /admin/v1/bootstrap-tokens
 
 Node Admission Candidate review endpoints SHALL expose sanitized observed identity, target reference, inventory, compatibility evidence, last observation timestamp when present, admission category, decision metadata when present, and audit event reference when present.
 Admin admission execution SHALL require a registered trusted Node with inventory, pool, and required policy inputs.
+`POST /admin/v1/nodes/:node_id/admit` SHALL accept optional non-negative `controller_dispatch_ceiling`, a required non-empty `capacity_policy_reason`, `dry_run`, and any confirmation required by its Action Preview; it SHALL default the ceiling explicitly to `1` only when omitted and include the resolved value and phase-derived policy state in its Action Preview.
+Admission execution SHALL lock and read the durable enforcement phase, persist the explicit ceiling, approval actor, timestamp, and reason with the admission decision, and fail the entire transaction on policy or audit failure.
 Pending admission rejection SHALL persist a Node Admission Decision and audit event without deleting observed inventory.
 Clearing rejection SHALL require admin authority and SHALL persist an audit event.
 Admin admit and pending-admission reject endpoints SHALL support `dry_run` requests that return the shared Action Preview shape and follow the side-effect-free invariants in §7.3.1.
@@ -2585,8 +2773,8 @@ message StatusResponse {
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
   bool supports_prompt_token_ids = 10;
   repeated RuntimeModelPlacement runtime_model_placements = 11;
-  // Aggregate runtime request capacity for the node.
-  // Controllers must treat absent or zero values as node capacity 1.
+  // Node-owned Runtime Concurrency Enforcement Limit.
+  // Only explicit unmanaged compatibility may normalize absent or zero to 1.
   uint32 max_concurrency = 12;
 }
 
@@ -2786,18 +2974,18 @@ Runtime capacity and Placement Capacity observation semantics:
 * `WorkerStatusResponse.active_request_count` SHALL report active `Generate` calls in that worker process
 * `WorkerStatusResponse.max_concurrency` SHALL report the worker's effective overlapping `Generate` capacity; omitted or zero values SHALL be treated as worker capacity `1` by the node agent
 * `StatusResponse.active_request_count` SHALL report aggregate active runtime requests across all loaded models on the node
-* `StatusResponse.max_concurrency` SHALL report the aggregate runtime request capacity that the node agent will enforce across loaded models
-* omitted or zero `StatusResponse.max_concurrency` SHALL mean aggregate capacity is unknown or legacy; schedulers SHALL treat it conservatively as node capacity `1`
+* `StatusResponse.max_concurrency` SHALL report the Runtime Concurrency Enforcement Limit that the node agent will enforce across loaded models
+* omitted or zero `StatusResponse.max_concurrency` SHALL mean the Runtime Concurrency Enforcement Limit is unknown or legacy; an explicitly unmanaged source-development or compatibility adapter MAY normalize it to `1`, while an admitted production Node SHALL receive Effective Dispatch Limit `0`
 * Runtime Endpoint Observations SHALL report active request count and max concurrency for each loaded runtime/model path as Placement Capacity
 * the current gRPC Compatibility Adapter maps Placement Capacity to and from `StatusResponse.runtime_model_placements` through the existing `GetStatus` probe
 * omitted or empty Placement Capacity SHALL mean no explicit per-placement capacity observation is available
 * omitted or empty Placement Capacity SHALL NOT be treated as an endpoint status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure for otherwise idle candidates
 * a matching placement capacity observation is valid only when exactly one entry matches the requested `model_ref`, `active_request_count >= 0`, and `max_concurrency > 0`
 * duplicate matching entries, malformed matching entries, non-matching entries, or `max_concurrency <= 0` SHALL make placement capacity unknown for that request
-* a valid matching placement observation SHALL NOT override exhausted node-level aggregate capacity
+* a valid matching placement observation SHALL NOT override a shared authority decision with no positive available slots; under `f11_enforcing`, this includes exhausted Dispatch Headroom
 * unknown placement capacity SHALL NOT prove eligibility for an already-active loaded-model candidate; an already-active loaded-model candidate MAY remain eligible only when exactly one valid matching entry reports `active_request_count < max_concurrency`
-* when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before health when a valid matching placement observation is available; otherwise it SHALL use the endpoint aggregate `active_request_count`
-* controller queue capacity MAY be refreshed from Runtime Endpoint Observations; loaded placement observations contribute only to their matching model/version lane, while cold/no-placement endpoint observations contribute conservative source-scoped capacity for queued lanes without exceeding aggregate endpoint capacity
+* when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before live cache-affinity and the remaining tie-breaks when a valid matching Placement Capacity observation is available; otherwise it SHALL use the endpoint aggregate `active_request_count`
+* controller queue capacity MAY be refreshed from Runtime Endpoint Observations; loaded placement observations contribute only to their matching model/version lane, while cold/no-placement endpoint observations contribute conservative source-scoped capacity for queued lanes without exceeding the shared authority decision's available slots
 * stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed observations SHALL clear their endpoint-owned queue capacity sources instead of preserving stale admission capacity
 * BEAM Runtime Endpoint observations MAY refresh queue capacity only when the target resolves back to the same persisted node identity; address-only or mismatched BEAM observations SHALL NOT publish queue capacity
 * node-agent request admission SHALL reject a new runtime request when aggregate active request count has reached the effective aggregate worker request limit, even if the requested model placement has remaining per-placement capacity
@@ -2881,6 +3069,17 @@ create type node_admission_decision_kind as enum (
   'rejected',
   'rejection_cleared',
   'admitted'
+);
+
+create type node_dispatch_capacity_policy_state as enum (
+  'shadow_legacy',
+  'approved_explicit',
+  'enforcing'
+);
+
+create type dispatch_capacity_enforcement_phase as enum (
+  'pre_cutover',
+  'enforcing'
 );
 
 create type beam_peer_grant_state as enum (
@@ -2985,6 +3184,59 @@ create table nodes (
   updated_at timestamptz not null default now()
 );
 
+create table node_dispatch_capacity_policies (
+  node_id uuid primary key references nodes(id) on delete cascade,
+  policy_state node_dispatch_capacity_policy_state not null,
+  controller_dispatch_ceiling integer,
+  approved_by_actor_type actor_type,
+  approved_by_actor_id text,
+  approved_at timestamptz,
+  approval_reason text,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (
+    (policy_state = 'shadow_legacy'
+      and controller_dispatch_ceiling is null
+      and approved_by_actor_type is null
+      and approved_by_actor_id is null
+      and approved_at is null
+      and approval_reason is null)
+    or
+    (policy_state in ('approved_explicit', 'enforcing')
+      and controller_dispatch_ceiling is not null
+      and controller_dispatch_ceiling >= 0
+      and approved_by_actor_type is not null
+      and approved_by_actor_id is not null
+      and approved_at is not null
+      and approval_reason is not null)
+  )
+);
+
+create table dispatch_capacity_authority (
+  singleton boolean primary key default true check (singleton),
+  enforcement_phase dispatch_capacity_enforcement_phase not null default 'pre_cutover',
+  required_contract_version integer not null default 1 check (required_contract_version > 0),
+  cutover_by_actor_type actor_type,
+  cutover_by_actor_id text,
+  cutover_at timestamptz,
+  cutover_reason text,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (
+    (enforcement_phase = 'pre_cutover'
+      and cutover_by_actor_type is null
+      and cutover_by_actor_id is null
+      and cutover_at is null
+      and cutover_reason is null)
+    or
+    (enforcement_phase = 'enforcing'
+      and cutover_by_actor_type is not null
+      and cutover_by_actor_id is not null
+      and cutover_at is not null
+      and cutover_reason is not null)
+  )
+);
+
 create table controller_instances (
   id uuid primary key,
   certificate_uri_san text not null unique,
@@ -2996,6 +3248,11 @@ create table controller_instances (
   status text not null check (
     status in ('enrolled', 'operational', 'recovery_required', 'retired')
   ),
+  software_version text,
+  dispatch_capacity_contract_version integer not null default 0
+    check (dispatch_capacity_contract_version >= 0),
+  dispatch_capacity_consumers_ready boolean not null default false,
+  dispatch_capacity_capability_observed_at timestamptz,
   first_enrolled_at timestamptz not null,
   last_seen_at timestamptz,
   inserted_at timestamptz not null default now(),
@@ -3335,7 +3592,7 @@ Both references MAY later become null through retention cleanup, because decisio
 Audit log `scope` SHALL distinguish tenant-scoped and cluster-scoped governance events.
 Tenant-scoped audit events SHALL set `scope = 'tenant'` and a non-null `tenant_id`.
 Cluster-scoped audit events SHALL set `scope = 'cluster'` and a null `tenant_id`.
-Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, node decommission, Active/Standby status-affecting writes, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
+Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, Controller Dispatch Ceiling approval or change, dispatch-capacity enforcement cutover, Controller-instance retirement, node decommission, Active/Standby status-affecting writes, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
 Audit log `actor_type` SHALL identify the provenance class of the action.
 `operator` represents operator and admin product surfaces such as Orchard Console, Orchard CLI, Operator API, and Admin API actions.
 `actor_id` MAY be null for `system` actions and for local operator actions before Orchard has an authenticated first-class operator identity.
@@ -3453,6 +3710,9 @@ create index idx_node_admission_decisions_audit_log
 create unique index idx_nodes_canonical_beam_name
   on nodes(canonical_beam_name)
   where canonical_beam_name is not null;
+
+create index idx_node_dispatch_capacity_policies_state
+  on node_dispatch_capacity_policies(policy_state, updated_at desc);
 
 create index idx_controller_instances_status_seen
   on controller_instances(status, last_seen_at desc nulls last);
@@ -3870,6 +4130,7 @@ Audit logs SHALL capture:
 * Node Admission rejection clearance
 * node admission after rejection
 * registration or trust event used to permit re-admission
+* Controller Dispatch Ceiling creation, approval, raising, lowering, and enforcement-state change
 * operator drain/cancel/retry actions
 * support bundle generation
 * upgrade actions
@@ -4080,6 +4341,9 @@ Required commands:
 
 Node-admission CLI commands SHALL provide stable human and JSON output for list, inspect, pending-review, admit, and reject workflows.
 `orchardctl nodes admit` and `orchardctl nodes reject` SHALL support side-effect-free `--dry-run` Action Preview output and explicit execution gates, including `--yes` for execution and `--reason` for rejection.
+`orchardctl nodes admit` SHALL accept optional `--controller-dispatch-ceiling <non-negative-integer>` and required `--capacity-policy-reason <non-empty-text>`.
+When the ceiling flag is omitted, the CLI SHALL preview and persist the explicit new-admission default `1`; its human and JSON previews SHALL include the resolved ceiling, durable enforcement phase, phase-derived policy state, blockers, warnings, consequences, and confirmation requirements.
+CLI admission execution SHALL record actor type `operator` with bounded local Controller-runtime principal provenance and SHALL use the same leader-only atomic Node Admission, policy, admission-decision, and cluster-audit transaction as the Admin API.
 For source-dev and packaged local use, node-admission CLI commands are local operator/admin commands that execute in the controller runtime context rather than proving Admin API bearer-token authorization.
 They SHALL still enforce the same leader-only write-path, admission, confirmation, cluster-scoped audit, and shared-presenter semantics as the Admin API.
 
@@ -4235,6 +4499,16 @@ Rules:
 * new code reads both old and new where needed
 * background backfill if required
 * destructive drops only after all nodes/controllers run compatible version
+
+The expand migration SHALL create the singleton durable dispatch-capacity authority row in phase `pre_cutover` with required contract version `1`.
+The F11 dispatch-capacity migration SHALL create `shadow_legacy` policy rows only for non-removed production Nodes whose Node Admission committed before the expand migration, using durable `admitted_at` or equivalent admission history, and SHALL leave their Controller Dispatch Ceiling null during that temporary state.
+Durably removed Nodes with revoked trust and successful removal audit SHALL retain historical policy evidence but SHALL NOT block approval or cutover.
+Before enforcement cutover, new admissions SHALL write `approved_explicit` policy with an explicit ceiling before admission commits.
+The migrate phase SHALL require operator approval without telemetry backfill and verify that all capacity consumers use the shared evaluation.
+Cutover SHALL lock the singleton phase and migration advisory lock, quiesce every non-removed admitted production Node to zero live temporary claims and new fresh zero-active aggregate evidence under the Controller-local gates, validate the expected `pre_cutover` phase and fresh compatible all-consumers-ready evidence for every non-retired Controller instance, atomically advance approved policies to `enforcing`, record cutover provenance, and set the durable phase to `enforcing` in one transaction.
+After enforcement cutover, new admissions SHALL write `enforcing` policy with an explicit ceiling before admission commits.
+Admission SHALL select the singleton phase for update inside its transaction, including on an otherwise empty cluster, and SHALL fail closed if the phase is missing, malformed, or unsupported by that Controller.
+The contract phase SHALL reject any otherwise eligible admitted production Node without an enforcing explicit policy and MAY strengthen persistence constraints after the bounded legacy cohort is removed.
 
 Migration ownership SHALL be protected by advisory lock.
 

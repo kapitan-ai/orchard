@@ -466,8 +466,9 @@ A per-Runtime Endpoint model state describing whether a model is unavailable, ca
 _Avoid_: Catalog State, tenant-visible model activation
 
 **Placement Capacity**:
-A first-class Runtime Endpoint Observation describing current active request count and maximum concurrency for a Model Placement.
-_Avoid_: Quota, durable capacity guarantee, transport field name
+The Node-owned active request count and concurrency bound for one Model Placement, reported through Runtime Endpoint Observations.
+It may reduce placement eligibility but never increases aggregate authority beyond the Effective Dispatch Limit.
+_Avoid_: Controller Dispatch Ceiling, aggregate Node capacity, Dispatch Headroom, durable capacity guarantee, queue lane capacity
 
 **Model Bundle**:
 An offline-importable model artifact directory or archive supplied to Orchard with a Model Manifest.
@@ -510,6 +511,27 @@ _Avoid_: Healthy node, every Runtime Endpoint
 **Schedulable Runtime Endpoint**:
 A Runtime Endpoint eligible for new work because policy, capability, health, capacity, and breaker conditions allow it.
 _Avoid_: Node inventory, hardware host
+
+**Runtime Concurrency Enforcement Limit**:
+The Node-owned dynamic upper bound on concurrent runtime work that the Node will accept and enforce at a given time.
+_Avoid_: advertised capacity, Controller concurrency limit, durable Node capacity, Controller Dispatch Ceiling, Placement Capacity
+
+**Controller Dispatch Ceiling**:
+The mandatory steady-state durable, operator-approved upper bound on concurrent work the Controller may allocate to an admitted production Node.
+The bounded pre-F11 `shadow_legacy` policy has no ceiling, authorizes none of the new semantics, and is not a missing policy record.
+_Avoid_: Admitted Capacity, runtime-managed capacity, nullable ceiling, inferred telemetry limit, Placement Capacity
+
+**Effective Dispatch Limit**:
+The aggregate limit the Controller may use after combining current Node runtime enforcement, durable Controller policy, and production eligibility.
+_Avoid_: Admitted Capacity, runtime max concurrency, Controller Dispatch Ceiling, Dispatch Headroom, Placement Capacity, queue lane capacity
+
+**Controller-accounted Allocation**:
+The count of work the current Active Controller treats as occupying a Node's aggregate dispatch allocation.
+_Avoid_: runtime active request count, worker occupancy, durable dispatch permit, queue grant, Placement Capacity
+
+**Dispatch Headroom**:
+The count of additional allocations the Controller may make within the Effective Dispatch Limit.
+_Avoid_: Admitted Capacity, spare runtime slots, queue capacity, Placement Capacity, dispatch permit balance
 
 **Candidate Tier**:
 A scheduling group based on model residency, such as loaded, cached, or cold.
@@ -584,14 +606,9 @@ Queue admission also uses valid loaded-placement observations to wake queued sam
 _Avoid_: Catalog State, durable placement record, model manifest metadata
 
 **Runtime Node Capacity**:
-Runtime Endpoint Observation data for aggregate runtime capacity on one endpoint-backed node.
-The current gRPC Compatibility Adapter maps this from `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
-The BEAM Node Agent facade maps the same node-agent status semantics into BEAM Runtime Endpoint Observations.
-The scheduler uses it to exclude endpoint-backed nodes that have exhausted aggregate request slots before considering per-placement capacity.
-Queue admission uses eligible endpoint observations to bound cold/no-placement wakeups and to keep active source reservations from being double-counted across queued lanes.
-Transport-failed or newly ineligible endpoints clear endpoint-owned aggregate, cold, and placement sources instead of retaining stale capacity.
-BEAM observations publish queue capacity only when the target resolves back to the same persisted node identity.
-_Avoid_: Tenant quota, durable Node inventory capacity, model-specific capacity
+Node-owned Runtime Endpoint Observation data describing aggregate runtime occupancy and enforcement limits for one endpoint-backed Node.
+It is an input to Controller capacity evaluation, not durable Controller policy or Controller allocation accounting.
+_Avoid_: Tenant quota, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, model-specific capacity
 
 **Prefix-cache Score**:
 A bounded, fail-open score RPC result used only as explicitly configured scheduler tie-break telemetry.
