@@ -62,6 +62,7 @@ defmodule Orchard.Application do
     []
     |> maybe_add_repo()
     |> maybe_add_peer_grant_stack()
+    |> maybe_add_membership_owner()
     |> maybe_add_activation_probe()
     |> maybe_add_inference_stack()
     |> add_pubsub_and_coordinator()
@@ -157,10 +158,48 @@ defmodule Orchard.Application do
       |> Kernel.++([{ControllerInitializer, initializer_opts}])
       |> maybe_add_controller_startup_verifier(config)
       |> maybe_add_controller_expiry_guard(config)
-      |> Kernel.++([{MembershipOwner, initializer_opts}])
       |> Kernel.++([{ControlListener, listener_opts}])
     else
       children
+    end
+  end
+
+  defp maybe_add_membership_owner(children) do
+    if Application.get_env(:orchard_controller, :start_repo, true) do
+      children ++ [{MembershipOwner, membership_opts()}]
+    else
+      children
+    end
+  end
+
+  defp membership_opts do
+    peer_grants = Application.get_env(:orchard_controller, :beam_peer_grants, [])
+    membership = Application.get_env(:orchard_controller, :controller_membership, [])
+    trust = Application.get_env(:orchard_controller, :node_trust, [])
+
+    [
+      private_ipv4: membership_private_ipv4(peer_grants, membership),
+      node_trust_root: Keyword.get(trust, :root),
+      authorization_root_path:
+        Keyword.get(peer_grants, :authorization_root_path) ||
+          Keyword.get(membership, :authorization_root_path)
+    ]
+  end
+
+  defp membership_private_ipv4(peer_grants, membership) do
+    peer_grants
+    |> Keyword.get(:control_listener, [])
+    |> Keyword.get(:host)
+    |> Kernel.||(Keyword.get(membership, :private_ipv4))
+    |> Kernel.||(beam_runtime_endpoint_host())
+  end
+
+  defp beam_runtime_endpoint_host do
+    beam = Application.get_env(:orchard_controller, :runtime_endpoint, [])[:beam] || []
+
+    case String.split(to_string(Keyword.get(beam, :node_name, "")), "@", parts: 2) do
+      [_service, host] -> host
+      _other -> Keyword.get(beam, :listen_host)
     end
   end
 

@@ -81,6 +81,18 @@ defmodule Orchard.DispatchCapacity.DiagnosticsTest do
            ]
   end
 
+  test "SPEC.md section 7.3.5 a saturated legacy node grants no slots on its reported active count" do
+    evidence =
+      evidence(validity: :missing, runtime_concurrency_limit: nil, active_request_count: 3)
+
+    snapshot = snapshot(policy: approved_policy(2), evidence: evidence)
+
+    assert snapshot.evaluation.available_slots == 0
+    refute snapshot.evaluation.eligible?
+    assert :runtime_concurrency_limit_exhausted in snapshot.evaluation.reason_codes
+    refute :runtime_active_request_count_legacy_fallback in snapshot.evaluation.reason_codes
+  end
+
   test "SPEC.md section 7.3.5 exposes degraded health without changing legacy eligibility" do
     snapshot = snapshot(policy: approved_policy(2), node: node_fixture(health: :degraded))
 

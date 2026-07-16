@@ -15,7 +15,8 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   @type state :: %{
           opts: keyword(),
-          timer_ref: term()
+          timer_ref: term(),
+          last_failure: term()
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -31,30 +32,29 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   @impl true
   def init(opts) do
-    case ControllerInstances.ensure_local(opts) do
-      {:ok, _instance} ->
-        send(self(), :heartbeat)
-        {:ok, %{opts: opts, timer_ref: start_timer()}}
-
-      {:error, reason} ->
-        {:stop, reason}
-    end
+    send(self(), :heartbeat)
+    {:ok, %{opts: opts, timer_ref: start_timer(), last_failure: nil}}
   end
 
   @impl true
   def handle_info(:heartbeat, state) do
     case attempt_publish(state.opts) do
       {:ok, _instance} ->
-        {:noreply, state}
+        {:noreply, %{state | last_failure: nil}}
 
       {:error, reason} ->
-        Logger.warning(
-          "Controller membership heartbeat failed; capability evidence remains stale " <>
-            "(reason=#{inspect(reason)})"
-        )
-
-        {:noreply, state}
+        log_failure(reason, state.last_failure)
+        {:noreply, %{state | last_failure: reason}}
     end
+  end
+
+  defp log_failure(reason, reason), do: :ok
+
+  defp log_failure(reason, _previous) do
+    Logger.warning(
+      "Controller membership heartbeat failed; capability evidence remains stale " <>
+        "(reason=#{inspect(reason)})"
+    )
   end
 
   defp attempt_publish(opts) do

@@ -222,6 +222,11 @@ beam_peer_grants_config =
 
 config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 
+config :orchard_controller, :controller_membership,
+  authorization_root_path:
+    env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
+      Path.join(dev_root, "beam-authorization-root")
+
 config :orchard_controller, :node_trust,
   root: System.get_env("ORCHARD_NODE_TRUST_ROOT") || Path.join(dev_root, "node-trust")
 

@@ -896,6 +896,11 @@ if config_env() == :prod do
 
       config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 
+      config :orchard_controller, :controller_membership,
+        authorization_root_path:
+          env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
+            Path.join([orchard_support_root, "support", "beam-authorization-root"])
+
       runtime_endpoint_inference_config =
         case {runtime_endpoint_transport_mode, runtime_endpoint_targets} do
           {:beam, []} ->

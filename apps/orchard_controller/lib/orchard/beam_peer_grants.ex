@@ -235,7 +235,6 @@ defmodule Orchard.BeamPeerGrants do
          :ok <- run_lock_observer(opts, :enrollment),
          {:ok, controller} <- lock_grant_controller(grant.controller_id),
          :ok <- run_lock_observer(opts, :controller),
-         true <- grant.controller_id == controller.id,
          {:ok, peer} <- authenticated_peer(enrollment),
          :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer),
          :ok <- validate_controller_binding(controller),
