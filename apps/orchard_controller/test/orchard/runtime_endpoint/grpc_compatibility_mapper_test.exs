@@ -86,6 +86,23 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     refute PlacementCapacity.full?(capacity)
   end
 
+  test "SPEC.md §4.6.2 preserves malformed aggregate evidence before scheduler fallback" do
+    observation =
+      GrpcCompatibilityMapper.observation_from_status(
+        [host: "127.0.0.1", port: 50_071],
+        %{active_request_count: -1, max_concurrency: 4}
+      )
+
+    assert observation.aggregate_active_request_count == 0
+    assert observation.aggregate_max_concurrency == 4
+
+    assert observation.aggregate_capacity_evidence == %{
+             active_request_count: nil,
+             runtime_concurrency_limit: 4,
+             validity: :invalid
+           }
+  end
+
   test "duplicate, malformed, and nonmatching placement capacity cannot prove spare capacity" do
     cases = [
       {

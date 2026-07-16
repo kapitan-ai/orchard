@@ -237,6 +237,8 @@ defmodule OrchardConsole.NodeDetailLiveTest do
           "trust_evidence_ref" => "registration-audit:test",
           "pool_id" => Ecto.UUID.generate(),
           "routing_policy_id" => Ecto.UUID.generate(),
+          "capacity_policy_reason" => "approved from Console admission review",
+          "controller_dispatch_ceiling" => "1",
           "confirmed" => "true"
         }
       }

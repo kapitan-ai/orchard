@@ -103,6 +103,23 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert PlacementCapacity.spare?(Observation.placement_capacity_for(observation, model_ref))
   end
 
+  test "SPEC.md §4.6.2 observations preserve aggregate capacity evidence before fallbacks" do
+    observation =
+      Observation.new(%{
+        aggregate_active_request_count: -1,
+        aggregate_max_concurrency: "four"
+      })
+
+    assert observation.aggregate_active_request_count == 0
+    assert observation.aggregate_max_concurrency == nil
+
+    assert observation.aggregate_capacity_evidence == %{
+             active_request_count: nil,
+             runtime_concurrency_limit: nil,
+             validity: :invalid
+           }
+  end
+
   test "target normalization preserves default gRPC fallback and admits explicit BEAM targets" do
     grpc_target = Target.normalize(host: "127.0.0.1", port: 50_071)
 

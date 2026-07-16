@@ -313,6 +313,17 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["status"]["object"] == "cluster_management.node_status"
       assert decoded["status"]["admission"]["category"] == "pending_registered"
       assert decoded["status"]["scheduling"]["reason_codes"] == ["node_not_admitted"]
+      assert decoded["status"]["dispatch_capacity"]["counterfactual"]
+      assert decoded["status"]["dispatch_capacity"]["mode"] == "counterfactual"
+      refute decoded["status"]["dispatch_capacity"]["consumers_ready"]
+
+      assert decoded["status"]["dispatch_capacity"]["reason_codes"] == [
+               "runtime_endpoint_management_class_missing",
+               "controller_dispatch_ceiling_missing",
+               "runtime_endpoint_identity_untrusted",
+               "node_lifecycle_not_active",
+               "runtime_capacity_observation_stale"
+             ]
     end
 
     test "SPEC.md §7.5.3 json output renders runtime memory budget data" do
@@ -394,6 +405,10 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "KV cache bytes/token: 16384"
       assert output =~ "Max context tokens: 32768"
       assert output =~ "Recommended context tokens: unknown"
+      assert output =~ "Dispatch capacity (counterfactual):"
+      assert output =~ "Consumers ready: false"
+      assert output =~ "Effective dispatch limit: 0"
+      assert output =~ "Dispatch headroom: 0"
       refute output =~ "Recommended context tokens: 0"
     end
 
@@ -534,7 +549,8 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["object"] == "cluster_management.action_preview"
       assert decoded["action"] == "node_admission.admit"
       assert decoded["target"] == %{"type" => "node", "id" => node.id}
-      assert decoded["confirmation_requirements"] == ["requires_yes_flag"]
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
+      assert decoded["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == 1
 
       assert Enum.map(decoded["blockers"], & &1["code"]) == [
                "trust_not_established",
@@ -562,7 +578,7 @@ defmodule OrchardCLI.Commands.NodesTest do
                ])
 
       decoded = Jason.decode!(output)
-      assert decoded["confirmation_requirements"] == ["requires_yes_flag"]
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
       assert decoded["blockers"] == []
       assert Repo.get!(Node, node.id).state == :registered
     end
@@ -581,7 +597,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                  "--pool-id",
                  Ecto.UUID.generate(),
                  "--routing-policy-id",
-                 Ecto.UUID.generate()
+                 Ecto.UUID.generate(),
+                 "--capacity-policy-reason",
+                 "approved by CLI test"
                ])
 
       decoded = Jason.decode!(output)
@@ -589,6 +607,7 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["node"]["id"] == node.id
       assert decoded["node"]["state"] == "admitted"
       assert decoded["audit_log"]["scope"] == "cluster"
+      assert decoded["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == 1
       assert Repo.get!(Node, node.id).state == :admitted
     end
 
@@ -936,7 +955,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                  "--pool-id",
                  Ecto.UUID.generate(),
                  "--routing-policy-id",
-                 Ecto.UUID.generate()
+                 Ecto.UUID.generate(),
+                 "--capacity-policy-reason",
+                 "audit failure rollback"
                ])
 
       decoded = Jason.decode!(output)

@@ -15,6 +15,7 @@ defmodule Orchard.Nodes do
   alias Orchard.BeamPeerGrants
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.ControlPlane
+  alias Orchard.DispatchCapacity
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Enrollment, Node}
@@ -488,7 +489,13 @@ defmodule Orchard.Nodes do
   Admits a registered node without activating it.
   """
   @spec admit_node(Ecto.UUID.t(), map() | keyword(), keyword()) ::
-          {:ok, %{node: Node.t(), decision: AdmissionDecision.t(), audit_log: AuditLog.t()}}
+          {:ok,
+           %{
+             node: Node.t(),
+             decision: AdmissionDecision.t(),
+             audit_log: AuditLog.t(),
+             policy: Orchard.DispatchCapacity.Policy.t()
+           }}
           | {:error, term()}
   def admit_node(node_id, attrs \\ %{}, opts \\ []) do
     attrs = normalize_attrs(attrs)
@@ -500,8 +507,11 @@ defmodule Orchard.Nodes do
   end
 
   defp admit_node_locked(node_id, attrs, opts) do
-    with {:ok, node} <- BeamPeerGrants.lock_initial_admission_node(node_id, opts),
+    with {:ok, authority} <- DispatchCapacity.lock_authority(),
+         :ok <- ensure_pre_cutover_authority(authority),
+         {:ok, node} <- BeamPeerGrants.lock_initial_admission_node(node_id, opts),
          :ok <- ensure_node_admittable(node, attrs),
+         {:ok, capacity_policy} <- resolve_admission_capacity_policy(attrs, opts),
          {:ok, candidate} <- get_or_create_candidate_for_node(node),
          {:ok, {node, grants}} <- BeamPeerGrants.issue_initial_for_admission(node, opts),
          {:ok, admitted_node} <- update_node_state(node, :admitted),
@@ -521,8 +531,25 @@ defmodule Orchard.Nodes do
              audit_log,
              attrs,
              opts
-           ) do
-      {:ok, %{node: admitted_node, decision: decision, audit_log: audit_log, grants: grants}}
+           ),
+         {:ok, policy} <-
+           DispatchCapacity.approve_admission_policy(%{
+             node_id: admitted_node.id,
+             admission_decision_id: decision.id,
+             controller_dispatch_ceiling: capacity_policy.ceiling,
+             approved_by_actor_type: capacity_policy.actor_type,
+             approved_by_actor_id: capacity_policy.actor_id,
+             approved_at: utc_now(),
+             approval_reason: capacity_policy.reason
+           }) do
+      {:ok,
+       %{
+         node: admitted_node,
+         decision: decision,
+         audit_log: audit_log,
+         grants: grants,
+         policy: policy
+       }}
     else
       {:error, reason} -> Repo.rollback(reason)
     end
@@ -554,6 +581,31 @@ defmodule Orchard.Nodes do
 
       _decision ->
         do_admission_blocker_codes(node, attrs)
+    end
+  end
+
+  @doc """
+  Resolves the capacity policy shown by admission previews and persisted on success.
+  """
+  @spec admission_capacity_policy(map() | keyword()) ::
+          {:ok,
+           %{
+             controller_dispatch_ceiling: non_neg_integer(),
+             policy_state: :approved_explicit,
+             warning_codes: [atom()]
+           }}
+          | {:error, :capacity_policy_reason_required | :invalid_controller_dispatch_ceiling}
+  def admission_capacity_policy(attrs) do
+    attrs = normalize_attrs(attrs)
+
+    with {:ok, _reason} <- required_capacity_policy_reason(attrs),
+         {:ok, ceiling} <- admission_capacity_ceiling(attrs) do
+      {:ok,
+       %{
+         controller_dispatch_ceiling: ceiling,
+         policy_state: :approved_explicit,
+         warning_codes: [:controller_dispatch_ceiling_not_yet_enforcing]
+       }}
     end
   end
 
@@ -746,6 +798,7 @@ defmodule Orchard.Nodes do
          agent_version: non_empty_or(map_get(meta, :agent_version), nil),
          capabilities: build_capabilities(meta, status_response),
          tool_readiness: build_tool_readiness(status_response),
+         aggregate_capacity_evidence: aggregate_capacity_evidence(status_response),
          last_heartbeat_at: observed_at
        }}
     else
@@ -1339,7 +1392,7 @@ defmodule Orchard.Nodes do
     |> authenticated_observation_changeset(observation)
     |> Repo.update()
     |> case do
-      {:ok, updated} -> updated
+      {:ok, updated} -> persist_authenticated_capacity_evidence(updated, observation)
       {:error, _changeset} -> Repo.rollback(:authenticated_observation_rejected)
     end
   end
@@ -1357,8 +1410,13 @@ defmodule Orchard.Nodes do
         |> where([candidate], exists(subquery(current_grant)))
 
       case Repo.update_all(query, set: Map.to_list(updates)) do
-        {1, _rows} -> Repo.get!(Node, node.id)
-        _other -> Repo.rollback(:authenticated_observation_rejected)
+        {1, _rows} ->
+          Node
+          |> Repo.get!(node.id)
+          |> persist_authenticated_capacity_evidence(observation)
+
+        _other ->
+          Repo.rollback(:authenticated_observation_rejected)
       end
     else
       Repo.rollback(:authenticated_observation_rejected)
@@ -1374,6 +1432,27 @@ defmodule Orchard.Nodes do
       |> Map.delete(:id)
       |> Map.put(:state, authenticated_observed_state(node))
     )
+  end
+
+  defp persist_authenticated_capacity_evidence(node, observation) do
+    attrs =
+      observation.aggregate_capacity_evidence
+      |> Map.put(:observed_at, observation.last_heartbeat_at)
+
+    case DispatchCapacity.record_capacity_evidence(node.id, attrs) do
+      {:ok, _evidence} -> node
+      {:error, _changeset} -> Repo.rollback(:authenticated_observation_rejected)
+    end
+  end
+
+  defp aggregate_capacity_evidence(%Observation{aggregate_capacity_evidence: evidence}),
+    do: evidence
+
+  defp aggregate_capacity_evidence(status_response) do
+    Observation.new(%{
+      aggregate_active_request_count: map_get(status_response, :active_request_count),
+      aggregate_max_concurrency: map_get(status_response, :max_concurrency)
+    }).aggregate_capacity_evidence
   end
 
   defp authenticated_observed_state(%Node{state: :admitted}), do: :active
@@ -1675,6 +1754,39 @@ defmodule Orchard.Nodes do
 
   defp ensure_node_admittable(%Node{}, _attrs), do: {:error, :node_not_pending_admission}
 
+  defp ensure_pre_cutover_authority(%{enforcement_phase: :pre_cutover}), do: :ok
+
+  defp ensure_pre_cutover_authority(_authority),
+    do: {:error, :dispatch_capacity_phase_unsupported}
+
+  defp resolve_admission_capacity_policy(attrs, opts) do
+    with {:ok, reason} <- required_capacity_policy_reason(attrs),
+         {:ok, ceiling} <- admission_capacity_ceiling(attrs) do
+      {:ok,
+       %{
+         reason: reason,
+         ceiling: ceiling,
+         actor_type: audit_actor_type(opts),
+         actor_id: audit_actor_id(opts) || "local-controller"
+       }}
+    end
+  end
+
+  defp required_capacity_policy_reason(attrs) do
+    case attrs |> Map.get("capacity_policy_reason") |> AdmissionDecision.normalize_reason() do
+      nil -> {:error, :capacity_policy_reason_required}
+      reason -> {:ok, reason}
+    end
+  end
+
+  defp admission_capacity_ceiling(attrs) do
+    case Map.fetch(attrs, "controller_dispatch_ceiling") do
+      :error -> {:ok, 1}
+      {:ok, ceiling} when is_integer(ceiling) and ceiling >= 0 -> {:ok, ceiling}
+      {:ok, _invalid} -> {:error, :invalid_controller_dispatch_ceiling}
+    end
+  end
+
   defp do_admission_blocker_codes(%Node{state: :provisioned}, _attrs),
     do: [:node_not_registered]
 
@@ -1689,6 +1801,10 @@ defmodule Orchard.Nodes do
     |> maybe_add_blocker(
       :policy_required,
       blank_admission_input?(attrs, ["routing_policy_id", "policy_ref", "policy_inputs"])
+    )
+    |> maybe_add_blocker(
+      :invalid_controller_dispatch_ceiling,
+      match?({:error, :invalid_controller_dispatch_ceiling}, admission_capacity_ceiling(attrs))
     )
   end
 

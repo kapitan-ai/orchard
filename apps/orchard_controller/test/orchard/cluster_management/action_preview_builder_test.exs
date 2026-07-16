@@ -44,6 +44,46 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilderTest do
              |> Repo.aggregate(:count)
   end
 
+  test "SPEC.md §7.3.1 admission preview resolves explicit default capacity policy" do
+    node = insert_node!(state: :registered)
+
+    preview =
+      ActionPreviewBuilder.admit_node(node.id, %{
+        trust_evidence_ref: "registration-audit:test",
+        pool_id: Ecto.UUID.generate(),
+        routing_policy_id: Ecto.UUID.generate(),
+        capacity_policy_reason: "bounded initial admission"
+      })
+
+    map = ActionPreview.to_map(preview)
+
+    assert map.dispatch_capacity_policy == %{
+             controller_dispatch_ceiling: 1,
+             policy_state: "approved_explicit",
+             warning_codes: ["controller_dispatch_ceiling_not_yet_enforcing"]
+           }
+
+    assert [%{code: "controller_dispatch_ceiling_not_yet_enforcing"}] = map.warnings
+    assert map.confirmation_requirements == ["requires_yes_flag"]
+    assert map.blockers == []
+  end
+
+  test "SPEC.md §7.3.1 admission preview blocks an invalid explicit ceiling" do
+    node = insert_node!(state: :registered)
+
+    preview =
+      ActionPreviewBuilder.admit_node(node.id, %{
+        trust_evidence_ref: "registration-audit:test",
+        pool_id: Ecto.UUID.generate(),
+        routing_policy_id: Ecto.UUID.generate(),
+        capacity_policy_reason: "invalid bound",
+        controller_dispatch_ceiling: -1
+      })
+
+    assert [blocker] = preview.blockers
+    assert blocker.code == "invalid_controller_dispatch_ceiling"
+  end
+
   test "decommission preview includes destructive confirmation requirements and consequences" do
     node = insert_node!(state: :active)
 

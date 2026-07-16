@@ -9,6 +9,7 @@ defmodule Orchard.BeamPeerGrantsTest do
   alias Orchard.BeamPeerGrants.{ControllerInitializer, ControlListener, ControlServer, Grant}
   alias Orchard.Cluster.V1.{RetrieveBeamPeerGrantRequest, RetrieveBeamPeerGrantResponse}
   alias Orchard.ControllerInstances
+  alias Orchard.DispatchCapacity
   alias Orchard.Governance.AuditLog
   alias Orchard.Node.{BeamPeerGrantBootstrap, BeamPeerGrantStore, RuntimeTLS}
   alias Orchard.NodeEnrollment.PKI
@@ -198,7 +199,8 @@ defmodule Orchard.BeamPeerGrantsTest do
                %{
                  trust_evidence_ref: "registration-audit:#{Ecto.UUID.generate()}",
                  pool_id: Ecto.UUID.generate(),
-                 routing_policy_id: Ecto.UUID.generate()
+                 routing_policy_id: Ecto.UUID.generate(),
+                 capacity_policy_reason: "approve initial peer grant capacity"
                },
                now: now
              )
@@ -1384,7 +1386,9 @@ defmodule Orchard.BeamPeerGrantsTest do
         listen_port: node.connect_port,
         agent_version: "0.5.0-dev"
       },
-      runtime_health: %{ready: true, health_code: "", health_message: ""}
+      runtime_health: %{ready: true, health_code: "", health_message: ""},
+      active_request_count: 2,
+      max_concurrency: 4
     }
 
     assert {:ok, active} =
@@ -1392,6 +1396,12 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     assert active.state == :active
     assert active.last_heartbeat_at == DateTime.truncate(observed_at, :microsecond)
+
+    evidence = DispatchCapacity.get_capacity_evidence(node.id)
+    assert evidence.runtime_concurrency_limit == 4
+    assert evidence.active_request_count == 2
+    assert evidence.validity == :valid
+    assert evidence.observed_at == DateTime.truncate(observed_at, :microsecond)
   end
 
   test "SPEC.md §7.5.0 authenticated activation uses the grant transaction lock order", %{
@@ -1565,7 +1575,8 @@ defmodule Orchard.BeamPeerGrantsTest do
     %{
       trust_evidence_ref: "registration-audit:#{Ecto.UUID.generate()}",
       pool_id: Ecto.UUID.generate(),
-      routing_policy_id: Ecto.UUID.generate()
+      routing_policy_id: Ecto.UUID.generate(),
+      capacity_policy_reason: "approved for test capacity"
     }
   end
 

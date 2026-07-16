@@ -1,0 +1,280 @@
+defmodule Orchard.DispatchCapacity.Diagnostics do
+  @moduledoc """
+  Read-only counterfactual diagnostics for the dispatch-capacity contract.
+
+  This module assembles Controller-owned facts for the pure evaluator. It does
+  not reserve capacity, mutate queue state, or authorize dispatch.
+  """
+
+  alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.{Authority, CapacityEvidence, Policy}
+  alias Orchard.DispatchCapacity.Evaluator
+  alias Orchard.DispatchCapacity.Evaluator.Input
+  alias Orchard.DispatchCapacity.ManagementClassifier
+  alias Orchard.DispatchCapacity.ManagementClassifier.Input, as: ClassificationInput
+  alias Orchard.Repo
+  alias Orchard.RuntimeEndpoint.PlacementCapacity
+
+  import Ecto.Query, only: [from: 2]
+
+  @admitted_states [:admitted, :active, :cordoned, :draining, :maintenance, :decommissioning]
+
+  defmodule Snapshot do
+    @moduledoc "Typed read-only wrapper around one complete counterfactual evaluation."
+
+    @enforce_keys [:counterfactual?, :consumers_ready?, :evaluation]
+    defstruct @enforce_keys
+
+    @type t :: %__MODULE__{
+            counterfactual?: true,
+            consumers_ready?: false,
+            evaluation: Orchard.DispatchCapacity.Evaluator.Result.t()
+          }
+
+    @doc "Converts the snapshot to the shared operator status representation."
+    @spec to_map(t()) :: map()
+    def to_map(%__MODULE__{} = snapshot) do
+      snapshot.evaluation
+      |> Map.from_struct()
+      |> Map.update!(:placement_capacity, &placement_to_map/1)
+      |> Map.put(:mode, :counterfactual)
+      |> Map.put(:counterfactual, snapshot.counterfactual?)
+      |> Map.put(:consumers_ready, snapshot.consumers_ready?)
+      |> Map.put(:eligible, snapshot.evaluation.eligible?)
+      |> Map.delete(:eligible?)
+    end
+
+    defp placement_to_map({:valid, active, maximum}) do
+      %{status: :valid, active_request_count: active, max_concurrency: maximum}
+    end
+
+    defp placement_to_map(value), do: value
+  end
+
+  @doc "Builds one diagnostic snapshot without changing dispatch authorization state."
+  @spec snapshot(map(), keyword()) :: Snapshot.t()
+  def snapshot(node, opts \\ []) when is_map(node) do
+    authority =
+      option(opts, :authority, fn -> safe_read(nil, &DispatchCapacity.get_authority/0) end)
+
+    policy =
+      option(opts, :policy, fn ->
+        safe_read(nil, fn -> DispatchCapacity.get_policy(field(node, :id)) end)
+      end)
+
+    evidence =
+      option(opts, :evidence, fn ->
+        safe_read(nil, fn -> DispatchCapacity.get_capacity_evidence(field(node, :id)) end)
+      end)
+
+    now = Keyword.get_lazy(opts, :now, &utc_now/0)
+    freshness_threshold_ms = Keyword.get(opts, :freshness_threshold_ms, freshness_threshold_ms())
+
+    evaluation =
+      %Input{
+        authority_phase: authority_phase(authority),
+        policy_presence: policy_presence(policy),
+        policy_state: policy_state(policy),
+        management_classification: management_classification(node, opts),
+        trusted_identity?: Keyword.get(opts, :trusted_identity?, trusted_identity?(node)),
+        lifecycle_state: field(node, :state),
+        health: field(node, :health),
+        heartbeat_fresh?: fresh?(field(node, :last_heartbeat_at), now, freshness_threshold_ms),
+        capacity_observation_fresh?:
+          fresh?(evidence_observed_at(evidence), now, freshness_threshold_ms),
+        observation_time: evidence_observed_at(evidence),
+        runtime_concurrency_limit: runtime_limit(evidence),
+        aggregate_active_count: active_count(evidence),
+        controller_dispatch_ceiling: controller_ceiling(policy),
+        controller_accounted_allocation:
+          Keyword.get(opts, :controller_accounted_allocation, :missing),
+        placement_capacity:
+          normalize_placement(Keyword.get(opts, :placement_capacity, :not_applicable)),
+        temporary_legacy_claim_count: Keyword.get(opts, :temporary_legacy_claim_count, 0),
+        pool_eligible?: Keyword.get(opts, :pool_eligible?, true),
+        format_eligible?: Keyword.get(opts, :format_eligible?, true),
+        memory_eligible?: Keyword.get(opts, :memory_eligible?, true),
+        breaker_eligible?: Keyword.get(opts, :breaker_eligible?, true)
+      }
+      |> Evaluator.evaluate()
+
+    %Snapshot{counterfactual?: true, consumers_ready?: false, evaluation: evaluation}
+  end
+
+  @doc "Builds snapshots for a Node list with one bounded read per durable fact type."
+  @spec snapshots([map()], keyword()) :: %{term() => Snapshot.t()}
+  def snapshots(nodes, opts \\ []) when is_list(nodes) do
+    node_ids = nodes |> Enum.map(&field(&1, :id)) |> Enum.reject(&is_nil/1)
+
+    authority =
+      option(opts, :authority, fn -> safe_read(nil, &DispatchCapacity.get_authority/0) end)
+
+    policies = policies_by_node(node_ids, opts)
+    evidence = evidence_by_node(node_ids, opts)
+    now = Keyword.get_lazy(opts, :now, &utc_now/0)
+
+    Map.new(nodes, fn node ->
+      node_id = field(node, :id)
+
+      snapshot_opts =
+        opts
+        |> Keyword.put(:authority, authority)
+        |> Keyword.put(:policy, Map.get(policies, node_id))
+        |> Keyword.put(:evidence, Map.get(evidence, node_id))
+        |> Keyword.put(:now, now)
+
+      {node_id, snapshot(node, snapshot_opts)}
+    end)
+  end
+
+  defp management_classification(node, opts) do
+    option(opts, :management_classification, fn ->
+      %ClassificationInput{
+        target_reference: field(node, :id),
+        inventory_resolution: inventory_resolution(node),
+        controller_mode: Keyword.get(opts, :controller_mode, :production),
+        declared_classes: Keyword.get(opts, :declared_classes, []),
+        compatibility_enabled?: Keyword.get(opts, :compatibility_enabled?, false)
+      }
+      |> ManagementClassifier.classify()
+    end)
+  end
+
+  defp inventory_resolution(node) do
+    if field(node, :state) in @admitted_states, do: :admitted, else: :not_admitted
+  end
+
+  defp trusted_identity?(node), do: field(node, :state) in @admitted_states
+
+  defp authority_phase(%Authority{enforcement_phase: phase}), do: phase
+  defp authority_phase(_authority), do: :invalid
+
+  defp policy_presence(%Policy{}), do: :present
+  defp policy_presence(_policy), do: :missing
+
+  defp policy_state(%Policy{policy_state: state}), do: state
+  defp policy_state(_policy), do: :missing
+
+  defp controller_ceiling(%Policy{
+         policy_state: :shadow_legacy,
+         controller_dispatch_ceiling: nil
+       }),
+       do: :missing
+
+  defp controller_ceiling(%Policy{controller_dispatch_ceiling: value})
+       when is_integer(value) and value >= 0,
+       do: {:valid, value}
+
+  defp controller_ceiling(%Policy{controller_dispatch_ceiling: nil}), do: :missing
+  defp controller_ceiling(%Policy{}), do: :invalid
+  defp controller_ceiling(_policy), do: :missing
+
+  defp runtime_limit(%CapacityEvidence{validity: :valid, runtime_concurrency_limit: value})
+       when is_integer(value) and value > 0,
+       do: {:valid, value}
+
+  defp runtime_limit(%CapacityEvidence{validity: :missing, runtime_concurrency_limit: nil}),
+    do: :missing
+
+  defp runtime_limit(%CapacityEvidence{validity: :missing, runtime_concurrency_limit: value})
+       when is_integer(value) and value > 0,
+       do: {:valid, value}
+
+  defp runtime_limit(%CapacityEvidence{}), do: :invalid
+  defp runtime_limit(_evidence), do: :missing
+
+  defp active_count(%CapacityEvidence{validity: :valid, active_request_count: value})
+       when is_integer(value) and value >= 0,
+       do: {:valid, value}
+
+  defp active_count(%CapacityEvidence{validity: :missing, active_request_count: nil}),
+    do: :missing
+
+  defp active_count(%CapacityEvidence{validity: :missing, active_request_count: value})
+       when is_integer(value) and value >= 0,
+       do: {:valid, value}
+
+  defp active_count(%CapacityEvidence{}), do: :invalid
+  defp active_count(_evidence), do: :missing
+
+  defp evidence_observed_at(%CapacityEvidence{observed_at: observed_at}), do: observed_at
+  defp evidence_observed_at(_evidence), do: nil
+
+  defp normalize_placement(%PlacementCapacity{
+         status: :known,
+         active_request_count: active,
+         max_concurrency: maximum
+       }),
+       do: {:valid, active, maximum}
+
+  defp normalize_placement(%PlacementCapacity{status: :unknown}), do: :unknown
+  defp normalize_placement(%PlacementCapacity{}), do: :invalid
+  defp normalize_placement(value), do: value
+
+  defp fresh?(%DateTime{} = observed_at, %DateTime{} = now, threshold_ms)
+       when is_integer(threshold_ms) and threshold_ms > 0 do
+    age_ms = DateTime.diff(now, observed_at, :millisecond)
+    age_ms >= 0 and age_ms <= threshold_ms
+  end
+
+  defp fresh?(_observed_at, _now, _threshold_ms), do: false
+
+  defp freshness_threshold_ms, do: Orchard.Inference.node_freshness_threshold_ms()
+
+  defp policies_by_node(node_ids, opts) do
+    case Keyword.fetch(opts, :policy) do
+      {:ok, %Policy{node_id: node_id} = policy} -> %{node_id => policy}
+      {:ok, _policy} -> %{}
+      :error -> read_rows_by_node(Policy, node_ids)
+    end
+  end
+
+  defp evidence_by_node(node_ids, opts) do
+    case Keyword.fetch(opts, :evidence) do
+      {:ok, %CapacityEvidence{node_id: node_id} = evidence} -> %{node_id => evidence}
+      {:ok, _evidence} -> %{}
+      :error -> read_rows_by_node(CapacityEvidence, node_ids)
+    end
+  end
+
+  defp read_rows_by_node(queryable, node_ids) do
+    node_ids = Enum.filter(node_ids, &valid_uuid?/1)
+
+    case node_ids do
+      [] ->
+        %{}
+
+      ids ->
+        safe_read(%{}, fn ->
+          queryable |> where_node_id_in(ids) |> Repo.all() |> index_by_node()
+        end)
+    end
+  end
+
+  defp valid_uuid?(value), do: match?({:ok, _uuid}, Ecto.UUID.cast(value))
+
+  defp where_node_id_in(queryable, node_ids) do
+    from(row in queryable, where: row.node_id in ^node_ids)
+  end
+
+  defp index_by_node(rows), do: Map.new(rows, &{&1.node_id, &1})
+
+  defp option(opts, key, default) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> value
+      :error -> default.()
+    end
+  end
+
+  defp safe_read(fallback, fun) do
+    fun.()
+  rescue
+    _exception -> fallback
+  catch
+    _kind, _reason -> fallback
+  end
+
+  defp field(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp utc_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+end

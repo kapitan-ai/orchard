@@ -37,8 +37,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
       observed_at: DateTime.utc_now(),
       availability: availability_from_response(response),
       worker_state: normalize_worker_state(value(response, :worker_state)),
-      aggregate_active_request_count:
-        non_negative_integer(value(response, :active_request_count)),
+      aggregate_active_request_count: value(response, :active_request_count),
       aggregate_max_concurrency: value(response, :max_concurrency),
       metadata: metadata,
       health: health_from_response(value(response, :runtime_health)),

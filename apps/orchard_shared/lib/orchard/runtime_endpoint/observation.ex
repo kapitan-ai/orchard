@@ -12,6 +12,11 @@ defmodule Orchard.RuntimeEndpoint.Observation do
             worker_state: :unknown,
             aggregate_active_request_count: 0,
             aggregate_max_concurrency: nil,
+            aggregate_capacity_evidence: %{
+              runtime_concurrency_limit: nil,
+              active_request_count: nil,
+              validity: :missing
+            },
             metadata: %{},
             health: %{},
             placements: [],
@@ -30,6 +35,11 @@ defmodule Orchard.RuntimeEndpoint.Observation do
           worker_state: term(),
           aggregate_active_request_count: non_neg_integer(),
           aggregate_max_concurrency: pos_integer() | nil,
+          aggregate_capacity_evidence: %{
+            runtime_concurrency_limit: pos_integer() | nil,
+            active_request_count: non_neg_integer() | nil,
+            validity: :valid | :missing | :invalid
+          },
           metadata: map(),
           health: map(),
           placements: [Placement.t()],
@@ -52,6 +62,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       worker_state: value(attrs, :worker_state) || :unknown,
       aggregate_active_request_count: aggregate_active_request_count(attrs),
       aggregate_max_concurrency: aggregate_max_concurrency(attrs),
+      aggregate_capacity_evidence: aggregate_capacity_evidence(attrs),
       metadata: map_value(attrs, :metadata),
       health: map_value(attrs, :health),
       placements: Enum.map(list_value(attrs, :placements), &normalize_placement/1),
@@ -126,6 +137,32 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       value -> value
     end
   end
+
+  defp aggregate_capacity_evidence(attrs) do
+    active = value(attrs, :aggregate_active_request_count)
+    limit = aggregate_max_concurrency_value(attrs)
+
+    %{
+      active_request_count: non_negative_or_nil(active),
+      runtime_concurrency_limit: positive_or_nil(limit),
+      validity: aggregate_capacity_validity(active, limit)
+    }
+  end
+
+  defp aggregate_capacity_validity(active, limit)
+       when is_integer(active) and active >= 0 and is_integer(limit) and limit > 0,
+       do: :valid
+
+  defp aggregate_capacity_validity(active, limit) when is_nil(active) or is_nil(limit),
+    do: :missing
+
+  defp aggregate_capacity_validity(_active, _limit), do: :invalid
+
+  defp non_negative_or_nil(value) when is_integer(value) and value >= 0, do: value
+  defp non_negative_or_nil(_value), do: nil
+
+  defp positive_or_nil(value) when is_integer(value) and value > 0, do: value
+  defp positive_or_nil(_value), do: nil
 
   defp map_value(attrs, key) do
     case value(attrs, key) do

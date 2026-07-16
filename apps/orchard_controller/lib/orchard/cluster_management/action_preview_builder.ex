@@ -14,6 +14,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
     case Nodes.fetch_node(node_id) do
       {:ok, %Node{} = node} ->
+        capacity_policy = capacity_policy_preview(attrs)
+
         blockers =
           []
           |> add_write_path_blocker(:node_admission)
@@ -23,9 +25,11 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
           action: "node_admission.admit",
           target: %{type: "node", id: node.id},
           current: StatusBuilder.node_status_map(node),
+          dispatch_capacity_policy: capacity_policy,
           scheduler_eligibility: scheduler_eligibility(node),
           blockers: blockers,
-          confirmation_requirements: [:requires_yes_flag],
+          warnings: capacity_policy_warnings(capacity_policy),
+          confirmation_requirements: admission_confirmation_requirements(attrs),
           expected_transition: %{from: node.state, to: :admitted},
           audit_action: "node_admission.admitted",
           confirmation_required: true
@@ -209,6 +213,40 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     |> add_confirmation_requirement(:requires_reason, blank?(Map.get(attrs, "reason")))
   end
 
+  defp admission_confirmation_requirements(attrs) do
+    [:requires_yes_flag]
+    |> add_confirmation_requirement(
+      :requires_reason,
+      blank?(Map.get(attrs, "capacity_policy_reason") || Map.get(attrs, :capacity_policy_reason))
+    )
+  end
+
+  defp capacity_policy_preview(attrs) do
+    case Nodes.admission_capacity_policy(attrs) do
+      {:ok, policy} -> policy
+      {:error, :capacity_policy_reason_required} -> unresolved_capacity_policy(attrs)
+      {:error, :invalid_controller_dispatch_ceiling} -> unresolved_capacity_policy(attrs)
+    end
+  end
+
+  defp unresolved_capacity_policy(attrs) do
+    %{
+      controller_dispatch_ceiling:
+        Map.get(attrs, "controller_dispatch_ceiling") ||
+          Map.get(attrs, :controller_dispatch_ceiling) || 1,
+      policy_state: :approved_explicit,
+      warning_codes: [:controller_dispatch_ceiling_not_yet_enforcing]
+    }
+  end
+
+  defp capacity_policy_warnings(%{warning_codes: warning_codes}) do
+    Enum.map(warning_codes, fn code -> %{code: code, message: warning_message(code)} end)
+  end
+
+  defp warning_message(:controller_dispatch_ceiling_not_yet_enforcing) do
+    "Controller Dispatch Ceiling is approved but is not yet enforcing."
+  end
+
   defp add_confirmation_requirement(requirements, requirement, true),
     do: requirements ++ [requirement]
 
@@ -271,6 +309,9 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   defp blocker_message(:policy_required), do: "Required policy inputs are missing."
   defp blocker_message(:pool_required), do: "Node pool assignment is required."
   defp blocker_message(:trust_not_established), do: "Node trust evidence is required."
+
+  defp blocker_message(:invalid_controller_dispatch_ceiling),
+    do: "Controller Dispatch Ceiling must be a non-negative integer."
 
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank?(nil), do: true

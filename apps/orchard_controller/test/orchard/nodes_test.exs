@@ -32,6 +32,8 @@ defmodule Orchard.NodesTest do
 
   import ExUnit.CaptureLog
 
+  alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance.AuditLog
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
@@ -117,7 +119,8 @@ defmodule Orchard.NodesTest do
       %{
         trust_evidence_ref: "registration-audit:#{Ecto.UUID.generate()}",
         pool_id: Ecto.UUID.generate(),
-        routing_policy_id: Ecto.UUID.generate()
+        routing_policy_id: Ecto.UUID.generate(),
+        capacity_policy_reason: "approved for test capacity"
       },
       overrides
     )
@@ -946,6 +949,10 @@ defmodule Orchard.NodesTest do
       assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
       assert admitted.node.state == :admitted
       assert admitted.decision.decision == :admitted
+      assert admitted.policy.policy_state == :approved_explicit
+      assert admitted.policy.controller_dispatch_ceiling == 1
+      assert admitted.policy.approval_reason == "approved for test capacity"
+      assert admitted.policy.admission_decision_id == admitted.decision.id
 
       decisions =
         AdmissionDecision
@@ -955,6 +962,56 @@ defmodule Orchard.NodesTest do
         |> Enum.map(& &1.decision)
 
       assert decisions == [:rejected, :rejection_cleared, :admitted]
+    end
+
+    test "SPEC.md §7.3.1 admission preserves explicit zero and approval provenance" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-zero-capacity",
+          hostname: "registered-zero-capacity.local"
+        })
+
+      attrs =
+        admission_attrs(%{
+          controller_dispatch_ceiling: 0,
+          capacity_policy_reason: "admit without dispatch headroom"
+        })
+
+      assert {:ok, admitted} =
+               Nodes.admit_node(node.id, attrs,
+                 actor_type: "service_account",
+                 actor_id: "operator-42"
+               )
+
+      assert %Policy{} = policy = Repo.get!(Policy, node.id)
+      assert policy.controller_dispatch_ceiling == 0
+      assert policy.policy_state == :approved_explicit
+      assert policy.approved_by_actor_type == "service_account"
+      assert policy.approved_by_actor_id == "operator-42"
+      assert policy.approval_reason == "admit without dispatch headroom"
+      assert policy.admission_decision_id == admitted.decision.id
+    end
+
+    test "SPEC.md §7.3.1 capacity policy validation rolls back admission" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-invalid-capacity",
+          hostname: "registered-invalid-capacity.local"
+        })
+
+      assert {:error, :capacity_policy_reason_required} =
+               Nodes.admit_node(node.id, Map.delete(admission_attrs(), :capacity_policy_reason))
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.get(Policy, node.id) == nil
+
+      assert {:error, :invalid_controller_dispatch_ceiling} =
+               Nodes.admit_node(node.id, admission_attrs(%{controller_dispatch_ceiling: -1}))
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.get(Policy, node.id) == nil
     end
 
     test "SPEC.md §4.2 registered node admission fails closed without required inputs" do
@@ -1199,6 +1256,7 @@ defmodule Orchard.NodesTest do
 
       assert {:ok, observed} = Nodes.observe_status(target, status, DateTime.utc_now())
       assert observed.state == :admitted
+      assert DispatchCapacity.get_capacity_evidence(node.id) == nil
     end
   end
 

@@ -356,6 +356,8 @@ defmodule OrchardCLI.Commands.Nodes do
       pool: :string,
       pool_id: :string,
       policy_ref: :string,
+      capacity_policy_reason: :string,
+      controller_dispatch_ceiling: :integer,
       routing_policy_id: :string,
       trust_evidence_ref: :string,
       trust_ref: :string,
@@ -393,6 +395,8 @@ defmodule OrchardCLI.Commands.Nodes do
     |> put_opt(opts, :pool)
     |> put_opt(opts, :routing_policy_id)
     |> put_opt(opts, :policy_ref)
+    |> put_opt(opts, :capacity_policy_reason)
+    |> put_opt(opts, :controller_dispatch_ceiling)
   end
 
   defp reject_attrs(opts), do: put_opt(%{}, opts, :reason)
@@ -547,6 +551,7 @@ defmodule OrchardCLI.Commands.Nodes do
       "Health: #{node.health}",
       "Admission: #{get_in(status, [:admission, :category])}",
       "Scheduling: #{format_scheduling(get_in(status, [:scheduling]))}",
+      format_dispatch_capacity(get_in(status, [:dispatch_capacity])),
       format_memory_budget(node[:memory_budget])
     ]
     |> Enum.reject(&is_nil/1)
@@ -684,6 +689,62 @@ defmodule OrchardCLI.Commands.Nodes do
   defp format_scheduling(%{reason_codes: codes}) do
     "blocked (#{Enum.join(codes, ", ")})"
   end
+
+  defp format_dispatch_capacity(nil), do: "Dispatch capacity: unavailable"
+
+  defp format_dispatch_capacity(capacity) do
+    [
+      "Dispatch capacity (counterfactual):",
+      "  Consumers ready: #{capacity.consumers_ready}",
+      "  Authority phase: #{capacity.authority_phase}",
+      "  Policy state: #{capacity.policy_state}",
+      "  Management class: #{capacity.management_class}",
+      "  Authority decision: #{capacity.authority_decision}",
+      "  Runtime concurrency enforcement limit: " <>
+        format_capacity_value(capacity.runtime_concurrency_enforcement_limit),
+      "  Controller dispatch ceiling: " <>
+        format_capacity_value(capacity.controller_dispatch_ceiling),
+      "  Effective dispatch limit: #{capacity.effective_dispatch_limit}",
+      "  Controller-accounted allocation: " <>
+        format_capacity_value(capacity.controller_accounted_allocation),
+      "  Dispatch headroom: #{capacity.dispatch_headroom}",
+      "  Placement capacity: #{format_capacity_value(capacity.placement_capacity)}",
+      "  Placement headroom: #{format_capacity_value(capacity.placement_headroom)}",
+      "  Available slots: #{capacity.available_slots}",
+      "  Temporary legacy available slots: " <>
+        format_capacity_value(capacity.temporary_legacy_available_slots),
+      "  Legacy pre-cutover limit: #{format_capacity_value(capacity.legacy_pre_cutover_limit)}",
+      "  Legacy reported allocation: " <>
+        format_capacity_value(capacity.legacy_pre_cutover_reported_allocation),
+      "  Legacy claim count: #{format_capacity_value(capacity.legacy_pre_cutover_claim_count)}",
+      "  Legacy available slots: " <>
+        format_capacity_value(capacity.legacy_pre_cutover_available_slots),
+      "  Eligible: #{capacity.eligible}",
+      "  Observation time: #{format_capacity_value(capacity.observation_time)}",
+      "  Reason codes: #{format_capacity_codes(capacity.reason_codes)}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp format_capacity_value(nil), do: "unknown"
+
+  defp format_capacity_value(%{status: status} = placement) do
+    case placement do
+      %{active_request_count: active, max_concurrency: maximum} ->
+        "#{status} (#{active}/#{maximum})"
+
+      _placement ->
+        to_string(status)
+    end
+  end
+
+  defp format_capacity_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp format_capacity_value(value) when is_binary(value) or is_atom(value), do: to_string(value)
+  defp format_capacity_value(value) when is_number(value), do: to_string(value)
+  defp format_capacity_value(value), do: inspect(value)
+
+  defp format_capacity_codes([]), do: "none"
+  defp format_capacity_codes(codes), do: Enum.join(codes, ", ")
 
   defp format_codes([], _key), do: "none"
 
@@ -869,7 +930,7 @@ defmodule OrchardCLI.Commands.Nodes do
   defp admit_usage do
     Enum.join(
       [
-        "Usage: orchardctl nodes admit <node-id> [--dry-run] [--json] [--yes] --trust-evidence-ref REF --pool-id ID --routing-policy-id ID",
+        "Usage: orchardctl nodes admit <node-id> [--dry-run] [--json] [--yes] --trust-evidence-ref REF --pool-id ID --routing-policy-id ID --capacity-policy-reason REASON [--controller-dispatch-ceiling N]",
         "",
         "Previews or admits a registered pending node.",
         "Execution requires --yes and a preview with no blockers."

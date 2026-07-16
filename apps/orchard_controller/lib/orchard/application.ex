@@ -13,6 +13,7 @@ defmodule Orchard.Application do
     ControlListener
   }
 
+  alias Orchard.ControllerInstances.MembershipOwner
   alias Orchard.Licensing
   alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
   alias Orchard.SentryContext
@@ -156,6 +157,7 @@ defmodule Orchard.Application do
       |> Kernel.++([{ControllerInitializer, initializer_opts}])
       |> maybe_add_controller_startup_verifier(config)
       |> maybe_add_controller_expiry_guard(config)
+      |> Kernel.++([{MembershipOwner, initializer_opts}])
       |> Kernel.++([{ControlListener, listener_opts}])
     else
       children

@@ -17,6 +17,7 @@
       "status": "fresh"
     }
   },
+  "dispatch_capacity_policy": {},
   "active_request_count": 0,
   "scheduler_eligibility": {
     "eligible": false,

@@ -62,6 +62,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     pool_required
     policy_required
     trust_not_established
+    invalid_controller_dispatch_ceiling
   )
 
   @confirmation_requirement_codes ~w(

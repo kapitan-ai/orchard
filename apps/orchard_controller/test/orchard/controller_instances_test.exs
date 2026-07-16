@@ -82,7 +82,7 @@ defmodule Orchard.ControllerInstancesTest do
     assert second.first_enrolled_at == first.first_enrolled_at
   end
 
-  test "SPEC.md §7.5.0 Controller initialization rejects every additional persisted instance", %{
+  test "SPEC.md §8.3 local identity upsert permits other Controller identities", %{
     root: root
   } do
     trust_root = Path.join(root, "node-trust")
@@ -114,7 +114,8 @@ defmodule Orchard.ControllerInstancesTest do
     })
     |> Repo.insert!()
 
-    assert {:error, :beam_controller_instance_cardinality_invalid} =
-             ControllerInstances.ensure_local(opts)
+    assert {:ok, local} = ControllerInstances.ensure_local(opts)
+    assert local.id != "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    assert Repo.aggregate(ControllerInstance, :count) == 2
   end
 end

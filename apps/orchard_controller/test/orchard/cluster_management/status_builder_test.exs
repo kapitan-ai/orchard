@@ -2,6 +2,8 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
   use Orchard.DataCase, async: false
 
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.DispatchCapacity.Diagnostics.Snapshot, as: CapacitySnapshot
+  alias Orchard.DispatchCapacity.Evaluator.Result, as: CapacityResult
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.Nodes.Node
@@ -111,6 +113,36 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
       assert status.admission.category == "pending_registered"
     end
 
+    test "shared Node status exposes the injected counterfactual capacity snapshot" do
+      node = %Node{
+        id: Ecto.UUID.generate(),
+        state: :active,
+        health: :healthy,
+        last_heartbeat_at: DateTime.utc_now()
+      }
+
+      capacity = %CapacitySnapshot{
+        counterfactual?: true,
+        consumers_ready?: false,
+        evaluation: capacity_result()
+      }
+
+      status =
+        StatusBuilder.node_status_map(node,
+          latest_decision: nil,
+          dispatch_capacity_snapshot: capacity
+        )
+
+      assert status.dispatch_capacity.counterfactual
+      assert status.dispatch_capacity.mode == "counterfactual"
+      refute status.dispatch_capacity.consumers_ready
+      assert status.dispatch_capacity.authority_phase == "pre_cutover"
+      assert status.dispatch_capacity.controller_dispatch_ceiling == 2
+      assert status.dispatch_capacity.effective_dispatch_limit == 0
+      assert status.dispatch_capacity.dispatch_headroom == 0
+      assert status.dispatch_capacity.temporary_legacy_available_slots == 3
+    end
+
     test "node_status_maps threads batched admission decisions" do
       node = insert_node!(%{state: :registered, health: :healthy})
 
@@ -158,6 +190,34 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
     %Node{}
     |> Node.changeset(attrs)
     |> Repo.insert!()
+  end
+
+  defp capacity_result do
+    %CapacityResult{
+      runtime_concurrency_enforcement_limit: 4,
+      controller_dispatch_ceiling: 2,
+      effective_dispatch_limit: 0,
+      controller_accounted_allocation: 0,
+      dispatch_headroom: 0,
+      placement_capacity: :not_applicable,
+      placement_headroom: nil,
+      authority_phase: :pre_cutover,
+      policy_state: :approved_explicit,
+      management_class: :production_managed,
+      authority_decision: :legacy_pre_cutover,
+      available_slots: 3,
+      temporary_legacy_available_slots: 3,
+      legacy_pre_cutover_limit: 4,
+      legacy_pre_cutover_reported_allocation: 1,
+      legacy_pre_cutover_claim_count: 0,
+      legacy_pre_cutover_available_slots: 3,
+      eligible?: true,
+      observation_time: DateTime.utc_now(),
+      reason_codes: [
+        :controller_dispatch_ceiling_not_yet_enforcing,
+        :dispatch_capacity_pre_cutover_legacy
+      ]
+    }
   end
 
   defp insert_candidate! do

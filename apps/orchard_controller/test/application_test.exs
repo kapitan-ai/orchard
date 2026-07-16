@@ -79,6 +79,13 @@ defmodule OrchardApplicationTest do
                &match?({Orchard.BeamPeerGrants.ControllerInitializer, _}, &1)
              )
 
+    assert {Orchard.ControllerInstances.MembershipOwner, membership_owner} =
+             Enum.find(
+               child_specs,
+               &match?({Orchard.ControllerInstances.MembershipOwner, _}, &1)
+             )
+
+    assert membership_owner[:private_ipv4] == listener[:host]
     assert initializer[:private_ipv4] == listener[:host]
 
     assert {Orchard.BeamPeerGrants.ControllerStartupVerifier, verifier} =
@@ -122,6 +129,15 @@ defmodule OrchardApplicationTest do
            ) <
              Enum.find_index(
                child_specs,
+               &match?({Orchard.ControllerInstances.MembershipOwner, _}, &1)
+             )
+
+    assert Enum.find_index(
+             child_specs,
+             &match?({Orchard.ControllerInstances.MembershipOwner, _}, &1)
+           ) <
+             Enum.find_index(
+               child_specs,
                &match?({Orchard.BeamPeerGrants.ControlListener, _}, &1)
              )
 
@@ -129,6 +145,7 @@ defmodule OrchardApplicationTest do
 
     refute Enum.any?(Orchard.Application.child_specs(), fn
              {Orchard.BeamPeerGrants.ControllerInitializer, _opts} -> true
+             {Orchard.ControllerInstances.MembershipOwner, _opts} -> true
              {Orchard.BeamPeerGrants.ControlListener, _opts} -> true
              _other -> false
            end)

@@ -19,7 +19,7 @@ defmodule Orchard.ControllerInstances do
 
   @spec ensure_local(keyword()) :: {:ok, ControllerInstance.t()} | {:error, term()}
   def ensure_local(opts) when is_list(opts) do
-    with :ok <- ControlPlane.authorize_write_path(:beam_peer_grant),
+    with :ok <- ControlPlane.authorize_membership_self_publication(),
          {:ok, private_ipv4} <- private_ipv4(opts),
          {:ok, trust_root} <- required_path(opts, :node_trust_root),
          {:ok, authorization_root_path} <- required_path(opts, :authorization_root_path),
@@ -36,21 +36,90 @@ defmodule Orchard.ControllerInstances do
     end
   end
 
+  @doc """
+  Atomically refreshes membership and dispatch-capacity capability evidence for
+  one authenticated local Controller identity.
+  """
+  @spec heartbeat_local(keyword(), map()) ::
+          {:ok, ControllerInstance.t()} | {:error, term()}
+  def heartbeat_local(opts, attrs) when is_list(opts) and is_map(attrs) do
+    attrs = force_consumers_not_ready(attrs)
+
+    with :ok <- ControlPlane.authorize_membership_self_publication(),
+         {:ok, local_identity} <- ensure_local(opts) do
+      Repo.transaction(fn -> refresh_local_identity(local_identity, attrs) end)
+      |> case do
+        {:ok, %ControllerInstance{} = instance} -> {:ok, instance}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp force_consumers_not_ready(attrs) do
+    if Enum.any?(Map.keys(attrs), &is_atom/1) do
+      attrs
+      |> Map.delete("dispatch_capacity_consumers_ready")
+      |> Map.put(:dispatch_capacity_consumers_ready, false)
+    else
+      Map.put(attrs, "dispatch_capacity_consumers_ready", false)
+    end
+  end
+
+  defp refresh_local_identity(local_identity, attrs) do
+    persisted =
+      Repo.one(
+        from(instance in ControllerInstance,
+          where: instance.id == ^local_identity.id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    case persisted do
+      nil ->
+        Repo.rollback(:beam_controller_instance_not_found)
+
+      %ControllerInstance{} = instance ->
+        ensure_heartbeat_identity_matches(instance, local_identity, attrs)
+    end
+  end
+
+  defp ensure_heartbeat_identity_matches(instance, local_identity, attrs) do
+    expected = local_identity |> Map.from_struct() |> Map.take(immutable_fields())
+    actual = instance |> Map.from_struct() |> Map.take(immutable_fields())
+
+    if actual == expected do
+      instance
+      |> ControllerInstance.heartbeat_changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, refreshed} -> refreshed
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    else
+      Repo.rollback(:beam_controller_instance_mismatch)
+    end
+  end
+
   defp ensure_persisted(attrs) do
     Repo.transaction(fn ->
-      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [@advisory_lock_name])
+      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        @advisory_lock_name <> "." <> attrs.id
+      ])
 
-      instances = Repo.all(from(instance in ControllerInstance, lock: "FOR UPDATE"))
+      instance =
+        Repo.one(
+          from(instance in ControllerInstance,
+            where: instance.id == ^attrs.id,
+            lock: "FOR UPDATE"
+          )
+        )
 
-      case instances do
-        [] ->
+      case instance do
+        nil ->
           insert_instance(attrs)
 
-        [%ControllerInstance{id: id} = instance] when id == attrs.id ->
+        %ControllerInstance{} = instance ->
           ensure_instance_matches(instance, attrs)
-
-        _other ->
-          Repo.rollback(:beam_controller_instance_cardinality_invalid)
       end
     end)
     |> case do

@@ -152,6 +152,33 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
     )
   end
 
+  defp send_error(conn, :capacity_policy_reason_required) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :bad_request,
+      "capacity_policy_reason_required",
+      "A nonblank capacity policy reason is required."
+    )
+  end
+
+  defp send_error(conn, :invalid_controller_dispatch_ceiling) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :bad_request,
+      "invalid_controller_dispatch_ceiling",
+      "Controller Dispatch Ceiling must be a non-negative integer."
+    )
+  end
+
+  defp send_error(conn, :dispatch_capacity_authority_missing) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :service_unavailable,
+      "dispatch_capacity_authority_missing",
+      "Dispatch capacity authority is unavailable."
+    )
+  end
+
   defp send_error(conn, :controller_standby) do
     AdminErrorHelpers.send_error(
       conn,

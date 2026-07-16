@@ -4,6 +4,8 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
   """
 
   alias Orchard.ClusterManagement.NodeStatus
+  alias Orchard.DispatchCapacity.Diagnostics
+  alias Orchard.DispatchCapacity.Diagnostics.Snapshot, as: CapacitySnapshot
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
 
@@ -44,6 +46,7 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
       runtime: %{status: :unknown, health_code: nil, health_message: nil},
       compatibility: %{status: :unknown},
       scheduling: scheduling(node),
+      dispatch_capacity: dispatch_capacity(node, opts),
       warnings: []
     })
   end
@@ -67,6 +70,7 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
       runtime: %{status: :unknown, health_code: nil, health_message: nil},
       compatibility: %{status: :unknown},
       scheduling: scheduling(node),
+      dispatch_capacity: dispatch_capacity(node, opts),
       warnings: []
     })
   end
@@ -103,6 +107,7 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
       runtime: %{status: :unknown, health_code: nil, health_message: nil},
       compatibility: candidate_compatibility(candidate),
       scheduling: candidate_scheduling(candidate),
+      dispatch_capacity: nil,
       warnings: []
     })
   end
@@ -126,6 +131,7 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
       runtime: runtime_readiness(target),
       compatibility: runtime_compatibility(target),
       scheduling: %{eligible: false, reason_codes: []},
+      dispatch_capacity: nil,
       warnings: runtime_warnings(target)
     })
   end
@@ -145,13 +151,26 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
       |> Enum.reject(&is_nil/1)
       |> Nodes.latest_admission_decisions_for_nodes()
 
+    capacity_snapshots = Diagnostics.snapshots(nodes)
+
     Enum.map(nodes, fn node ->
-      node_status_map(node, latest_decision: Map.get(decisions, node_id(node)))
+      node_status_map(node,
+        latest_decision: Map.get(decisions, node_id(node)),
+        dispatch_capacity_snapshot: Map.get(capacity_snapshots, node_id(node))
+      )
     end)
   end
 
   defp node_id(%Node{id: id}), do: id
   defp node_id(%{} = node), do: node_field(node, :id)
+
+  defp dispatch_capacity(node, opts) do
+    case Keyword.fetch(opts, :dispatch_capacity_snapshot) do
+      {:ok, %CapacitySnapshot{} = snapshot} -> CapacitySnapshot.to_map(snapshot)
+      {:ok, nil} -> nil
+      :error -> node |> Diagnostics.snapshot(opts) |> CapacitySnapshot.to_map()
+    end
+  end
 
   defp node_admission_category(_node, %AdmissionDecision{decision: :rejected}), do: :rejected
   defp node_admission_category(%Node{state: :provisioned}, _decision), do: :pending_provisioned

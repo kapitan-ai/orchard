@@ -324,7 +324,9 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert preview["object"] == "cluster_management.action_preview"
       assert preview["action"] == "node_admission.admit"
       assert preview["target"] == %{"type" => "node", "id" => node.id}
-      assert preview["confirmation_requirements"] == ["requires_yes_flag"]
+      assert preview["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
+      assert preview["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == 1
+      assert preview["dispatch_capacity_policy"]["policy_state"] == "approved_explicit"
 
       assert Enum.map(preview["blockers"], & &1["code"]) == [
                "trust_not_established",
@@ -560,7 +562,8 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
     %{
       "trust_evidence_ref" => "registration-audit:test",
       "pool_id" => Ecto.UUID.generate(),
-      "routing_policy_id" => Ecto.UUID.generate()
+      "routing_policy_id" => Ecto.UUID.generate(),
+      "capacity_policy_reason" => "approved by API test"
     }
   end
 
