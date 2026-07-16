@@ -214,4 +214,32 @@ defmodule Orchard.Config.SourceDevBeamTest do
       end
     end
   end
+
+  describe "controller_membership_identity!/2" do
+    test "classifies gRPC source dev as a stable local-only membership host" do
+      assert SourceDevBeam.controller_membership_identity!(:grpc, "orchard_controller@10.0.0.10") ==
+               {"127.0.0.1", :local_only}
+    end
+
+    test "classifies the default loopback BEAM host as local-only" do
+      assert SourceDevBeam.controller_membership_identity!(:beam, "orchard_controller@127.0.0.1") ==
+               {"127.0.0.1", :local_only}
+    end
+
+    test "classifies a private BEAM host as remote membership" do
+      assert SourceDevBeam.controller_membership_identity!(:beam, "orchard_controller@10.0.0.10") ==
+               {"10.0.0.10", :remote_beam}
+    end
+
+    test "rejects a public BEAM membership host" do
+      assert_raise RuntimeError,
+                   ~r/Controller membership host must be a private IPv4 address/,
+                   fn ->
+                     SourceDevBeam.controller_membership_identity!(
+                       :beam,
+                       "orchard_controller@203.0.113.10"
+                     )
+                   end
+    end
+  end
 end

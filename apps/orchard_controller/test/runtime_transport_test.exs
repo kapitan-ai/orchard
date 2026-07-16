@@ -134,6 +134,109 @@ defmodule Orchard.RuntimeTransportTest do
                  end
   end
 
+  test "SPEC.md §8.3 gRPC Controllers publish a local-only membership identity", %{
+    support_root: support_root
+  } do
+    config = read_controller_config!(support_root, %{})
+
+    assert config[:controller_membership][:private_ipv4] == "127.0.0.1"
+    assert config[:controller_membership][:scope] == :local_only
+
+    assert config[:controller_membership][:authorization_root_path] ==
+             Path.join([support_root, "support", "beam-authorization-root"])
+  end
+
+  test "SPEC.md §8.3 single-host BEAM Controllers classify loopback membership as local-only", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@127.0.0.1",
+        "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == "127.0.0.1"
+    assert config[:controller_membership][:scope] == :local_only
+  end
+
+  test "SPEC.md §8.3 remote BEAM Controllers classify a private membership host", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10",
+        "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == "10.0.0.10"
+    assert config[:controller_membership][:scope] == :remote_beam
+  end
+
+  test "SPEC.md §8.3 membership identity ignores the peer-grant control listener host", %{
+    support_root: support_root
+  } do
+    grant_env = %{
+      "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+      "ORCHARD_BEAM_NODE_NAME" => "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+      "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+      "ORCHARD_BEAM_PEER_GRANT_MODE" => "distributed",
+      "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => Path.join(support_root, "launch.json"),
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.99",
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+      "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => Path.join(support_root, "beam-authorization-root")
+    }
+
+    granted = read_controller_config!(support_root, grant_env)
+
+    ungranted =
+      read_controller_config!(support_root, %{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" =>
+          "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+        "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11",
+        "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" =>
+          Path.join(support_root, "beam-authorization-root")
+      })
+
+    assert granted[:beam_peer_grants][:control_listener][:host] == "10.0.0.99"
+    assert granted[:controller_membership] == ungranted[:controller_membership]
+    assert granted[:controller_membership][:private_ipv4] == "10.0.0.10"
+  end
+
+  test "SPEC.md §8.3 grant-control Controllers keep a local-only membership identity", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+        "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
+        "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.99",
+        "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+        "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" =>
+          Path.join(support_root, "beam-authorization-root")
+      })
+
+    assert config[:controller_membership][:private_ipv4] == "127.0.0.1"
+    assert config[:controller_membership][:scope] == :local_only
+  end
+
+  test "SPEC.md §8.3 a public membership BEAM host fails closed at config time", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_BEAM_NODE_NAME Controller membership host must be a private IPv4 address/,
+                 fn ->
+                   read_controller_config!(support_root, %{
+                     "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                     "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@203.0.113.10",
+                     "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11"
+                   })
+                 end
+  end
+
   test "SPEC 10.7: ORCHARD_TRANSPORT_MODE=plain_http_localhost wins over legacy TLS envs", %{
     support_root: support_root
   } do

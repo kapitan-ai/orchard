@@ -66,6 +66,38 @@ defmodule Orchard.Config.SourceDevBeam do
     end
   end
 
+  @doc """
+  Resolves the Controller membership host and its loopback classification.
+
+  Membership identity never reads the BEAM Peer Grant control listener, so
+  toggling grants cannot move a Controller's durable canonical BEAM name.
+  """
+  def controller_membership_identity!(:grpc, _node_name), do: {"127.0.0.1", :local_only}
+
+  def controller_membership_identity!(:beam, node_name) do
+    {_service, host} = local_controller_service_host!(node_name)
+    ip = parse_ipv4!(host, @node_name_env, node_name)
+
+    cond do
+      loopback_ip?(ip) ->
+        {host, :local_only}
+
+      private_ipv4?(ip) ->
+        {host, :remote_beam}
+
+      true ->
+        raise "environment variable #{@node_name_env} Controller membership host must be a private IPv4 address, got #{inspect(node_name)}"
+    end
+  end
+
+  defp loopback_ip?({127, _b, _c, _d}), do: true
+  defp loopback_ip?(_ip), do: false
+
+  defp private_ipv4?({10, _b, _c, _d}), do: true
+  defp private_ipv4?({172, b, _c, _d}) when b in 16..31, do: true
+  defp private_ipv4?({192, 168, _c, _d}), do: true
+  defp private_ipv4?(_ip), do: false
+
   def beam_guardrail_config!(node_name, cookie_file, targets) do
     {_service, listen_host} = local_controller_service_host!(node_name)
 

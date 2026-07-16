@@ -9,6 +9,7 @@ defmodule OrchardApplicationTest do
       start_endpoint: Application.get_env(:orchard_controller, :start_endpoint, true),
       enable_db_checks: Application.get_env(:orchard_controller, :enable_db_checks, true),
       beam_peer_grants: Application.get_env(:orchard_controller, :beam_peer_grants),
+      controller_membership: Application.get_env(:orchard_controller, :controller_membership),
       sentry_dsn: Application.get_env(:sentry, :dsn)
     }
 
@@ -29,6 +30,13 @@ defmodule OrchardApplicationTest do
       Application.put_env(:orchard_controller, :start_endpoint, previous_env.start_endpoint)
       Application.put_env(:orchard_controller, :enable_db_checks, previous_env.enable_db_checks)
       restore_app_env(:orchard_controller, :beam_peer_grants, previous_env.beam_peer_grants)
+
+      restore_app_env(
+        :orchard_controller,
+        :controller_membership,
+        previous_env.controller_membership
+      )
+
       Application.put_env(:sentry, :dsn, previous_env.sentry_dsn)
       remove_sentry_handler()
 
@@ -155,22 +163,44 @@ defmodule OrchardApplicationTest do
     end
   end
 
-  test "SPEC.md §8.3 membership owner binds the peer-grant listener identity when enabled" do
+  test "SPEC.md §8.3 membership identity never follows the peer-grant control listener" do
+    Application.put_env(:orchard_controller, :start_repo, true)
+
+    Application.put_env(:orchard_controller, :controller_membership,
+      private_ipv4: "10.0.0.10",
+      scope: :remote_beam,
+      authorization_root_path: "/protected/authorization-root"
+    )
+
+    assert [{Orchard.ControllerInstances.MembershipOwner, disabled_opts}] =
+             membership_owner_specs(Orchard.Application.child_specs())
+
     Application.put_env(:orchard_controller, :beam_peer_grants,
       enabled: true,
       mode: :distributed,
-      authorization_root_path: "/protected/authorization-root",
+      authorization_root_path: "/grant/authorization-root",
       manifest_path: "/protected/controller-launch.json",
-      control_listener: [host: "10.0.0.10", port: 50_072]
+      control_listener: [host: "10.0.0.99", port: 50_072]
     )
 
+    assert [{Orchard.ControllerInstances.MembershipOwner, enabled_opts}] =
+             membership_owner_specs(Orchard.Application.child_specs())
+
+    assert enabled_opts == disabled_opts
+    assert enabled_opts[:private_ipv4] == "10.0.0.10"
+    assert enabled_opts[:membership_scope] == :remote_beam
+    assert enabled_opts[:authorization_root_path] == "/protected/authorization-root"
+  end
+
+  test "SPEC.md §8.3 membership identity defaults to a local-only loopback host" do
     Application.put_env(:orchard_controller, :start_repo, true)
+    Application.delete_env(:orchard_controller, :controller_membership)
 
     assert [{Orchard.ControllerInstances.MembershipOwner, opts}] =
              membership_owner_specs(Orchard.Application.child_specs())
 
-    assert opts[:private_ipv4] == "10.0.0.10"
-    assert opts[:authorization_root_path] == "/protected/authorization-root"
+    assert opts[:private_ipv4] == "127.0.0.1"
+    assert opts[:membership_scope] == :local_only
   end
 
   test "SPEC.md §8.3 membership owner is omitted only when repo ownership is disabled" do

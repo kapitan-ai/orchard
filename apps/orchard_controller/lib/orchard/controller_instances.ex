@@ -224,11 +224,15 @@ defmodule Orchard.ControllerInstances do
 
   defp private_ipv4(opts) do
     with value when is_binary(value) <- Keyword.get(opts, :private_ipv4),
-         {:ok, _address} <- BeamNodeName.private_ipv4(value) do
+         {:ok, _address} <- BeamNodeName.private_ipv4(value, allow_loopback: local_only?(opts)) do
       {:ok, value}
     else
       _other -> {:error, :beam_controller_private_ipv4_invalid}
     end
+  end
+
+  defp local_only?(opts) do
+    Keyword.get(opts, :membership_scope, :remote_beam) == :local_only
   end
 
   defp required_path(opts, key) do

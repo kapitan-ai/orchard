@@ -896,7 +896,33 @@ if config_env() == :prod do
 
       config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 
+      {membership_private_ipv4, membership_scope} =
+        case {runtime_endpoint_transport_mode, env_optional_string.("ORCHARD_BEAM_NODE_NAME")} do
+          {:grpc, _name} ->
+            {"127.0.0.1", :local_only}
+
+          {:beam, nil} ->
+            {"127.0.0.1", :local_only}
+
+          {:beam, name} ->
+            {_service, host} = beam_service_host.(name, "ORCHARD_BEAM_NODE_NAME")
+            ip = parse_beam_ipv4.(host, "ORCHARD_BEAM_NODE_NAME", name)
+
+            cond do
+              loopback_ip?.(ip) ->
+                {host, :local_only}
+
+              private_ipv4?.(ip) ->
+                {host, :remote_beam}
+
+              true ->
+                raise "ORCHARD_BEAM_NODE_NAME Controller membership host must be a private IPv4 address, got segment #{inspect(name)}"
+            end
+        end
+
       config :orchard_controller, :controller_membership,
+        private_ipv4: membership_private_ipv4,
+        scope: membership_scope,
         authorization_root_path:
           env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
             Path.join([orchard_support_root, "support", "beam-authorization-root"])

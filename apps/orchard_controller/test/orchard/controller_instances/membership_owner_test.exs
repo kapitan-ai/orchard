@@ -1,6 +1,8 @@
 defmodule Orchard.ControllerInstances.MembershipOwnerTest do
   use Orchard.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.ControllerInstances
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.ControllerInstances.MembershipOwner
@@ -173,6 +175,115 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
   test "SPEC.md §8.3 heartbeat interval is exactly 10000 ms" do
     assert MembershipOwner.heartbeat_interval_ms() == 10_000
+  end
+
+  test "SPEC.md §8.3 a stuck heartbeat stays observable on a bounded log interval", %{root: root} do
+    {opts, _trust} = identity_opts(root)
+    clock = start_supervised!({Agent, fn -> ~U[2026-07-16 01:00:00.000000Z] end}, id: :clock)
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> Agent.get(clock, & &1) end)
+      |> Keyword.put(:publisher, fn _opts, _attrs ->
+        {:error, :beam_controller_instance_configuration_invalid}
+      end)
+
+    {pid, first} = start_owner(opts)
+
+    assert first =~
+             "reason=beam_controller_instance_configuration_invalid suppressed_attempts=0"
+
+    assert beat(pid, 2) == ""
+
+    Agent.update(clock, &DateTime.add(&1, 300, :second))
+
+    assert beat(pid, 1) =~
+             "reason=beam_controller_instance_configuration_invalid suppressed_attempts=2"
+  end
+
+  test "SPEC.md §8.3 a changed failure reason is logged without waiting for the interval", %{
+    root: root
+  } do
+    {opts, _trust} = identity_opts(root)
+    reason = start_supervised!({Agent, fn -> :beam_controller_private_ipv4_invalid end}, id: :why)
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:00:00.000000Z] end)
+      |> Keyword.put(:publisher, fn _opts, _attrs -> {:error, Agent.get(reason, & &1)} end)
+
+    {pid, first} = start_owner(opts)
+    assert first =~ "reason=beam_controller_private_ipv4_invalid"
+
+    Agent.update(reason, fn _previous -> :beam_controller_instance_mismatch end)
+
+    assert beat(pid, 1) =~ "reason=beam_controller_instance_mismatch suppressed_attempts=0"
+  end
+
+  test "SPEC.md §8.3 heartbeat failure reasons are sanitized to stable codes", %{root: root} do
+    {opts, _trust} = identity_opts(root)
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:00:00.000000Z] end)
+      |> Keyword.put(:publisher, fn _opts, _attrs ->
+        raise Postgrex.Error, message: "FATAL: password authentication failed for hunter2"
+      end)
+
+    {_pid, log} = start_owner(opts)
+
+    assert log =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+    refute log =~ "hunter2"
+  end
+
+  test "SPEC.md §8.3 recovery after a failure is announced once", %{root: root} do
+    {opts, trust} = identity_opts(root)
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
+
+    failing = start_supervised!({Agent, fn -> true end}, id: :failing)
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+
+    publisher = fn publisher_opts, attrs ->
+      if Agent.get(failing, & &1) do
+        {:error, :beam_controller_instance_configuration_invalid}
+      else
+        ControllerInstances.heartbeat_local(publisher_opts, attrs)
+      end
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> observed_at end)
+      |> Keyword.put(:publisher, publisher)
+
+    {pid, _log} = start_owner(opts)
+    Agent.update(failing, fn _previous -> false end)
+
+    assert beat(pid, 1) =~
+             "recovered; capability evidence is fresh " <>
+               "(previous_reason=beam_controller_instance_configuration_invalid)"
+
+    assert Repo.get!(ControllerInstance, trust.controller_id).last_seen_at == observed_at
+    assert beat(pid, 1) == ""
+  end
+
+  defp start_owner(opts) do
+    with_log(fn ->
+      pid = start_supervised!({MembershipOwner, opts})
+      :sys.get_state(pid)
+      pid
+    end)
+  end
+
+  defp beat(pid, count) do
+    capture_log(fn ->
+      Enum.each(1..count, fn _attempt ->
+        send(pid, :heartbeat)
+        :sys.get_state(pid)
+      end)
+    end)
   end
 
   defp identity_opts(root) do

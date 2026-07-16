@@ -222,7 +222,15 @@ beam_peer_grants_config =
 
 config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 
+{membership_private_ipv4, membership_scope} =
+  Orchard.Config.SourceDevBeam.controller_membership_identity!(
+    runtime_endpoint_transport,
+    beam_controller_node_name
+  )
+
 config :orchard_controller, :controller_membership,
+  private_ipv4: membership_private_ipv4,
+  scope: membership_scope,
   authorization_root_path:
     env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
       Path.join(dev_root, "beam-authorization-root")

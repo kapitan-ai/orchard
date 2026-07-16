@@ -10,13 +10,16 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   alias Orchard.ControllerInstances
 
   @heartbeat_interval_ms 10_000
+  @failure_log_interval_ms 300_000
   @dispatch_capacity_contract_version 1
   @dispatch_capacity_consumers_ready false
+
+  @type failure :: %{reason: atom(), logged_at: DateTime.t(), suppressed: non_neg_integer()}
 
   @type state :: %{
           opts: keyword(),
           timer_ref: term(),
-          last_failure: term()
+          failure: failure() | nil
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -33,32 +36,67 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   @impl true
   def init(opts) do
     send(self(), :heartbeat)
-    {:ok, %{opts: opts, timer_ref: start_timer(), last_failure: nil}}
+    {:ok, %{opts: opts, timer_ref: start_timer(), failure: nil}}
   end
 
   @impl true
   def handle_info(:heartbeat, state) do
-    case attempt_publish(state.opts) do
+    observed_at = now(state.opts)
+
+    case attempt_publish(state.opts, observed_at) do
       {:ok, _instance} ->
-        {:noreply, %{state | last_failure: nil}}
+        log_recovery(state.failure)
+        {:noreply, %{state | failure: nil}}
 
       {:error, reason} ->
-        log_failure(reason, state.last_failure)
-        {:noreply, %{state | last_failure: reason}}
+        {:noreply, %{state | failure: record_failure(state.failure, reason, observed_at)}}
     end
   end
 
-  defp log_failure(reason, reason), do: :ok
+  defp record_failure(nil, reason, observed_at) do
+    log_failure(sanitize_reason(reason), 0, observed_at)
+  end
 
-  defp log_failure(reason, _previous) do
+  defp record_failure(%{reason: previous} = failure, reason, observed_at) do
+    sanitized = sanitize_reason(reason)
+
+    cond do
+      sanitized != previous ->
+        log_failure(sanitized, 0, observed_at)
+
+      DateTime.diff(observed_at, failure.logged_at, :millisecond) >= @failure_log_interval_ms ->
+        log_failure(sanitized, failure.suppressed, observed_at)
+
+      true ->
+        %{failure | suppressed: failure.suppressed + 1}
+    end
+  end
+
+  defp log_failure(reason, suppressed, observed_at) do
     Logger.warning(
       "Controller membership heartbeat failed; capability evidence remains stale " <>
-        "(reason=#{inspect(reason)})"
+        "(reason=#{reason} suppressed_attempts=#{suppressed})"
+    )
+
+    %{reason: reason, logged_at: observed_at, suppressed: 0}
+  end
+
+  defp log_recovery(nil), do: :ok
+
+  defp log_recovery(%{reason: reason}) do
+    Logger.info(
+      "Controller membership heartbeat recovered; capability evidence is fresh " <>
+        "(previous_reason=#{reason})"
     )
   end
 
-  defp attempt_publish(opts) do
-    publish(opts)
+  defp sanitize_reason(%Ecto.Changeset{}), do: :beam_controller_instance_heartbeat_invalid
+  defp sanitize_reason(reason) when is_atom(reason), do: reason
+  defp sanitize_reason({tag, _detail}) when is_atom(tag), do: tag
+  defp sanitize_reason(_reason), do: :beam_controller_membership_heartbeat_failed
+
+  defp attempt_publish(opts, observed_at) do
+    publish(opts, observed_at)
   rescue
     exception in [
       ArgumentError,
@@ -74,9 +112,7 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
     :exit, reason -> {:error, {:heartbeat_publish_exit, reason}}
   end
 
-  defp publish(opts) do
-    observed_at = now(opts)
-
+  defp publish(opts, observed_at) do
     publisher(opts).(opts, %{
       last_seen_at: observed_at,
       software_version: software_version(),
