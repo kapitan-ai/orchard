@@ -720,6 +720,7 @@ Env surface:
 | `ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST` | _(required, controller)_ | Private, non-loopback IPv4 address the grant-delivery control listener binds. |
 | `ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT` | _(required, controller)_ | Port for the grant-delivery control listener. |
 | `ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH` | _(required, controller)_ | Path to the Controller-local BEAM Authorization Root that derives pair-secret material. |
+| `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` | _(required, controller)_ | Private, non-loopback IPv4 address that fixes the Controller's durable canonical BEAM name across both tracer phases. It is independent of the control listener host and must match the `ORCHARD_BEAM_NODE_NAME` host in `distributed` mode. |
 | `ORCHARD_NODE_TRUST_ROOT` | _(required, controller preflight/run)_ | Controller node-trust root used by the distributed controller preflight and run; conventionally `tmp/dev/node-trust` in source dev. |
 | `ORCHARD_NODE_IDENTITY_ROOT` | _(required, node)_ | Owner-only node identity root holding the Node key, Node Certificate, and stored grant; conventionally `tmp/dev/config/node-identity` in source dev. |
 | `ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR` | _(required, node; controller preflight)_ | Path to the grant descriptor that binds the exact Controller-to-Node pair. |

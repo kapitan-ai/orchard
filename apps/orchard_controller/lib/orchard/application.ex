@@ -148,16 +148,9 @@ defmodule Orchard.Application do
 
     if Keyword.get(config, :enabled, false) do
       listener_opts = Keyword.get(config, :control_listener, [])
-      trust = Application.get_env(:orchard_controller, :node_trust, [])
-
-      initializer_opts = [
-        private_ipv4: Keyword.get(listener_opts, :host),
-        node_trust_root: Keyword.get(trust, :root),
-        authorization_root_path: Keyword.get(config, :authorization_root_path)
-      ]
 
       children
-      |> Kernel.++([{ControllerInitializer, initializer_opts}])
+      |> Kernel.++([{ControllerInitializer, membership_identity_opts()}])
       |> maybe_add_controller_startup_verifier(config)
       |> maybe_add_controller_expiry_guard(config)
       |> Kernel.++([{ControlListener, listener_opts}])
@@ -168,13 +161,13 @@ defmodule Orchard.Application do
 
   defp maybe_add_membership_owner(children) do
     if Application.get_env(:orchard_controller, :start_repo, true) do
-      children ++ [{MembershipOwner, membership_opts()}]
+      children ++ [{MembershipOwner, membership_identity_opts()}]
     else
       children
     end
   end
 
-  defp membership_opts do
+  defp membership_identity_opts do
     membership = Application.get_env(:orchard_controller, :controller_membership, [])
     trust = Application.get_env(:orchard_controller, :node_trust, [])
 

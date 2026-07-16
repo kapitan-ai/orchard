@@ -1,6 +1,12 @@
 defmodule Orchard.ControllerInstances.MembershipOwner do
   @moduledoc """
   Owns the local Controller membership heartbeat and capability evidence.
+
+  The first complete membership and capability tuple is published synchronously
+  during `init/1`, so identity, custody, schema, or configuration failures stop
+  Controller startup instead of leaving a live Controller whose dispatch-capacity
+  cutover evidence never appears. Later heartbeat failures are transient and
+  retry on the fixed interval with bounded logging.
   """
 
   use GenServer
@@ -35,8 +41,10 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   @impl true
   def init(opts) do
-    send(self(), :heartbeat)
-    {:ok, %{opts: opts, timer_ref: start_timer(), failure: nil}}
+    case attempt_publish(opts, now(opts)) do
+      {:ok, _instance} -> {:ok, %{opts: opts, timer_ref: start_timer(), failure: nil}}
+      {:error, reason} -> {:stop, sanitize_reason(reason)}
+    end
   end
 
   @impl true

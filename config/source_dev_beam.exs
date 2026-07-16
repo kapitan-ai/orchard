@@ -5,6 +5,7 @@ defmodule Orchard.Config.SourceDevBeam do
   @targets_env "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
   @role_env "ORCHARD_SOURCE_DEV_ROLE"
   @node_name_env "ORCHARD_BEAM_NODE_NAME"
+  @membership_host_env "ORCHARD_CONTROLLER_MEMBERSHIP_HOST"
   @max_legacy_beam_targets 64
 
   def transport!(value) do
@@ -69,12 +70,57 @@ defmodule Orchard.Config.SourceDevBeam do
   @doc """
   Resolves the Controller membership host and its loopback classification.
 
-  Membership identity never reads the BEAM Peer Grant control listener, so
-  toggling grants cannot move a Controller's durable canonical BEAM name.
+  `#{@membership_host_env}` is the only external source for the durable
+  canonical Controller host. Membership identity never reads the BEAM Peer
+  Grant control listener, so toggling grants cannot move a Controller's durable
+  canonical BEAM name. When the override is absent, membership defaults to the
+  runtime BEAM identity host, and to loopback for gRPC or local-only source dev.
   """
-  def controller_membership_identity!(:grpc, _node_name), do: {"127.0.0.1", :local_only}
+  def controller_membership_identity!(transport, node_name, opts \\ []) do
+    membership_host = optional_trimmed(Keyword.get(opts, :membership_host))
+    peer_grants_enabled? = Keyword.get(opts, :peer_grants_enabled?, false)
 
-  def controller_membership_identity!(:beam, node_name) do
+    case membership_host do
+      nil ->
+        default_membership_identity!(transport, optional_trimmed(node_name), peer_grants_enabled?)
+
+      host ->
+        explicit_membership_identity!(
+          host,
+          transport,
+          optional_trimmed(node_name),
+          peer_grants_enabled?
+        )
+    end
+  end
+
+  defp explicit_membership_identity!(host, transport, node_name, peer_grants_enabled?) do
+    ip = parse_ipv4!(host, @membership_host_env, host)
+    require_membership_node_name_agreement!(host, transport, node_name)
+
+    cond do
+      loopback_ip?(ip) and peer_grants_enabled? ->
+        raise "environment variable #{@membership_host_env} must be a private non-loopback IPv4 address when BEAM Peer Grants are enabled, got #{inspect(host)}"
+
+      loopback_ip?(ip) ->
+        {host, :local_only}
+
+      private_ipv4?(ip) ->
+        {host, :remote_beam}
+
+      true ->
+        raise "environment variable #{@membership_host_env} Controller membership host must be a private IPv4 address, got #{inspect(host)}"
+    end
+  end
+
+  defp default_membership_identity!(_transport, _node_name, true) do
+    raise "environment variable #{@membership_host_env} is required when BEAM Peer Grants are enabled"
+  end
+
+  defp default_membership_identity!(:grpc, _node_name, false), do: {"127.0.0.1", :local_only}
+  defp default_membership_identity!(:beam, nil, false), do: {"127.0.0.1", :local_only}
+
+  defp default_membership_identity!(:beam, node_name, false) do
     {_service, host} = local_controller_service_host!(node_name)
     ip = parse_ipv4!(host, @node_name_env, node_name)
 
@@ -88,6 +134,19 @@ defmodule Orchard.Config.SourceDevBeam do
       true ->
         raise "environment variable #{@node_name_env} Controller membership host must be a private IPv4 address, got #{inspect(node_name)}"
     end
+  end
+
+  defp require_membership_node_name_agreement!(_host, :grpc, _node_name), do: :ok
+  defp require_membership_node_name_agreement!(_host, :beam, nil), do: :ok
+
+  defp require_membership_node_name_agreement!(host, :beam, node_name) do
+    {_service, node_host} = local_controller_service_host!(node_name)
+
+    unless node_host == host do
+      raise "environment variable #{@membership_host_env} #{inspect(host)} must match the #{@node_name_env} host #{inspect(node_host)}"
+    end
+
+    :ok
   end
 
   defp loopback_ip?({127, _b, _c, _d}), do: true

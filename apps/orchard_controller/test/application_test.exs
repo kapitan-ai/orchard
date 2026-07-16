@@ -72,6 +72,12 @@ defmodule OrchardApplicationTest do
   test "SPEC.md §7.5.0 production grants add the configured control listener child" do
     listener = [host: "10.0.0.10", port: 50_072]
 
+    Application.put_env(:orchard_controller, :controller_membership,
+      private_ipv4: "10.0.0.20",
+      scope: :remote_beam,
+      authorization_root_path: "/protected/authorization-root"
+    )
+
     Application.put_env(:orchard_controller, :beam_peer_grants,
       enabled: true,
       mode: :distributed,
@@ -87,7 +93,7 @@ defmodule OrchardApplicationTest do
                &match?({Orchard.BeamPeerGrants.ControllerInitializer, _}, &1)
              )
 
-    assert initializer[:private_ipv4] == listener[:host]
+    assert initializer[:private_ipv4] == "10.0.0.20"
 
     assert {Orchard.BeamPeerGrants.ControllerStartupVerifier, verifier} =
              Enum.find(
@@ -190,6 +196,40 @@ defmodule OrchardApplicationTest do
     assert enabled_opts[:private_ipv4] == "10.0.0.10"
     assert enabled_opts[:membership_scope] == :remote_beam
     assert enabled_opts[:authorization_root_path] == "/protected/authorization-root"
+  end
+
+  test "SPEC.md §8.3 the grant initializer and membership owner share one durable identity" do
+    Application.put_env(:orchard_controller, :start_repo, true)
+
+    Application.put_env(:orchard_controller, :controller_membership,
+      private_ipv4: "10.0.0.10",
+      scope: :remote_beam,
+      authorization_root_path: "/protected/authorization-root"
+    )
+
+    Application.put_env(:orchard_controller, :beam_peer_grants,
+      enabled: true,
+      mode: :distributed,
+      authorization_root_path: "/grant/authorization-root",
+      manifest_path: "/protected/controller-launch.json",
+      control_listener: [host: "10.0.0.99", port: 50_072]
+    )
+
+    child_specs = Orchard.Application.child_specs()
+
+    assert {Orchard.BeamPeerGrants.ControllerInitializer, initializer_opts} =
+             Enum.find(
+               child_specs,
+               &match?({Orchard.BeamPeerGrants.ControllerInitializer, _}, &1)
+             )
+
+    assert [{Orchard.ControllerInstances.MembershipOwner, membership_opts}] =
+             membership_owner_specs(child_specs)
+
+    assert initializer_opts == membership_opts
+    assert initializer_opts[:private_ipv4] == "10.0.0.10"
+    assert initializer_opts[:membership_scope] == :remote_beam
+    assert initializer_opts[:authorization_root_path] == "/protected/authorization-root"
   end
 
   test "SPEC.md §8.3 membership identity defaults to a local-only loopback host" do

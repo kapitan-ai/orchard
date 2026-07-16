@@ -215,7 +215,73 @@ defmodule Orchard.Config.SourceDevBeamTest do
     end
   end
 
-  describe "controller_membership_identity!/2" do
+  describe "controller_membership_identity!/3" do
+    test "prefers the explicit membership host over the BEAM node name host" do
+      assert SourceDevBeam.controller_membership_identity!(:grpc, nil,
+               membership_host: "10.0.0.10"
+             ) == {"10.0.0.10", :remote_beam}
+    end
+
+    test "requires an explicit membership host when peer grants are enabled" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_CONTROLLER_MEMBERSHIP_HOST is required when BEAM Peer Grants are enabled/,
+                   fn ->
+                     SourceDevBeam.controller_membership_identity!(
+                       :beam,
+                       "orchard_controller@10.0.0.10",
+                       peer_grants_enabled?: true
+                     )
+                   end
+    end
+
+    test "rejects a loopback membership host when peer grants are enabled" do
+      assert_raise RuntimeError,
+                   ~r/must be a private non-loopback IPv4 address when BEAM Peer Grants are enabled/,
+                   fn ->
+                     SourceDevBeam.controller_membership_identity!(:beam, nil,
+                       membership_host: "127.0.0.1",
+                       peer_grants_enabled?: true
+                     )
+                   end
+    end
+
+    test "rejects a membership host that disagrees with the BEAM node name host" do
+      assert_raise RuntimeError,
+                   ~r/must match the ORCHARD_BEAM_NODE_NAME host/,
+                   fn ->
+                     SourceDevBeam.controller_membership_identity!(
+                       :beam,
+                       "orchard_controller_00112233445566778899aabbccddeeff@10.0.0.10",
+                       membership_host: "10.0.0.20",
+                       peer_grants_enabled?: true
+                     )
+                   end
+    end
+
+    test "accepts a membership host that matches the distributed BEAM node name host" do
+      assert SourceDevBeam.controller_membership_identity!(
+               :beam,
+               "orchard_controller_00112233445566778899aabbccddeeff@10.0.0.10",
+               membership_host: "10.0.0.10",
+               peer_grants_enabled?: true
+             ) == {"10.0.0.10", :remote_beam}
+    end
+
+    test "rejects a public explicit membership host" do
+      assert_raise RuntimeError,
+                   ~r/Controller membership host must be a private IPv4 address/,
+                   fn ->
+                     SourceDevBeam.controller_membership_identity!(:beam, nil,
+                       membership_host: "203.0.113.10"
+                     )
+                   end
+    end
+
+    test "classifies a BEAM controller without a node name as local-only" do
+      assert SourceDevBeam.controller_membership_identity!(:beam, nil) ==
+               {"127.0.0.1", :local_only}
+    end
+
     test "classifies gRPC source dev as a stable local-only membership host" do
       assert SourceDevBeam.controller_membership_identity!(:grpc, "orchard_controller@10.0.0.10") ==
                {"127.0.0.1", :local_only}

@@ -184,13 +184,16 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     opts =
       opts
       |> Keyword.put(:clock, fn -> Agent.get(clock, & &1) end)
-      |> Keyword.put(:publisher, fn _opts, _attrs ->
-        {:error, :beam_controller_instance_configuration_invalid}
-      end)
+      |> Keyword.put(
+        :publisher,
+        fail_after_boot(fn _opts, _attrs ->
+          {:error, :beam_controller_instance_configuration_invalid}
+        end)
+      )
 
-    {pid, first} = start_owner(opts)
+    pid = start_supervised!({MembershipOwner, opts})
 
-    assert first =~
+    assert beat(pid, 1) =~
              "reason=beam_controller_instance_configuration_invalid suppressed_attempts=0"
 
     assert beat(pid, 2) == ""
@@ -199,6 +202,24 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
     assert beat(pid, 1) =~
              "reason=beam_controller_instance_configuration_invalid suppressed_attempts=2"
+  end
+
+  test "SPEC.md §8.3 boot fails closed when the first capability publication cannot be proven", %{
+    root: root
+  } do
+    {opts, trust} = identity_opts(root)
+
+    opts =
+      Keyword.put(opts, :publisher, fn _opts, _attrs ->
+        {:error, :beam_controller_instance_configuration_invalid}
+      end)
+
+    Process.flag(:trap_exit, true)
+
+    assert {:error, :beam_controller_instance_configuration_invalid} =
+             MembershipOwner.start_link(opts)
+
+    assert Repo.get(ControllerInstance, trust.controller_id) == nil
   end
 
   test "SPEC.md §8.3 a changed failure reason is logged without waiting for the interval", %{
@@ -210,10 +231,13 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     opts =
       opts
       |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:00:00.000000Z] end)
-      |> Keyword.put(:publisher, fn _opts, _attrs -> {:error, Agent.get(reason, & &1)} end)
+      |> Keyword.put(
+        :publisher,
+        fail_after_boot(fn _opts, _attrs -> {:error, Agent.get(reason, & &1)} end)
+      )
 
-    {pid, first} = start_owner(opts)
-    assert first =~ "reason=beam_controller_private_ipv4_invalid"
+    pid = start_supervised!({MembershipOwner, opts})
+    assert beat(pid, 1) =~ "reason=beam_controller_private_ipv4_invalid"
 
     Agent.update(reason, fn _previous -> :beam_controller_instance_mismatch end)
 
@@ -226,11 +250,15 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     opts =
       opts
       |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:00:00.000000Z] end)
-      |> Keyword.put(:publisher, fn _opts, _attrs ->
-        raise Postgrex.Error, message: "FATAL: password authentication failed for hunter2"
-      end)
+      |> Keyword.put(
+        :publisher,
+        fail_after_boot(fn _opts, _attrs ->
+          raise Postgrex.Error, message: "FATAL: password authentication failed for hunter2"
+        end)
+      )
 
-    {_pid, log} = start_owner(opts)
+    pid = start_supervised!({MembershipOwner, opts})
+    log = beat(pid, 1)
 
     assert log =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
     refute log =~ "hunter2"
@@ -242,7 +270,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     Logger.configure(level: :info)
     on_exit(fn -> Logger.configure(level: previous_level) end)
 
-    failing = start_supervised!({Agent, fn -> true end}, id: :failing)
+    failing = start_supervised!({Agent, fn -> false end}, id: :failing)
     observed_at = ~U[2026-07-16 01:02:03.000000Z]
 
     publisher = fn publisher_opts, attrs ->
@@ -258,7 +286,9 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
       |> Keyword.put(:clock, fn -> observed_at end)
       |> Keyword.put(:publisher, publisher)
 
-    {pid, _log} = start_owner(opts)
+    pid = start_supervised!({MembershipOwner, opts})
+    Agent.update(failing, fn _previous -> true end)
+    assert beat(pid, 1) =~ "reason=beam_controller_instance_configuration_invalid"
     Agent.update(failing, fn _previous -> false end)
 
     assert beat(pid, 1) =~
@@ -269,12 +299,17 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     assert beat(pid, 1) == ""
   end
 
-  defp start_owner(opts) do
-    with_log(fn ->
-      pid = start_supervised!({MembershipOwner, opts})
-      :sys.get_state(pid)
-      pid
-    end)
+  defp fail_after_boot(fun) do
+    booted = start_supervised!({Agent, fn -> false end}, id: {:booted, make_ref()})
+    fn opts, attrs -> publish_after_boot(booted, fun, opts, attrs) end
+  end
+
+  defp publish_after_boot(booted, fun, opts, attrs) do
+    if Agent.get_and_update(booted, fn booted -> {booted, true} end) do
+      fun.(opts, attrs)
+    else
+      ControllerInstances.heartbeat_local(opts, attrs)
+    end
   end
 
   defp beat(pid, count) do

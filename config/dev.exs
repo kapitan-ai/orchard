@@ -225,7 +225,9 @@ config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 {membership_private_ipv4, membership_scope} =
   Orchard.Config.SourceDevBeam.controller_membership_identity!(
     runtime_endpoint_transport,
-    beam_controller_node_name
+    System.get_env("ORCHARD_BEAM_NODE_NAME"),
+    membership_host: System.get_env("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
+    peer_grants_enabled?: beam_peer_grants_enabled?
   )
 
 config :orchard_controller, :controller_membership,
