@@ -494,7 +494,8 @@ defmodule Orchard.InferenceTest do
           "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
-          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root"
+          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root",
+          "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10"
         })
 
       assert Keyword.fetch!(inference, :runtime_endpoint_client_impl) ==
@@ -514,7 +515,8 @@ defmodule Orchard.InferenceTest do
           "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
-          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root"
+          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root",
+          "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10"
         })
 
       refute Keyword.has_key?(controller_config, :runtime_endpoint)
@@ -531,7 +533,8 @@ defmodule Orchard.InferenceTest do
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
           "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root",
-          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => "/protected/controller-launch.json"
+          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => "/protected/controller-launch.json",
+          "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10"
         })
       end
     end
@@ -549,7 +552,8 @@ defmodule Orchard.InferenceTest do
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
           "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
           "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root",
-          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => "/protected/controller-launch.json"
+          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => "/protected/controller-launch.json",
+          "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10"
         })
 
       assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam] == [
@@ -694,13 +698,15 @@ defmodule Orchard.InferenceTest do
     end
 
     test "runtime.exs rejects packaged local BEAM node services with invalid characters" do
-      assert_raise RuntimeError, ~r/ORCHARD_BEAM_NODE_NAME has invalid BEAM service name/, fn ->
-        read_runtime_controller_config!(%{
-          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
-          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
-          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller!@127.0.0.1"
-        })
-      end
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_BEAM_NODE_NAME local controller BEAM node service contains invalid characters/,
+                   fn ->
+                     read_runtime_controller_config!(%{
+                       "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                       "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+                       "ORCHARD_BEAM_NODE_NAME" => "orchard_controller!@127.0.0.1"
+                     })
+                   end
     end
   end
 
