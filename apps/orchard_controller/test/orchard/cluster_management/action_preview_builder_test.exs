@@ -82,6 +82,36 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilderTest do
 
     assert [blocker] = preview.blockers
     assert blocker.code == "invalid_controller_dispatch_ceiling"
+
+    assert ActionPreview.to_map(preview).dispatch_capacity_policy == %{
+             controller_dispatch_ceiling: nil,
+             policy_state: "unresolved",
+             warning_codes: []
+           }
+  end
+
+  test "SPEC.md §7.3.1 admission preview leaves the policy unresolved without an approval reason" do
+    node = insert_node!(state: :registered)
+
+    preview =
+      ActionPreviewBuilder.admit_node(node.id, %{
+        trust_evidence_ref: "registration-audit:test",
+        pool_id: Ecto.UUID.generate(),
+        routing_policy_id: Ecto.UUID.generate(),
+        controller_dispatch_ceiling: 4
+      })
+
+    map = ActionPreview.to_map(preview)
+
+    assert map.dispatch_capacity_policy == %{
+             controller_dispatch_ceiling: nil,
+             policy_state: "unresolved",
+             warning_codes: []
+           }
+
+    assert map.warnings == []
+    assert map.blockers == []
+    assert map.confirmation_requirements == ["requires_yes_flag", "requires_reason"]
   end
 
   test "decommission preview includes destructive confirmation requirements and consequences" do

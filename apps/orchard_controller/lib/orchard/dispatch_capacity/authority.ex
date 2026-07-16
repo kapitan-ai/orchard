@@ -8,8 +8,6 @@ defmodule Orchard.DispatchCapacity.Authority do
 
   use Ecto.Schema
 
-  import Ecto.Changeset
-
   @primary_key {:singleton, :boolean, autogenerate: false}
   @phases [:pre_cutover, :enforcing]
 
@@ -33,25 +31,5 @@ defmodule Orchard.DispatchCapacity.Authority do
     field(:cutover_reason, :string)
 
     timestamps(type: :utc_datetime_usec)
-  end
-
-  @doc """
-  Builds the only authority changeset supported by the non-enforcing foundation.
-  """
-  @spec pre_cutover_changeset(struct(), map()) :: Ecto.Changeset.t()
-  def pre_cutover_changeset(authority, attrs) do
-    authority
-    |> cast(attrs, [:singleton, :required_contract_version])
-    |> put_change(:enforcement_phase, :pre_cutover)
-    |> validate_required([:singleton, :enforcement_phase, :required_contract_version])
-    |> validate_acceptance(:singleton)
-    |> validate_number(:required_contract_version, greater_than: 0)
-    |> check_constraint(:singleton, name: :dispatch_capacity_authority_singleton)
-    |> check_constraint(:required_contract_version,
-      name: :dispatch_capacity_authority_required_contract_version
-    )
-    |> check_constraint(:enforcement_phase,
-      name: :dispatch_capacity_authority_phase_provenance
-    )
   end
 end

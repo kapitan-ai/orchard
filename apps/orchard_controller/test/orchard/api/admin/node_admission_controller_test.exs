@@ -325,8 +325,8 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert preview["action"] == "node_admission.admit"
       assert preview["target"] == %{"type" => "node", "id" => node.id}
       assert preview["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
-      assert preview["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == 1
-      assert preview["dispatch_capacity_policy"]["policy_state"] == "approved_explicit"
+      assert preview["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == nil
+      assert preview["dispatch_capacity_policy"]["policy_state"] == "unresolved"
 
       assert Enum.map(preview["blockers"], & &1["code"]) == [
                "trust_not_established",

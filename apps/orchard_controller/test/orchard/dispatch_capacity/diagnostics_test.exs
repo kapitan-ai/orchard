@@ -1,6 +1,8 @@
 defmodule Orchard.DispatchCapacity.DiagnosticsTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Orchard.DispatchCapacity.{Authority, CapacityEvidence, Diagnostics, Policy}
   alias Orchard.Nodes.Node
 
@@ -25,7 +27,6 @@ defmodule Orchard.DispatchCapacity.DiagnosticsTest do
     assert snapshot.evaluation.effective_dispatch_limit == 0
     assert snapshot.evaluation.dispatch_headroom == 0
     assert snapshot.evaluation.available_slots == 2
-    assert snapshot.evaluation.temporary_legacy_available_slots == 2
 
     assert snapshot.evaluation.reason_codes == [
              :dispatch_ceiling_not_approved,
@@ -39,7 +40,6 @@ defmodule Orchard.DispatchCapacity.DiagnosticsTest do
     assert snapshot.evaluation.controller_dispatch_ceiling == 2
     assert snapshot.evaluation.effective_dispatch_limit == 0
     assert snapshot.evaluation.dispatch_headroom == 0
-    assert snapshot.evaluation.temporary_legacy_available_slots == 3
 
     assert snapshot.evaluation.reason_codes == [
              :controller_dispatch_ceiling_not_yet_enforcing,
@@ -64,7 +64,6 @@ defmodule Orchard.DispatchCapacity.DiagnosticsTest do
     snapshot = snapshot(policy: approved_policy(2), evidence: evidence)
 
     assert snapshot.evaluation.available_slots == 0
-    assert snapshot.evaluation.temporary_legacy_available_slots == nil
     assert :runtime_capacity_observation_stale in snapshot.evaluation.reason_codes
   end
 
@@ -98,11 +97,18 @@ defmodule Orchard.DispatchCapacity.DiagnosticsTest do
   end
 
   test "operator snapshots fail closed when persistence is unavailable or an ID is not durable" do
-    [snapshot] = Diagnostics.snapshots([node_fixture(id: "support-bundle-node")]) |> Map.values()
+    log =
+      capture_log(fn ->
+        [snapshot] =
+          Diagnostics.snapshots([node_fixture(id: "support-bundle-node")]) |> Map.values()
 
-    assert snapshot.counterfactual?
-    assert snapshot.evaluation.authority_decision == :fail_closed
-    assert :controller_dispatch_ceiling_missing in snapshot.evaluation.reason_codes
+        assert snapshot.counterfactual?
+        assert snapshot.evaluation.authority_decision == :fail_closed
+        assert :controller_dispatch_ceiling_missing in snapshot.evaluation.reason_codes
+      end)
+
+    assert log =~ "could not read the dispatch-capacity authority"
+    assert log =~ "fell back to fail-closed facts"
   end
 
   defp snapshot(overrides) do

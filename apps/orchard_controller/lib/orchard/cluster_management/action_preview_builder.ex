@@ -224,18 +224,16 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   defp capacity_policy_preview(attrs) do
     case Nodes.admission_capacity_policy(attrs) do
       {:ok, policy} -> policy
-      {:error, :capacity_policy_reason_required} -> unresolved_capacity_policy(attrs)
-      {:error, :invalid_controller_dispatch_ceiling} -> unresolved_capacity_policy(attrs)
+      {:error, :capacity_policy_reason_required} -> unresolved_capacity_policy()
+      {:error, :invalid_controller_dispatch_ceiling} -> unresolved_capacity_policy()
     end
   end
 
-  defp unresolved_capacity_policy(attrs) do
+  defp unresolved_capacity_policy do
     %{
-      controller_dispatch_ceiling:
-        Map.get(attrs, "controller_dispatch_ceiling") ||
-          Map.get(attrs, :controller_dispatch_ceiling) || 1,
-      policy_state: :approved_explicit,
-      warning_codes: [:controller_dispatch_ceiling_not_yet_enforcing]
+      controller_dispatch_ceiling: nil,
+      policy_state: :unresolved,
+      warning_codes: []
     }
   end
 

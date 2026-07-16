@@ -120,6 +120,42 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
            }
   end
 
+  test "SPEC.md §4.6.2 a malformed capacity value stays invalid when its pair is missing" do
+    malformed_active = Observation.new(%{aggregate_active_request_count: -1})
+
+    assert malformed_active.aggregate_capacity_evidence == %{
+             active_request_count: nil,
+             runtime_concurrency_limit: nil,
+             validity: :invalid
+           }
+
+    malformed_limit = Observation.new(%{aggregate_max_concurrency: 0})
+
+    assert malformed_limit.aggregate_capacity_evidence == %{
+             active_request_count: nil,
+             runtime_concurrency_limit: nil,
+             validity: :invalid
+           }
+  end
+
+  test "SPEC.md §4.6.2 absent capacity values stay missing rather than invalid" do
+    observation = Observation.new(%{})
+
+    assert observation.aggregate_capacity_evidence == %{
+             active_request_count: nil,
+             runtime_concurrency_limit: nil,
+             validity: :missing
+           }
+
+    partial = Observation.new(%{aggregate_active_request_count: 2})
+
+    assert partial.aggregate_capacity_evidence == %{
+             active_request_count: 2,
+             runtime_concurrency_limit: nil,
+             validity: :missing
+           }
+  end
+
   test "target normalization preserves default gRPC fallback and admits explicit BEAM targets" do
     grpc_target = Target.normalize(host: "127.0.0.1", port: 50_071)
 

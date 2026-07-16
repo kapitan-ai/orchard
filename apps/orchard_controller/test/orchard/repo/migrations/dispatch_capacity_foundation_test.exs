@@ -272,6 +272,55 @@ defmodule Orchard.Repo.Migrations.DispatchCapacityFoundationTest do
     assert %Policy{policy_state: :approved_explicit} = DispatchCapacity.get_policy(node_id)
   end
 
+  test "SPEC.md section 13.2 rollback is vetoed by authoritative state but not by renewable facts" do
+    set_admission_fence("DISABLE")
+    node_id = insert_node("rollback-guard", "active")
+    decision_id = insert_admission_decision(node_id, ~U[2026-07-16 02:00:00.000000Z])
+
+    Repo.query!(
+      """
+      INSERT INTO node_dispatch_capacity_policies (
+        node_id, admission_decision_id, policy_state, legacy_admitted_at,
+        version, inserted_at, updated_at
+      )
+      VALUES ($1, $2, 'shadow_legacy', NOW(), 1, NOW(), NOW())
+      """,
+      dump_uuids([node_id, decision_id])
+    )
+
+    assert {:ok, _evidence} =
+             CapacityEvidence.changeset(%CapacityEvidence{}, %{
+               node_id: node_id,
+               runtime_concurrency_limit: 4,
+               active_request_count: 1,
+               validity: :valid,
+               observed_at: ~U[2026-07-16 02:00:00.000000Z]
+             })
+             |> Repo.insert()
+
+    Repo.query!("""
+    UPDATE controller_instances
+    SET software_version = '0.0.0-test',
+        dispatch_capacity_contract_version = 1,
+        dispatch_capacity_consumers_ready = false,
+        dispatch_capacity_capability_observed_at = NOW()
+    """)
+
+    assert %Postgrex.Result{} = Repo.query!(Migration.rollback_guard_sql())
+
+    admitted_id = insert_node("rollback-guard-admitted", "active")
+
+    admitted_decision_id =
+      insert_admission_decision(admitted_id, ~U[2026-07-16 02:00:01.000000Z])
+
+    Repo.query!(explicit_policy_insert_sql(), dump_uuids([admitted_id, admitted_decision_id]))
+    set_admission_fence("ENABLE")
+
+    assert_raise Postgrex.Error, ~r/explicit export and recovery plan/, fn ->
+      Repo.query!(Migration.rollback_guard_sql())
+    end
+  end
+
   defp insert_node(label, state) do
     id = Ecto.UUID.generate()
 

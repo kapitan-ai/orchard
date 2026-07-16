@@ -107,7 +107,6 @@ defmodule Orchard.ClusterManagement.ContractTest do
                  management_class: :production_managed,
                  authority_decision: :legacy_pre_cutover,
                  available_slots: 3,
-                 temporary_legacy_available_slots: 3,
                  legacy_pre_cutover_limit: 4,
                  legacy_pre_cutover_reported_allocation: 1,
                  legacy_pre_cutover_claim_count: 0,
@@ -128,7 +127,6 @@ defmodule Orchard.ClusterManagement.ContractTest do
     refute capacity.consumers_ready
     assert capacity.effective_dispatch_limit == 0
     assert capacity.dispatch_headroom == 0
-    assert capacity.temporary_legacy_available_slots == 3
     assert capacity.controller_dispatch_ceiling == 2
   end
 

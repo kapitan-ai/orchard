@@ -17,6 +17,8 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
 
   import Ecto.Query, only: [from: 2]
 
+  require Logger
+
   @admitted_states [:admitted, :active, :cordoned, :draining, :maintenance, :decommissioning]
 
   defmodule Snapshot do
@@ -55,16 +57,22 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
   @spec snapshot(map(), keyword()) :: Snapshot.t()
   def snapshot(node, opts \\ []) when is_map(node) do
     authority =
-      option(opts, :authority, fn -> safe_read(nil, &DispatchCapacity.get_authority/0) end)
+      option(opts, :authority, fn ->
+        safe_read(nil, "the dispatch-capacity authority", &DispatchCapacity.get_authority/0)
+      end)
 
     policy =
       option(opts, :policy, fn ->
-        safe_read(nil, fn -> DispatchCapacity.get_policy(field(node, :id)) end)
+        safe_read(nil, "the Node dispatch-capacity policy", fn ->
+          DispatchCapacity.get_policy(field(node, :id))
+        end)
       end)
 
     evidence =
       option(opts, :evidence, fn ->
-        safe_read(nil, fn -> DispatchCapacity.get_capacity_evidence(field(node, :id)) end)
+        safe_read(nil, "Node runtime capacity evidence", fn ->
+          DispatchCapacity.get_capacity_evidence(field(node, :id))
+        end)
       end)
 
     now = Keyword.get_lazy(opts, :now, &utc_now/0)
@@ -107,7 +115,9 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
     node_ids = nodes |> Enum.map(&field(&1, :id)) |> Enum.reject(&is_nil/1)
 
     authority =
-      option(opts, :authority, fn -> safe_read(nil, &DispatchCapacity.get_authority/0) end)
+      option(opts, :authority, fn ->
+        safe_read(nil, "the dispatch-capacity authority", &DispatchCapacity.get_authority/0)
+      end)
 
     policies = policies_by_node(node_ids, opts)
     evidence = evidence_by_node(node_ids, opts)
@@ -225,19 +235,24 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
     case Keyword.fetch(opts, :policy) do
       {:ok, %Policy{node_id: node_id} = policy} -> %{node_id => policy}
       {:ok, _policy} -> %{}
-      :error -> read_rows_by_node(Policy, node_ids)
+      :error -> read_rows_by_node(Policy, "Node dispatch-capacity policies", node_ids)
     end
   end
 
   defp evidence_by_node(node_ids, opts) do
     case Keyword.fetch(opts, :evidence) do
-      {:ok, %CapacityEvidence{node_id: node_id} = evidence} -> %{node_id => evidence}
-      {:ok, _evidence} -> %{}
-      :error -> read_rows_by_node(CapacityEvidence, node_ids)
+      {:ok, %CapacityEvidence{node_id: node_id} = evidence} ->
+        %{node_id => evidence}
+
+      {:ok, _evidence} ->
+        %{}
+
+      :error ->
+        read_rows_by_node(CapacityEvidence, "Node runtime capacity evidence", node_ids)
     end
   end
 
-  defp read_rows_by_node(queryable, node_ids) do
+  defp read_rows_by_node(queryable, source, node_ids) do
     node_ids = Enum.filter(node_ids, &valid_uuid?/1)
 
     case node_ids do
@@ -245,7 +260,7 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
         %{}
 
       ids ->
-        safe_read(%{}, fn ->
+        safe_read(%{}, source, fn ->
           queryable |> where_node_id_in(ids) |> Repo.all() |> index_by_node()
         end)
     end
@@ -266,12 +281,23 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
     end
   end
 
-  defp safe_read(fallback, fun) do
+  defp safe_read(fallback, source, fun) do
     fun.()
   rescue
-    _exception -> fallback
+    exception ->
+      log_read_fallback(source, :error, exception, __STACKTRACE__)
+      fallback
   catch
-    _kind, _reason -> fallback
+    kind, reason ->
+      log_read_fallback(source, kind, reason, __STACKTRACE__)
+      fallback
+  end
+
+  defp log_read_fallback(source, kind, reason, stacktrace) do
+    Logger.warning(fn ->
+      "dispatch-capacity diagnostics could not read #{source} and fell back to fail-closed " <>
+        "facts: " <> Exception.format(kind, reason, stacktrace)
+    end)
   end
 
   defp field(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))

@@ -46,19 +46,6 @@ defmodule Orchard.DispatchCapacity.Policy do
   end
 
   @doc """
-  Builds a bounded migration policy linked to its durable admission decision.
-  """
-  @spec shadow_legacy_changeset(struct(), map()) :: Ecto.Changeset.t()
-  def shadow_legacy_changeset(policy, attrs) do
-    policy
-    |> cast(attrs, [:node_id, :admission_decision_id, :legacy_admitted_at, :version])
-    |> put_change(:policy_state, :shadow_legacy)
-    |> validate_common()
-    |> validate_required([:legacy_admitted_at])
-    |> apply_constraints()
-  end
-
-  @doc """
   Builds an explicit policy approval for use while the authority is pre-cutover.
   """
   @spec approved_explicit_changeset(struct(), map()) :: Ecto.Changeset.t()

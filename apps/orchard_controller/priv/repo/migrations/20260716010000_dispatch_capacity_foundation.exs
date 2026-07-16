@@ -215,37 +215,7 @@ defmodule Orchard.Repo.Migrations.DispatchCapacityFoundation do
   end
 
   def down do
-    execute("""
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1
-        FROM dispatch_capacity_authority
-        WHERE enforcement_phase <> 'pre_cutover'
-           OR cutover_by_actor_type IS NOT NULL
-           OR cutover_by_actor_id IS NOT NULL
-           OR cutover_at IS NOT NULL
-           OR cutover_reason IS NOT NULL
-      ) OR EXISTS (
-        SELECT 1
-        FROM node_dispatch_capacity_policies
-        WHERE policy_state <> 'shadow_legacy'
-      ) OR EXISTS (
-        SELECT 1 FROM node_runtime_capacity_evidence
-      ) OR EXISTS (
-        SELECT 1
-        FROM controller_instances
-        WHERE software_version IS NOT NULL
-           OR dispatch_capacity_contract_version IS NOT NULL
-           OR dispatch_capacity_consumers_ready IS NOT NULL
-           OR dispatch_capacity_capability_observed_at IS NOT NULL
-      ) THEN
-        RAISE EXCEPTION
-          'dispatch-capacity foundation rollback requires an explicit export and recovery plan';
-      END IF;
-    END;
-    $$
-    """)
+    execute(rollback_guard_sql())
 
     alter table(:controller_instances) do
       remove(:dispatch_capacity_capability_observed_at)
@@ -274,7 +244,37 @@ defmodule Orchard.Repo.Migrations.DispatchCapacityFoundation do
     execute("DROP TYPE node_dispatch_capacity_policy_state")
   end
 
-  @doc false
+  @doc """
+  Returns the guard that vetoes rollback while authoritative capacity state exists.
+  """
+  def rollback_guard_sql do
+    """
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM dispatch_capacity_authority
+        WHERE enforcement_phase <> 'pre_cutover'
+           OR cutover_by_actor_type IS NOT NULL
+           OR cutover_by_actor_id IS NOT NULL
+           OR cutover_at IS NOT NULL
+           OR cutover_reason IS NOT NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM node_dispatch_capacity_policies
+        WHERE policy_state <> 'shadow_legacy'
+      ) THEN
+        RAISE EXCEPTION
+          'dispatch-capacity foundation rollback requires an explicit export and recovery plan';
+      END IF;
+    END;
+    $$
+    """
+  end
+
+  @doc """
+  Returns the bounded `shadow_legacy` backfill for Nodes admitted before this migration.
+  """
   def backfill_sql do
     """
     INSERT INTO node_dispatch_capacity_policies (

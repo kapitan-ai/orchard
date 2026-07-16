@@ -13,40 +13,6 @@ defmodule Orchard.ClusterManagement.NodeStatus do
   @transport_values ~w(reachable timeout connect_failed identity_mismatch target_unconfigured unknown)
   @runtime_values ~w(ready not_ready unsupported unknown)
   @compatibility_values ~w(compatible legacy_metadata partial_metadata version_skew unsupported_version unknown)
-  @dispatch_capacity_reason_codes ~w(
-    runtime_endpoint_management_class_missing
-    runtime_endpoint_management_class_invalid
-    dispatch_capacity_phase_policy_mismatch
-    controller_dispatch_ceiling_missing
-    dispatch_ceiling_shadow_mismatch
-    dispatch_ceiling_not_approved
-    controller_dispatch_ceiling_invalid
-    runtime_endpoint_identity_untrusted
-    node_lifecycle_not_active
-    node_health_invalid
-    node_health_unhealthy
-    node_health_not_healthy
-    node_health_degraded
-    node_heartbeat_stale
-    runtime_capacity_observation_stale
-    runtime_concurrency_limit_unknown
-    runtime_active_request_count_legacy_fallback
-    controller_accounted_allocation_invalid
-    temporary_legacy_claim_count_invalid
-    pool_not_allowed
-    model_format_unsupported
-    memory_headroom_insufficient
-    circuit_breaker_open
-    placement_capacity_unknown
-    placement_capacity_invalid
-    controller_dispatch_ceiling_not_yet_enforcing
-    dispatch_capacity_pre_cutover_legacy
-    controller_dispatch_ceiling_zero
-    runtime_concurrency_limit_exhausted
-    controller_dispatch_ceiling_exhausted
-    dispatch_headroom_exhausted
-    placement_capacity_exhausted
-  )
 
   defstruct object: @object,
             contract_version: @contract_version,
@@ -201,7 +167,6 @@ defmodule Orchard.ClusterManagement.NodeStatus do
           management_class: "invalid",
           authority_decision: "fail_closed",
           available_slots: 0,
-          temporary_legacy_available_slots: nil,
           legacy_pre_cutover_limit: nil,
           legacy_pre_cutover_reported_allocation: nil,
           legacy_pre_cutover_claim_count: nil,
@@ -223,7 +188,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
   defp dispatch_capacity_reason_codes(codes) when is_list(codes) do
     normalized = Enum.map(codes, &Value.normalize_string/1)
 
-    case Enum.find(normalized, &(&1 not in @dispatch_capacity_reason_codes)) do
+    case Enum.find(normalized, &(&1 not in ReasonCodes.dispatch_capacity_codes())) do
       nil -> {:ok, normalized}
       unknown -> {:error, {:unknown_dispatch_capacity_reason_code, unknown}}
     end

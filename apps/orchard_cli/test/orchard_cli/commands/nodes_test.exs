@@ -550,7 +550,8 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["action"] == "node_admission.admit"
       assert decoded["target"] == %{"type" => "node", "id" => node.id}
       assert decoded["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
-      assert decoded["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == 1
+      assert decoded["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == nil
+      assert decoded["dispatch_capacity_policy"]["policy_state"] == "unresolved"
 
       assert Enum.map(decoded["blockers"], & &1["code"]) == [
                "trust_not_established",
@@ -580,6 +581,51 @@ defmodule OrchardCLI.Commands.NodesTest do
       decoded = Jason.decode!(output)
       assert decoded["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
       assert decoded["blockers"] == []
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "SPEC.md §7.3.1 yes execution without a capacity policy reason stops before mutation" do
+      node = insert_node!(state: :registered, display_name: "admit-needs-capacity-reason-node")
+
+      assert {:error, message, 2} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--yes",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate()
+               ])
+
+      assert message =~ "requires a nonblank --capacity-policy-reason before execution"
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "SPEC.md §7.3.1 an invalid dispatch ceiling blocks admission with a readable message" do
+      node = insert_node!(state: :registered, display_name: "admit-invalid-ceiling-node")
+
+      assert {:error, message, 2} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--yes",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate(),
+                 "--capacity-policy-reason",
+                 "invalid bound",
+                 "--controller-dispatch-ceiling",
+                 "-1"
+               ])
+
+      assert message =~ "cannot execute because preview blockers are present"
+      assert message =~ "invalid_controller_dispatch_ceiling"
       assert Repo.get!(Node, node.id).state == :registered
     end
 
@@ -625,7 +671,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                    "--pool-id",
                    Ecto.UUID.generate(),
                    "--routing-policy-id",
-                   Ecto.UUID.generate()
+                   Ecto.UUID.generate(),
+                   "--capacity-policy-reason",
+                   "approved by CLI test"
                  ])
 
         assert message == "Error: this controller has not proven local leadership."
@@ -649,7 +697,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                    "--pool-id",
                    Ecto.UUID.generate(),
                    "--routing-policy-id",
-                   Ecto.UUID.generate()
+                   Ecto.UUID.generate(),
+                   "--capacity-policy-reason",
+                   "approved by CLI test"
                  ])
 
         assert Jason.decode!(json)["code"] == "controller_leadership_unproven"

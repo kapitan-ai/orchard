@@ -1,8 +1,22 @@
 defmodule Orchard.DispatchCapacity.EvaluatorTest do
   use ExUnit.Case, async: true
 
+  alias Orchard.ClusterManagement.{NodeStatus, ReasonCodes}
   alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.DispatchCapacity.Evaluator.Input
+
+  test "SPEC.md §7.3.1 every evaluator reason code renders on the shared status contract" do
+    assert Evaluator.reason_precedence() ==
+             Enum.map(ReasonCodes.dispatch_capacity_codes(), &String.to_existing_atom/1)
+
+    assert {:ok, status} =
+             NodeStatus.new(%{
+               resource: %{type: "node", id: Ecto.UUID.generate()},
+               dispatch_capacity: %{reason_codes: Evaluator.reason_precedence()}
+             })
+
+    assert status.dispatch_capacity.reason_codes == ReasonCodes.dispatch_capacity_codes()
+  end
 
   describe "production phase-policy truth table" do
     test "returns the required decision for every phase-policy combination" do
@@ -231,7 +245,6 @@ defmodule Orchard.DispatchCapacity.EvaluatorTest do
       assert result.authority_decision == :legacy_pre_cutover
       assert result.effective_dispatch_limit == 0
       assert result.dispatch_headroom == 0
-      assert result.temporary_legacy_available_slots == 1
       assert result.legacy_pre_cutover_limit == 3
       assert result.legacy_pre_cutover_reported_allocation == 1
       assert result.legacy_pre_cutover_claim_count == 1
@@ -296,7 +309,6 @@ defmodule Orchard.DispatchCapacity.EvaluatorTest do
           temporary_legacy_claim_count: 0
         })
 
-      assert fallback.temporary_legacy_available_slots == 1
       assert fallback.eligible?
 
       assert fallback.reason_codes == [
@@ -316,7 +328,6 @@ defmodule Orchard.DispatchCapacity.EvaluatorTest do
           aggregate_active_count: :missing
         })
 
-      assert stale.temporary_legacy_available_slots == nil
       refute stale.eligible?
 
       assert stale.reason_codes == [
@@ -351,7 +362,6 @@ defmodule Orchard.DispatchCapacity.EvaluatorTest do
           temporary_legacy_claim_count: :invalid
         })
 
-      assert invalid_claims.temporary_legacy_available_slots == nil
       refute invalid_claims.eligible?
 
       assert invalid_claims.reason_codes == [
@@ -430,7 +440,6 @@ defmodule Orchard.DispatchCapacity.EvaluatorTest do
 
         assert result.authority_decision == :fail_closed
         assert result.available_slots == 0
-        assert result.temporary_legacy_available_slots == nil
         refute result.eligible?
         assert result.reason_codes == [reason]
       end

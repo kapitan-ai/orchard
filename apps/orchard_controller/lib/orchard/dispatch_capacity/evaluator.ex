@@ -136,7 +136,6 @@ defmodule Orchard.DispatchCapacity.Evaluator do
       :management_class,
       :authority_decision,
       :available_slots,
-      :temporary_legacy_available_slots,
       :legacy_pre_cutover_limit,
       :legacy_pre_cutover_reported_allocation,
       :legacy_pre_cutover_claim_count,
@@ -161,7 +160,6 @@ defmodule Orchard.DispatchCapacity.Evaluator do
             management_class: management_class(),
             authority_decision: authority_decision(),
             available_slots: non_neg_integer(),
-            temporary_legacy_available_slots: non_neg_integer() | nil,
             legacy_pre_cutover_limit: pos_integer() | nil,
             legacy_pre_cutover_reported_allocation: non_neg_integer() | nil,
             legacy_pre_cutover_claim_count: non_neg_integer() | nil,
@@ -173,43 +171,15 @@ defmodule Orchard.DispatchCapacity.Evaluator do
   end
 
   alias __MODULE__.{Input, Result}
+  alias Orchard.ClusterManagement.ReasonCodes
 
-  @reason_precedence [
-    :runtime_endpoint_management_class_missing,
-    :runtime_endpoint_management_class_invalid,
-    :dispatch_capacity_phase_policy_mismatch,
-    :controller_dispatch_ceiling_missing,
-    :dispatch_ceiling_shadow_mismatch,
-    :dispatch_ceiling_not_approved,
-    :controller_dispatch_ceiling_invalid,
-    :runtime_endpoint_identity_untrusted,
-    :node_lifecycle_not_active,
-    :node_health_invalid,
-    :node_health_unhealthy,
-    :node_health_not_healthy,
-    :node_health_degraded,
-    :node_heartbeat_stale,
-    :runtime_capacity_observation_stale,
-    :runtime_concurrency_limit_unknown,
-    :runtime_active_request_count_legacy_fallback,
-    :controller_accounted_allocation_invalid,
-    :temporary_legacy_claim_count_invalid,
-    :pool_not_allowed,
-    :model_format_unsupported,
-    :memory_headroom_insufficient,
-    :circuit_breaker_open,
-    :placement_capacity_unknown,
-    :placement_capacity_invalid,
-    :controller_dispatch_ceiling_not_yet_enforcing,
-    :dispatch_capacity_pre_cutover_legacy,
-    :controller_dispatch_ceiling_zero,
-    :runtime_concurrency_limit_exhausted,
-    :controller_dispatch_ceiling_exhausted,
-    :dispatch_headroom_exhausted,
-    :placement_capacity_exhausted
-  ]
+  @reason_precedence Enum.map(ReasonCodes.dispatch_capacity_codes(), &String.to_atom/1)
 
   @reason_order @reason_precedence |> Enum.with_index() |> Map.new()
+
+  @doc "Returns the shared dispatch-capacity reason codes in precedence order."
+  @spec reason_precedence() :: [Result.reason_code()]
+  def reason_precedence, do: @reason_precedence
 
   @doc "Evaluates the shared dispatch-capacity contract from normalized facts."
   @spec evaluate(Input.t()) :: Result.t()
@@ -249,7 +219,6 @@ defmodule Orchard.DispatchCapacity.Evaluator do
       management_class: management_class,
       authority_decision: decision,
       available_slots: available_slots,
-      temporary_legacy_available_slots: evaluation.temporary_legacy_slots,
       legacy_pre_cutover_limit: evaluation.legacy_limit,
       legacy_pre_cutover_reported_allocation: evaluation.legacy_reported_allocation,
       legacy_pre_cutover_claim_count: evaluation.legacy_claim_count,

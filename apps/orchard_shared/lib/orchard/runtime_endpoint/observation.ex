@@ -149,14 +149,17 @@ defmodule Orchard.RuntimeEndpoint.Observation do
     }
   end
 
-  defp aggregate_capacity_validity(active, limit)
-       when is_integer(active) and active >= 0 and is_integer(limit) and limit > 0,
-       do: :valid
+  defp aggregate_capacity_validity(active, limit) do
+    cond do
+      malformed?(active, &non_negative_or_nil/1) -> :invalid
+      malformed?(limit, &positive_or_nil/1) -> :invalid
+      is_nil(active) or is_nil(limit) -> :missing
+      true -> :valid
+    end
+  end
 
-  defp aggregate_capacity_validity(active, limit) when is_nil(active) or is_nil(limit),
-    do: :missing
-
-  defp aggregate_capacity_validity(_active, _limit), do: :invalid
+  defp malformed?(nil, _normalizer), do: false
+  defp malformed?(value, normalizer), do: is_nil(normalizer.(value))
 
   defp non_negative_or_nil(value) when is_integer(value) and value >= 0, do: value
   defp non_negative_or_nil(_value), do: nil

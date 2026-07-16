@@ -140,7 +140,6 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
       assert status.dispatch_capacity.controller_dispatch_ceiling == 2
       assert status.dispatch_capacity.effective_dispatch_limit == 0
       assert status.dispatch_capacity.dispatch_headroom == 0
-      assert status.dispatch_capacity.temporary_legacy_available_slots == 3
     end
 
     test "node_status_maps threads batched admission decisions" do
@@ -206,7 +205,6 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
       management_class: :production_managed,
       authority_decision: :legacy_pre_cutover,
       available_slots: 3,
-      temporary_legacy_available_slots: 3,
       legacy_pre_cutover_limit: 4,
       legacy_pre_cutover_reported_allocation: 1,
       legacy_pre_cutover_claim_count: 0,

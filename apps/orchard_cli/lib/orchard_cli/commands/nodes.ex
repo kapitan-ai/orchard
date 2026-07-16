@@ -207,20 +207,18 @@ defmodule OrchardCLI.Commands.Nodes do
   defp preview_and_execute_admit(opts) do
     preview = ActionPreviewBuilder.admit_node(opts.id, opts.attrs)
 
-    if preview_blocked?(preview) or not opts.yes? do
-      confirmation_error(preview, opts, :admit)
-    else
-      execute_admit(opts)
+    case admission_confirmation_error(preview, opts, :admit) do
+      nil -> execute_admit(opts)
+      message -> confirmation_error(preview, opts, :admit, message)
     end
   end
 
   defp preview_and_execute_reject(opts) do
     preview = ActionPreviewBuilder.reject_admission(opts.id, opts.attrs)
 
-    if preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) do
-      confirmation_error(preview, opts, :reject)
-    else
-      execute_reject(opts)
+    case admission_confirmation_error(preview, opts, :reject) do
+      nil -> execute_reject(opts)
+      message -> confirmation_error(preview, opts, :reject, message)
     end
   end
 
@@ -412,15 +410,6 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp unknown_option(flag), do: {:error, "Unknown option: #{flag}", 2}
 
-  defp confirmation_error(%ActionPreview{} = preview, %{json?: true}, _action) do
-    {:error, render_preview(preview, true), 2}
-  end
-
-  defp confirmation_error(%ActionPreview{} = preview, opts, action) do
-    message = confirmation_message(preview, opts, action)
-    {:error, message <> "\n\n" <> render_preview(preview, false), 2}
-  end
-
   defp confirmation_error(%ActionPreview{} = preview, %{json?: true}, _action, _message) do
     {:error, render_preview(preview, true), 2}
   end
@@ -429,7 +418,7 @@ defmodule OrchardCLI.Commands.Nodes do
     {:error, message <> "\n\n" <> render_preview(preview, false), 2}
   end
 
-  defp confirmation_message(preview, opts, action) do
+  defp admission_confirmation_error(%ActionPreview{} = preview, opts, action) do
     cond do
       preview_blocked?(preview) ->
         "Error: #{action_name(action)} cannot execute because preview blockers are present."
@@ -437,10 +426,17 @@ defmodule OrchardCLI.Commands.Nodes do
       not opts.yes? ->
         "Error: #{action_name(action)} requires --yes before execution."
 
+      "requires_reason" in preview.confirmation_requirements ->
+        "Error: #{action_name(action)} requires a nonblank #{reason_flag(action)} " <>
+          "before execution."
+
       true ->
-        "Error: #{action_name(action)} requires a nonblank --reason before execution."
+        nil
     end
   end
+
+  defp reason_flag(:admit), do: "--capacity-policy-reason"
+  defp reason_flag(:reject), do: "--reason"
 
   defp lifecycle_confirmation_error(%ActionPreview{} = preview, opts) do
     if preview_blocked?(preview) do
@@ -497,6 +493,16 @@ defmodule OrchardCLI.Commands.Nodes do
     do: {:error, "Error: the admission action could not be completed.", 1}
 
   defp human_reason(:admission_not_pending), do: "admission is not pending."
+
+  defp human_reason(:capacity_policy_reason_required),
+    do: "a nonblank --capacity-policy-reason is required."
+
+  defp human_reason(:invalid_controller_dispatch_ceiling),
+    do: "--controller-dispatch-ceiling must be a non-negative integer."
+
+  defp human_reason(:dispatch_capacity_phase_unsupported),
+    do: "the cluster dispatch-capacity phase does not support this action."
+
   defp human_reason(:admission_rejected), do: "admission rejection must be cleared first."
   defp human_reason(:controller_standby), do: "this controller is in standby mode."
 
@@ -530,13 +536,6 @@ defmodule OrchardCLI.Commands.Nodes do
   defp human_reason(reason), do: "#{reason}."
 
   defp preview_blocked?(%ActionPreview{blockers: blockers}), do: blockers != []
-
-  defp reason_missing?(attrs) do
-    case Map.get(attrs, "reason") do
-      reason when is_binary(reason) -> String.trim(reason) == ""
-      _other -> true
-    end
-  end
 
   defp render_node(node, true), do: encode_json(node)
 
@@ -711,8 +710,6 @@ defmodule OrchardCLI.Commands.Nodes do
       "  Placement capacity: #{format_capacity_value(capacity.placement_capacity)}",
       "  Placement headroom: #{format_capacity_value(capacity.placement_headroom)}",
       "  Available slots: #{capacity.available_slots}",
-      "  Temporary legacy available slots: " <>
-        format_capacity_value(capacity.temporary_legacy_available_slots),
       "  Legacy pre-cutover limit: #{format_capacity_value(capacity.legacy_pre_cutover_limit)}",
       "  Legacy reported allocation: " <>
         format_capacity_value(capacity.legacy_pre_cutover_reported_allocation),
