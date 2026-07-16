@@ -73,7 +73,7 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
          failure: record_failure(nil, reason, observed_at)
        }}
     else
-      {:stop, sanitize_reason(reason)}
+      {:stop, fatal_reason(reason)}
     end
   end
 
@@ -95,9 +95,42 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
     if retryable?(reason) do
       {:noreply, %{state | failure: record_failure(state.failure, reason, observed_at)}}
     else
-      {:stop, sanitize_reason(reason), state}
+      {:stop, fatal_reason(reason), state}
     end
   end
+
+  defp fatal_reason(reason) do
+    sanitized = sanitize_reason(reason)
+
+    Logger.error(
+      "Controller membership publication failed permanently; capability evidence cannot be " <>
+        "published (reason=#{sanitized} #{diagnostic(reason)})"
+    )
+
+    sanitized
+  end
+
+  # The stop reason stays a stable code, so the diagnostic is the only place an
+  # operator learns which fault occurred. It carries the failure class, the
+  # SQLSTATE, and the server's own message; exception messages elsewhere may
+  # embed custody paths, queries, or connection strings and stay out.
+  defp diagnostic({:heartbeat_publish_exit, _reason}), do: "class=exit"
+
+  defp diagnostic({_tag, %Postgrex.Error{postgres: %{pg_code: sqlstate} = postgres}})
+       when is_binary(sqlstate) do
+    "class=Postgrex.Error sqlstate=#{sqlstate} detail=#{inspect(Map.get(postgres, :message))}"
+  end
+
+  defp diagnostic({_tag, exception}) when is_exception(exception) do
+    "class=#{inspect(exception.__struct__)}"
+  end
+
+  defp diagnostic(%Ecto.Changeset{} = changeset) do
+    fields = changeset |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
+    "class=Ecto.Changeset detail=#{inspect(fields)}"
+  end
+
+  defp diagnostic(_reason), do: "class=none"
 
   defp retryable?({:heartbeat_publish_failed, %DBConnection.ConnectionError{}}), do: true
 
@@ -106,7 +139,7 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
     String.starts_with?(sqlstate, @retryable_sqlstate_class) or sqlstate in @retryable_sqlstates
   end
 
-  defp retryable?({:heartbeat_publish_exit, {:timeout, {DBConnection.Holder, :checkout, _args}}}),
+  defp retryable?({:heartbeat_publish_exit, {_reason, {DBConnection.Holder, :checkout, _args}}}),
     do: true
 
   defp retryable?(_reason), do: false

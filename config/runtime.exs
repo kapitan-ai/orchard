@@ -1595,18 +1595,24 @@ end
 if config_env() == :dev do
   # Source dev resolves membership identity here rather than in config/dev.exs,
   # because compile-time config cannot reach the compiled shared resolver.
-  {membership_private_ipv4, membership_scope} =
-    Orchard.Config.ControllerMembership.identity!(
-      if(env_optional_string.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT") == "beam",
-        do: :beam,
-        else: :grpc
-      ),
-      env_optional_string.("ORCHARD_BEAM_NODE_NAME"),
-      membership_host: env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
-      peer_grants_enabled?: env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
-    )
+  # Only Controller-hosting roles carry a Controller membership identity;
+  # ORCHARD_BEAM_NODE_NAME names the node-agent on a node-agent-only host.
+  source_dev_role =
+    Orchard.Config.SourceDevBeam.source_dev_role(env_optional_string.("ORCHARD_SOURCE_DEV_ROLE"))
 
-  config :orchard_controller, :controller_membership,
-    private_ipv4: membership_private_ipv4,
-    scope: membership_scope
+  if source_dev_role in [:controller, :all_in_one] do
+    {membership_private_ipv4, membership_scope} =
+      Orchard.Config.ControllerMembership.identity!(
+        Orchard.Config.SourceDevBeam.transport!(
+          env_optional_string.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT")
+        ),
+        env_optional_string.("ORCHARD_BEAM_NODE_NAME"),
+        membership_host: env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
+        peer_grants_enabled?: env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+      )
+
+    config :orchard_controller, :controller_membership,
+      private_ipv4: membership_private_ipv4,
+      scope: membership_scope
+  end
 end

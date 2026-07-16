@@ -7,6 +7,10 @@ defmodule Orchard.Config.ControllerMembership do
   Controllers cannot drift apart on the identity that names a Controller
   forever.
 
+  This resolver lives in `orchard_shared` because `config/runtime.exs` is
+  evaluated by every umbrella app, including source-dev hosts that do not depend
+  on `orchard_controller` and so cannot load a module compiled into it.
+
   `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` is the only external source for the
   durable canonical Controller host. Membership identity never reads the BEAM
   Peer Grant control listener, so toggling grants cannot move a Controller's

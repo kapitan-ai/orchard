@@ -338,6 +338,83 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     end
   end
 
+  test "SPEC.md §8.3 every structured pool checkout exit defers rather than failing boot", %{
+    root: root
+  } do
+    for pool_reason <- [:timeout, :noproc, {:shutdown, :pool_terminated}] do
+      {opts, trust} = identity_opts(root)
+
+      opts =
+        opts
+        |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:02:03.000000Z] end)
+        |> Keyword.put(:publisher, fn _opts, _attrs ->
+          exit({pool_reason, {DBConnection.Holder, :checkout, [:pool, []]}})
+        end)
+
+      log = capture_log(fn -> start_supervised!({MembershipOwner, opts}) end)
+      pid = Process.whereis(MembershipOwner)
+
+      assert is_pid(pid)
+      assert log =~ "reason=heartbeat_publish_exit suppressed_attempts=0"
+      assert Repo.get(ControllerInstance, trust.controller_id) == nil
+
+      stop_supervised!(MembershipOwner)
+    end
+  end
+
+  test "SPEC.md §8.3 a fatal database fault names its SQLSTATE without leaking the query", %{
+    root: root
+  } do
+    {opts, trust} = identity_opts(root)
+
+    opts =
+      Keyword.put(opts, :publisher, fn _opts, _attrs ->
+        raise Postgrex.Error,
+          postgres: %{
+            code: "42P01",
+            severity: "ERROR",
+            message: "relation \"controller_instances\" does not exist"
+          },
+          query: "SELECT * FROM controller_instances WHERE token = 'hunter2'"
+      end)
+
+    Process.flag(:trap_exit, true)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :heartbeat_publish_failed} = MembershipOwner.start_link(opts)
+      end)
+
+    assert log =~ "reason=heartbeat_publish_failed"
+    assert log =~ "class=Postgrex.Error"
+    assert log =~ "sqlstate=42P01"
+    assert log =~ "relation \\\"controller_instances\\\" does not exist"
+    refute log =~ "hunter2"
+    assert Repo.get(ControllerInstance, trust.controller_id) == nil
+  end
+
+  test "SPEC.md §8.3 a fatal identity failure is diagnosed without custody detail", %{root: root} do
+    {opts, _trust} = identity_opts(root)
+
+    opts =
+      Keyword.put(opts, :publisher, fn _opts, _attrs ->
+        raise File.Error,
+          reason: :enoent,
+          action: "read file",
+          path: "/Library/Application Support/Orchard/support/beam-authorization-root"
+      end)
+
+    Process.flag(:trap_exit, true)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :heartbeat_publish_failed} = MembershipOwner.start_link(opts)
+      end)
+
+    assert log =~ "class=File.Error"
+    refute log =~ "beam-authorization-root"
+  end
+
   test "SPEC.md §8.3 a fatal failure after boot stops the owner rather than retrying", %{
     root: root
   } do

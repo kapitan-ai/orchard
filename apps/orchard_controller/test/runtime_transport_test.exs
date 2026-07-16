@@ -1,3 +1,5 @@
+Code.require_file(Path.expand("../../../config/source_dev_beam.exs", __DIR__))
+
 defmodule Orchard.RuntimeTransportTest do
   use ExUnit.Case, async: false
 
@@ -767,6 +769,56 @@ defmodule Orchard.RuntimeTransportTest do
     assert_raise RuntimeError, ~r/ORCHARD_TRANSPORT_MODE must be/, fn ->
       read_controller_config!(support_root, %{"ORCHARD_TRANSPORT_MODE" => "https"})
     end
+  end
+
+  test "SPEC.md §8.3 a source-dev node-agent carries no Controller membership identity", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "node_agent",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_node_agent@10.0.0.7"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == nil
+    assert config[:controller_membership][:scope] == nil
+  end
+
+  test "SPEC.md §8.3 a source-dev Controller resolves its membership identity", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == "10.0.0.10"
+    assert config[:controller_membership][:scope] == :remote_beam
+  end
+
+  defp read_dev_config!(support_root, overrides) do
+    base = %{
+      "MIX_RELEASE_NAME" => nil,
+      "ORCHARD_SUPPORT_ROOT" => support_root,
+      "RELEASE_NAME" => nil,
+      "SECRET_KEY_BASE" => String.duplicate("runtime-secret", 8)
+    }
+
+    clear_config_env!()
+
+    base
+    |> Map.merge(overrides)
+    |> Enum.each(fn
+      {key, nil} -> System.delete_env(key)
+      {key, value} -> System.put_env(key, value)
+    end)
+
+    @runtime_config
+    |> Config.Reader.read!(env: :dev)
+    |> Keyword.get(:orchard_controller, [])
   end
 
   defp read_controller_config!(support_root, overrides) do
