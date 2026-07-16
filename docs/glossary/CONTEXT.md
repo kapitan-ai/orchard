@@ -109,6 +109,21 @@ _Avoid_: Primary worker
 A non-leader Controller instance that may serve liveness but must not mutate runtime cluster state.
 _Avoid_: Secondary active controller
 
+**Controller Instance**:
+A Controller identified by its own durable membership identity, certificate identity, canonical BEAM node name, and BEAM Authorization Root custody reference.
+Controller-instance identity is durable cluster truth and never implies current leadership.
+_Avoid_: The controller, controller row, leader, Active Leader
+
+**Controller Membership Heartbeat**:
+The periodic write in which one Controller instance atomically refreshes its own last-seen timestamp and its complete Controller Capability Evidence tuple.
+It reports membership, not leadership, and a failed heartbeat leaves the previous evidence stale rather than partially updated.
+_Avoid_: Node Heartbeat, leader election, liveness probe, keepalive
+
+**Controller Capability Evidence**:
+The published tuple of a Controller instance's running Orchard version, supported dispatch-capacity contract version, indivisible all-consumers-ready declaration, and capability observation timestamp.
+It is the evidence an enforcement cutover reads to decide whether every non-retired Controller can honor the contract.
+_Avoid_: Node capability, feature flag, runtime telemetry, readiness probe
+
 **Advisory Lock**:
 A Postgres coordination lock used by Orchard for exclusive leadership and ownership of single-writer tasks.
 _Avoid_: Distributed lock service
@@ -532,6 +547,21 @@ _Avoid_: runtime active request count, worker occupancy, durable dispatch permit
 **Dispatch Headroom**:
 The count of additional allocations the Controller may make within the Effective Dispatch Limit.
 _Avoid_: Admitted Capacity, spare runtime slots, queue capacity, Placement Capacity, dispatch permit balance
+
+**Dispatch Capacity Enforcement Phase**:
+The single durable cluster-wide phase, `pre_cutover` or `enforcing`, that decides whether Controller Dispatch Ceilings are recorded policy or live allocation authority.
+While the phase is `pre_cutover`, an approved ceiling including `0` is not yet allocation authority.
+_Avoid_: feature flag, per-Node toggle, policy state, migration flag
+
+**Capacity Management Class**:
+The Controller-owned classification of whether a target's capacity is production-managed through admitted inventory or explicitly unmanaged for compatibility.
+Absent, malformed, or conflicting classification fails closed for production dispatch rather than normalizing to legacy behavior.
+_Avoid_: transport mode, node role, environment, deployment mode
+
+**Counterfactual Capacity Diagnostics**:
+The read-only report of what the shared capacity evaluation would decide if enforcement were live, exposed while every capacity consumer keeps its current behavior.
+It is observability, never authorization.
+_Avoid_: dry-run enforcement, shadow enforcement, simulated dispatch, capacity forecast
 
 **Candidate Tier**:
 A scheduling group based on model residency, such as loaded, cached, or cold.

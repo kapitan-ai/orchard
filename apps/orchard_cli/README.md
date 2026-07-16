@@ -21,7 +21,13 @@ This README is orientation only. Normative CLI requirements live in
   their milestones land: `node join`.
 - Node-admission-review commands (`nodes inspect`, `nodes pending`,
   `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
-  previews, and `--yes`/`--reason` execution gating.
+  previews, and `--yes` execution gating. `nodes reject` requires a nonblank
+  `--reason`. `nodes admit` requires a nonblank `--capacity-policy-reason` and
+  accepts an optional non-negative `--controller-dispatch-ceiling` that defaults
+  to `1` when omitted, persisting the Controller Dispatch Ceiling atomically
+  with admission. `nodes inspect` renders a counterfactual dispatch-capacity
+  block that reports what F11 enforcement would decide without changing dispatch
+  behavior.
 - Node lifecycle commands (`nodes cordon`, `nodes uncordon`, `nodes drain`,
   `nodes cancel-drain`, `nodes maintenance`, `nodes resume`,
   `nodes decommission`) on the shared Action Preview contract, with

@@ -24,11 +24,18 @@ product/system/build contract.
   `orchardctl nodes inspect`, `orchardctl nodes pending`,
   `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for
   the current node-admission-review slice, with stable JSON and human output,
-  `--dry-run` previews, and `--yes`/`--reason` execution gating.
+  `--dry-run` previews, and `--yes` execution gating; `orchardctl nodes reject`
+  additionally requires a nonblank `--reason`, and `orchardctl nodes admit`
+  requires a nonblank `--capacity-policy-reason` and accepts an optional
+  non-negative `--controller-dispatch-ceiling` that defaults to `1`, persisting
+  the Controller Dispatch Ceiling atomically with admission.
   `orchardctl nodes inspect` also surfaces an observe-only runtime
   memory-budget block, at parity with the Console node-detail memory telemetry
   group, when a matching Runtime Endpoint snapshot reports memory-budget
   telemetry and failing open to omission otherwise.
+  `orchardctl nodes inspect` surfaces a counterfactual dispatch-capacity block
+  showing what F11 enforcement would decide; every capacity consumer stays on
+  its current behavior in this non-enforcing slice.
   `orchardctl nodes cordon`, `orchardctl nodes uncordon`,
   `orchardctl nodes drain`, `orchardctl nodes cancel-drain`,
   `orchardctl nodes maintenance`, `orchardctl nodes resume`, and
@@ -81,6 +88,8 @@ Core design rules from `SPEC.md`:
 - Node Certificates remain durable identity anchors, while BEAM Peer Grants provide bounded transport authorization and never replace Node Admission;
 - each Active/Standby Controller has a distinct identity, BEAM name, authorization root, and Peer Grant with each admitted Node;
 - a Peer Grant proves Controller-instance membership, not advisory-lock leadership, so leader-only operations remain gated by Postgres before leaving the Controller;
+- each Controller instance owns a durable membership identity, keyed by its certificate identity rather than by a single-row assumption, and a supervised membership owner republishes `last_seen_at` and the Controller's dispatch-capacity capability evidence on every heartbeat; that identity is durable cluster truth and is distinct from transient advisory-lock leadership;
+- the membership identity is named by `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` and is independent of the BEAM Peer Grant control listener, so toggling grants cannot move a Controller's durable canonical BEAM name;
 - distributed Erlang membership is a high-trust code boundary rather than a per-function capability sandbox;
 - node agents are the v1 first-party Runtime Endpoint boundary;
 - worker runtimes are local subprocesses, not public services;
@@ -147,6 +156,10 @@ Invalid, ineligible, unavailable, or transport-failed observations clear stale e
 For BEAM Runtime Endpoint observations, queue capacity is published only when the target resolves back to the same persisted node identity.
 Console Nodes live diagnostics probe the configured Runtime Endpoint targets rather than a separate legacy gRPC-only target list.
 Scheduler and dispatch orchestration crashes after request validation terminalize the durable request as a failed `orchestration_error` with sanitized public error payloads instead of leaving it active.
+
+Alongside that Node-owned limit, the controller persists its own durable per-Node Controller Dispatch Ceiling and a cluster-wide dispatch-capacity enforcement phase, and evaluates both through one pure shared evaluator.
+That evaluation is counterfactual today: the phase stays `pre_cutover`, the evaluator feeds diagnostics only, and scheduling, queue admission, and dispatch keep consuming the capacity telemetry described above.
+See `SPEC.md` §4.6.2 and `docs/decisions/0013-controller-dispatch-capacity-authority.md` for the target authority boundary.
 
 Runtime Endpoint and worker runtime contracts are separate:
 
