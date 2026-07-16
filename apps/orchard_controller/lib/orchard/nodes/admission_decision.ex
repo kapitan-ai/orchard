@@ -71,7 +71,13 @@ defmodule Orchard.Nodes.AdmissionDecision do
     end
   end
 
-  @spec normalize_reason(term()) :: String.t() | nil | term()
+  @doc """
+  Normalizes an operator-supplied reason to a trimmed, non-empty string.
+
+  Every value that is not a non-empty string, including non-binary input,
+  normalizes to `nil` so callers reject it before opening a transaction.
+  """
+  @spec normalize_reason(term()) :: String.t() | nil
   def normalize_reason(reason) when is_binary(reason) do
     case String.trim(reason) do
       "" -> nil
@@ -79,5 +85,5 @@ defmodule Orchard.Nodes.AdmissionDecision do
     end
   end
 
-  def normalize_reason(reason), do: reason
+  def normalize_reason(_reason), do: nil
 end

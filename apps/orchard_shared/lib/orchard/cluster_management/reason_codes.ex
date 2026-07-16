@@ -131,8 +131,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     action_blocker: @action_blocker_codes,
     confirmation_requirement: @confirmation_requirement_codes,
     consequence: @consequence_codes,
-    support_scope: @support_scope_codes,
-    dispatch_capacity: @dispatch_capacity_codes
+    support_scope: @support_scope_codes
   }
 
   @type vocabulary ::
@@ -142,7 +141,6 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
           | :confirmation_requirement
           | :consequence
           | :support_scope
-          | :dispatch_capacity
 
   @spec scheduler_rejection_codes() :: [String.t()]
   def scheduler_rejection_codes, do: @scheduler_rejection_codes

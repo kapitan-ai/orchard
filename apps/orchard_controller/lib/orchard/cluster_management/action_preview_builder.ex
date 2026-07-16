@@ -7,7 +7,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   alias Orchard.ControlPlane
   alias Orchard.DispatchCapacity.Diagnostics
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionCandidate, Lifecycle, Node}
+  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Lifecycle, Node}
 
   @spec admit_node(Ecto.UUID.t(), map() | keyword()) :: ActionPreview.t()
   def admit_node(node_id, attrs \\ %{}) do
@@ -216,14 +216,19 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   defp rejection_confirmation_requirements(attrs) do
     [:requires_yes_flag]
-    |> add_confirmation_requirement(:requires_reason, blank?(Map.get(attrs, "reason")))
+    |> add_confirmation_requirement(
+      :requires_reason,
+      is_nil(AdmissionDecision.normalize_reason(Map.get(attrs, "reason")))
+    )
   end
 
   defp admission_confirmation_requirements(attrs) do
+    reason = Map.get(attrs, "capacity_policy_reason") || Map.get(attrs, :capacity_policy_reason)
+
     [:requires_yes_flag]
     |> add_confirmation_requirement(
       :requires_reason,
-      blank?(Map.get(attrs, "capacity_policy_reason") || Map.get(attrs, :capacity_policy_reason))
+      is_nil(AdmissionDecision.normalize_reason(reason))
     )
   end
 
@@ -320,8 +325,4 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   defp blocker_message(:invalid_controller_dispatch_ceiling),
     do: "Controller Dispatch Ceiling must be a non-negative integer."
-
-  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank?(nil), do: true
-  defp blank?(_value), do: false
 end

@@ -1018,6 +1018,23 @@ defmodule Orchard.NodesTest do
       assert Repo.get(Policy, node.id) == nil
     end
 
+    test "SPEC.md §7.3.1 a non-binary capacity policy reason is a client error, not a rollback" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-nonbinary-reason",
+          hostname: "registered-nonbinary-reason.local"
+        })
+
+      for reason <- [123, %{"text" => "approved"}, ["approved"], :approved, true] do
+        assert {:error, :capacity_policy_reason_required} =
+                 Nodes.admit_node(node.id, admission_attrs(%{capacity_policy_reason: reason}))
+
+        assert Repo.get!(Node, node.id).state == :registered
+        assert Repo.get(Policy, node.id) == nil
+      end
+    end
+
     test "SPEC.md §7.3.1 admission rolls back when no trusted actor provenance is available" do
       node =
         insert_node!(%{

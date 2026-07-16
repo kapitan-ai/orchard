@@ -7,7 +7,6 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   require Logger
 
-  alias Orchard.BeamPeerGrants.ControllerInitializer
   alias Orchard.ControllerInstances
 
   @heartbeat_interval_ms 10_000
@@ -32,7 +31,7 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   @impl true
   def init(opts) do
-    case ControllerInitializer.initialize(opts) do
+    case ControllerInstances.ensure_local(opts) do
       {:ok, _instance} ->
         send(self(), :heartbeat)
         {:ok, %{opts: opts, timer_ref: start_timer()}}

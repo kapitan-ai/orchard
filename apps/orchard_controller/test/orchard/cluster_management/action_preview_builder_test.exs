@@ -114,6 +114,30 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilderTest do
     assert map.confirmation_requirements == ["requires_yes_flag", "requires_reason"]
   end
 
+  test "admit preview still requires a reason when the supplied reason is not a string" do
+    node = insert_node!(state: :registered)
+
+    for reason <- [123, %{"text" => "approved"}, ["approved"], :approved, true, "   "] do
+      map =
+        node.id
+        |> ActionPreviewBuilder.admit_node(%{
+          trust_evidence_ref: "registration-audit:test",
+          pool_id: Ecto.UUID.generate(),
+          routing_policy_id: Ecto.UUID.generate(),
+          capacity_policy_reason: reason
+        })
+        |> ActionPreview.to_map()
+
+      assert map.confirmation_requirements == ["requires_yes_flag", "requires_reason"]
+
+      assert map.dispatch_capacity_policy == %{
+               controller_dispatch_ceiling: nil,
+               policy_state: "unresolved",
+               warning_codes: []
+             }
+    end
+  end
+
   test "decommission preview includes destructive confirmation requirements and consequences" do
     node = insert_node!(state: :active)
 
