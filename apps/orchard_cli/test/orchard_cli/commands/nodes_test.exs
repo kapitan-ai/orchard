@@ -96,9 +96,11 @@ defmodule OrchardCLI.Commands.NodesTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance.AuditLog
   alias Orchard.Models.Model
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
+  alias Orchard.NodeTrust
   alias Orchard.Repo
   alias OrchardCLI.Commands.Nodes, as: NodesCmd
   alias OrchardCLI.Commands.NodesTest.FailingAuditLog
@@ -629,7 +631,8 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert Repo.get!(Node, node.id).state == :registered
     end
 
-    test "yes execution admits a registered node and emits action result json" do
+    test "SPEC.md §4.7 yes execution admits a registered node and emits action result json" do
+      trust = establish_local_controller_identity!()
       node = insert_node!(state: :registered, display_name: "admit-execute-node")
 
       assert {:ok, output} =
@@ -655,6 +658,14 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["audit_log"]["scope"] == "cluster"
       assert decoded["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == 1
       assert Repo.get!(Node, node.id).state == :admitted
+
+      policy = Repo.get!(Policy, node.id)
+      assert policy.approved_by_actor_type == "operator"
+      assert policy.approved_by_actor_id == trust.controller_uri_san
+
+      decision = Repo.get_by!(AdmissionDecision, node_id: node.id, decision: :admitted)
+      assert decision.actor_type == "operator"
+      assert decision.actor_id == trust.controller_uri_san
     end
 
     test "yes execution surfaces a friendly message when leadership is lost after preview" do
@@ -986,6 +997,7 @@ defmodule OrchardCLI.Commands.NodesTest do
 
   describe "action persistence failures" do
     setup do
+      establish_local_controller_identity!()
       Application.put_env(:orchard_controller, :governance_audit_log_impl, FailingAuditLog)
       on_exit(fn -> Application.delete_env(:orchard_controller, :governance_audit_log_impl) end)
       :ok
@@ -1082,6 +1094,34 @@ defmodule OrchardCLI.Commands.NodesTest do
         config -> Application.put_env(:orchard_controller, :control_plane, config)
       end
     end
+  end
+
+  defp establish_local_controller_identity! do
+    previous_trust = Application.get_env(:orchard_controller, :node_trust)
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-cli-node-trust-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    trust_root = Path.join(root, "node-trust")
+    Application.put_env(:orchard_controller, :node_trust, root: trust_root)
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+
+      if previous_trust do
+        Application.put_env(:orchard_controller, :node_trust, previous_trust)
+      else
+        Application.delete_env(:orchard_controller, :node_trust)
+      end
+    end)
+
+    {:ok, trust} = NodeTrust.initialize(root: trust_root)
+    trust
   end
 
   defp insert_node!(attrs) do

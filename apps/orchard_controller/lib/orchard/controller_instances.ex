@@ -9,7 +9,7 @@ defmodule Orchard.ControllerInstances do
 
   alias Orchard.BeamAuthorizationRoot.Store, as: AuthorizationRootStore
   alias Orchard.ControllerInstances.ControllerInstance
-  alias Orchard.{ControlPlane, NodeTrust, Repo}
+  alias Orchard.{ControlPlane, NodeTrust, Repo, SchemaSupport}
   alias Orchard.RuntimeEndpoint.BeamNodeName
   alias Orchard.TransportTLS.CertificateIdentity
 
@@ -37,6 +37,52 @@ defmodule Orchard.ControllerInstances do
   end
 
   @doc """
+  Resolves the authenticated local Controller principal without mutating cluster state.
+
+  The principal is the local Controller's canonical certificate URI SAN, proven
+  against on-disk trust custody. When Controller instances are persisted, the row
+  addressed by the local trust identity must agree with that custody, so peer rows
+  belonging to other Controllers can never supply the principal.
+  """
+  @spec local_principal(keyword()) :: {:ok, String.t()} | {:error, term()}
+  def local_principal(opts \\ []) when is_list(opts) do
+    with {:ok, trust} <- NodeTrust.public_material(trust_opts(opts)),
+         {:ok, certificate} <- CertificateIdentity.from_pem(trust.controller_certificate_pem),
+         true <- certificate.uri_sans == [trust.controller_uri_san],
+         true <- certificate.fingerprint == trust.controller_certificate_fingerprint,
+         :ok <- ensure_persisted_identity_agrees(trust, certificate) do
+      {:ok, trust.controller_uri_san}
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :beam_controller_instance_invalid}
+    end
+  end
+
+  defp trust_opts(opts) do
+    case Keyword.fetch(opts, :node_trust_root) do
+      {:ok, root} -> [root: root]
+      :error -> []
+    end
+  end
+
+  defp ensure_persisted_identity_agrees(trust, certificate) do
+    case Repo.get(ControllerInstance, trust.controller_id) do
+      nil ->
+        :ok
+
+      %ControllerInstance{
+        certificate_uri_san: uri_san,
+        certificate_fingerprint_sha256: fingerprint
+      } ->
+        if uri_san == trust.controller_uri_san and fingerprint == certificate.fingerprint do
+          :ok
+        else
+          {:error, :beam_controller_instance_mismatch}
+        end
+    end
+  end
+
+  @doc """
   Atomically refreshes membership and dispatch-capacity capability evidence for
   one authenticated local Controller identity.
   """
@@ -56,13 +102,9 @@ defmodule Orchard.ControllerInstances do
   end
 
   defp force_consumers_not_ready(attrs) do
-    if Enum.any?(Map.keys(attrs), &is_atom/1) do
-      attrs
-      |> Map.delete("dispatch_capacity_consumers_ready")
-      |> Map.put(:dispatch_capacity_consumers_ready, false)
-    else
-      Map.put(attrs, "dispatch_capacity_consumers_ready", false)
-    end
+    attrs
+    |> SchemaSupport.normalize_attrs()
+    |> Map.put("dispatch_capacity_consumers_ready", false)
   end
 
   defp refresh_local_identity(local_identity, attrs) do

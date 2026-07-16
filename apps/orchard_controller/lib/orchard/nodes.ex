@@ -13,6 +13,7 @@ defmodule Orchard.Nodes do
   require Logger
 
   alias Orchard.BeamPeerGrants
+  alias Orchard.ControllerInstances
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.ControlPlane
   alias Orchard.DispatchCapacity
@@ -512,6 +513,7 @@ defmodule Orchard.Nodes do
          {:ok, node} <- BeamPeerGrants.lock_initial_admission_node(node_id, opts),
          :ok <- ensure_node_admittable(node, attrs),
          {:ok, capacity_policy} <- resolve_admission_capacity_policy(attrs, opts),
+         opts <- put_actor_opts(opts, capacity_policy),
          {:ok, candidate} <- get_or_create_candidate_for_node(node),
          {:ok, {node, grants}} <- BeamPeerGrants.issue_initial_for_admission(node, opts),
          {:ok, admitted_node} <- update_node_state(node, :admitted),
@@ -1761,15 +1763,37 @@ defmodule Orchard.Nodes do
 
   defp resolve_admission_capacity_policy(attrs, opts) do
     with {:ok, reason} <- required_capacity_policy_reason(attrs),
-         {:ok, ceiling} <- admission_capacity_ceiling(attrs) do
+         {:ok, ceiling} <- admission_capacity_ceiling(attrs),
+         {:ok, actor} <- resolve_admission_actor(opts) do
       {:ok,
        %{
          reason: reason,
          ceiling: ceiling,
-         actor_type: audit_actor_type(opts),
-         actor_id: audit_actor_id(opts) || "local-controller"
+         actor_type: actor.actor_type,
+         actor_id: actor.actor_id
        }}
     end
+  end
+
+  defp resolve_admission_actor(opts) do
+    case audit_actor_id(opts) do
+      actor_id when is_binary(actor_id) and actor_id != "" ->
+        {:ok, %{actor_type: audit_actor_type(opts), actor_id: actor_id}}
+
+      _absent ->
+        local_controller_actor(opts)
+    end
+  end
+
+  defp local_controller_actor(opts) do
+    case ControllerInstances.local_principal(opts) do
+      {:ok, principal} -> {:ok, %{actor_type: "operator", actor_id: principal}}
+      {:error, _reason} -> {:error, :admission_actor_identity_unavailable}
+    end
+  end
+
+  defp put_actor_opts(opts, %{actor_type: actor_type, actor_id: actor_id}) do
+    Keyword.merge(opts, actor_type: actor_type, actor_id: actor_id)
   end
 
   defp required_capacity_policy_reason(attrs) do

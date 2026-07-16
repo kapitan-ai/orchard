@@ -5,6 +5,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   alias Orchard.ClusterManagement.{ActionPreview, StatusBuilder}
   alias Orchard.ControlPlane
+  alias Orchard.DispatchCapacity.Diagnostics
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, Lifecycle, Node}
 
@@ -15,6 +16,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     case Nodes.fetch_node(node_id) do
       {:ok, %Node{} = node} ->
         capacity_policy = capacity_policy_preview(attrs)
+        status_opts = capacity_status_opts(node)
 
         blockers =
           []
@@ -24,9 +26,9 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
         action_preview(%{
           action: "node_admission.admit",
           target: %{type: "node", id: node.id},
-          current: StatusBuilder.node_status_map(node),
+          current: StatusBuilder.node_status_map(node, status_opts),
           dispatch_capacity_policy: capacity_policy,
-          scheduler_eligibility: scheduler_eligibility(node),
+          scheduler_eligibility: scheduler_eligibility(node, status_opts),
           blockers: blockers,
           warnings: capacity_policy_warnings(capacity_policy),
           confirmation_requirements: admission_confirmation_requirements(attrs),
@@ -74,6 +76,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
            ] do
     case Nodes.fetch_node(node_id) do
       {:ok, %Node{} = node} ->
+        status_opts = capacity_status_opts(node)
+
         blockers =
           []
           |> add_write_path_blocker(:node_lifecycle)
@@ -82,9 +86,9 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
         action_preview(%{
           action: Lifecycle.preview_action(action),
           target: %{type: "node", id: node.id},
-          current: StatusBuilder.node_status_map(node),
+          current: StatusBuilder.node_status_map(node, status_opts),
           active_request_count: nil,
-          scheduler_eligibility: scheduler_eligibility(node),
+          scheduler_eligibility: scheduler_eligibility(node, status_opts),
           blockers: blockers,
           warnings: [],
           consequence_codes: Lifecycle.consequence_codes(action),
@@ -152,6 +156,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   end
 
   defp reject_node_preview(%Node{} = node, attrs) do
+    status_opts = capacity_status_opts(node)
+
     blockers =
       []
       |> add_write_path_blocker(:node_admission)
@@ -160,8 +166,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     action_preview(%{
       action: "node_admission.reject",
       target: %{type: "node", id: node.id},
-      current: StatusBuilder.node_status_map(node),
-      scheduler_eligibility: scheduler_eligibility(node),
+      current: StatusBuilder.node_status_map(node, status_opts),
+      scheduler_eligibility: scheduler_eligibility(node, status_opts),
       blockers: blockers,
       confirmation_requirements: rejection_confirmation_requirements(attrs),
       expected_transition: %{from: node.state, to: :rejected},
@@ -250,9 +256,13 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   defp add_confirmation_requirement(requirements, _requirement, false), do: requirements
 
-  defp scheduler_eligibility(%Node{} = node) do
+  defp capacity_status_opts(%Node{} = node) do
+    [dispatch_capacity_snapshot: Diagnostics.snapshot(node)]
+  end
+
+  defp scheduler_eligibility(%Node{} = node, status_opts) do
     node
-    |> StatusBuilder.node_status()
+    |> StatusBuilder.node_status(status_opts)
     |> then(& &1.scheduling)
   end
 

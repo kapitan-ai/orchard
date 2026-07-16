@@ -123,11 +123,31 @@ defmodule Orchard.ClusterManagement.ContractTest do
     capacity = NodeStatus.to_map(status).dispatch_capacity
 
     assert capacity.mode == "counterfactual"
-    assert capacity.counterfactual
-    refute capacity.consumers_ready
+    assert capacity.counterfactual == true
+    assert capacity.consumers_ready == false
+    assert capacity.eligible == true
     assert capacity.effective_dispatch_limit == 0
     assert capacity.dispatch_headroom == 0
     assert capacity.controller_dispatch_ceiling == 2
+  end
+
+  test "node status keeps dispatch-capacity booleans as booleans in both directions" do
+    status =
+      NodeStatus.new!(%{
+        resource: %{type: :node, id: "node-1"},
+        dispatch_capacity: %{
+          counterfactual: false,
+          consumers_ready: true,
+          eligible: false,
+          reason_codes: []
+        }
+      })
+
+    capacity = NodeStatus.to_map(status).dispatch_capacity
+
+    assert capacity.counterfactual == false
+    assert capacity.consumers_ready == true
+    assert capacity.eligible == false
   end
 
   test "node status rejects unknown dispatch-capacity reason codes" do

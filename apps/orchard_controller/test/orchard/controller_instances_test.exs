@@ -118,4 +118,49 @@ defmodule Orchard.ControllerInstancesTest do
     assert local.id != "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
     assert Repo.aggregate(ControllerInstance, :count) == 2
   end
+
+  test "SPEC.md §7.3.1 local principal resolves only the locally authenticated identity", %{
+    root: root
+  } do
+    trust_root = Path.join(root, "node-trust")
+    authorization_root = Path.join(root, "beam-authorization-root")
+    now = ~U[2026-07-13 08:00:00.000000Z]
+
+    assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
+
+    opts = [
+      private_ipv4: "10.0.0.10",
+      node_trust_root: trust_root,
+      authorization_root_path: authorization_root,
+      now: now
+    ]
+
+    assert {:ok, _instance} = ControllerInstances.ensure_local(opts)
+
+    peer_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+
+    %ControllerInstance{}
+    |> ControllerInstance.changeset(%{
+      id: peer_id,
+      certificate_uri_san: "urn:orchard:controller:#{peer_id}",
+      certificate_identifier: "serial:999",
+      certificate_fingerprint_sha256: String.duplicate("e", 64),
+      canonical_beam_name: "orchard_controller_eeeeeeeeeeee4eee8eeeeeeeeeeeeeee@10.0.0.11",
+      beam_authorization_root_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      authorization_root_custody_ref: "owner-only-local:ffffffff-ffff-4fff-8fff-ffffffffffff",
+      status: :operational,
+      first_enrolled_at: now
+    })
+    |> Repo.insert!()
+
+    assert Repo.aggregate(ControllerInstance, :count) == 2
+    assert {:ok, principal} = ControllerInstances.local_principal(opts)
+    assert principal == trust.controller_uri_san
+    refute principal == "urn:orchard:controller:#{peer_id}"
+  end
+
+  test "SPEC.md §7.3.1 local principal fails closed without local trust custody" do
+    assert {:error, _reason} =
+             ControllerInstances.local_principal(node_trust_root: "/nonexistent")
+  end
 end

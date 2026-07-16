@@ -1180,6 +1180,10 @@ defmodule OrchardConsole.NodeDetailLive do
   defp error_message(:node_not_found), do: "Node was not found."
   defp error_message(:reason_required), do: "A nonblank rejection reason is required."
   defp error_message(:admission_not_pending), do: "Admission is not pending."
+
+  defp error_message(:admission_actor_identity_unavailable),
+    do: "The local controller identity could not be proven for admission provenance."
+
   defp error_message(:admission_not_rejected), do: "Admission is not rejected."
   defp error_message(:admission_rejected), do: "Admission rejection must be cleared first."
   defp error_message(:node_not_registered), do: "Node is not registered."

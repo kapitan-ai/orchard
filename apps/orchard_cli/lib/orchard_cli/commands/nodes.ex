@@ -494,6 +494,9 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp human_reason(:admission_not_pending), do: "admission is not pending."
 
+  defp human_reason(:admission_actor_identity_unavailable),
+    do: "the local controller identity could not be proven for admission provenance."
+
   defp human_reason(:capacity_policy_reason_required),
     do: "a nonblank --capacity-policy-reason is required."
 

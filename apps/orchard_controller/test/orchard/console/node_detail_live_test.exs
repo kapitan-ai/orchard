@@ -50,8 +50,10 @@ defmodule OrchardConsole.NodeDetailLiveTest do
   import Phoenix.LiveViewTest
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
+  alias Orchard.NodeTrust
   alias Orchard.Repo
 
   @moduletag :live
@@ -213,6 +215,8 @@ defmodule OrchardConsole.NodeDetailLiveTest do
 
   describe "admission action previews" do
     test "previews and executes node admit with shared blockers and confirmation", %{conn: conn} do
+      trust = establish_local_controller_identity!()
+
       node =
         insert_node!(%{
           display_name: "admit-detail-node",
@@ -252,6 +256,10 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       |> render_submit()
 
       assert Repo.get!(Node, node.id).state == :admitted
+
+      policy = Repo.get!(Policy, node.id)
+      assert policy.approved_by_actor_type == "operator"
+      assert policy.approved_by_actor_id == trust.controller_uri_san
 
       assert %AdmissionDecision{decision: :admitted} =
                Nodes.latest_admission_decision_for_node(node.id)
@@ -567,6 +575,34 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert Repo.get!(Node, node.id).state == :draining
       assert render(view) =~ "Resolve blockers and confirm the preview before executing."
     end
+  end
+
+  defp establish_local_controller_identity! do
+    previous_trust = Application.get_env(:orchard_controller, :node_trust)
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-console-node-trust-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    trust_root = Path.join(root, "node-trust")
+    Application.put_env(:orchard_controller, :node_trust, root: trust_root)
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+
+      if previous_trust do
+        Application.put_env(:orchard_controller, :node_trust, previous_trust)
+      else
+        Application.delete_env(:orchard_controller, :node_trust)
+      end
+    end)
+
+    {:ok, trust} = NodeTrust.initialize(root: trust_root)
+    trust
   end
 
   defp insert_node!(attrs) do

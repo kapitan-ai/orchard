@@ -244,13 +244,18 @@ defmodule Orchard.ClusterManagement.NodeStatus do
 
   defp normalize_value(nil, default), do: default
   defp normalize_value(%DateTime{} = value, _default), do: value
+  defp normalize_value(value, _default) when is_boolean(value), do: value
   defp normalize_value(value, _default) when is_atom(value), do: Atom.to_string(value)
   defp normalize_value(value, _default), do: value
 
   defp value(attrs, key), do: map_value(attrs, key)
 
   defp map_value(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+    case Map.fetch(map, key) do
+      {:ok, nil} -> Map.get(map, Atom.to_string(key))
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
 
   defp map_value(_map, _key), do: nil

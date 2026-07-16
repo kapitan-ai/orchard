@@ -114,6 +114,10 @@ defmodule Orchard.NodesTest do
 
   defp make_target(host, port), do: [host: host, port: port]
 
+  defp admission_opts do
+    [actor_type: "service_account", actor_id: "admin-api-principal"]
+  end
+
   defp admission_attrs(overrides \\ %{}) do
     Map.merge(
       %{
@@ -946,7 +950,7 @@ defmodule Orchard.NodesTest do
                Nodes.clear_admission_rejection(rejected.candidate.id, %{surface: "test"})
 
       assert cleared.candidate.admission_category == :pending_registered
-      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
+      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs(), admission_opts())
       assert admitted.node.state == :admitted
       assert admitted.decision.decision == :admitted
       assert admitted.policy.policy_state == :approved_explicit
@@ -1014,6 +1018,44 @@ defmodule Orchard.NodesTest do
       assert Repo.get(Policy, node.id) == nil
     end
 
+    test "SPEC.md §7.3.1 admission rolls back when no trusted actor provenance is available" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-no-actor",
+          hostname: "registered-no-actor.local"
+        })
+
+      assert {:error, :admission_actor_identity_unavailable} =
+               Nodes.admit_node(node.id, admission_attrs())
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.get(Policy, node.id) == nil
+      assert Repo.aggregate(AdmissionDecision, :count) == 0
+    end
+
+    test "SPEC.md §7.3.1 admission ignores actor provenance supplied in request attributes" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-spoofed-actor",
+          hostname: "registered-spoofed-actor.local"
+        })
+
+      attrs =
+        admission_attrs(%{
+          actor_id: "spoofed-operator",
+          actor_type: "system",
+          approved_by_actor_id: "spoofed-operator"
+        })
+
+      assert {:ok, _admitted} = Nodes.admit_node(node.id, attrs, admission_opts())
+
+      policy = Repo.get!(Policy, node.id)
+      assert policy.approved_by_actor_type == "service_account"
+      assert policy.approved_by_actor_id == "admin-api-principal"
+    end
+
     test "SPEC.md §4.2 registered node admission fails closed without required inputs" do
       node =
         insert_node!(%{
@@ -1048,7 +1090,7 @@ defmodule Orchard.NodesTest do
           connect_port: 50_071
         })
 
-      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
+      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs(), admission_opts())
       assert admitted.node.state == :admitted
       assert admitted.decision.decision == :admitted
     end
@@ -1240,7 +1282,7 @@ defmodule Orchard.NodesTest do
           rpc_port: 9444
         })
 
-      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
+      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs(), admission_opts())
       assert admitted.node.state == :admitted
 
       target = make_target("10.0.0.14", 9444)

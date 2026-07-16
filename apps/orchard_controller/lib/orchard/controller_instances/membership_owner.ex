@@ -48,9 +48,10 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
       {:ok, _instance} ->
         {:noreply, state}
 
-      {:error, _reason} ->
+      {:error, reason} ->
         Logger.warning(
-          "Controller membership heartbeat failed; capability evidence remains stale"
+          "Controller membership heartbeat failed; capability evidence remains stale " <>
+            "(reason=#{inspect(reason)})"
         )
 
         {:noreply, state}
@@ -60,16 +61,18 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   defp attempt_publish(opts) do
     publish(opts)
   rescue
-    _exception in [
+    exception in [
+      ArgumentError,
       DBConnection.ConnectionError,
       Ecto.QueryError,
       Ecto.StaleEntryError,
+      File.Error,
       Postgrex.Error,
       RuntimeError
     ] ->
-      {:error, :heartbeat_publish_failed}
+      {:error, {:heartbeat_publish_failed, Exception.message(exception)}}
   catch
-    :exit, _reason -> {:error, :heartbeat_publish_failed}
+    :exit, reason -> {:error, {:heartbeat_publish_exit, reason}}
   end
 
   defp publish(opts) do
