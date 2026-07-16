@@ -130,6 +130,7 @@ defmodule Orchard.BeamPeerGrantsTest do
              start_supervised!(
                {ControllerInitializer,
                 private_ipv4: "10.0.0.10",
+                membership_scope: :remote_beam,
                 node_trust_root: trust_root,
                 authorization_root_path: authorization_root,
                 now: now}
@@ -186,6 +187,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -244,6 +246,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -271,6 +274,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -320,6 +324,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -377,6 +382,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -408,6 +414,7 @@ defmodule Orchard.BeamPeerGrantsTest do
         assert {:ok, _controller} =
                  ControllerInstances.ensure_local(
                    private_ipv4: "10.0.0.10",
+                   membership_scope: :remote_beam,
                    node_trust_root: trust_root,
                    authorization_root_path: authorization_root,
                    now: now
@@ -486,6 +493,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -592,6 +600,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -929,6 +938,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -970,6 +980,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -1429,6 +1440,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -1683,6 +1695,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now

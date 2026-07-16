@@ -232,15 +232,15 @@ defmodule OrchardApplicationTest do
     assert initializer_opts[:authorization_root_path] == "/protected/authorization-root"
   end
 
-  test "SPEC.md §8.3 membership identity defaults to a local-only loopback host" do
+  test "SPEC.md §8.3 membership identity is never defaulted when config resolved no scope" do
     Application.put_env(:orchard_controller, :start_repo, true)
     Application.delete_env(:orchard_controller, :controller_membership)
 
     assert [{Orchard.ControllerInstances.MembershipOwner, opts}] =
              membership_owner_specs(Orchard.Application.child_specs())
 
-    assert opts[:private_ipv4] == "127.0.0.1"
-    assert opts[:membership_scope] == :local_only
+    assert opts[:private_ipv4] == nil
+    assert opts[:membership_scope] == nil
   end
 
   test "SPEC.md §8.3 membership owner is omitted only when repo ownership is disabled" do

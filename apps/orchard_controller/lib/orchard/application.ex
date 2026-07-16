@@ -18,8 +18,6 @@ defmodule Orchard.Application do
   alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
   alias Orchard.SentryContext
 
-  @default_membership_private_ipv4 "127.0.0.1"
-
   @impl true
   def start(_type, _args) do
     with :ok <- validate_peer_grant_mode(Node.self()) do
@@ -172,8 +170,8 @@ defmodule Orchard.Application do
     trust = Application.get_env(:orchard_controller, :node_trust, [])
 
     [
-      private_ipv4: Keyword.get(membership, :private_ipv4, @default_membership_private_ipv4),
-      membership_scope: Keyword.get(membership, :scope, :local_only),
+      private_ipv4: Keyword.get(membership, :private_ipv4),
+      membership_scope: Keyword.get(membership, :scope),
       node_trust_root: Keyword.get(trust, :root),
       authorization_root_path: Keyword.get(membership, :authorization_root_path)
     ]

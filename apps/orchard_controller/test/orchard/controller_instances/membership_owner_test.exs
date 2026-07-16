@@ -1,6 +1,7 @@
 defmodule Orchard.ControllerInstances.MembershipOwnerTest do
   use Orchard.DataCase, async: false
 
+  import Ecto.Query, only: [from: 2]
   import ExUnit.CaptureLog
 
   alias Orchard.ControllerInstances
@@ -184,24 +185,17 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     opts =
       opts
       |> Keyword.put(:clock, fn -> Agent.get(clock, & &1) end)
-      |> Keyword.put(
-        :publisher,
-        fail_after_boot(fn _opts, _attrs ->
-          {:error, :beam_controller_instance_configuration_invalid}
-        end)
-      )
+      |> Keyword.put(:publisher, fail_after_boot(&raise_unavailable_database/2))
 
     pid = start_supervised!({MembershipOwner, opts})
 
-    assert beat(pid, 1) =~
-             "reason=beam_controller_instance_configuration_invalid suppressed_attempts=0"
+    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
 
     assert beat(pid, 2) == ""
 
     Agent.update(clock, &DateTime.add(&1, 300, :second))
 
-    assert beat(pid, 1) =~
-             "reason=beam_controller_instance_configuration_invalid suppressed_attempts=2"
+    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=2"
   end
 
   test "SPEC.md §8.3 boot fails closed when the first capability publication cannot be proven", %{
@@ -226,42 +220,148 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     root: root
   } do
     {opts, _trust} = identity_opts(root)
-    reason = start_supervised!({Agent, fn -> :beam_controller_private_ipv4_invalid end}, id: :why)
+    kind = start_supervised!({Agent, fn -> :connection end}, id: :why)
+
+    publisher = fn _opts, _attrs ->
+      case Agent.get(kind, & &1) do
+        :connection -> raise DBConnection.ConnectionError, message: "connection not available"
+        :checkout -> exit({:timeout, {DBConnection.Holder, :checkout, [:pool, []]}})
+      end
+    end
 
     opts =
       opts
       |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:00:00.000000Z] end)
-      |> Keyword.put(
-        :publisher,
-        fail_after_boot(fn _opts, _attrs -> {:error, Agent.get(reason, & &1)} end)
-      )
+      |> Keyword.put(:publisher, fail_after_boot(publisher))
 
     pid = start_supervised!({MembershipOwner, opts})
-    assert beat(pid, 1) =~ "reason=beam_controller_private_ipv4_invalid"
+    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
 
-    Agent.update(reason, fn _previous -> :beam_controller_instance_mismatch end)
+    Agent.update(kind, fn _previous -> :checkout end)
 
-    assert beat(pid, 1) =~ "reason=beam_controller_instance_mismatch suppressed_attempts=0"
+    assert beat(pid, 1) =~ "reason=heartbeat_publish_exit suppressed_attempts=0"
   end
 
-  test "SPEC.md §8.3 heartbeat failure reasons are sanitized to stable codes", %{root: root} do
+  test "SPEC.md §8.3 transient heartbeat failure reasons are sanitized to stable codes", %{
+    root: root
+  } do
     {opts, _trust} = identity_opts(root)
 
     opts =
       opts
       |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:00:00.000000Z] end)
-      |> Keyword.put(
-        :publisher,
-        fail_after_boot(fn _opts, _attrs ->
-          raise Postgrex.Error, message: "FATAL: password authentication failed for hunter2"
-        end)
-      )
+      |> Keyword.put(:publisher, fail_after_boot(&raise_unavailable_database/2))
 
     pid = start_supervised!({MembershipOwner, opts})
     log = beat(pid, 1)
 
     assert log =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
     refute log =~ "hunter2"
+  end
+
+  test "SPEC.md §8.3 an unavailable database defers the first publication instead of failing boot",
+       %{root: root} do
+    {opts, trust} = identity_opts(root)
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+    down = start_supervised!({Agent, fn -> true end}, id: :down)
+
+    publisher = fn publisher_opts, attrs ->
+      if Agent.get(down, & &1) do
+        raise_unavailable_database(publisher_opts, attrs)
+      else
+        ControllerInstances.heartbeat_local(publisher_opts, attrs)
+      end
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> observed_at end)
+      |> Keyword.put(:publisher, publisher)
+
+    log = capture_log(fn -> start_supervised!({MembershipOwner, opts}) end)
+    pid = Process.whereis(MembershipOwner)
+
+    assert is_pid(pid)
+    assert log =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+    assert Repo.get(ControllerInstance, trust.controller_id) == nil
+
+    Agent.update(down, fn _previous -> false end)
+    beat(pid, 1)
+
+    await_timestamp(trust.controller_id, observed_at)
+    published = Repo.get!(ControllerInstance, trust.controller_id)
+
+    assert published.dispatch_capacity_capability_observed_at == observed_at
+    assert published.dispatch_capacity_consumers_ready == false
+  end
+
+  test "SPEC.md §8.3 the deferred first publication schedules the fixed heartbeat retry", %{
+    root: root
+  } do
+    {opts, _trust} = identity_opts(root)
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:02:03.000000Z] end)
+      |> Keyword.put(:publisher, &raise_unavailable_database/2)
+
+    capture_log(fn -> start_supervised!({MembershipOwner, opts}) end)
+    state = :sys.get_state(Process.whereis(MembershipOwner))
+
+    assert state.timer_ref != nil
+    assert state.failure.reason == :heartbeat_publish_failed
+    assert MembershipOwner.heartbeat_interval_ms() == 10_000
+  end
+
+  test "SPEC.md §8.3 a database fault that is not an availability fault fails closed", %{
+    root: root
+  } do
+    for publisher <- [
+          fn _opts, _attrs -> raise_sqlstate("42P01", "relation does not exist") end,
+          fn _opts, _attrs -> raise_sqlstate("28P01", "password authentication failed") end,
+          fn _opts, _attrs ->
+            raise Ecto.QueryError,
+              message: "bad query",
+              query: from(i in ControllerInstance, select: i)
+          end,
+          fn _opts, _attrs -> raise RuntimeError, message: "unexpected publication fault" end,
+          fn _opts, _attrs -> exit(:shutdown) end
+        ] do
+      {opts, trust} = identity_opts(root)
+      opts = Keyword.put(opts, :publisher, publisher)
+
+      Process.flag(:trap_exit, true)
+
+      assert {:error, reason} = MembershipOwner.start_link(opts)
+      assert reason in [:heartbeat_publish_failed, :heartbeat_publish_exit]
+      assert Repo.get(ControllerInstance, trust.controller_id) == nil
+    end
+  end
+
+  test "SPEC.md §8.3 a fatal failure after boot stops the owner rather than retrying", %{
+    root: root
+  } do
+    {opts, trust} = identity_opts(root)
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> observed_at end)
+      |> Keyword.put(
+        :publisher,
+        fail_after_boot(fn _opts, _attrs ->
+          {:error, :beam_controller_instance_mismatch}
+        end)
+      )
+
+    pid = start_supervised!({MembershipOwner, opts})
+    await_timestamp(trust.controller_id, observed_at)
+
+    Process.flag(:trap_exit, true)
+    ref = Process.monitor(pid)
+    send(pid, :heartbeat)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :beam_controller_instance_mismatch}, 1_000
   end
 
   test "SPEC.md §8.3 recovery after a failure is announced once", %{root: root} do
@@ -275,7 +375,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
     publisher = fn publisher_opts, attrs ->
       if Agent.get(failing, & &1) do
-        {:error, :beam_controller_instance_configuration_invalid}
+        raise_unavailable_database(publisher_opts, attrs)
       else
         ControllerInstances.heartbeat_local(publisher_opts, attrs)
       end
@@ -288,15 +388,24 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
     pid = start_supervised!({MembershipOwner, opts})
     Agent.update(failing, fn _previous -> true end)
-    assert beat(pid, 1) =~ "reason=beam_controller_instance_configuration_invalid"
+    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed"
     Agent.update(failing, fn _previous -> false end)
 
     assert beat(pid, 1) =~
              "recovered; capability evidence is fresh " <>
-               "(previous_reason=beam_controller_instance_configuration_invalid)"
+               "(previous_reason=heartbeat_publish_failed)"
 
     assert Repo.get!(ControllerInstance, trust.controller_id).last_seen_at == observed_at
     assert beat(pid, 1) == ""
+  end
+
+  defp raise_unavailable_database(_opts, _attrs) do
+    raise_sqlstate("57P01", "terminating connection due to administrator command hunter2")
+  end
+
+  defp raise_sqlstate(sqlstate, message) do
+    raise Postgrex.Error,
+      postgres: %{code: sqlstate, severity: "FATAL", message: message}
   end
 
   defp fail_after_boot(fun) do
@@ -329,6 +438,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
     opts = [
       private_ipv4: "10.0.0.10",
+      membership_scope: :remote_beam,
       node_trust_root: trust_root,
       authorization_root_path: authorization_root,
       now: now

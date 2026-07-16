@@ -42,6 +42,7 @@ defmodule Orchard.ControllerInstancesTest do
 
     opts = [
       private_ipv4: "10.0.0.10",
+      membership_scope: :remote_beam,
       node_trust_root: trust_root,
       authorization_root_path: authorization_root,
       now: now
@@ -105,20 +106,28 @@ defmodule Orchard.ControllerInstancesTest do
     assert Repo.aggregate(ControllerInstance, :count) == 0
   end
 
-  test "SPEC.md §8.3 unclassified membership scope fails closed on loopback", %{root: root} do
+  test "SPEC.md §8.3 an unresolved membership scope fails closed as configuration invalid", %{
+    root: root
+  } do
     trust_root = Path.join(root, "node-trust")
     now = ~U[2026-07-13 08:00:00.000000Z]
     assert {:ok, _trust} = NodeTrust.initialize(root: trust_root, now: now)
 
-    opts = [
-      private_ipv4: "127.0.0.1",
+    base = [
       node_trust_root: trust_root,
       authorization_root_path: Path.join(root, "beam-authorization-root"),
       now: now
     ]
 
-    assert {:error, :beam_controller_private_ipv4_invalid} =
-             ControllerInstances.ensure_local(opts)
+    for scope <- [[], [membership_scope: nil], [membership_scope: :single_host]],
+        host <- ["127.0.0.1", "10.0.0.10"] do
+      opts = base ++ scope ++ [private_ipv4: host]
+
+      assert {:error, :beam_controller_instance_configuration_invalid} =
+               ControllerInstances.ensure_local(opts)
+    end
+
+    assert Repo.aggregate(ControllerInstance, :count) == 0
   end
 
   test "SPEC.md §8.3 local-only membership still rejects a public host", %{root: root} do
@@ -149,6 +158,7 @@ defmodule Orchard.ControllerInstancesTest do
 
     opts = [
       private_ipv4: "10.0.0.10",
+      membership_scope: :remote_beam,
       node_trust_root: trust_root,
       authorization_root_path: authorization_root
     ]
@@ -170,6 +180,7 @@ defmodule Orchard.ControllerInstancesTest do
 
     opts = [
       private_ipv4: "10.0.0.10",
+      membership_scope: :remote_beam,
       node_trust_root: trust_root,
       authorization_root_path: authorization_root,
       now: now
@@ -207,6 +218,7 @@ defmodule Orchard.ControllerInstancesTest do
 
     opts = [
       private_ipv4: "10.0.0.10",
+      membership_scope: :remote_beam,
       node_trust_root: trust_root,
       authorization_root_path: authorization_root,
       now: now

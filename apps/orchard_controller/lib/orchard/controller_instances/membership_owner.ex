@@ -5,8 +5,15 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   The first complete membership and capability tuple is published synchronously
   during `init/1`, so identity, custody, schema, or configuration failures stop
   Controller startup instead of leaving a live Controller whose dispatch-capacity
-  cutover evidence never appears. Later heartbeat failures are transient and
-  retry on the fixed interval with bounded logging.
+  cutover evidence never appears.
+
+  Database availability is not such a failure. A Controller whose Postgres is
+  still starting must boot and serve, so publication failures are classified
+  from their structured shape before they are reduced to a stable code: only
+  `DBConnection` availability and pool faults, and the allowlisted transient
+  PostgreSQL SQLSTATEs, retry on the fixed interval with bounded logging. Every
+  other failure — identity, custody, schema, authorization, or unrecognized —
+  fails closed and stops the owner.
   """
 
   use GenServer
@@ -19,6 +26,11 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   @failure_log_interval_ms 300_000
   @dispatch_capacity_contract_version 1
   @dispatch_capacity_consumers_ready false
+
+  # SQLSTATE class 08 is connection exception. 57P01/57P02/57P03 are admin
+  # shutdown, crash shutdown, and cannot-connect-now; 53300 is too-many-connections.
+  @retryable_sqlstate_class "08"
+  @retryable_sqlstates ~w(57P01 57P02 57P03 53300)
 
   @type failure :: %{reason: atom(), logged_at: DateTime.t(), suppressed: non_neg_integer()}
 
@@ -41,9 +53,27 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   @impl true
   def init(opts) do
-    case attempt_publish(opts, now(opts)) do
-      {:ok, _instance} -> {:ok, %{opts: opts, timer_ref: start_timer(), failure: nil}}
-      {:error, reason} -> {:stop, sanitize_reason(reason)}
+    observed_at = now(opts)
+
+    case attempt_publish(opts, observed_at) do
+      {:ok, _instance} ->
+        {:ok, %{opts: opts, timer_ref: start_timer(), failure: nil}}
+
+      {:error, reason} ->
+        init_failure(opts, reason, observed_at)
+    end
+  end
+
+  defp init_failure(opts, reason, observed_at) do
+    if retryable?(reason) do
+      {:ok,
+       %{
+         opts: opts,
+         timer_ref: start_timer(),
+         failure: record_failure(nil, reason, observed_at)
+       }}
+    else
+      {:stop, sanitize_reason(reason)}
     end
   end
 
@@ -57,9 +87,29 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
         {:noreply, %{state | failure: nil}}
 
       {:error, reason} ->
-        {:noreply, %{state | failure: record_failure(state.failure, reason, observed_at)}}
+        heartbeat_failure(state, reason, observed_at)
     end
   end
+
+  defp heartbeat_failure(state, reason, observed_at) do
+    if retryable?(reason) do
+      {:noreply, %{state | failure: record_failure(state.failure, reason, observed_at)}}
+    else
+      {:stop, sanitize_reason(reason), state}
+    end
+  end
+
+  defp retryable?({:heartbeat_publish_failed, %DBConnection.ConnectionError{}}), do: true
+
+  defp retryable?({:heartbeat_publish_failed, %Postgrex.Error{postgres: %{pg_code: sqlstate}}})
+       when is_binary(sqlstate) do
+    String.starts_with?(sqlstate, @retryable_sqlstate_class) or sqlstate in @retryable_sqlstates
+  end
+
+  defp retryable?({:heartbeat_publish_exit, {:timeout, {DBConnection.Holder, :checkout, _args}}}),
+    do: true
+
+  defp retryable?(_reason), do: false
 
   defp record_failure(nil, reason, observed_at) do
     log_failure(sanitize_reason(reason), 0, observed_at)
@@ -115,7 +165,7 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
       Postgrex.Error,
       RuntimeError
     ] ->
-      {:error, {:heartbeat_publish_failed, Exception.message(exception)}}
+      {:error, {:heartbeat_publish_failed, exception}}
   catch
     :exit, reason -> {:error, {:heartbeat_publish_exit, reason}}
   end

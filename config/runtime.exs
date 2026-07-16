@@ -896,68 +896,13 @@ if config_env() == :prod do
 
       config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 
-      membership_node_host = fn
-        nil ->
-          nil
-
-        name ->
-          {_service, host} = beam_service_host.(name, "ORCHARD_BEAM_NODE_NAME")
-          parse_beam_ipv4.(host, "ORCHARD_BEAM_NODE_NAME", name)
-          host
-      end
-
-      classify_membership_host = fn host, env_name ->
-        ip = parse_beam_ipv4.(host, env_name, host)
-
-        cond do
-          loopback_ip?.(ip) ->
-            {host, :local_only}
-
-          private_ipv4?.(ip) ->
-            {host, :remote_beam}
-
-          true ->
-            raise "#{env_name} Controller membership host must be a private IPv4 address, got #{inspect(host)}"
-        end
-      end
-
       {membership_private_ipv4, membership_scope} =
-        case env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST") do
-          nil ->
-            node_host =
-              if runtime_endpoint_transport_mode == :beam do
-                membership_node_host.(env_optional_string.("ORCHARD_BEAM_NODE_NAME"))
-              end
-
-            cond do
-              beam_peer_grants_enabled? ->
-                raise "ORCHARD_CONTROLLER_MEMBERSHIP_HOST is required when BEAM Peer Grants are enabled"
-
-              is_nil(node_host) ->
-                {"127.0.0.1", :local_only}
-
-              true ->
-                classify_membership_host.(node_host, "ORCHARD_BEAM_NODE_NAME")
-            end
-
-          host ->
-            node_host =
-              if runtime_endpoint_transport_mode == :beam do
-                membership_node_host.(env_optional_string.("ORCHARD_BEAM_NODE_NAME"))
-              end
-
-            if node_host && node_host != host do
-              raise "ORCHARD_CONTROLLER_MEMBERSHIP_HOST #{inspect(host)} must match the ORCHARD_BEAM_NODE_NAME host #{inspect(node_host)}"
-            end
-
-            identity = classify_membership_host.(host, "ORCHARD_CONTROLLER_MEMBERSHIP_HOST")
-
-            if beam_peer_grants_enabled? and elem(identity, 1) == :local_only do
-              raise "ORCHARD_CONTROLLER_MEMBERSHIP_HOST must be a private non-loopback IPv4 address when BEAM Peer Grants are enabled"
-            end
-
-            identity
-        end
+        Orchard.Config.ControllerMembership.identity!(
+          runtime_endpoint_transport_mode,
+          env_optional_string.("ORCHARD_BEAM_NODE_NAME"),
+          membership_host: env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
+          peer_grants_enabled?: beam_peer_grants_enabled?
+        )
 
       config :orchard_controller, :controller_membership,
         private_ipv4: membership_private_ipv4,
@@ -1645,4 +1590,23 @@ if config_env() == :prod do
     _other_release ->
       :ok
   end
+end
+
+if config_env() == :dev do
+  # Source dev resolves membership identity here rather than in config/dev.exs,
+  # because compile-time config cannot reach the compiled shared resolver.
+  {membership_private_ipv4, membership_scope} =
+    Orchard.Config.ControllerMembership.identity!(
+      if(env_optional_string.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT") == "beam",
+        do: :beam,
+        else: :grpc
+      ),
+      env_optional_string.("ORCHARD_BEAM_NODE_NAME"),
+      membership_host: env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
+      peer_grants_enabled?: env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+    )
+
+  config :orchard_controller, :controller_membership,
+    private_ipv4: membership_private_ipv4,
+    scope: membership_scope
 end
