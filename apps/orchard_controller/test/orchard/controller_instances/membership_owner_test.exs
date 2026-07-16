@@ -369,13 +369,15 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
     opts =
       Keyword.put(opts, :publisher, fn _opts, _attrs ->
-        raise Postgrex.Error,
+        raise %Postgrex.Error{
           postgres: %{
-            code: "42P01",
+            code: :undefined_table,
+            pg_code: "42P01",
             severity: "ERROR",
             message: "relation \"controller_instances\" does not exist"
           },
           query: "SELECT * FROM controller_instances WHERE token = 'hunter2'"
+        }
       end)
 
     Process.flag(:trap_exit, true)
@@ -391,6 +393,27 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     assert log =~ "relation \\\"controller_instances\\\" does not exist"
     refute log =~ "hunter2"
     assert Repo.get(ControllerInstance, trust.controller_id) == nil
+  end
+
+  test "SPEC.md §8.3 a fatal exit names its callee without leaking the exit payload", %{
+    root: root
+  } do
+    {opts, _trust} = identity_opts(root)
+
+    opts =
+      Keyword.put(opts, :publisher, fn _opts, _attrs ->
+        exit({:noproc, {Orchard.Repo, :transaction, ["dsn=postgres://user:hunter2@host/db"]}})
+      end)
+
+    Process.flag(:trap_exit, true)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :heartbeat_publish_exit} = MembershipOwner.start_link(opts)
+      end)
+
+    assert log =~ "class=exit callee=Orchard.Repo.transaction reason=noproc"
+    refute log =~ "hunter2"
   end
 
   test "SPEC.md §8.3 a fatal identity failure is diagnosed without custody detail", %{root: root} do
@@ -415,30 +438,68 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     refute log =~ "beam-authorization-root"
   end
 
-  test "SPEC.md §8.3 a fatal failure after boot stops the owner rather than retrying", %{
+  test "SPEC.md §8.3 a fatal failure after boot holds a terminal state instead of exiting", %{
     root: root
   } do
     {opts, trust} = identity_opts(root)
     observed_at = ~U[2026-07-16 01:02:03.000000Z]
+    later = ~U[2026-07-16 01:09:03.000000Z]
+    clock = start_supervised!({Agent, fn -> observed_at end}, id: :terminal_clock)
 
     opts =
       opts
-      |> Keyword.put(:clock, fn -> observed_at end)
+      |> Keyword.put(:clock, fn -> Agent.get(clock, & &1) end)
       |> Keyword.put(
         :publisher,
-        fail_after_boot(fn _opts, _attrs ->
-          {:error, :beam_controller_instance_mismatch}
-        end)
+        fail_after_boot(fn _opts, _attrs -> {:error, :beam_controller_instance_mismatch} end)
       )
 
     pid = start_supervised!({MembershipOwner, opts})
     await_timestamp(trust.controller_id, observed_at)
 
-    Process.flag(:trap_exit, true)
-    ref = Process.monitor(pid)
-    send(pid, :heartbeat)
+    log = beat(pid, 1)
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, :beam_controller_instance_mismatch}, 1_000
+    assert log =~ "reason=beam_controller_instance_mismatch"
+    assert log =~ "remediated and restarted"
+    assert Process.alive?(pid)
+    assert Process.whereis(MembershipOwner) == pid
+
+    state = :sys.get_state(pid)
+    assert state.fatal == :beam_controller_instance_mismatch
+    assert state.timer_ref == nil
+
+    Agent.update(clock, fn _previous -> later end)
+
+    assert beat(pid, 2) == ""
+    assert Process.alive?(pid)
+    assert Repo.get!(ControllerInstance, trust.controller_id).last_seen_at == observed_at
+  end
+
+  test "SPEC.md §8.3 a lock conflict between heartbeat and admission retries", %{root: root} do
+    for sqlstate <- ~w(40001 40P01 57014) do
+      {opts, trust} = identity_opts(root)
+
+      opts =
+        opts
+        |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:02:03.000000Z] end)
+        |> Keyword.put(
+          :publisher,
+          fail_after_boot(fn _opts, _attrs -> raise_sqlstate(sqlstate, "lock conflict") end)
+        )
+
+      pid = start_supervised!({MembershipOwner, opts})
+      await_capability(trust.controller_id)
+
+      assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+      assert :sys.get_state(pid).fatal == nil
+      assert Process.alive?(pid)
+
+      stop_supervised!(MembershipOwner)
+    end
+  end
+
+  test "SPEC.md §8.3 the membership owner is a permanent supervision child" do
+    assert Map.get(MembershipOwner.child_spec([]), :restart, :permanent) == :permanent
   end
 
   test "SPEC.md §8.3 recovery after a failure is announced once", %{root: root} do

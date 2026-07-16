@@ -13,7 +13,14 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   `DBConnection` availability and pool faults, and the allowlisted transient
   PostgreSQL SQLSTATEs, retry on the fixed interval with bounded logging. Every
   other failure — identity, custody, schema, authorization, or unrecognized —
-  fails closed and stops the owner.
+  fails closed.
+
+  After the first publication has succeeded, failing closed cannot mean exiting:
+  a `:permanent` child that keeps stopping would exhaust the supervisor's restart
+  intensity and take the serving Controller down with it. A post-boot fatal
+  failure therefore logs once, cancels the heartbeat, leaves the last durable
+  evidence untouched, and holds an explicit terminal state that ignores queued
+  heartbeats until an operator remediates and restarts the Controller.
   """
 
   use GenServer
@@ -29,15 +36,19 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   # SQLSTATE class 08 is connection exception. 57P01/57P02/57P03 are admin
   # shutdown, crash shutdown, and cannot-connect-now; 53300 is too-many-connections.
+  # 40001/40P01/57014 are serialization failure, deadlock, and query cancellation:
+  # the publication is one atomic row-locked transaction, so re-running it on the
+  # next beat is the correct response to losing a lock race with an admission.
   @retryable_sqlstate_class "08"
-  @retryable_sqlstates ~w(57P01 57P02 57P03 53300)
+  @retryable_sqlstates ~w(57P01 57P02 57P03 53300 40001 40P01 57014)
 
   @type failure :: %{reason: atom(), logged_at: DateTime.t(), suppressed: non_neg_integer()}
 
   @type state :: %{
           opts: keyword(),
           timer_ref: term(),
-          failure: failure() | nil
+          failure: failure() | nil,
+          fatal: atom() | nil
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -57,7 +68,7 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
     case attempt_publish(opts, observed_at) do
       {:ok, _instance} ->
-        {:ok, %{opts: opts, timer_ref: start_timer(), failure: nil}}
+        {:ok, %{opts: opts, timer_ref: start_timer(), failure: nil, fatal: nil}}
 
       {:error, reason} ->
         init_failure(opts, reason, observed_at)
@@ -70,7 +81,8 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
        %{
          opts: opts,
          timer_ref: start_timer(),
-         failure: record_failure(nil, reason, observed_at)
+         failure: record_failure(nil, reason, observed_at),
+         fatal: nil
        }}
     else
       {:stop, fatal_reason(reason)}
@@ -78,6 +90,10 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   end
 
   @impl true
+  def handle_info(:heartbeat, %{fatal: fatal} = state) when not is_nil(fatal) do
+    {:noreply, state}
+  end
+
   def handle_info(:heartbeat, state) do
     observed_at = now(state.opts)
 
@@ -95,8 +111,13 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
     if retryable?(reason) do
       {:noreply, %{state | failure: record_failure(state.failure, reason, observed_at)}}
     else
-      {:stop, fatal_reason(reason), state}
+      {:noreply, enter_terminal_fatal(state, reason)}
     end
+  end
+
+  defp enter_terminal_fatal(state, reason) do
+    {:ok, :cancel} = :timer.cancel(state.timer_ref)
+    %{state | timer_ref: nil, failure: nil, fatal: fatal_reason(reason)}
   end
 
   defp fatal_reason(reason) do
@@ -104,7 +125,8 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
     Logger.error(
       "Controller membership publication failed permanently; capability evidence cannot be " <>
-        "published (reason=#{sanitized} #{diagnostic(reason)})"
+        "published until the Controller is remediated and restarted " <>
+        "(reason=#{sanitized} #{diagnostic(reason)})"
     )
 
     sanitized
@@ -114,7 +136,12 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   # operator learns which fault occurred. It carries the failure class, the
   # SQLSTATE, and the server's own message; exception messages elsewhere may
   # embed custody paths, queries, or connection strings and stay out.
-  defp diagnostic({:heartbeat_publish_exit, _reason}), do: "class=exit"
+  defp diagnostic({:heartbeat_publish_exit, {reason, {module, function, _args}}})
+       when is_atom(module) and is_atom(function) do
+    "class=exit callee=#{inspect(module)}.#{function}" <> exit_reason(reason)
+  end
+
+  defp diagnostic({:heartbeat_publish_exit, reason}), do: "class=exit" <> exit_reason(reason)
 
   defp diagnostic({_tag, %Postgrex.Error{postgres: %{pg_code: sqlstate} = postgres}})
        when is_binary(sqlstate) do
@@ -131,6 +158,11 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   end
 
   defp diagnostic(_reason), do: "class=none"
+
+  # Exit terms carry arbitrary payloads, so only an atom reason leaves the process.
+  defp exit_reason(reason) when is_atom(reason), do: " reason=#{reason}"
+  defp exit_reason({reason, _detail}) when is_atom(reason), do: " reason=#{reason}"
+  defp exit_reason(_reason), do: ""
 
   defp retryable?({:heartbeat_publish_failed, %DBConnection.ConnectionError{}}), do: true
 
