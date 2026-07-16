@@ -12,6 +12,8 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
   alias Orchard.Nodes
 
   @reserved_request_metadata_keys MapSet.new([
+                                    "actor_id",
+                                    "actor_type",
                                     "admission_category",
                                     "audit_log_id",
                                     "candidate_id",
@@ -179,6 +181,15 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
     )
   end
 
+  defp send_error(conn, :admission_actor_identity_unavailable) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :service_unavailable,
+      "admission_actor_identity_unavailable",
+      "This controller could not prove a trusted admission actor identity."
+    )
+  end
+
   defp send_error(conn, :controller_standby) do
     AdminErrorHelpers.send_error(
       conn,
@@ -202,6 +213,7 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
               :admission_not_pending,
               :admission_not_rejected,
               :admission_rejected,
+              :dispatch_capacity_phase_unsupported,
               :node_not_registered,
               :node_not_pending_admission,
               :inventory_missing,
@@ -225,6 +237,10 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
   defp conflict_message("admission_not_pending"), do: "Admission is not pending."
   defp conflict_message("admission_not_rejected"), do: "Admission is not rejected."
   defp conflict_message("admission_rejected"), do: "Admission rejection must be cleared first."
+
+  defp conflict_message("dispatch_capacity_phase_unsupported"),
+    do: "Dispatch capacity authority phase does not support this action."
+
   defp conflict_message("node_not_registered"), do: "Node is not registered."
   defp conflict_message("node_not_pending_admission"), do: "Node is not pending admission."
   defp conflict_message("inventory_missing"), do: "Registered node inventory is missing."

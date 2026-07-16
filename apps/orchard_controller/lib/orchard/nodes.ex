@@ -41,6 +41,7 @@ defmodule Orchard.Nodes do
   @snapshot_string_limit_bytes 512
   @snapshot_truncation_key "__orchard_snapshot_truncation__"
   @authenticated_observation_future_skew_ms 5_000
+  @reserved_actor_provenance_keys ~w(actor_id actor_type)
 
   # -- Read APIs --
 
@@ -2091,7 +2092,11 @@ defmodule Orchard.Nodes do
     where(query, [candidate], candidate.admission_category == ^category)
   end
 
-  defp normalize_attrs(attrs), do: SchemaSupport.normalize_attrs(attrs)
+  defp normalize_attrs(attrs) do
+    attrs
+    |> SchemaSupport.normalize_attrs()
+    |> Map.drop(@reserved_actor_provenance_keys)
+  end
 
   defp normalize_uuid(value, error) do
     case Ecto.UUID.cast(value) do

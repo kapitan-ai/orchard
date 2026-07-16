@@ -1049,11 +1049,23 @@ defmodule Orchard.NodesTest do
           approved_by_actor_id: "spoofed-operator"
         })
 
-      assert {:ok, _admitted} = Nodes.admit_node(node.id, attrs, admission_opts())
+      assert {:ok, admitted} = Nodes.admit_node(node.id, attrs, admission_opts())
 
       policy = Repo.get!(Policy, node.id)
       assert policy.approved_by_actor_type == "service_account"
       assert policy.approved_by_actor_id == "admin-api-principal"
+
+      decision = Repo.get!(AdmissionDecision, admitted.decision.id)
+      assert decision.actor_type == "service_account"
+      assert decision.actor_id == "admin-api-principal"
+      refute Map.has_key?(decision.metadata, "actor_id")
+      refute Map.has_key?(decision.metadata, "actor_type")
+      assert decision.metadata["capacity_policy_reason"] == "approved for test capacity"
+
+      audit_log = Repo.get!(AuditLog, admitted.audit_log.id)
+      refute Map.has_key?(audit_log.payload, "actor_id")
+      refute Map.has_key?(audit_log.payload, "actor_type")
+      assert audit_log.actor_id == "admin-api-principal"
     end
 
     test "SPEC.md §4.2 registered node admission fails closed without required inputs" do
