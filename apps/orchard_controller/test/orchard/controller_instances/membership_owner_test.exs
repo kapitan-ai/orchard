@@ -498,6 +498,66 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     end
   end
 
+  test "SPEC.md §8.3 a heartbeat during a Repo restart retries instead of failing closed", %{
+    root: root
+  } do
+    {opts, trust} = identity_opts(root)
+    first = ~U[2026-07-16 01:02:03.000000Z]
+    next = ~U[2026-07-16 01:03:03.000000Z]
+    clock = start_supervised!({Agent, fn -> first end}, id: :repo_clock)
+    restarting = start_supervised!({Agent, fn -> true end}, id: :restarting)
+
+    publisher = fn publisher_opts, attrs ->
+      if Agent.get(restarting, & &1) do
+        Ecto.Repo.Registry.lookup(Orchard.Repo.Unstarted)
+      else
+        ControllerInstances.heartbeat_local(publisher_opts, attrs)
+      end
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> Agent.get(clock, & &1) end)
+      |> Keyword.put(:publisher, fail_after_boot(publisher))
+
+    pid = start_supervised!({MembershipOwner, opts})
+    await_timestamp(trust.controller_id, first)
+
+    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+    assert :sys.get_state(pid).fatal == nil
+    assert Process.alive?(pid)
+
+    Agent.update(restarting, fn _previous -> false end)
+    Agent.update(clock, fn _previous -> next end)
+    beat(pid, 1)
+
+    await_timestamp(trust.controller_id, next)
+    assert Repo.get!(ControllerInstance, trust.controller_id).last_seen_at == next
+  end
+
+  test "SPEC.md §8.3 an unrelated runtime fault after boot still holds the terminal state", %{
+    root: root
+  } do
+    {opts, trust} = identity_opts(root)
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+
+    publisher = fn _opts, _attrs ->
+      raise RuntimeError, message: "unexpected publication fault"
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> observed_at end)
+      |> Keyword.put(:publisher, fail_after_boot(publisher))
+
+    pid = start_supervised!({MembershipOwner, opts})
+    await_timestamp(trust.controller_id, observed_at)
+
+    assert beat(pid, 1) =~ "class=RuntimeError"
+    assert :sys.get_state(pid).fatal == :heartbeat_publish_failed
+    assert Process.alive?(pid)
+  end
+
   test "SPEC.md §8.3 the membership owner is a permanent supervision child" do
     assert Map.get(MembershipOwner.child_spec([]), :restart, :permanent) == :permanent
   end

@@ -10,8 +10,9 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   Database availability is not such a failure. A Controller whose Postgres is
   still starting must boot and serve, so publication failures are classified
   from their structured shape before they are reduced to a stable code: only
-  `DBConnection` availability and pool faults, and the allowlisted transient
-  PostgreSQL SQLSTATEs, retry on the fixed interval with bounded logging. Every
+  `DBConnection` availability and pool faults, an unregistered Repo, and the
+  allowlisted transient PostgreSQL SQLSTATEs retry on the fixed interval with
+  bounded logging. Every
   other failure — identity, custody, schema, authorization, or unrecognized —
   fails closed.
 
@@ -164,6 +165,8 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   defp exit_reason({reason, _detail}) when is_atom(reason), do: " reason=#{reason}"
   defp exit_reason(_reason), do: ""
 
+  defp retryable?({:heartbeat_publish_failed, :repo_unavailable}), do: true
+
   defp retryable?({:heartbeat_publish_failed, %DBConnection.ConnectionError{}}), do: true
 
   defp retryable?({:heartbeat_publish_failed, %Postgrex.Error{postgres: %{pg_code: sqlstate}}})
@@ -230,10 +233,23 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
       Postgrex.Error,
       RuntimeError
     ] ->
-      {:error, {:heartbeat_publish_failed, exception}}
+      {:error, {:heartbeat_publish_failed, classify(exception, __STACKTRACE__)}}
   catch
     :exit, reason -> {:error, {:heartbeat_publish_exit, reason}}
   end
+
+  # `Ecto.Repo.Registry.lookup/1` raises a bare RuntimeError while the Repo is
+  # between crash and restart, so the raising frame is the only structured
+  # evidence separating repo availability from a publication defect.
+  defp classify(%RuntimeError{} = exception, stacktrace) do
+    if Enum.any?(stacktrace, &match?({Ecto.Repo.Registry, :lookup, 1, _location}, &1)) do
+      :repo_unavailable
+    else
+      exception
+    end
+  end
+
+  defp classify(exception, _stacktrace), do: exception
 
   defp publish(opts, observed_at) do
     publisher(opts).(opts, %{
