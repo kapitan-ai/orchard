@@ -16,7 +16,9 @@ defmodule Orchard.Config.ControllerMembership do
   Peer Grant control listener, so toggling grants cannot move a Controller's
   durable canonical BEAM name. When the override is absent, membership defaults
   to the runtime BEAM identity host, and to loopback for gRPC or single-host
-  Controllers.
+  Controllers. BEAM Peer Grants have no such default: a grants-enabled
+  Controller must name its routable membership host explicitly, because every
+  available default is loopback and grants reject a loopback identity.
 
   The resolved scope is explicit rather than defaulted: `Orchard.Application`
   hands it to `Orchard.ControllerInstances`, which only allows a loopback
@@ -37,7 +39,9 @@ defmodule Orchard.Config.ControllerMembership do
   Resolves the Controller membership host and its loopback classification.
 
   Raises when the resolved host is public, contradicts `#{@node_name_env}`, or
-  is loopback while BEAM Peer Grants require a routable Controller.
+  is loopback while BEAM Peer Grants require a routable Controller. Also raises
+  when `:membership_host` is absent and BEAM Peer Grants are enabled: grants
+  have no default membership host, so `#{@membership_host_env}` is required.
 
   ## Options
 
