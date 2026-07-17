@@ -32,4 +32,5 @@ It adds no public inference behavior change and no enforcing capacity consumer.
 It does not implement policy mutation or cutover APIs, temporary legacy claim serialization, per-Node acceptance gates, or any M7 fencing and recovery follow-up.
 
 No SPEC.md behavior impact.
-This change implements a bounded subset of the already approved `SPEC.md` §4.6.2, §7.3.5, §7.5.3, §8.3, §10.9, and §13.2 contract without modifying it.
+This change implements a bounded subset of the already approved `SPEC.md` §4.6.2, §7.3.5, §7.5.3, §8.3, §10.9, and §13.2 contract without changing what it requires.
+The single editorial exception is §3.3, where the heartbeat owner is renamed from the never-implemented `Orchard.ControllerMembership` to the implemented `Orchard.ControllerInstances.MembershipOwner`; the interval, the atomic complete-tuple write, and every other requirement are unchanged.
