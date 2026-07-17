@@ -1,8 +1,12 @@
 defmodule Orchard.DispatchCapacity do
   @moduledoc """
-  Read boundary for durable dispatch-capacity authority, policy, and evidence.
+  Domain boundary for durable dispatch-capacity authority, policy, and evidence.
 
-  This foundation intentionally exposes no phase or policy transition API.
+  The reads are open to any caller; the three writing seams are deliberately
+  narrow. `lock_authority/0` and `approve_admission_policy/1` exist only for the
+  Node Admission transaction, and `record_capacity_evidence/2` persists
+  Node-owned runtime evidence that never becomes policy. This foundation exposes
+  no transition to `enforcing`, for either the durable phase or a policy.
   """
 
   alias Orchard.DispatchCapacity.{Authority, CapacityEvidence, Policy}
@@ -18,6 +22,11 @@ defmodule Orchard.DispatchCapacity do
 
   @doc """
   Locks and returns the singleton authority row for an admission transaction.
+
+  A transaction that locks both this row and Node or grant rows must take this
+  lock first. Admission establishes that order and the later cutover slice
+  inherits it; a caller that locks a Node first deadlocks against a concurrent
+  admission.
   """
   @spec lock_authority() :: {:ok, Authority.t()} | {:error, :dispatch_capacity_authority_missing}
   def lock_authority do

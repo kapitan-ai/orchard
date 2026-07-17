@@ -1,6 +1,11 @@
 defmodule Orchard.ControllerInstances.ControllerInstance do
   @moduledoc """
-  Durable identity for one enrolled Controller instance.
+  Durable identity for one enrolled Controller instance, and the membership and
+  dispatch-capacity capability evidence that instance republishes.
+
+  Identity fields are immutable once enrolled; the heartbeat fields are the only
+  refreshed state, and they move together so an enforcement cutover never reads
+  a tuple that is half fresh.
   """
 
   use Ecto.Schema

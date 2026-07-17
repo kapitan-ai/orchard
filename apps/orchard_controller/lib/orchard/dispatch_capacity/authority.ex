@@ -2,7 +2,9 @@ defmodule Orchard.DispatchCapacity.Authority do
   @moduledoc """
   Durable cluster-wide dispatch-capacity enforcement authority.
 
-  This foundation exposes only the seeded `pre_cutover` representation.
+  The schema spans both phases so the evaluator's truth table and the database
+  constraints can be settled once, but this foundation ships no way to reach
+  `enforcing`: the row is seeded `pre_cutover` and nothing writes the phase.
   Enforcement cutover belongs to a later implementation slice.
   """
 

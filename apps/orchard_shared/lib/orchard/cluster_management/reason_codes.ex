@@ -162,6 +162,13 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
 
   @doc """
   Returns dispatch-capacity reason codes in the order surfaces must render them.
+
+  The list order is the contract, not just a render order:
+  `Orchard.DispatchCapacity.Evaluator` derives its reason precedence from it, so
+  reordering these entries changes which reason an operator sees first for the
+  same evidence. Unlike the other vocabularies, this one is not a `vocabulary/0`
+  member, so `valid?/2` and `validate_codes/2` cannot check these codes at all:
+  the evaluator is their only producer and it emits them from this list.
   """
   @spec dispatch_capacity_codes() :: [String.t()]
   def dispatch_capacity_codes, do: @dispatch_capacity_codes

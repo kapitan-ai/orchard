@@ -9,16 +9,24 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
 
   Database availability is not such a failure. A Controller whose Postgres is
   still starting must boot and serve, so publication failures are classified
-  from their structured shape before they are reduced to a stable code: only
-  `DBConnection` availability and pool faults, an unregistered Repo, and the
-  allowlisted transient PostgreSQL SQLSTATEs retry on the fixed interval with
-  bounded logging.
+  before they are reduced to a stable code: only `DBConnection` availability and
+  pool faults, an unavailable Repo, and the allowlisted transient PostgreSQL
+  SQLSTATEs retry on the fixed interval with bounded logging.
 
   Neither is uninitialized node trust. `orchardctl nodes trust init` is a
   leader-gated operator step run against an already-serving Controller, so a
   Controller that has no trust material yet must boot and wait for it rather
   than stop and make trust unreachable forever. Every other failure — identity
   mismatch, custody, schema, authorization, or unrecognized — fails closed.
+
+  An unavailable Repo is the one input with no structured shape to read, so it
+  is classified by raising frame instead. `Ecto.Repo.Registry.lookup/1` raises a
+  bare `RuntimeError` while the Repo is unregistered, and a bare `ArgumentError`
+  once it is registered but not yet associated. Both restart windows are
+  therefore indistinguishable from a publication defect by exception class, and
+  neither message is a pinned contract. The `Ecto.Repo.Registry.lookup/1` stack
+  frame is the evidence instead: any exception raised through it is retryable
+  `repo_unavailable`, and an `ArgumentError` raised anywhere else stays fatal.
 
   After the first publication has succeeded, failing closed cannot mean exiting:
   a `:permanent` child that keeps stopping would exhaust the supervisor's restart

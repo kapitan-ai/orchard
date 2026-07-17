@@ -1,6 +1,11 @@
 defmodule Orchard.ControllerInstances do
   @moduledoc """
-  Establishes the durable identity of the local Controller instance.
+  Establishes the durable identity of the local Controller instance and
+  republishes its membership and capability evidence.
+
+  Every operation is keyed by the local certificate identity, so a cluster of
+  Controller instances persists one row each and no Controller can write a
+  peer's evidence.
 
   The database receives only an opaque reference to Controller-local BEAM
   Authorization Root custody. Root bytes and local filesystem paths stay out
@@ -85,6 +90,12 @@ defmodule Orchard.ControllerInstances do
   @doc """
   Atomically refreshes membership and dispatch-capacity capability evidence for
   one authenticated local Controller identity.
+
+  `dispatch_capacity_consumers_ready` is forced to `false` rather than taken
+  from `attrs`: no consumer reads the shared evaluation in this non-enforcing
+  foundation, so no caller and no configuration may publish the readiness an
+  enforcement cutover would act on. The heartbeat is all-or-nothing, so a
+  partial `attrs` map is rejected instead of making stale evidence look fresh.
   """
   @spec heartbeat_local(keyword(), map()) ::
           {:ok, ControllerInstance.t()} | {:error, term()}

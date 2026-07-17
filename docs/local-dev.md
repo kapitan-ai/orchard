@@ -1123,7 +1123,7 @@ All-in-one local boot (dev):
    - Runs pending migrations
    - Exports dev gRPC port (50071)
    - Starts `iex -S mix phx.server`
-   - Controller boots: Endpoint, Repo, Inference supervisor, Runtime Endpoint clients
+   - Controller boots: Endpoint, Repo, membership owner, Inference supervisor, Runtime Endpoint clients
    - Node-agent boots: ModelManager, WorkerSupervisor, Runtime Endpoint task supervisor, gRPC server
 3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
 4. Create an Organization and API Token with `OrchardCLI.main(["tenants", ...])` and

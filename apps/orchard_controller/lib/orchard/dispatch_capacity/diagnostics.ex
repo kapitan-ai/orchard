@@ -4,6 +4,12 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
 
   This module assembles Controller-owned facts for the pure evaluator. It does
   not reserve capacity, mutate queue state, or authorize dispatch.
+
+  Because it is observability rather than authorization, a failed durable read
+  is logged and degraded to a missing fact instead of raised: an operator
+  surface must still render while Postgres is unavailable. A snapshot therefore
+  reports what the evaluator decided from the facts that could be read, which
+  fail closed, and never proves the underlying evidence was reachable.
   """
 
   alias Orchard.DispatchCapacity
