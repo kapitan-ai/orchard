@@ -256,6 +256,10 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     "Controller Dispatch Ceiling is approved but is not yet enforcing."
   end
 
+  defp warning_message(code) do
+    "Dispatch-capacity policy reported #{code}."
+  end
+
   defp add_confirmation_requirement(requirements, requirement, true),
     do: requirements ++ [requirement]
 

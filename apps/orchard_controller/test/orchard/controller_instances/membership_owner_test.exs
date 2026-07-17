@@ -189,13 +189,18 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
     pid = start_supervised!({MembershipOwner, opts})
 
-    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+    assert beat(pid, 1) =~
+             "reason=heartbeat_publish_failed class=Postgrex.Error sqlstate=57P01 " <>
+               "detail=\"terminating connection due to administrator command\" " <>
+               "suppressed_attempts=0"
 
     assert beat(pid, 2) == ""
 
     Agent.update(clock, &DateTime.add(&1, 300, :second))
 
-    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=2"
+    assert beat(pid, 1) =~
+             "sqlstate=57P01 detail=\"terminating connection due to " <>
+               "administrator command\" suppressed_attempts=2"
   end
 
   test "SPEC.md §8.3 boot fails closed when the first capability publication cannot be proven", %{
@@ -214,6 +219,38 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
              MembershipOwner.start_link(opts)
 
     assert Repo.get(ControllerInstance, trust.controller_id) == nil
+  end
+
+  test "SPEC.md §8.3 uninitialized node trust defers the first publication instead of failing boot",
+       %{root: root} do
+    trust_root = Path.join(root, "node-trust")
+    enrolled_at = ~U[2026-07-16 01:00:00.000000Z]
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+
+    opts = [
+      private_ipv4: "10.0.0.10",
+      membership_scope: :remote_beam,
+      node_trust_root: trust_root,
+      authorization_root_path: Path.join(root, "beam-authorization-root"),
+      now: enrolled_at,
+      clock: fn -> observed_at end
+    ]
+
+    log = capture_log(fn -> start_supervised!({MembershipOwner, opts}) end)
+    pid = Process.whereis(MembershipOwner)
+
+    assert is_pid(pid)
+    assert log =~ "reason=node_trust_not_initialized"
+    assert :sys.get_state(pid).timer_ref != nil
+
+    {:ok, trust} = NodeTrust.initialize(root: trust_root, now: enrolled_at)
+    beat(pid, 1)
+
+    await_timestamp(trust.controller_id, observed_at)
+    published = Repo.get!(ControllerInstance, trust.controller_id)
+
+    assert published.dispatch_capacity_capability_observed_at == observed_at
+    assert published.dispatch_capacity_consumers_ready == false
   end
 
   test "SPEC.md §8.3 a changed failure reason is logged without waiting for the interval", %{
@@ -235,11 +272,39 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
       |> Keyword.put(:publisher, fail_after_boot(publisher))
 
     pid = start_supervised!({MembershipOwner, opts})
-    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+
+    assert beat(pid, 1) =~
+             "reason=heartbeat_publish_failed class=DBConnection.ConnectionError " <>
+               "suppressed_attempts=0"
 
     Agent.update(kind, fn _previous -> :checkout end)
 
-    assert beat(pid, 1) =~ "reason=heartbeat_publish_exit suppressed_attempts=0"
+    assert beat(pid, 1) =~
+             "reason=heartbeat_publish_exit class=exit callee=DBConnection.Holder.checkout " <>
+               "reason=timeout suppressed_attempts=0"
+  end
+
+  test "SPEC.md §8.3 one stable code covering two faults still logs each fault", %{root: root} do
+    {opts, _trust} = identity_opts(root)
+    sqlstate = start_supervised!({Agent, fn -> "53300" end}, id: :sqlstate)
+
+    publisher = fn _opts, _attrs ->
+      raise_sqlstate(Agent.get(sqlstate, & &1), "database is not accepting connections")
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:clock, fn -> ~U[2026-07-16 01:00:00.000000Z] end)
+      |> Keyword.put(:publisher, fail_after_boot(publisher))
+
+    pid = start_supervised!({MembershipOwner, opts})
+    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed class=Postgrex.Error sqlstate=53300"
+
+    Agent.update(sqlstate, fn _previous -> "57P03" end)
+
+    assert beat(pid, 1) =~
+             "reason=heartbeat_publish_failed class=Postgrex.Error sqlstate=57P03 " <>
+               "detail=\"database is not accepting connections\" suppressed_attempts=0"
   end
 
   test "SPEC.md §8.3 transient heartbeat failure reasons are sanitized to stable codes", %{
@@ -255,7 +320,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     pid = start_supervised!({MembershipOwner, opts})
     log = beat(pid, 1)
 
-    assert log =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+    assert log =~ "reason=heartbeat_publish_failed class=Postgrex.Error sqlstate=57P01"
     refute log =~ "hunter2"
   end
 
@@ -282,7 +347,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     pid = Process.whereis(MembershipOwner)
 
     assert is_pid(pid)
-    assert log =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+    assert log =~ "reason=heartbeat_publish_failed class=Postgrex.Error sqlstate=57P01"
     assert Repo.get(ControllerInstance, trust.controller_id) == nil
 
     Agent.update(down, fn _previous -> false end)
@@ -355,7 +420,10 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
       pid = Process.whereis(MembershipOwner)
 
       assert is_pid(pid)
-      assert log =~ "reason=heartbeat_publish_exit suppressed_attempts=0"
+
+      assert log =~
+               "reason=heartbeat_publish_exit class=exit callee=DBConnection.Holder.checkout"
+
       assert Repo.get(ControllerInstance, trust.controller_id) == nil
 
       stop_supervised!(MembershipOwner)
@@ -490,7 +558,9 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
       pid = start_supervised!({MembershipOwner, opts})
       await_capability(trust.controller_id)
 
-      assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+      assert beat(pid, 1) =~
+               "reason=heartbeat_publish_failed class=Postgrex.Error sqlstate=#{sqlstate}"
+
       assert :sys.get_state(pid).fatal == nil
       assert Process.alive?(pid)
 
@@ -523,7 +593,9 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     pid = start_supervised!({MembershipOwner, opts})
     await_timestamp(trust.controller_id, first)
 
-    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+    assert beat(pid, 1) =~
+             "reason=heartbeat_publish_failed class=repo_unavailable suppressed_attempts=0"
+
     assert :sys.get_state(pid).fatal == nil
     assert Process.alive?(pid)
 
@@ -560,7 +632,9 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
     assert Process.whereis(MembershipOwner) == pid
     refute :ets.member(Ecto.Repo.Registry, pid)
-    assert beat(pid, 1) =~ "reason=heartbeat_publish_failed suppressed_attempts=0"
+
+    assert beat(pid, 1) =~
+             "reason=heartbeat_publish_failed class=repo_unavailable suppressed_attempts=0"
 
     state = :sys.get_state(pid)
     assert state.fatal == nil
@@ -666,12 +740,14 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
   end
 
   defp raise_unavailable_database(_opts, _attrs) do
-    raise_sqlstate("57P01", "terminating connection due to administrator command hunter2")
+    raise_sqlstate("57P01", "terminating connection due to administrator command")
   end
 
   defp raise_sqlstate(sqlstate, message) do
-    raise Postgrex.Error,
-      postgres: %{code: sqlstate, severity: "FATAL", message: message}
+    error =
+      Postgrex.Error.exception(postgres: %{code: sqlstate, severity: "FATAL", message: message})
+
+    raise %{error | query: "SELECT * FROM controller_instances WHERE token = 'hunter2'"}
   end
 
   defp fail_after_boot(fun) do

@@ -4,6 +4,7 @@ defmodule OrchardConsole.NodesPageData do
   """
 
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.DispatchCapacity.Diagnostics
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, Node}
 
@@ -39,14 +40,21 @@ defmodule OrchardConsole.NodesPageData do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
+    pending_nodes =
+      nodes
+      |> Enum.filter(&pending_node?/1)
+      |> Enum.reject(&MapSet.member?(candidate_node_ids, &1.id))
+
+    capacity_snapshots = Diagnostics.snapshots(pending_nodes)
+
     rows =
       candidates
       |> Enum.map(&candidate_row(&1, Map.get(candidate_decisions, &1.id)))
       |> Kernel.++(
-        nodes
-        |> Enum.filter(&pending_node?/1)
-        |> Enum.reject(&MapSet.member?(candidate_node_ids, &1.id))
-        |> Enum.map(&node_row(&1, Map.get(node_decisions, &1.id)))
+        Enum.map(
+          pending_nodes,
+          &node_row(&1, Map.get(node_decisions, &1.id), Map.get(capacity_snapshots, &1.id))
+        )
       )
       |> Enum.sort_by(&row_sort_key/1)
 
@@ -76,8 +84,12 @@ defmodule OrchardConsole.NodesPageData do
     }
   end
 
-  defp node_row(%Node{} = node, latest_decision) do
-    status = StatusBuilder.node_status_map(node, latest_decision: latest_decision)
+  defp node_row(%Node{} = node, latest_decision, capacity_snapshot) do
+    status =
+      StatusBuilder.node_status_map(node,
+        latest_decision: latest_decision,
+        dispatch_capacity_snapshot: capacity_snapshot
+      )
 
     %{
       kind: :node,

@@ -12,9 +12,13 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   from their structured shape before they are reduced to a stable code: only
   `DBConnection` availability and pool faults, an unregistered Repo, and the
   allowlisted transient PostgreSQL SQLSTATEs retry on the fixed interval with
-  bounded logging. Every
-  other failure — identity, custody, schema, authorization, or unrecognized —
-  fails closed.
+  bounded logging.
+
+  Neither is uninitialized node trust. `orchardctl nodes trust init` is a
+  leader-gated operator step run against an already-serving Controller, so a
+  Controller that has no trust material yet must boot and wait for it rather
+  than stop and make trust unreachable forever. Every other failure — identity
+  mismatch, custody, schema, authorization, or unrecognized — fails closed.
 
   After the first publication has succeeded, failing closed cannot mean exiting:
   a `:permanent` child that keeps stopping would exhaust the supervisor's restart
@@ -43,7 +47,12 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   @retryable_sqlstate_class "08"
   @retryable_sqlstates ~w(57P01 57P02 57P03 53300 40001 40P01 57014)
 
-  @type failure :: %{reason: atom(), logged_at: DateTime.t(), suppressed: non_neg_integer()}
+  @type failure :: %{
+          reason: atom(),
+          diagnostic: String.t(),
+          logged_at: DateTime.t(),
+          suppressed: non_neg_integer()
+        }
 
   @type state :: %{
           opts: keyword(),
@@ -153,6 +162,8 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
     "class=#{inspect(exception.__struct__)}"
   end
 
+  defp diagnostic({_tag, detail}) when is_atom(detail), do: "class=#{detail}"
+
   defp diagnostic(%Ecto.Changeset{} = changeset) do
     fields = changeset |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
     "class=Ecto.Changeset detail=#{inspect(fields)}"
@@ -164,6 +175,8 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   defp exit_reason(reason) when is_atom(reason), do: " reason=#{reason}"
   defp exit_reason({reason, _detail}) when is_atom(reason), do: " reason=#{reason}"
   defp exit_reason(_reason), do: ""
+
+  defp retryable?(:node_trust_not_initialized), do: true
 
   defp retryable?({:heartbeat_publish_failed, :repo_unavailable}), do: true
 
@@ -180,31 +193,32 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   defp retryable?(_reason), do: false
 
   defp record_failure(nil, reason, observed_at) do
-    log_failure(sanitize_reason(reason), 0, observed_at)
+    log_failure(sanitize_reason(reason), diagnostic(reason), 0, observed_at)
   end
 
-  defp record_failure(%{reason: previous} = failure, reason, observed_at) do
+  defp record_failure(failure, reason, observed_at) do
     sanitized = sanitize_reason(reason)
+    diagnostic = diagnostic(reason)
 
     cond do
-      sanitized != previous ->
-        log_failure(sanitized, 0, observed_at)
+      {sanitized, diagnostic} != {failure.reason, failure.diagnostic} ->
+        log_failure(sanitized, diagnostic, 0, observed_at)
 
       DateTime.diff(observed_at, failure.logged_at, :millisecond) >= @failure_log_interval_ms ->
-        log_failure(sanitized, failure.suppressed, observed_at)
+        log_failure(sanitized, diagnostic, failure.suppressed, observed_at)
 
       true ->
         %{failure | suppressed: failure.suppressed + 1}
     end
   end
 
-  defp log_failure(reason, suppressed, observed_at) do
+  defp log_failure(reason, diagnostic, suppressed, observed_at) do
     Logger.warning(
       "Controller membership heartbeat failed; capability evidence remains stale " <>
-        "(reason=#{reason} suppressed_attempts=#{suppressed})"
+        "(reason=#{reason} #{diagnostic} suppressed_attempts=#{suppressed})"
     )
 
-    %{reason: reason, logged_at: observed_at, suppressed: 0}
+    %{reason: reason, diagnostic: diagnostic, logged_at: observed_at, suppressed: 0}
   end
 
   defp log_recovery(nil), do: :ok
