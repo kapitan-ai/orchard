@@ -37,9 +37,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
       observed_at: DateTime.utc_now(),
       availability: availability_from_response(response),
       worker_state: normalize_worker_state(value(response, :worker_state)),
-      aggregate_active_request_count:
-        non_negative_integer(value(response, :active_request_count)),
-      aggregate_max_concurrency: value(response, :max_concurrency),
+      aggregate_active_request_count: value(response, :active_request_count),
+      aggregate_max_concurrency: compat_max_concurrency(value(response, :max_concurrency)),
       metadata: metadata,
       health: health_from_response(value(response, :runtime_health)),
       placements: placements_from_status(response),
@@ -286,6 +285,12 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
   defp normalize_worker_state(5), do: :failed
   defp normalize_worker_state(6), do: :stopped
   defp normalize_worker_state(_other), do: :unknown
+
+  # SPEC.md §12.4: proto3 `uint32` decodes an omitted StatusResponse.max_concurrency
+  # as 0, so this transport cannot distinguish absent from zero. Both mean the
+  # Runtime Concurrency Enforcement Limit is unknown or legacy.
+  defp compat_max_concurrency(0), do: nil
+  defp compat_max_concurrency(value), do: value
 
   defp endpoint_id(%Target{id: id}, _metadata) when is_binary(id) and id != "", do: id
 

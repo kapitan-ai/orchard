@@ -9,6 +9,7 @@ defmodule OrchardApplicationTest do
       start_endpoint: Application.get_env(:orchard_controller, :start_endpoint, true),
       enable_db_checks: Application.get_env(:orchard_controller, :enable_db_checks, true),
       beam_peer_grants: Application.get_env(:orchard_controller, :beam_peer_grants),
+      controller_membership: Application.get_env(:orchard_controller, :controller_membership),
       sentry_dsn: Application.get_env(:sentry, :dsn)
     }
 
@@ -29,6 +30,13 @@ defmodule OrchardApplicationTest do
       Application.put_env(:orchard_controller, :start_endpoint, previous_env.start_endpoint)
       Application.put_env(:orchard_controller, :enable_db_checks, previous_env.enable_db_checks)
       restore_app_env(:orchard_controller, :beam_peer_grants, previous_env.beam_peer_grants)
+
+      restore_app_env(
+        :orchard_controller,
+        :controller_membership,
+        previous_env.controller_membership
+      )
+
       Application.put_env(:sentry, :dsn, previous_env.sentry_dsn)
       remove_sentry_handler()
 
@@ -64,6 +72,12 @@ defmodule OrchardApplicationTest do
   test "SPEC.md §7.5.0 production grants add the configured control listener child" do
     listener = [host: "10.0.0.10", port: 50_072]
 
+    Application.put_env(:orchard_controller, :controller_membership,
+      private_ipv4: "10.0.0.20",
+      scope: :remote_beam,
+      authorization_root_path: "/protected/authorization-root"
+    )
+
     Application.put_env(:orchard_controller, :beam_peer_grants,
       enabled: true,
       mode: :distributed,
@@ -79,7 +93,7 @@ defmodule OrchardApplicationTest do
                &match?({Orchard.BeamPeerGrants.ControllerInitializer, _}, &1)
              )
 
-    assert initializer[:private_ipv4] == listener[:host]
+    assert initializer[:private_ipv4] == "10.0.0.20"
 
     assert {Orchard.BeamPeerGrants.ControllerStartupVerifier, verifier} =
              Enum.find(
@@ -132,6 +146,107 @@ defmodule OrchardApplicationTest do
              {Orchard.BeamPeerGrants.ControlListener, _opts} -> true
              _other -> false
            end)
+  end
+
+  test "SPEC.md §8.3 exactly one membership owner is supervised whenever the repo is owned" do
+    listener = [host: "10.0.0.10", port: 50_072]
+
+    for peer_grants <- [
+          [enabled: false],
+          [
+            enabled: true,
+            mode: :distributed,
+            authorization_root_path: "/protected/authorization-root",
+            manifest_path: "/protected/controller-launch.json",
+            control_listener: listener
+          ]
+        ] do
+      Application.put_env(:orchard_controller, :beam_peer_grants, peer_grants)
+      Application.put_env(:orchard_controller, :start_repo, true)
+
+      assert [{Orchard.ControllerInstances.MembershipOwner, _opts}] =
+               membership_owner_specs(Orchard.Application.child_specs())
+    end
+  end
+
+  test "SPEC.md §8.3 membership identity never follows the peer-grant control listener" do
+    Application.put_env(:orchard_controller, :start_repo, true)
+
+    Application.put_env(:orchard_controller, :controller_membership,
+      private_ipv4: "10.0.0.10",
+      scope: :remote_beam,
+      authorization_root_path: "/protected/authorization-root"
+    )
+
+    assert [{Orchard.ControllerInstances.MembershipOwner, disabled_opts}] =
+             membership_owner_specs(Orchard.Application.child_specs())
+
+    Application.put_env(:orchard_controller, :beam_peer_grants,
+      enabled: true,
+      mode: :distributed,
+      authorization_root_path: "/grant/authorization-root",
+      manifest_path: "/protected/controller-launch.json",
+      control_listener: [host: "10.0.0.99", port: 50_072]
+    )
+
+    assert [{Orchard.ControllerInstances.MembershipOwner, enabled_opts}] =
+             membership_owner_specs(Orchard.Application.child_specs())
+
+    assert enabled_opts == disabled_opts
+    assert enabled_opts[:private_ipv4] == "10.0.0.10"
+    assert enabled_opts[:membership_scope] == :remote_beam
+    assert enabled_opts[:authorization_root_path] == "/protected/authorization-root"
+  end
+
+  test "SPEC.md §8.3 the grant initializer and membership owner share one durable identity" do
+    Application.put_env(:orchard_controller, :start_repo, true)
+
+    Application.put_env(:orchard_controller, :controller_membership,
+      private_ipv4: "10.0.0.10",
+      scope: :remote_beam,
+      authorization_root_path: "/protected/authorization-root"
+    )
+
+    Application.put_env(:orchard_controller, :beam_peer_grants,
+      enabled: true,
+      mode: :distributed,
+      authorization_root_path: "/grant/authorization-root",
+      manifest_path: "/protected/controller-launch.json",
+      control_listener: [host: "10.0.0.99", port: 50_072]
+    )
+
+    child_specs = Orchard.Application.child_specs()
+
+    assert {Orchard.BeamPeerGrants.ControllerInitializer, initializer_opts} =
+             Enum.find(
+               child_specs,
+               &match?({Orchard.BeamPeerGrants.ControllerInitializer, _}, &1)
+             )
+
+    assert [{Orchard.ControllerInstances.MembershipOwner, membership_opts}] =
+             membership_owner_specs(child_specs)
+
+    assert initializer_opts == membership_opts
+    assert initializer_opts[:private_ipv4] == "10.0.0.10"
+    assert initializer_opts[:membership_scope] == :remote_beam
+    assert initializer_opts[:authorization_root_path] == "/protected/authorization-root"
+  end
+
+  test "SPEC.md §8.3 membership identity is never defaulted when config resolved no scope" do
+    Application.put_env(:orchard_controller, :start_repo, true)
+    Application.delete_env(:orchard_controller, :controller_membership)
+
+    assert [{Orchard.ControllerInstances.MembershipOwner, opts}] =
+             membership_owner_specs(Orchard.Application.child_specs())
+
+    assert opts[:private_ipv4] == nil
+    assert opts[:membership_scope] == nil
+  end
+
+  test "SPEC.md §8.3 membership owner is omitted only when repo ownership is disabled" do
+    Application.put_env(:orchard_controller, :start_repo, false)
+
+    assert membership_owner_specs(Orchard.Application.child_specs()) == []
   end
 
   test "SPEC.md §7.5.0 controller startup fails closed when its grant listener is invalid" do
@@ -252,6 +367,10 @@ defmodule OrchardApplicationTest do
     assert Path.type(licensing[:node_identity_path]) == :absolute
     assert String.ends_with?(licensing[:bundle_path], "/tmp/test/config/licensing/current.json")
     assert String.ends_with?(licensing[:node_identity_path], "/tmp/test/data/node-id")
+  end
+
+  defp membership_owner_specs(child_specs) do
+    Enum.filter(child_specs, &match?({Orchard.ControllerInstances.MembershipOwner, _opts}, &1))
   end
 
   defp remove_sentry_handler do

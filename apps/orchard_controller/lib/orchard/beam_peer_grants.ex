@@ -197,7 +197,7 @@ defmodule Orchard.BeamPeerGrants do
   defp do_issue_initial_for_admission(node, opts) do
     with {:ok, enrollment, node_certificate} <- lock_enrollment_binding(node),
          :ok <- run_lock_observer(opts, :enrollment),
-         {:ok, controller} <- lock_single_controller(),
+         {:ok, controller} <- lock_local_controller(),
          :ok <- run_lock_observer(opts, :controller),
          :ok <- validate_enrollment_controller(enrollment, controller),
          :ok <- validate_controller_binding(controller),
@@ -233,9 +233,8 @@ defmodule Orchard.BeamPeerGrants do
          :ok <- run_lock_observer(opts, :node),
          {:ok, enrollment} <- lock_only_launch_enrollment(node.id),
          :ok <- run_lock_observer(opts, :enrollment),
-         {:ok, controller} <- lock_only_controller(),
+         {:ok, controller} <- lock_grant_controller(grant.controller_id),
          :ok <- run_lock_observer(opts, :controller),
-         true <- grant.controller_id == controller.id,
          {:ok, peer} <- authenticated_peer(enrollment),
          :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer),
          :ok <- validate_controller_binding(controller),
@@ -264,15 +263,9 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
-  defp lock_only_controller do
-    controllers =
-      ControllerInstance
-      |> order_by([controller], asc: controller.id)
-      |> lock("FOR UPDATE")
-      |> Repo.all()
-
-    case controllers do
-      [%ControllerInstance{status: :operational} = controller] -> {:ok, controller}
+  defp lock_grant_controller(controller_id) do
+    case lock_controller(controller_id) do
+      %ControllerInstance{status: :operational} = controller -> {:ok, controller}
       _other -> {:error, :beam_distribution_launch_scope_invalid}
     end
   end
@@ -349,17 +342,13 @@ defmodule Orchard.BeamPeerGrants do
     |> Repo.all()
   end
 
-  defp lock_single_controller do
-    query =
-      from(instance in ControllerInstance,
-        where: instance.status == :operational,
-        order_by: [asc: instance.id],
-        lock: "FOR UPDATE"
-      )
-
-    case Repo.all(query) do
-      [controller] -> {:ok, controller}
-      _instances -> {:error, :beam_peer_grant_controller_scope_invalid}
+  defp lock_local_controller do
+    with {:ok, trust} <- NodeTrust.public_material(),
+         %ControllerInstance{status: :operational} = controller <-
+           lock_controller(trust.controller_id) do
+      {:ok, controller}
+    else
+      _other -> {:error, :beam_peer_grant_controller_scope_invalid}
     end
   end
 

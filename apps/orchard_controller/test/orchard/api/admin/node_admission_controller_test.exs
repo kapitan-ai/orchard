@@ -3,6 +3,7 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
 
   import Ecto.Query
 
+  alias Orchard.API.Admin.NodeAdmissionController
   alias Orchard.API.Router
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
@@ -324,7 +325,9 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert preview["object"] == "cluster_management.action_preview"
       assert preview["action"] == "node_admission.admit"
       assert preview["target"] == %{"type" => "node", "id" => node.id}
-      assert preview["confirmation_requirements"] == ["requires_yes_flag"]
+      assert preview["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
+      assert preview["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == nil
+      assert preview["dispatch_capacity_policy"]["policy_state"] == "unresolved"
 
       assert Enum.map(preview["blockers"], & &1["code"]) == [
                "trust_not_established",
@@ -362,7 +365,13 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       refute Map.has_key?(body["decision"]["metadata"], "node_id")
       refute Map.has_key?(body["decision"]["metadata"], "source")
       refute Map.has_key?(body["decision"]["metadata"], "observed_identity")
+      refute Map.has_key?(body["decision"]["metadata"], "actor_id")
+      refute Map.has_key?(body["decision"]["metadata"], "actor_type")
       assert body["audit_log"]["scope"] == "cluster"
+
+      decision = Repo.get!(AdmissionDecision, body["decision"]["id"])
+      assert decision.actor_id != "spoofed-operator"
+      assert decision.actor_type != "system"
 
       audit_log = Repo.get!(AuditLog, body["audit_log"]["id"])
       assert audit_log.payload["source"] == "registered_node"
@@ -370,8 +379,64 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert audit_log.payload["node_id"] == node.id
       assert audit_log.payload["observed_identity"]["node_id"] == node.id
       assert audit_log.payload["target_ref"] != "spoofed-target"
+      refute Map.has_key?(audit_log.payload, "actor_id")
+      refute Map.has_key?(audit_log.payload, "actor_type")
+      assert audit_log.actor_id != "spoofed-operator"
 
       assert Repo.get!(Node, node.id).state == :admitted
+    end
+
+    test "admit reports service unavailable when no trusted actor identity can be proven" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-no-actor-api",
+          hostname: "registered-no-actor-api.local"
+        })
+
+      conn =
+        :post
+        |> build_conn("/admin/v1/nodes/#{node.id}/admit", admission_attrs())
+        |> Map.put(:body_params, admission_attrs())
+        |> NodeAdmissionController.admit(%{"node_id" => node.id})
+
+      assert conn.status == 503
+
+      assert Jason.decode!(conn.resp_body)["error"]["code"] ==
+               "admission_actor_identity_unavailable"
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.aggregate(AdmissionDecision, :count, :id) == 0
+    end
+
+    test "admit reports conflict when the authority phase does not support admission" do
+      token = admin_token!("admin-node-admission-phase")
+
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-enforcing-phase",
+          hostname: "registered-enforcing-phase.local"
+        })
+
+      Repo.query!("""
+      UPDATE dispatch_capacity_authority
+         SET enforcement_phase = 'enforcing',
+             cutover_by_actor_type = 'operator',
+             cutover_by_actor_id = 'phase-test-operator',
+             cutover_at = NOW(),
+             cutover_reason = 'phase test cutover'
+      """)
+
+      conn = admin_json(:post, "/admin/v1/nodes/#{node.id}/admit", token, admission_attrs())
+
+      assert conn.status == 409
+
+      assert Jason.decode!(conn.resp_body)["error"]["code"] ==
+               "dispatch_capacity_phase_unsupported"
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.aggregate(AdmissionDecision, :count, :id) == 0
     end
 
     test "stored snapshot truncation markers are preserved in candidate responses" do
@@ -560,7 +625,8 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
     %{
       "trust_evidence_ref" => "registration-audit:test",
       "pool_id" => Ecto.UUID.generate(),
-      "routing_policy_id" => Ecto.UUID.generate()
+      "routing_policy_id" => Ecto.UUID.generate(),
+      "capacity_policy_reason" => "approved by API test"
     }
   end
 
@@ -571,7 +637,9 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       "observed_identity" => %{"claimed_node_id" => "spoofed-node"},
       "target_ref" => "spoofed-target",
       "candidate_id" => Ecto.UUID.generate(),
-      "node_id" => Ecto.UUID.generate()
+      "node_id" => Ecto.UUID.generate(),
+      "actor_id" => "spoofed-operator",
+      "actor_type" => "system"
     })
   end
 end

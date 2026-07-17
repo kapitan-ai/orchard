@@ -14,6 +14,12 @@ This README is orientation only. Normative behavior lives in
 - Authenticated public `/v1` routes for models, chat completions, and the
   bounded Responses API subset.
 - `Orchard.Repo` migrations and Postgres-backed controller state.
+- Durable Controller membership identity and the supervised membership owner
+  that republishes `last_seen_at` and this Controller's dispatch-capacity
+  capability evidence on every heartbeat.
+- Durable dispatch-capacity policy, the cluster enforcement phase, and the
+  shared capacity evaluation that currently produces counterfactual
+  diagnostics only.
 - Governance persistence and lifecycle APIs for Organizations, tenant-direct API Tokens, API Clients, service-account-owned API Tokens, role bindings, and provisioning batches.
 - Request canonicalization, tokenization orchestration, admission, scheduling,
   dispatch, lifecycle persistence, and public response serialization.

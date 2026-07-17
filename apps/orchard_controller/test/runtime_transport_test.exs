@@ -1,3 +1,5 @@
+Code.require_file(Path.expand("../../../config/source_dev_beam.exs", __DIR__))
+
 defmodule Orchard.RuntimeTransportTest do
   use ExUnit.Case, async: false
 
@@ -59,6 +61,7 @@ defmodule Orchard.RuntimeTransportTest do
         "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => manifest_path,
         "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
         "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+        "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10",
         "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => authorization_root
       })
 
@@ -130,6 +133,165 @@ defmodule Orchard.RuntimeTransportTest do
                      "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
                      "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" =>
                        Path.join(support_root, "beam-authorization-root")
+                   })
+                 end
+  end
+
+  test "SPEC.md §8.3 gRPC Controllers publish a local-only membership identity", %{
+    support_root: support_root
+  } do
+    config = read_controller_config!(support_root, %{})
+
+    assert config[:controller_membership][:private_ipv4] == "127.0.0.1"
+    assert config[:controller_membership][:scope] == :local_only
+
+    assert config[:controller_membership][:authorization_root_path] ==
+             Path.join([support_root, "support", "beam-authorization-root"])
+  end
+
+  test "SPEC.md §8.3 single-host BEAM Controllers classify loopback membership as local-only", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@127.0.0.1",
+        "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == "127.0.0.1"
+    assert config[:controller_membership][:scope] == :local_only
+  end
+
+  test "SPEC.md §8.3 remote BEAM Controllers classify a private membership host", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10",
+        "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == "10.0.0.10"
+    assert config[:controller_membership][:scope] == :remote_beam
+  end
+
+  test "SPEC.md §8.3 membership identity ignores the peer-grant control listener host", %{
+    support_root: support_root
+  } do
+    grant_env = %{
+      "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+      "ORCHARD_BEAM_NODE_NAME" => "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+      "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+      "ORCHARD_BEAM_PEER_GRANT_MODE" => "distributed",
+      "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => Path.join(support_root, "launch.json"),
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.99",
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+      "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10",
+      "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => Path.join(support_root, "beam-authorization-root")
+    }
+
+    granted = read_controller_config!(support_root, grant_env)
+
+    ungranted =
+      read_controller_config!(support_root, %{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" =>
+          "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+        "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11",
+        "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" =>
+          Path.join(support_root, "beam-authorization-root")
+      })
+
+    assert granted[:beam_peer_grants][:control_listener][:host] == "10.0.0.99"
+    assert granted[:controller_membership] == ungranted[:controller_membership]
+    assert granted[:controller_membership][:private_ipv4] == "10.0.0.10"
+  end
+
+  test "SPEC.md §8.3 grant-control Controllers publish the same identity as the launch phase", %{
+    support_root: support_root
+  } do
+    grant_control_env = %{
+      "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+      "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+      "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.99",
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+      "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.10",
+      "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => Path.join(support_root, "beam-authorization-root")
+    }
+
+    config = read_controller_config!(support_root, grant_control_env)
+
+    assert config[:controller_membership][:private_ipv4] == "10.0.0.10"
+    assert config[:controller_membership][:scope] == :remote_beam
+
+    distributed =
+      read_controller_config!(
+        support_root,
+        Map.merge(grant_control_env, %{
+          "ORCHARD_BEAM_PEER_GRANT_MODE" => "distributed",
+          "ORCHARD_BEAM_NODE_NAME" =>
+            "orchard_controller_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa@10.0.0.10",
+          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => Path.join(support_root, "launch.json")
+        })
+      )
+
+    assert distributed[:controller_membership] == config[:controller_membership]
+  end
+
+  test "SPEC.md §8.3 peer-grant Controllers reject an unset or loopback membership host", %{
+    support_root: support_root
+  } do
+    grant_env = %{
+      "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+      "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+      "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.99",
+      "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+      "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => Path.join(support_root, "beam-authorization-root")
+    }
+
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_CONTROLLER_MEMBERSHIP_HOST is required when BEAM Peer Grants are enabled/,
+                 fn -> read_controller_config!(support_root, grant_env) end
+
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_CONTROLLER_MEMBERSHIP_HOST must be a private non-loopback IPv4 address/,
+                 fn ->
+                   read_controller_config!(
+                     support_root,
+                     Map.put(grant_env, "ORCHARD_CONTROLLER_MEMBERSHIP_HOST", "127.0.0.1")
+                   )
+                 end
+  end
+
+  test "SPEC.md §8.3 a membership host that contradicts the BEAM node name fails closed", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_CONTROLLER_MEMBERSHIP_HOST "10.0.0.20" must match the ORCHARD_BEAM_NODE_NAME host "10.0.0.10"/,
+                 fn ->
+                   read_controller_config!(support_root, %{
+                     "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                     "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10",
+                     "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11",
+                     "ORCHARD_CONTROLLER_MEMBERSHIP_HOST" => "10.0.0.20"
+                   })
+                 end
+  end
+
+  test "SPEC.md §8.3 a public membership BEAM host fails closed at config time", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_BEAM_NODE_NAME Controller membership host must be a private IPv4 address/,
+                 fn ->
+                   read_controller_config!(support_root, %{
+                     "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                     "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@203.0.113.10",
+                     "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.11"
                    })
                  end
   end
@@ -607,6 +769,56 @@ defmodule Orchard.RuntimeTransportTest do
     assert_raise RuntimeError, ~r/ORCHARD_TRANSPORT_MODE must be/, fn ->
       read_controller_config!(support_root, %{"ORCHARD_TRANSPORT_MODE" => "https"})
     end
+  end
+
+  test "SPEC.md §8.3 a source-dev node-agent carries no Controller membership identity", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "node_agent",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_node_agent@10.0.0.7"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == nil
+    assert config[:controller_membership][:scope] == nil
+  end
+
+  test "SPEC.md §8.3 a source-dev Controller resolves its membership identity", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10"
+      })
+
+    assert config[:controller_membership][:private_ipv4] == "10.0.0.10"
+    assert config[:controller_membership][:scope] == :remote_beam
+  end
+
+  defp read_dev_config!(support_root, overrides) do
+    base = %{
+      "MIX_RELEASE_NAME" => nil,
+      "ORCHARD_SUPPORT_ROOT" => support_root,
+      "RELEASE_NAME" => nil,
+      "SECRET_KEY_BASE" => String.duplicate("runtime-secret", 8)
+    }
+
+    clear_config_env!()
+
+    base
+    |> Map.merge(overrides)
+    |> Enum.each(fn
+      {key, nil} -> System.delete_env(key)
+      {key, value} -> System.put_env(key, value)
+    end)
+
+    @runtime_config
+    |> Config.Reader.read!(env: :dev)
+    |> Keyword.get(:orchard_controller, [])
   end
 
   defp read_controller_config!(support_root, overrides) do

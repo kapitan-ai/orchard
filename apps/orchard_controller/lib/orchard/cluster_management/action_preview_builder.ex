@@ -5,8 +5,9 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   alias Orchard.ClusterManagement.{ActionPreview, StatusBuilder}
   alias Orchard.ControlPlane
+  alias Orchard.DispatchCapacity.Diagnostics
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionCandidate, Lifecycle, Node}
+  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Lifecycle, Node}
 
   @spec admit_node(Ecto.UUID.t(), map() | keyword()) :: ActionPreview.t()
   def admit_node(node_id, attrs \\ %{}) do
@@ -14,6 +15,9 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
     case Nodes.fetch_node(node_id) do
       {:ok, %Node{} = node} ->
+        capacity_policy = capacity_policy_preview(attrs)
+        status_opts = capacity_status_opts(node)
+
         blockers =
           []
           |> add_write_path_blocker(:node_admission)
@@ -22,10 +26,12 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
         action_preview(%{
           action: "node_admission.admit",
           target: %{type: "node", id: node.id},
-          current: StatusBuilder.node_status_map(node),
-          scheduler_eligibility: scheduler_eligibility(node),
+          current: StatusBuilder.node_status_map(node, status_opts),
+          dispatch_capacity_policy: capacity_policy,
+          scheduler_eligibility: scheduler_eligibility(node, status_opts),
           blockers: blockers,
-          confirmation_requirements: [:requires_yes_flag],
+          warnings: capacity_policy_warnings(capacity_policy),
+          confirmation_requirements: admission_confirmation_requirements(attrs),
           expected_transition: %{from: node.state, to: :admitted},
           audit_action: "node_admission.admitted",
           confirmation_required: true
@@ -70,6 +76,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
            ] do
     case Nodes.fetch_node(node_id) do
       {:ok, %Node{} = node} ->
+        status_opts = capacity_status_opts(node)
+
         blockers =
           []
           |> add_write_path_blocker(:node_lifecycle)
@@ -78,9 +86,9 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
         action_preview(%{
           action: Lifecycle.preview_action(action),
           target: %{type: "node", id: node.id},
-          current: StatusBuilder.node_status_map(node),
+          current: StatusBuilder.node_status_map(node, status_opts),
           active_request_count: nil,
-          scheduler_eligibility: scheduler_eligibility(node),
+          scheduler_eligibility: scheduler_eligibility(node, status_opts),
           blockers: blockers,
           warnings: [],
           consequence_codes: Lifecycle.consequence_codes(action),
@@ -148,6 +156,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   end
 
   defp reject_node_preview(%Node{} = node, attrs) do
+    status_opts = capacity_status_opts(node)
+
     blockers =
       []
       |> add_write_path_blocker(:node_admission)
@@ -156,8 +166,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     action_preview(%{
       action: "node_admission.reject",
       target: %{type: "node", id: node.id},
-      current: StatusBuilder.node_status_map(node),
-      scheduler_eligibility: scheduler_eligibility(node),
+      current: StatusBuilder.node_status_map(node, status_opts),
+      scheduler_eligibility: scheduler_eligibility(node, status_opts),
       blockers: blockers,
       confirmation_requirements: rejection_confirmation_requirements(attrs),
       expected_transition: %{from: node.state, to: :rejected},
@@ -206,7 +216,48 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   defp rejection_confirmation_requirements(attrs) do
     [:requires_yes_flag]
-    |> add_confirmation_requirement(:requires_reason, blank?(Map.get(attrs, "reason")))
+    |> add_confirmation_requirement(
+      :requires_reason,
+      is_nil(AdmissionDecision.normalize_reason(Map.get(attrs, "reason")))
+    )
+  end
+
+  defp admission_confirmation_requirements(attrs) do
+    reason = Map.get(attrs, "capacity_policy_reason") || Map.get(attrs, :capacity_policy_reason)
+
+    [:requires_yes_flag]
+    |> add_confirmation_requirement(
+      :requires_reason,
+      is_nil(AdmissionDecision.normalize_reason(reason))
+    )
+  end
+
+  defp capacity_policy_preview(attrs) do
+    case Nodes.admission_capacity_policy(attrs) do
+      {:ok, policy} -> policy
+      {:error, :capacity_policy_reason_required} -> unresolved_capacity_policy()
+      {:error, :invalid_controller_dispatch_ceiling} -> unresolved_capacity_policy()
+    end
+  end
+
+  defp unresolved_capacity_policy do
+    %{
+      controller_dispatch_ceiling: nil,
+      policy_state: :unresolved,
+      warning_codes: []
+    }
+  end
+
+  defp capacity_policy_warnings(%{warning_codes: warning_codes}) do
+    Enum.map(warning_codes, fn code -> %{code: code, message: warning_message(code)} end)
+  end
+
+  defp warning_message(:controller_dispatch_ceiling_not_yet_enforcing) do
+    "Controller Dispatch Ceiling is approved but is not yet enforcing."
+  end
+
+  defp warning_message(code) do
+    "Dispatch-capacity policy reported #{code}."
   end
 
   defp add_confirmation_requirement(requirements, requirement, true),
@@ -214,9 +265,13 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   defp add_confirmation_requirement(requirements, _requirement, false), do: requirements
 
-  defp scheduler_eligibility(%Node{} = node) do
+  defp capacity_status_opts(%Node{} = node) do
+    [dispatch_capacity_snapshot: Diagnostics.snapshot(node)]
+  end
+
+  defp scheduler_eligibility(%Node{} = node, status_opts) do
     node
-    |> StatusBuilder.node_status()
+    |> StatusBuilder.node_status(status_opts)
     |> then(& &1.scheduling)
   end
 
@@ -272,7 +327,6 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   defp blocker_message(:pool_required), do: "Node pool assignment is required."
   defp blocker_message(:trust_not_established), do: "Node trust evidence is required."
 
-  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank?(nil), do: true
-  defp blank?(_value), do: false
+  defp blocker_message(:invalid_controller_dispatch_ceiling),
+    do: "Controller Dispatch Ceiling must be a non-negative integer."
 end

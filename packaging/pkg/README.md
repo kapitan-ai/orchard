@@ -418,6 +418,7 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
 | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` | `beam` | Runtime Endpoint transport. Use `grpc` only for compatibility fallback. |
 | `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | required for BEAM multi-Mac | Comma-separated node-agent BEAM node names such as `orchard_node_agent@10.0.0.21`. |
 | `ORCHARD_BEAM_NODE_NAME` | `orchard_controller@127.0.0.1` | Controller BEAM node name. Use `orchard_controller@<controller-ipv4>` for multi-Mac; remote BEAM targets are rejected while this remains loopback. |
+| `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` | the `ORCHARD_BEAM_NODE_NAME` host, or `127.0.0.1` under `grpc`; **required when `ORCHARD_BEAM_PEER_GRANTS_ENABLED=true`** | Private IPv4 address naming this controller's durable membership identity, which the controller republishes on every membership heartbeat. It must match the `ORCHARD_BEAM_NODE_NAME` host under `beam`. When BEAM Peer Grants are enabled there is no default: the address must be set explicitly and must be private non-loopback, or the controller fails to start. |
 | `ORCHARD_BEAM_COOKIE_FILE` | `/Library/Application Support/Orchard/config/beam.cookie` | Root-owned mode `0600` BEAM cookie file shared across controller and node-agent Macs. |
 | `ORCHARD_BEAM_EPMD_PORT` | `4369` | EPMD port. Set the same override on every Mac when needed. |
 | `ORCHARD_BEAM_DIST_PORT_MIN` / `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` | Controller BEAM distribution port range. |
@@ -573,6 +574,12 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
    ```
    Existing `controller.env`, support data, and TLS material are preserved.
    Services are stopped during upgrade and are not auto-restarted.
+
+   Controllers running with `ORCHARD_BEAM_PEER_GRANTS_ENABLED=true` must set
+   `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` in `controller.env` to the controller's
+   private non-loopback IPv4 address before starting services. Grants-enabled
+   controllers have no default membership host, so a controller upgraded without
+   it fails to start.
 
 5. **Run migrations if the new release requires them:**
    ```bash

@@ -9,6 +9,8 @@ defmodule Orchard.BeamPeerGrantsTest do
   alias Orchard.BeamPeerGrants.{ControllerInitializer, ControlListener, ControlServer, Grant}
   alias Orchard.Cluster.V1.{RetrieveBeamPeerGrantRequest, RetrieveBeamPeerGrantResponse}
   alias Orchard.ControllerInstances
+  alias Orchard.ControllerInstances.ControllerInstance
+  alias Orchard.DispatchCapacity
   alias Orchard.Governance.AuditLog
   alias Orchard.Node.{BeamPeerGrantBootstrap, BeamPeerGrantStore, RuntimeTLS}
   alias Orchard.NodeEnrollment.PKI
@@ -128,6 +130,7 @@ defmodule Orchard.BeamPeerGrantsTest do
              start_supervised!(
                {ControllerInitializer,
                 private_ipv4: "10.0.0.10",
+                membership_scope: :remote_beam,
                 node_trust_root: trust_root,
                 authorization_root_path: authorization_root,
                 now: now}
@@ -184,6 +187,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -198,7 +202,8 @@ defmodule Orchard.BeamPeerGrantsTest do
                %{
                  trust_evidence_ref: "registration-audit:#{Ecto.UUID.generate()}",
                  pool_id: Ecto.UUID.generate(),
-                 routing_policy_id: Ecto.UUID.generate()
+                 routing_policy_id: Ecto.UUID.generate(),
+                 capacity_policy_reason: "approve initial peer grant capacity"
                },
                now: now
              )
@@ -230,6 +235,85 @@ defmodule Orchard.BeamPeerGrantsTest do
     refute Map.has_key?(Map.from_struct(grant), :encoded_secret)
   end
 
+  test "SPEC.md §7.5.0 admission binds the grant to the local Controller when a peer row exists",
+       %{
+         trust_root: trust_root,
+         authorization_root: authorization_root
+       } do
+    now = ~U[2026-07-13 08:00:00.000000Z]
+    assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
+
+    assert {:ok, controller} =
+             ControllerInstances.ensure_local(
+               private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
+               node_trust_root: trust_root,
+               authorization_root_path: authorization_root,
+               now: now
+             )
+
+    peer = insert_peer_controller!(now)
+    node = register_node!(trust, now)
+
+    assert {:ok, %{grants: [%Grant{} = grant]}} =
+             Nodes.admit_node(node.id, admission_attrs(), now: now)
+
+    assert grant.controller_id == controller.id
+    refute grant.controller_id == peer.id
+    assert grant.controller_beam_name == controller.canonical_beam_name
+  end
+
+  test "SPEC.md §7.5.0 admission fails closed when the local Controller row is not operational",
+       %{
+         trust_root: trust_root,
+         authorization_root: authorization_root
+       } do
+    now = ~U[2026-07-13 08:00:00.000000Z]
+    assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
+
+    assert {:ok, controller} =
+             ControllerInstances.ensure_local(
+               private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
+               node_trust_root: trust_root,
+               authorization_root_path: authorization_root,
+               now: now
+             )
+
+    insert_peer_controller!(now)
+    node = register_node!(trust, now)
+
+    ControllerInstance
+    |> Repo.get!(controller.id)
+    |> Ecto.Changeset.change(status: :retired)
+    |> Repo.update!()
+
+    assert {:error, :beam_peer_grant_controller_scope_invalid} =
+             Nodes.admit_node(node.id, admission_attrs(), now: now)
+
+    assert BeamPeerGrants.list_for_node(node.id) == []
+    assert Repo.get!(Node, node.id).state == :registered
+  end
+
+  defp insert_peer_controller!(now) do
+    peer_id = Ecto.UUID.generate()
+    compact_id = String.replace(peer_id, "-", "")
+
+    %ControllerInstance{}
+    |> ControllerInstance.changeset(%{
+      id: peer_id,
+      certificate_uri_san: "spiffe://orchard/controller/#{peer_id}",
+      certificate_identifier: "serial:#{System.unique_integer([:positive])}",
+      certificate_fingerprint_sha256: Base.encode16(:crypto.strong_rand_bytes(32), case: :lower),
+      canonical_beam_name: "orchard_controller_#{compact_id}@10.0.0.11",
+      beam_authorization_root_id: Ecto.UUID.generate(),
+      authorization_root_custody_ref: "owner-only-local:#{Ecto.UUID.generate()}",
+      status: :operational,
+      first_enrolled_at: now
+    })
+    |> Repo.insert!()
+  end
+
   test "SPEC.md §7.5.0 concurrent admission permits only one tracer Node pair", %{
     trust_root: trust_root,
     authorization_root: authorization_root
@@ -240,6 +324,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -297,6 +382,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -328,6 +414,7 @@ defmodule Orchard.BeamPeerGrantsTest do
         assert {:ok, _controller} =
                  ControllerInstances.ensure_local(
                    private_ipv4: "10.0.0.10",
+                   membership_scope: :remote_beam,
                    node_trust_root: trust_root,
                    authorization_root_path: authorization_root,
                    now: now
@@ -406,6 +493,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -512,6 +600,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -849,6 +938,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -890,6 +980,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -1349,6 +1440,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now
@@ -1384,7 +1476,9 @@ defmodule Orchard.BeamPeerGrantsTest do
         listen_port: node.connect_port,
         agent_version: "0.5.0-dev"
       },
-      runtime_health: %{ready: true, health_code: "", health_message: ""}
+      runtime_health: %{ready: true, health_code: "", health_message: ""},
+      active_request_count: 2,
+      max_concurrency: 4
     }
 
     assert {:ok, active} =
@@ -1392,6 +1486,12 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     assert active.state == :active
     assert active.last_heartbeat_at == DateTime.truncate(observed_at, :microsecond)
+
+    evidence = DispatchCapacity.get_capacity_evidence(node.id)
+    assert evidence.runtime_concurrency_limit == 4
+    assert evidence.active_request_count == 2
+    assert evidence.validity == :valid
+    assert evidence.observed_at == DateTime.truncate(observed_at, :microsecond)
   end
 
   test "SPEC.md §7.5.0 authenticated activation uses the grant transaction lock order", %{
@@ -1565,7 +1665,8 @@ defmodule Orchard.BeamPeerGrantsTest do
     %{
       trust_evidence_ref: "registration-audit:#{Ecto.UUID.generate()}",
       pool_id: Ecto.UUID.generate(),
-      routing_policy_id: Ecto.UUID.generate()
+      routing_policy_id: Ecto.UUID.generate(),
+      capacity_policy_reason: "approved for test capacity"
     }
   end
 
@@ -1594,6 +1695,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert {:ok, _controller} =
              ControllerInstances.ensure_local(
                private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
                node_trust_root: trust_root,
                authorization_root_path: authorization_root,
                now: now

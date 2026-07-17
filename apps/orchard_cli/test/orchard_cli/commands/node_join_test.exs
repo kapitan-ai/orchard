@@ -339,7 +339,9 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
       "--pool-id",
       pool_id,
       "--routing-policy-id",
-      routing_policy_id
+      routing_policy_id,
+      "--capacity-policy-reason",
+      reason
     ]
 
     assert {:ok, preview_output} = Nodes.run(admit_args)
@@ -356,7 +358,8 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
       "trust_evidence_ref" => "node-enrollment:#{enrollment_id}",
       "pool_id" => pool_id,
       "routing_policy_id" => routing_policy_id,
-      "reason" => reason
+      "reason" => reason,
+      "capacity_policy_reason" => reason
     }
 
     assert {:ok, result} =
@@ -414,7 +417,8 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
              NodeInventory.admit_node(node_id, %{
                "trust_evidence_ref" => "node-enrollment:#{enrollment_id}",
                "pool_id" => Ecto.UUID.generate(),
-               "routing_policy_id" => Ecto.UUID.generate()
+               "routing_policy_id" => Ecto.UUID.generate(),
+               "capacity_policy_reason" => "approve authenticated activation capacity"
              })
 
     assert admitted.node.state == :admitted
@@ -1046,7 +1050,8 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
              NodeInventory.admit_node(node_id, %{
                "trust_evidence_ref" => "node-enrollment:#{enrollment_id}",
                "pool_id" => Ecto.UUID.generate(),
-               "routing_policy_id" => Ecto.UUID.generate()
+               "routing_policy_id" => Ecto.UUID.generate(),
+               "capacity_policy_reason" => "approve joined Node capacity"
              })
 
     assert admitted.node.state == :admitted

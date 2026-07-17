@@ -25,6 +25,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
             runtime: %{status: "unknown", health_code: nil, health_message: nil},
             compatibility: %{status: "unknown"},
             scheduling: %{eligible: false, reason_codes: []},
+            dispatch_capacity: nil,
             warnings: []
 
   @type t :: %__MODULE__{}
@@ -56,6 +57,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
          {:ok, compatibility} <-
            category(attrs, :compatibility, @compatibility_values, %{status: "unknown"}),
          {:ok, scheduling} <- scheduling(attrs),
+         {:ok, dispatch_capacity} <- dispatch_capacity(value(attrs, :dispatch_capacity)),
          {:ok, warnings} <- warnings(value(attrs, :warnings)) do
       {:ok,
        %__MODULE__{
@@ -73,6 +75,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
          runtime: runtime,
          compatibility: compatibility,
          scheduling: scheduling,
+         dispatch_capacity: dispatch_capacity,
          warnings: warnings
        }}
     end
@@ -100,6 +103,7 @@ defmodule Orchard.ClusterManagement.NodeStatus do
       runtime: json_map(status.runtime),
       compatibility: json_map(status.compatibility),
       scheduling: json_map(status.scheduling),
+      dispatch_capacity: json_map(status.dispatch_capacity),
       warnings: Enum.map(status.warnings, &json_map/1)
     }
   end
@@ -138,6 +142,60 @@ defmodule Orchard.ClusterManagement.NodeStatus do
        }}
     end
   end
+
+  defp dispatch_capacity(nil), do: {:ok, nil}
+
+  defp dispatch_capacity(capacity) when is_map(capacity) do
+    reason_codes = map_value(capacity, :reason_codes)
+
+    with {:ok, reason_codes} <- dispatch_capacity_reason_codes(reason_codes) do
+      normalized =
+        capacity
+        |> string_map(%{
+          mode: "counterfactual",
+          counterfactual: true,
+          consumers_ready: false,
+          runtime_concurrency_enforcement_limit: nil,
+          controller_dispatch_ceiling: nil,
+          effective_dispatch_limit: 0,
+          controller_accounted_allocation: nil,
+          dispatch_headroom: 0,
+          placement_capacity: "not_applicable",
+          placement_headroom: nil,
+          authority_phase: "invalid",
+          policy_state: "missing",
+          management_class: "invalid",
+          authority_decision: "fail_closed",
+          available_slots: 0,
+          legacy_pre_cutover_limit: nil,
+          legacy_pre_cutover_reported_allocation: nil,
+          legacy_pre_cutover_claim_count: nil,
+          legacy_pre_cutover_available_slots: nil,
+          eligible: false,
+          observation_time: nil,
+          reason_codes: []
+        })
+        |> Map.put(:reason_codes, reason_codes)
+
+      {:ok, normalized}
+    end
+  end
+
+  defp dispatch_capacity(_capacity), do: {:error, :dispatch_capacity_must_be_map}
+
+  defp dispatch_capacity_reason_codes(nil), do: {:ok, []}
+
+  defp dispatch_capacity_reason_codes(codes) when is_list(codes) do
+    normalized = Enum.map(codes, &Value.normalize_string/1)
+
+    case Enum.find(normalized, &(&1 not in ReasonCodes.dispatch_capacity_codes())) do
+      nil -> {:ok, normalized}
+      unknown -> {:error, {:unknown_dispatch_capacity_reason_code, unknown}}
+    end
+  end
+
+  defp dispatch_capacity_reason_codes(_codes),
+    do: {:error, :dispatch_capacity_reason_codes_must_be_list}
 
   defp warnings(nil), do: {:ok, []}
 
@@ -182,15 +240,22 @@ defmodule Orchard.ClusterManagement.NodeStatus do
     Map.new(map, fn {key, value} -> {key, Value.json_value(value)} end)
   end
 
+  defp json_map(nil), do: nil
+
   defp normalize_value(nil, default), do: default
   defp normalize_value(%DateTime{} = value, _default), do: value
+  defp normalize_value(value, _default) when is_boolean(value), do: value
   defp normalize_value(value, _default) when is_atom(value), do: Atom.to_string(value)
   defp normalize_value(value, _default), do: value
 
   defp value(attrs, key), do: map_value(attrs, key)
 
   defp map_value(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+    case Map.fetch(map, key) do
+      {:ok, nil} -> Map.get(map, Atom.to_string(key))
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
 
   defp map_value(_map, _key), do: nil

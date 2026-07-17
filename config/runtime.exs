@@ -896,6 +896,21 @@ if config_env() == :prod do
 
       config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 
+      {membership_private_ipv4, membership_scope} =
+        Orchard.Config.ControllerMembership.identity!(
+          runtime_endpoint_transport_mode,
+          env_optional_string.("ORCHARD_BEAM_NODE_NAME"),
+          membership_host: env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
+          peer_grants_enabled?: beam_peer_grants_enabled?
+        )
+
+      config :orchard_controller, :controller_membership,
+        private_ipv4: membership_private_ipv4,
+        scope: membership_scope,
+        authorization_root_path:
+          env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
+            Path.join([orchard_support_root, "support", "beam-authorization-root"])
+
       runtime_endpoint_inference_config =
         case {runtime_endpoint_transport_mode, runtime_endpoint_targets} do
           {:beam, []} ->
@@ -1574,5 +1589,30 @@ if config_env() == :prod do
 
     _other_release ->
       :ok
+  end
+end
+
+if config_env() == :dev do
+  # Source dev resolves membership identity here rather than in config/dev.exs,
+  # because compile-time config cannot reach the compiled shared resolver.
+  # Only Controller-hosting roles carry a Controller membership identity;
+  # ORCHARD_BEAM_NODE_NAME names the node-agent on a node-agent-only host.
+  source_dev_role =
+    Orchard.Config.SourceDevBeam.source_dev_role(env_optional_string.("ORCHARD_SOURCE_DEV_ROLE"))
+
+  if source_dev_role in [:controller, :all_in_one] do
+    {membership_private_ipv4, membership_scope} =
+      Orchard.Config.ControllerMembership.identity!(
+        Orchard.Config.SourceDevBeam.transport!(
+          env_optional_string.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT")
+        ),
+        env_optional_string.("ORCHARD_BEAM_NODE_NAME"),
+        membership_host: env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
+        peer_grants_enabled?: env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+      )
+
+    config :orchard_controller, :controller_membership,
+      private_ipv4: membership_private_ipv4,
+      scope: membership_scope
   end
 end

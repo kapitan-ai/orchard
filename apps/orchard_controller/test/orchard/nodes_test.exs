@@ -32,6 +32,8 @@ defmodule Orchard.NodesTest do
 
   import ExUnit.CaptureLog
 
+  alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance.AuditLog
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
@@ -112,12 +114,17 @@ defmodule Orchard.NodesTest do
 
   defp make_target(host, port), do: [host: host, port: port]
 
+  defp admission_opts do
+    [actor_type: "service_account", actor_id: "admin-api-principal"]
+  end
+
   defp admission_attrs(overrides \\ %{}) do
     Map.merge(
       %{
         trust_evidence_ref: "registration-audit:#{Ecto.UUID.generate()}",
         pool_id: Ecto.UUID.generate(),
-        routing_policy_id: Ecto.UUID.generate()
+        routing_policy_id: Ecto.UUID.generate(),
+        capacity_policy_reason: "approved for test capacity"
       },
       overrides
     )
@@ -943,9 +950,13 @@ defmodule Orchard.NodesTest do
                Nodes.clear_admission_rejection(rejected.candidate.id, %{surface: "test"})
 
       assert cleared.candidate.admission_category == :pending_registered
-      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
+      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs(), admission_opts())
       assert admitted.node.state == :admitted
       assert admitted.decision.decision == :admitted
+      assert admitted.policy.policy_state == :approved_explicit
+      assert admitted.policy.controller_dispatch_ceiling == 1
+      assert admitted.policy.approval_reason == "approved for test capacity"
+      assert admitted.policy.admission_decision_id == admitted.decision.id
 
       decisions =
         AdmissionDecision
@@ -955,6 +966,123 @@ defmodule Orchard.NodesTest do
         |> Enum.map(& &1.decision)
 
       assert decisions == [:rejected, :rejection_cleared, :admitted]
+    end
+
+    test "SPEC.md §7.3.1 admission preserves explicit zero and approval provenance" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-zero-capacity",
+          hostname: "registered-zero-capacity.local"
+        })
+
+      attrs =
+        admission_attrs(%{
+          controller_dispatch_ceiling: 0,
+          capacity_policy_reason: "admit without dispatch headroom"
+        })
+
+      assert {:ok, admitted} =
+               Nodes.admit_node(node.id, attrs,
+                 actor_type: "service_account",
+                 actor_id: "operator-42"
+               )
+
+      assert %Policy{} = policy = Repo.get!(Policy, node.id)
+      assert policy.controller_dispatch_ceiling == 0
+      assert policy.policy_state == :approved_explicit
+      assert policy.approved_by_actor_type == "service_account"
+      assert policy.approved_by_actor_id == "operator-42"
+      assert policy.approval_reason == "admit without dispatch headroom"
+      assert policy.admission_decision_id == admitted.decision.id
+    end
+
+    test "SPEC.md §7.3.1 capacity policy validation rolls back admission" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-invalid-capacity",
+          hostname: "registered-invalid-capacity.local"
+        })
+
+      assert {:error, :capacity_policy_reason_required} =
+               Nodes.admit_node(node.id, Map.delete(admission_attrs(), :capacity_policy_reason))
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.get(Policy, node.id) == nil
+
+      assert {:error, :invalid_controller_dispatch_ceiling} =
+               Nodes.admit_node(node.id, admission_attrs(%{controller_dispatch_ceiling: -1}))
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.get(Policy, node.id) == nil
+    end
+
+    test "SPEC.md §7.3.1 a non-binary capacity policy reason is a client error, not a rollback" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-nonbinary-reason",
+          hostname: "registered-nonbinary-reason.local"
+        })
+
+      for reason <- [123, %{"text" => "approved"}, ["approved"], :approved, true] do
+        assert {:error, :capacity_policy_reason_required} =
+                 Nodes.admit_node(node.id, admission_attrs(%{capacity_policy_reason: reason}))
+
+        assert Repo.get!(Node, node.id).state == :registered
+        assert Repo.get(Policy, node.id) == nil
+      end
+    end
+
+    test "SPEC.md §7.3.1 admission rolls back when no trusted actor provenance is available" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-no-actor",
+          hostname: "registered-no-actor.local"
+        })
+
+      assert {:error, :admission_actor_identity_unavailable} =
+               Nodes.admit_node(node.id, admission_attrs())
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert Repo.get(Policy, node.id) == nil
+      assert Repo.aggregate(AdmissionDecision, :count) == 0
+    end
+
+    test "SPEC.md §7.3.1 admission ignores actor provenance supplied in request attributes" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-spoofed-actor",
+          hostname: "registered-spoofed-actor.local"
+        })
+
+      attrs =
+        admission_attrs(%{
+          actor_id: "spoofed-operator",
+          actor_type: "system",
+          approved_by_actor_id: "spoofed-operator"
+        })
+
+      assert {:ok, admitted} = Nodes.admit_node(node.id, attrs, admission_opts())
+
+      policy = Repo.get!(Policy, node.id)
+      assert policy.approved_by_actor_type == "service_account"
+      assert policy.approved_by_actor_id == "admin-api-principal"
+
+      decision = Repo.get!(AdmissionDecision, admitted.decision.id)
+      assert decision.actor_type == "service_account"
+      assert decision.actor_id == "admin-api-principal"
+      refute Map.has_key?(decision.metadata, "actor_id")
+      refute Map.has_key?(decision.metadata, "actor_type")
+      assert decision.metadata["capacity_policy_reason"] == "approved for test capacity"
+
+      audit_log = Repo.get!(AuditLog, admitted.audit_log.id)
+      refute Map.has_key?(audit_log.payload, "actor_id")
+      refute Map.has_key?(audit_log.payload, "actor_type")
+      assert audit_log.actor_id == "admin-api-principal"
     end
 
     test "SPEC.md §4.2 registered node admission fails closed without required inputs" do
@@ -991,7 +1119,7 @@ defmodule Orchard.NodesTest do
           connect_port: 50_071
         })
 
-      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
+      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs(), admission_opts())
       assert admitted.node.state == :admitted
       assert admitted.decision.decision == :admitted
     end
@@ -1183,7 +1311,7 @@ defmodule Orchard.NodesTest do
           rpc_port: 9444
         })
 
-      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
+      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs(), admission_opts())
       assert admitted.node.state == :admitted
 
       target = make_target("10.0.0.14", 9444)
@@ -1199,6 +1327,7 @@ defmodule Orchard.NodesTest do
 
       assert {:ok, observed} = Nodes.observe_status(target, status, DateTime.utc_now())
       assert observed.state == :admitted
+      assert DispatchCapacity.get_capacity_evidence(node.id) == nil
     end
   end
 

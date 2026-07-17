@@ -1,6 +1,11 @@
 defmodule Orchard.ControllerInstances do
   @moduledoc """
-  Establishes the durable identity of the local Controller instance.
+  Establishes the durable identity of the local Controller instance and
+  republishes its membership and capability evidence.
+
+  Every operation is keyed by the local certificate identity, so a cluster of
+  Controller instances persists one row each and no Controller can write a
+  peer's evidence.
 
   The database receives only an opaque reference to Controller-local BEAM
   Authorization Root custody. Root bytes and local filesystem paths stay out
@@ -9,7 +14,7 @@ defmodule Orchard.ControllerInstances do
 
   alias Orchard.BeamAuthorizationRoot.Store, as: AuthorizationRootStore
   alias Orchard.ControllerInstances.ControllerInstance
-  alias Orchard.{ControlPlane, NodeTrust, Repo}
+  alias Orchard.{ControlPlane, NodeTrust, Repo, SchemaSupport}
   alias Orchard.RuntimeEndpoint.BeamNodeName
   alias Orchard.TransportTLS.CertificateIdentity
 
@@ -19,7 +24,7 @@ defmodule Orchard.ControllerInstances do
 
   @spec ensure_local(keyword()) :: {:ok, ControllerInstance.t()} | {:error, term()}
   def ensure_local(opts) when is_list(opts) do
-    with :ok <- ControlPlane.authorize_write_path(:beam_peer_grant),
+    with :ok <- ControlPlane.authorize_membership_self_publication(),
          {:ok, private_ipv4} <- private_ipv4(opts),
          {:ok, trust_root} <- required_path(opts, :node_trust_root),
          {:ok, authorization_root_path} <- required_path(opts, :authorization_root_path),
@@ -36,21 +41,138 @@ defmodule Orchard.ControllerInstances do
     end
   end
 
+  @doc """
+  Resolves the authenticated local Controller principal without mutating cluster state.
+
+  The principal is the local Controller's canonical certificate URI SAN, proven
+  against on-disk trust custody. When Controller instances are persisted, the row
+  addressed by the local trust identity must agree with that custody, so peer rows
+  belonging to other Controllers can never supply the principal.
+  """
+  @spec local_principal(keyword()) :: {:ok, String.t()} | {:error, term()}
+  def local_principal(opts \\ []) when is_list(opts) do
+    with {:ok, trust} <- NodeTrust.public_material(trust_opts(opts)),
+         {:ok, certificate} <- CertificateIdentity.from_pem(trust.controller_certificate_pem),
+         true <- certificate.uri_sans == [trust.controller_uri_san],
+         true <- certificate.fingerprint == trust.controller_certificate_fingerprint,
+         :ok <- ensure_persisted_identity_agrees(trust, certificate) do
+      {:ok, trust.controller_uri_san}
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :beam_controller_instance_invalid}
+    end
+  end
+
+  defp trust_opts(opts) do
+    case Keyword.fetch(opts, :node_trust_root) do
+      {:ok, root} -> [root: root]
+      :error -> []
+    end
+  end
+
+  defp ensure_persisted_identity_agrees(trust, certificate) do
+    case Repo.get(ControllerInstance, trust.controller_id) do
+      nil ->
+        :ok
+
+      %ControllerInstance{
+        certificate_uri_san: uri_san,
+        certificate_fingerprint_sha256: fingerprint
+      } ->
+        if uri_san == trust.controller_uri_san and fingerprint == certificate.fingerprint do
+          :ok
+        else
+          {:error, :beam_controller_instance_mismatch}
+        end
+    end
+  end
+
+  @doc """
+  Atomically refreshes membership and dispatch-capacity capability evidence for
+  one authenticated local Controller identity.
+
+  `dispatch_capacity_consumers_ready` is forced to `false` rather than taken
+  from `attrs`: no consumer reads the shared evaluation in this non-enforcing
+  foundation, so no caller and no configuration may publish the readiness an
+  enforcement cutover would act on. The heartbeat is all-or-nothing, so a
+  partial `attrs` map is rejected instead of making stale evidence look fresh.
+  """
+  @spec heartbeat_local(keyword(), map()) ::
+          {:ok, ControllerInstance.t()} | {:error, term()}
+  def heartbeat_local(opts, attrs) when is_list(opts) and is_map(attrs) do
+    attrs = force_consumers_not_ready(attrs)
+
+    with :ok <- ControlPlane.authorize_membership_self_publication(),
+         {:ok, local_identity} <- ensure_local(opts) do
+      Repo.transaction(fn -> refresh_local_identity(local_identity, attrs) end)
+      |> case do
+        {:ok, %ControllerInstance{} = instance} -> {:ok, instance}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp force_consumers_not_ready(attrs) do
+    attrs
+    |> SchemaSupport.normalize_attrs()
+    |> Map.put("dispatch_capacity_consumers_ready", false)
+  end
+
+  defp refresh_local_identity(local_identity, attrs) do
+    persisted =
+      Repo.one(
+        from(instance in ControllerInstance,
+          where: instance.id == ^local_identity.id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    case persisted do
+      nil ->
+        Repo.rollback(:beam_controller_instance_not_found)
+
+      %ControllerInstance{} = instance ->
+        ensure_heartbeat_identity_matches(instance, local_identity, attrs)
+    end
+  end
+
+  defp ensure_heartbeat_identity_matches(instance, local_identity, attrs) do
+    expected = local_identity |> Map.from_struct() |> Map.take(immutable_fields())
+    actual = instance |> Map.from_struct() |> Map.take(immutable_fields())
+
+    if actual == expected do
+      instance
+      |> ControllerInstance.heartbeat_changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, refreshed} -> refreshed
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    else
+      Repo.rollback(:beam_controller_instance_mismatch)
+    end
+  end
+
   defp ensure_persisted(attrs) do
     Repo.transaction(fn ->
-      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [@advisory_lock_name])
+      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        @advisory_lock_name <> "." <> attrs.id
+      ])
 
-      instances = Repo.all(from(instance in ControllerInstance, lock: "FOR UPDATE"))
+      instance =
+        Repo.one(
+          from(instance in ControllerInstance,
+            where: instance.id == ^attrs.id,
+            lock: "FOR UPDATE"
+          )
+        )
 
-      case instances do
-        [] ->
+      case instance do
+        nil ->
           insert_instance(attrs)
 
-        [%ControllerInstance{id: id} = instance] when id == attrs.id ->
+        %ControllerInstance{} = instance ->
           ensure_instance_matches(instance, attrs)
-
-        _other ->
-          Repo.rollback(:beam_controller_instance_cardinality_invalid)
       end
     end)
     |> case do
@@ -112,11 +234,26 @@ defmodule Orchard.ControllerInstances do
   end
 
   defp private_ipv4(opts) do
+    case membership_scope(opts) do
+      {:ok, allow_loopback} -> validated_private_ipv4(opts, allow_loopback)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validated_private_ipv4(opts, allow_loopback) do
     with value when is_binary(value) <- Keyword.get(opts, :private_ipv4),
-         {:ok, _address} <- BeamNodeName.private_ipv4(value) do
+         {:ok, _address} <- BeamNodeName.private_ipv4(value, allow_loopback: allow_loopback) do
       {:ok, value}
     else
       _other -> {:error, :beam_controller_private_ipv4_invalid}
+    end
+  end
+
+  defp membership_scope(opts) do
+    case Keyword.get(opts, :membership_scope) do
+      :local_only -> {:ok, true}
+      :remote_beam -> {:ok, false}
+      _other -> {:error, :beam_controller_instance_configuration_invalid}
     end
   end
 

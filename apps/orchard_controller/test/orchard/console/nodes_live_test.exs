@@ -791,6 +791,16 @@ defmodule OrchardConsole.NodesLiveTest do
       assert node_row.status.resource.type == "node"
     end
 
+    test "dispatch-capacity reads do not scale with the pending node count" do
+      single = [insert_node!(%{state: :registered, health: :healthy})]
+
+      many =
+        Enum.map(1..3, fn _index -> insert_node!(%{state: :registered, health: :healthy}) end)
+
+      assert repo_query_count(fn -> NodesPageData.pending_admissions([], single) end) ==
+               repo_query_count(fn -> NodesPageData.pending_admissions([], many) end)
+    end
+
     test "separates pending and rejected review counts" do
       pending_candidate = insert_candidate!(admission_category: :pending_observed)
       rejected_candidate = insert_candidate!(admission_category: :rejected)
@@ -1702,6 +1712,33 @@ defmodule OrchardConsole.NodesLiveTest do
     refute html =~ "admittable"
     refute html =~ "fits"
     refute html =~ "can admit"
+  end
+
+  defp repo_query_count(fun) do
+    handler_id = {:repo_query_count, System.unique_integer([:positive])}
+    test = self()
+
+    :telemetry.attach(
+      handler_id,
+      [:orchard, :repo, :query],
+      fn _event, _measurements, _metadata, _config -> send(test, {handler_id, :query}) end,
+      nil
+    )
+
+    try do
+      fun.()
+      drain_repo_queries(handler_id, 0)
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp drain_repo_queries(handler_id, count) do
+    receive do
+      {^handler_id, :query} -> drain_repo_queries(handler_id, count + 1)
+    after
+      0 -> count
+    end
   end
 
   defp insert_node!(attrs) do

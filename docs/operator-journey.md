@@ -222,7 +222,7 @@ Console offers **Add a worker** as the next action and does not imply that a hea
 6. The worker generates its private key locally, validates the pinned Controller, submits its CSR and bounded inventory, and receives a Node Certificate.
 7. The worker reports **Registered, awaiting administrator approval**.
 8. Console shows the registered Node, trust evidence, inventory, compatibility, and any blockers.
-9. The operator previews and approves Node Admission.
+9. The operator previews and approves Node Admission, supplying a reason for the approved Controller Dispatch Ceiling and either accepting the default ceiling of `1` or setting an explicit one.
 10. The Active Leader authorizes one BEAM Peer Grant for each eligible Controller-to-Node pair.
 11. The worker retrieves the grants over certificate-authenticated control traffic and stores them in protected local identity state.
 12. The Controller derives the canonical BEAM name and Runtime Endpoint target from trusted inventory.

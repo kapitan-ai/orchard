@@ -36,5 +36,6 @@
     "eligible": true,
     "reason_codes": []
   },
+  "dispatch_capacity": null,
   "warnings": []
 }

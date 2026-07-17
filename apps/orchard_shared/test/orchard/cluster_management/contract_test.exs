@@ -87,6 +87,77 @@ defmodule Orchard.ClusterManagement.ContractTest do
              })
   end
 
+  test "node status preserves the complete counterfactual dispatch-capacity evaluation" do
+    assert {:ok, status} =
+             NodeStatus.new(%{
+               resource: %{type: :node, id: "node-1"},
+               dispatch_capacity: %{
+                 mode: :counterfactual,
+                 counterfactual: true,
+                 consumers_ready: false,
+                 runtime_concurrency_enforcement_limit: 4,
+                 controller_dispatch_ceiling: 2,
+                 effective_dispatch_limit: 0,
+                 controller_accounted_allocation: 0,
+                 dispatch_headroom: 0,
+                 placement_capacity: :not_applicable,
+                 placement_headroom: nil,
+                 authority_phase: :pre_cutover,
+                 policy_state: :approved_explicit,
+                 management_class: :production_managed,
+                 authority_decision: :legacy_pre_cutover,
+                 available_slots: 3,
+                 legacy_pre_cutover_limit: 4,
+                 legacy_pre_cutover_reported_allocation: 1,
+                 legacy_pre_cutover_claim_count: 0,
+                 legacy_pre_cutover_available_slots: 3,
+                 eligible: true,
+                 observation_time: ~U[2026-07-16 08:00:00Z],
+                 reason_codes: [
+                   :controller_dispatch_ceiling_not_yet_enforcing,
+                   :dispatch_capacity_pre_cutover_legacy
+                 ]
+               }
+             })
+
+    capacity = NodeStatus.to_map(status).dispatch_capacity
+
+    assert capacity.mode == "counterfactual"
+    assert capacity.counterfactual == true
+    assert capacity.consumers_ready == false
+    assert capacity.eligible == true
+    assert capacity.effective_dispatch_limit == 0
+    assert capacity.dispatch_headroom == 0
+    assert capacity.controller_dispatch_ceiling == 2
+  end
+
+  test "node status keeps dispatch-capacity booleans as booleans in both directions" do
+    status =
+      NodeStatus.new!(%{
+        resource: %{type: :node, id: "node-1"},
+        dispatch_capacity: %{
+          counterfactual: false,
+          consumers_ready: true,
+          eligible: false,
+          reason_codes: []
+        }
+      })
+
+    capacity = NodeStatus.to_map(status).dispatch_capacity
+
+    assert capacity.counterfactual == false
+    assert capacity.consumers_ready == true
+    assert capacity.eligible == false
+  end
+
+  test "node status rejects unknown dispatch-capacity reason codes" do
+    assert {:error, {:unknown_dispatch_capacity_reason_code, "surprise_capacity_reason"}} =
+             NodeStatus.new(%{
+               resource: %{type: :node, id: "node-1"},
+               dispatch_capacity: %{reason_codes: [:surprise_capacity_reason]}
+             })
+  end
+
   test "scheduler explanation rejects free-text-only rejected candidates" do
     assert {:error, :rejected_candidate_reason_codes_required} =
              SchedulerExplanation.new(%{

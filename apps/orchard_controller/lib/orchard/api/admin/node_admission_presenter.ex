@@ -4,6 +4,7 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
   """
 
   alias Orchard.ClusterManagement.{ActionPreview, StatusBuilder}
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance.AuditLog
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
@@ -63,13 +64,32 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
     do: candidate_action_result("node_admission.rejection_cleared", result)
 
   @spec admit_result(map()) :: map()
-  def admit_result(%{node: %Node{} = node, decision: decision, audit_log: audit_log}) do
+  def admit_result(%{
+        node: %Node{} = node,
+        decision: decision,
+        audit_log: audit_log,
+        policy: %Policy{} = policy
+      }) do
     %{
       object: "node_admission_action_result",
       action: "node_admission.admitted",
       node: present_node(node),
+      dispatch_capacity_policy: dispatch_capacity_policy(policy),
       decision: decision(decision),
       audit_log: audit_log(audit_log)
+    }
+  end
+
+  defp dispatch_capacity_policy(%Policy{} = policy) do
+    %{
+      node_id: policy.node_id,
+      admission_decision_id: policy.admission_decision_id,
+      policy_state: atom_string(policy.policy_state),
+      controller_dispatch_ceiling: policy.controller_dispatch_ceiling,
+      approved_by_actor_type: policy.approved_by_actor_type,
+      approved_by_actor_id: policy.approved_by_actor_id,
+      approved_at: iso8601(policy.approved_at),
+      approval_reason: policy.approval_reason
     }
   end
 

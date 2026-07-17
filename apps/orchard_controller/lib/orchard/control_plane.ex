@@ -35,6 +35,15 @@ defmodule Orchard.ControlPlane do
     end
   end
 
+  @doc """
+  Authorizes authenticated publication of this Controller's own membership.
+
+  Unlike leader-owned cluster mutations, every Active or Standby Controller
+  publishes its own durable membership evidence.
+  """
+  @spec authorize_membership_self_publication() :: :ok
+  def authorize_membership_self_publication, do: :ok
+
   @spec read_only_status() :: ControlPlaneStatus.t()
   def read_only_status do
     config = control_plane_config()

@@ -295,7 +295,7 @@ Controller-instance identity is durable cluster truth.
 Advisory-lock leadership is transient and SHALL NOT be conflated with Controller-instance identity.
 
 Every non-retired Controller instance SHALL atomically publish its running Orchard version, supported dispatch-capacity contract version, `dispatch_capacity_consumers_ready`, and capability observation timestamp at boot and on each Controller membership heartbeat.
-The supervised `Orchard.ControllerMembership` owner SHALL emit that heartbeat every `10000` ms and update `last_seen_at` plus the complete capability tuple in one write.
+The supervised `Orchard.ControllerInstances.MembershipOwner` SHALL emit that heartbeat every `10000` ms and update `last_seen_at` plus the complete capability tuple in one write.
 Heartbeat failure SHALL be retried without reporting fresh capability evidence, and evidence older than the freshness threshold SHALL remain stale until a successful complete write.
 `dispatch_capacity_consumers_ready = true` SHALL declare that MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation all use the shared evaluation as one indivisible contract-versioned capability.
 For F11, Controller capability is compatible only when `dispatch_capacity_contract_version` exactly equals the locked singleton row's `required_contract_version` and `dispatch_capacity_consumers_ready` is true.

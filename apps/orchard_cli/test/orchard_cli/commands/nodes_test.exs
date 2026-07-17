@@ -96,9 +96,11 @@ defmodule OrchardCLI.Commands.NodesTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance.AuditLog
   alias Orchard.Models.Model
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
+  alias Orchard.NodeTrust
   alias Orchard.Repo
   alias OrchardCLI.Commands.Nodes, as: NodesCmd
   alias OrchardCLI.Commands.NodesTest.FailingAuditLog
@@ -313,6 +315,17 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["status"]["object"] == "cluster_management.node_status"
       assert decoded["status"]["admission"]["category"] == "pending_registered"
       assert decoded["status"]["scheduling"]["reason_codes"] == ["node_not_admitted"]
+      assert decoded["status"]["dispatch_capacity"]["counterfactual"]
+      assert decoded["status"]["dispatch_capacity"]["mode"] == "counterfactual"
+      refute decoded["status"]["dispatch_capacity"]["consumers_ready"]
+
+      assert decoded["status"]["dispatch_capacity"]["reason_codes"] == [
+               "runtime_endpoint_management_class_missing",
+               "controller_dispatch_ceiling_missing",
+               "runtime_endpoint_identity_untrusted",
+               "node_lifecycle_not_active",
+               "runtime_capacity_observation_stale"
+             ]
     end
 
     test "SPEC.md §7.5.3 json output renders runtime memory budget data" do
@@ -394,6 +407,10 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "KV cache bytes/token: 16384"
       assert output =~ "Max context tokens: 32768"
       assert output =~ "Recommended context tokens: unknown"
+      assert output =~ "Dispatch capacity (counterfactual):"
+      assert output =~ "Consumers ready: false"
+      assert output =~ "Effective dispatch limit: 0"
+      assert output =~ "Dispatch headroom: 0"
       refute output =~ "Recommended context tokens: 0"
     end
 
@@ -534,7 +551,9 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["object"] == "cluster_management.action_preview"
       assert decoded["action"] == "node_admission.admit"
       assert decoded["target"] == %{"type" => "node", "id" => node.id}
-      assert decoded["confirmation_requirements"] == ["requires_yes_flag"]
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
+      assert decoded["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == nil
+      assert decoded["dispatch_capacity_policy"]["policy_state"] == "unresolved"
 
       assert Enum.map(decoded["blockers"], & &1["code"]) == [
                "trust_not_established",
@@ -562,12 +581,58 @@ defmodule OrchardCLI.Commands.NodesTest do
                ])
 
       decoded = Jason.decode!(output)
-      assert decoded["confirmation_requirements"] == ["requires_yes_flag"]
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
       assert decoded["blockers"] == []
       assert Repo.get!(Node, node.id).state == :registered
     end
 
-    test "yes execution admits a registered node and emits action result json" do
+    test "SPEC.md §7.3.1 yes execution without a capacity policy reason stops before mutation" do
+      node = insert_node!(state: :registered, display_name: "admit-needs-capacity-reason-node")
+
+      assert {:error, message, 2} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--yes",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate()
+               ])
+
+      assert message =~ "requires a nonblank --capacity-policy-reason before execution"
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "SPEC.md §7.3.1 an invalid dispatch ceiling blocks admission with a readable message" do
+      node = insert_node!(state: :registered, display_name: "admit-invalid-ceiling-node")
+
+      assert {:error, message, 2} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--yes",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate(),
+                 "--capacity-policy-reason",
+                 "invalid bound",
+                 "--controller-dispatch-ceiling",
+                 "-1"
+               ])
+
+      assert message =~ "cannot execute because preview blockers are present"
+      assert message =~ "invalid_controller_dispatch_ceiling"
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "SPEC.md §4.7 yes execution admits a registered node and emits action result json" do
+      trust = establish_local_controller_identity!()
       node = insert_node!(state: :registered, display_name: "admit-execute-node")
 
       assert {:ok, output} =
@@ -581,7 +646,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                  "--pool-id",
                  Ecto.UUID.generate(),
                  "--routing-policy-id",
-                 Ecto.UUID.generate()
+                 Ecto.UUID.generate(),
+                 "--capacity-policy-reason",
+                 "approved by CLI test"
                ])
 
       decoded = Jason.decode!(output)
@@ -589,7 +656,16 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["node"]["id"] == node.id
       assert decoded["node"]["state"] == "admitted"
       assert decoded["audit_log"]["scope"] == "cluster"
+      assert decoded["dispatch_capacity_policy"]["controller_dispatch_ceiling"] == 1
       assert Repo.get!(Node, node.id).state == :admitted
+
+      policy = Repo.get!(Policy, node.id)
+      assert policy.approved_by_actor_type == "operator"
+      assert policy.approved_by_actor_id == trust.controller_uri_san
+
+      decision = Repo.get_by!(AdmissionDecision, node_id: node.id, decision: :admitted)
+      assert decision.actor_type == "operator"
+      assert decision.actor_id == trust.controller_uri_san
     end
 
     test "yes execution surfaces a friendly message when leadership is lost after preview" do
@@ -606,7 +682,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                    "--pool-id",
                    Ecto.UUID.generate(),
                    "--routing-policy-id",
-                   Ecto.UUID.generate()
+                   Ecto.UUID.generate(),
+                   "--capacity-policy-reason",
+                   "approved by CLI test"
                  ])
 
         assert message == "Error: this controller has not proven local leadership."
@@ -630,7 +708,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                    "--pool-id",
                    Ecto.UUID.generate(),
                    "--routing-policy-id",
-                   Ecto.UUID.generate()
+                   Ecto.UUID.generate(),
+                   "--capacity-policy-reason",
+                   "approved by CLI test"
                  ])
 
         assert Jason.decode!(json)["code"] == "controller_leadership_unproven"
@@ -917,6 +997,7 @@ defmodule OrchardCLI.Commands.NodesTest do
 
   describe "action persistence failures" do
     setup do
+      establish_local_controller_identity!()
       Application.put_env(:orchard_controller, :governance_audit_log_impl, FailingAuditLog)
       on_exit(fn -> Application.delete_env(:orchard_controller, :governance_audit_log_impl) end)
       :ok
@@ -936,7 +1017,9 @@ defmodule OrchardCLI.Commands.NodesTest do
                  "--pool-id",
                  Ecto.UUID.generate(),
                  "--routing-policy-id",
-                 Ecto.UUID.generate()
+                 Ecto.UUID.generate(),
+                 "--capacity-policy-reason",
+                 "audit failure rollback"
                ])
 
       decoded = Jason.decode!(output)
@@ -1011,6 +1094,34 @@ defmodule OrchardCLI.Commands.NodesTest do
         config -> Application.put_env(:orchard_controller, :control_plane, config)
       end
     end
+  end
+
+  defp establish_local_controller_identity! do
+    previous_trust = Application.get_env(:orchard_controller, :node_trust)
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-cli-node-trust-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    trust_root = Path.join(root, "node-trust")
+    Application.put_env(:orchard_controller, :node_trust, root: trust_root)
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+
+      if previous_trust do
+        Application.put_env(:orchard_controller, :node_trust, previous_trust)
+      else
+        Application.delete_env(:orchard_controller, :node_trust)
+      end
+    end)
+
+    {:ok, trust} = NodeTrust.initialize(root: trust_root)
+    trust
   end
 
   defp insert_node!(attrs) do

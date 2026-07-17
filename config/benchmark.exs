@@ -32,6 +32,15 @@ config :orchard_controller,
     ),
   hf: Orchard.Config.M1RuntimeDefaults.hf()
 
+# Benchmark runs a Repo-owning Controller, so it carries the same loopback
+# single-host membership identity the resolver produces for gRPC and dev.
+config :orchard_controller, :controller_membership,
+  private_ipv4: "127.0.0.1",
+  scope: :local_only,
+  authorization_root_path: Path.join(benchmark_root, "beam-authorization-root")
+
+config :orchard_controller, :node_trust, root: Path.join(benchmark_root, "node-trust")
+
 # Benchmark runtime: REAL MLX backend (not fake/stub)
 config :orchard_node_agent,
   runtime:

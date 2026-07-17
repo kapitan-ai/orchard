@@ -720,7 +720,13 @@ defmodule OrchardConsole.NodeDetailLive do
   defp audit_opts, do: [actor_type: "operator", actor_id: nil]
 
   defp default_action_inputs(:admit) do
-    %{"trust_evidence_ref" => "", "pool_id" => "", "routing_policy_id" => ""}
+    %{
+      "trust_evidence_ref" => "",
+      "pool_id" => "",
+      "routing_policy_id" => "",
+      "capacity_policy_reason" => "",
+      "controller_dispatch_ceiling" => 1
+    }
   end
 
   defp default_action_inputs(:reject), do: %{"reason" => ""}
@@ -739,7 +745,10 @@ defmodule OrchardConsole.NodeDetailLive do
     %{
       "trust_evidence_ref" => Map.get(params, "trust_evidence_ref", ""),
       "pool_id" => Map.get(params, "pool_id", ""),
-      "routing_policy_id" => Map.get(params, "routing_policy_id", "")
+      "routing_policy_id" => Map.get(params, "routing_policy_id", ""),
+      "capacity_policy_reason" => Map.get(params, "capacity_policy_reason", ""),
+      "controller_dispatch_ceiling" =>
+        normalize_capacity_ceiling(Map.get(params, "controller_dispatch_ceiling", "1"))
     }
   end
 
@@ -778,6 +787,11 @@ defmodule OrchardConsole.NodeDetailLive do
       blank?(Map.get(inputs, "reason"))
   end
 
+  defp missing_required_input?(:admit, preview, inputs) do
+    "requires_reason" in preview_codes(preview, :confirmation_requirements) and
+      blank?(Map.get(inputs, "capacity_policy_reason"))
+  end
+
   defp missing_required_input?(kind, preview, inputs) when kind in @lifecycle_actions do
     requirements = preview_codes(preview, :confirmation_requirements)
 
@@ -786,6 +800,17 @@ defmodule OrchardConsole.NodeDetailLive do
   end
 
   defp missing_required_input?(_kind, _preview, _inputs), do: false
+
+  defp normalize_capacity_ceiling(value) when is_integer(value), do: value
+
+  defp normalize_capacity_ceiling(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {ceiling, ""} -> ceiling
+      _invalid -> value
+    end
+  end
+
+  defp normalize_capacity_ceiling(value), do: value
 
   defp can_open_admit?(:node, %Node{}, status) do
     status_value(status, :admission, :category) in ["pending_provisioned", "pending_registered"]
@@ -1155,6 +1180,10 @@ defmodule OrchardConsole.NodeDetailLive do
   defp error_message(:node_not_found), do: "Node was not found."
   defp error_message(:reason_required), do: "A nonblank rejection reason is required."
   defp error_message(:admission_not_pending), do: "Admission is not pending."
+
+  defp error_message(:admission_actor_identity_unavailable),
+    do: "The local controller identity could not be proven for admission provenance."
+
   defp error_message(:admission_not_rejected), do: "Admission is not rejected."
   defp error_message(:admission_rejected), do: "Admission rejection must be cleared first."
   defp error_message(:node_not_registered), do: "Node is not registered."
@@ -1427,7 +1456,7 @@ defmodule OrchardConsole.NodeDetailLive do
             </div>
           </div>
 
-          <div :if={@action.kind == :admit} id="action-admit-inputs" class="grid gap-4 md:grid-cols-3">
+          <div :if={@action.kind == :admit} id="action-admit-inputs" class="grid gap-4 md:grid-cols-2">
             <.input
               id="action-trust-evidence-ref"
               name="action[trust_evidence_ref]"
@@ -1448,6 +1477,24 @@ defmodule OrchardConsole.NodeDetailLive do
               value={@action.inputs["routing_policy_id"]}
               label="Routing Policy ID"
               placeholder="policy identifier"
+            />
+            <.input
+              id="action-capacity-policy-reason"
+              name="action[capacity_policy_reason]"
+              type="textarea"
+              rows="2"
+              value={@action.inputs["capacity_policy_reason"]}
+              label="Capacity Policy Reason"
+              placeholder="Explain the approved dispatch-capacity bound."
+              errors={admission_reason_errors(@action)}
+            />
+            <.input
+              id="action-controller-dispatch-ceiling"
+              name="action[controller_dispatch_ceiling]"
+              type="number"
+              min="0"
+              value={@action.inputs["controller_dispatch_ceiling"]}
+              label="Controller Dispatch Ceiling"
             />
           </div>
 
@@ -1533,6 +1580,14 @@ defmodule OrchardConsole.NodeDetailLive do
   end
 
   defp reject_reason_errors(_action), do: []
+
+  defp admission_reason_errors(%{kind: :admit, preview: preview, inputs: inputs}) do
+    if missing_required_input?(:admit, preview, inputs),
+      do: ["A nonblank capacity policy reason is required."],
+      else: []
+  end
+
+  defp admission_reason_errors(_action), do: []
 
   defp typed_node_id_errors(%{kind: :decommission, preview: preview, inputs: inputs}) do
     requirements = preview_codes(preview, :confirmation_requirements)

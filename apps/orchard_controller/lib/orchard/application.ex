@@ -13,6 +13,7 @@ defmodule Orchard.Application do
     ControlListener
   }
 
+  alias Orchard.ControllerInstances.MembershipOwner
   alias Orchard.Licensing
   alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
   alias Orchard.SentryContext
@@ -61,6 +62,7 @@ defmodule Orchard.Application do
     []
     |> maybe_add_repo()
     |> maybe_add_peer_grant_stack()
+    |> maybe_add_membership_owner()
     |> maybe_add_activation_probe()
     |> maybe_add_inference_stack()
     |> add_pubsub_and_coordinator()
@@ -144,22 +146,35 @@ defmodule Orchard.Application do
 
     if Keyword.get(config, :enabled, false) do
       listener_opts = Keyword.get(config, :control_listener, [])
-      trust = Application.get_env(:orchard_controller, :node_trust, [])
-
-      initializer_opts = [
-        private_ipv4: Keyword.get(listener_opts, :host),
-        node_trust_root: Keyword.get(trust, :root),
-        authorization_root_path: Keyword.get(config, :authorization_root_path)
-      ]
 
       children
-      |> Kernel.++([{ControllerInitializer, initializer_opts}])
+      |> Kernel.++([{ControllerInitializer, membership_identity_opts()}])
       |> maybe_add_controller_startup_verifier(config)
       |> maybe_add_controller_expiry_guard(config)
       |> Kernel.++([{ControlListener, listener_opts}])
     else
       children
     end
+  end
+
+  defp maybe_add_membership_owner(children) do
+    if Application.get_env(:orchard_controller, :start_repo, true) do
+      children ++ [{MembershipOwner, membership_identity_opts()}]
+    else
+      children
+    end
+  end
+
+  defp membership_identity_opts do
+    membership = Application.get_env(:orchard_controller, :controller_membership, [])
+    trust = Application.get_env(:orchard_controller, :node_trust, [])
+
+    [
+      private_ipv4: Keyword.get(membership, :private_ipv4),
+      membership_scope: Keyword.get(membership, :scope),
+      node_trust_root: Keyword.get(trust, :root),
+      authorization_root_path: Keyword.get(membership, :authorization_root_path)
+    ]
   end
 
   defp maybe_add_controller_startup_verifier(children, config) do
