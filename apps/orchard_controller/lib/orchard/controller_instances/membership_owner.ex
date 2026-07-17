@@ -238,18 +238,16 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
     :exit, reason -> {:error, {:heartbeat_publish_exit, reason}}
   end
 
-  # `Ecto.Repo.Registry.lookup/1` raises a bare RuntimeError while the Repo is
-  # between crash and restart, so the raising frame is the only structured
-  # evidence separating repo availability from a publication defect.
-  defp classify(%RuntimeError{} = exception, stacktrace) do
+  # `Ecto.Repo.Registry.lookup/1` raises RuntimeError or ArgumentError while
+  # the Repo is between crash and restart, so the raising frame is the only
+  # structured evidence separating repo availability from a publication defect.
+  defp classify(exception, stacktrace) do
     if Enum.any?(stacktrace, &match?({Ecto.Repo.Registry, :lookup, 1, _location}, &1)) do
       :repo_unavailable
     else
       exception
     end
   end
-
-  defp classify(exception, _stacktrace), do: exception
 
   defp publish(opts, observed_at) do
     publisher(opts).(opts, %{
