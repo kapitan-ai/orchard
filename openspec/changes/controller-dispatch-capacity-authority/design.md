@@ -227,9 +227,9 @@ The term `Admitted Capacity` is prohibited because it conflates unrelated admiss
 
 ## First implementation tracer
 
-The first tracer is intentionally non-enforcing.
-It adds the policy table and constraints, creates `shadow_legacy` rows for the existing cohort, adds the pure evaluator and truth-table tests, atomically persists admission default `1`, and exposes policy diagnostics.
-It does not advance any policy to `enforcing` and does not claim production enforcement.
+PR #93 delivered the first tracer as intentionally non-enforcing.
+It added the policy table and constraints, created `shadow_legacy` rows for the existing cohort, added the pure evaluator and truth-table tests, atomically persisted admission default `1`, and exposed policy diagnostics.
+It did not advance any policy to `enforcing` and did not claim production enforcement.
 
 The next implementation slice is the first enforcing vertical tracer.
 It must wire all five consumers, serialize temporary legacy and F11 allocation claims, add the transition barrier and per-Node acceptance gates, preserve each claim through model loading and Node acceptance, revalidate before execution, release once on every terminal path, and quiesce legacy occupancy before cutover.
