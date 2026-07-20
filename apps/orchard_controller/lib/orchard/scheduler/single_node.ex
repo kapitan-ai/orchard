@@ -4,7 +4,13 @@ defmodule Orchard.Scheduler.SingleNode do
 
   When status probing succeeds, the scheduler uses live node and placement
   capacity to advertise `:queue_lane_capacity` or return `{:error, :model_busy}`
-  for proven saturation. Probe failures preserve the legacy direct schedule.
+  for proven saturation.
+
+  Managed targets fail closed: when the target resolves to a known Node and no
+  live authorized capacity input can be built — probe failure, skipped probing,
+  or missing Controller-owned facts — the scheduler returns
+  `{:error, :model_busy}` instead of a legacy direct schedule. Explicitly
+  classified unmanaged targets keep the direct schedule.
   """
 
   alias Orchard.CanonicalRequest

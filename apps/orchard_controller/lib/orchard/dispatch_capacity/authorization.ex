@@ -7,6 +7,8 @@ defmodule Orchard.DispatchCapacity.Authorization do
   target classification and a successful live observation.
   """
 
+  require Logger
+
   alias Orchard.DispatchCapacity
   alias Orchard.DispatchCapacity.{Authority, CapacityEvidence, ManagementClassifier, Policy}
   alias Orchard.DispatchCapacity.Evaluator.Input
@@ -31,9 +33,9 @@ defmodule Orchard.DispatchCapacity.Authorization do
 
     {:ok, from_facts(node, authority, policy, evidence, opts)}
   rescue
-    _error -> {:error, :dispatch_capacity_facts_unavailable}
+    error -> facts_unavailable(error)
   catch
-    _kind, _reason -> {:error, :dispatch_capacity_facts_unavailable}
+    kind, reason -> facts_unavailable({kind, reason})
   end
 
   @doc "Reloads one Node and its Controller-owned capacity facts."
@@ -46,9 +48,9 @@ defmodule Orchard.DispatchCapacity.Authorization do
       _missing -> {:error, :dispatch_capacity_node_not_found}
     end
   rescue
-    _error -> {:error, :dispatch_capacity_facts_unavailable}
+    error -> facts_unavailable(error)
   catch
-    _kind, _reason -> {:error, :dispatch_capacity_facts_unavailable}
+    kind, reason -> facts_unavailable({kind, reason})
   end
 
   @doc "Reloads one Node while using capacity facts from its current live observation."
@@ -88,9 +90,9 @@ defmodule Orchard.DispatchCapacity.Authorization do
         {:error, :dispatch_capacity_node_not_found}
     end
   rescue
-    _error -> {:error, :dispatch_capacity_facts_unavailable}
+    error -> facts_unavailable(error)
   catch
-    _kind, _reason -> {:error, :dispatch_capacity_facts_unavailable}
+    kind, reason -> facts_unavailable({kind, reason})
   end
 
   @doc "Builds a mode-valid explicitly unmanaged input from one live observation."
@@ -432,6 +434,11 @@ defmodule Orchard.DispatchCapacity.Authorization do
       {:ok, value} -> value
       :error -> default.()
     end
+  end
+
+  defp facts_unavailable(cause) do
+    Logger.warning("Dispatch-capacity fact assembly failed: #{inspect(cause)}")
+    {:error, :dispatch_capacity_facts_unavailable}
   end
 
   defp map_value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))

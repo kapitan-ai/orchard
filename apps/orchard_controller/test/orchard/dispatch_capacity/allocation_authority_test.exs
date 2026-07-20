@@ -298,6 +298,93 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 
+  test "SPEC 4.5 quarantine of an absent Node identity leaves unmanaged evaluation open" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    input = unmanaged_input()
+
+    assert AllocationAuthority.evaluate(authority, nil, input).eligible?
+    assert :ok = AllocationAuthority.quarantine_node(authority, nil)
+
+    result = AllocationAuthority.evaluate(authority, nil, input)
+
+    assert result.eligible?
+    assert result.available_slots > 0
+  end
+
+  test "SPEC 5.9 a policy mutation gives up bounded instead of waiting out a dispatch" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    parent = self()
+
+    holder =
+      Task.async(fn ->
+        {:ok, lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
+        send(parent, :gate_held)
+
+        receive do
+          :release -> QueueManager.release_acceptance_gate(lease, authority: authority)
+        end
+      end)
+
+    assert_receive :gate_held
+
+    assert {:error, :dispatch_capacity_acceptance_gate_busy} =
+             DispatchCapacity.with_policy_mutation_gate(
+               node_id,
+               fn -> :never_runs end,
+               authority: authority,
+               gate_timeout_ms: 60
+             )
+
+    send(holder.pid, :release)
+    assert :ok = Task.await(holder)
+
+    assert :mutated =
+             DispatchCapacity.with_policy_mutation_gate(node_id, fn -> :mutated end,
+               authority: authority,
+               gate_timeout_ms: 60
+             )
+  end
+
+  test "SPEC 5.9 a policy mutation reports an unavailable authority instead of exiting" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    stop_supervised!(AllocationAuthority)
+
+    assert {:error, :dispatch_capacity_authority_unavailable} =
+             DispatchCapacity.with_policy_mutation_gate(
+               node_id,
+               fn -> :never_runs end,
+               authority: authority,
+               gate_timeout_ms: 60
+             )
+  end
+
+  defp unmanaged_input do
+    %Input{
+      authority_phase: :invalid,
+      policy_presence: :missing,
+      policy_state: :missing,
+      management_classification: {:ok, :unmanaged_compatibility},
+      trusted_identity?: true,
+      lifecycle_state: :active,
+      health: :healthy,
+      heartbeat_fresh?: true,
+      capacity_observation_fresh?: true,
+      observation_time: ~U[2026-07-20 00:00:00.000000Z],
+      runtime_concurrency_limit: {:valid, 4},
+      aggregate_active_count: {:valid, 0},
+      controller_dispatch_ceiling: :missing,
+      controller_accounted_allocation: 0,
+      placement_capacity: :not_applicable,
+      temporary_legacy_claim_count: 0,
+      pool_eligible?: true,
+      format_eligible?: true,
+      memory_eligible?: true,
+      breaker_eligible?: true
+    }
+  end
+
   defp enforcing_input(placement_capacity) do
     %Input{
       authority_phase: :enforcing,

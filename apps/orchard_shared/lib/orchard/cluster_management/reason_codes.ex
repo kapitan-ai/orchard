@@ -29,6 +29,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     queue_lane_capacity_unavailable
     trust_not_established
     unknown_capacity
+    dispatch_capacity_facts_unavailable
   )
 
   @scheduler_skip_codes ~w(

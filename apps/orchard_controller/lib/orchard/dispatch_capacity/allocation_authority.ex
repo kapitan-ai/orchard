@@ -42,6 +42,12 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
           }
   end
 
+  @gate_poll_interval_ms 25
+
+  @type acceptance_gate_error ::
+          :dispatch_capacity_acceptance_gate_busy
+          | :dispatch_capacity_authority_unavailable
+
   @type acquire_result ::
           {:ok, Claim.t(), Evaluator.Result.t()}
           | {:error, :dispatch_capacity_unavailable, Evaluator.Result.t()}
@@ -75,12 +81,20 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     GenServer.call(server, {:release, claim.token})
   end
 
-  @doc "Blocks new acquisition and revalidation for a Node until this authority restarts."
+  @doc """
+  Blocks new acquisition and revalidation for a Node until this authority restarts.
+
+  Quarantine is per-Node. `nil` is not a Node identity — unmanaged and
+  compatibility evaluations share it — so quarantining `nil` is a no-op rather
+  than a cluster-wide block on every unmanaged evaluation.
+  """
   @spec quarantine_node(Ecto.UUID.t() | nil) :: :ok
   def quarantine_node(node_id), do: quarantine_node(__MODULE__, node_id)
 
   @spec quarantine_node(GenServer.server(), Ecto.UUID.t() | nil) :: :ok
-  def quarantine_node(server, node_id) do
+  def quarantine_node(_server, nil), do: :ok
+
+  def quarantine_node(server, node_id) when is_binary(node_id) do
     GenServer.call(server, {:quarantine_node, node_id})
   end
 
@@ -127,6 +141,45 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     GenServer.call(server, {:acquire_acceptance_gate, node_id}, :infinity)
   end
 
+  @doc """
+  Acquires the acceptance gate for one Node without queueing behind dispatch.
+
+  Dispatch can hold the gate for a whole request, so callers that must stay
+  responsive poll with a deadline instead of waiting unboundedly. A dead or
+  restarting authority is reported as an error rather than exiting the caller.
+  """
+  @spec try_acquire_acceptance_gate(GenServer.server(), Ecto.UUID.t(), timeout()) ::
+          {:ok, AcceptanceLease.t()} | {:error, acceptance_gate_error()}
+  def try_acquire_acceptance_gate(server, node_id, timeout_ms)
+      when is_integer(timeout_ms) and timeout_ms >= 0 do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    poll_acceptance_gate(server, node_id, deadline)
+  end
+
+  defp poll_acceptance_gate(server, node_id, deadline) do
+    case call_acceptance_gate(server, node_id) do
+      {:ok, _lease} = acquired ->
+        acquired
+
+      :busy ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(@gate_poll_interval_ms)
+          poll_acceptance_gate(server, node_id, deadline)
+        else
+          {:error, :dispatch_capacity_acceptance_gate_busy}
+        end
+
+      :unavailable ->
+        {:error, :dispatch_capacity_authority_unavailable}
+    end
+  end
+
+  defp call_acceptance_gate(server, node_id) do
+    GenServer.call(server, {:try_acquire_acceptance_gate, node_id})
+  catch
+    :exit, _reason -> :unavailable
+  end
+
   @doc "Releases an acceptance-gate lease idempotently."
   @spec release_acceptance_gate(AcceptanceLease.t()) :: :ok
   def release_acceptance_gate(%AcceptanceLease{} = lease) do
@@ -136,24 +189,6 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @spec release_acceptance_gate(GenServer.server(), AcceptanceLease.t()) :: :ok
   def release_acceptance_gate(server, %AcceptanceLease{} = lease) do
     GenServer.call(server, {:release_acceptance_gate, lease})
-  end
-
-  @doc "Runs a function while holding one Node's acceptance gate."
-  @spec with_acceptance_gate(Ecto.UUID.t(), (-> result)) :: result when result: term()
-  def with_acceptance_gate(node_id, fun) when is_function(fun, 0) do
-    with_acceptance_gate(__MODULE__, node_id, fun)
-  end
-
-  @spec with_acceptance_gate(GenServer.server(), Ecto.UUID.t(), (-> result)) :: result
-        when result: term()
-  def with_acceptance_gate(server, node_id, fun) when is_function(fun, 0) do
-    {:ok, lease} = acquire_acceptance_gate(server, node_id)
-
-    try do
-      fun.()
-    after
-      release_acceptance_gate(server, lease)
-    end
   end
 
   @impl true
@@ -206,7 +241,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     {:reply, :ok, remove_claim(state, token)}
   end
 
-  def handle_call({:quarantine_node, node_id}, _from, state) do
+  def handle_call({:quarantine_node, node_id}, _from, state) when is_binary(node_id) do
     quarantined_nodes = MapSet.put(state.quarantined_nodes, node_id)
     {:reply, :ok, %{state | quarantined_nodes: quarantined_nodes}}
   end
@@ -247,6 +282,17 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
         waiters = :queue.in(from, gate.waiters)
         gates = Map.put(state.gates, node_id, %{gate | waiters: waiters})
         {:noreply, %{state | gates: gates}}
+    end
+  end
+
+  def handle_call({:try_acquire_acceptance_gate, node_id}, from, state) do
+    case Map.get(state.gates, node_id) do
+      nil ->
+        {lease, state} = put_gate_owner(state, node_id, from, :queue.new())
+        {:reply, {:ok, lease}, state}
+
+      _held ->
+        {:reply, :busy, state}
     end
   end
 

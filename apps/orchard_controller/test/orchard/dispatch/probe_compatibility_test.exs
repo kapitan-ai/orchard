@@ -616,7 +616,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         execute: {:error, :node_timeout}
       })
 
-      assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
+      assert {:error, {:dispatch_failed, :node_timeout}} =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -843,7 +843,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{execute: {:error, :node_timeout}})
 
-      assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
+      assert {:error, {:dispatch_failed, :node_timeout}} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )

@@ -1,16 +1,16 @@
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.Client do
   @moduledoc false
 
-  alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   def configure(test_pid), do: :persistent_term.put({__MODULE__, :test_pid}, test_pid)
   def clear, do: :persistent_term.erase({__MODULE__, :test_pid})
 
   def connect(_target), do: {:ok, :capacity_test_channel}
   def disconnect(_channel), do: :ok
-  def status(_channel, _opts \\ []), do: {:ok, %StatusResponse{}}
+  def status(_channel, _opts \\ []), do: {:ok, DispatchCapacityFixtures.probe_status_response()}
 
   def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts \\ []) do
     test_pid = :persistent_term.get({__MODULE__, :test_pid})
@@ -63,16 +63,16 @@ end
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient do
   @moduledoc false
 
-  alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   def configure(test_pid), do: :persistent_term.put({__MODULE__, :test_pid}, test_pid)
   def clear, do: :persistent_term.erase({__MODULE__, :test_pid})
 
   def connect(_target), do: {:ok, :capacity_gate_channel}
   def disconnect(_channel), do: :ok
-  def status(_channel, _opts \\ []), do: {:ok, %StatusResponse{}}
+  def status(_channel, _opts \\ []), do: {:ok, DispatchCapacityFixtures.probe_status_response()}
 
   def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts \\ []) do
     send(:persistent_term.get({__MODULE__, :test_pid}), :model_loaded)
@@ -523,6 +523,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   alias Orchard.InferenceEvent
   alias Orchard.Nodes.{AdmissionDecision, Node}
   alias Orchard.Scheduler.{MultiNode, SingleNode}
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   alias __MODULE__.{
     CancellableStreamClient,
@@ -565,6 +566,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       @noisy_cancel_client.clear()
       @pre_acceptance_cancel_client.clear()
       @production_fresh_status_client.clear()
+      DispatchCapacityFixtures.clear_probe_node_id()
     end)
 
     :ok
@@ -572,7 +574,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 dispatch retains one claim through loading, acceptance, and completion" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     input = enforcing_input()
     request_id = "request-claim-lifetime"
 
@@ -632,7 +634,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 4.6.2 dispatch owner death releases its claim exactly once" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-owner-death"
     input = enforcing_input()
 
@@ -681,7 +683,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 policy mutation linearizes before final dispatch revalidation" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-final-revalidation"
     parent = self()
     input_state = start_supervised!({Agent, fn -> enforcing_input() end})
@@ -742,7 +744,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 4.5 synchronous execute failure releases the claim for retry" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-execute-error"
 
     assert {:error, {:dispatch_failed, :execution_refused}} =
@@ -768,7 +770,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 4.6 runtime completion before Accepted is a pre-acceptance failure" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-missing-acceptance"
 
     assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
@@ -783,7 +785,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   end
 
   test "SPEC 5.9 managed dispatch rejects cached capacity without fresh providers" do
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-cached-capacity-authorization"
 
     schedule =
@@ -810,7 +812,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 initial claim acquisition reloads current capacity facts" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-fresh-acquisition-capacity"
 
     unavailable_input = %{
@@ -867,7 +869,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 Completed before Accepted is a pre-acceptance failure" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-completed-before-accepted"
 
     @terminal_before_accepted_client.configure(
@@ -887,7 +889,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 Failed before Accepted is a pre-acceptance failure" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-failed-before-accepted"
 
     @terminal_before_accepted_client.configure(
@@ -905,12 +907,12 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
-  test "SPEC 5.9 stream error after a pre-Accepted delta remains a pre-acceptance failure" do
+  test "SPEC 5.9 stream error after a pre-Accepted delta fails with the transport reason" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-delta-before-acceptance-error"
 
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
+    assert {:error, {:dispatch_failed, :stream_failed}} =
              RequestDispatcher.dispatch(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
@@ -923,7 +925,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 4.5 Accepted handler exception retains the claim through cancellation terminal" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-accepted-handler-exception"
 
     dispatch =
@@ -953,7 +955,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 4.5 delta handler exception retains the claim through cancellation terminal" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-delta-handler-exception"
 
     dispatch =
@@ -983,7 +985,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 timeout before Accepted remains a pre-acceptance failure" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-timeout-before-accepted"
     schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
 
@@ -1007,7 +1009,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 handler exception before Accepted remains failed after late Accepted" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-handler-failure-before-late-acceptance"
 
     dispatch =
@@ -1033,7 +1035,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     test "SPEC 4.5 cancel #{cancel_failure} still drains before releasing the claim" do
       @pre_acceptance_cancel_client.configure(self(), cancel_failure: unquote(cancel_failure))
       authority = start_supervised!({AllocationAuthority, name: nil})
-      node_id = Ecto.UUID.generate()
+      node_id = claim_node_id()
       request_id = "request-cancel-#{unquote(cancel_failure)}"
       schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
 
@@ -1058,7 +1060,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 4.5 an unresponsive cancellation reconciles fail closed before release" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-cancel-drain-timeout"
     schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
 
@@ -1093,7 +1095,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 4.5 cancellation drain deadline is not extended by nonterminal events" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-noisy-cancel-drain"
     schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
 
@@ -1120,7 +1122,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     target = Inference.runtime_client_target()
     inventory_node = insert_admitted_node!(target, DateTime.utc_now())
-    claimed_node_id = Ecto.UUID.generate()
+    claimed_node_id = claim_node_id()
     request_id = "request-mismatched-reconciliation-node"
 
     schedule = %{
@@ -1156,7 +1158,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 handler cancellation before Accepted remains a pre-acceptance failure" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-handler-cancel-before-accepted"
 
     dispatch =
@@ -1180,7 +1182,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   test "SPEC 5.9 caller death before Accepted remains a pre-acceptance failure" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
+    node_id = claim_node_id()
     request_id = "request-caller-death-before-accepted"
     caller = spawn(fn -> Process.sleep(:infinity) end)
 
@@ -1325,7 +1327,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     target = SingleNode.target()
     runtime_node = insert_admitted_node!(target, DateTime.utc_now())
-    claimed_node_id = Ecto.UUID.generate()
+    claimed_node_id = claim_node_id()
     request_id = "request-probe-identity-remap"
     status = production_status(runtime_node, target, [])
 
@@ -1342,6 +1344,24 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     refute_receive :production_execute_called
     assert AllocationAuthority.claim_count(authority, claimed_node_id) == 0
     assert AllocationAuthority.claim_count(authority, runtime_node.id) == 0
+  end
+
+  test "SPEC 5.9 a claimed Node whose dispatch probe reports no identity fails closed" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    DispatchCapacityFixtures.clear_probe_node_id()
+    node_id = Ecto.UUID.generate()
+    request_id = "request-probe-identity-missing"
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
+             RequestDispatcher.dispatch(
+               capacity_schedule(authority, node_id, request_id),
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
   test "SPEC 5.9 admitted MultiNode dispatch rejects nonmatching post-load placement evidence" do
@@ -1384,6 +1404,12 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     refute_receive :production_execute_called
     assert AllocationAuthority.claim_count(authority, node.id) == 0
+  end
+
+  defp claim_node_id do
+    node_id = Ecto.UUID.generate()
+    DispatchCapacityFixtures.put_probe_node_id(node_id)
+    node_id
   end
 
   defp execute_request(request_id) do

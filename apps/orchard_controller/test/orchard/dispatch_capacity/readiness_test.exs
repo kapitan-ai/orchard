@@ -8,6 +8,12 @@ defmodule Orchard.DispatchCapacity.ReadinessTest do
     assert length(Readiness.consumer_manifest()) == 5
   end
 
+  test "SPEC 4.8 the default readiness proof is memoized for the build" do
+    assert Readiness.ready?()
+    assert :persistent_term.get({Readiness, :default_readiness}) == true
+    assert Readiness.ready?()
+  end
+
   test "SPEC 4.8 missing, incompatible, or fixture-failing builds remain false" do
     [_missing | incomplete] = Readiness.consumer_manifest()
 

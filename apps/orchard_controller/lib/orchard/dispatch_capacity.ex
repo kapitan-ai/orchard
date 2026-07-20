@@ -14,6 +14,8 @@ defmodule Orchard.DispatchCapacity do
 
   import Ecto.Query, only: [from: 2]
 
+  @policy_mutation_gate_timeout_ms 5_000
+
   @doc """
   Returns the singleton durable authority row, or `nil` if persistence is corrupt.
   """
@@ -64,17 +66,33 @@ defmodule Orchard.DispatchCapacity do
     |> Repo.insert()
   end
 
-  @doc "Runs a policy mutation while holding the target Node's acceptance gate."
-  @spec with_policy_mutation_gate(Ecto.UUID.t(), (-> result), keyword()) :: result
+  @doc """
+  Runs a policy mutation while holding the target Node's acceptance gate.
+
+  Dispatch holds the same gate until the Node accepts, so acquisition is
+  bounded by `:gate_timeout_ms` and reported as
+  `{:error, :dispatch_capacity_acceptance_gate_busy}` instead of blocking the
+  caller for a whole request. An unavailable authority yields
+  `{:error, :dispatch_capacity_authority_unavailable}`.
+  """
+  @spec with_policy_mutation_gate(Ecto.UUID.t(), (-> result), keyword()) ::
+          result | {:error, AllocationAuthority.acceptance_gate_error()}
         when result: term()
   def with_policy_mutation_gate(node_id, fun, opts \\ []) when is_function(fun, 0) do
     authority = Keyword.get(opts, :authority, AllocationAuthority)
+    timeout_ms = Keyword.get(opts, :gate_timeout_ms, @policy_mutation_gate_timeout_ms)
 
-    AllocationAuthority.with_acceptance_gate(
-      authority,
-      node_id,
-      fun
-    )
+    case AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, timeout_ms) do
+      {:ok, lease} ->
+        try do
+          fun.()
+        after
+          AllocationAuthority.release_acceptance_gate(authority, lease)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @doc """

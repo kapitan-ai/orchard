@@ -6,12 +6,15 @@ defmodule Orchard.DispatchCapacity.Readiness do
   version declarations, and the deterministic shared public-interface fixture.
   """
 
+  require Logger
+
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Evaluator}
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
   alias Orchard.Scheduler.{MultiNode, SingleNode}
 
+  @readiness_cache_key {__MODULE__, :default_readiness}
   @contract_version 1
   @consumer_manifest [
     {MultiNode, :multi_node_eligibility_and_lane},
@@ -29,9 +32,19 @@ defmodule Orchard.DispatchCapacity.Readiness do
   @spec consumer_manifest() :: [{module(), atom()}]
   def consumer_manifest, do: @consumer_manifest
 
-  @doc "Verifies exact consumer wiring, version compatibility, and fixture conformance."
+  @doc """
+  Verifies exact consumer wiring, version compatibility, and fixture conformance.
+
+  The default proof depends only on compiled modules and a frozen fixture, so
+  its outcome is constant for a build and is computed once per node. Callers
+  that override any input get an uncached proof.
+  """
   @spec ready?(keyword()) :: boolean()
-  def ready?(opts \\ []) do
+  def ready?(opts \\ [])
+
+  def ready?([]), do: cached_default_readiness()
+
+  def ready?(opts) do
     manifest = Keyword.get(opts, :consumer_manifest, @consumer_manifest)
     required_version = Keyword.get(opts, :required_contract_version, @contract_version)
     fixture_input = Keyword.get_lazy(opts, :fixture_input, &ConformanceFixture.input/0)
@@ -40,9 +53,25 @@ defmodule Orchard.DispatchCapacity.Readiness do
       fixture_input == ConformanceFixture.input() and
       fixture_conforms?(manifest, fixture_input)
   rescue
-    _error -> false
+    error ->
+      Logger.warning("Dispatch-capacity readiness proof raised: #{inspect(error)}")
+      false
   catch
-    _kind, _reason -> false
+    kind, reason ->
+      Logger.warning("Dispatch-capacity readiness proof #{kind}: #{inspect(reason)}")
+      false
+  end
+
+  defp cached_default_readiness do
+    case :persistent_term.get(@readiness_cache_key, :uncomputed) do
+      :uncomputed ->
+        ready? = ready?(consumer_manifest: @consumer_manifest)
+        :persistent_term.put(@readiness_cache_key, ready?)
+        ready?
+
+      ready? ->
+        ready?
+    end
   end
 
   defp fixture_conforms?(manifest, %Evaluator.Input{} = input) do
