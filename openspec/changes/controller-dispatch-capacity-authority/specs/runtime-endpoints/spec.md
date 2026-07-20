@@ -1,5 +1,61 @@
 ## MODIFIED Requirements
 
+### Requirement: Controller-Owned Capacity Management Classification
+Orchard SHALL normalize a Runtime Endpoint target's capacity management class from Controller-owned configuration and admitted inventory before shared capacity evaluation.
+A target that resolves to admitted production inventory SHALL be `production_managed` regardless of transport or a conflicting unmanaged declaration.
+An unmanaged source-development or compatibility class SHALL require explicit mode-valid Controller configuration and MUST NOT be inferred from Node telemetry, transport, address, or probe failure.
+While a Controller publishes `dispatch_capacity_consumers_ready = false`, this classification SHALL remain diagnostics-only and SHALL NOT change dispatch behavior.
+Transport selection SHALL NOT determine whether the capacity-authority contract applies.
+An admitted production Node SHALL remain governed over BEAM, gRPC compatibility, or a static target reference.
+Production inventory resolution SHALL happen before any unmanaged exception is considered.
+Every normalized Runtime Endpoint target SHALL carry Controller-owned `capacity_management_class` of `production_managed`, `unmanaged_source_development`, or `unmanaged_compatibility`.
+`unmanaged_source_development` SHALL be valid only in Controller source-development mode, and `unmanaged_compatibility` SHALL be valid only for explicitly enabled compatibility configuration that does not match admitted inventory.
+Missing, malformed, conflicting, Node-reported, transport-inferred, or probe-inferred classification SHALL fail closed.
+Only a valid explicitly classified unmanaged source-development or compatibility target MAY retain legacy capacity behavior.
+Failure to resolve or probe a production-managed target SHALL NOT downgrade it to unmanaged behavior.
+This refines `SPEC.md` §4.6.2, §5.9, and §7.5.
+
+#### Scenario: Admitted gRPC target remains production managed
+- **WHEN** a gRPC compatibility target resolves to an admitted production Node
+- **THEN** the normalized class is `production_managed`
+- **AND** counterfactual diagnostics apply the production fail-closed contract
+- **AND** Orchard requires an in-force Controller Dispatch Ceiling and shared capacity evaluation once enforcement is live
+
+#### Scenario: Static target matches production inventory
+- **WHEN** a static target reference resolves to an admitted production Node
+- **THEN** Orchard applies production capacity authority before dispatch
+- **AND** static configuration does not create an unmanaged exemption
+
+#### Scenario: Admitted inventory overrides unmanaged declaration
+- **WHEN** a target resolves to admitted production inventory
+- **AND** configuration declares an unmanaged capacity management class
+- **THEN** Orchard classifies the target as `production_managed`
+- **AND** Orchard applies the enforcing production contract
+
+#### Scenario: Explicit unmanaged source development
+- **WHEN** Controller-owned source-development configuration sets `capacity_management_class = unmanaged_source_development`
+- **AND** the Controller is in source-development mode and the target does not resolve to admitted production inventory
+- **THEN** Orchard may retain documented legacy capacity behavior
+- **AND** any missing-runtime normalization to `1` remains ephemeral runtime interpretation
+- **AND** Orchard creates no durable Controller Dispatch Ceiling from that interpretation
+
+#### Scenario: Missing unmanaged declaration is invalid
+- **WHEN** a target does not resolve to admitted inventory and has no explicit mode-valid management class
+- **THEN** classification is invalid
+- **AND** diagnostics expose `runtime_endpoint_management_class_missing`
+- **AND** Orchard does not infer an unmanaged class from successful or failed probing
+
+#### Scenario: Management class is malformed or invalid for the mode
+- **WHEN** a target does not resolve to admitted inventory and its capacity management class is malformed, conflicting, or invalid for the Controller mode
+- **THEN** Orchard fails closed for new dispatch
+- **AND** Orchard exposes `runtime_endpoint_management_class_invalid`
+- **AND** Orchard does not infer classification from transport, address, telemetry, or probe outcome
+
+#### Scenario: Production probe fails
+- **WHEN** a production-managed target cannot provide fresh trusted capacity evidence before dispatch
+- **THEN** Orchard does not allocate or execute new work through a compatibility fallback
+- **AND** broader probe-failure fallback cleanup remains a separate implementation finding
+
 ### Requirement: Placement Capacity Observation
 Placement Capacity SHALL be a first-class Runtime Endpoint Observation for Model Placements.
 Placement Capacity SHALL include the model reference, active request count, and maximum concurrency for the placement.

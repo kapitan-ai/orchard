@@ -7,8 +7,9 @@
 - [x] 1.3 Add the canonical glossary terms and `_Avoid_` aliases, including the rejected `Admitted Capacity` alias.
 - [x] 1.4 Add focused `dispatch-capacity` and `runtime-endpoints` OpenSpec deltas with acceptance scenarios.
 - [x] 1.5 Run strict validation for this exact OpenSpec change.
-- [x] 1.6 Review generated main specs for placeholder prose after archive or sync.
-  Completed by the post-PR #93 reconciliation: the foundation requirements were merged without duplicate headings or placeholder purpose prose.
+- [ ] 1.6 Review generated main specs for placeholder prose after archive or sync.
+  Foundation evidence, 2026-07-20: after the post-PR #93 foundation tracer sync, the five merged `dispatch-capacity` requirements and the merged `runtime-endpoints` requirements carried no duplicate headings and no placeholder purpose prose.
+  This gate is recurring and remains open: it must repeat at every later sync of this change and again at parent archive.
 
 ## 2. Non-enforcing foundation tracer
 
@@ -84,5 +85,6 @@ No Operator policy mutation, Controller retirement, cutover, quiescence, accepta
 - [ ] 6.5 For implementation slices, run `mise exec -- mix dialyzer`.
 - [ ] 6.6 For implementation slices, run `mise exec -- mix test`.
 - [ ] 6.7 For implementation slices, run `mise exec -- mix test --cover`.
-- [x] 6.8 After archive or sync, run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive` and remove placeholder prose such as `Purpose TBD`.
-  Completed by the post-PR #93 reconciliation after intelligent sync and archive; all nine remaining validation items, comprising six active changes and three main specs, passed strict validation with no placeholder prose.
+- [ ] 6.8 After archive or sync, run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive` and remove placeholder prose such as `Purpose TBD`.
+  Foundation evidence, 2026-07-20: after the foundation tracer sync and archive, all nine remaining validation items, comprising six active changes and three main specs, passed strict validation with no placeholder prose.
+  This gate is recurring and remains open: it must repeat at every later sync of this change and again at parent archive.
