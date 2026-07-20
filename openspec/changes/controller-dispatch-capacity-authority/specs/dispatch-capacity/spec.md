@@ -12,7 +12,8 @@ Every admitted production Node SHALL have one durable Controller dispatch capaci
 Registered but unadmitted production inventory SHALL NOT enter the migration cohort or require dispatch policy until Node Admission commits.
 Operational capacity evaluation SHALL exclude a Node and its policy only after durable lifecycle `removed`, trust revocation, and an existing successful removal audit have all committed.
 A qualifying removed tombstone SHALL retain historical policy evidence but SHALL NOT be passed into operational capacity evaluation.
-Until that conjunction is proven, the Node SHALL remain in the operational cohort and SHALL be evaluated fail closed.
+A Node not yet proven to be a qualifying removed tombstone SHALL remain in the operational cohort and SHALL follow the normal shared evaluation, failing closed only when an applicable prerequisite fails.
+Removal intent, lifecycle `decommissioning`, unreachability, or any partial proof SHALL NOT grant exclusion.
 Later re-enrollment SHALL pass a new Node Admission and persist policy under the then-current phase.
 Except for the bounded pre-F11 cohort while its policy state is `shadow_legacy`, that policy SHALL have an explicit non-negative Controller Dispatch Ceiling.
 The `shadow_legacy` record SHALL deliberately have no ceiling, SHALL authorize none of the new production capacity semantics, and SHALL remain distinct from a missing policy record.

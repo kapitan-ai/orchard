@@ -136,6 +136,7 @@ One pure transport-independent evaluation returns:
 - Effective Dispatch Limit.
 - Controller-accounted Allocation.
 - Dispatch Headroom.
+- Placement Capacity.
 - Durable enforcement phase.
 - Policy state.
 - Normalized target `capacity_management_class`.
