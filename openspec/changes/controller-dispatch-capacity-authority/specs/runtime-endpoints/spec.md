@@ -4,17 +4,19 @@
 Orchard SHALL normalize a Runtime Endpoint target's capacity management class from Controller-owned configuration and admitted inventory before shared capacity evaluation.
 A target that resolves to admitted production inventory SHALL be `production_managed` regardless of transport or a conflicting unmanaged declaration.
 An unmanaged source-development or compatibility class SHALL require explicit mode-valid Controller configuration and MUST NOT be inferred from Node telemetry, transport, address, or probe failure.
-Until `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all actually consume the shared evaluation, capacity management classification SHALL remain diagnostics-only and SHALL NOT change dispatch behavior.
+Until `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all actually consume the shared evaluation and the Controller publishes `dispatch_capacity_consumers_ready = true`, the normalized `capacity_management_class` SHALL remain diagnostics-only and SHALL NOT by itself change dispatch behavior.
+Before that wiring completes, classification-driven fail-closed behavior and unmanaged legacy-capacity exceptions SHALL NOT be dispatch-authoritative.
 `dispatch_capacity_consumers_ready = true` SHALL be capability evidence only and SHALL NOT by itself enable any classification-driven behavior.
-After every named consumer actually consumes the shared evaluation, classification MAY affect dispatch only as an input to the complete shared authority decision under the applicable durable phase contract.
+Independently of normalized classification, admitted production identity and the existing fresh-trusted-capacity-evidence and no-compatibility-fallback requirements SHALL remain enforced at every stage under `Admitted Production Evidence Safety`.
+After every named consumer actually consumes the shared evaluation and the Controller publishes `dispatch_capacity_consumers_ready = true`, classification MAY affect dispatch only as an input to the complete shared authority decision under the applicable durable phase contract.
 Classification alone SHALL NOT authorize dispatch, and every phase, policy, trust, lifecycle, health, freshness, runtime, placement, routing, breaker, allocation, temporary-claim, and claim-acquisition gate SHALL still apply.
 Transport selection SHALL NOT determine whether the capacity-authority contract applies.
 An admitted production Node SHALL remain governed over BEAM, gRPC compatibility, or a static target reference.
 Production inventory resolution SHALL happen before any unmanaged exception is considered.
 Every normalized Runtime Endpoint target SHALL carry Controller-owned `capacity_management_class` of `production_managed`, `unmanaged_source_development`, or `unmanaged_compatibility`.
 `unmanaged_source_development` SHALL be valid only in Controller source-development mode, and `unmanaged_compatibility` SHALL be valid only for explicitly enabled compatibility configuration that does not match admitted inventory.
-Before the named consumers consume the shared evaluation, missing, malformed, conflicting, Node-reported, transport-inferred, or probe-inferred classification SHALL be diagnostic only and SHALL NOT alter dispatch.
-After the named consumers consume the shared evaluation, such classification SHALL make the complete shared authority decision fail closed for new dispatch.
+Before that wiring completes, missing, malformed, conflicting, Node-reported, transport-inferred, or probe-inferred classification SHALL be diagnostic only and SHALL NOT by itself alter dispatch.
+After that wiring completes, such classification SHALL make the complete shared authority decision fail closed for new dispatch.
 At no stage SHALL invalid, missing, or inferred classification become an unmanaged exception, and failure to resolve or probe a production-managed target SHALL NOT downgrade it to unmanaged behavior.
 Only a valid explicitly classified unmanaged source-development or compatibility target MAY retain documented unmanaged legacy capacity behavior once classification participates in the fully wired shared evaluation.
 This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
@@ -58,15 +60,6 @@ This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 - **AND** after the named consumers consume the shared evaluation, the complete shared authority decision fails closed for new dispatch under the current durable phase
 - **AND** Orchard does not infer classification from transport, address, telemetry, or probe outcome, and never treats the invalid classification as an unmanaged exception
 
-#### Scenario: Production probe fails
-- **WHEN** a target resolves to admitted production inventory and is normalized `production_managed`
-- **AND** that target lacks fresh trusted capacity evidence before dispatch
-- **THEN** Orchard does not downgrade or reclassify the target to unmanaged behavior
-- **AND** Orchard does not allocate or execute new work through a compatibility fallback
-- **AND** that prohibition applies regardless of `dispatch_capacity_consumers_ready`
-- **AND** before all named consumers actually consume the shared evaluation, normalized classification remains diagnostics-only and does not otherwise change dispatch behavior
-- **AND** broader production probe-failure direct scheduling fallback cleanup remains a separate implementation finding
-
 ### Requirement: Placement Capacity Observation
 Placement Capacity SHALL be a first-class Runtime Endpoint Observation for Model Placements.
 Placement Capacity SHALL include the model reference, active request count, and maximum concurrency for the placement.
@@ -106,3 +99,21 @@ This requirement traces to `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, §7.5, and 
 #### Scenario: Placement is tighter than aggregate authority
 - **WHEN** the shared authority decision has positive available slots but the requested Placement Capacity is exhausted
 - **THEN** Orchard does not allocate the request to that placement
+
+## ADDED Requirements
+
+### Requirement: Admitted Production Evidence Safety
+Admitted production identity SHALL govern a Runtime Endpoint target at every stage, independently of the normalized `capacity_management_class`.
+When a target that resolves to admitted production inventory lacks fresh trusted capacity evidence before dispatch, Orchard SHALL NOT allocate or execute new work for that target through an unmanaged or compatibility fallback.
+`dispatch_capacity_consumers_ready` SHALL NOT weaken that prohibition in either state.
+Enforcing that prohibition SHALL NOT make the normalized classification dispatch-authoritative before every named capacity consumer actually consumes the shared evaluation.
+Broader production probe-failure direct scheduling fallback cleanup remains a separate implementation finding and is not resolved by this requirement.
+This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
+
+#### Scenario: Admitted production target lacks fresh trusted evidence
+- **WHEN** a target resolves to admitted production inventory
+- **AND** that target lacks fresh trusted capacity evidence before dispatch
+- **THEN** Orchard does not downgrade or reclassify the target to unmanaged behavior
+- **AND** Orchard does not allocate or execute new work through an unmanaged or compatibility fallback
+- **AND** that prohibition holds while `dispatch_capacity_consumers_ready` is `false`
+- **AND** before all named consumers actually consume the shared evaluation, normalized classification remains diagnostics-only and does not otherwise change dispatch behavior
