@@ -31,9 +31,9 @@ No Operator policy mutation, Controller retirement, cutover, quiescence, accepta
 - [x] 2.5 Make Node Admission lock and read the durable phase, atomically persist `approved_explicit` before cutover with an administrator-supplied value or the explicit default `1`, and roll back admission if phase, policy, or audit persistence fails.
   Completed by PR #93 for pre-cutover admission; enforcing post-cutover admission remains in 3.5.
 - [x] 2.6 Expose policy and counterfactual capacity diagnostics without advancing any policy to `enforcing` or claiming production enforcement.
-  Completed by PR #93 through read-only operator diagnostics and the five-consumer non-enforcement boundary test.
+  Completed by PR #93 through read-only operator diagnostics and its five-consumer non-enforcement boundary test; the enforcing tracer replaced that boundary test with five-consumer conformance coverage while keeping diagnostics read-only and every policy below `enforcing`.
 - [x] 2.7 Add the supervised Controller membership owner and its `10000` ms heartbeat, atomically publishing `last_seen_at`, software version, supported dispatch-capacity contract version, all-five-consumers-ready declaration, and capability observation time at boot and on each heartbeat.
-  Completed by PR #93 with readiness forced to false; publishing true remains in 4.8 after all five consumers are wired.
+  Completed by PR #93 with readiness forced to false; the enforcing tracer completed 4.8 by publishing the proved readiness once all five consumers were wired.
 
 ## 3. Operator approval and migration cutover
 
@@ -48,6 +48,10 @@ No Operator policy mutation, Controller retirement, cutover, quiescence, accepta
 - [ ] 3.7 Implement Controller retirement blockers for the current Active, leadership-lock holder, and last non-retired instance, with optimistic concurrency and atomic cluster audit.
 
 ## 4. First enforcing vertical tracer
+
+The enforcing five-consumer tracer completes 4.1 through 4.8 only.
+The durable phase stays `pre_cutover`, so production-managed targets authorize through the shared `legacy_pre_cutover` decision and its centrally calculated temporary legacy slots, while F11 Effective Dispatch Limit and Dispatch Headroom stay counterfactual `0`.
+No Operator policy mutation, Controller retirement, cutover, quiescence, transition barrier, or durable permit task is completed by this tracer, and every parent out-of-scope item is preserved.
 
 - [x] 4.1 Wire MultiNode eligibility and lane contribution to the shared evaluation.
 - [x] 4.2 Wire admitted and production-managed SingleNode paths to the same evaluation while preserving only explicitly unmanaged source-development compatibility behavior.

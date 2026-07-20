@@ -41,6 +41,9 @@ The active OpenSpec delta is covered by and traces to the current exact union `S
 ## Delivery state
 
 PR #93 delivered the non-enforcing foundation only.
+The following slice delivered the first enforcing five-consumer vertical tracer: the Controller-owned allocation authority with serialized per-Node claims, the per-Node acceptance gate shared by policy mutation and the final dispatch handoff, shared-evaluation wiring for MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch revalidation, and contract-versioned all-five-consumers readiness published on the Controller membership heartbeat.
+That tracer does not advance the durable phase, so production-managed targets still authorize through `legacy_pre_cutover`.
+Operator policy mutation surfaces, Controller retirement, enforcement cutover, and legacy quiescence remain unimplemented, and every out-of-scope item below is unchanged.
 The remaining product-code implementation remains active in this parent change.
 
 ## Out of scope

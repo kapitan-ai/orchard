@@ -557,6 +557,12 @@ defmodule Orchard.Nodes do
 
   @doc """
   Admits a registered node without activating it.
+
+  The capacity-policy write runs while holding that Node's acceptance gate, so
+  admission returns `{:error, :dispatch_capacity_acceptance_gate_busy}` when a
+  dispatch holds the gate longer than the bounded wait, and
+  `{:error, :dispatch_capacity_authority_unavailable}` when the allocation
+  authority is not running. Both are retryable.
   """
   @spec admit_node(Ecto.UUID.t(), map() | keyword(), keyword()) ::
           {:ok,

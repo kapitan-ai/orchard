@@ -16,8 +16,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   cancellation, retry, or completion. Immediately before `ExecuteInference` the
   dispatcher takes that Node's acceptance gate, revalidates the recognized
   claim without counting it twice, and holds the gate until the node accepts or
-  the attempt fails pre-acceptance. Unavailable capacity fails the dispatch with
-  `:dispatch_capacity_unavailable` rather than proceeding.
+  the attempt fails pre-acceptance. Gate acquisition is bounded by the schedule's
+  request timeout, falling back to 30 seconds, and fails the dispatch with
+  `:dispatch_capacity_acceptance_gate_busy` rather than waiting behind another
+  in-flight dispatch to the same Node indefinitely. Unavailable capacity fails
+  the dispatch with `:dispatch_capacity_unavailable` rather than proceeding.
 
   Transport failures during connect, pre-dispatch status, model load, or stream
   execution are recorded through node inventory so stale capacity for the failed

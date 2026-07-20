@@ -149,6 +149,11 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   Dispatch can hold the gate for a whole request, so callers that must stay
   responsive poll with a deadline instead of waiting unboundedly. A dead or
   restarting authority is reported as an error rather than exiting the caller.
+
+  Polling runs in a short-lived guardian process that owns the lease, so a
+  grant that arrives after the caller's deadline is released instead of leaving
+  the gate held forever. The lease is likewise released when the caller dies,
+  and `release_acceptance_gate/1,2` stops the guardian.
   """
   @spec try_acquire_acceptance_gate(GenServer.server(), Ecto.UUID.t(), timeout()) ::
           {:ok, AcceptanceLease.t()} | {:error, acceptance_gate_error()}

@@ -231,9 +231,13 @@ PR #93 delivered the first tracer as intentionally non-enforcing.
 It added the policy table and constraints, created `shadow_legacy` rows for the existing cohort, added the pure evaluator and truth-table tests, atomically persisted admission default `1`, and exposed policy diagnostics.
 It did not advance any policy to `enforcing` and did not claim production enforcement.
 
-The next implementation slice is the first enforcing vertical tracer.
-It must wire all five consumers, serialize temporary legacy and F11 allocation claims, add the transition barrier and per-Node acceptance gates, preserve each claim through model loading and Node acceptance, revalidate before execution, release once on every terminal path, and quiesce legacy occupancy before cutover.
-Partial enforcing wiring is rejected because an unwired consumer could bypass the ceiling.
+The next implementation slice was the first enforcing vertical tracer.
+It wired all five consumers to the shared evaluation, serialized temporary legacy and F11 allocation claims in one supervised Controller-local allocation authority, added the per-Node acceptance gate shared by policy mutation and dispatch, preserved each claim through model loading and Node acceptance, revalidated the recognized claim immediately before `ExecuteInference` without double-counting it, released once on every terminal path, and published contract-versioned all-five-consumers readiness only when the exact consumer manifest and the shared conformance fixture agree.
+Partial enforcing wiring is rejected because an unwired consumer could bypass the ceiling, so readiness is proved as one indivisible capability rather than per consumer.
+
+Both acceptance-gate consumers are bounded rather than blocking: policy mutation and dispatch each fail with `dispatch_capacity_acceptance_gate_busy` instead of waiting behind an in-flight dispatch to the same Node.
+A consumer that cannot assemble Controller-owned facts from current authenticated evidence fails closed with `dispatch_capacity_facts_unavailable` instead of falling back to telemetry.
+The tracer left the durable phase at `pre_cutover`, so the cluster-wide transition barrier, legacy quiescence to zero live claims and fresh zero observed occupancy, and the atomic switch to F11 authority remain the next slice.
 
 ## Rejected alternatives
 
