@@ -1010,7 +1010,8 @@ If policy mutation holds the gate first, later revalidation SHALL observe the ne
 Enforcement cutover SHALL use the cluster transition barrier and every Node acceptance gate in stable order so no temporary legacy claim or pre-acceptance handoff can cross the phase change.
 These gates define one live Active Controller's F11 linearization boundary and are not a substitute for M7 leadership fencing or durable dispatch permits.
 
-A dispatch that cannot establish whether its runtime execution ended — a cancel drain that times out without a clean transport disconnect and without a durably recorded `unhealthy` or `unreachable` Node — SHALL quarantine that Node in the Active Controller's local quarantine set.
+A dispatch that cannot establish whether its runtime execution ended — a cancel drain that times out without a transport-proven clean disconnect and without a durably recorded `unhealthy` or `unreachable` Node — SHALL quarantine that Node in the Active Controller's local quarantine set.
+A transport disconnect counts as proof only when the Runtime Endpoint client affirmatively reports the runtime stream closed; a best-effort `:ok` from a transport that cannot observe closure SHALL be treated as unreconciled.
 Quarantine is keyed by admitted Node identity, so an evaluation without a Node identity, such as an unmanaged source-development or compatibility target, SHALL NOT be quarantined.
 Every later shared evaluation for a quarantined Node SHALL supply health `unreachable` rather than counting the unresolved execution as free capacity, and SHALL therefore fail closed with the existing `node_health_unhealthy` reason code.
 The quarantine set SHALL be supervised outside the inference subtree so restarting the allocation authority cannot resume dispatch from a clean quarantine set, and an unavailable quarantine set SHALL make every Node evaluate as unreachable rather than as free capacity.

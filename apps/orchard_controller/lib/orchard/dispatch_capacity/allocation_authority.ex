@@ -50,7 +50,6 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
           }
   end
 
-  @gate_poll_interval_ms 25
   @gate_response_margin_ms 1
   @gate_cleanup_timeout_ms 25
 
@@ -94,6 +93,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @spec release(GenServer.server(), Claim.t()) :: :ok
   def release(server, %Claim{} = claim) do
     GenServer.call(server, {:release, claim.token})
+  catch
+    :exit, _reason -> :ok
   end
 
   @doc """
@@ -173,10 +174,13 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   Acquires the acceptance gate for one Node without queueing behind dispatch.
 
   Dispatch can hold the gate for a whole request, so callers that must stay
-  responsive poll with a deadline instead of waiting unboundedly. A dead or
-  restarting authority is reported as an error rather than exiting the caller.
+  responsive wait with a deadline instead of waiting unboundedly. Waiting is
+  ordered: a bounded caller joins the same per-Node FIFO queue as an unbounded
+  one, so a contended Node grants in arrival order rather than by race, and no
+  caller polls the authority while it waits. A dead or restarting authority is
+  reported as an error rather than exiting the caller.
 
-  Polling runs in a short-lived guardian process that owns the lease, so a
+  Waiting runs in a short-lived guardian process that owns the lease, so a
   grant that arrives after the caller's deadline is released instead of leaving
   the gate held forever. The lease is likewise released when the caller dies,
   and `release_acceptance_gate/1,2` stops the guardian.
@@ -247,10 +251,6 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
         {:ok, _lease} = acquired ->
           acquired
 
-        :busy ->
-          Process.sleep(min(@gate_poll_interval_ms, remaining_ms))
-          poll_acceptance_gate(server, node_id, deadline, abort_pid)
-
         :expired ->
           {:error, :dispatch_capacity_acceptance_gate_busy}
 
@@ -272,6 +272,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
       timeout_ms
     )
   catch
+    :exit, {:timeout, _call} -> :expired
     :exit, _reason -> :unavailable
   end
 
@@ -366,6 +367,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @spec release_acceptance_gate(GenServer.server(), AcceptanceLease.t()) :: :ok
   def release_acceptance_gate(server, %AcceptanceLease{} = lease) do
     GenServer.call(server, {:release_acceptance_gate, lease})
+  catch
+    :exit, _reason -> :ok
   after
     release_guardian(lease)
   end
@@ -382,6 +385,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   def init(%{quarantine_store: quarantine_store}) do
     base = %{
       claims: %{},
+      claim_counts: %{},
       request_claims: %{},
       monitors: %{},
       gates: %{},
@@ -430,11 +434,18 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
           }
 
           claims = Map.put(state.claims, claim.token, claim)
+          claim_counts = adjust_claim_count(state.claim_counts, node_id, kind, 1)
           request_claims = Map.put(state.request_claims, request_id, claim.token)
           monitors = Map.put(state.monitors, monitor_ref, claim.token)
 
           {:reply, {:ok, claim, result},
-           %{state | claims: claims, request_claims: request_claims, monitors: monitors}}
+           %{
+             state
+             | claims: claims,
+               claim_counts: claim_counts,
+               request_claims: request_claims,
+               monitors: monitors
+           }}
 
         :error ->
           {:reply, {:error, :dispatch_capacity_unavailable, result}, state}
@@ -447,13 +458,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   end
 
   def handle_call({:quarantine_node, node_id}, _from, state) when is_binary(node_id) do
-    Logger.warning(
-      "dispatch-capacity authority quarantined node #{node_id} after an unreconciled " <>
-        "dispatch; it remains excluded until verified reconciliation proves the runtime " <>
-        "execution is absent"
-    )
-
     {reply, state} = quarantine_node_in_store(state, node_id)
+    log_quarantine_outcome(reply, node_id)
     {:reply, reply, state}
   end
 
@@ -463,8 +469,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   end
 
   def handle_call({:claim_count, node_id}, _from, state) do
-    count = Enum.count(state.claims, fn {_token, claim} -> claim.node_id == node_id end)
-    {:reply, count, state}
+    {f11_count, legacy_count} = claim_counts(state, node_id, nil)
+    {:reply, f11_count + legacy_count, state}
   end
 
   def handle_call({:evaluate, node_id, input}, _from, state) do
@@ -495,9 +501,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
         {:reply, {:ok, lease}, state}
 
       gate ->
-        waiters = :queue.in(from, gate.waiters)
-        gates = Map.put(state.gates, node_id, %{gate | waiters: waiters})
-        {:noreply, %{state | gates: gates}}
+        {:noreply, enqueue_gate_waiter(state, node_id, gate, {from, :infinity})}
     end
   end
 
@@ -513,8 +517,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
       remaining_ms(deadline) <= 0 or not Process.alive?(owner) ->
         {:reply, :expired, state}
 
-      Map.has_key?(state.gates, node_id) ->
-        {:reply, :busy, state}
+      gate = Map.get(state.gates, node_id) ->
+        {:noreply, enqueue_gate_waiter(state, node_id, gate, {from, deadline})}
 
       true ->
         {lease, state} = put_gate_owner(state, node_id, from, :queue.new())
@@ -563,7 +567,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   end
 
   defp evaluate_with_live_claims(input, node_id, state, excluded_token \\ nil) do
-    {f11_count, legacy_count} = claim_counts(state.claims, node_id, excluded_token)
+    {f11_count, legacy_count} = claim_counts(state, node_id, excluded_token)
 
     input =
       case quarantine_status(state, node_id) do
@@ -622,6 +626,22 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     end
   end
 
+  defp log_quarantine_outcome(:ok, node_id) do
+    Logger.warning(
+      "dispatch-capacity authority quarantined node #{node_id} after an unreconciled " <>
+        "dispatch; it remains excluded until verified reconciliation proves the runtime " <>
+        "execution is absent"
+    )
+  end
+
+  defp log_quarantine_outcome({:error, reason}, node_id) do
+    Logger.error(
+      "dispatch-capacity authority could not quarantine node #{node_id} after an " <>
+        "unreconciled dispatch: #{inspect(reason)}; every Node evaluates as unreachable " <>
+        "until the Controller is recovered through a verified reconciliation path"
+    )
+  end
+
   defp quarantined_nodes_from_store(%{quarantine_store_available?: false} = state) do
     {{:error, :dispatch_capacity_quarantine_store_unavailable}, state}
   end
@@ -665,59 +685,53 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     })
   end
 
-  defp claim_counts(claims, node_id, excluded_token) do
-    Enum.reduce(claims, {0, 0}, fn
-      {token, _claim}, counts when token == excluded_token ->
-        counts
+  defp claim_counts(state, node_id, excluded_token) do
+    counts = Map.get(state.claim_counts, node_id, {0, 0})
 
-      {_token, %Claim{node_id: ^node_id, kind: :f11}}, {f11, legacy} ->
-        {f11 + 1, legacy}
-
-      {_token, %Claim{node_id: ^node_id, kind: :legacy}}, {f11, legacy} ->
-        {f11, legacy + 1}
-
-      _claim, counts ->
-        counts
-    end)
+    case Map.get(state.claims, excluded_token) do
+      %Claim{node_id: ^node_id, kind: kind} -> apply_claim_delta(counts, kind, -1)
+      _foreign_or_missing -> counts
+    end
   end
+
+  defp adjust_claim_count(claim_counts, node_id, kind, delta) do
+    case claim_counts |> Map.get(node_id, {0, 0}) |> apply_claim_delta(kind, delta) do
+      {0, 0} -> Map.delete(claim_counts, node_id)
+      counts -> Map.put(claim_counts, node_id, counts)
+    end
+  end
+
+  defp apply_claim_delta({f11, legacy}, :f11, delta), do: {f11 + delta, legacy}
+  defp apply_claim_delta({f11, legacy}, :legacy, delta), do: {f11, legacy + delta}
 
   defp remove_claim(state, token) do
     case Map.pop(state.claims, token) do
       {nil, _claims} ->
         state
 
-      {%Claim{monitor_ref: monitor_ref, request_id: request_id}, claims} ->
-        Process.demonitor(monitor_ref, [:flush])
-        monitors = Map.delete(state.monitors, monitor_ref)
-        request_claims = Map.delete(state.request_claims, request_id)
-        %{state | claims: claims, request_claims: request_claims, monitors: monitors}
+      {%Claim{} = claim, claims} ->
+        Process.demonitor(claim.monitor_ref, [:flush])
+        monitors = Map.delete(state.monitors, claim.monitor_ref)
+        request_claims = Map.delete(state.request_claims, claim.request_id)
+        claim_counts = adjust_claim_count(state.claim_counts, claim.node_id, claim.kind, -1)
+
+        %{
+          state
+          | claims: claims,
+            claim_counts: claim_counts,
+            request_claims: request_claims,
+            monitors: monitors
+        }
     end
   end
 
-  defp revalidation_result(
-         :f11,
-         %Evaluator.Result{
-           authority_decision: :f11_enforcing,
-           eligible?: true,
-           available_slots: slots
-         } = result
-       )
-       when slots > 0,
-       do: {:ok, result}
-
-  defp revalidation_result(
-         :legacy,
-         %Evaluator.Result{
-           authority_decision: :legacy_pre_cutover,
-           eligible?: true,
-           available_slots: slots
-         } = result
-       )
-       when slots > 0,
-       do: {:ok, result}
-
-  defp revalidation_result(_kind, %Evaluator.Result{} = result),
-    do: {:error, :dispatch_capacity_revalidation_failed, result}
+  defp revalidation_result(kind, %Evaluator.Result{} = result) do
+    if claim_kind(result) == {:ok, kind} do
+      {:ok, result}
+    else
+      {:error, :dispatch_capacity_revalidation_failed, result}
+    end
+  end
 
   defp put_gate_owner(state, node_id, {owner, _tag}, waiters) do
     monitor_ref = Process.monitor(owner)
@@ -748,17 +762,36 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     end
   end
 
+  defp enqueue_gate_waiter(state, node_id, gate, waiter) do
+    waiters = :queue.in(waiter, gate.waiters)
+    %{state | gates: Map.put(state.gates, node_id, %{gate | waiters: waiters})}
+  end
+
   defp advance_gate(state, node_id, waiters) do
     case :queue.out(waiters) do
       {:empty, _waiters} ->
         %{state | gates: Map.delete(state.gates, node_id)}
 
-      {{:value, from}, remaining_waiters} ->
-        {lease, state} = put_gate_owner(state, node_id, from, remaining_waiters)
-        GenServer.reply(from, {:ok, lease})
-        state
+      {{:value, {from, deadline}}, remaining_waiters} ->
+        grant_gate_to_waiter(state, node_id, from, deadline, remaining_waiters)
     end
   end
+
+  defp grant_gate_to_waiter(state, node_id, {owner, _tag} = from, deadline, remaining_waiters) do
+    if gate_waiter_live?(owner, deadline) do
+      {lease, state} = put_gate_owner(state, node_id, from, remaining_waiters)
+      GenServer.reply(from, {:ok, lease})
+      state
+    else
+      GenServer.reply(from, :expired)
+      advance_gate(state, node_id, remaining_waiters)
+    end
+  end
+
+  defp gate_waiter_live?(owner, :infinity), do: Process.alive?(owner)
+
+  defp gate_waiter_live?(owner, deadline),
+    do: remaining_ms(deadline) > 0 and Process.alive?(owner)
 
   defp claim_kind(%Evaluator.Result{
          eligible?: true,

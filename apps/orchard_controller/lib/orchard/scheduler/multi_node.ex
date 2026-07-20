@@ -224,7 +224,7 @@ defmodule Orchard.Scheduler.MultiNode do
             dispatch_capacity_evaluation: selected.dispatch_capacity_evaluation
           }
           |> maybe_put_runtime_client_target(selected.target)
-          |> maybe_put_dispatch_capacity_authority(opts)
+          |> Consumer.put_authority(opts)
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
           |> maybe_put_prefix_cache_fingerprint_match(
             selected,
@@ -396,6 +396,14 @@ defmodule Orchard.Scheduler.MultiNode do
   defp skipped_candidates(_candidates, _selected_tier), do: []
 
   defp rejection_reason_codes(candidate) do
+    if dispatch_capacity_eligible?(candidate) do
+      []
+    else
+      ineligible_reason_codes(candidate)
+    end
+  end
+
+  defp ineligible_reason_codes(candidate) do
     capacity_reason_codes =
       case Map.get(candidate, :dispatch_capacity_evaluation) do
         %{eligible?: true} -> []
@@ -518,11 +526,13 @@ defmodule Orchard.Scheduler.MultiNode do
     case dispatch_capacity_input(candidate, placement_capacity, opts, observed_at) do
       {:ok, input} ->
         authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
-        evaluation = evaluate_dispatch_capacity(authority, candidate.node_id, input)
 
         candidate
         |> Map.put(:dispatch_capacity_input, input)
-        |> Map.put(:dispatch_capacity_evaluation, evaluation)
+        |> Map.put(
+          :dispatch_capacity_evaluation,
+          safe_evaluate_dispatch_capacity(authority, candidate.node_id, input)
+        )
 
       {:error, _reason} ->
         candidate
@@ -531,37 +541,49 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
+  defp safe_evaluate_dispatch_capacity(authority, node_id, input) do
+    evaluate_dispatch_capacity(authority, node_id, input)
+  catch
+    :exit, reason ->
+      Logger.warning("Dispatch-capacity authority unavailable: #{inspect(reason)}")
+      nil
+  end
+
   defp dispatch_capacity_input(candidate, placement_capacity, opts, observed_at) do
     case Keyword.get(opts, :dispatch_capacity_input_provider) do
       provider when is_function(provider, 3) ->
-        normalize_capacity_input(
+        Consumer.normalize_input(
           provider.(candidate.node, candidate.observation, placement_capacity)
         )
 
       provider when is_function(provider, 0) ->
-        normalize_capacity_input(provider.())
+        Consumer.normalize_input(provider.())
 
       nil ->
-        Authorization.input_for_node_observation(candidate.node_id, candidate.observation,
-          minimum_evidence_observed_at: observed_at,
-          placement_capacity: placement_capacity
-        )
+        observation_capacity_input(candidate, placement_capacity, observed_at)
     end
   end
 
-  defp normalize_capacity_input({:ok, _input} = result), do: result
+  defp observation_capacity_input(
+         %{node: %Nodes.Node{} = node} = candidate,
+         placement_capacity,
+         observed_at
+       ) do
+    Authorization.input_for_observation(node, candidate.observation,
+      minimum_evidence_observed_at: observed_at,
+      placement_capacity: placement_capacity
+    )
+  end
 
-  defp normalize_capacity_input(%Orchard.DispatchCapacity.Evaluator.Input{} = input),
-    do: {:ok, input}
+  defp observation_capacity_input(candidate, placement_capacity, observed_at) do
+    Authorization.input_for_node_observation(candidate.node_id, candidate.observation,
+      minimum_evidence_observed_at: observed_at,
+      placement_capacity: placement_capacity
+    )
+  end
 
-  defp normalize_capacity_input(_invalid),
-    do: {:error, :dispatch_capacity_facts_unavailable}
-
-  defp dispatch_capacity_eligible?(%{
-         dispatch_capacity_evaluation: %{eligible?: true, available_slots: slots}
-       })
-       when slots > 0,
-       do: true
+  defp dispatch_capacity_eligible?(%{dispatch_capacity_evaluation: evaluation}),
+    do: Consumer.authorized?(evaluation)
 
   defp dispatch_capacity_eligible?(_candidate), do: false
 
@@ -615,13 +637,6 @@ defmodule Orchard.Scheduler.MultiNode do
   defp placement_default(_candidate, :revalidation), do: :unknown
   defp placement_default(%{loaded_model?: true}, :acquisition), do: :unknown
   defp placement_default(_candidate, :acquisition), do: :not_applicable
-
-  defp maybe_put_dispatch_capacity_authority(schedule, opts) do
-    case Keyword.fetch(opts, :dispatch_capacity_authority) do
-      {:ok, authority} -> Map.put(schedule, :dispatch_capacity_authority, authority)
-      :error -> schedule
-    end
-  end
 
   defp runtime_endpoint_unavailable?(%{availability: availability}),
     do: availability not in [:available, :degraded]

@@ -60,34 +60,37 @@ defmodule Orchard.DispatchCapacity.Authorization do
     node_fetcher = Keyword.get(opts, :node_fetcher, &Nodes.fetch_node/1)
 
     case node_fetcher.(node_id) do
-      {:ok, %Node{} = node} ->
-        evidence =
-          option(opts, :evidence, fn -> DispatchCapacity.get_capacity_evidence(node.id) end)
+      {:ok, %Node{} = node} -> input_for_observation(node, observation, opts)
+      _missing -> {:error, :dispatch_capacity_node_not_found}
+    end
+  rescue
+    error -> facts_unavailable(error)
+  catch
+    kind, reason -> facts_unavailable({kind, reason})
+  end
 
-        minimum_observed_at = Keyword.get(opts, :minimum_evidence_observed_at)
+  @doc "Uses one already-loaded Node with capacity facts from its current live observation."
+  @spec input_for_observation(Node.t(), Observation.t() | map(), keyword()) ::
+          {:ok, Input.t()} | {:error, error_reason()}
+  def input_for_observation(%Node{} = node, observation, opts \\ []) do
+    evidence = option(opts, :evidence, fn -> DispatchCapacity.get_capacity_evidence(node.id) end)
+    minimum_observed_at = Keyword.get(opts, :minimum_evidence_observed_at)
+    now = Keyword.get_lazy(opts, :now, &utc_now/0)
+    freshness_threshold_ms = Keyword.get(opts, :freshness_threshold_ms, freshness_threshold_ms())
 
-        now = Keyword.get_lazy(opts, :now, &utc_now/0)
-
-        freshness_threshold_ms =
-          Keyword.get(opts, :freshness_threshold_ms, freshness_threshold_ms())
-
-        if observation_identity_matches?(node, observation) and
-             authenticated_evidence_current?(evidence, minimum_observed_at) and
-             authenticated_evidence_fresh?(evidence, now, freshness_threshold_ms) do
-          authorized_observation_input(
-            node,
-            observation,
-            evidence,
-            opts,
-            now,
-            freshness_threshold_ms
-          )
-        else
-          {:error, :dispatch_capacity_facts_unavailable}
-        end
-
-      _missing ->
-        {:error, :dispatch_capacity_node_not_found}
+    if observation_identity_matches?(node, observation) and
+         authenticated_evidence_current?(evidence, minimum_observed_at) and
+         authenticated_evidence_fresh?(evidence, now, freshness_threshold_ms) do
+      authorized_observation_input(
+        node,
+        observation,
+        evidence,
+        opts,
+        now,
+        freshness_threshold_ms
+      )
+    else
+      {:error, :dispatch_capacity_facts_unavailable}
     end
   rescue
     error -> facts_unavailable(error)
@@ -104,6 +107,11 @@ defmodule Orchard.DispatchCapacity.Authorization do
     with {:ok, classification} <- classify_unmanaged_target(target, opts) do
       now = Keyword.get_lazy(opts, :now, &utc_now/0)
 
+      freshness_threshold_ms =
+        Keyword.get(opts, :freshness_threshold_ms, freshness_threshold_ms())
+
+      observed_at = observation_time(observation, now)
+
       {:ok,
        %Input{
          authority_phase: :invalid,
@@ -114,8 +122,8 @@ defmodule Orchard.DispatchCapacity.Authorization do
          lifecycle_state: :active,
          health: observation_health(observation),
          heartbeat_fresh?: true,
-         capacity_observation_fresh?: true,
-         observation_time: observation_time(observation, now),
+         capacity_observation_fresh?: fresh?(observed_at, now, freshness_threshold_ms),
+         observation_time: observed_at,
          runtime_concurrency_limit: runtime_limit(observation),
          aggregate_active_count: active_count(observation),
          controller_dispatch_ceiling: :missing,

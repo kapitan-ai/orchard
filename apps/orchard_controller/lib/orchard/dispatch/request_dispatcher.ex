@@ -448,7 +448,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp disconnect_best_effort(client, channel) do
     case client.disconnect(channel) do
-      :ok -> :ok
+      {:ok, :disconnected} -> :ok
+      :ok -> {:error, :disconnect_unproven}
       _unconfirmed -> {:error, :disconnect_unconfirmed}
     end
   rescue
@@ -703,13 +704,19 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
       {:error, reason} ->
         mark_transport_failure(target, reason)
-        {:ok, model_load_request, metrics}
+        unverified_probe_identity(model_load_request, claimed_node_id, metrics)
     end
   rescue
     error ->
       Logger.warning("Status probe failed unexpectedly: #{inspect(error)}")
-      {:ok, model_load_request, metrics}
+      unverified_probe_identity(model_load_request, claimed_node_id, metrics)
   end
+
+  defp unverified_probe_identity(model_load_request, nil, metrics),
+    do: {:ok, model_load_request, metrics}
+
+  defp unverified_probe_identity(_model_load_request, _claimed_node_id, metrics),
+    do: {:error, :dispatch_capacity_node_identity_mismatch, metrics}
 
   defp resolve_probe_status(
          response,
@@ -1074,15 +1081,27 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp stream_error_result(_loop_ctx, _events, _metrics, reason),
     do: {:error, {:dispatch_failed, reason}}
 
+  defp stream_terminal_result(loop_ctx, events, metrics),
+    do: stream_terminal_result(loop_ctx, events, metrics, nil)
+
   defp stream_terminal_result(
          %{accepted?: true, cancellation_started_before_acceptance?: false},
          events,
-         metrics
+         metrics,
+         _cancel_reason
        ),
        do: {:ok, Enum.reverse(events), metrics}
 
-  defp stream_terminal_result(_loop_ctx, _events, _metrics),
-    do: {:error, {:dispatch_failed, :node_acceptance_missing}}
+  defp stream_terminal_result(_loop_ctx, _events, _metrics, cancel_reason),
+    do: {:error, {:dispatch_failed, pre_acceptance_failure_reason(cancel_reason)}}
+
+  defp pre_acceptance_failure_reason(:timeout), do: :request_timeout
+
+  defp pre_acceptance_failure_reason(reason)
+       when reason in [:caller_disconnect, :client_disconnect],
+       do: :request_caller_disconnect
+
+  defp pre_acceptance_failure_reason(_cancel_reason), do: :node_acceptance_missing
 
   defp cancel_and_drain(loop_ctx, events, cancel_reason) do
     %{client: client, channel: channel, metrics: metrics} = loop_ctx
@@ -1141,7 +1160,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           metrics = update_metrics_for_event(metrics, event)
 
           if InferenceEvent.terminal?(event) do
-            stream_terminal_result(loop_ctx, events, metrics)
+            stream_terminal_result(loop_ctx, events, metrics, cancel_reason)
           else
             drain_until_terminal_or_done(
               %{loop_ctx | metrics: metrics},
@@ -1185,7 +1204,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       |> update_metrics_for_terminal(timeout_event, :synthesized)
 
     put_terminal_synthesized_context(metrics, cancel_reason)
-    stream_terminal_result(loop_ctx, [timeout_event | events], metrics)
+    stream_terminal_result(loop_ctx, [timeout_event | events], metrics, cancel_reason)
   end
 
   defp reconcile_cancel_drain_timeout(%{

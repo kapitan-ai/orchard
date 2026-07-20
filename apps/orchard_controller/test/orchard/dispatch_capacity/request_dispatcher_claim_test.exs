@@ -287,6 +287,20 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CancellableStreamC
   end
 end
 
+defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.UnprobeableClient do
+  @moduledoc false
+
+  alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
+
+  defdelegate connect(target), to: GateClient
+  defdelegate disconnect(channel), to: GateClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: GateClient
+  defdelegate execute_inference(channel, request, opts), to: GateClient
+  defdelegate cancel_inference(channel, request, opts), to: GateClient
+
+  def status(_channel, _opts \\ []), do: {:error, :node_timeout}
+end
+
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.PreAcceptanceCancelClient do
   @moduledoc false
 
@@ -595,7 +609,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     PreAcceptanceCancelClient,
     ProductionFreshStatusClient,
     SlowLoadClient,
-    TerminalBeforeAcceptedClient
+    TerminalBeforeAcceptedClient,
+    UnprobeableClient
   }
 
   @client Client
@@ -607,6 +622,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   @cancellable_stream_client CancellableStreamClient
   @noisy_cancel_client NoisyCancelClient
   @pre_acceptance_cancel_client PreAcceptanceCancelClient
+  @unprobeable_client UnprobeableClient
   @production_fresh_status_client ProductionFreshStatusClient
   @slow_load_client SlowLoadClient
 
@@ -1097,7 +1113,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     send(emitter, :finish_cancel_after_acceptance)
 
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1151,12 +1167,16 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       assert AllocationAuthority.claim_count(authority, node_id) == 1
       send(emitter, :finish_cancel)
 
-      assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+      assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
       assert AllocationAuthority.claim_count(authority, node_id) == 0
     end
   end
 
-  test "SPEC 4.5 a clean disconnect after cancel drain timeout does not quarantine" do
+  test "SPEC 4.5 a proven clean disconnect after cancel drain timeout does not quarantine" do
+    @pre_acceptance_cancel_client.configure(self(),
+      disconnect_results: [{:ok, :disconnected}, {:ok, :disconnected}]
+    )
+
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-cancel-drain-timeout"
@@ -1181,7 +1201,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     assert_receive :pre_acceptance_disconnected, 1_000
 
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
 
     assert {:ok, claim, available} =
@@ -1197,9 +1217,45 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 
+  test "SPEC 4.5 an unproven disconnect after cancel drain timeout quarantines the Node" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-cancel-drain-unproven-disconnect"
+
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: @expiring_request_timeout_ms
+    }
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          schedule,
+          execute_request(request_id),
+          model_load_request(node_id),
+          client_impl: @pre_acceptance_cancel_client,
+          cancel_drain_timeout_ms: 20
+        )
+      end)
+
+    assert_receive {:pre_acceptance_cancel_received, _emitter}, 1_000
+    assert_receive :pre_acceptance_disconnected, 1_000
+    assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
+
+    assert {:error, :dispatch_capacity_unavailable, quarantined} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-unproven-disconnect",
+               enforcing_input(),
+               authority: authority
+             )
+
+    assert :node_health_unhealthy in quarantined.reason_codes
+  end
+
   test "SPEC 4.5 a later cleanup disconnect reconciles an earlier disconnect failure" do
     @pre_acceptance_cancel_client.configure(self(),
-      disconnect_results: [{:error, :disconnect_failed}, :ok]
+      disconnect_results: [{:error, :disconnect_failed}, {:ok, :disconnected}]
     )
 
     authority = start_supervised!({AllocationAuthority, name: nil})
@@ -1225,7 +1281,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert_receive {:pre_acceptance_cancel_received, _emitter}, 1_000
     assert_receive :pre_acceptance_disconnected, 1_000
     assert_receive :pre_acceptance_disconnected, 1_000
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
 
     assert {:ok, claim, available} =
              QueueManager.acquire_dispatch_capacity(
@@ -1271,7 +1327,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     assert_receive {:pre_acceptance_cancel_received, _emitter}, 1_000
     assert_receive :pre_acceptance_disconnected, 1_000
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
     assert Repo.get!(Node, node.id).health == :unhealthy
 
     assert {:ok, claim, available} =
@@ -1312,7 +1368,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     assert_receive :noisy_cancel_disconnected, 250
 
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1341,7 +1397,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       end)
 
     assert_receive {:pre_acceptance_cancel_received, _emitter}, 1_000
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_timeout}} = Task.await(dispatch)
     assert Repo.get!(Node, inventory_node.id).health == :degraded
 
     assert {:error, :dispatch_capacity_unavailable, quarantined} =
@@ -1375,7 +1431,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     send(emitter, :finish_cancel_after_acceptance)
 
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_caller_disconnect}} = Task.await(dispatch)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1402,7 +1458,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     send(emitter, :finish_cancel_after_acceptance)
 
-    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert {:error, {:dispatch_failed, :request_caller_disconnect}} = Task.await(dispatch)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1560,6 +1616,22 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
              )
 
     refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC 5.9 a claimed Node whose dispatch probe fails cannot prove identity" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-probe-identity-unverified"
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
+             RequestDispatcher.dispatch(
+               capacity_schedule(authority, node_id, request_id),
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @unprobeable_client
+             )
+
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 

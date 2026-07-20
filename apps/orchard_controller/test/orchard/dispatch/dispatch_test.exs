@@ -333,7 +333,7 @@ defmodule Orchard.Dispatch.DispatchTest do
       end)
     end
 
-    test "timeout fails closed when cancellation cannot establish Node acceptance", %{
+    test "timeout fails closed and keeps the timeout classification", %{
       bundle: bundle
     } do
       # Leave enough budget to begin execution, then time out before acceptance.
@@ -341,7 +341,7 @@ defmodule Orchard.Dispatch.DispatchTest do
       execute = execute_request("req-dispatch-timeout")
       model_load = model_load_request(bundle)
 
-      assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
+      assert {:error, {:dispatch_failed, :request_timeout}} =
                RequestDispatcher.dispatch(schedule, execute, model_load,
                  client_impl: Orchard.Dispatch.DispatchTest.NeverAcceptClient
                )

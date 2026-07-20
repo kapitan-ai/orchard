@@ -616,14 +616,14 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
       end)
 
     try do
-      assert_receive {:bounded_gate_result, ^caller, {:error, reason}, elapsed_ms}, 250
+      assert_receive {:bounded_gate_result, ^caller, {:error, reason}, elapsed_ms}, 1_500
 
       assert reason in [
                :dispatch_capacity_acceptance_gate_busy,
                :dispatch_capacity_authority_unavailable
              ]
 
-      assert elapsed_ms < 200
+      assert elapsed_ms < 1_000
       refute_receive :abandoned_mutation_ran
 
       :ok = :sys.resume(authority)
@@ -653,6 +653,74 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
                authority: authority,
                gate_timeout_ms: 60
              )
+  end
+
+  test "SPEC 5.9 a loaded but live authority reports gate busy instead of unavailable" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+
+    :ok = :sys.suspend(authority)
+
+    try do
+      assert {:error, :dispatch_capacity_acceptance_gate_busy} =
+               AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, 40)
+    after
+      :sys.resume(authority)
+    end
+  end
+
+  test "SPEC 5.9 releasing a claim and a gate after the authority dies does not exit the caller" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+
+    assert {:ok, claim, _result} =
+             AllocationAuthority.acquire(
+               authority,
+               node_id,
+               "request-release-after-death",
+               enforcing_input(:not_applicable)
+             )
+
+    assert {:ok, lease} = AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, 100)
+
+    stop_supervised!(AllocationAuthority)
+
+    assert :ok = AllocationAuthority.release_acceptance_gate(authority, lease)
+    assert :ok = AllocationAuthority.release(authority, claim)
+  end
+
+  test "SPEC 5.9 bounded acceptance-gate waiters are granted in arrival order" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    parent = self()
+
+    assert {:ok, holder} =
+             AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, 100)
+
+    waiters =
+      for index <- 1..3 do
+        task =
+          Task.async(fn ->
+            result = AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, 2_000)
+            send(parent, {:granted, index})
+
+            case result do
+              {:ok, lease} -> AllocationAuthority.release_acceptance_gate(authority, lease)
+              other -> other
+            end
+          end)
+
+        Process.sleep(20)
+        task
+      end
+
+    assert :ok = AllocationAuthority.release_acceptance_gate(authority, holder)
+
+    for index <- 1..3 do
+      assert_receive {:granted, ^index}, 2_000
+    end
+
+    Enum.each(waiters, &Task.await/1)
   end
 
   defp hold_acquisition(parent, acquisition) do

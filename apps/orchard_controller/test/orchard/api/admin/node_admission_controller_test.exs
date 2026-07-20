@@ -5,6 +5,7 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
 
   alias Orchard.API.Admin.NodeAdmissionController
   alias Orchard.API.Router
+  alias Orchard.DispatchCapacity.AllocationAuthority
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
   alias Orchard.Nodes
@@ -407,6 +408,43 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
 
       assert Repo.get!(Node, node.id).state == :registered
       assert Repo.aggregate(AdmissionDecision, :count, :id) == 0
+    end
+
+    test "admit reports service unavailable while a dispatch holds the acceptance gate" do
+      token = admin_token!("admin-node-admission-gate")
+
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-gate-busy",
+          hostname: "registered-gate-busy.local"
+        })
+
+      parent = self()
+
+      holder =
+        spawn(fn ->
+          {:ok, lease} = AllocationAuthority.acquire_acceptance_gate(node.id)
+          send(parent, :gate_held)
+
+          receive do
+            :release -> AllocationAuthority.release_acceptance_gate(lease)
+          end
+        end)
+
+      assert_receive :gate_held, 1_000
+
+      conn =
+        admin_json(:post, "/admin/v1/nodes/#{node.id}/admit", token, admission_attrs())
+
+      send(holder, :release)
+
+      assert conn.status == 503
+
+      assert Jason.decode!(conn.resp_body)["error"]["code"] ==
+               "dispatch_capacity_acceptance_gate_busy"
+
+      assert Repo.get!(Node, node.id).state == :registered
     end
 
     test "admit reports conflict when the authority phase does not support admission" do

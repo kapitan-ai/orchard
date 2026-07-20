@@ -74,6 +74,37 @@ defmodule Orchard.DispatchCapacity.AuthorizationTest do
              })
   end
 
+  test "SPEC 4.6.1 fails an unmanaged target closed when its live observation is stale" do
+    target =
+      Target.normalize(
+        transport: :beam,
+        address: "orchard_node_agent@127.0.0.1",
+        metadata: %{source_dev: true}
+      )
+
+    observation =
+      Observation.new(%{
+        target: target,
+        observed_at: DateTime.add(@now, -600, :second),
+        availability: :available,
+        aggregate_active_request_count: 0,
+        aggregate_max_concurrency: 1
+      })
+
+    assert {:ok, input} =
+             Authorization.unmanaged_input(target, observation,
+               now: @now,
+               freshness_threshold_ms: 30_000
+             )
+
+    refute input.capacity_observation_fresh?
+
+    result = Evaluator.evaluate(input)
+
+    refute result.eligible?
+    assert :runtime_capacity_observation_stale in result.reason_codes
+  end
+
   test "SPEC 4.6.2 rejects live production evidence for a different Node identity" do
     node = active_node()
     other_node_id = Ecto.UUID.generate()

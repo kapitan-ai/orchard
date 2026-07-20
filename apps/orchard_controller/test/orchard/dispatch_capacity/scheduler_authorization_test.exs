@@ -105,6 +105,46 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
              )
   end
 
+  test "SPEC 4.1 MultiNode never rejects and selects the same candidate" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+    configure_target(node)
+    put_status(node)
+
+    status = Process.get(:capacity_status)
+    Process.put(:capacity_status, %{status | active_request_count: 2, max_concurrency: 2})
+
+    assert {:ok, schedule} =
+             MultiNode.schedule(canonical_request(),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _observation, _placement ->
+                 {:ok, enforcing_input(2)}
+               end
+             )
+
+    assert schedule.node_id == node.id
+    assert schedule.rejected_candidates == []
+    assert Enum.all?(schedule.scored_candidates, & &1.eligible)
+  end
+
+  test "SPEC 4.1 MultiNode reports a busy cluster when the authority is unavailable" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+    configure_target(node)
+    put_status(node)
+    stop_supervised!(AllocationAuthority)
+
+    assert {:error, :cluster_busy} =
+             MultiNode.schedule(canonical_request(),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _observation, _placement ->
+                 {:ok, enforcing_input(2)}
+               end
+             )
+  end
+
   test "SPEC 4.6.2 SingleNode rejects a probe not bound to current authenticated evidence" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     evidence_at = DateTime.add(DateTime.utc_now(), -1, :second)

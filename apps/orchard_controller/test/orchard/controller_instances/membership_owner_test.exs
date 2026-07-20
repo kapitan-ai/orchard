@@ -144,6 +144,21 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     assert refreshed.dispatch_capacity_consumers_ready == true
   end
 
+  test "SPEC.md §8.3 heartbeat rejects a partial dispatch-capacity attrs map", %{root: root} do
+    {opts, _trust} = identity_opts(root)
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+
+    assert {:error, changeset} =
+             ControllerInstances.heartbeat_local(opts, %{
+               last_seen_at: observed_at,
+               software_version: "0.5.0-dev",
+               dispatch_capacity_consumers_ready: true,
+               dispatch_capacity_capability_observed_at: observed_at
+             })
+
+    assert errors_on(changeset).dispatch_capacity_contract_version == ["can't be blank"]
+  end
+
   test "SPEC.md §8.3 caller cannot select another Controller identity", %{root: root} do
     {opts, trust} = identity_opts(root)
     other = insert_other_instance!()

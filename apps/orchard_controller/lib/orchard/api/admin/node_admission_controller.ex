@@ -181,6 +181,24 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
     )
   end
 
+  defp send_error(conn, :dispatch_capacity_authority_unavailable) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :service_unavailable,
+      "dispatch_capacity_authority_unavailable",
+      "Dispatch capacity authority is unavailable. Retry this request."
+    )
+  end
+
+  defp send_error(conn, :dispatch_capacity_acceptance_gate_busy) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :service_unavailable,
+      "dispatch_capacity_acceptance_gate_busy",
+      "A dispatch holds this Node's acceptance gate. Retry this request."
+    )
+  end
+
   defp send_error(conn, :admission_actor_identity_unavailable) do
     AdminErrorHelpers.send_error(
       conn,

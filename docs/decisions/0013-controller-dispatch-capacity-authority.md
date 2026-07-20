@@ -89,6 +89,7 @@ Node Admission and operator policy changes become auditable capacity-authority w
 Diagnostics must show the separate runtime limit, Controller ceiling, effective limit, Controller allocation, headroom, Placement Capacity, policy state, management class, authority decision, decision-specific available slots, eligibility, and reason codes.
 Production capacity becomes fail-closed when policy, trust, health, freshness, or runtime evidence is missing.
 Source-development and compatibility exceptions require explicit unmanaged classification and cannot be inferred from transport.
+A target that an operator explicitly enabled as a static Controller-owned runtime endpoint, and that resolves to no admitted inventory, counts as that explicit compatibility configuration; nothing about its transport, address shape, or probe outcome contributes to the class.
 
 F11 provides durable Controller policy and a serialized Controller-local bound on new allocations by one live Active Controller.
 It does not provide a durable distributed dispatch permit, leader epoch, Node-verifiable token, crash-recoverable reservation ledger, or proof of actual Node occupancy.

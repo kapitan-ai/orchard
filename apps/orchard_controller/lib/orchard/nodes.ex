@@ -35,7 +35,7 @@ defmodule Orchard.Nodes do
 
     result = evaluate_dispatch_capacity(authority, node_id, input)
 
-    if result.eligible? and result.available_slots > 0 do
+    if Consumer.authorized?(result) do
       refresh
       |> Map.put(:node_active, 0)
       |> Map.put(:node_max, result.available_slots)
@@ -980,14 +980,12 @@ defmodule Orchard.Nodes do
          queue_capacity_eligible_observation?(status_response) do
       case observation_capacity_input(node, status_response, opts) do
         {:ok, input} ->
-          refresh_dispatch_capacity_sources(node, input, refresh,
-            authority:
-              Keyword.get(
-                opts,
-                :dispatch_capacity_authority,
-                DispatchCapacity.AllocationAuthority
-              ),
-            queue_manager: queue_manager
+          refresh_or_clear_dispatch_capacity_sources(
+            node,
+            input,
+            refresh,
+            queue_manager,
+            opts
           )
 
         {:error, _reason} ->
@@ -1006,6 +1004,24 @@ defmodule Orchard.Nodes do
       :ok
   end
 
+  defp refresh_or_clear_dispatch_capacity_sources(node, input, refresh, queue_manager, opts) do
+    authority =
+      Keyword.get(opts, :dispatch_capacity_authority, DispatchCapacity.AllocationAuthority)
+
+    refresh_dispatch_capacity_sources(node, input, refresh,
+      authority: authority,
+      queue_manager: queue_manager
+    )
+  rescue
+    error ->
+      Logger.debug("Dispatch-capacity source refresh failed: #{inspect(error)}")
+      queue_manager.clear_capacity_sources(refresh.clear_sources, promote?: true)
+  catch
+    :exit, reason ->
+      Logger.debug("Dispatch-capacity source refresh exited: #{inspect(reason)}")
+      queue_manager.clear_capacity_sources(refresh.clear_sources, promote?: true)
+  end
+
   defp observation_capacity_input(node, status_response, opts) do
     case Keyword.fetch(opts, :dispatch_capacity_input) do
       {:ok, %Orchard.DispatchCapacity.Evaluator.Input{} = input} ->
@@ -1015,7 +1031,7 @@ defmodule Orchard.Nodes do
         {:error, :dispatch_capacity_facts_unavailable}
 
       :error ->
-        Authorization.input_for_node_observation(node.id, status_response,
+        Authorization.input_for_observation(node, status_response,
           minimum_evidence_observed_at: node.last_heartbeat_at
         )
     end

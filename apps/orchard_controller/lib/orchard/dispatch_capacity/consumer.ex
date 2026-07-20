@@ -8,11 +8,36 @@ defmodule Orchard.DispatchCapacity.Consumer do
   drift apart.
   """
 
+  alias Orchard.DispatchCapacity.Evaluator
+
   @contract_version 1
 
   @doc "Returns the dispatch-capacity conformance contract version this build implements."
   @spec contract_version() :: pos_integer()
   def contract_version, do: @contract_version
+
+  @doc "Returns whether one shared evaluation authorizes a dispatch unit right now."
+  @spec authorized?(term()) :: boolean()
+  def authorized?(%Evaluator.Result{eligible?: true, available_slots: slots}) when slots > 0,
+    do: true
+
+  def authorized?(_result), do: false
+
+  @doc "Normalizes one consumer-supplied capacity input seam result."
+  @spec normalize_input(term()) ::
+          {:ok, Evaluator.Input.t()} | {:error, :dispatch_capacity_facts_unavailable}
+  def normalize_input({:ok, %Evaluator.Input{}} = result), do: result
+  def normalize_input(%Evaluator.Input{} = input), do: {:ok, input}
+  def normalize_input(_invalid), do: {:error, :dispatch_capacity_facts_unavailable}
+
+  @doc "Copies an explicitly configured authority seam onto one schedule map."
+  @spec put_authority(map(), keyword()) :: map()
+  def put_authority(schedule, opts) when is_map(schedule) and is_list(opts) do
+    case Keyword.fetch(opts, :dispatch_capacity_authority) do
+      {:ok, authority} -> Map.put(schedule, :dispatch_capacity_authority, authority)
+      :error -> schedule
+    end
+  end
 
   defmacro __using__(opts) do
     wiring = Keyword.fetch!(opts, :wiring)

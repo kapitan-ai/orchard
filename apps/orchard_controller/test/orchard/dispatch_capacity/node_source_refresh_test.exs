@@ -130,6 +130,49 @@ defmodule Orchard.DispatchCapacity.NodeSourceRefreshTest do
                     }}
   end
 
+  test "SPEC 4.6.2 an unavailable authority clears Node queue sources instead of leaving them live" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    now = DateTime.utc_now()
+    node = insert_node!(now)
+    target = [host: node.advertise_addr, port: node.rpc_port]
+
+    status = %{
+      node_metadata: %{
+        node_id: node.id,
+        display_name: node.display_name,
+        hostname: node.hostname,
+        agent_version: "test",
+        listen_host: node.advertise_addr,
+        listen_port: node.rpc_port,
+        worker_backend: "mlx"
+      },
+      active_request_count: 0,
+      max_concurrency: 8,
+      runtime_model_placements: []
+    }
+
+    stop_supervised!(AllocationAuthority)
+
+    assert {:ok, %Node{id: node_id}} =
+             Nodes.observe_status(target, status, now,
+               queue_manager: @queue_manager,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input: enforcing_input()
+             )
+
+    assert node_id == node.id
+
+    expected_sources = [
+      {:node, node.id},
+      {:node, node.id, :placement},
+      {:node, node.id, :cold}
+    ]
+
+    assert_receive {:capacity_cleared, cleared, [promote?: true]}
+    assert Enum.sort(cleared) == Enum.sort(expected_sources)
+    refute_receive {:capacity_refreshed, _attrs}
+  end
+
   test "SPEC 4.3 default Node refresh evaluates the triggering observation" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     now = DateTime.utc_now()

@@ -521,7 +521,8 @@ This refines `SPEC.md` §4.6.2 and §5.4.
 
 ### Requirement: Unresolved Execution Node Quarantine
 A dispatch that cannot establish whether its runtime execution ended SHALL quarantine that Node in the Active Controller's local quarantine set.
-An unresolved execution SHALL mean a cancel drain that times out without a clean transport disconnect and without a durably recorded `unhealthy` or `unreachable` Node.
+An unresolved execution SHALL mean a cancel drain that times out without a transport-proven clean disconnect and without a durably recorded `unhealthy` or `unreachable` Node.
+A transport disconnect SHALL count as proof only when the Runtime Endpoint client affirmatively reports the runtime stream closed.
 Quarantine SHALL be keyed by admitted Node identity, and an evaluation without a Node identity SHALL NOT be quarantined.
 Every later shared evaluation for a quarantined Node SHALL supply health `unreachable` so the decision fails closed with the stable reason code `node_health_unhealthy` instead of counting the unresolved execution as free capacity.
 The quarantine set SHALL be supervised outside the inference subtree so restarting the allocation authority SHALL NOT resume dispatch from a clean quarantine set.
@@ -532,13 +533,13 @@ This refines `SPEC.md` §4.6.2.
 
 #### Scenario: Cancel drain times out without reconciliation
 - **WHEN** a cancelled request's drain times out
-- **AND** the transport does not disconnect cleanly
+- **AND** the transport cannot prove it disconnected cleanly
 - **AND** the Node is not durably recorded `unhealthy` or `unreachable`
 - **THEN** Orchard quarantines that Node
 - **AND** later capacity evaluation of that Node fails closed with `node_health_unhealthy`
 
 #### Scenario: Reconciled cancel drain does not quarantine
-- **WHEN** a cancelled request's drain ends with a clean disconnect
+- **WHEN** a cancelled request's drain ends with a transport-proven clean disconnect
 - **OR** the Node is durably recorded `unhealthy` or `unreachable`
 - **THEN** Orchard does not quarantine that Node
 - **AND** later capacity evaluation follows the normal shared decision

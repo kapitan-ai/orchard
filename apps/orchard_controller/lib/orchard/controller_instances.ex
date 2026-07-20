@@ -120,8 +120,15 @@ defmodule Orchard.ControllerInstances do
     ready? = Map.get(attrs, "dispatch_capacity_consumers_ready") == true and Readiness.ready?()
 
     attrs
-    |> Map.put("dispatch_capacity_contract_version", Readiness.contract_version())
-    |> Map.put("dispatch_capacity_consumers_ready", ready?)
+    |> stamp_supplied(
+      "dispatch_capacity_contract_version",
+      Readiness.contract_version()
+    )
+    |> stamp_supplied("dispatch_capacity_consumers_ready", ready?)
+  end
+
+  defp stamp_supplied(attrs, key, value) do
+    if Map.has_key?(attrs, key), do: Map.put(attrs, key, value), else: attrs
   end
 
   defp refresh_local_identity(local_identity, attrs) do

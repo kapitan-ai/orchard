@@ -167,7 +167,7 @@ defmodule Orchard.Scheduler.SingleNode do
     authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
     result = evaluate_dispatch_capacity(authority, schedule.node_id, input)
 
-    if result.eligible? and result.available_slots > 0 do
+    if Consumer.authorized?(result) do
       acquisition_provider =
         capacity_input_provider(
           request,
@@ -197,7 +197,7 @@ defmodule Orchard.Scheduler.SingleNode do
         |> Map.put(:dispatch_capacity_acquisition_input_provider, acquisition_provider)
         |> Map.put(:dispatch_capacity_input_provider, revalidation_provider)
         |> Map.put(:dispatch_capacity_evaluation, result)
-        |> maybe_put_capacity_authority(opts)
+        |> Consumer.put_authority(opts)
 
       {:ok, authorized_schedule}
     else
@@ -208,22 +208,13 @@ defmodule Orchard.Scheduler.SingleNode do
   defp capacity_input(node, target, response, placement_capacity, opts) do
     case Keyword.get(opts, :dispatch_capacity_input_provider) do
       provider when is_function(provider, 3) ->
-        provider.(node, response, placement_capacity)
+        Consumer.normalize_input(provider.(node, response, placement_capacity))
 
       provider when is_function(provider, 0) ->
-        normalize_input_result(provider.())
+        Consumer.normalize_input(provider.())
 
       nil when not is_nil(node) ->
-        observation = normalize_observation(target, response)
-
-        if observation_applied_or_current?(observe_capacity(target, response, opts), node.id) do
-          Authorization.input_for_node_observation(node.id, observation,
-            minimum_evidence_observed_at: Keyword.fetch!(opts, :observed_at),
-            placement_capacity: placement_capacity
-          )
-        else
-          {:error, :dispatch_capacity_facts_unavailable}
-        end
+        observed_capacity_input(node, target, response, placement_capacity, opts)
 
       nil ->
         Authorization.unmanaged_input(capacity_target(target), response,
@@ -233,12 +224,25 @@ defmodule Orchard.Scheduler.SingleNode do
     end
   end
 
-  defp normalize_input_result({:ok, _input} = result), do: result
+  defp observed_capacity_input(node, target, response, placement_capacity, opts) do
+    observation = normalize_observation(target, response)
 
-  defp normalize_input_result(%Orchard.DispatchCapacity.Evaluator.Input{} = input),
-    do: {:ok, input}
+    input_opts = [
+      minimum_evidence_observed_at: Keyword.fetch!(opts, :observed_at),
+      placement_capacity: placement_capacity
+    ]
 
-  defp normalize_input_result(_invalid), do: {:error, :dispatch_capacity_facts_unavailable}
+    case observe_capacity(target, response, opts) do
+      {:ok, %Orchard.Nodes.Node{id: node_id} = observed} when node_id == node.id ->
+        Authorization.input_for_observation(observed, observation, input_opts)
+
+      :noop ->
+        Authorization.input_for_node_observation(node.id, observation, input_opts)
+
+      _mismatched_or_unavailable ->
+        {:error, :dispatch_capacity_facts_unavailable}
+    end
+  end
 
   defp capacity_input_provider(
          request,
@@ -330,12 +334,6 @@ defmodule Orchard.Scheduler.SingleNode do
     Nodes.observe_status(target, response, observed_at)
   end
 
-  defp observation_applied_or_current?({:ok, %Orchard.Nodes.Node{id: node_id}}, node_id),
-    do: true
-
-  defp observation_applied_or_current?(:noop, _node_id), do: true
-  defp observation_applied_or_current?(_result, _node_id), do: false
-
   defp normalize_observation(_target, %Observation{} = observation), do: observation
 
   defp normalize_observation(target, response),
@@ -357,7 +355,7 @@ defmodule Orchard.Scheduler.SingleNode do
     authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
     result = evaluate_dispatch_capacity(authority, nil, input)
 
-    if result.eligible? and result.available_slots > 0 do
+    if Consumer.authorized?(result) do
       provider = fn -> unprobed_unmanaged_input_or_nil(capacity_target, opts) end
 
       authorized_schedule =
@@ -367,7 +365,7 @@ defmodule Orchard.Scheduler.SingleNode do
         |> Map.put(:dispatch_capacity_acquisition_input_provider, provider)
         |> Map.put(:dispatch_capacity_input_provider, provider)
         |> Map.put(:dispatch_capacity_evaluation, result)
-        |> maybe_put_capacity_authority(opts)
+        |> Consumer.put_authority(opts)
 
       {:ok, authorized_schedule}
     else
@@ -411,13 +409,6 @@ defmodule Orchard.Scheduler.SingleNode do
     do: Map.put(schedule, :runtime_endpoint_target, target)
 
   defp put_target(schedule, target), do: Map.put(schedule, :runtime_client_target, target)
-
-  defp maybe_put_capacity_authority(schedule, opts) do
-    case Keyword.fetch(opts, :dispatch_capacity_authority) do
-      {:ok, authority} -> Map.put(schedule, :dispatch_capacity_authority, authority)
-      :error -> schedule
-    end
-  end
 
   defp model_placement_capacity_for(
          %Observation{} = observation,
