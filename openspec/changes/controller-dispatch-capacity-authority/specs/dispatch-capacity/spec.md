@@ -518,3 +518,37 @@ This refines `SPEC.md` §4.6.2 and §5.4.
 - **THEN** the shared per-Node gate linearizes the operations
 - **AND** either Node acceptance completes before the mutation and the work drains naturally, or the mutation completes first and dispatch revalidates under the new policy
 - **AND** pre-acceptance work never executes under an obsolete authority decision
+
+### Requirement: Unresolved Execution Node Quarantine
+A dispatch that cannot establish whether its runtime execution ended SHALL quarantine that Node in the Active Controller's local quarantine set.
+An unresolved execution SHALL mean a cancel drain that times out without a clean transport disconnect and without a durably recorded `unhealthy` or `unreachable` Node.
+Quarantine SHALL be keyed by admitted Node identity, and an evaluation without a Node identity SHALL NOT be quarantined.
+Every later shared evaluation for a quarantined Node SHALL supply health `unreachable` so the decision fails closed with the stable reason code `node_health_unhealthy` instead of counting the unresolved execution as free capacity.
+The quarantine set SHALL be supervised outside the inference subtree so restarting the allocation authority SHALL NOT resume dispatch from a clean quarantine set.
+An unavailable quarantine set SHALL make every Node evaluate as unreachable rather than as free capacity.
+Quarantine SHALL NOT expire on a timer and SHALL NOT be released through an unauthenticated operator surface within this change.
+Durable quarantine survival across Controller restart and audited release after verified reconciliation remain M7-aligned follow-ups.
+This refines `SPEC.md` §4.6.2.
+
+#### Scenario: Cancel drain times out without reconciliation
+- **WHEN** a cancelled request's drain times out
+- **AND** the transport does not disconnect cleanly
+- **AND** the Node is not durably recorded `unhealthy` or `unreachable`
+- **THEN** Orchard quarantines that Node
+- **AND** later capacity evaluation of that Node fails closed with `node_health_unhealthy`
+
+#### Scenario: Reconciled cancel drain does not quarantine
+- **WHEN** a cancelled request's drain ends with a clean disconnect
+- **OR** the Node is durably recorded `unhealthy` or `unreachable`
+- **THEN** Orchard does not quarantine that Node
+- **AND** later capacity evaluation follows the normal shared decision
+
+#### Scenario: Allocation authority restart preserves quarantine
+- **WHEN** the allocation authority restarts after a Node was quarantined
+- **THEN** the quarantine set survives the restart
+- **AND** dispatch to that Node remains blocked
+
+#### Scenario: Quarantine set becomes unavailable
+- **WHEN** the quarantine set stops
+- **THEN** every Node evaluates as unreachable
+- **AND** Orchard authorizes no new dispatch until the Controller restarts

@@ -69,7 +69,8 @@ API mutations require cluster `admin`, while local CLI admission uses the establ
 Per-Node policy mutation and final dispatch revalidation share one Controller-local acceptance gate that remains held through Node acceptance or pre-acceptance failure.
 This makes either acceptance or the policy change happen first without an authority gap, while leaving distributed leadership fencing to M7.
 Both gate consumers are bounded rather than blocking: policy mutation and dispatch each fail with `dispatch_capacity_acceptance_gate_busy` when they cannot acquire the gate within their own bound, so neither waits behind an in-flight dispatch to the same Node.
-A dispatch that cannot establish whether its runtime execution ended quarantines that Node Controller-locally, so every later evaluation treats it as unreachable instead of counting an unresolved execution as free capacity; the quarantine does not expire and is lifted only by verified reconciliation, which keeps release out of unauthenticated operator reach until durable permits and crash recovery land in M7.
+A dispatch that cannot establish whether its runtime execution ended quarantines that Node Controller-locally, so every later evaluation treats it as unreachable instead of counting an unresolved execution as free capacity; the quarantine does not expire and exposes no operator-release seam, which keeps release out of unauthenticated operator reach; today it survives an allocation authority restart and clears only with the Controller, and durable survival plus audited release after verified reconciliation land with durable permits and crash recovery in M7.
+`SPEC.md` §4.6.2 states this quarantine contract normatively, and §3.2 places the quarantine store at the Controller root ahead of the inference subtree.
 
 ## Rejected alternatives
 

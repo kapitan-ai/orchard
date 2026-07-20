@@ -242,6 +242,7 @@ Orchard.Application
 ├─ Orchard.API.Endpoint
 ├─ Orchard.RPC.ControllerServer
 ├─ Orchard.RPC.NodeClientPool
+├─ Orchard.DispatchCapacity.QuarantineStore
 ├─ Orchard.Inference                                  # rest_for_one
 │  ├─ Orchard.Requests.Registry
 │  ├─ Orchard.DispatchCapacity.AllocationAuthority
@@ -261,6 +262,7 @@ Orchard.Application
 ```
 
 The inference subtree SHALL start `Orchard.DispatchCapacity.AllocationAuthority` ahead of the request supervisor and queue manager under a `rest_for_one` strategy, so losing the Controller allocation authority also restarts the processes whose dispatch claims it tracked instead of leaving orphaned claims behind.
+`Orchard.DispatchCapacity.QuarantineStore` SHALL be supervised by the Controller root ahead of that subtree so an allocation authority restart cannot resume dispatch from a clean quarantine set, as required by §4.6.2.
 
 ### 3.3 Controller leadership
 
@@ -1008,6 +1010,12 @@ If policy mutation holds the gate first, later revalidation SHALL observe the ne
 Enforcement cutover SHALL use the cluster transition barrier and every Node acceptance gate in stable order so no temporary legacy claim or pre-acceptance handoff can cross the phase change.
 These gates define one live Active Controller's F11 linearization boundary and are not a substitute for M7 leadership fencing or durable dispatch permits.
 
+A dispatch that cannot establish whether its runtime execution ended — a cancel drain that times out without a clean transport disconnect and without a durably recorded `unhealthy` or `unreachable` Node — SHALL quarantine that Node in the Active Controller's local quarantine set.
+Quarantine is keyed by admitted Node identity, so an evaluation without a Node identity, such as an unmanaged source-development or compatibility target, SHALL NOT be quarantined.
+Every later shared evaluation for a quarantined Node SHALL supply health `unreachable` rather than counting the unresolved execution as free capacity, and SHALL therefore fail closed with the existing `node_health_unhealthy` reason code.
+The quarantine set SHALL be supervised outside the inference subtree so restarting the allocation authority cannot resume dispatch from a clean quarantine set, and an unavailable quarantine set SHALL make every Node evaluate as unreachable rather than as free capacity.
+Within F11, quarantine SHALL NOT expire on a timer and SHALL NOT be released through an unauthenticated operator surface; recovery is a Controller restart after the operator confirms no orphaned execution remains.
+
 One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, explicit authority decision of `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`, decision-specific available slots, eligibility, and stable reason codes.
 For a `production_managed` target, only `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom SHALL authorize dispatch.
 `fail_closed` SHALL NEVER authorize dispatch.
@@ -1060,7 +1068,7 @@ A consumer that cannot assemble the Controller-owned facts required for the shar
 Serialized per-Node capacity policy mutation that cannot acquire the Node acceptance gate SHALL fail fast with `dispatch_capacity_acceptance_gate_busy` rather than block behind an in-flight dispatch.
 The term `Admitted Capacity` SHALL NOT be used for any of these concepts.
 
-Durable dispatch permits, leadership epochs and dispatch fencing, crash or handover reservation recovery, and compromised-node occupancy integrity are M7-aligned follow-ups outside F11.
+Durable dispatch permits, leadership epochs and dispatch fencing, crash or handover reservation recovery, durable quarantine survival across Controller restart, audited quarantine release after verified reconciliation, and compromised-node occupancy integrity are M7-aligned follow-ups outside F11.
 Malformed aggregate active-count handling, production probe-failure direct scheduling fallback, queue-source expiry and reservation provenance, and configured-base versus live-capacity provenance are separate follow-ups outside F11.
 
 ### 4.7 Pool model

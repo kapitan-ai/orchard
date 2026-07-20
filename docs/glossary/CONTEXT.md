@@ -584,7 +584,7 @@ _Avoid_: advisory lock, leader epoch, durable dispatch permit, queue lane, clust
 
 **Unresolved Execution Quarantine**:
 The Controller-local per-Node block applied when a dispatch cannot establish whether its runtime execution ended, after which every capacity evaluation for that Node is treated as unreachable instead of as free capacity.
-It does not expire and is lifted only by verified reconciliation proving the unresolved execution is absent, never by an operator override.
+It does not expire and is never lifted by an operator override; today it clears only when the Controller restarts, and audited release after verified reconciliation is a later slice.
 _Avoid_: Cordon, Drain, Node Circuit Breaker, Maintenance, Node Health
 
 **Capacity Consumer Readiness**:
