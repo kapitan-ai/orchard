@@ -13,7 +13,7 @@ Every normalized Runtime Endpoint target SHALL carry Controller-owned `capacity_
 Missing, malformed, conflicting, Node-reported, transport-inferred, or probe-inferred classification SHALL fail closed.
 Only a valid explicitly classified unmanaged source-development or compatibility target MAY retain legacy capacity behavior.
 Failure to resolve or probe a production-managed target SHALL NOT downgrade it to unmanaged behavior.
-This refines `SPEC.md` §4.6.2, §5.9, and §7.5.
+This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 
 #### Scenario: Admitted gRPC target remains production managed
 - **WHEN** a gRPC compatibility target resolves to an admitted production Node
@@ -66,7 +66,7 @@ Under `f11_enforcing`, no new Controller-accounted Allocation across all placeme
 Under `legacy_pre_cutover`, the central temporary legacy available slots SHALL subtract both reported allocation and serialized live temporary legacy claims across all placements and lanes while Effective Dispatch Limit remains counterfactual `0`.
 A lower ceiling MAY temporarily leave accepted, running, or streaming allocations above the new limit while they drain naturally.
 Placement Capacity SHALL NOT create aggregate Controller authority or increase Dispatch Headroom.
-This refines `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, and §7.5.3.
+This requirement traces to `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, §5.7, §7.5, and §7.5.3.
 
 #### Scenario: Active loaded placement has spare capacity
 - **WHEN** exactly one matching Placement Capacity observation reports `active_request_count < max_concurrency`

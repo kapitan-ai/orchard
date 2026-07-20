@@ -4,7 +4,9 @@
 Orchard SHALL persist one cluster-scoped dispatch-capacity authority singleton initialized in enforcement phase `pre_cutover`, with a positive required contract version.
 Orchard SHALL persist one policy for each governed admitted production Node and SHALL distinguish `shadow_legacy`, `approved_explicit`, and `enforcing` from missing policy.
 A policy ceiling MUST be a non-negative integer for `approved_explicit` and `enforcing` and MUST be null only for `shadow_legacy`.
-Only the approved enforcement-cutover workflow MAY advance the durable phase or a policy to `enforcing`.
+Only the approved enforcement-cutover workflow MAY advance the durable phase or any policy to `enforcing`.
+Every other repository operation MUST NOT advance the durable phase or any policy to `enforcing`.
+The workflow's mutating transition MUST remain unavailable until MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation all consume the shared evaluation and every non-retired Controller has fresh compatible all-five-consumers-ready capability evidence.
 Every admitted production Node SHALL have one durable Controller dispatch capacity policy.
 Registered but unadmitted production inventory SHALL NOT enter the migration cohort or require dispatch policy until Node Admission commits.
 The operational cohort SHALL end only when lifecycle `removed`, trust revocation, and the removal audit commit durably.
@@ -28,7 +30,7 @@ Cutover SHALL use the migration advisory lock and one transaction to validate th
 Before that transaction, cutover SHALL enter a visible Controller-local quiescing barrier, refuse new temporary legacy claims, wait for zero live temporary claims and a new fresh aggregate observation reporting zero active requests for every non-removed admitted production Node, then acquire every applicable per-Node acceptance gate in stable order and revalidate the zero-occupancy boundary.
 Cutover SHALL exclude a removed tombstone only when durable lifecycle `removed`, revoked trust, and the existing successful removal audit all prove the exclusion; every other lifecycle state and unreachable Node SHALL remain a blocker.
 Cutover SHALL hold those gates through commit and local phase publication, SHALL NOT adopt live legacy work into Controller-accounted Allocation, and SHALL reopen legacy dispatch without phase or policy changes when quiescence or revalidation fails.
-This refines `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, §10.9, and §13.2.
+This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, §10.9, and §13.2.
 
 #### Scenario: Expand migration creates bounded legacy shadow rows
 - **WHEN** the expand migration finds a non-removed production Node with durable successful admission evidence committed before the migration boundary
@@ -141,7 +143,7 @@ Orchard SHALL require MultiNode, admitted SingleNode, Node queue-source refresh,
 No named consumer SHALL re-derive the formulas, default missing production policy to `1`, or use configured queue capacity as dispatch authority.
 Every consumer SHALL accept either `legacy_pre_cutover` with positive centrally calculated temporary slots and successful serialized temporary-claim acquisition or `f11_enforcing` with positive Dispatch Headroom.
 Dispatch SHALL re-run the same decision after model loading and immediately before `ExecuteInference`, using held-claim revalidation under both decisions and retaining the per-Node acceptance gate through Node acceptance.
-This refines `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
+This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
 
 #### Scenario: Ceiling is the counterfactual binding limit
 - **WHEN** an enforcing evaluator fixture has runtime limit `4`, Controller ceiling `2`, Controller-accounted Allocation `1`, and every eligibility gate satisfied
@@ -256,7 +258,7 @@ While the phase is `pre_cutover`, admission SHALL persist `approved_explicit` an
 No telemetry value SHALL supply the default or override the explicit admission value.
 Node Admission SHALL persist the policy atomically before the Node enters `admitted`, using an administrator-supplied value or the explicit default `1`, and SHALL record approval provenance.
 After enforcement cutover, admission SHALL persist `enforcing` policy and its audit record directly rather than stranding the Node in `approved_explicit`.
-This refines `SPEC.md` §4.6.2 and §13.2.
+This requirement traces to `SPEC.md` §4.4, §4.6.2, §7.3.1, §7.4.1, §10.9, §11.9, and §13.2.
 
 #### Scenario: Admission omission persists explicit one
 - **WHEN** an administrator confirms admission with a non-empty capacity policy reason and omits the ceiling
@@ -308,7 +310,7 @@ For F11, compatibility SHALL require exact equality between the published contra
 Greater-than-or-equal comparison SHALL NOT prove compatibility.
 Missing, version-zero, false, or stale capability evidence SHALL block cutover until the Controller refreshes evidence or is explicitly retired through `POST /ops/v1/controllers/:controller_id/retire`.
 A Controller that cannot enforce the recorded contract version SHALL fail readiness and refuse admission and dispatch after cutover.
-This refines `SPEC.md` §8.3 and §13.2.
+This requirement traces to `SPEC.md` §3.3, §8.2, §8.3, and §13.2.
 
 #### Scenario: Heartbeat publishes one complete tuple
 - **WHEN** the supervised membership owner boots or reaches its `10000` ms heartbeat
@@ -341,7 +343,7 @@ Under `legacy_pre_cutover`, diagnostics SHALL expose temporary `legacy_pre_cutov
 The stable reason vocabulary SHALL distinguish degraded health, missing policy, invalid policy, explicit zero, ceiling exhaustion, runtime-limit uncertainty or exhaustion, headroom exhaustion, placement exhaustion, revalidation failure, pre-cutover legacy mode, phase-policy mismatch, missing or invalid target management class, shadow mismatch, and unapproved policy.
 Public inference errors SHALL retain existing sanitized `cluster_busy`, `queue_timeout`, and dispatch error contracts.
 The term `Admitted Capacity` SHALL NOT be used.
-This refines `SPEC.md` §7.3.5 and the shared cluster-management contract.
+This requirement traces to `SPEC.md` §4.6.2 and §7.3.5 and the shared cluster-management contract.
 
 #### Scenario: Approved ceiling is visible but not enforced
 - **WHEN** a pre-cutover Node has an `approved_explicit` ceiling and fresh runtime evidence

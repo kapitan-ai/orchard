@@ -549,8 +549,7 @@ The count of additional allocations the Controller may make within the Effective
 _Avoid_: Admitted Capacity, spare runtime slots, queue capacity, Placement Capacity, dispatch permit balance
 
 **Temporary Legacy Claim**:
-A Controller-local pre-cutover claim for one temporary dispatch slot while legacy capacity behavior remains active.
-The shared evaluator subtracts live claims from temporary legacy available slots today; serialized acquisition and release of those claims remains contract-only until the enforcing consumer work lands.
+A Controller-local pre-cutover claim for one serialized temporary dispatch slot while legacy capacity behavior remains active.
 It is not Controller-accounted Allocation, Dispatch Headroom, or a durable dispatch permit.
 _Avoid_: queue slot, reservation, Controller-accounted Allocation, Dispatch Headroom, durable dispatch permit
 
