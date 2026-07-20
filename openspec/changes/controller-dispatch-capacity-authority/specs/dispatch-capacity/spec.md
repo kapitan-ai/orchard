@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Capacity Authority Persistence
-Orchard SHALL persist one cluster-scoped dispatch-capacity authority row in `pre_cutover` with a positive required contract version.
+Orchard SHALL persist one cluster-scoped dispatch-capacity authority singleton initialized in enforcement phase `pre_cutover`, with a positive required contract version.
 Orchard SHALL persist one policy for each governed admitted production Node and SHALL distinguish `shadow_legacy`, `approved_explicit`, and `enforcing` from missing policy.
 A policy ceiling MUST be a non-negative integer for `approved_explicit` and `enforcing` and MUST be null only for `shadow_legacy`.
 Only the approved enforcement-cutover workflow MAY advance the durable phase or a policy to `enforcing`.

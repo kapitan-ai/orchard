@@ -93,6 +93,7 @@ Orchard SHALL persist at most one current aggregate runtime capacity evidence ro
 The row SHALL preserve the latest trusted authenticated observation time, raw normalized runtime maximum concurrency, raw normalized active request count, and validity state.
 A newer authenticated observation SHALL replace older evidence atomically, and an older or unauthenticated observation MUST NOT overwrite it.
 Missing or malformed runtime values SHALL remain missing or invalid and MUST NOT be durably normalized to maximum `1`, active count `0`, or a Controller Dispatch Ceiling.
+This requirement traces to `SPEC.md` §4.6.2 and §7.5.3.
 
 #### Scenario: Newer trusted observation replaces current evidence
 - **WHEN** a trusted authenticated Runtime Endpoint Observation is newer than the current evidence for its admitted Node
@@ -118,6 +119,7 @@ Orchard SHALL normalize a Runtime Endpoint target's capacity management class fr
 A target that resolves to admitted production inventory SHALL be `production_managed` regardless of transport or a conflicting unmanaged declaration.
 An unmanaged source-development or compatibility class SHALL require explicit mode-valid Controller configuration and MUST NOT be inferred from Node telemetry, transport, address, or probe failure.
 While a Controller publishes `dispatch_capacity_consumers_ready = false`, this classification SHALL remain diagnostics-only and SHALL NOT change dispatch behavior.
+This requirement traces to `SPEC.md` §4.6.2 and §7.5.
 
 #### Scenario: Admitted gRPC target remains production managed
 - **WHEN** a gRPC compatibility target resolves to an admitted production Node

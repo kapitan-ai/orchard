@@ -5,10 +5,11 @@ Define Orchard's durable Controller dispatch-capacity authority and policy evide
 
 ## Requirements
 ### Requirement: Capacity Authority Persistence
-Orchard SHALL persist one cluster-scoped dispatch-capacity authority row in `pre_cutover` with a positive required contract version.
+Orchard SHALL persist one cluster-scoped dispatch-capacity authority singleton initialized in enforcement phase `pre_cutover`, with a positive required contract version.
 Orchard SHALL persist one policy for each governed admitted production Node and SHALL distinguish `shadow_legacy`, `approved_explicit`, and `enforcing` from missing policy.
 A policy ceiling MUST be a non-negative integer for `approved_explicit` and `enforcing` and MUST be null only for `shadow_legacy`.
 Only the approved enforcement-cutover workflow MAY advance the durable phase or a policy to `enforcing`.
+This requirement traces to `SPEC.md` §4.6.2 and §13.2.
 
 #### Scenario: Expand migration creates bounded legacy shadow rows
 - **WHEN** the expand migration finds a non-removed production Node with durable successful admission evidence committed before the migration boundary
@@ -30,6 +31,7 @@ Orchard SHALL provide one pure transport-independent evaluator that accepts norm
 The evaluator SHALL return Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
 In `pre_cutover`, canonical Effective Dispatch Limit and Dispatch Headroom SHALL remain `0` while the temporary legacy decision is calculated separately.
 In `enforcing`, the evaluator SHALL calculate the approved minimum and headroom formulas and fail closed for every missing or invalid production prerequisite.
+This requirement traces to `SPEC.md` §4.6.2, §5.4, and §5.5.
 
 #### Scenario: Ceiling is the counterfactual binding limit
 - **WHEN** an enforcing evaluator fixture has runtime limit `4`, Controller ceiling `2`, Controller-accounted Allocation `1`, and every eligibility gate satisfied
@@ -60,6 +62,7 @@ Every new Node Admission SHALL lock and read the durable authority phase and ato
 The shared Admin API and local CLI admission preview SHALL require a non-empty capacity policy reason, accept an optional non-negative ceiling, and resolve omission to explicit ceiling `1`.
 While the phase is `pre_cutover`, admission SHALL persist `approved_explicit` and SHALL warn that the ceiling is not yet enforcing.
 No telemetry value SHALL supply the default or override the explicit admission value.
+This requirement traces to `SPEC.md` §4.4, §4.6.2, §7.3.1, §7.4.1, §10.9, and §11.9.
 
 #### Scenario: Admission omission persists explicit one
 - **WHEN** an administrator confirms admission with a non-empty capacity policy reason and omits the ceiling
@@ -85,6 +88,7 @@ No telemetry value SHALL supply the default or override the explicit admission v
 Every operational Controller SHALL atomically publish membership freshness, software version, supported dispatch-capacity contract version, all-five-consumers readiness, and capability observation time at boot and every `10000` ms.
 The local Controller identity owner SHALL update only its authenticated durable identity row.
 A Controller SHALL publish all-five-consumers readiness as false until MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation all consume the shared evaluation.
+This requirement traces to `SPEC.md` §3.3, §8.2, and §13.2.
 
 #### Scenario: Heartbeat publishes one complete tuple
 - **WHEN** the supervised membership owner boots or reaches its `10000` ms heartbeat
@@ -101,6 +105,7 @@ A Controller SHALL publish all-five-consumers readiness as false until MultiNode
 Shared operator Node status SHALL expose the complete evaluator result, durable phase, policy state, normalized management class, observation time, and stable reason codes.
 Under `pre_cutover`, diagnostics SHALL label the result counterfactual, keep canonical enforcing values at `0`, and expose temporary legacy available slots separately.
 Counterfactual diagnostics MUST NOT mutate scheduler, queue, placement, reservation, or dispatch authorization behavior.
+This requirement traces to `SPEC.md` §4.6.2 and §7.3.5.
 
 #### Scenario: Approved ceiling is visible but not enforced
 - **WHEN** a pre-cutover Node has an `approved_explicit` ceiling and fresh runtime evidence
