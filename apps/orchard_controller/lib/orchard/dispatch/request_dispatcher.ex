@@ -42,7 +42,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     ExecuteInferenceRequest
   }
 
-  alias Orchard.DispatchCapacity.{AllocationAuthority, Evaluator}
+  use Orchard.DispatchCapacity.Consumer, wiring: :final_dispatch_revalidation
+
   alias Orchard.Inference
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Inference.QueueManager
@@ -63,16 +64,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   @maximum_cancel_drain_timeout_ms 5_000
 
-  @doc "Returns this consumer's shared dispatch-capacity evaluation."
-  @spec evaluate_dispatch_capacity(
-          GenServer.server(),
-          Ecto.UUID.t() | nil,
-          Evaluator.Input.t()
-        ) ::
-          Evaluator.Result.t()
-  def evaluate_dispatch_capacity(authority, node_id, input),
-    do: AllocationAuthority.evaluate(authority, node_id, input)
-
   @doc "Revalidates a recognized dispatch claim through the production QueueManager seam."
   @spec revalidate_dispatch_capacity(
           AllocationAuthority.Claim.t(),
@@ -84,12 +75,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   def revalidate_dispatch_capacity(claim, input, opts \\ []) do
     QueueManager.revalidate_dispatch_capacity(claim, input, opts)
   end
-
-  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
-  def dispatch_capacity_contract_version, do: 1
-
-  @doc "Identifies RequestDispatcher's final dispatch-revalidation wiring."
-  def dispatch_capacity_wiring, do: :final_dispatch_revalidation
 
   # Metrics structure for timing instrumentation
   defmodule Metrics do
@@ -196,7 +181,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:runtime_endpoint_target` - typed Runtime Endpoint target for new schedulers
   - `:runtime_client_target` - legacy `[host: ..., port: ...]` gRPC compatibility target
   - `:request_id` - the canonical request ID
-  - `:request_timeout_ms` - maximum wall-clock time for the entire dispatch
+  - `:request_timeout_ms` - maximum wall-clock time for the dispatch excluding
+    model load, which is bounded separately by `:model_load_timeout_ms`. The
+    deadline runs from dispatch entry and covers connect, probe, acceptance-gate
+    acquisition, and streaming, so a slow cold start cannot starve the stream.
 
   BEAM schedules may omit `:runtime_client_target`.
   If a configured BEAM target node ID conflicts with observed endpoint metadata,
@@ -512,6 +500,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     }
 
     put_ensure_model_load_completed_context(metrics)
+
+    context = %{context | deadline_ms: context.deadline_ms + (ensure_end - ensure_start)}
 
     result = execute_loaded_request(context, ensure_load_meta, metrics)
 
@@ -1029,7 +1019,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         end
 
       {:runtime_endpoint_done, ^task_ref, :ok} ->
-        stream_completion_result(loop_ctx, events, metrics)
+        stream_terminal_result(loop_ctx, events, metrics)
 
       {:runtime_endpoint_done, ^task_ref, {:error, reason}} ->
         mark_transport_failure(target, reason)
@@ -1082,16 +1072,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        do: {:ok, Enum.reverse(events), metrics}
 
   defp stream_terminal_result(_loop_ctx, _events, _metrics),
-    do: {:error, {:dispatch_failed, :node_acceptance_missing}}
-
-  defp stream_completion_result(
-         %{accepted?: true, cancellation_started_before_acceptance?: false},
-         events,
-         metrics
-       ),
-       do: {:ok, Enum.reverse(events), metrics}
-
-  defp stream_completion_result(_loop_ctx, _events, _metrics),
     do: {:error, {:dispatch_failed, :node_acceptance_missing}}
 
   defp cancel_and_drain(loop_ctx, events, cancel_reason) do

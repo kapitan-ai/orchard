@@ -109,6 +109,34 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.SlowLoadClient do
+  @moduledoc false
+
+  alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
+  alias Orchard.RuntimeEndpoint.Operation
+
+  @load_duration_ms 200
+
+  def load_duration_ms, do: @load_duration_ms
+
+  defdelegate connect(target), to: GateClient
+  defdelegate disconnect(channel), to: GateClient
+  defdelegate status(channel, opts), to: GateClient
+  defdelegate execute_inference(channel, request, opts), to: GateClient
+  defdelegate cancel_inference(channel, request, opts), to: GateClient
+
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts) do
+    Process.sleep(@load_duration_ms)
+
+    {:ok,
+     %Operation.EnsureModelLoadedResult{
+       already_loaded: false,
+       placement_state: :loaded,
+       worker_supports_prompt_token_ids: true
+     }}
+  end
+end
+
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.ExecuteErrorClient do
   @moduledoc false
 
@@ -535,6 +563,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     NonterminalThenErrorClient,
     PreAcceptanceCancelClient,
     ProductionFreshStatusClient,
+    SlowLoadClient,
     TerminalBeforeAcceptedClient
   }
 
@@ -548,11 +577,12 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   @noisy_cancel_client NoisyCancelClient
   @pre_acceptance_cancel_client PreAcceptanceCancelClient
   @production_fresh_status_client ProductionFreshStatusClient
+  @slow_load_client SlowLoadClient
 
-  # The request timeout now bounds connect, model load, and acceptance-gate
-  # waiting as well as streaming, so it must outlast dispatch setup or the
-  # request expires as `:dispatch_capacity_acceptance_gate_busy` before the
-  # stream-phase cancellation path under test can run.
+  # The request timeout now bounds connect, probe, and acceptance-gate waiting
+  # as well as streaming, so it must outlast dispatch setup or the request
+  # expires as `:dispatch_capacity_acceptance_gate_busy` before the stream-phase
+  # cancellation path under test can run.
   @expiring_request_timeout_ms 250
 
   setup do
@@ -871,6 +901,29 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     assert_receive :model_loaded
     refute_receive :execute_called
+  end
+
+  test "SPEC 5.9 a cold model load does not consume the stream's request budget" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-cold-load-budget"
+
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: div(@slow_load_client.load_duration_ms(), 2),
+        model_load_timeout_ms: 5_000
+    }
+
+    assert {:ok, events} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @slow_load_client
+             )
+
+    assert Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Accepted{}}, &1))
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
   test "SPEC 5.9 Completed before Accepted is a pre-acceptance failure" do

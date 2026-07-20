@@ -46,8 +46,10 @@ defmodule Orchard.Scheduler.MultiNode do
   candidate or change the scheduling outcome.
   """
 
+  use Orchard.DispatchCapacity.Consumer, wiring: :multi_node_eligibility_and_lane
+
   alias Orchard.CanonicalRequest
-  alias Orchard.DispatchCapacity.{AllocationAuthority, Authorization, Evaluator}
+  alias Orchard.DispatchCapacity.Authorization
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes
@@ -84,22 +86,6 @@ defmodule Orchard.Scheduler.MultiNode do
   def schedule(%CanonicalRequest{} = request) do
     schedule(request, [])
   end
-
-  @doc "Returns this consumer's shared dispatch-capacity evaluation."
-  @spec evaluate_dispatch_capacity(
-          GenServer.server(),
-          Ecto.UUID.t() | nil,
-          Evaluator.Input.t()
-        ) ::
-          Evaluator.Result.t()
-  def evaluate_dispatch_capacity(authority, node_id, input),
-    do: AllocationAuthority.evaluate(authority, node_id, input)
-
-  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
-  def dispatch_capacity_contract_version, do: 1
-
-  @doc "Identifies MultiNode's eligibility and queue-lane wiring."
-  def dispatch_capacity_wiring, do: :multi_node_eligibility_and_lane
 
   @doc """
   Schedule with injectable options for testing.

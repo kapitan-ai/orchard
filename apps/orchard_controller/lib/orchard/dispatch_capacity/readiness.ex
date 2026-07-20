@@ -9,13 +9,13 @@ defmodule Orchard.DispatchCapacity.Readiness do
   require Logger
 
   alias Orchard.Dispatch.RequestDispatcher
-  alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Evaluator}
+  alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Consumer, Evaluator}
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
   alias Orchard.Scheduler.{MultiNode, SingleNode}
 
   @readiness_cache_key {__MODULE__, :default_readiness}
-  @contract_version 1
+  @contract_version Consumer.contract_version()
   @consumer_manifest [
     {MultiNode, :multi_node_eligibility_and_lane},
     {SingleNode, :single_node_authorization},

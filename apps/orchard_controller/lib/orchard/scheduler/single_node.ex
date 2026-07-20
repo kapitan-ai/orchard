@@ -15,9 +15,11 @@ defmodule Orchard.Scheduler.SingleNode do
   authorizes them through the same shared contract.
   """
 
+  use Orchard.DispatchCapacity.Consumer, wiring: :single_node_authorization
+
   alias Orchard.CanonicalRequest
   alias Orchard.Dispatch.GrpcNodeRuntimeClient
-  alias Orchard.DispatchCapacity.{AllocationAuthority, Authorization, Evaluator}
+  alias Orchard.DispatchCapacity.Authorization
   alias Orchard.Inference
   alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
@@ -33,22 +35,6 @@ defmodule Orchard.Scheduler.SingleNode do
       module -> module.schedule(request)
     end
   end
-
-  @doc "Returns this consumer's shared dispatch-capacity evaluation."
-  @spec evaluate_dispatch_capacity(
-          GenServer.server(),
-          Ecto.UUID.t() | nil,
-          Evaluator.Input.t()
-        ) ::
-          Evaluator.Result.t()
-  def evaluate_dispatch_capacity(authority, node_id, input),
-    do: AllocationAuthority.evaluate(authority, node_id, input)
-
-  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
-  def dispatch_capacity_contract_version, do: 1
-
-  @doc "Identifies SingleNode's scheduling authorization wiring."
-  def dispatch_capacity_wiring, do: :single_node_authorization
 
   def target, do: Orchard.Inference.runtime_client_target()
 

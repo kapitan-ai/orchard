@@ -24,27 +24,11 @@ defmodule Orchard.Inference.QueueManager do
   """
 
   use GenServer
+  use Orchard.DispatchCapacity.Consumer, wiring: :aggregate_allocation_authority
 
-  alias Orchard.DispatchCapacity.{AllocationAuthority, Evaluator}
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{Request, RequestServer}
-
-  @doc "Returns this consumer's shared dispatch-capacity evaluation."
-  @spec evaluate_dispatch_capacity(
-          GenServer.server(),
-          Ecto.UUID.t() | nil,
-          Evaluator.Input.t()
-        ) ::
-          Evaluator.Result.t()
-  def evaluate_dispatch_capacity(authority, node_id, input),
-    do: AllocationAuthority.evaluate(authority, node_id, input)
-
-  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
-  def dispatch_capacity_contract_version, do: 1
-
-  @doc "Identifies QueueManager's aggregate allocation-authority wiring."
-  def dispatch_capacity_wiring, do: :aggregate_allocation_authority
 
   @doc "Acquires one live Node capacity claim through the shared authority."
   @spec acquire_dispatch_capacity(

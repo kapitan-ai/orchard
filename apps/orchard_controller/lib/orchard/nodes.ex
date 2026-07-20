@@ -16,25 +16,9 @@ defmodule Orchard.Nodes do
   holds.
   """
 
+  use Orchard.DispatchCapacity.Consumer, wiring: :node_queue_source_refresh
+
   import Ecto.Query
-
-  alias Orchard.DispatchCapacity.{AllocationAuthority, Evaluator}
-
-  @doc "Returns this consumer's shared dispatch-capacity evaluation."
-  @spec evaluate_dispatch_capacity(
-          GenServer.server(),
-          Ecto.UUID.t() | nil,
-          Evaluator.Input.t()
-        ) ::
-          Evaluator.Result.t()
-  def evaluate_dispatch_capacity(authority, node_id, input),
-    do: AllocationAuthority.evaluate(authority, node_id, input)
-
-  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
-  def dispatch_capacity_contract_version, do: 1
-
-  @doc "Identifies Nodes' queue-source refresh wiring."
-  def dispatch_capacity_wiring, do: :node_queue_source_refresh
 
   @doc "Refreshes or clears Node-owned queue sources from one shared capacity evaluation."
   @spec refresh_dispatch_capacity_sources(
