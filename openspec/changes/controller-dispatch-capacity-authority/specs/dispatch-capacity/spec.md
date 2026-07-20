@@ -21,7 +21,7 @@ A missing policy or missing ceiling for an admitted production Node SHALL yield 
 A permanent null ceiling meaning runtime-managed capacity SHALL be prohibited.
 The durable ceiling SHALL NOT be inferred or backfilled from Runtime Endpoint telemetry.
 `shadow_legacy` SHALL apply only to non-removed production Nodes whose Node Admission committed before the F11 expand migration, selected from durable admission evidence, and SHALL be temporary and counterfactual.
-This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, and §13.2.
+This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.2, and §13.2.
 
 #### Scenario: Expand migration creates bounded legacy shadow rows
 - **WHEN** the expand migration finds a non-removed production Node with durable successful admission evidence committed before the migration boundary
@@ -260,7 +260,7 @@ For F11, compatibility SHALL require exact equality between the published contra
 Greater-than-or-equal comparison SHALL NOT prove compatibility.
 Missing, version-zero, false, or stale capability evidence SHALL block cutover until the Controller refreshes evidence or is explicitly retired through `POST /ops/v1/controllers/:controller_id/retire`.
 A Controller that cannot enforce the recorded contract version SHALL fail readiness and refuse admission and dispatch after cutover.
-This requirement traces to `SPEC.md` §3.3, §8.2, §8.3, and §13.2.
+This requirement traces to `SPEC.md` §3.3, §8.2, and §13.2.
 
 #### Scenario: Heartbeat publishes one complete tuple
 - **WHEN** the supervised membership owner boots or reaches its `10000` ms heartbeat
@@ -370,7 +370,7 @@ Enforcement cutover SHALL exclude a removed tombstone from approval, compatibili
 Every other lifecycle state, including `decommissioning`, and an unreachable Node SHALL remain a blocker.
 Cutover SHALL hold those gates through commit and local phase publication, SHALL NOT adopt live legacy work into Controller-accounted Allocation, and SHALL reopen legacy dispatch without phase or policy changes when quiescence or revalidation fails.
 Cutover SHALL require `expected_required_contract_version` to equal the locked singleton row, SHALL reject a mismatch as an optimistic concurrency conflict, and SHALL NOT change the durable required contract version.
-This refines `SPEC.md` §4.6.2, §8.3, and §13.2.
+This refines `SPEC.md` §4.6.2, §8.2, and §13.2.
 
 #### Scenario: Cutover commits atomically
 - **WHEN** cutover proves every non-removed admitted production Node has approved policy and every non-retired Controller has fresh capability evidence at the required version with all five consumers ready

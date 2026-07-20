@@ -64,7 +64,7 @@ This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 - **THEN** Orchard does not downgrade or reclassify the target to unmanaged behavior
 - **AND** Orchard does not allocate or execute new work through a compatibility fallback
 - **AND** that prohibition applies regardless of `dispatch_capacity_consumers_ready`
-- **AND** while readiness is false, the normalized classification remains diagnostics-only and does not otherwise change dispatch
+- **AND** before all named consumers actually consume the shared evaluation, normalized classification remains diagnostics-only and does not otherwise change dispatch behavior
 - **AND** broader production probe-failure direct scheduling fallback cleanup remains a separate implementation finding
 
 ### Requirement: Placement Capacity Observation
