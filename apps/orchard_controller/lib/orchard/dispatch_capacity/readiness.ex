@@ -82,6 +82,29 @@ defmodule Orchard.DispatchCapacity.Readiness do
   end
 
   defp fixture_conforms?(manifest, %Evaluator.Input{} = input) do
+    isolated_proof(fn -> fixture_proof(manifest, input) end)
+  end
+
+  defp fixture_conforms?(_manifest, _invalid_input), do: false
+
+  defp isolated_proof(proof) do
+    parent = self()
+    reply_ref = make_ref()
+
+    {proof_pid, monitor_ref} = spawn_monitor(fn -> send(parent, {reply_ref, proof.()}) end)
+
+    receive do
+      {^reply_ref, conforms?} ->
+        Process.demonitor(monitor_ref, [:flush])
+        conforms? == true
+
+      {:DOWN, ^monitor_ref, :process, ^proof_pid, reason} ->
+        Logger.warning("Dispatch-capacity readiness proof exited: #{inspect(reason)}")
+        false
+    end
+  end
+
+  defp fixture_proof(manifest, input) do
     node_id = "00000000-0000-0000-0000-000000000001"
     {:ok, authority} = AllocationAuthority.start_link(name: nil)
 
@@ -94,8 +117,6 @@ defmodule Orchard.DispatchCapacity.Readiness do
       GenServer.stop(authority)
     end
   end
-
-  defp fixture_conforms?(_manifest, _invalid_input), do: false
 
   defp consumers_conform?(manifest, authority, node_id, input, expected) do
     Enum.all?(manifest, fn {consumer, wiring} ->

@@ -477,6 +477,41 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert :node_health_unhealthy in other_blocked.reason_codes
   end
 
+  test "SPEC 4.5 an authority restarted without a quarantine store starts fail-closed" do
+    node_id = Ecto.UUID.generate()
+    input = enforcing_input({:valid, 0, 4})
+    store_key = {QuarantineStore, self(), make_ref()}
+    store_name = {:global, store_key}
+    store = start_supervised!({QuarantineStore, name: store_name})
+
+    store_monitor_ref = Process.monitor(store)
+    Process.exit(store, :kill)
+    assert_receive {:DOWN, ^store_monitor_ref, :process, ^store, :killed}
+    assert :global.whereis_name(store_key) == :undefined
+
+    assert {:ok, authority} =
+             AllocationAuthority.start_link(name: nil, quarantine_store: store_name)
+
+    assert Process.alive?(authority)
+
+    assert {:error, :dispatch_capacity_quarantine_store_unavailable} =
+             AllocationAuthority.quarantined_nodes(authority)
+
+    assert {:error, :dispatch_capacity_unavailable, blocked} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-store-loss-and-authority-restart",
+               input,
+               authority: authority
+             )
+
+    refute blocked.eligible?
+    assert :node_health_unhealthy in blocked.reason_codes
+
+    assert {:error, :dispatch_capacity_quarantine_store_unavailable} =
+             AllocationAuthority.quarantine_node(authority, node_id)
+  end
+
   test "SPEC 4.5 quarantine of an absent Node identity leaves unmanaged evaluation open" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     input = unmanaged_input()

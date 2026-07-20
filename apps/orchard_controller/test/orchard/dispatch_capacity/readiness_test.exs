@@ -14,6 +14,17 @@ defmodule Orchard.DispatchCapacity.ReadinessTest do
     assert Readiness.ready?()
   end
 
+  test "SPEC 4.8 the readiness proof leaves no fixture link on the caller" do
+    Process.flag(:trap_exit, true)
+    {:links, before_links} = Process.info(self(), :links)
+
+    assert Readiness.ready?(required_contract_version: Readiness.contract_version())
+
+    {:links, after_links} = Process.info(self(), :links)
+    assert after_links == before_links
+    refute_receive {:EXIT, _pid, _reason}, 50
+  end
+
   test "SPEC 4.8 missing, incompatible, or fixture-failing builds remain false" do
     [_missing | incomplete] = Readiness.consumer_manifest()
 

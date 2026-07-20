@@ -581,8 +581,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   # The request timeout now bounds connect, probe, and acceptance-gate waiting
   # as well as streaming, so it must outlast dispatch setup or the request
-  # expires as `:dispatch_capacity_acceptance_gate_busy` before the stream-phase
-  # cancellation path under test can run.
+  # expires as `:dispatch_timeout` before the stream-phase cancellation path
+  # under test can run.
   @expiring_request_timeout_ms 250
 
   setup do
@@ -1524,6 +1524,33 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
              )
 
     refute_receive :execute_called, 50
+    assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC 5.9 an exhausted deadline reports dispatch timeout instead of gate contention" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-deadline-exhausted-before-acceptance-gate"
+
+    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 0}
+
+    assert {:error, {:dispatch_failed, :dispatch_timeout}} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    refute_receive :execute_called, 50
+
+    assert {:ok, lease} =
+             QueueManager.acquire_acceptance_gate(node_id,
+               authority: authority,
+               gate_timeout_ms: 100
+             )
+
     assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end

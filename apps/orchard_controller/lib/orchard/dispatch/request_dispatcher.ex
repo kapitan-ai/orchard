@@ -615,20 +615,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp acquire_dispatch_acceptance_gate(%{capacity_claim: claim, schedule: schedule} = context) do
     opts = capacity_authority_opts(schedule)
+    gate_timeout_ms = remaining_request_timeout_ms(context.deadline_ms)
 
-    gate_opts =
-      Keyword.put(
-        opts,
-        :gate_timeout_ms,
-        remaining_request_timeout_ms(context.deadline_ms)
-      )
-      |> Keyword.put(:abort_monitor_ref, context.caller_ref)
-      |> Keyword.put(:abort_pid, context.caller)
+    if gate_timeout_ms <= 0 do
+      {:error, :dispatch_timeout}
+    else
+      gate_opts =
+        opts
+        |> Keyword.put(:gate_timeout_ms, gate_timeout_ms)
+        |> Keyword.put(:abort_monitor_ref, context.caller_ref)
+        |> Keyword.put(:abort_pid, context.caller)
 
-    case QueueManager.acquire_acceptance_gate(claim.node_id, gate_opts) do
-      {:ok, lease} -> {:ok, {lease, opts}}
-      {:error, :dispatch_capacity_caller_down} -> {:error, :caller_disconnect}
-      {:error, _reason} = error -> error
+      case QueueManager.acquire_acceptance_gate(claim.node_id, gate_opts) do
+        {:ok, lease} -> {:ok, {lease, opts}}
+        {:error, :dispatch_capacity_caller_down} -> {:error, :caller_disconnect}
+        {:error, _reason} = error -> error
+      end
     end
   end
 

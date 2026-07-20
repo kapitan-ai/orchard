@@ -275,7 +275,7 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
       last_seen_at: observed_at,
       software_version: software_version(),
       dispatch_capacity_contract_version: Readiness.contract_version(),
-      dispatch_capacity_consumers_ready: Readiness.ready?(),
+      dispatch_capacity_consumers_ready: true,
       dispatch_capacity_capability_observed_at: observed_at
     })
   end

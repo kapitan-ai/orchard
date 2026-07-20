@@ -4,6 +4,11 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
   Acquisition and release are serialized per Controller process. Durable
   permits and recovery after a Controller crash remain outside this boundary.
+
+  The authority mirrors the quarantine set it seeds from `QuarantineStore`, so
+  evaluation never blocks on a second process. Losing the store — at boot or
+  later — leaves the mirror unusable, and every Node then evaluates as
+  unreachable rather than as free capacity, per `SPEC.md` §4.6.2.
   """
 
   use GenServer
@@ -375,24 +380,32 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
   @impl true
   def init(%{quarantine_store: quarantine_store}) do
-    case resolve_quarantine_store(quarantine_store) do
-      {:ok, quarantine_store_pid} ->
-        quarantine_store_monitor_ref = Process.monitor(quarantine_store_pid)
+    base = %{
+      claims: %{},
+      request_claims: %{},
+      monitors: %{},
+      gates: %{},
+      gate_monitors: %{}
+    }
 
+    case resolve_quarantine_store(quarantine_store) do
+      {:ok, quarantine_store_pid, quarantined_nodes} ->
         {:ok,
-         %{
-           claims: %{},
-           request_claims: %{},
-           monitors: %{},
-           gates: %{},
-           gate_monitors: %{},
+         Map.merge(base, %{
+           quarantined_nodes: quarantined_nodes,
            quarantine_store: quarantine_store_pid,
            quarantine_store_available?: true,
-           quarantine_store_monitor_ref: quarantine_store_monitor_ref
-         }}
+           quarantine_store_monitor_ref: Process.monitor(quarantine_store_pid)
+         })}
 
       :error ->
-        {:stop, :dispatch_capacity_quarantine_store_unavailable}
+        Logger.error(
+          "dispatch-capacity authority started without a reachable quarantine store; all " <>
+            "dispatch remains blocked until the Controller is recovered through a verified " <>
+            "reconciliation path"
+        )
+
+        {:ok, Map.merge(base, mark_quarantine_store_unavailable(%{}))}
     end
   end
 
@@ -573,7 +586,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
   defp probe_quarantine_store(pid) when is_pid(pid) do
     case safe_quarantine_store_call(fn -> QuarantineStore.quarantined_nodes(pid) end) do
-      {:ok, %MapSet{}} -> {:ok, pid}
+      {:ok, %MapSet{} = quarantined_nodes} -> {:ok, pid, quarantined_nodes}
       _unavailable -> :error
     end
   end
@@ -600,12 +613,20 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   defp quarantine_store_pid(_unsupported), do: nil
 
   defp quarantine_node_in_store(state, node_id) do
-    call_quarantine_store(state, fn store -> QuarantineStore.quarantine(store, node_id) end)
+    case call_quarantine_store(state, &QuarantineStore.quarantine(&1, node_id)) do
+      {:ok, state} ->
+        {:ok, %{state | quarantined_nodes: MapSet.put(state.quarantined_nodes, node_id)}}
+
+      unavailable ->
+        unavailable
+    end
   end
 
-  defp quarantined_nodes_from_store(state) do
-    call_quarantine_store(state, &QuarantineStore.quarantined_nodes/1)
+  defp quarantined_nodes_from_store(%{quarantine_store_available?: false} = state) do
+    {{:error, :dispatch_capacity_quarantine_store_unavailable}, state}
   end
+
+  defp quarantined_nodes_from_store(state), do: {state.quarantined_nodes, state}
 
   defp call_quarantine_store(%{quarantine_store_available?: false} = state, _call) do
     {{:error, :dispatch_capacity_quarantine_store_unavailable}, state}
@@ -623,14 +644,10 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   end
 
   defp quarantine_status(%{quarantine_store_available?: false}, _node_id), do: :unavailable
+  defp quarantine_status(_state, nil), do: false
 
   defp quarantine_status(state, node_id) do
-    case safe_quarantine_store_call(fn ->
-           QuarantineStore.quarantined?(state.quarantine_store, node_id)
-         end) do
-      {:ok, quarantined?} -> quarantined?
-      :error -> :unavailable
-    end
+    MapSet.member?(state.quarantined_nodes, node_id)
   end
 
   defp safe_quarantine_store_call(call) do
@@ -640,12 +657,12 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   end
 
   defp mark_quarantine_store_unavailable(state) do
-    %{
-      state
-      | quarantine_store: nil,
-        quarantine_store_available?: false,
-        quarantine_store_monitor_ref: nil
-    }
+    Map.merge(state, %{
+      quarantined_nodes: MapSet.new(),
+      quarantine_store: nil,
+      quarantine_store_available?: false,
+      quarantine_store_monitor_ref: nil
+    })
   end
 
   defp claim_counts(claims, node_id, excluded_token) do
