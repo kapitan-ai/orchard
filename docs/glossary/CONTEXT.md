@@ -582,6 +582,11 @@ The Controller-local per-Node serialization point that per-Node capacity policy 
 It is held from the final shared evaluation through Node acceptance or pre-acceptance failure, and it is not distributed leadership fencing.
 _Avoid_: advisory lock, leader epoch, durable dispatch permit, queue lane, cluster transition barrier
 
+**Unresolved Execution Quarantine**:
+The Controller-local per-Node block applied when a dispatch cannot establish whether its runtime execution ended, after which every capacity evaluation for that Node is treated as unreachable instead of as free capacity.
+It does not expire and is lifted only by verified reconciliation proving the unresolved execution is absent, never by an operator override.
+_Avoid_: Cordon, Drain, Node Circuit Breaker, Maintenance, Node Health
+
 **Capacity Consumer Readiness**:
 The Controller capability declaration that this running build wires all five named capacity consumers to the shared evaluation as one indivisible contract-versioned capability.
 It is proved against an exact consumer manifest, an exact contract version, and a shared deterministic conformance fixture, and it gates enforcement cutover rather than describing the current phase.

@@ -20,6 +20,9 @@ This README is orientation only. Normative behavior lives in
 - Durable dispatch-capacity policy, the cluster enforcement phase, the shared
   capacity evaluation, and the supervised allocation authority that owns
   per-Node claims and the per-Node acceptance gate.
+- The Controller-local quarantine of a Node whose runtime execution a dispatch
+  could not resolve, supervised outside the inference subtree so an authority
+  restart cannot resume dispatch from a clean quarantine set.
 - Fail-closed capacity authorization for the five named consumers — MultiNode,
   admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch
   revalidation — plus the read-only counterfactual diagnostics that stay

@@ -237,6 +237,7 @@ Partial enforcing wiring is rejected because an unwired consumer could bypass th
 
 Both acceptance-gate consumers are bounded rather than blocking: policy mutation and dispatch each fail with `dispatch_capacity_acceptance_gate_busy` instead of waiting behind an in-flight dispatch to the same Node.
 A consumer that cannot assemble Controller-owned facts from current authenticated evidence fails closed with `dispatch_capacity_facts_unavailable` instead of falling back to telemetry.
+A dispatch that cannot establish whether its runtime execution ended quarantines the Node Controller-locally, so later evaluations treat it as unreachable rather than counting the unresolved execution as free capacity; the quarantine set is supervised outside the inference subtree, does not expire, and has no operator-release seam, because durable reconciliation proving the execution is absent belongs to the durable-permit and recovery slice.
 The tracer left the durable phase at `pre_cutover`, so the cluster-wide transition barrier, legacy quiescence to zero live claims and fresh zero observed occupancy, and the atomic switch to F11 authority remain the next slice.
 
 ## Rejected alternatives
