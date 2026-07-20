@@ -39,6 +39,15 @@ defmodule Orchard.DispatchCapacity.Consumer do
     end
   end
 
+  @doc """
+  Declares the calling module one of the five shared capacity consumers.
+
+  `:wiring` must be that module's atom in `Orchard.DispatchCapacity.Readiness`'s
+  manifest. The injected `evaluate_dispatch_capacity/3`,
+  `dispatch_capacity_contract_version/0`, and `dispatch_capacity_wiring/0` are
+  what the readiness proof reads, so a consumer cannot claim readiness without
+  the shared evaluation seam.
+  """
   defmacro __using__(opts) do
     wiring = Keyword.fetch!(opts, :wiring)
 
