@@ -1252,7 +1252,7 @@ A valid explicitly classified unmanaged target SHALL instead be bounded by its m
 A node is eligible only if all conditions are true:
 
 * node state = `active`
-* node health = `healthy`, or node health in `{healthy, degraded}` while the shared capacity authority decision is `legacy_pre_cutover`
+* node health = `healthy`, or node health in `{healthy, degraded}` while the shared capacity authority decision is `legacy_pre_cutover`, `unmanaged_source_development`, or `unmanaged_compatibility`
 * pool is allowed by routing policy
 * model format is supported by node runtime
 * node has enough memory headroom

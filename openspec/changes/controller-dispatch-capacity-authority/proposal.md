@@ -31,7 +31,8 @@ The apex contract update for this change is complete.
 It principally established the accepted Controller dispatch-capacity authority contract in `SPEC.md` §4.6.2 and reconciled related requirements across affected sections.
 This reconciliation closes one narrow §4.6.2 output-enumeration gap by adding Placement Capacity and decision-specific available slots to the shared evaluation output, matching the approved parent contract and the corresponding fields already present in the shipped `Orchard.DispatchCapacity.Evaluator.Result`.
 It closes the matching §7.3.5 operator-diagnostics enumeration gap by exposing Placement Capacity, decision-specific available slots, and eligibility consistently with §4.6.2.
-It changes no other `SPEC.md` behavior.
+It also reconciles the shared authority-decision vocabulary with the shipped evaluator by naming `unmanaged_source_development`, `unmanaged_compatibility`, and `fail_closed` in §4.6.2 and by scoping the previously production-only authorization, eligibility, and degraded-health clauses in §4.6.2, §5.4, and §5.5 so a valid explicitly classified unmanaged target is authorized only through its matching unmanaged decision while `fail_closed` never authorizes dispatch.
+It makes no further `SPEC.md` behavior change beyond these reconciliations.
 The active OpenSpec delta is covered by and traces to the current exact union `SPEC.md` §3.3, §4.1, §4.4, §4.5, §4.6.1, §4.6.2, §5.4, §5.5, §5.9, §7.3.1, §7.3.5, §7.4.1, §7.5, §7.5.3, §8, §8.2, §10.9, §11.9, and §13.2.
 `SPEC.md` remains the apex contract, and these OpenSpec deltas define the remaining implementation and acceptance intent beneath it.
 
