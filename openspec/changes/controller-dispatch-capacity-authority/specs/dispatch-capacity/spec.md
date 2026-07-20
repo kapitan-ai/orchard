@@ -10,7 +10,7 @@ The workflow's mutating transition MUST remain unavailable until `Orchard.Schedu
 Every admitted production Node SHALL have one durable Controller dispatch capacity policy.
 Registered but unadmitted production inventory SHALL NOT enter the migration cohort or require dispatch policy until Node Admission commits.
 The operational cohort SHALL end only when lifecycle `removed`, trust revocation, and the removal audit commit durably.
-A removed tombstone SHALL retain historical policy evidence but SHALL NOT block approval, compatibility preflight, zero-occupancy quiescence, or cutover.
+A removed tombstone SHALL retain historical policy evidence.
 Later re-enrollment SHALL pass a new Node Admission and persist policy under the then-current phase.
 Except for the bounded pre-F11 cohort while its policy state is `shadow_legacy`, that policy SHALL have an explicit non-negative Controller Dispatch Ceiling.
 The `shadow_legacy` record SHALL deliberately have no ceiling, SHALL authorize none of the new production capacity semantics, and SHALL remain distinct from a missing policy record.
@@ -37,6 +37,11 @@ This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, and §13
 #### Scenario: Removed inventory is not operationally backfilled
 - **WHEN** a Node is already durably `removed` at the expand migration boundary
 - **THEN** Orchard does not create an operational `shadow_legacy` policy for that Node
+
+#### Scenario: Removed tombstone re-enrolls under the current phase
+- **WHEN** a durably removed Node passes a new Node Admission
+- **THEN** Orchard retains the historical policy evidence of the tombstone
+- **AND** Orchard persists a new policy under the then-current enforcement phase
 
 #### Scenario: Explicit zero pauses new allocation
 - **WHEN** under `f11_enforcing` an admitted production Node has Controller Dispatch Ceiling `0`
@@ -360,7 +365,8 @@ The durable phase SHALL take the values `pre_cutover` and `enforcing` and SHALL 
 The phase row SHALL exist for an empty cluster and SHALL NOT be inferred from Node policy rows, Controller version, transport, or cluster occupancy.
 Cutover SHALL use the migration advisory lock and one transaction to validate the expected phase and fresh compatible all-consumers-ready evidence for every non-retired Controller, advance approved policies, record provenance, and change the phase atomically.
 Before that transaction, cutover SHALL enter a visible Controller-local quiescing barrier, refuse new temporary legacy claims, wait for zero live temporary claims and a new fresh aggregate observation reporting zero active requests for every non-removed admitted production Node, then acquire every applicable per-Node acceptance gate in stable order and revalidate the zero-occupancy boundary.
-Cutover SHALL exclude a removed tombstone only when durable lifecycle `removed`, revoked trust, and the existing successful removal audit all prove the exclusion; every other lifecycle state and unreachable Node SHALL remain a blocker.
+Enforcement cutover SHALL exclude a removed tombstone from approval, compatibility preflight, zero-occupancy quiescence, and cutover blockers only when durable lifecycle `removed`, revoked trust, and an existing successful removal audit all prove the exclusion.
+Every other lifecycle state, including `decommissioning`, and an unreachable Node SHALL remain a blocker.
 Cutover SHALL hold those gates through commit and local phase publication, SHALL NOT adopt live legacy work into Controller-accounted Allocation, and SHALL reopen legacy dispatch without phase or policy changes when quiescence or revalidation fails.
 Cutover SHALL require `expected_required_contract_version` to equal the locked singleton row, SHALL reject a mismatch as an optimistic concurrency conflict, and SHALL NOT change the durable required contract version.
 This refines `SPEC.md` §4.6.2, §8.3, and §13.2.
@@ -379,9 +385,8 @@ This refines `SPEC.md` §4.6.2, §8.3, and §13.2.
 
 #### Scenario: Removed tombstone does not block cutover
 - **WHEN** a former production Node has durable lifecycle `removed`, revoked trust, and a successful removal audit
-- **THEN** cutover retains its historical policy but excludes it from approval and zero-occupancy blockers
+- **THEN** cutover excludes it from approval, compatibility preflight, zero-occupancy quiescence, and cutover blockers
 - **AND** an unreachable, decommissioning, or otherwise non-removed Node receives no implicit exclusion
-- **AND** later re-enrollment persists a new admission policy under the current phase
 
 #### Scenario: Cutover excludes new legacy handoffs
 - **WHEN** cutover enters its Controller-local quiescing barrier

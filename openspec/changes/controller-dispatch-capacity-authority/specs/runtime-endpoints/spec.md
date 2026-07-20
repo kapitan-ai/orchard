@@ -4,7 +4,8 @@
 Orchard SHALL normalize a Runtime Endpoint target's capacity management class from Controller-owned configuration and admitted inventory before shared capacity evaluation.
 A target that resolves to admitted production inventory SHALL be `production_managed` regardless of transport or a conflicting unmanaged declaration.
 An unmanaged source-development or compatibility class SHALL require explicit mode-valid Controller configuration and MUST NOT be inferred from Node telemetry, transport, address, or probe failure.
-While a Controller publishes `dispatch_capacity_consumers_ready = false`, this classification SHALL remain diagnostics-only and SHALL NOT change dispatch behavior.
+Capacity management classification SHALL remain diagnostics-only and SHALL NOT change dispatch behavior unless the durable enforcement phase is `enforcing`, every named capacity consumer uses the shared evaluation, and the complete shared authority decision authorizes dispatch under the applicable enforcing contract.
+`dispatch_capacity_consumers_ready = true` alone SHALL NOT authorize classification to affect dispatch.
 Transport selection SHALL NOT determine whether the capacity-authority contract applies.
 An admitted production Node SHALL remain governed over BEAM, gRPC compatibility, or a static target reference.
 Production inventory resolution SHALL happen before any unmanaged exception is considered.
