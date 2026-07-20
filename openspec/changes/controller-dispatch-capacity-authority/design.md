@@ -183,17 +183,16 @@ Transport is not an authority classification.
 An admitted production Node remains governed over BEAM, gRPC compatibility, or a static target reference.
 Production inventory resolution happens before any source-development or compatibility exception is considered.
 
-Admitted Production Evidence Safety is always active and does not depend on the classification authority gate.
+Admitted Production Evidence Safety is a separate always-on invariant.
 An admitted target is `production_managed`, and missing, stale, invalid, or untrusted capacity evidence never downgrades it or authorizes unmanaged or compatibility semantics for it.
 
 Each normalized target has Controller-owned `capacity_management_class` of `production_managed`, `unmanaged_source_development`, or `unmanaged_compatibility`.
 An admitted inventory match always forces `production_managed`.
 Unmanaged source development is valid only in source-development mode, and unmanaged compatibility is valid only for explicitly enabled compatibility configuration that does not match admitted inventory.
 
-Classification becomes dispatch authority only when both conditions hold: `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all actually consume the shared evaluation, and the running Controller publishes `dispatch_capacity_consumers_ready = true`.
-Readiness is capability evidence, not an enforcement switch, and it cannot substitute for missing consumer wiring.
-Before both conditions hold, classification is diagnostics-only and does not change scheduling or dispatch.
-After both conditions hold, missing, malformed, conflicting, telemetry-derived, transport-derived, or probe-derived classification fails closed, and only a valid explicitly classified unmanaged source-development or static compatibility target may retain documented legacy capacity behavior through shared capacity evaluation.
+Classification is always-on target safety, not a staged behavior.
+Missing, malformed, conflicting, telemetry-derived, transport-derived, or probe-derived classification fails closed for production dispatch with no legacy normalization, and only a valid explicitly classified unmanaged source-development or static compatibility target may retain documented legacy capacity behavior through shared capacity evaluation.
+`dispatch_capacity_consumers_ready` proves only that the five named capacity consumers are ready for enforcement-cutover preflight; it never selects runtime behavior and never enables, disables, defers, or weakens this classification contract.
 That documented legacy behavior includes bounded ephemeral normalization of a missing or zero runtime maximum to `1`, which populates only the ephemeral Runtime Concurrency Enforcement Limit and never creates or backfills a Controller Dispatch Ceiling.
 An admitted production target can never fall back to unmanaged or compatibility behavior at any stage.
 Broader production probe-failure direct scheduling fallback cleanup remains out of scope for this change.
