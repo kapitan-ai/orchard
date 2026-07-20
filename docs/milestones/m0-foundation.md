@@ -144,14 +144,14 @@ Likely initial home for:
 
 Per `SPEC.md` §14, Milestone 0 exits when:
 
-PR #85 later extended the current `SPEC.md` acceptance contract after the milestone's recorded 2026-03-09 completion.
-The `Orchard.app` rollback and retention criterion and the mounted-DMG signature and entitlement criterion below are post-completion additions satisfied by the merged app-lifecycle work rather than gates used for the original completion record.
-
 - controller starts on macOS
 - node agent starts on macOS
 - `Orchard.app` assembles as a valid app bundle and passes sandboxed service-lifecycle rollback and retention tests
 - the verified app assembles into a mountable DMG without nested signature or entitlement drift
 - PKG installs launchd services correctly
+
+PR #85 later extended the current `SPEC.md` acceptance contract after the milestone's recorded 2026-03-09 completion.
+The `Orchard.app` rollback and retention criterion and the mounted-DMG signature and entitlement criterion above are post-completion additions satisfied by the merged app-lifecycle work rather than gates used for the original completion record.
 
 ## Supporting verification signals
 

@@ -4,6 +4,8 @@
 
 Defines Orchard's current macOS packaging and distribution requirements: signed PKG remains a parallel root-authorized local and offline installer, managed-device channels are deferred, unattended `installer` remains supported, and reusable distribution artifacts remain generic and free of customer or deployment secrets.
 
+This capability is the sole owner of the generic-distribution-artifact contract; `app-distribution-lifecycle` scopes itself to app-specific behavior and does not restate it. Homebrew has no requirement here: it is neither a current channel nor a v1 release gate, and adopting it would need its own change package.
+
 ## Requirements
 
 ### Requirement: PKG Supports Privileged Local Installation
@@ -18,7 +20,6 @@ Orchard's v1 macOS packaging contract in `SPEC.md` §11 SHALL retain signed PKG 
 ### Requirement: Managed Device Deployment Is Deferred
 
 Orchard's v1 macOS packaging contract in `SPEC.md` §11 SHALL NOT require MDM, Jamf, or enterprise managed-device deployment as a supported current distribution channel.
-Homebrew MAY be considered as an optional future or convenience channel, but SHALL NOT be a v1 release gate.
 
 #### Scenario: MDM is not an acceptance gate
 
