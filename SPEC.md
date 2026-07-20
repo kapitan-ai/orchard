@@ -242,9 +242,12 @@ Orchard.Application
 ├─ Orchard.API.Endpoint
 ├─ Orchard.RPC.ControllerServer
 ├─ Orchard.RPC.NodeClientPool
-├─ Orchard.RequestSupervisor
+├─ Orchard.Inference                                  # rest_for_one
+│  ├─ Orchard.Requests.Registry
+│  ├─ Orchard.DispatchCapacity.AllocationAuthority
+│  ├─ Orchard.Requests.Supervisor
+│  └─ Orchard.Inference.QueueManager
 ├─ Orchard.Scheduler.Supervisor
-│  ├─ Orchard.Scheduler.QueueManager
 │  ├─ Orchard.Scheduler.Dispatcher
 │  └─ Orchard.Scheduler.PlacementReconciler
 ├─ Orchard.NodeSupervisor
@@ -256,6 +259,8 @@ Orchard.Application
    ├─ Orchard.Leader.QuotaSweeper
    └─ Orchard.Leader.SupportBundleManager
 ```
+
+The inference subtree SHALL start `Orchard.DispatchCapacity.AllocationAuthority` ahead of the request supervisor and queue manager under a `rest_for_one` strategy, so losing the Controller allocation authority also restarts the processes whose dispatch claims it tracked instead of leaving orphaned claims behind.
 
 ### 3.3 Controller leadership
 
