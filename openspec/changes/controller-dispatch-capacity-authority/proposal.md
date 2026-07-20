@@ -27,9 +27,11 @@ This change separates the Node-owned dynamic enforcement limit from the Controll
 
 ## SPEC.md impact
 
-No `SPEC.md` edit is required for this change.
-The active delta is covered by the apex contract and traces exactly to `SPEC.md` §3.3, §4.1, §4.4, §4.5, §4.6.1, §4.6.2, §5.4, §5.5, §5.9, §7.3.1, §7.3.5, §7.4.1, §7.5, §7.5.3, §8, §8.2, §10.9, §11.9, and §13.2.
-`SPEC.md` remains the apex contract, and these OpenSpec deltas define the implementation and acceptance intent beneath it.
+The apex contract update for this change is complete.
+It principally established the accepted Controller dispatch-capacity authority contract in `SPEC.md` §4.6.2 and reconciled related requirements across affected sections.
+No further `SPEC.md` edit is required by this reconciliation.
+The active OpenSpec delta is covered by and traces to the current exact union `SPEC.md` §3.3, §4.1, §4.4, §4.5, §4.6.1, §4.6.2, §5.4, §5.5, §5.9, §7.3.1, §7.3.5, §7.4.1, §7.5, §7.5.3, §8, §8.2, §10.9, §11.9, and §13.2.
+`SPEC.md` remains the apex contract, and these OpenSpec deltas define the remaining implementation and acceptance intent beneath it.
 
 ## Out of scope
 
@@ -41,4 +43,6 @@ The active delta is covered by the apex contract and traces exactly to `SPEC.md`
 - Production probe-failure direct scheduling fallback cleanup.
 - Queue-source expiry and reservation provenance.
 - Configured-base versus live-capacity provenance.
-- Product-code implementation in this contract PR.
+- Further product-code implementation in this reconciliation PR.
+- PR #93 delivered the bounded non-enforcing foundation under this active change, but it did not complete the parent change.
+- The remaining operator approval, Controller retirement, cutover, quiescence, acceptance-gate, five-consumer wiring, and production-enforcement work remains active and will proceed through separate reviewed implementation slices.

@@ -11,7 +11,7 @@ The workflow's mutating transition MUST remain unavailable until `Orchard.Schedu
 Every admitted production Node SHALL have one durable Controller dispatch capacity policy.
 Registered but unadmitted production inventory SHALL NOT enter the migration cohort or require dispatch policy until Node Admission commits.
 The operational cohort SHALL end only when lifecycle `removed`, trust revocation, and the removal audit commit durably.
-A removed tombstone SHALL retain historical policy evidence.
+A removed tombstone SHALL retain historical policy evidence and SHALL be excluded from capacity evaluation.
 Later re-enrollment SHALL pass a new Node Admission and persist policy under the then-current phase.
 Except for the bounded pre-F11 cohort while its policy state is `shadow_legacy`, that policy SHALL have an explicit non-negative Controller Dispatch Ceiling.
 The `shadow_legacy` record SHALL deliberately have no ceiling, SHALL authorize none of the new production capacity semantics, and SHALL remain distinct from a missing policy record.
@@ -38,6 +38,12 @@ This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.2, and §13
 #### Scenario: Removed inventory is not operationally backfilled
 - **WHEN** a Node is already durably `removed` at the expand migration boundary
 - **THEN** Orchard does not create an operational `shadow_legacy` policy for that Node
+
+#### Scenario: Removed tombstone is excluded from capacity evaluation
+- **WHEN** a Node has durable lifecycle `removed`, revoked trust, and a successful removal audit
+- **AND** its policy remains retained
+- **THEN** Orchard preserves that policy as historical evidence
+- **AND** Orchard excludes the Node and its policy from capacity evaluation
 
 #### Scenario: Removed tombstone re-enrolls under the current phase
 - **WHEN** a durably removed Node passes a new Node Admission
