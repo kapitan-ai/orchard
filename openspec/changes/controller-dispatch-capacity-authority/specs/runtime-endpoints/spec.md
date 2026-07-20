@@ -4,46 +4,47 @@
 Orchard SHALL normalize a Runtime Endpoint target's capacity management class from Controller-owned configuration and admitted inventory before shared capacity evaluation.
 A target that resolves to admitted production inventory SHALL be `production_managed` regardless of transport or a conflicting unmanaged declaration.
 An unmanaged source-development or compatibility class SHALL require explicit mode-valid Controller configuration and MUST NOT be inferred from Node telemetry, transport, address, or probe failure.
-Until `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all actually consume the shared evaluation and the Controller publishes `dispatch_capacity_consumers_ready = true`, the normalized `capacity_management_class` SHALL remain diagnostics-only and SHALL NOT by itself change dispatch behavior.
-Before that wiring completes, classification-driven fail-closed behavior and unmanaged legacy-capacity exceptions SHALL NOT be dispatch-authoritative.
-`dispatch_capacity_consumers_ready = true` SHALL be capability evidence only and SHALL NOT by itself enable any classification-driven behavior.
+The classification authority gate SHALL be satisfied only when both conditions hold: `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all actually consume the shared evaluation; and the running Controller publishes `dispatch_capacity_consumers_ready = true`.
+Before the classification authority gate is satisfied, the normalized `capacity_management_class` SHALL remain diagnostics-only and SHALL NOT change scheduling or dispatch behavior.
+Before the classification authority gate is satisfied, classification-driven fail-closed behavior and unmanaged legacy-capacity exceptions SHALL NOT be dispatch-authoritative.
+`dispatch_capacity_consumers_ready = true` SHALL be capability evidence only and SHALL NOT by itself make classification authoritative, advance the durable enforcement phase or any policy, or authorize work.
 Independently of normalized classification, admitted production identity and the existing fresh-trusted-capacity-evidence and no-compatibility-fallback requirements SHALL remain enforced at every stage under `Admitted Production Evidence Safety`.
-After every named consumer actually consumes the shared evaluation and the Controller publishes `dispatch_capacity_consumers_ready = true`, classification MAY affect dispatch only as an input to the complete shared authority decision under the applicable durable phase contract.
+After the classification authority gate is satisfied, the normalized classification SHALL participate only through shared capacity evaluation, subject to the durable enforcement phase, policy, and every other capacity-authority gate.
 Classification alone SHALL NOT authorize dispatch, and every phase, policy, trust, lifecycle, health, freshness, runtime, placement, routing, breaker, allocation, temporary-claim, and claim-acquisition gate SHALL still apply.
 Transport selection SHALL NOT determine whether the capacity-authority contract applies.
 An admitted production Node SHALL remain governed over BEAM, gRPC compatibility, or a static target reference.
 Production inventory resolution SHALL happen before any unmanaged exception is considered.
 Every normalized Runtime Endpoint target SHALL carry Controller-owned `capacity_management_class` of `production_managed`, `unmanaged_source_development`, or `unmanaged_compatibility`.
 `unmanaged_source_development` SHALL be valid only in Controller source-development mode, and `unmanaged_compatibility` SHALL be valid only for explicitly enabled compatibility configuration that does not match admitted inventory.
-Before that wiring completes, missing, malformed, conflicting, Node-reported, transport-inferred, or probe-inferred classification SHALL be diagnostic only and SHALL NOT by itself alter dispatch.
-After that wiring completes, such classification SHALL make the complete shared authority decision fail closed for new dispatch.
+Before the classification authority gate is satisfied, missing, malformed, conflicting, Node-reported, transport-inferred, or probe-inferred classification SHALL be diagnostic only and SHALL NOT by itself alter dispatch.
+After the classification authority gate is satisfied, such classification SHALL make the complete shared authority decision fail closed for new dispatch.
 At no stage SHALL invalid, missing, or inferred classification become an unmanaged exception, and failure to resolve or probe a production-managed target SHALL NOT downgrade it to unmanaged behavior.
-Only a valid explicitly classified unmanaged source-development or compatibility target MAY retain documented unmanaged legacy capacity behavior once classification participates in the fully wired shared evaluation.
+Only a valid explicitly classified unmanaged source-development or compatibility target MAY retain documented unmanaged legacy capacity behavior after the classification authority gate is satisfied and only through shared capacity evaluation.
 This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 
 #### Scenario: Admitted gRPC target remains production managed
 - **WHEN** a gRPC compatibility target resolves to an admitted production Node
 - **THEN** the normalized class is `production_managed`
-- **AND** before the named consumers consume the shared evaluation, counterfactual diagnostics apply the production fail-closed contract without changing dispatch
-- **AND** after the named consumers consume the shared evaluation, Orchard requires an in-force Controller Dispatch Ceiling and the complete shared authority decision under the current durable phase
+- **AND** before the classification authority gate is satisfied, counterfactual diagnostics apply the production fail-closed contract without changing dispatch
+- **AND** after the classification authority gate is satisfied, Orchard requires an in-force Controller Dispatch Ceiling and the complete shared authority decision under the current durable phase
 
 #### Scenario: Static target matches production inventory
 - **WHEN** a static target reference resolves to an admitted production Node
 - **THEN** static configuration does not create an unmanaged exemption
-- **AND** before the named consumers consume the shared evaluation, the production classification is diagnostics-only
-- **AND** after the named consumers consume the shared evaluation, Orchard applies the complete shared authority decision under the current durable phase before dispatch
+- **AND** before the classification authority gate is satisfied, the production classification is diagnostics-only
+- **AND** after the classification authority gate is satisfied, Orchard applies the complete shared authority decision under the current durable phase before dispatch
 
 #### Scenario: Admitted inventory overrides unmanaged declaration
 - **WHEN** a target resolves to admitted production inventory
 - **AND** configuration declares an unmanaged capacity management class
 - **THEN** Orchard classifies the target as `production_managed`
-- **AND** before the named consumers consume the shared evaluation, that reclassification is diagnostics-only
-- **AND** after the named consumers consume the shared evaluation, Orchard applies the production contract for the current durable phase
+- **AND** before the classification authority gate is satisfied, that reclassification is diagnostics-only
+- **AND** after the classification authority gate is satisfied, Orchard applies the production contract for the current durable phase
 
 #### Scenario: Explicit unmanaged source development
 - **WHEN** Controller-owned source-development configuration sets `capacity_management_class = unmanaged_source_development`
 - **AND** the Controller is in source-development mode and the target does not resolve to admitted production inventory
-- **THEN** Orchard may retain documented unmanaged legacy capacity behavior once classification participates in the fully wired shared evaluation
+- **THEN** Orchard may retain documented unmanaged legacy capacity behavior only after the classification authority gate is satisfied and only through shared capacity evaluation
 - **AND** any missing-runtime normalization to `1` remains ephemeral runtime interpretation
 - **AND** Orchard creates no durable Controller Dispatch Ceiling from that interpretation
 
@@ -56,9 +57,29 @@ This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 #### Scenario: Management class is malformed or invalid for the mode
 - **WHEN** a target does not resolve to admitted inventory and its capacity management class is malformed, conflicting, or invalid for the Controller mode
 - **THEN** Orchard exposes `runtime_endpoint_management_class_invalid`
-- **AND** before the named consumers consume the shared evaluation, the invalid classification is diagnostic and does not alter dispatch
-- **AND** after the named consumers consume the shared evaluation, the complete shared authority decision fails closed for new dispatch under the current durable phase
+- **AND** before the classification authority gate is satisfied, the invalid classification is diagnostic and does not alter dispatch
+- **AND** after the classification authority gate is satisfied, the complete shared authority decision fails closed for new dispatch under the current durable phase
 - **AND** Orchard does not infer classification from transport, address, telemetry, or probe outcome, and never treats the invalid classification as an unmanaged exception
+
+#### Scenario: Consumer wiring without published readiness leaves the gate unsatisfied
+- **WHEN** `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all consume the shared evaluation
+- **AND** the running Controller does not publish `dispatch_capacity_consumers_ready = true`
+- **THEN** the classification authority gate is not satisfied
+- **AND** the normalized classification remains diagnostics-only and does not change scheduling or dispatch
+
+#### Scenario: Published readiness without consumer wiring leaves the gate unsatisfied
+- **WHEN** the running Controller publishes `dispatch_capacity_consumers_ready = true`
+- **AND** at least one named capacity consumer does not consume the shared evaluation
+- **THEN** the classification authority gate is not satisfied
+- **AND** the published readiness value does not compensate for the missing consumer wiring
+- **AND** the normalized classification remains diagnostics-only and does not change scheduling or dispatch
+
+#### Scenario: Satisfied gate makes classification an evaluation input only
+- **WHEN** every named capacity consumer consumes the shared evaluation
+- **AND** the running Controller publishes `dispatch_capacity_consumers_ready = true`
+- **THEN** the normalized classification participates only through shared capacity evaluation under the durable enforcement phase, policy, and every other capacity-authority gate
+- **AND** the classification does not by itself advance the durable enforcement phase or any policy
+- **AND** the classification does not by itself authorize dispatch
 
 ### Requirement: Placement Capacity Observation
 Placement Capacity SHALL be a first-class Runtime Endpoint Observation for Model Placements.
@@ -106,7 +127,7 @@ This requirement traces to `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, §7.5, and 
 Admitted production identity SHALL govern a Runtime Endpoint target at every stage, independently of the normalized `capacity_management_class`.
 When a target that resolves to admitted production inventory lacks fresh trusted capacity evidence before dispatch, Orchard SHALL NOT allocate or execute new work for that target through an unmanaged or compatibility fallback.
 `dispatch_capacity_consumers_ready` SHALL NOT weaken that prohibition in either state.
-Enforcing that prohibition SHALL NOT make the normalized classification dispatch-authoritative before every named capacity consumer actually consumes the shared evaluation.
+Enforcing that prohibition SHALL NOT make the normalized classification dispatch-authoritative before the classification authority gate is satisfied.
 Broader production probe-failure direct scheduling fallback cleanup remains a separate implementation finding and is not resolved by this requirement.
 This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 
@@ -116,4 +137,4 @@ This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 - **THEN** Orchard does not downgrade or reclassify the target to unmanaged behavior
 - **AND** Orchard does not allocate or execute new work through an unmanaged or compatibility fallback
 - **AND** that prohibition holds while `dispatch_capacity_consumers_ready` is `false`
-- **AND** before all named consumers actually consume the shared evaluation, normalized classification remains diagnostics-only and does not otherwise change dispatch behavior
+- **AND** before the classification authority gate is satisfied, normalized classification remains diagnostics-only and does not otherwise change dispatch behavior
