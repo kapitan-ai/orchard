@@ -10,8 +10,9 @@ Every other repository operation MUST NOT advance the durable phase, transition 
 The workflow's mutating transition MUST remain unavailable until `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all consume the shared evaluation and every non-retired Controller instance has fresh compatible capability evidence with `dispatch_capacity_consumers_ready = true`.
 Every admitted production Node SHALL have one durable Controller dispatch capacity policy.
 Registered but unadmitted production inventory SHALL NOT enter the migration cohort or require dispatch policy until Node Admission commits.
-The operational cohort SHALL end only when lifecycle `removed`, trust revocation, and the removal audit commit durably.
-A removed tombstone SHALL retain historical policy evidence and SHALL be excluded from capacity evaluation.
+Operational capacity evaluation SHALL exclude a Node and its policy only after durable lifecycle `removed`, trust revocation, and an existing successful removal audit have all committed.
+A qualifying removed tombstone SHALL retain historical policy evidence but SHALL NOT be passed into operational capacity evaluation.
+Until that conjunction is proven, the Node SHALL remain in the operational cohort and SHALL be evaluated fail closed.
 Later re-enrollment SHALL pass a new Node Admission and persist policy under the then-current phase.
 Except for the bounded pre-F11 cohort while its policy state is `shadow_legacy`, that policy SHALL have an explicit non-negative Controller Dispatch Ceiling.
 The `shadow_legacy` record SHALL deliberately have no ceiling, SHALL authorize none of the new production capacity semantics, and SHALL remain distinct from a missing policy record.
@@ -39,11 +40,16 @@ This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.2, and §13
 - **WHEN** a Node is already durably `removed` at the expand migration boundary
 - **THEN** Orchard does not create an operational `shadow_legacy` policy for that Node
 
-#### Scenario: Removed tombstone is excluded from capacity evaluation
+#### Scenario: Removed tombstone is excluded from operational capacity evaluation
 - **WHEN** a Node has durable lifecycle `removed`, revoked trust, and a successful removal audit
 - **AND** its policy remains retained
 - **THEN** Orchard preserves that policy as historical evidence
-- **AND** Orchard excludes the Node and its policy from capacity evaluation
+- **AND** Orchard excludes the Node and its policy from operational capacity evaluation
+
+#### Scenario: Unproven removal keeps the Node in the operational cohort
+- **WHEN** a Node has durable lifecycle `removed` but trust revocation or a successful removal audit is missing
+- **THEN** Orchard keeps the Node in the operational cohort
+- **AND** operational capacity evaluation of that Node fails closed
 
 #### Scenario: Removed tombstone re-enrolls under the current phase
 - **WHEN** a durably removed Node passes a new Node Admission
@@ -77,6 +83,9 @@ This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.2, and §13
 ### Requirement: Pure Shared Capacity Evaluation
 Orchard SHALL provide one pure transport-independent evaluator that accepts normalized policy, phase, management class, eligibility, freshness, capacity, allocation, placement, and temporary-claim inputs.
 The evaluator SHALL return Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
+Operational cohort selection SHALL be owned by `Capacity Authority Persistence` before the operational evaluator is invoked.
+The evaluator SHALL remain total: a direct non-Active lifecycle input, including `removed`, SHALL return Effective Dispatch Limit `0`, Dispatch Headroom `0`, no positive decision-specific available slots, and eligibility false.
+That defensive result SHALL NOT re-add a qualifying removed tombstone to the operational cohort.
 In `pre_cutover`, canonical Effective Dispatch Limit and Dispatch Headroom SHALL remain `0` while the temporary legacy decision is calculated separately.
 In `enforcing`, the evaluator SHALL calculate the approved minimum and headroom formulas and fail closed for every missing or invalid production prerequisite.
 For a trusted, Active, healthy admitted production Node with scheduler-fresh heartbeat and capacity observations, durable cluster phase `enforcing`, in-force explicit policy, and valid runtime evidence, Orchard SHALL compute Effective Dispatch Limit as the smaller of Runtime Concurrency Enforcement Limit and Controller Dispatch Ceiling.
@@ -160,9 +169,13 @@ This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
 - **WHEN** a target is unresolved, rejected, identity-mismatched, or otherwise untrusted
 - **THEN** its Effective Dispatch Limit is `0`
 
-#### Scenario: Lifecycle is not Active
-- **WHEN** a trusted Node is `admitted`, `cordoned`, `draining`, `maintenance`, `decommissioning`, or `removed`
+#### Scenario: Non-Active lifecycle is supplied defensively
+- **WHEN** a trusted Node input is `admitted`, `cordoned`, `draining`, `maintenance`, `decommissioning`, or `removed`
 - **THEN** its Effective Dispatch Limit is `0`
+- **AND** its Dispatch Headroom is `0`
+- **AND** it has no positive decision-specific available slots
+- **AND** its eligibility is false
+- **AND** that defensive result does not re-add a qualifying removed tombstone to the operational cohort
 
 #### Scenario: Health is degraded or unhealthy
 - **WHEN** the decision is `f11_enforcing` and a trusted Active Node is `degraded`, `unhealthy`, or `unreachable`

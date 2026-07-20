@@ -102,7 +102,7 @@ This requirement traces to `SPEC.md` §3.3, §8.2, and §13.2.
 - **AND** diagnostics do not claim the cluster can cut over
 
 ### Requirement: Counterfactual Capacity Diagnostics
-Shared operator Node status SHALL expose the complete evaluator result, durable phase, policy state, normalized management class, observation time, and stable reason codes.
+Shared operator Node status SHALL expose the complete evaluator result together with its observation time.
 Under `pre_cutover`, diagnostics SHALL label the result counterfactual, keep canonical enforcing values at `0`, and expose temporary legacy available slots separately.
 Counterfactual diagnostics MUST NOT mutate scheduler, queue, placement, reservation, or dispatch authorization behavior.
 This requirement traces to `SPEC.md` §4.6.2 and §7.3.5.
