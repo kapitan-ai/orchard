@@ -713,7 +713,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   describe "Sentry cancellation enrichment" do
     test "cancellation calls runtime endpoint cancel with opts", ctx do
       configure_stub(%{execute: :accepted_until_cancel})
-      schedule = %{ctx.schedule | request_timeout_ms: 1}
+      schedule = %{ctx.schedule | request_timeout_ms: 100}
 
       assert {:ok, events} =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,

@@ -336,8 +336,8 @@ defmodule Orchard.Dispatch.DispatchTest do
     test "timeout fails closed when cancellation cannot establish Node acceptance", %{
       bundle: bundle
     } do
-      # Use a very short timeout to trigger it
-      schedule = build_schedule("req-dispatch-timeout", request_timeout_ms: 1)
+      # Leave enough budget to begin execution, then time out before acceptance.
+      schedule = build_schedule("req-dispatch-timeout", request_timeout_ms: 100)
       execute = execute_request("req-dispatch-timeout")
       model_load = model_load_request(bundle)
 

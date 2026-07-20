@@ -1453,6 +1453,90 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
+  test "SPEC 5.9 caller death while waiting for acceptance prevents execution" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-caller-death-during-acceptance-wait"
+    caller = spawn(fn -> Process.sleep(:infinity) end)
+
+    {:ok, held_lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          capacity_schedule(authority, node_id, request_id),
+          execute_request(request_id),
+          model_load_request(node_id),
+          client_impl: @gate_client,
+          caller: caller
+        )
+      end)
+
+    try do
+      assert_receive :model_loaded
+      Process.exit(caller, :kill)
+      assert :ok = QueueManager.release_acceptance_gate(held_lease, authority: authority)
+
+      assert {:ok, {:error, {:dispatch_failed, :caller_disconnect}}} =
+               Task.yield(dispatch, 250)
+
+      refute_receive :execute_called
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+    after
+      Task.shutdown(dispatch, :brutal_kill)
+      QueueManager.release_acceptance_gate(held_lease, authority: authority)
+    end
+
+    assert {:ok, next_lease} =
+             QueueManager.acquire_acceptance_gate(node_id,
+               authority: authority,
+               gate_timeout_ms: 100
+             )
+
+    assert :ok = QueueManager.release_acceptance_gate(next_lease, authority: authority)
+  end
+
+  test "SPEC 5.9 acceptance waiting and streaming share one request timeout" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-shared-acceptance-deadline"
+    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 400}
+
+    {:ok, held_lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
+    started_at = System.monotonic_time(:millisecond)
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          schedule,
+          execute_request(request_id),
+          model_load_request(node_id),
+          client_impl: @cancellable_stream_client
+        )
+      end)
+
+    try do
+      assert_receive :model_loaded
+      Process.sleep(250)
+      assert :ok = QueueManager.release_acceptance_gate(held_lease, authority: authority)
+
+      assert_receive {:cancel_received, emitter}, 260
+      assert System.monotonic_time(:millisecond) - started_at < 550
+
+      send(emitter, :finish_cancel)
+      assert {:ok, _events} = Task.await(dispatch)
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+    after
+      Task.shutdown(dispatch, :brutal_kill)
+      QueueManager.release_acceptance_gate(held_lease, authority: authority)
+
+      case :persistent_term.get({CancellableStreamClient, :emitter}, nil) do
+        emitter when is_pid(emitter) -> Process.exit(emitter, :kill)
+        nil -> :ok
+      end
+    end
+  end
+
   defp claim_node_id do
     node_id = Ecto.UUID.generate()
     DispatchCapacityFixtures.put_probe_node_id(node_id)

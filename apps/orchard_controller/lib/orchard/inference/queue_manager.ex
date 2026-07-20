@@ -102,7 +102,13 @@ defmodule Orchard.Inference.QueueManager do
 
     case Keyword.fetch(opts, :gate_timeout_ms) do
       {:ok, timeout_ms} when is_integer(timeout_ms) and timeout_ms >= 0 ->
-        AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, timeout_ms)
+        AllocationAuthority.try_acquire_acceptance_gate(
+          authority,
+          node_id,
+          timeout_ms,
+          Keyword.get(opts, :abort_monitor_ref),
+          Keyword.get(opts, :abort_pid)
+        )
 
       _unbounded ->
         AllocationAuthority.acquire_acceptance_gate(authority, node_id)

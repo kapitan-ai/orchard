@@ -311,6 +311,32 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert result.available_slots > 0
   end
 
+  test "SPEC 5.9 a dead external caller cannot receive an acceptance grant" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    caller = spawn(fn -> Process.sleep(:infinity) end)
+
+    Process.exit(caller, :kill)
+    refute Process.alive?(caller)
+
+    assert {:error, :dispatch_capacity_caller_down} =
+             AllocationAuthority.try_acquire_acceptance_gate(
+               authority,
+               node_id,
+               100,
+               nil,
+               caller
+             )
+
+    assert {:ok, lease} =
+             QueueManager.acquire_acceptance_gate(node_id,
+               authority: authority,
+               gate_timeout_ms: 100
+             )
+
+    assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
+  end
+
   test "SPEC 5.9 a policy mutation gives up bounded instead of waiting out a dispatch" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = Ecto.UUID.generate()

@@ -57,7 +57,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   require Logger
 
   @maximum_cancel_drain_timeout_ms 5_000
-  @default_acceptance_gate_timeout_ms 30_000
 
   @doc "Returns this consumer's shared dispatch-capacity evaluation."
   @spec evaluate_dispatch_capacity(
@@ -236,8 +235,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     target = runtime_endpoint_target(schedule)
     request_id = Map.fetch!(schedule, :request_id)
     timeout_ms = Map.fetch!(schedule, :request_timeout_ms)
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     model_load_timeout = Map.get(schedule, :model_load_timeout_ms, 120_000)
     caller = Keyword.get(opts, :caller, self())
+    caller_ref = Process.monitor(caller)
     event_handler = Keyword.get(opts, :event_handler)
     on_node_resolved = Keyword.get(opts, :on_node_resolved)
     client = Keyword.get(opts, :client_impl, Inference.runtime_endpoint_client())
@@ -266,21 +267,27 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       metrics: metrics,
       model_load_timeout: model_load_timeout,
       timeout_ms: timeout_ms,
+      deadline_ms: deadline_ms,
       caller: caller,
+      caller_ref: caller_ref,
       cancel_drain_timeout_ms: cancel_drain_timeout_ms,
       event_handler: event_handler,
       on_node_resolved: on_node_resolved
     }
 
-    case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
-      :ok ->
-        dispatch_with_capacity_claim(context)
+    try do
+      case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
+        :ok ->
+          dispatch_with_capacity_claim(context)
 
-      {:error, reason} ->
-        error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
-        put_dispatch_terminal_context(error_metrics, target)
-        emit_timing_log(error_metrics, {:error, {:dispatch_failed, reason}})
-        {:error, {:dispatch_failed, reason}}
+        {:error, reason} ->
+          error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
+          put_dispatch_terminal_context(error_metrics, target)
+          emit_timing_log(error_metrics, {:error, {:dispatch_failed, reason}})
+          {:error, {:dispatch_failed, reason}}
+      end
+    after
+      Process.demonitor(caller_ref, [:flush])
     end
   end
 
@@ -552,7 +559,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       :ok ->
         stream_context = %{
           acceptance_gate: acceptance_gate,
-          caller: context.caller,
+          caller_ref: context.caller_ref,
           cancel_drain_timeout_ms: context.cancel_drain_timeout_ms,
           capacity_authority: capacity_authority(context.schedule),
           capacity_node_id: Map.get(context.schedule, :node_id),
@@ -560,7 +567,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           client: context.client,
           event_handler: context.event_handler,
           target: context.target,
-          timeout_ms: context.timeout_ms
+          timeout_ms: remaining_request_timeout_ms(context.deadline_ms)
         }
 
         do_execute_and_stream(stream_context, gated_execute_request, metrics)
@@ -619,21 +626,23 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       Keyword.put(
         opts,
         :gate_timeout_ms,
-        acceptance_gate_timeout_ms(Map.get(context, :timeout_ms))
+        remaining_request_timeout_ms(context.deadline_ms)
       )
+      |> Keyword.put(:abort_monitor_ref, context.caller_ref)
+      |> Keyword.put(:abort_pid, context.caller)
 
     case QueueManager.acquire_acceptance_gate(claim.node_id, gate_opts) do
       {:ok, lease} -> {:ok, {lease, opts}}
+      {:error, :dispatch_capacity_caller_down} -> {:error, :caller_disconnect}
       {:error, _reason} = error -> error
     end
   end
 
   defp acquire_dispatch_acceptance_gate(_context), do: {:ok, nil}
 
-  defp acceptance_gate_timeout_ms(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0,
-    do: timeout_ms
-
-  defp acceptance_gate_timeout_ms(_timeout_ms), do: @default_acceptance_gate_timeout_ms
+  defp remaining_request_timeout_ms(deadline_ms) do
+    max(deadline_ms - System.monotonic_time(:millisecond), 0)
+  end
 
   defp release_dispatch_acceptance_gate(nil), do: :ok
 
@@ -904,13 +913,18 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp normalize_placement_state(:failed), do: :failed
   defp normalize_placement_state(other), do: {:unexpected, other}
 
+  defp do_execute_and_stream(%{timeout_ms: timeout_ms}, _request, _metrics)
+       when timeout_ms <= 0 do
+    {:error, {:dispatch_failed, :dispatch_timeout}}
+  end
+
   defp do_execute_and_stream(stream_context, request, metrics) do
     %{
       acceptance_gate: acceptance_gate,
       cancel_drain_timeout_ms: cancel_drain_timeout_ms,
       capacity_authority: capacity_authority,
       capacity_node_id: capacity_node_id,
-      caller: caller,
+      caller_ref: caller_ref,
       channel: channel,
       client: client,
       event_handler: event_handler,
@@ -918,43 +932,54 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       timeout_ms: timeout_ms
     } = stream_context
 
-    caller_ref = Process.monitor(caller)
     timer_ref = start_timeout_timer(timeout_ms)
 
     execute_request = execute_operation(request)
 
     try do
-      case client.execute_inference(channel, execute_request, owner: self()) do
-        {:ok, task_ref} ->
-          receive_loop(
-            %{
-              caller_ref: caller_ref,
-              channel: channel,
-              client: client,
-              controller_session_id: execute_request.controller_session_id,
-              event_handler: event_handler,
-              accepted?: false,
-              acceptance_gate: acceptance_gate,
-              cancel_drain_timeout_ms: cancel_drain_timeout_ms,
-              capacity_authority: capacity_authority,
-              capacity_node_id: capacity_node_id,
-              cancellation_started_before_acceptance?: false,
-              metrics: metrics,
-              target: target,
-              task_ref: task_ref,
-              timer_ref: timer_ref
-            },
-            []
-          )
+      if caller_disconnected?(caller_ref) do
+        {:error, {:dispatch_failed, :caller_disconnect}}
+      else
+        case client.execute_inference(channel, execute_request, owner: self()) do
+          {:ok, task_ref} ->
+            receive_loop(
+              %{
+                caller_ref: caller_ref,
+                channel: channel,
+                client: client,
+                controller_session_id: execute_request.controller_session_id,
+                event_handler: event_handler,
+                accepted?: false,
+                acceptance_gate: acceptance_gate,
+                cancel_drain_timeout_ms: cancel_drain_timeout_ms,
+                capacity_authority: capacity_authority,
+                capacity_node_id: capacity_node_id,
+                cancellation_started_before_acceptance?: false,
+                metrics: metrics,
+                target: target,
+                task_ref: task_ref,
+                timer_ref: timer_ref
+              },
+              []
+            )
 
-        {:error, reason} ->
-          {:error, {:dispatch_failed, reason}}
+          {:error, reason} ->
+            {:error, {:dispatch_failed, reason}}
 
-        _invalid ->
-          {:error, {:dispatch_failed, :runtime_endpoint_protocol_error}}
+          _invalid ->
+            {:error, {:dispatch_failed, :runtime_endpoint_protocol_error}}
+        end
       end
     after
-      cleanup(timer_ref, caller_ref)
+      cleanup_timer(timer_ref)
+    end
+  end
+
+  defp caller_disconnected?(caller_ref) do
+    receive do
+      {:DOWN, ^caller_ref, :process, _pid, _reason} -> true
+    after
+      0 -> false
     end
   end
 
@@ -1244,7 +1269,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     ref
   end
 
-  defp cleanup(timer_ref, caller_ref) do
+  defp cleanup_timer(timer_ref) do
     # Cancel the timeout timer and flush if it already fired
     Process.cancel_timer(timer_ref)
 
@@ -1253,8 +1278,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     after
       0 -> :ok
     end
-
-    Process.demonitor(caller_ref, [:flush])
   end
 
   defp put_dispatch_base_context(%Metrics{} = metrics) do
