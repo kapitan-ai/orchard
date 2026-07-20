@@ -285,7 +285,7 @@ This requirement traces to `SPEC.md` §3.3, §8.2, and §13.2.
 - **AND** it refuses admission and dispatch rather than treating the cluster as `pre_cutover`
 
 ### Requirement: Counterfactual Capacity Diagnostics
-Shared operator Node status SHALL expose the complete evaluator result, durable phase, policy state, normalized management class, observation time, and stable reason codes.
+Shared operator Node status SHALL expose the complete evaluator result together with its observation time.
 Under `pre_cutover`, diagnostics SHALL label the result counterfactual, keep canonical enforcing values at `0`, and expose temporary legacy available slots separately.
 Counterfactual diagnostics MUST NOT mutate scheduler, queue, placement, reservation, or dispatch authorization behavior.
 The complete evaluator result SHALL include Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
@@ -415,7 +415,7 @@ Before cutover, admission and policy-mutation previews SHALL expose `controller_
 Under `f11_enforcing`, lowering below Controller-accounted Allocation SHALL require `capacity_reduction_drain` confirmation.
 Successful admission policy writes, approvals, ceiling changes, and cutover SHALL persist cluster-scoped audit evidence atomically with the authoritative mutation.
 Local CLI admission SHALL use actor type `operator` with bounded Controller-runtime principal provenance and the same leader-only atomic admission, policy, decision, and audit transaction as the Admin API.
-This refines `SPEC.md` §7.3.1, §7.4.1, §10.9, and §13.2.
+This refines `SPEC.md` §7.3.1, §7.4.1, §10.9, §11.9, and §13.2.
 
 #### Scenario: Admission preview resolves default
 - **WHEN** an administrator previews Node Admission without supplying a ceiling
