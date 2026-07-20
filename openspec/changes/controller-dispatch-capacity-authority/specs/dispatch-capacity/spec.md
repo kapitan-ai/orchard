@@ -4,9 +4,9 @@
 Orchard SHALL persist one cluster-scoped dispatch-capacity authority singleton initialized in enforcement phase `pre_cutover`, with a positive required contract version.
 Orchard SHALL persist one policy for each governed admitted production Node and SHALL distinguish `shadow_legacy`, `approved_explicit`, and `enforcing` from missing policy.
 A policy ceiling MUST be a non-negative integer for `approved_explicit` and `enforcing` and MUST be null only for `shadow_legacy`.
-Only the approved enforcement-cutover workflow MAY advance the durable phase or any policy to `enforcing`.
-Every other repository operation MUST NOT advance the durable phase or any policy to `enforcing`.
-The workflow's mutating transition MUST remain unavailable until MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation all consume the shared evaluation and every non-retired Controller has fresh compatible all-five-consumers-ready capability evidence.
+Only the approved enforcement-cutover workflow MAY advance the durable enforcement phase or any dispatch-capacity policy to `enforcing`.
+Every other repository operation MUST NOT advance the durable enforcement phase or any dispatch-capacity policy to `enforcing`.
+The workflow's mutating transition MUST remain unavailable until `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all consume the shared evaluation and every non-retired Controller instance has fresh compatible capability evidence with `dispatch_capacity_consumers_ready = true`.
 Every admitted production Node SHALL have one durable Controller dispatch capacity policy.
 Registered but unadmitted production inventory SHALL NOT enter the migration cohort or require dispatch policy until Node Admission commits.
 The operational cohort SHALL end only when lifecycle `removed`, trust revocation, and the removal audit commit durably.
@@ -19,18 +19,8 @@ It SHALL stop new allocation only under `f11_enforcing`; before cutover, it SHAL
 A missing policy or missing ceiling for an admitted production Node SHALL yield Effective Dispatch Limit `0`.
 A permanent null ceiling meaning runtime-managed capacity SHALL be prohibited.
 The durable ceiling SHALL NOT be inferred or backfilled from Runtime Endpoint telemetry.
-Existing production Nodes SHALL migrate through `shadow_legacy`, `approved_explicit`, and `enforcing` in that order.
 `shadow_legacy` SHALL apply only to non-removed production Nodes whose Node Admission committed before the F11 expand migration, selected from durable admission evidence, and SHALL be temporary and counterfactual.
-Operator approval SHALL persist a ceiling, actor, timestamp, and reason before policy becomes `approved_explicit`.
-No policy SHALL become `enforcing` until every named consumer uses the shared evaluation.
-After cutover, every otherwise eligible non-removed admitted production Node SHALL have enforcing explicit policy or fail closed.
-The durable phase SHALL take the values `pre_cutover` and `enforcing` and SHALL carry cutover provenance.
-The phase row SHALL exist for an empty cluster and SHALL NOT be inferred from Node policy rows, Controller version, transport, or cluster occupancy.
-Cutover SHALL use the migration advisory lock and one transaction to validate the expected phase and fresh compatible all-consumers-ready evidence for every non-retired Controller, advance approved policies, record provenance, and change the phase atomically.
-Before that transaction, cutover SHALL enter a visible Controller-local quiescing barrier, refuse new temporary legacy claims, wait for zero live temporary claims and a new fresh aggregate observation reporting zero active requests for every non-removed admitted production Node, then acquire every applicable per-Node acceptance gate in stable order and revalidate the zero-occupancy boundary.
-Cutover SHALL exclude a removed tombstone only when durable lifecycle `removed`, revoked trust, and the existing successful removal audit all prove the exclusion; every other lifecycle state and unreachable Node SHALL remain a blocker.
-Cutover SHALL hold those gates through commit and local phase publication, SHALL NOT adopt live legacy work into Controller-accounted Allocation, and SHALL reopen legacy dispatch without phase or policy changes when quiescence or revalidation fails.
-This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, §10.9, and §13.2.
+This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, and §13.2.
 
 #### Scenario: Expand migration creates bounded legacy shadow rows
 - **WHEN** the expand migration finds a non-removed production Node with durable successful admission evidence committed before the migration boundary
@@ -71,52 +61,6 @@ This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, §10.9, 
 - **AND** any temporary legacy behavior is named and non-authoritative
 - **AND** Orchard distinguishes the present `shadow_legacy` policy from a missing policy record
 - **AND** Orchard exposes a shadow mismatch reason when legacy behavior differs
-
-#### Scenario: Operator approves explicit policy
-- **WHEN** an authorized operator approves a ceiling for a shadow Node
-- **THEN** Orchard persists the value and provenance
-- **AND** the policy becomes `approved_explicit`
-- **AND** telemetry does not supply the value
-
-#### Scenario: Enforcement cutover finds missing policy
-- **WHEN** cutover evaluates an otherwise eligible admitted production Node without approved policy
-- **THEN** Orchard excludes the Node with Effective Dispatch Limit `0`
-- **AND** Orchard does not treat the missing record as legacy mode
-
-#### Scenario: Cutover advances approved policy
-- **WHEN** cutover verifies that every named semantic consumer uses the shared evaluation
-- **AND** a legacy Node has an `approved_explicit` ceiling with approval provenance
-- **THEN** Orchard advances that policy to `enforcing` as part of cutover
-- **AND** the Node can have a non-zero Effective Dispatch Limit only after that advancement
-
-#### Scenario: Cutover commits atomically
-- **WHEN** cutover proves every non-removed admitted production Node has approved policy and every non-retired Controller has fresh capability evidence at the required version with all five consumers ready
-- **AND** quiescing has reached zero live temporary claims and new fresh zero-active aggregate observations under the per-Node acceptance gates
-- **THEN** Orchard advances approved policies and the phase to `enforcing` in one transaction
-- **AND** Orchard records cutover actor, time, reason, and required contract version
-- **AND** any failed precondition or write rolls back both policy and phase changes
-
-#### Scenario: Cutover cannot reach zero occupancy
-- **WHEN** a temporary legacy claim remains live or a fresh aggregate observation remains nonzero, stale, missing, or malformed until the quiescing deadline
-- **THEN** Orchard leaves every policy and the durable phase unchanged
-- **AND** Orchard reopens legacy dispatch and exposes `dispatch_capacity_cutover_occupancy_not_zero`
-
-#### Scenario: Removed tombstone does not block cutover
-- **WHEN** a former production Node has durable lifecycle `removed`, revoked trust, and a successful removal audit
-- **THEN** cutover retains its historical policy but excludes it from approval and zero-occupancy blockers
-- **AND** an unreachable, decommissioning, or otherwise non-removed Node receives no implicit exclusion
-- **AND** later re-enrollment persists a new admission policy under the current phase
-
-#### Scenario: Cutover excludes new legacy handoffs
-- **WHEN** cutover enters its Controller-local quiescing barrier
-- **THEN** Orchard refuses new temporary legacy claims with `dispatch_capacity_cutover_quiescing`
-- **AND** existing accepted work drains without forced cancellation
-- **AND** no pre-acceptance handoff crosses the phase commit
-
-#### Scenario: Cutover expected version mismatches durable authority
-- **WHEN** a cutover request's `expected_required_contract_version` differs from the locked singleton row
-- **THEN** Orchard rejects cutover as an optimistic concurrency conflict
-- **AND** Orchard does not change the durable required version, policy states, or enforcement phase
 
 ### Requirement: Pure Shared Capacity Evaluation
 Orchard SHALL provide one pure transport-independent evaluator that accepts normalized policy, phase, management class, eligibility, freshness, capacity, allocation, placement, and temporary-claim inputs.
@@ -387,6 +331,69 @@ This refines `SPEC.md` §4.6.1, §4.6.2, and §7.5.3.
 - **AND** every production eligibility gate passes
 - **THEN** its Effective Dispatch Limit is `3`
 
+### Requirement: Capacity Policy Migration And Operator Approval
+Existing production Nodes SHALL migrate through `shadow_legacy`, `approved_explicit`, and `enforcing` in that order.
+Operator approval SHALL persist a ceiling, actor, timestamp, and reason before policy becomes `approved_explicit`.
+No policy SHALL become `enforcing` until every named consumer uses the shared evaluation.
+After cutover, every otherwise eligible non-removed admitted production Node SHALL have enforcing explicit policy or fail closed.
+This refines `SPEC.md` §4.6.2 and §13.2.
+
+#### Scenario: Operator approves explicit policy
+- **WHEN** an authorized operator approves a ceiling for a shadow Node
+- **THEN** Orchard persists the value and provenance
+- **AND** the policy becomes `approved_explicit`
+- **AND** telemetry does not supply the value
+
+#### Scenario: Enforcement cutover finds missing policy
+- **WHEN** cutover evaluates an otherwise eligible admitted production Node without approved policy
+- **THEN** Orchard excludes the Node with Effective Dispatch Limit `0`
+- **AND** Orchard does not treat the missing record as legacy mode
+
+#### Scenario: Cutover advances approved policy
+- **WHEN** cutover verifies that every named semantic consumer uses the shared evaluation
+- **AND** a legacy Node has an `approved_explicit` ceiling with approval provenance
+- **THEN** Orchard advances that policy to `enforcing` as part of cutover
+- **AND** the Node can have a non-zero Effective Dispatch Limit only after that advancement
+
+### Requirement: Durable Enforcement Cutover Phase
+The durable phase SHALL take the values `pre_cutover` and `enforcing` and SHALL carry cutover provenance.
+The phase row SHALL exist for an empty cluster and SHALL NOT be inferred from Node policy rows, Controller version, transport, or cluster occupancy.
+Cutover SHALL use the migration advisory lock and one transaction to validate the expected phase and fresh compatible all-consumers-ready evidence for every non-retired Controller, advance approved policies, record provenance, and change the phase atomically.
+Before that transaction, cutover SHALL enter a visible Controller-local quiescing barrier, refuse new temporary legacy claims, wait for zero live temporary claims and a new fresh aggregate observation reporting zero active requests for every non-removed admitted production Node, then acquire every applicable per-Node acceptance gate in stable order and revalidate the zero-occupancy boundary.
+Cutover SHALL exclude a removed tombstone only when durable lifecycle `removed`, revoked trust, and the existing successful removal audit all prove the exclusion; every other lifecycle state and unreachable Node SHALL remain a blocker.
+Cutover SHALL hold those gates through commit and local phase publication, SHALL NOT adopt live legacy work into Controller-accounted Allocation, and SHALL reopen legacy dispatch without phase or policy changes when quiescence or revalidation fails.
+Cutover SHALL require `expected_required_contract_version` to equal the locked singleton row, SHALL reject a mismatch as an optimistic concurrency conflict, and SHALL NOT change the durable required contract version.
+This refines `SPEC.md` §4.6.2, §8.3, and §13.2.
+
+#### Scenario: Cutover commits atomically
+- **WHEN** cutover proves every non-removed admitted production Node has approved policy and every non-retired Controller has fresh capability evidence at the required version with all five consumers ready
+- **AND** quiescing has reached zero live temporary claims and new fresh zero-active aggregate observations under the per-Node acceptance gates
+- **THEN** Orchard advances approved policies and the phase to `enforcing` in one transaction
+- **AND** Orchard records cutover actor, time, reason, and required contract version
+- **AND** any failed precondition or write rolls back both policy and phase changes
+
+#### Scenario: Cutover cannot reach zero occupancy
+- **WHEN** a temporary legacy claim remains live or a fresh aggregate observation remains nonzero, stale, missing, or malformed until the quiescing deadline
+- **THEN** Orchard leaves every policy and the durable phase unchanged
+- **AND** Orchard reopens legacy dispatch and exposes `dispatch_capacity_cutover_occupancy_not_zero`
+
+#### Scenario: Removed tombstone does not block cutover
+- **WHEN** a former production Node has durable lifecycle `removed`, revoked trust, and a successful removal audit
+- **THEN** cutover retains its historical policy but excludes it from approval and zero-occupancy blockers
+- **AND** an unreachable, decommissioning, or otherwise non-removed Node receives no implicit exclusion
+- **AND** later re-enrollment persists a new admission policy under the current phase
+
+#### Scenario: Cutover excludes new legacy handoffs
+- **WHEN** cutover enters its Controller-local quiescing barrier
+- **THEN** Orchard refuses new temporary legacy claims with `dispatch_capacity_cutover_quiescing`
+- **AND** existing accepted work drains without forced cancellation
+- **AND** no pre-acceptance handoff crosses the phase commit
+
+#### Scenario: Cutover expected version mismatches durable authority
+- **WHEN** a cutover request's `expected_required_contract_version` differs from the locked singleton row
+- **THEN** Orchard rejects cutover as an optimistic concurrency conflict
+- **AND** Orchard does not change the durable required version, policy states, or enforcement phase
+
 ### Requirement: Capacity Policy Management Surface
 `POST /admin/v1/nodes/:node_id/admit` SHALL accept optional non-negative `controller_dispatch_ceiling`, required non-empty `capacity_policy_reason`, `dry_run`, and required confirmation, and SHALL expose the resolved ceiling and phase-derived policy state in its Action Preview.
 `orchardctl nodes admit` SHALL accept optional `--controller-dispatch-ceiling`, required `--capacity-policy-reason`, `--dry-run`, and execution confirmation, and SHALL expose the same resolved ceiling, phase-derived state, and preview semantics in human and JSON output.
@@ -395,7 +402,7 @@ This refines `SPEC.md` §4.6.1, §4.6.2, and §7.5.3.
 `POST /ops/v1/controllers/:controller_id/retire` SHALL require cluster `admin`, Active leadership, reason, optimistic concurrency, side-effect-free Action Preview, and typed Controller ID confirmation.
 Retirement SHALL be blocked for the current Active Controller, a Controller holding the leadership lock, or the last non-retired Controller, and successful retirement SHALL atomically persist status plus cluster-scoped audit evidence.
 `PATCH /ops/v1/nodes/:node_id/dispatch-capacity-policy` and `POST /ops/v1/dispatch-capacity/enforcement-cutover` SHALL be leader-only, require cluster `admin`, support side-effect-free Action Preview, and revalidate authorization, leadership, durable phase, compatibility, and mutation blockers inside the transaction.
-Cutover SHALL accept `expected_required_contract_version`, require it to equal the locked singleton row, and SHALL NOT change the durable required version.
+The cutover endpoint SHALL accept `expected_required_contract_version` as a required request field and SHALL surface a version conflict as a side-effect-free preview and execution blocker.
 Policy updates SHALL require a non-negative ceiling, non-empty reason, optimistic concurrency value, and any consequence confirmation.
 Policy updates SHALL hold the target Node's acceptance gate through commit and local policy publication.
 Before cutover, admission and policy-mutation previews SHALL expose `controller_dispatch_ceiling_not_yet_enforcing` and SHALL NOT claim any approved ceiling changes temporary legacy allocation.
