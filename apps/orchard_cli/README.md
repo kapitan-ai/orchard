@@ -27,7 +27,8 @@ This README is orientation only. Normative CLI requirements live in
   to `1` when omitted, persisting the Controller Dispatch Ceiling atomically
   with admission. `nodes inspect` renders a counterfactual dispatch-capacity
   block that reports what F11 enforcement would decide without changing dispatch
-  behavior.
+  behavior, including the capacity management class, authority decision,
+  Placement Capacity, and decision-specific available slots.
 - Node lifecycle commands (`nodes cordon`, `nodes uncordon`, `nodes drain`,
   `nodes cancel-drain`, `nodes maintenance`, `nodes resume`,
   `nodes decommission`) on the shared Action Preview contract, with

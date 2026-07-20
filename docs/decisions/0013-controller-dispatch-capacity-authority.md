@@ -82,7 +82,7 @@ The term `Admitted Capacity` is rejected because it conflates Node Admission, Re
 ## Consequences
 
 Node Admission and operator policy changes become auditable capacity-authority writes.
-Diagnostics must show the separate runtime limit, Controller ceiling, effective limit, Controller allocation, headroom, policy state, and reason codes.
+Diagnostics must show the separate runtime limit, Controller ceiling, effective limit, Controller allocation, headroom, Placement Capacity, policy state, management class, authority decision, decision-specific available slots, eligibility, and reason codes.
 Production capacity becomes fail-closed when policy, trust, health, freshness, or runtime evidence is missing.
 Source-development and compatibility exceptions require explicit unmanaged classification and cannot be inferred from transport.
 

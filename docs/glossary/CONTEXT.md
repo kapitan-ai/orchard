@@ -563,9 +563,14 @@ While the phase is `pre_cutover`, an approved ceiling including `0` is not yet a
 _Avoid_: feature flag, per-Node toggle, Dispatch Capacity Policy State, migration flag
 
 **Capacity Management Class**:
-The Controller-owned classification of whether a target's capacity is production-managed through admitted inventory or explicitly unmanaged for compatibility.
+The Controller-owned classification of a target as `production_managed` through admitted inventory, or as explicitly unmanaged for source development or compatibility.
 Absent, malformed, or conflicting classification fails closed for production dispatch rather than normalizing to legacy behavior.
 _Avoid_: transport mode, node role, environment, deployment mode
+
+**Capacity Authority Decision**:
+The single outcome of the shared capacity evaluation, `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`, that names which capacity contract bounds a target and supplies its decision-specific available slots.
+A production-managed target dispatches only under `legacy_pre_cutover` or `f11_enforcing`, an unmanaged target only under its matching unmanaged decision, and `fail_closed` never authorizes dispatch.
+_Avoid_: Capacity Management Class, Dispatch Capacity Enforcement Phase, Dispatch Capacity Policy State, Scheduler Reason Code
 
 **Counterfactual Capacity Diagnostics**:
 The read-only report of what the shared capacity evaluation would decide if enforcement were live, exposed while every capacity consumer keeps its current behavior.
