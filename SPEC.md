@@ -1003,7 +1003,10 @@ If policy mutation holds the gate first, later revalidation SHALL observe the ne
 Enforcement cutover SHALL use the cluster transition barrier and every Node acceptance gate in stable order so no temporary legacy claim or pre-acceptance handoff can cross the phase change.
 These gates define one live Active Controller's F11 linearization boundary and are not a substitute for M7 leadership fencing or durable dispatch permits.
 
-One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, explicit legacy-pre-cutover or F11-enforcing decision, decision-specific available slots, eligibility, and stable reason codes.
+One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, explicit authority decision of `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`, decision-specific available slots, eligibility, and stable reason codes.
+For a `production_managed` target, only `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom SHALL authorize dispatch.
+A valid explicitly classified unmanaged target SHALL be authorized only through its matching `unmanaged_source_development` or `unmanaged_compatibility` decision and its documented unmanaged legacy-capacity behavior.
+`fail_closed` SHALL NEVER authorize dispatch.
 `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node observation queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation SHALL consume that evaluation without re-deriving the formulas or defaulting missing production policy to `1`.
 Transport selection SHALL NOT classify capacity authority.
 An admitted production Node remains governed by this contract over BEAM, gRPC compatibility, or a static target reference.
@@ -1242,6 +1245,7 @@ BEAM Runtime Endpoint observations MAY refresh queue capacity only when the targ
 Runtime Endpoint Admission Candidates SHALL NOT publish queue lane capacity.
 Queue lane capacity SHALL come only from trusted active Nodes or Runtime Endpoints resolved to trusted active Nodes.
 Configured base lane capacity and live capacity sources SHALL NOT authorize production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
+A valid explicitly classified unmanaged target SHALL instead be bounded by its matching `unmanaged_source_development` or `unmanaged_compatibility` decision and that decision's available slots.
 
 ### 5.5 Eligibility filter
 
@@ -1252,7 +1256,7 @@ A node is eligible only if all conditions are true:
 * pool is allowed by routing policy
 * model format is supported by node runtime
 * node has enough memory headroom
-* the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom
+* for a `production_managed` target, the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom; for a valid explicitly classified unmanaged target, the decision is its matching `unmanaged_source_development` or `unmanaged_compatibility` with positive available slots
 * model placement concurrency not exceeded
 * no placement/node circuit breaker suppresses dispatch
 
@@ -1277,7 +1281,8 @@ Eligibility condition:
 available_memory_bytes >= required_bytes
 ```
 
-Endpoint node concurrency is not exceeded only when the shared capacity evaluation returns `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with Dispatch Headroom greater than `0`.
+Endpoint node concurrency is not exceeded only when the shared capacity evaluation returns, for a `production_managed` target, `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with Dispatch Headroom greater than `0`, or, for a valid explicitly classified unmanaged target, its matching `unmanaged_source_development` or `unmanaged_compatibility` decision with positive available slots.
+`fail_closed` never satisfies this condition.
 Under `f11_enforcing`, a degraded, unhealthy, unreachable, non-Active, untrusted, scheduler-stale, or policy-missing admitted production Node SHALL have Effective Dispatch Limit `0` and SHALL be ineligible for new work.
 Model placement concurrency is evaluated independently through valid matching Placement Capacity.
 Both endpoint-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.

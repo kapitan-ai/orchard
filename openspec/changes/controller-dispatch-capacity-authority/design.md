@@ -140,7 +140,7 @@ One pure transport-independent evaluation returns:
 - Durable enforcement phase.
 - Policy state.
 - Normalized target `capacity_management_class`.
-- Authority decision, `legacy_pre_cutover`, `f11_enforcing`, or fail-closed.
+- Authority decision, `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`.
 - Decision-specific available slots, including temporary `legacy_pre_cutover_available_slots` when applicable.
 - Eligibility.
 - Stable reason codes.
