@@ -69,7 +69,7 @@ This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.3, and §13
 
 ### Requirement: Pure Shared Capacity Evaluation
 Orchard SHALL provide one pure transport-independent evaluator that accepts normalized policy, phase, management class, eligibility, freshness, capacity, allocation, placement, and temporary-claim inputs.
-The evaluator SHALL return Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
+The evaluator SHALL return Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
 In `pre_cutover`, canonical Effective Dispatch Limit and Dispatch Headroom SHALL remain `0` while the temporary legacy decision is calculated separately.
 In `enforcing`, the evaluator SHALL calculate the approved minimum and headroom formulas and fail closed for every missing or invalid production prerequisite.
 For a trusted, Active, healthy admitted production Node with scheduler-fresh heartbeat and capacity observations, durable cluster phase `enforcing`, in-force explicit policy, and valid runtime evidence, Orchard SHALL compute Effective Dispatch Limit as the smaller of Runtime Concurrency Enforcement Limit and Controller Dispatch Ceiling.
@@ -287,7 +287,7 @@ This requirement traces to `SPEC.md` §3.3, §8.2, §8.3, and §13.2.
 Shared operator Node status SHALL expose the complete evaluator result, durable phase, policy state, normalized management class, observation time, and stable reason codes.
 Under `pre_cutover`, diagnostics SHALL label the result counterfactual, keep canonical enforcing values at `0`, and expose temporary legacy available slots separately.
 Counterfactual diagnostics MUST NOT mutate scheduler, queue, placement, reservation, or dispatch authorization behavior.
-The complete evaluator result SHALL include the authority decision, Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, and Placement Capacity.
+The complete evaluator result SHALL include the authority decision, Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, and normalized target management class.
 Under `legacy_pre_cutover`, diagnostics SHALL expose temporary `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state while keeping the canonical F11 Effective Dispatch Limit and Dispatch Headroom at `0`.
 The stable reason vocabulary SHALL distinguish degraded health, missing policy, invalid policy, explicit zero, ceiling exhaustion, runtime-limit uncertainty or exhaustion, headroom exhaustion, placement exhaustion, revalidation failure, pre-cutover legacy mode, phase-policy mismatch, missing or invalid target management class, shadow mismatch, and unapproved policy.
 Public inference errors SHALL retain existing sanitized `cluster_busy`, `queue_timeout`, and dispatch error contracts.

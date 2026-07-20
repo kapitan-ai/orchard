@@ -27,7 +27,8 @@ This change separates the Node-owned dynamic enforcement limit from the Controll
 
 ## SPEC.md impact
 
-This change updates `SPEC.md` §4.1, §4.4, §4.6.1, new §4.6.2, §5.4, §5.5, §5.9, §7.3.5, §7.5.3, §8, §10.9, and §13.2.
+No `SPEC.md` edit is required for this change.
+The active delta is covered by the apex contract and traces exactly to `SPEC.md` §3.3, §4.1, §4.4, §4.5, §4.6.1, §4.6.2, §5.4, §5.5, §5.7, §5.9, §7.3.1, §7.3.5, §7.4.1, §7.5, §7.5.3, §8, §8.2, §8.3, §10.9, §11.9, and §13.2.
 `SPEC.md` remains the apex contract, and these OpenSpec deltas define the implementation and acceptance intent beneath it.
 
 ## Out of scope
