@@ -50,8 +50,8 @@ After cutover, a missing policy fails closed with Effective Dispatch Limit `0`.
 One durable cluster-wide enforcement phase distinguishes `pre_cutover` from `enforcing` and records the required contract version plus cutover provenance.
 Admission locks and reads that marker in its transaction instead of inferring cutover from policy rows, Controller version, or cluster occupancy.
 In `pre_cutover`, every named consumer uses one shared legacy decision while F11 Effective Dispatch Limit and Dispatch Headroom remain counterfactual zero for `shadow_legacy` and `approved_explicit`.
-That decision centrally freezes the pre-F11 calculation as positive fresh runtime maximum or fallback `1`, minus non-negative fresh reported aggregate active count or fallback `0`, floored at zero, under the pre-F11 trusted, Active, healthy-or-degraded, fresh, placement, and routing gates.
-Every legacy dispatch also acquires one serialized Controller-local temporary claim across all placements and lanes, and the shared temporary available-slot calculation subtracts both reported allocation and live temporary claims.
+That decision centrally freezes the pre-F11 calculation as positive fresh runtime maximum or fallback `1`, minus non-negative fresh reported aggregate active count or fallback `0` and live temporary legacy claims, with the complete result floored at zero exactly once, equivalent to `max(limit - reported - claimed, 0)`, under the pre-F11 trusted, Active, healthy-or-degraded, fresh, placement, and routing gates.
+Every legacy dispatch also acquires one serialized Controller-local temporary claim across all placements and lanes, and that live claim count is one of the operands subtracted before the single final floor.
 The claim remains through Node acceptance and terminal completion so concurrent lanes cannot spend the same temporary slot.
 Cutover requires fresh evidence from every non-retired Controller whose published contract version exactly equals the locked required version and whose all-consumers-ready declaration is true, atomically advances approved policies and the marker, and makes a Controller that cannot enforce the recorded contract version fail closed after cutover.
 Cutover quiesces new legacy claims, waits for all temporary claims to release and for new fresh aggregate observations to report zero active requests on every non-removed admitted production Node, then holds every applicable per-Node acceptance gate while it revalidates and commits.
@@ -82,7 +82,7 @@ The term `Admitted Capacity` is rejected because it conflates Node Admission, Re
 ## Consequences
 
 Node Admission and operator policy changes become auditable capacity-authority writes.
-Diagnostics must show the separate runtime limit, Controller ceiling, effective limit, Controller allocation, headroom, policy state, and reason codes.
+Diagnostics must show the separate runtime limit, Controller ceiling, effective limit, Controller allocation, headroom, Placement Capacity, policy state, management class, authority decision, decision-specific available slots, eligibility, and reason codes.
 Production capacity becomes fail-closed when policy, trust, health, freshness, or runtime evidence is missing.
 Source-development and compatibility exceptions require explicit unmanaged classification and cannot be inferred from transport.
 

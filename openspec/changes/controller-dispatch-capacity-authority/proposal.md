@@ -27,8 +27,21 @@ This change separates the Node-owned dynamic enforcement limit from the Controll
 
 ## SPEC.md impact
 
-This change updates `SPEC.md` §4.1, §4.4, §4.6.1, new §4.6.2, §5.4, §5.5, §5.9, §7.3.5, §7.5.3, §8, §10.9, and §13.2.
-`SPEC.md` remains the apex contract, and these OpenSpec deltas define the implementation and acceptance intent beneath it.
+The apex contract update for this change is complete.
+It principally established the accepted Controller dispatch-capacity authority contract in `SPEC.md` §4.6.2 and reconciled related requirements across affected sections.
+This reconciliation closes one narrow §4.6.2 output-enumeration gap by adding Placement Capacity and decision-specific available slots to the shared evaluation output, matching the approved parent contract and the corresponding fields already present in the shipped `Orchard.DispatchCapacity.Evaluator.Result`.
+It closes the matching §7.3.5 operator-diagnostics enumeration gap by exposing Placement Capacity, decision-specific available slots, and eligibility consistently with §4.6.2.
+It also reconciles the shared authority-decision vocabulary in §4.6.2 with the shipped evaluator by naming `unmanaged_source_development`, `unmanaged_compatibility`, and `fail_closed`, while stating that only `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom authorizes a `production_managed` target and that `fail_closed` never authorizes dispatch or proceeds to `ExecuteInference`.
+It introduces no unmanaged authorization or unmanaged dispatch mechanism: §5.4, §5.5, and the §5.9 dispatch sequence keep their existing production-managed authorization, eligibility, degraded-health, and lifecycle semantics, and the existing §4.6.2 legacy exception continues to govern valid explicitly classified unmanaged targets.
+The one further §5.9 change is ordering: trusted admitted production inventory and identity SHALL resolve before configured classification is applied, matching §4.6.2.
+It makes no further `SPEC.md` behavior change beyond these reconciliations.
+The active OpenSpec delta is covered by and traces to the current exact union `SPEC.md` §3.3, §4.1, §4.4, §4.5, §4.6.1, §4.6.2, §5.4, §5.5, §5.9, §7.3.1, §7.3.5, §7.4.1, §7.5, §7.5.3, §8, §8.2, §10.9, §11.9, and §13.2.
+`SPEC.md` remains the apex contract, and these OpenSpec deltas define the remaining implementation and acceptance intent beneath it.
+
+## Delivery state
+
+PR #93 delivered the non-enforcing foundation only.
+The remaining product-code implementation remains active in this parent change.
 
 ## Out of scope
 
@@ -40,4 +53,4 @@ This change updates `SPEC.md` §4.1, §4.4, §4.6.1, new §4.6.2, §5.4, §5.5, 
 - Production probe-failure direct scheduling fallback cleanup.
 - Queue-source expiry and reservation provenance.
 - Configured-base versus live-capacity provenance.
-- Product-code implementation in this contract PR.
+- Further product-code implementation in this reconciliation PR.

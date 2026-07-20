@@ -158,6 +158,7 @@ Console Nodes live diagnostics probe the configured Runtime Endpoint targets rat
 Scheduler and dispatch orchestration crashes after request validation terminalize the durable request as a failed `orchestration_error` with sanitized public error payloads instead of leaving it active.
 
 Alongside that Node-owned limit, the controller persists its own durable per-Node Controller Dispatch Ceiling and a cluster-wide dispatch-capacity enforcement phase, and evaluates both through one pure shared evaluator.
+The evaluator first normalizes the target's Controller-owned capacity management class — admitted inventory always resolves to `production_managed`, and an unmanaged source-development or compatibility class requires explicit configuration — and then returns one authority decision (`legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`) with that decision's available slots, Placement Capacity, and stable reason codes.
 That evaluation is counterfactual today: the phase stays `pre_cutover`, the evaluator feeds diagnostics only, and scheduling, queue admission, and dispatch keep consuming the capacity telemetry described above.
 See `SPEC.md` §4.6.2 and `docs/decisions/0013-controller-dispatch-capacity-authority.md` for the target authority boundary.
 

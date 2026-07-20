@@ -1003,7 +1003,9 @@ If policy mutation holds the gate first, later revalidation SHALL observe the ne
 Enforcement cutover SHALL use the cluster transition barrier and every Node acceptance gate in stable order so no temporary legacy claim or pre-acceptance handoff can cross the phase change.
 These gates define one live Active Controller's F11 linearization boundary and are not a substitute for M7 leadership fencing or durable dispatch permits.
 
-One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, durable enforcement phase, policy state, normalized target management class, explicit legacy-pre-cutover or F11-enforcing decision, eligibility, and stable reason codes.
+One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, explicit authority decision of `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`, decision-specific available slots, eligibility, and stable reason codes.
+For a `production_managed` target, only `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom SHALL authorize dispatch.
+`fail_closed` SHALL NEVER authorize dispatch.
 `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node observation queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation SHALL consume that evaluation without re-deriving the formulas or defaulting missing production policy to `1`.
 Transport selection SHALL NOT classify capacity authority.
 An admitted production Node remains governed by this contract over BEAM, gRPC compatibility, or a static target reference.
@@ -1046,7 +1048,7 @@ Every Controller SHALL read the durable phase at boot, readiness, Active-role ac
 A Controller that cannot enforce the marker's required contract version SHALL fail readiness and refuse admission and dispatch after cutover rather than treating the cluster as `pre_cutover`.
 The migration SHALL NOT assign existing Nodes a ceiling of `1`, infer a ceiling from telemetry, or treat a missing policy record as legacy state.
 
-Operator diagnostics SHALL expose durable enforcement phase, policy state, normalized target management class, authority decision, Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, the relevant observation time, and stable reason codes.
+Operator diagnostics SHALL expose durable enforcement phase, policy state, normalized target management class, authority decision, Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, decision-specific available slots, eligibility, the relevant observation time, and stable reason codes.
 While the decision is `legacy_pre_cutover`, diagnostics SHALL additionally expose `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state as temporary non-authoritative migration evidence and SHALL keep Effective Dispatch Limit and Dispatch Headroom at `0`.
 Stable capacity reason codes SHALL include `node_health_degraded`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_not_yet_enforcing`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_pre_cutover_legacy`, `dispatch_capacity_phase_policy_mismatch`, `dispatch_capacity_cutover_quiescing`, `dispatch_capacity_cutover_occupancy_not_zero`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
 The term `Admitted Capacity` SHALL NOT be used for any of these concepts.
@@ -1278,6 +1280,7 @@ available_memory_bytes >= required_bytes
 ```
 
 Endpoint node concurrency is not exceeded only when the shared capacity evaluation returns `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with Dispatch Headroom greater than `0`.
+`fail_closed` never satisfies this condition.
 Under `f11_enforcing`, a degraded, unhealthy, unreachable, non-Active, untrusted, scheduler-stale, or policy-missing admitted production Node SHALL have Effective Dispatch Limit `0` and SHALL be ineligible for new work.
 Model placement concurrency is evaluated independently through valid matching Placement Capacity.
 Both endpoint-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.
@@ -1414,7 +1417,7 @@ schedule(req):
 Dispatch sequence:
 
 1. reserve request in request FSM (`scheduled`)
-2. resolve trusted production identity and consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots
+2. resolve trusted admitted production inventory and identity before applying configured classification, then consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots; `fail_closed` SHALL NOT proceed to `ExecuteInference`
 3. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
 4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
 5. if revalidation fails, release the allocation exactly once and requeue or fail under the existing queue deadline and public error contract

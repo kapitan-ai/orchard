@@ -71,8 +71,8 @@ Admission locks and reads it inside the admission transaction, so the initial po
 
 The shared evaluator takes the durable phase as an explicit input.
 In `pre_cutover`, `shadow_legacy` and `approved_explicit` return counterfactual F11 values of zero plus one explicit legacy decision consumed by all named consumers.
-That decision centrally calculates temporary available slots as positive fresh runtime `max_concurrency` or fallback `1`, minus non-negative fresh aggregate `active_request_count` or fallback `0`, floored at `0`.
-It then subtracts unique non-released Controller-local temporary legacy claims, acquired serially across all placements and lanes and retained through terminal completion.
+The decision centrally selects `legacy_pre_cutover_limit` as positive fresh runtime `max_concurrency` or fallback `1`, `legacy_pre_cutover_reported_allocation` as non-negative fresh aggregate `active_request_count` or fallback `0`, and `legacy_pre_cutover_claimed_allocation` as the count of unique non-released Controller-local temporary legacy claims, acquired serially across all placements and lanes and retained through terminal completion.
+It calculates `legacy_pre_cutover_available_slots = max(legacy_pre_cutover_limit - legacy_pre_cutover_reported_allocation - legacy_pre_cutover_claimed_allocation, 0)` exactly once after all three operands resolve.
 Legacy revalidation excludes only the current recognized temporary claim, and every queue grant must acquire that claim even when queue-source capacity advertised the same slots to multiple lanes.
 It preserves the pre-F11 trusted, Active, healthy-or-degraded, fresh, placement, pool, format, memory, and breaker gates.
 Queue contribution, scheduler eligibility, QueueManager, admitted SingleNode, and dispatch revalidation consume those temporary slots directly instead of requiring positive Dispatch Headroom or re-deriving legacy concurrency.
@@ -136,10 +136,11 @@ One pure transport-independent evaluation returns:
 - Effective Dispatch Limit.
 - Controller-accounted Allocation.
 - Dispatch Headroom.
+- Placement Capacity.
 - Durable enforcement phase.
 - Policy state.
 - Normalized target `capacity_management_class`.
-- Authority decision, `legacy_pre_cutover`, `f11_enforcing`, or fail-closed.
+- Authority decision, `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`.
 - Decision-specific available slots, including temporary `legacy_pre_cutover_available_slots` when applicable.
 - Eligibility.
 - Stable reason codes.
@@ -181,19 +182,24 @@ Queue wake-up follows shared re-evaluation.
 Transport is not an authority classification.
 An admitted production Node remains governed over BEAM, gRPC compatibility, or a static target reference.
 Production inventory resolution happens before any source-development or compatibility exception is considered.
-Failure to resolve or probe a production-managed target cannot downgrade it to unmanaged legacy behavior.
+
+Admitted Production Evidence Safety is a separate always-on invariant.
+An admitted target is `production_managed`, and missing, stale, invalid, or untrusted capacity evidence never downgrades it or authorizes unmanaged or compatibility semantics for it.
 
 Each normalized target has Controller-owned `capacity_management_class` of `production_managed`, `unmanaged_source_development`, or `unmanaged_compatibility`.
 An admitted inventory match always forces `production_managed`.
 Unmanaged source development is valid only in source-development mode, and unmanaged compatibility is valid only for explicitly enabled compatibility configuration that does not match admitted inventory.
-Missing, malformed, conflicting, telemetry-derived, transport-derived, or probe-derived classification fails closed.
-Only a valid explicitly classified unmanaged source-development or static compatibility target may retain legacy capacity behavior.
-Compatibility normalization of missing or zero runtime maximum to `1` populates only the ephemeral Runtime Concurrency Enforcement Limit.
-It never creates or backfills a Controller Dispatch Ceiling.
+
+Classification is always-on target safety, not a staged behavior.
+Missing, malformed, conflicting, telemetry-derived, transport-derived, or probe-derived classification fails closed for production dispatch with no legacy normalization, and only a valid explicitly classified unmanaged source-development or static compatibility target may retain documented legacy capacity behavior through shared capacity evaluation.
+`dispatch_capacity_consumers_ready` proves only that the five named capacity consumers are ready for enforcement-cutover preflight; it never selects runtime behavior and never enables, disables, defers, or weakens this classification contract.
+That documented legacy behavior includes bounded ephemeral normalization of a missing or zero runtime maximum to `1`, which populates only the ephemeral Runtime Concurrency Enforcement Limit and never creates or backfills a Controller Dispatch Ceiling.
+An admitted production target can never fall back to unmanaged or compatibility behavior at any stage.
+Broader production probe-failure direct scheduling fallback cleanup remains out of scope for this change.
 
 ## Diagnostics
 
-Operator status exposes durable enforcement phase, policy state, normalized target management class, authority decision, all five aggregate capacity values, Placement Capacity, observation time, and stable reason codes.
+Operator status exposes all five canonical aggregate capacity values (Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, and Dispatch Headroom), plus Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, the relevant observation time, and stable reason codes.
 Pre-cutover status also exposes temporary `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state while the canonical F11 Effective Dispatch Limit and Dispatch Headroom remain `0`.
 At minimum, the fixed vocabulary includes:
 
@@ -221,9 +227,9 @@ The term `Admitted Capacity` is prohibited because it conflates unrelated admiss
 
 ## First implementation tracer
 
-The first tracer is intentionally non-enforcing.
-It adds the policy table and constraints, creates `shadow_legacy` rows for the existing cohort, adds the pure evaluator and truth-table tests, atomically persists admission default `1`, and exposes policy diagnostics.
-It does not advance any policy to `enforcing` and does not claim production enforcement.
+PR #93 delivered the first tracer as intentionally non-enforcing.
+It added the policy table and constraints, created `shadow_legacy` rows for the existing cohort, added the pure evaluator and truth-table tests, atomically persisted admission default `1`, and exposed policy diagnostics.
+It did not advance any policy to `enforcing` and did not claim production enforcement.
 
 The next implementation slice is the first enforcing vertical tracer.
 It must wire all five consumers, serialize temporary legacy and F11 allocation claims, add the transition barrier and per-Node acceptance gates, preserve each claim through model loading and Node acceptance, revalidate before execution, release once on every terminal path, and quiesce legacy occupancy before cutover.
