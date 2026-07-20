@@ -346,6 +346,59 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
              )
   end
 
+  test "SPEC 5.9 an abandoned bounded gate request cannot install a late lease" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    parent = self()
+
+    :ok = :sys.suspend(authority)
+
+    caller =
+      spawn(fn ->
+        started_at = System.monotonic_time(:millisecond)
+
+        result =
+          DispatchCapacity.with_policy_mutation_gate(
+            node_id,
+            fn -> send(parent, :abandoned_mutation_ran) end,
+            authority: authority,
+            gate_timeout_ms: 40
+          )
+
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at
+        send(parent, {:bounded_gate_result, self(), result, elapsed_ms})
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    try do
+      assert_receive {:bounded_gate_result, ^caller, {:error, reason}, elapsed_ms}, 250
+
+      assert reason in [
+               :dispatch_capacity_acceptance_gate_busy,
+               :dispatch_capacity_authority_unavailable
+             ]
+
+      assert elapsed_ms < 200
+      refute_receive :abandoned_mutation_ran
+
+      :ok = :sys.resume(authority)
+
+      assert :mutated =
+               DispatchCapacity.with_policy_mutation_gate(node_id, fn -> :mutated end,
+                 authority: authority,
+                 gate_timeout_ms: 100
+               )
+
+      refute_receive :abandoned_mutation_ran
+    after
+      :sys.resume(authority)
+      send(caller, :stop)
+    end
+  end
+
   test "SPEC 5.9 a policy mutation reports an unavailable authority instead of exiting" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = Ecto.UUID.generate()

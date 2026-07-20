@@ -32,17 +32,19 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     @moduledoc "Opaque ownership proof for one per-Node acceptance gate."
 
     @enforce_keys [:token, :node_id, :owner, :monitor_ref]
-    defstruct @enforce_keys
+    defstruct [:token, :node_id, :owner, :monitor_ref, guardian: nil]
 
     @type t :: %__MODULE__{
             token: reference(),
             node_id: Ecto.UUID.t(),
             owner: pid(),
-            monitor_ref: reference()
+            monitor_ref: reference(),
+            guardian: pid() | nil
           }
   end
 
   @gate_poll_interval_ms 25
+  @gate_response_margin_ms 1
 
   @type acceptance_gate_error ::
           :dispatch_capacity_acceptance_gate_busy
@@ -153,31 +155,99 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   def try_acquire_acceptance_gate(server, node_id, timeout_ms)
       when is_integer(timeout_ms) and timeout_ms >= 0 do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    poll_acceptance_gate(server, node_id, deadline)
+    caller = self()
+    request_ref = make_ref()
+
+    {guardian, monitor_ref} =
+      spawn_monitor(fn ->
+        acceptance_gate_guardian(caller, request_ref, server, node_id, deadline)
+      end)
+
+    await_acceptance_gate(guardian, monitor_ref, request_ref, deadline)
   end
 
   defp poll_acceptance_gate(server, node_id, deadline) do
-    case call_acceptance_gate(server, node_id) do
-      {:ok, _lease} = acquired ->
-        acquired
+    remaining_ms = remaining_ms(deadline)
 
-      :busy ->
-        if System.monotonic_time(:millisecond) < deadline do
-          Process.sleep(@gate_poll_interval_ms)
+    if remaining_ms <= 0 do
+      {:error, :dispatch_capacity_acceptance_gate_busy}
+    else
+      case call_acceptance_gate(server, node_id, deadline, remaining_ms) do
+        {:ok, _lease} = acquired ->
+          acquired
+
+        :busy ->
+          Process.sleep(min(@gate_poll_interval_ms, remaining_ms))
           poll_acceptance_gate(server, node_id, deadline)
-        else
-          {:error, :dispatch_capacity_acceptance_gate_busy}
-        end
 
-      :unavailable ->
-        {:error, :dispatch_capacity_authority_unavailable}
+        :expired ->
+          {:error, :dispatch_capacity_acceptance_gate_busy}
+
+        :unavailable ->
+          {:error, :dispatch_capacity_authority_unavailable}
+      end
     end
   end
 
-  defp call_acceptance_gate(server, node_id) do
-    GenServer.call(server, {:try_acquire_acceptance_gate, node_id})
+  defp call_acceptance_gate(server, node_id, deadline, remaining_ms) do
+    timeout_ms = max(remaining_ms - @gate_response_margin_ms, 1)
+    GenServer.call(server, {:try_acquire_acceptance_gate, node_id, deadline}, timeout_ms)
   catch
     :exit, _reason -> :unavailable
+  end
+
+  defp acceptance_gate_guardian(caller, request_ref, server, node_id, deadline) do
+    caller_monitor = Process.monitor(caller)
+
+    case poll_acceptance_gate(server, node_id, deadline) do
+      {:ok, lease} ->
+        lease = %{lease | guardian: self()}
+        send(caller, {request_ref, {:ok, lease}})
+        await_guardian_release(caller_monitor, lease.token)
+
+      {:error, _reason} = error ->
+        send(caller, {request_ref, error})
+    end
+  end
+
+  defp await_acceptance_gate(guardian, monitor_ref, request_ref, deadline) do
+    receive do
+      {^request_ref, result} ->
+        Process.demonitor(monitor_ref, [:flush])
+        result
+
+      {:DOWN, ^monitor_ref, :process, ^guardian, _reason} ->
+        {:error, :dispatch_capacity_authority_unavailable}
+    after
+      remaining_ms(deadline) ->
+        Process.exit(guardian, :kill)
+
+        receive do
+          {:DOWN, ^monitor_ref, :process, ^guardian, _reason} -> :ok
+        end
+
+        flush_acceptance_gate_result(request_ref)
+        {:error, :dispatch_capacity_acceptance_gate_busy}
+    end
+  end
+
+  defp await_guardian_release(caller_monitor, request_ref) do
+    receive do
+      {^request_ref, :release} -> :ok
+      {:DOWN, ^caller_monitor, :process, _caller, _reason} -> :ok
+    end
+  end
+
+  defp flush_acceptance_gate_result(request_ref) do
+    receive do
+      {^request_ref, _result} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp remaining_ms(deadline) do
+    max(deadline - System.monotonic_time(:millisecond), 0)
   end
 
   @doc "Releases an acceptance-gate lease idempotently."
@@ -189,7 +259,17 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @spec release_acceptance_gate(GenServer.server(), AcceptanceLease.t()) :: :ok
   def release_acceptance_gate(server, %AcceptanceLease{} = lease) do
     GenServer.call(server, {:release_acceptance_gate, lease})
+  after
+    release_guardian(lease)
   end
+
+  defp release_guardian(%AcceptanceLease{guardian: guardian, token: token})
+       when is_pid(guardian) do
+    send(guardian, {token, :release})
+    :ok
+  end
+
+  defp release_guardian(%AcceptanceLease{}), do: :ok
 
   @impl true
   def init(_init_arg) do
@@ -285,14 +365,17 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     end
   end
 
-  def handle_call({:try_acquire_acceptance_gate, node_id}, from, state) do
-    case Map.get(state.gates, node_id) do
-      nil ->
+  def handle_call({:try_acquire_acceptance_gate, node_id, deadline}, {owner, _tag} = from, state) do
+    cond do
+      remaining_ms(deadline) <= 0 or not Process.alive?(owner) ->
+        {:reply, :expired, state}
+
+      Map.has_key?(state.gates, node_id) ->
+        {:reply, :busy, state}
+
+      true ->
         {lease, state} = put_gate_owner(state, node_id, from, :queue.new())
         {:reply, {:ok, lease}, state}
-
-      _held ->
-        {:reply, :busy, state}
     end
   end
 
