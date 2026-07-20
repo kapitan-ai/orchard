@@ -1419,13 +1419,13 @@ schedule(req):
 Dispatch sequence:
 
 1. reserve request in request FSM (`scheduled`)
-2. resolve trusted production identity and consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots
-3. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
-4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
-5. if revalidation fails, release the allocation exactly once and requeue or fail under the existing queue deadline and public error contract
+2. consume the shared capacity authority decision; for a `production_managed` target, resolve trusted production identity and, under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots; for a valid explicitly classified unmanaged target, consume its matching `unmanaged_source_development` or `unmanaged_compatibility` decision with positive decision-specific available slots under the documented unmanaged legacy-capacity behavior, acquiring neither a Controller allocation nor a temporary legacy claim; `fail_closed` SHALL NOT proceed to `ExecuteInference`
+3. if placement not `loaded`, call `EnsureModelLoaded` while retaining any allocation or temporary legacy claim the decision established
+4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand, and `unmanaged_source_development` or `unmanaged_compatibility` SHALL revalidate positive decision-specific available slots with no Controller allocation or temporary legacy claim to exclude
+5. if revalidation fails, release any held allocation or temporary legacy claim exactly once and requeue or fail under the existing queue deadline and public error contract
 6. call `ExecuteInference`
 7. wait for `accepted` while retaining the Node acceptance gate, or treat failure before `accepted` as pre-acceptance failure
-8. after `accepted`, release the acceptance gate, retain the allocation or temporary legacy claim through terminal completion, and transition request to `running`
+8. after `accepted`, release the acceptance gate, retain any allocation or temporary legacy claim the decision established through terminal completion, and transition request to `running`
 
 Retry rule:
 

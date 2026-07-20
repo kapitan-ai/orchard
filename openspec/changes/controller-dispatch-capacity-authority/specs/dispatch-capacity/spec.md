@@ -114,7 +114,7 @@ For a `production_managed` target, every consumer SHALL accept either `legacy_pr
 A valid explicitly classified unmanaged target SHALL use `unmanaged_source_development` or `unmanaged_compatibility` only through its documented unmanaged legacy-capacity contract, and SHALL NOT be authorized under the production-managed paths.
 `fail_closed` SHALL NEVER authorize dispatch.
 Every existing routing, placement, breaker, liveness, loadability, and phase gate SHALL continue to apply under every decision.
-Dispatch SHALL re-run the same decision after model loading and immediately before `ExecuteInference`, using held-claim revalidation under both production-managed decisions and retaining the per-Node acceptance gate through Node acceptance.
+Dispatch SHALL re-run the same decision after model loading and immediately before `ExecuteInference`, using held-claim revalidation under both production-managed decisions, requiring positive decision-specific available slots with no held Controller allocation or temporary legacy claim under either unmanaged decision, and retaining the per-Node acceptance gate through Node acceptance.
 This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
 
 #### Scenario: Ceiling is the counterfactual binding limit
