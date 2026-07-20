@@ -9,9 +9,9 @@ Every normalized Runtime Endpoint target SHALL carry Controller-owned `capacity_
 Absent, malformed, conflicting, or unresolved classification SHALL fail closed for production dispatch with no legacy normalization.
 Only a valid explicitly classified unmanaged source-development or compatibility target MAY retain documented unmanaged legacy capacity behavior, and only through shared capacity evaluation.
 Classification SHALL NOT be inferred from Node telemetry, transport type, address shape, probe outcome, or adapter fallback.
-Failure to resolve or probe a production-managed target SHALL NOT downgrade it to unmanaged behavior, and invalid, missing, or inferred classification SHALL NOT become an unmanaged exception.
+Missing, stale, invalid, or unavailable trusted capacity evidence after a target is classified as `production_managed` is governed by the separate `Admitted Production Evidence Safety` requirement.
 Transport selection SHALL NOT determine whether the capacity-authority contract applies, and an admitted production Node SHALL remain governed over BEAM, gRPC compatibility, or a static target reference.
-Classification alone SHALL NOT authorize dispatch, and every phase, policy, trust, lifecycle, health, freshness, runtime, placement, routing, breaker, allocation, temporary-claim, and claim-acquisition gate SHALL still apply.
+Capacity management classification SHALL NOT by itself authorize dispatch, create an unmanaged exception, or relax production fail-closed behavior required by `SPEC.md` §4.6.2, and every phase, policy, trust, lifecycle, health, freshness, runtime, placement, routing, breaker, allocation, temporary-claim, and claim-acquisition gate SHALL still apply.
 `dispatch_capacity_consumers_ready` SHALL be Controller capability evidence for enforcement-cutover preflight only, and SHALL NOT enable, disable, defer, or weaken this classification contract.
 Admitted production identity and the fresh-trusted-capacity-evidence and no-compatibility-fallback prohibitions SHALL remain separately and always enforced under `Admitted Production Evidence Safety`.
 This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.

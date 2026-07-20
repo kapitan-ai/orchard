@@ -71,8 +71,8 @@ Admission locks and reads it inside the admission transaction, so the initial po
 
 The shared evaluator takes the durable phase as an explicit input.
 In `pre_cutover`, `shadow_legacy` and `approved_explicit` return counterfactual F11 values of zero plus one explicit legacy decision consumed by all named consumers.
-That decision centrally calculates temporary available slots as positive fresh runtime `max_concurrency` or fallback `1`, minus non-negative fresh aggregate `active_request_count` or fallback `0`, floored at `0`.
-It then subtracts unique non-released Controller-local temporary legacy claims, acquired serially across all placements and lanes and retained through terminal completion.
+The decision centrally selects `legacy_pre_cutover_limit` as positive fresh runtime `max_concurrency` or fallback `1`, `legacy_pre_cutover_reported_allocation` as non-negative fresh aggregate `active_request_count` or fallback `0`, and `legacy_pre_cutover_claimed_allocation` as the count of unique non-released Controller-local temporary legacy claims, acquired serially across all placements and lanes and retained through terminal completion.
+It calculates `legacy_pre_cutover_available_slots = max(legacy_pre_cutover_limit - legacy_pre_cutover_reported_allocation - legacy_pre_cutover_claimed_allocation, 0)` exactly once after all three operands resolve.
 Legacy revalidation excludes only the current recognized temporary claim, and every queue grant must acquire that claim even when queue-source capacity advertised the same slots to multiple lanes.
 It preserves the pre-F11 trusted, Active, healthy-or-degraded, fresh, placement, pool, format, memory, and breaker gates.
 Queue contribution, scheduler eligibility, QueueManager, admitted SingleNode, and dispatch revalidation consume those temporary slots directly instead of requiring positive Dispatch Headroom or re-deriving legacy concurrency.
@@ -199,7 +199,7 @@ Broader production probe-failure direct scheduling fallback cleanup remains out 
 
 ## Diagnostics
 
-Operator status exposes durable enforcement phase, policy state, normalized target management class, authority decision, all five aggregate capacity values, Placement Capacity, observation time, and stable reason codes.
+Operator status exposes all five canonical aggregate capacity values (Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, and Dispatch Headroom), plus Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, the relevant observation time, and stable reason codes.
 Pre-cutover status also exposes temporary `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state while the canonical F11 Effective Dispatch Limit and Dispatch Headroom remain `0`.
 At minimum, the fixed vocabulary includes:
 
