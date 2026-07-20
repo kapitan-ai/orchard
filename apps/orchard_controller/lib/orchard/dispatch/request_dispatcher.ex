@@ -54,6 +54,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   require Logger
 
   @maximum_cancel_drain_timeout_ms 5_000
+  @default_acceptance_gate_timeout_ms 30_000
 
   @doc "Returns this consumer's shared dispatch-capacity evaluation."
   @spec evaluate_dispatch_capacity(
@@ -534,32 +535,38 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp execute_under_acceptance_gate(context, gated_execute_request, metrics) do
-    {:ok, acceptance_gate} = acquire_dispatch_acceptance_gate(context)
+    case acquire_dispatch_acceptance_gate(context) do
+      {:ok, acceptance_gate} ->
+        stream_under_acceptance_gate(context, gated_execute_request, metrics, acceptance_gate)
 
-    try do
-      case revalidate_capacity_claim(context) do
-        :ok ->
-          stream_context = %{
-            acceptance_gate: acceptance_gate,
-            caller: context.caller,
-            cancel_drain_timeout_ms: context.cancel_drain_timeout_ms,
-            capacity_authority: capacity_authority(context.schedule),
-            capacity_node_id: Map.get(context.schedule, :node_id),
-            channel: context.channel,
-            client: context.client,
-            event_handler: context.event_handler,
-            target: context.target,
-            timeout_ms: context.timeout_ms
-          }
-
-          do_execute_and_stream(stream_context, gated_execute_request, metrics)
-
-        {:error, :dispatch_capacity_revalidation_failed, _result} ->
-          {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}}
-      end
-    after
-      release_dispatch_acceptance_gate(acceptance_gate)
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
     end
+  end
+
+  defp stream_under_acceptance_gate(context, gated_execute_request, metrics, acceptance_gate) do
+    case revalidate_capacity_claim(context) do
+      :ok ->
+        stream_context = %{
+          acceptance_gate: acceptance_gate,
+          caller: context.caller,
+          cancel_drain_timeout_ms: context.cancel_drain_timeout_ms,
+          capacity_authority: capacity_authority(context.schedule),
+          capacity_node_id: Map.get(context.schedule, :node_id),
+          channel: context.channel,
+          client: context.client,
+          event_handler: context.event_handler,
+          target: context.target,
+          timeout_ms: context.timeout_ms
+        }
+
+        do_execute_and_stream(stream_context, gated_execute_request, metrics)
+
+      {:error, :dispatch_capacity_revalidation_failed, _result} ->
+        {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}}
+    end
+  after
+    release_dispatch_acceptance_gate(acceptance_gate)
   end
 
   defp revalidate_capacity_claim(%{capacity_claim: claim, schedule: schedule}) do
@@ -602,15 +609,28 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     _kind, _reason -> nil
   end
 
-  defp acquire_dispatch_acceptance_gate(%{capacity_claim: claim, schedule: schedule}) do
+  defp acquire_dispatch_acceptance_gate(%{capacity_claim: claim, schedule: schedule} = context) do
     opts = capacity_authority_opts(schedule)
 
-    case QueueManager.acquire_acceptance_gate(claim.node_id, opts) do
+    gate_opts =
+      Keyword.put(
+        opts,
+        :gate_timeout_ms,
+        acceptance_gate_timeout_ms(Map.get(context, :timeout_ms))
+      )
+
+    case QueueManager.acquire_acceptance_gate(claim.node_id, gate_opts) do
       {:ok, lease} -> {:ok, {lease, opts}}
+      {:error, _reason} = error -> error
     end
   end
 
   defp acquire_dispatch_acceptance_gate(_context), do: {:ok, nil}
+
+  defp acceptance_gate_timeout_ms(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0,
+    do: timeout_ms
+
+  defp acceptance_gate_timeout_ms(_timeout_ms), do: @default_acceptance_gate_timeout_ms
 
   defp release_dispatch_acceptance_gate(nil), do: :ok
 

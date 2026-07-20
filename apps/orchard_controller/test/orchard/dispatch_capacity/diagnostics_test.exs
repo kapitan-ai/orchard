@@ -147,6 +147,13 @@ defmodule Orchard.DispatchCapacity.DiagnosticsTest do
     assert snapshot.evaluation.eligible?
   end
 
+  test "SPEC.md section 7.3.5 keeps an admitted Node identity trusted without capacity evidence" do
+    snapshot = snapshot(evidence: nil)
+
+    refute :runtime_endpoint_identity_untrusted in snapshot.evaluation.reason_codes
+    assert :runtime_capacity_observation_stale in snapshot.evaluation.reason_codes
+  end
+
   defp snapshot(overrides) do
     node = Keyword.get(overrides, :node, node_fixture())
 

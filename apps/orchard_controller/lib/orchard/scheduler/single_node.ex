@@ -10,7 +10,9 @@ defmodule Orchard.Scheduler.SingleNode do
   live authorized capacity input can be built — probe failure, skipped probing,
   or missing Controller-owned facts — the scheduler returns
   `{:error, :model_busy}` instead of a legacy direct schedule. Explicitly
-  classified unmanaged targets keep the direct schedule.
+  classified unmanaged targets stay dispatchable: they carry an unmanaged
+  capacity input, its evaluation, and refresh providers so the dispatcher
+  authorizes them through the same shared contract.
   """
 
   alias Orchard.CanonicalRequest
@@ -348,10 +350,53 @@ defmodule Orchard.Scheduler.SingleNode do
     do: {:error, :model_busy}
 
   defp unavailable_schedule(schedule, target, nil, opts) do
-    case Authorization.classify_unmanaged_target(capacity_target(target), opts) do
-      {:ok, _class} -> {:ok, schedule}
+    capacity_target = capacity_target(target)
+
+    case unprobed_unmanaged_input(capacity_target, opts) do
+      {:ok, input} -> authorize_unprobed_unmanaged(schedule, capacity_target, input, opts)
       {:error, _reason} -> {:error, :model_busy}
     end
+  end
+
+  defp authorize_unprobed_unmanaged(schedule, capacity_target, input, opts) do
+    authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
+    result = evaluate_dispatch_capacity(authority, nil, input)
+
+    if result.eligible? and result.available_slots > 0 do
+      provider = fn -> unprobed_unmanaged_input_or_nil(capacity_target, opts) end
+
+      authorized_schedule =
+        schedule
+        |> Map.put(:queue_lane_capacity, result.available_slots)
+        |> Map.put(:dispatch_capacity_input, input)
+        |> Map.put(:dispatch_capacity_acquisition_input_provider, provider)
+        |> Map.put(:dispatch_capacity_input_provider, provider)
+        |> Map.put(:dispatch_capacity_evaluation, result)
+        |> maybe_put_capacity_authority(opts)
+
+      {:ok, authorized_schedule}
+    else
+      {:error, :model_busy}
+    end
+  end
+
+  defp unprobed_unmanaged_input_or_nil(capacity_target, opts) do
+    case unprobed_unmanaged_input(capacity_target, opts) do
+      {:ok, input} -> input
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp unprobed_unmanaged_input(capacity_target, opts) do
+    input_opts = [placement_capacity: :not_applicable, now: DateTime.utc_now()]
+
+    input_opts =
+      case Keyword.fetch(opts, :controller_mode) do
+        {:ok, controller_mode} -> Keyword.put(input_opts, :controller_mode, controller_mode)
+        :error -> input_opts
+      end
+
+    Authorization.unmanaged_input(capacity_target, %{}, input_opts)
   end
 
   defp capacity_target(target) do

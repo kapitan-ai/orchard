@@ -95,6 +95,7 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
       |> Keyword.put(:freshness_threshold_ms, freshness_threshold_ms)
       |> Keyword.put(:management_classification, management_classification(node, opts))
       |> Keyword.put_new(:controller_accounted_allocation, :missing)
+      |> Keyword.put_new(:trusted_identity?, field(node, :state) in @admitted_states)
 
     evaluation =
       node

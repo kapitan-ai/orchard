@@ -87,12 +87,26 @@ defmodule Orchard.Inference.QueueManager do
     AllocationAuthority.revalidate(authority, claim, input)
   end
 
-  @doc "Acquires one Node's acceptance gate."
+  @doc """
+  Acquires one Node's acceptance gate.
+
+  Pass `:gate_timeout_ms` to bound the wait. Dispatch holds the gate until the
+  Node accepts, so callers on the dispatch path must bound it and surface
+  `:dispatch_capacity_acceptance_gate_busy` rather than queue unboundedly.
+  """
   @spec acquire_acceptance_gate(Ecto.UUID.t(), keyword()) ::
           {:ok, AllocationAuthority.AcceptanceLease.t()}
+          | {:error, AllocationAuthority.acceptance_gate_error()}
   def acquire_acceptance_gate(node_id, opts \\ []) do
     authority = Keyword.get(opts, :authority, AllocationAuthority)
-    AllocationAuthority.acquire_acceptance_gate(authority, node_id)
+
+    case Keyword.fetch(opts, :gate_timeout_ms) do
+      {:ok, timeout_ms} when is_integer(timeout_ms) and timeout_ms >= 0 ->
+        AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, timeout_ms)
+
+      _unbounded ->
+        AllocationAuthority.acquire_acceptance_gate(authority, node_id)
+    end
   end
 
   @doc "Releases one Node acceptance-gate lease idempotently."

@@ -1406,6 +1406,53 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node.id) == 0
   end
 
+  test "SPEC 5.9 an unprobed unmanaged schedule stays dispatchable end to end" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    request_id = "request-unprobed-unmanaged"
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request(),
+               Inference.runtime_client_target(),
+               probe_status?: false,
+               dispatch_capacity_authority: authority
+             )
+
+    assert is_nil(schedule.node_id)
+    assert %Input{} = schedule.dispatch_capacity_input
+    assert %Evaluator.Result{eligible?: true} = schedule.dispatch_capacity_evaluation
+
+    assert {:ok, _events} =
+             RequestDispatcher.dispatch(
+               Map.put(schedule, :request_id, request_id),
+               execute_request(request_id),
+               model_load_request("unmanaged"),
+               client_impl: @gate_client
+             )
+  end
+
+  test "SPEC 5.9 a held acceptance gate fails dispatch bounded instead of blocking" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-acceptance-gate-busy"
+
+    {:ok, lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
+
+    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 60}
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_acceptance_gate_busy}} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    refute_receive :execute_called, 50
+    assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
   defp claim_node_id do
     node_id = Ecto.UUID.generate()
     DispatchCapacityFixtures.put_probe_node_id(node_id)

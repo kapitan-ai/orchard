@@ -36,7 +36,9 @@ defmodule Orchard.DispatchCapacity.Readiness do
   Verifies exact consumer wiring, version compatibility, and fixture conformance.
 
   The default proof depends only on compiled modules and a frozen fixture, so
-  its outcome is constant for a build and is computed once per node. Callers
+  a successful outcome is constant for a build and is cached. A failed proof is
+  never cached: it can fail for transient runtime reasons, and a conformant
+  build must not advertise itself as unready until the BEAM restarts. Callers
   that override any input get an uncached proof.
   """
   @spec ready?(keyword()) :: boolean()
@@ -63,14 +65,19 @@ defmodule Orchard.DispatchCapacity.Readiness do
   end
 
   defp cached_default_readiness do
-    case :persistent_term.get(@readiness_cache_key, :uncomputed) do
-      :uncomputed ->
-        ready? = ready?(consumer_manifest: @consumer_manifest)
-        :persistent_term.put(@readiness_cache_key, ready?)
-        ready?
+    if :persistent_term.get(@readiness_cache_key, false) do
+      true
+    else
+      compute_default_readiness()
+    end
+  end
 
-      ready? ->
-        ready?
+  defp compute_default_readiness do
+    if ready?(consumer_manifest: @consumer_manifest) do
+      :persistent_term.put(@readiness_cache_key, true)
+      true
+    else
+      false
     end
   end
 

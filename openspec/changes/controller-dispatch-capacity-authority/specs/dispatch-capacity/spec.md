@@ -115,6 +115,7 @@ A valid explicitly classified unmanaged target SHALL remain outside this product
 `fail_closed` SHALL NEVER authorize dispatch.
 A consumer that cannot assemble the Controller-owned facts required for that evaluation from current authenticated evidence SHALL reject the target with the stable scheduler rejection reason code `dispatch_capacity_facts_unavailable` rather than fall back to telemetry or a permissive default.
 Serialized per-Node policy mutation that cannot acquire the shared acceptance gate within its bound SHALL fail fast with `dispatch_capacity_acceptance_gate_busy` rather than block behind an in-flight dispatch.
+Dispatch that cannot acquire the shared acceptance gate within its own request-timeout bound SHALL likewise fail with `dispatch_capacity_acceptance_gate_busy` rather than queue unboundedly behind another in-flight dispatch to the same Node.
 Every existing routing, placement, breaker, liveness, loadability, and phase gate SHALL continue to apply under every decision.
 For a `production_managed` target, dispatch SHALL re-run the same decision after model loading and immediately before `ExecuteInference`, using held-claim revalidation under both production-managed decisions and retaining the per-Node acceptance gate through Node acceptance.
 This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
