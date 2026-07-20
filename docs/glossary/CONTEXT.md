@@ -548,10 +548,19 @@ _Avoid_: runtime active request count, worker occupancy, durable dispatch permit
 The count of additional allocations the Controller may make within the Effective Dispatch Limit.
 _Avoid_: Admitted Capacity, spare runtime slots, queue capacity, Placement Capacity, dispatch permit balance
 
+**Temporary Legacy Claim**:
+A Controller-local pre-cutover claim for one serialized temporary dispatch slot while legacy capacity behavior remains active.
+It is not Controller-accounted Allocation, Dispatch Headroom, or a durable dispatch permit.
+_Avoid_: queue slot, reservation, Controller-accounted Allocation, Dispatch Headroom, durable dispatch permit
+
+**Dispatch Capacity Policy State**:
+The per-Node durable state, `shadow_legacy`, `approved_explicit`, or `enforcing`, that records whether a Controller Dispatch Ceiling is absent for bounded migration, approved but not live authority, or enforcing.
+_Avoid_: Dispatch Capacity Enforcement Phase, feature flag, migration phase, Node Lifecycle State
+
 **Dispatch Capacity Enforcement Phase**:
 The single durable cluster-wide phase, `pre_cutover` or `enforcing`, that decides whether Controller Dispatch Ceilings are recorded policy or live allocation authority.
 While the phase is `pre_cutover`, an approved ceiling including `0` is not yet allocation authority.
-_Avoid_: feature flag, per-Node toggle, policy state, migration flag
+_Avoid_: feature flag, per-Node toggle, Dispatch Capacity Policy State, migration flag
 
 **Capacity Management Class**:
 The Controller-owned classification of whether a target's capacity is production-managed through admitted inventory or explicitly unmanaged for compatibility.

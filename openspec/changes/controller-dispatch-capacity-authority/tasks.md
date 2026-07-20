@@ -7,17 +7,32 @@
 - [x] 1.3 Add the canonical glossary terms and `_Avoid_` aliases, including the rejected `Admitted Capacity` alias.
 - [x] 1.4 Add focused `dispatch-capacity` and `runtime-endpoints` OpenSpec deltas with acceptance scenarios.
 - [x] 1.5 Run strict validation for this exact OpenSpec change.
-- [ ] 1.6 Review generated main specs for placeholder prose after archive or sync.
+- [x] 1.6 Review generated main specs for placeholder prose after archive or sync.
+  Completed by the post-PR #93 reconciliation: the foundation requirements were merged without duplicate headings or placeholder purpose prose.
 
 ## 2. Non-enforcing foundation tracer
 
-- [ ] 2.1 Add `node_dispatch_capacity_policies` plus the singleton dispatch-capacity authority row in `pre_cutover`, with policy states, approval and cutover provenance, positive required contract version, non-negative explicit ceilings, and constraints that allow a null ceiling only in temporary `shadow_legacy`.
+PR #93 completes only the non-enforcing foundation.
+Temporary legacy claims are evaluator inputs only and are not acquired or serialized.
+MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch revalidation remain unwired, and Controller capability publication remains `dispatch_capacity_consumers_ready = false`.
+No Operator policy mutation, Controller retirement, cutover, quiescence, acceptance gate, or production enforcement task is completed by this reconciliation.
+
+- [x] 2.1 Add `node_dispatch_capacity_policies` plus the singleton dispatch-capacity authority row in `pre_cutover`, with policy states, approval and cutover provenance, positive required contract version, non-negative explicit ceilings, and constraints that allow a null ceiling only in temporary `shadow_legacy`.
+  Completed by PR #93: the expand migration, schemas, constraints, singleton seed, provenance fields, explicit-zero support, and rollback guard are merged.
 - [ ] 2.2 Create `shadow_legacy` rows only for non-removed production Nodes whose Node Admission committed before the expand migration, selected from durable `admitted_at` or equivalent admission history, without assigning `1` and without reading telemetry into policy; retain historical policy for durably removed, trust-revoked, audited tombstones without making them cutover blockers.
-- [ ] 2.3 Add one pure shared capacity evaluator that takes durable phase and normalized target management class, calculates the frozen pre-cutover runtime-max-or-1 minus reported-active-or-0 and live temporary legacy claims centrally, and returns the five canonical aggregate values, durable phase, policy state, normalized management class, explicit authority decision, decision-specific available slots, eligibility, and reason codes.
-- [ ] 2.4 Add truth-table tests for phase-policy combinations, trust, lifecycle, healthy-only eligibility, heartbeat and capacity freshness, policy presence, runtime evidence, target management class, explicit zero, and min/headroom arithmetic.
-- [ ] 2.5 Make Node Admission lock and read the durable phase, atomically persist `approved_explicit` before cutover with an administrator-supplied value or the explicit default `1`, and roll back admission if phase, policy, or audit persistence fails.
-- [ ] 2.6 Expose policy and counterfactual capacity diagnostics without advancing any policy to `enforcing` or claiming production enforcement.
-- [ ] 2.7 Add the supervised Controller membership owner and its `10000` ms heartbeat, atomically publishing `last_seen_at`, software version, supported dispatch-capacity contract version, all-five-consumers-ready declaration, and capability observation time at boot and on each heartbeat.
+  Partial after PR #93: the expand migration creates null-ceiling `shadow_legacy` policies from durable successful admission evidence for non-removed Nodes, without telemetry backfill or an implicit ceiling of `1`.
+  Remaining work must preserve historical policy evidence for removed tombstones and prove that operational and cutover exclusion occurs only when lifecycle is `removed`, trust is revoked, and a successful removal audit exists.
+  That conjunctive exclusion remains covered by 3.3 and 5.7c, so 2.2 remains unchecked.
+- [x] 2.3 Add one pure shared capacity evaluator that takes durable phase and normalized target management class, calculates the frozen pre-cutover runtime-max-or-1 minus reported-active-or-0 and live temporary legacy claims centrally, and returns the five canonical aggregate values, durable phase, policy state, normalized management class, explicit authority decision, decision-specific available slots, eligibility, and reason codes.
+  Completed by PR #93 for the evaluator boundary: temporary claim count is a pure input and the evaluator centrally subtracts it, while live claim acquisition and ownership remain in 4.5 and 4.9.
+- [x] 2.4 Add truth-table tests for phase-policy combinations, trust, lifecycle, healthy-only eligibility, heartbeat and capacity freshness, policy presence, runtime evidence, target management class, explicit zero, and min/headroom arithmetic.
+  Completed by PR #93 through evaluator, evidence, and management-classifier truth-table coverage.
+- [x] 2.5 Make Node Admission lock and read the durable phase, atomically persist `approved_explicit` before cutover with an administrator-supplied value or the explicit default `1`, and roll back admission if phase, policy, or audit persistence fails.
+  Completed by PR #93 for pre-cutover admission; enforcing post-cutover admission remains in 3.5.
+- [x] 2.6 Expose policy and counterfactual capacity diagnostics without advancing any policy to `enforcing` or claiming production enforcement.
+  Completed by PR #93 through read-only operator diagnostics and the five-consumer non-enforcement boundary test.
+- [x] 2.7 Add the supervised Controller membership owner and its `10000` ms heartbeat, atomically publishing `last_seen_at`, software version, supported dispatch-capacity contract version, all-five-consumers-ready declaration, and capability observation time at boot and on each heartbeat.
+  Completed by PR #93 with readiness forced to false; publishing true remains in 4.8 after all five consumers are wired.
 
 ## 3. Operator approval and migration cutover
 
@@ -69,4 +84,5 @@
 - [ ] 6.5 For implementation slices, run `mise exec -- mix dialyzer`.
 - [ ] 6.6 For implementation slices, run `mise exec -- mix test`.
 - [ ] 6.7 For implementation slices, run `mise exec -- mix test --cover`.
-- [ ] 6.8 After archive or sync, run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive` and remove placeholder prose such as `Purpose TBD`.
+- [x] 6.8 After archive or sync, run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive` and remove placeholder prose such as `Purpose TBD`.
+  Completed by the post-PR #93 reconciliation after intelligent sync and archive; all nine remaining validation items, comprising six active changes and three main specs, passed strict validation with no placeholder prose.
