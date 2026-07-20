@@ -303,10 +303,14 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     node_id = Ecto.UUID.generate()
     input = enforcing_input({:valid, 0, 4})
 
-    assert :ok = AllocationAuthority.quarantine_node(authority, node_id, 1)
+    # The window has to outlast scheduling jitter between quarantining and
+    # reading the block back, or the entry expires before it can be observed.
+    quarantine_ms = 50
+
+    assert :ok = AllocationAuthority.quarantine_node(authority, node_id, quarantine_ms)
     assert %{^node_id => remaining} = AllocationAuthority.quarantined_nodes(authority)
-    assert remaining <= 1
-    Process.sleep(2)
+    assert remaining <= quarantine_ms
+    Process.sleep(quarantine_ms * 3)
 
     assert AllocationAuthority.quarantined_nodes(authority) == %{}
 

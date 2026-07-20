@@ -549,6 +549,12 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   @pre_acceptance_cancel_client PreAcceptanceCancelClient
   @production_fresh_status_client ProductionFreshStatusClient
 
+  # The request timeout now bounds connect, model load, and acceptance-gate
+  # waiting as well as streaming, so it must outlast dispatch setup or the
+  # request expires as `:dispatch_capacity_acceptance_gate_busy` before the
+  # stream-phase cancellation path under test can run.
+  @expiring_request_timeout_ms 250
+
   setup do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     @client.configure(self())
@@ -987,7 +993,10 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-timeout-before-accepted"
-    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: @expiring_request_timeout_ms
+    }
 
     dispatch =
       Task.async(fn ->
@@ -1037,7 +1046,10 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       authority = start_supervised!({AllocationAuthority, name: nil})
       node_id = claim_node_id()
       request_id = "request-cancel-#{unquote(cancel_failure)}"
-      schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
+      schedule = %{
+        capacity_schedule(authority, node_id, request_id)
+        | request_timeout_ms: @expiring_request_timeout_ms
+      }
 
       dispatch =
         Task.async(fn ->
@@ -1062,7 +1074,10 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-cancel-drain-timeout"
-    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: @expiring_request_timeout_ms
+    }
 
     dispatch =
       Task.async(fn ->
@@ -1097,7 +1112,10 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-noisy-cancel-drain"
-    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 10}
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: @expiring_request_timeout_ms
+    }
 
     dispatch =
       Task.async(fn ->
@@ -1127,7 +1145,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, claimed_node_id, request_id)
-      | request_timeout_ms: 10
+      | request_timeout_ms: @expiring_request_timeout_ms
     }
 
     dispatch =
