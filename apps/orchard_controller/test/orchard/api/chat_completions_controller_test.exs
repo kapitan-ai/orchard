@@ -3,30 +3,30 @@ defmodule Orchard.API.ChatCompletionsControllerTest.UnsupportedVersionScoreSched
 
   alias Orchard.CanonicalRequest
   alias Orchard.Inference
-
-  @scheduled_node_id "00000000-0000-4000-a000-0000000000a4"
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   def schedule(%CanonicalRequest{} = request) do
-    {:ok,
-     %{
-       strategy: :multi_node,
-       request_id: request.public_id,
-       runtime_client_target: Inference.runtime_client_target(),
-       request_timeout_ms: Inference.request_timeout_ms(),
-       model_load_timeout_ms: Inference.model_load_timeout_ms(),
-       node_id: @scheduled_node_id,
-       candidate_count: 1,
-       selected_tier: :loaded,
-       selected_cache_tier: "warm_prefix",
-       prefix_cache_score: %{
-         status_code: "unsupported_version",
-         status_message:
-           "must not persist prompt=unsupported-version smoke token_ids=[1,2,3] hmac-sha256:#{String.duplicate("f", 64)} raw_score",
-         resident_fingerprint_match: true,
-         score_tier: "resident_fingerprint",
-         session_started_unix_ms: 1_713_726_400_456
-       }
-     }}
+    schedule =
+      DispatchCapacityFixtures.authorize_unmanaged_schedule(%{
+        strategy: :multi_node,
+        request_id: request.public_id,
+        runtime_client_target: Inference.runtime_client_target(),
+        request_timeout_ms: Inference.request_timeout_ms(),
+        model_load_timeout_ms: Inference.model_load_timeout_ms(),
+        candidate_count: 1,
+        selected_tier: :loaded,
+        selected_cache_tier: "warm_prefix",
+        prefix_cache_score: %{
+          status_code: "unsupported_version",
+          status_message:
+            "must not persist prompt=unsupported-version smoke token_ids=[1,2,3] hmac-sha256:#{String.duplicate("f", 64)} raw_score",
+          resident_fingerprint_match: true,
+          score_tier: "resident_fingerprint",
+          session_started_unix_ms: 1_713_726_400_456
+        }
+      })
+
+    {:ok, schedule}
   end
 end
 

@@ -6,6 +6,7 @@ defmodule Orchard.Inference do
   use Supervisor
 
   alias Orchard.BeamPeerGrants
+  alias Orchard.DispatchCapacity.AllocationAuthority
   alias Orchard.Inference.{CacheAffinity, QueueManager}
   alias Orchard.Nodes
   alias Orchard.Requests.Supervisor, as: RequestsSupervisor
@@ -20,11 +21,12 @@ defmodule Orchard.Inference do
   def init(_init_arg) do
     children = [
       {Registry, keys: :unique, name: Orchard.Requests.Registry},
+      AllocationAuthority,
       RequestsSupervisor,
       {QueueManager, startup_reconciliation: {:once, queue_manager_boot_token()}}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    Supervisor.init(children, strategy: :rest_for_one)
   end
 
   defp queue_manager_boot_token do

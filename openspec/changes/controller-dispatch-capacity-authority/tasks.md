@@ -49,28 +49,28 @@ No Operator policy mutation, Controller retirement, cutover, quiescence, accepta
 
 ## 4. First enforcing vertical tracer
 
-- [ ] 4.1 Wire MultiNode eligibility and lane contribution to the shared evaluation.
-- [ ] 4.2 Wire admitted and production-managed SingleNode paths to the same evaluation while preserving only explicitly unmanaged source-development compatibility behavior.
-- [ ] 4.3 Wire Node queue-source refresh to publish bounded effective capacity and clear sources on trust, lifecycle, health, freshness, policy, or runtime-limit loss.
-- [ ] 4.4 Wire QueueManager so all placements and lanes on one Node share one aggregate allocation bound.
-- [ ] 4.5 Serialize Controller-local acquisition of both temporary legacy claims and the final Dispatch Headroom unit across all placements and lanes, retain the applicable claim through model loading, acceptance, and terminal completion, and release it exactly once on failure, cancellation, retry, or completion.
-- [ ] 4.6 Add the per-Node acceptance gate shared by policy mutation and dispatch, then revalidate after model loading and immediately before `ExecuteInference`, excluding only the request's recognized claim from the applicable operand and holding the gate through Node acceptance or pre-acceptance failure.
-- [ ] 4.7 Prove with one shared fixture that MultiNode, admitted SingleNode, Node refresh, QueueManager, and dispatch revalidation return the same capacity values and reasons.
-- [ ] 4.8 Publish `dispatch_capacity_consumers_ready = true` only when the running Controller version has all five consumers wired and the shared fixture passes; otherwise publish false.
+- [x] 4.1 Wire MultiNode eligibility and lane contribution to the shared evaluation.
+- [x] 4.2 Wire admitted and production-managed SingleNode paths to the same evaluation while preserving only explicitly unmanaged source-development compatibility behavior.
+- [x] 4.3 Wire Node queue-source refresh to publish bounded effective capacity and clear sources on trust, lifecycle, health, freshness, policy, or runtime-limit loss.
+- [x] 4.4 Wire QueueManager so all placements and lanes on one Node share one aggregate allocation bound.
+- [x] 4.5 Serialize Controller-local acquisition of both temporary legacy claims and the final Dispatch Headroom unit across all placements and lanes, retain the applicable claim through model loading, acceptance, and terminal completion, and release it exactly once on failure, cancellation, retry, or completion.
+- [x] 4.6 Add the per-Node acceptance gate shared by policy mutation and dispatch, then revalidate after model loading and immediately before `ExecuteInference`, excluding only the request's recognized claim from the applicable operand and holding the gate through Node acceptance or pre-acceptance failure.
+- [x] 4.7 Prove with one shared fixture that MultiNode, admitted SingleNode, Node refresh, QueueManager, and dispatch revalidation return the same capacity values and reasons.
+- [x] 4.8 Publish `dispatch_capacity_consumers_ready = true` only when the running Controller version has all five consumers wired and the shared fixture passes; otherwise publish false.
 - [ ] 4.9 Prove all five consumers authorize `legacy_pre_cutover` from the same central temporary slots and serialized claims without requiring positive Dispatch Headroom, then quiesce to zero live claims and fresh zero observed occupancy before switching atomically to F11 authority at cutover.
 
 ## 5. Acceptance and diagnostics
 
 - [ ] 5.1 Cover trusted and untrusted, Active and non-Active, healthy, degraded, unhealthy, fresh and stale, policy present, missing, and malformed, explicit zero, runtime-bound, ceiling-bound, and equal-bound scenarios.
 - [ ] 5.2 Cover raising and lowering, pre-acceptance held-allocation revalidation without double-counting, accepted/running/streaming natural drain without forced cancellation solely because of a reduction, and queue wake-up after re-evaluation.
-- [ ] 5.3 Cover two concurrent requests racing for one final allocation and prove exactly one succeeds.
-- [ ] 5.3a Cover two legacy queue lanes racing for one temporary slot and prove exactly one acquires a temporary claim.
-- [ ] 5.4 Cover Placement Capacity above the Effective Dispatch Limit, Placement Capacity below it, and aggregate exhaustion with per-placement room.
+- [x] 5.3 Cover two concurrent requests racing for one final allocation and prove exactly one succeeds.
+- [x] 5.3a Cover two legacy queue lanes racing for one temporary slot and prove exactly one acquires a temporary claim.
+- [x] 5.4 Cover Placement Capacity above the Effective Dispatch Limit, Placement Capacity below it, and aggregate exhaustion with per-placement room.
 - [ ] 5.5 Cover migration without telemetry backfill or existing-row default `1` and fail-closed cutover for missing policy.
 - [ ] 5.6 Cover `approved_explicit` to `enforcing` cutover and post-cutover admission entering `enforcing` directly.
 - [ ] 5.7 Cover an empty cluster, admission racing with cutover, rollback of partial cutover, exact Controller-to-required-version equality, expected-version mismatch, and incompatible Controller fail-closed behavior against the durable phase.
 - [ ] 5.7a Cover cutover quiescing, new-claim refusal, natural legacy drain, stale or nonzero occupancy timeout with unchanged phase, and successful zero-occupancy revalidation under every acceptance gate.
-- [ ] 5.7b Cover ceiling mutation racing the final dispatch-to-acceptance handoff and prove the shared gate linearizes either acceptance before mutation or revalidation under the new policy.
+- [x] 5.7b Cover ceiling mutation racing the final dispatch-to-acceptance handoff and prove the shared gate linearizes either acceptance before mutation or revalidation under the new policy.
 - [ ] 5.7c Cover removed tombstone exclusion, rejection of implicit exclusion for unreachable or other lifecycle states, and re-enrollment under the current phase.
 - [ ] 5.8 Cover fresh, stale, missing, incompatible, and all-consumers-not-ready Controller capability evidence plus audited retirement before exclusion from cutover.
 - [ ] 5.9 Cover Admin and CLI admission preview, pre-cutover not-yet-enforcing warnings including zero, Operator API read and update authorization, optimistic concurrency, enforcing drain confirmation, standby rejection, local actor provenance, and atomic audit persistence.

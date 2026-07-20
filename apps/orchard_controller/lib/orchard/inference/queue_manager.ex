@@ -20,11 +20,87 @@ defmodule Orchard.Inference.QueueManager do
 
   use GenServer
 
-  import Ecto.Query
-
+  alias Orchard.DispatchCapacity.{AllocationAuthority, Evaluator}
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{Request, RequestServer}
+
+  @doc "Returns this consumer's shared dispatch-capacity evaluation."
+  @spec evaluate_dispatch_capacity(
+          GenServer.server(),
+          Ecto.UUID.t() | nil,
+          Evaluator.Input.t()
+        ) ::
+          Evaluator.Result.t()
+  def evaluate_dispatch_capacity(authority, node_id, input),
+    do: AllocationAuthority.evaluate(authority, node_id, input)
+
+  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
+  def dispatch_capacity_contract_version, do: 1
+
+  @doc "Identifies QueueManager's aggregate allocation-authority wiring."
+  def dispatch_capacity_wiring, do: :aggregate_allocation_authority
+
+  @doc "Acquires one live Node capacity claim through the shared authority."
+  @spec acquire_dispatch_capacity(
+          Ecto.UUID.t(),
+          String.t(),
+          Evaluator.Input.t(),
+          keyword()
+        ) :: AllocationAuthority.acquire_result()
+  def acquire_dispatch_capacity(node_id, request_id, input, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+
+    AllocationAuthority.acquire(
+      authority,
+      node_id,
+      request_id,
+      input
+    )
+  end
+
+  @doc "Releases one live Node capacity claim idempotently."
+  @spec release_dispatch_capacity(
+          AllocationAuthority.Claim.t(),
+          keyword()
+        ) :: :ok
+  def release_dispatch_capacity(claim, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    AllocationAuthority.release(authority, claim)
+  end
+
+  @doc "Revalidates a recognized claim without counting it twice."
+  @spec revalidate_dispatch_capacity(
+          AllocationAuthority.Claim.t(),
+          Evaluator.Input.t(),
+          keyword()
+        ) ::
+          {:ok, Evaluator.Result.t()}
+          | {:error, :dispatch_capacity_revalidation_failed, Evaluator.Result.t()}
+  def revalidate_dispatch_capacity(claim, input, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    AllocationAuthority.revalidate(authority, claim, input)
+  end
+
+  @doc "Acquires one Node's acceptance gate."
+  @spec acquire_acceptance_gate(Ecto.UUID.t(), keyword()) ::
+          {:ok, AllocationAuthority.AcceptanceLease.t()}
+  def acquire_acceptance_gate(node_id, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    AllocationAuthority.acquire_acceptance_gate(authority, node_id)
+  end
+
+  @doc "Releases one Node acceptance-gate lease idempotently."
+  @spec release_acceptance_gate(
+          AllocationAuthority.AcceptanceLease.t(),
+          keyword()
+        ) :: :ok
+  def release_acceptance_gate(lease, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    AllocationAuthority.release_acceptance_gate(authority, lease)
+  end
+
+  import Ecto.Query
 
   require Logger
 

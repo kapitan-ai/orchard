@@ -129,10 +129,12 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   }
 
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.DispatchCapacity.{ConformanceFixture, Policy}
   alias Orchard.Inference
   alias Orchard.Inference.QueueManager
-  alias Orchard.Nodes.Node
+  alias Orchard.Nodes.{AdmissionDecision, Node}
   alias Orchard.RuntimeEndpoint.{Operation, Target}
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   @valid_uuid "550e8400-e29b-41d4-a716-446655440000"
   @other_uuid "660f9511-f30c-52e5-b827-557766551111"
@@ -146,13 +148,14 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     configure_static_compatibility_targets(runtime_client_target)
 
     %{
-      schedule: %{
-        strategy: :single_node,
-        request_id: "req-probe-test",
-        runtime_client_target: runtime_client_target,
-        request_timeout_ms: 5_000,
-        model_load_timeout_ms: 5_000
-      },
+      schedule:
+        DispatchCapacityFixtures.authorize_unmanaged_schedule(%{
+          strategy: :single_node,
+          request_id: "req-probe-test",
+          runtime_client_target: runtime_client_target,
+          request_timeout_ms: 5_000,
+          model_load_timeout_ms: 5_000
+        }),
       execute: %ExecuteInferenceRequest{
         request_id: "req-probe-test",
         controller_session_id: "probe-test-session",
@@ -260,9 +263,37 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       last_heartbeat_at: Keyword.get(opts, :last_heartbeat_at, now)
     }
 
-    %Node{}
-    |> Node.changeset(attrs)
+    node =
+      %Node{}
+      |> Node.changeset(attrs)
+      |> Repo.insert!()
+
+    decision =
+      %AdmissionDecision{}
+      |> AdmissionDecision.changeset(%{
+        node_id: node.id,
+        decision: :admitted,
+        actor_type: "system",
+        actor_id: "probe-compatibility-test",
+        observed_identity: %{},
+        metadata: %{},
+        decided_at: now
+      })
+      |> Repo.insert!()
+
+    %Policy{}
+    |> Policy.approved_explicit_changeset(%{
+      node_id: node.id,
+      admission_decision_id: decision.id,
+      controller_dispatch_ceiling: 4,
+      approved_by_actor_type: "system",
+      approved_by_actor_id: "probe-compatibility-test",
+      approved_at: now,
+      approval_reason: "probe compatibility capacity fixture"
+    })
     |> Repo.insert!()
+
+    node
   end
 
   defp queue_admission_request(public_id, model_id) do
@@ -451,7 +482,9 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       )
 
       assert {:ok, _node} =
-               Orchard.Nodes.observe_status(target, healthy_status, DateTime.utc_now())
+               Orchard.Nodes.observe_status(target, healthy_status, DateTime.utc_now(),
+                 dispatch_capacity_input: ConformanceFixture.input()
+               )
 
       assert_receive {:first_probe_stale_source_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
@@ -487,7 +520,8 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
                Orchard.Nodes.observe_status(
                  target,
                  healthy_status,
-                 DateTime.add(DateTime.utc_now(), 1, :second)
+                 DateTime.add(DateTime.utc_now(), 1, :second),
+                 dispatch_capacity_input: ConformanceFixture.input()
                )
 
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
@@ -582,7 +616,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         execute: {:error, :node_timeout}
       })
 
-      assert {:error, {:dispatch_failed, :node_timeout}} =
+      assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -809,7 +843,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{execute: {:error, :node_timeout}})
 
-      assert {:error, {:dispatch_failed, :node_timeout}} =
+      assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )

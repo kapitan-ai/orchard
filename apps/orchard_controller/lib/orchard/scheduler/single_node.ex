@@ -9,7 +9,10 @@ defmodule Orchard.Scheduler.SingleNode do
 
   alias Orchard.CanonicalRequest
   alias Orchard.Dispatch.GrpcNodeRuntimeClient
+  alias Orchard.DispatchCapacity.{AllocationAuthority, Authorization, Evaluator}
   alias Orchard.Inference
+  alias Orchard.Nodes
+  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Observation, Target}
 
   @callback schedule(CanonicalRequest.t()) :: {:ok, map()} | {:error, term()}
 
@@ -22,6 +25,22 @@ defmodule Orchard.Scheduler.SingleNode do
       module -> module.schedule(request)
     end
   end
+
+  @doc "Returns this consumer's shared dispatch-capacity evaluation."
+  @spec evaluate_dispatch_capacity(
+          GenServer.server(),
+          Ecto.UUID.t() | nil,
+          Evaluator.Input.t()
+        ) ::
+          Evaluator.Result.t()
+  def evaluate_dispatch_capacity(authority, node_id, input),
+    do: AllocationAuthority.evaluate(authority, node_id, input)
+
+  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
+  def dispatch_capacity_contract_version, do: 1
+
+  @doc "Identifies SingleNode's scheduling authorization wiring."
+  def dispatch_capacity_wiring, do: :single_node_authorization
 
   def target, do: Orchard.Inference.runtime_client_target()
 
@@ -51,92 +70,326 @@ defmodule Orchard.Scheduler.SingleNode do
   end
 
   def default_schedule(%CanonicalRequest{} = request, target, opts) when is_list(opts) do
-    node_id = resolve_node_id(target)
+    case resolve_node(target, opts) do
+      {:ok, node} ->
+        schedule =
+          %{
+            strategy: :single_node,
+            request_id: request.public_id,
+            request_timeout_ms: Inference.request_timeout_ms(),
+            model_load_timeout_ms: Inference.model_load_timeout_ms(),
+            node_id: node && node.id
+          }
+          |> put_target(target)
 
-    schedule = %{
-      strategy: :single_node,
-      request_id: request.public_id,
-      runtime_client_target: target,
-      request_timeout_ms: Orchard.Inference.request_timeout_ms(),
-      model_load_timeout_ms: Orchard.Inference.model_load_timeout_ms(),
-      node_id: node_id
-    }
+        authorize_schedule(schedule, request, target, node, opts)
 
-    maybe_put_queue_lane_capacity(schedule, request, target, opts)
+      {:error, :node_inventory_unavailable} ->
+        {:error, :model_busy}
+    end
   end
 
-  defp resolve_node_id(target) do
-    case Orchard.Nodes.lookup_by_target(target) do
-      %{id: id} -> id
-      nil -> nil
+  defp resolve_node(target, opts) do
+    resolver = Keyword.get(opts, :node_resolver, &Nodes.lookup_by_target_result/1)
+
+    case resolver.(target) do
+      {:ok, %Orchard.Nodes.Node{} = node} -> {:ok, node}
+      {:ok, nil} -> {:ok, nil}
+      %Orchard.Nodes.Node{} = node -> {:ok, node}
+      nil -> {:ok, nil}
+      _error -> {:error, :node_inventory_unavailable}
     end
   rescue
-    _ -> nil
+    _error -> {:error, :node_inventory_unavailable}
+  catch
+    _kind, _reason -> {:error, :node_inventory_unavailable}
   end
 
-  defp maybe_put_queue_lane_capacity(schedule, request, target, opts) do
+  defp authorize_schedule(schedule, request, target, node, opts) do
     if Keyword.get(opts, :probe_status?, true) do
       client = Keyword.get(opts, :status_client, GrpcNodeRuntimeClient)
       timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
+      opts = Keyword.put(opts, :observed_at, DateTime.utc_now())
 
       case client.connect(target) do
         {:ok, channel} ->
           try do
             case client.status(channel, timeout: timeout) do
-              {:ok, response} -> capacity_schedule(schedule, request, response)
-              {:error, _reason} -> {:ok, schedule}
+              {:ok, response} ->
+                capacity_schedule(schedule, request, target, node, response, opts)
+
+              {:error, _reason} ->
+                unavailable_schedule(schedule, target, node, opts)
             end
           after
             client.disconnect(channel)
           end
 
         {:error, _reason} ->
-          {:ok, schedule}
+          unavailable_schedule(schedule, target, node, opts)
       end
     else
-      {:ok, schedule}
+      unavailable_schedule(schedule, target, node, opts)
     end
   rescue
-    _error -> {:ok, schedule}
+    _error -> unavailable_schedule(schedule, target, node, opts)
   catch
-    :exit, _reason -> {:ok, schedule}
+    :exit, _reason -> unavailable_schedule(schedule, target, node, opts)
   end
 
-  defp capacity_schedule(schedule, request, response) do
-    case model_placement_capacity_for(response, request.model_ref) do
-      nil ->
-        schedule_unless_node_busy(schedule, response)
+  defp capacity_schedule(schedule, request, target, node, response, opts) do
+    placement_capacity = model_placement_capacity_for(response, request.model_ref)
 
-      capacity ->
-        placement_capacity_schedule(schedule, response, capacity)
+    case capacity_input(node, target, response, placement_capacity, opts) do
+      {:ok, input} ->
+        authorize_capacity_input(
+          schedule,
+          request,
+          target,
+          node,
+          response,
+          placement_capacity,
+          input,
+          opts
+        )
+
+      {:error, _reason} ->
+        {:error, :model_busy}
     end
   end
 
-  defp placement_capacity_schedule(schedule, response, %{
-         active_request_count: active_request_count,
-         max_concurrency: max_concurrency
-       }) do
-    effective_max_concurrency =
-      effective_model_capacity(response, active_request_count, max_concurrency)
+  defp authorize_capacity_input(
+         schedule,
+         request,
+         target,
+         node,
+         response,
+         placement_capacity,
+         input,
+         opts
+       ) do
+    authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
+    result = evaluate_dispatch_capacity(authority, schedule.node_id, input)
 
-    if active_request_count < effective_max_concurrency do
-      {:ok, Map.put(schedule, :queue_lane_capacity, effective_max_concurrency)}
+    if result.eligible? and result.available_slots > 0 do
+      acquisition_provider =
+        capacity_input_provider(
+          request,
+          target,
+          node,
+          response,
+          placement_capacity,
+          :acquisition,
+          opts
+        )
+
+      revalidation_provider =
+        capacity_input_provider(
+          request,
+          target,
+          node,
+          response,
+          placement_capacity,
+          :revalidation,
+          opts
+        )
+
+      authorized_schedule =
+        schedule
+        |> Map.put(:queue_lane_capacity, result.available_slots)
+        |> Map.put(:dispatch_capacity_input, input)
+        |> Map.put(:dispatch_capacity_acquisition_input_provider, acquisition_provider)
+        |> Map.put(:dispatch_capacity_input_provider, revalidation_provider)
+        |> Map.put(:dispatch_capacity_evaluation, result)
+        |> maybe_put_capacity_authority(opts)
+
+      {:ok, authorized_schedule}
     else
       {:error, :model_busy}
     end
   end
 
-  defp schedule_unless_node_busy(schedule, response) do
-    if node_concurrency_exhausted?(response), do: {:error, :model_busy}, else: {:ok, schedule}
+  defp capacity_input(node, target, response, placement_capacity, opts) do
+    case Keyword.get(opts, :dispatch_capacity_input_provider) do
+      provider when is_function(provider, 3) ->
+        provider.(node, response, placement_capacity)
+
+      provider when is_function(provider, 0) ->
+        normalize_input_result(provider.())
+
+      nil when not is_nil(node) ->
+        observation = normalize_observation(target, response)
+
+        if observation_applied_or_current?(observe_capacity(target, response, opts), node.id) do
+          Authorization.input_for_node_observation(node.id, observation,
+            minimum_evidence_observed_at: Keyword.fetch!(opts, :observed_at),
+            placement_capacity: placement_capacity
+          )
+        else
+          {:error, :dispatch_capacity_facts_unavailable}
+        end
+
+      nil ->
+        Authorization.unmanaged_input(capacity_target(target), response,
+          placement_capacity: placement_capacity,
+          now: Keyword.get(opts, :observed_at, DateTime.utc_now())
+        )
+    end
+  end
+
+  defp normalize_input_result({:ok, _input} = result), do: result
+
+  defp normalize_input_result(%Orchard.DispatchCapacity.Evaluator.Input{} = input),
+    do: {:ok, input}
+
+  defp normalize_input_result(_invalid), do: {:error, :dispatch_capacity_facts_unavailable}
+
+  defp capacity_input_provider(
+         request,
+         target,
+         node,
+         response,
+         placement_capacity,
+         phase,
+         opts
+       ) do
+    if Keyword.has_key?(opts, :dispatch_capacity_input_provider) do
+      configured_capacity_input_provider(node, target, response, placement_capacity, opts)
+    else
+      expected_node_id = if node, do: node.id, else: nil
+      fn -> fresh_capacity_input(request, target, expected_node_id, phase, opts) end
+    end
+  end
+
+  defp configured_capacity_input_provider(node, target, response, placement_capacity, opts) do
+    fn ->
+      case capacity_input(node, target, response, placement_capacity, opts) do
+        {:ok, refreshed_input} -> refreshed_input
+        {:error, _reason} -> nil
+      end
+    end
+  end
+
+  defp fresh_capacity_input(request, target, expected_node_id, phase, opts) do
+    opts = Keyword.put(opts, :observed_at, DateTime.utc_now())
+
+    with {:ok, node} <- resolve_node(target, opts),
+         true <- capacity_identity_matches?(node, expected_node_id),
+         {:ok, response} <- fresh_status(target, opts),
+         placement_capacity <- refreshed_placement_capacity(response, request.model_ref, phase),
+         {:ok, input} <-
+           capacity_input(
+             node,
+             target,
+             response,
+             placement_capacity,
+             opts
+           ) do
+      input
+    else
+      _unavailable -> nil
+    end
+  end
+
+  defp capacity_identity_matches?(%Orchard.Nodes.Node{id: node_id}, node_id), do: true
+  defp capacity_identity_matches?(nil, nil), do: true
+  defp capacity_identity_matches?(_node, _expected_node_id), do: false
+
+  defp refreshed_placement_capacity(response, model_ref, :acquisition),
+    do: model_placement_capacity_for(response, model_ref)
+
+  defp refreshed_placement_capacity(response, model_ref, :revalidation),
+    do: post_load_placement_capacity_for(response, model_ref)
+
+  defp fresh_status(target, opts) do
+    client = Keyword.get(opts, :status_client, GrpcNodeRuntimeClient)
+    timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
+
+    case client.connect(target) do
+      {:ok, channel} ->
+        try do
+          client.status(channel, timeout: timeout)
+        after
+          client.disconnect(channel)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  rescue
+    _error -> {:error, :status_unavailable}
+  catch
+    _kind, _reason -> {:error, :status_unavailable}
+  end
+
+  defp observe_capacity(target, response, opts) do
+    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
+    Nodes.observe_status(target, response, observed_at)
+  end
+
+  defp observation_applied_or_current?({:ok, %Orchard.Nodes.Node{id: node_id}}, node_id),
+    do: true
+
+  defp observation_applied_or_current?(:noop, _node_id), do: true
+  defp observation_applied_or_current?(_result, _node_id), do: false
+
+  defp normalize_observation(_target, %Observation{} = observation), do: observation
+
+  defp normalize_observation(target, response),
+    do: GrpcCompatibilityMapper.observation_from_status(Target.normalize(target), response)
+
+  defp unavailable_schedule(_schedule, _target, node, _opts) when not is_nil(node),
+    do: {:error, :model_busy}
+
+  defp unavailable_schedule(schedule, target, nil, opts) do
+    case Authorization.classify_unmanaged_target(capacity_target(target), opts) do
+      {:ok, _class} -> {:ok, schedule}
+      {:error, _reason} -> {:error, :model_busy}
+    end
+  end
+
+  defp capacity_target(target) do
+    normalized = Target.normalize(target)
+
+    if normalized.metadata == %{} and Inference.static_runtime_target?(normalized) do
+      %{normalized | metadata: %{capacity_management_class: :unmanaged_compatibility}}
+    else
+      normalized
+    end
+  end
+
+  defp put_target(schedule, %Target{transport: :grpc_compat, address: address}),
+    do: Map.put(schedule, :runtime_client_target, address)
+
+  defp put_target(schedule, %Target{} = target),
+    do: Map.put(schedule, :runtime_endpoint_target, target)
+
+  defp put_target(schedule, target), do: Map.put(schedule, :runtime_client_target, target)
+
+  defp maybe_put_capacity_authority(schedule, opts) do
+    case Keyword.fetch(opts, :dispatch_capacity_authority) do
+      {:ok, authority} -> Map.put(schedule, :dispatch_capacity_authority, authority)
+      :error -> schedule
+    end
   end
 
   defp model_placement_capacity_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
+    missing = if model_loaded?(response, model_ref), do: :unknown, else: :not_applicable
+    matching_placement_capacity(response, model_ref, missing)
+  end
+
+  defp post_load_placement_capacity_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
+    matching_placement_capacity(response, model_ref, :unknown)
+  end
+
+  defp matching_placement_capacity(response, model_ref, missing) do
     response
     |> response_list(:runtime_model_placements)
     |> matching_model_placements(model_ref)
     |> case do
+      [] -> missing
       [placement] -> valid_model_placement_capacity(placement)
-      _none_or_ambiguous -> nil
+      _ambiguous -> :unknown
     end
   end
 
@@ -150,8 +403,22 @@ defmodule Orchard.Scheduler.SingleNode do
   defp matching_model_placements(placements, model_ref) when is_list(placements),
     do: Enum.filter(placements, &model_placement_matches?(&1, model_ref))
 
+  defp model_loaded?(response, model_ref) do
+    response
+    |> response_list(:loaded_models)
+    |> Enum.any?(&model_reference_matches?(&1, model_ref))
+  end
+
   defp model_placement_matches?(placement, model_ref) when is_map(placement) do
-    case placement_value(placement, :model_ref) do
+    placement
+    |> placement_value(:model_ref)
+    |> model_reference_matches?(model_ref)
+  end
+
+  defp model_placement_matches?(_placement, _model_ref), do: false
+
+  defp model_reference_matches?(reference, model_ref) when is_map(reference) do
+    case reference do
       %{model_id: model_id, version: version}
       when is_binary(model_id) and is_binary(version) ->
         model_id == model_ref.model_id and version == model_ref.version
@@ -165,7 +432,7 @@ defmodule Orchard.Scheduler.SingleNode do
     end
   end
 
-  defp model_placement_matches?(_placement, _model_ref), do: false
+  defp model_reference_matches?(_reference, _model_ref), do: false
 
   defp valid_model_placement_capacity(placement) when is_map(placement) do
     active_request_count = placement_value(placement, :active_request_count)
@@ -173,40 +440,15 @@ defmodule Orchard.Scheduler.SingleNode do
 
     if is_integer(active_request_count) and active_request_count >= 0 and
          is_integer(max_concurrency) and max_concurrency > 0 do
-      %{active_request_count: active_request_count, max_concurrency: max_concurrency}
+      {:valid, active_request_count, max_concurrency}
     else
-      nil
+      :unknown
     end
   end
 
-  defp valid_model_placement_capacity(_placement), do: nil
+  defp valid_model_placement_capacity(_placement), do: :unknown
 
   defp placement_value(placement, key) do
     Map.get(placement, key, Map.get(placement, to_string(key)))
   end
-
-  defp effective_model_capacity(response, model_active, placement_max) do
-    node_active = non_negative_integer(response_value(response, :active_request_count), 0)
-    node_max = positive_integer(response_value(response, :max_concurrency), 1)
-    remaining_node_capacity = max(node_max - node_active, 0)
-
-    min(placement_max, model_active + remaining_node_capacity)
-  end
-
-  defp node_concurrency_exhausted?(response) do
-    node_active = non_negative_integer(response_value(response, :active_request_count), 0)
-    node_max = positive_integer(response_value(response, :max_concurrency), 1)
-
-    node_active >= node_max
-  end
-
-  defp response_value(response, key) do
-    Map.get(response, key, Map.get(response, to_string(key)))
-  end
-
-  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
-  defp positive_integer(_value, default), do: default
-
-  defp non_negative_integer(value, _default) when is_integer(value) and value >= 0, do: value
-  defp non_negative_integer(_value, default), do: default
 end

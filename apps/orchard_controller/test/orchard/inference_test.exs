@@ -1170,7 +1170,7 @@ defmodule Orchard.InferenceTest do
 
   describe "SingleNode backward compatibility" do
     @tag :db
-    test "SingleNode.schedule/1 always uses singular target even when plural differs" do
+    test "unmanaged singular target outside the configured plural set fails closed" do
       put_inference(
         runtime_client_targets: [
           [host: "10.0.0.99", port: 50_099],
@@ -1182,23 +1182,23 @@ defmodule Orchard.InferenceTest do
 
       request = canonical_request()
       assert Inference.scheduler() == MultiNode
-      assert {:ok, schedule} = SingleNode.schedule(request)
-      assert schedule.strategy == :single_node
-      assert schedule.runtime_client_target == [host: "127.0.0.1", port: 50_071]
+      assert SingleNode.target() == [host: "127.0.0.1", port: 50_071]
+
+      assert {:error, :model_busy} =
+               SingleNode.default_schedule(
+                 request,
+                 [host: "127.0.0.1", port: 50_071],
+                 probe_status?: false
+               )
     end
   end
 
   describe "scheduler repo-off fallback" do
-    test "SingleNode.schedule/1 returns node_id: nil when Repo is unavailable" do
+    test "SingleNode.schedule/1 fails closed when Node inventory is unavailable" do
       request = canonical_request()
 
       with_repo_unregistered(fn ->
-        assert {:ok, schedule} = SingleNode.schedule(request)
-        assert schedule.strategy == :single_node
-        assert schedule.runtime_client_target == test_runtime_client_target()
-        assert schedule.request_timeout_ms == 5_000
-        assert schedule.model_load_timeout_ms == 5_000
-        assert schedule.node_id == nil
+        assert {:error, :model_busy} = SingleNode.schedule(request)
       end)
     end
   end

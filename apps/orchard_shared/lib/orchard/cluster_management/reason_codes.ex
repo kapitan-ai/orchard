@@ -125,8 +125,13 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     placement_capacity_exhausted
   )
 
+  @scheduler_rejection_codes_with_capacity Enum.uniq(
+                                             @scheduler_rejection_codes ++
+                                               @dispatch_capacity_codes
+                                           )
+
   @vocabularies %{
-    scheduler_rejection: @scheduler_rejection_codes,
+    scheduler_rejection: @scheduler_rejection_codes_with_capacity,
     scheduler_skip: @scheduler_skip_codes,
     action_blocker: @action_blocker_codes,
     confirmation_requirement: @confirmation_requirement_codes,
@@ -143,7 +148,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
           | :support_scope
 
   @spec scheduler_rejection_codes() :: [String.t()]
-  def scheduler_rejection_codes, do: @scheduler_rejection_codes
+  def scheduler_rejection_codes, do: @scheduler_rejection_codes_with_capacity
 
   @spec scheduler_skip_codes() :: [String.t()]
   def scheduler_skip_codes, do: @scheduler_skip_codes
@@ -166,9 +171,8 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
   The list order is the contract, not just a render order:
   `Orchard.DispatchCapacity.Evaluator` derives its reason precedence from it, so
   reordering these entries changes which reason an operator sees first for the
-  same evidence. Unlike the other vocabularies, this one is not a `vocabulary/0`
-  member, so `valid?/2` and `validate_codes/2` cannot check these codes at all:
-  the evaluator is their only producer and it emits them from this list.
+  same evidence. Scheduler explanations also accept these codes as rejection
+  reasons when a shared capacity evaluation excludes a candidate.
   """
   @spec dispatch_capacity_codes() :: [String.t()]
   def dispatch_capacity_codes, do: @dispatch_capacity_codes

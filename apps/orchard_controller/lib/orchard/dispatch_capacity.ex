@@ -9,7 +9,7 @@ defmodule Orchard.DispatchCapacity do
   no transition to `enforcing`, for either the durable phase or a policy.
   """
 
-  alias Orchard.DispatchCapacity.{Authority, CapacityEvidence, Policy}
+  alias Orchard.DispatchCapacity.{AllocationAuthority, Authority, CapacityEvidence, Policy}
   alias Orchard.Repo
 
   import Ecto.Query, only: [from: 2]
@@ -62,6 +62,19 @@ defmodule Orchard.DispatchCapacity do
     %Policy{}
     |> Policy.approved_explicit_changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc "Runs a policy mutation while holding the target Node's acceptance gate."
+  @spec with_policy_mutation_gate(Ecto.UUID.t(), (-> result), keyword()) :: result
+        when result: term()
+  def with_policy_mutation_gate(node_id, fun, opts \\ []) when is_function(fun, 0) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+
+    AllocationAuthority.with_acceptance_gate(
+      authority,
+      node_id,
+      fun
+    )
   end
 
   @doc """

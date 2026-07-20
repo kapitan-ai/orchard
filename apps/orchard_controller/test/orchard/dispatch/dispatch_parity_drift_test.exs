@@ -77,6 +77,7 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
   alias Orchard.Inference
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   @stub_client Orchard.Dispatch.DispatchParityDriftTest.StubClient
   @event [:orchard, :tokenizer, :parity_drift]
@@ -163,13 +164,13 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
   end
 
   defp schedule(request_id) do
-    %{
+    DispatchCapacityFixtures.authorize_unmanaged_schedule(%{
       strategy: :single_node,
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
       model_load_timeout_ms: 5_000
-    }
+    })
   end
 
   defp execute_request(request_id) do

@@ -2,13 +2,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
   alias Orchard.CanonicalRequest
+  alias Orchard.DispatchCapacity.{ConformanceFixture, Evaluator}
   alias Orchard.Inference
 
-  @scheduled_node_id "00000000-0000-4000-a000-000000000099"
+  @scheduled_node_id "00000000-0000-4000-a000-000000000001"
 
   def scheduled_node_id, do: @scheduled_node_id
 
   def schedule(%CanonicalRequest{} = request) do
+    capacity_input = ConformanceFixture.input()
+
     {:ok,
      %{
        strategy: :multi_node,
@@ -18,7 +21,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
        model_load_timeout_ms: Inference.model_load_timeout_ms(),
        node_id: @scheduled_node_id,
        candidate_count: 2,
-       selected_tier: :loaded
+       selected_tier: :loaded,
+       dispatch_capacity_input: capacity_input,
+       dispatch_capacity_evaluation: Evaluator.evaluate(capacity_input),
+       dispatch_capacity_acquisition_input_provider: fn -> capacity_input end,
+       dispatch_capacity_input_provider: fn -> capacity_input end
      }}
   end
 end
@@ -265,13 +272,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPromotedPrefixCacheScore
   @behaviour Orchard.Scheduler.SingleNode
 
   alias Orchard.CanonicalRequest
+  alias Orchard.DispatchCapacity.{ConformanceFixture, Evaluator}
   alias Orchard.Inference
 
-  @promoted_node_id "00000000-0000-4000-a000-000000000222"
+  @promoted_node_id "00000000-0000-4000-a000-000000000001"
 
   def promoted_node_id, do: @promoted_node_id
 
   def schedule(%CanonicalRequest{} = request) do
+    capacity_input = ConformanceFixture.input()
+
     {:ok,
      %{
        strategy: :multi_node,
@@ -325,7 +335,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPromotedPrefixCacheScore
        },
        selected_prefix_cache_score_status_message: "incumbent-selected-score-leak",
        selected_prefix_cache_entry_count: 1,
-       selected_memory_status_code: "incumbent-memory-leak"
+       selected_memory_status_code: "incumbent-memory-leak",
+       dispatch_capacity_input: capacity_input,
+       dispatch_capacity_evaluation: Evaluator.evaluate(capacity_input),
+       dispatch_capacity_acquisition_input_provider: fn -> capacity_input end,
+       dispatch_capacity_input_provider: fn -> capacity_input end
      }
      |> Map.put("prefix_cache_score", %{
        "status_code" => "ok",
@@ -362,16 +376,24 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
   alias Orchard.CanonicalRequest
+  alias Orchard.DispatchCapacity.{ConformanceFixture, Evaluator}
   alias Orchard.Inference
 
   def schedule(%CanonicalRequest{} = request) do
+    capacity_input = ConformanceFixture.input()
+
     {:ok,
      %{
        strategy: :single_node,
        request_id: request.public_id,
        runtime_client_target: [host: "127.0.0.1", port: 1],
        request_timeout_ms: Inference.request_timeout_ms(),
-       model_load_timeout_ms: 2_000
+       model_load_timeout_ms: 2_000,
+       node_id: "00000000-0000-4000-a000-000000000001",
+       dispatch_capacity_input: capacity_input,
+       dispatch_capacity_evaluation: Evaluator.evaluate(capacity_input),
+       dispatch_capacity_acquisition_input_provider: fn -> capacity_input end,
+       dispatch_capacity_input_provider: fn -> capacity_input end
      }}
   end
 end
@@ -399,6 +421,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
 
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   def connect(target), do: {:ok, target}
 
@@ -407,19 +430,46 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
     key = {Keyword.fetch!(address, :host), Keyword.fetch!(address, :port)}
 
     case Process.get({__MODULE__, key}) do
-      nil -> {:error, :unavailable}
-      response -> {:ok, response}
+      nil ->
+        {:error, :unavailable}
+
+      response ->
+        DispatchCapacityFixtures.record_authenticated_probe_evidence(response)
+        {:ok, response}
     end
   end
 
-  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts),
-    do:
-      {:ok,
-       %Operation.EnsureModelLoadedResult{
-         already_loaded: false,
-         placement_state: :loaded,
-         worker_supports_prompt_token_ids: true
-       }}
+  def ensure_model_loaded(channel, %Operation.EnsureModelLoadedRequest{} = request, _opts) do
+    address = channel.address
+    key = {Keyword.fetch!(address, :host), Keyword.fetch!(address, :port)}
+    response = Process.get({__MODULE__, key})
+
+    model = %{
+      model_id: request.model_ref.model_id,
+      version: request.model_ref.version
+    }
+
+    placement = %{
+      model_ref: model,
+      placement_state: :loaded,
+      active_request_count: 0,
+      max_concurrency: 4
+    }
+
+    Process.put(
+      {__MODULE__, key},
+      response
+      |> Map.put(:loaded_models, [model])
+      |> Map.put(:runtime_model_placements, [placement])
+    )
+
+    {:ok,
+     %Operation.EnsureModelLoadedResult{
+       already_loaded: false,
+       placement_state: :loaded,
+       worker_supports_prompt_token_ids: true
+     }}
+  end
 
   def unload_model(_channel, %Operation.UnloadModelRequest{}, _opts),
     do: {:ok, %Operation.Ack{ok: true}}
@@ -427,6 +477,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
   def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts) do
     owner = Keyword.fetch!(opts, :owner)
     stream_ref = make_ref()
+
+    send(
+      owner,
+      {:runtime_endpoint_event, stream_ref, request.request_id, InferenceEvent.accepted(0)}
+    )
 
     send(
       owner,
@@ -714,12 +769,15 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
+  alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
   alias Orchard.Inference.RequestOrchestrator
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Nodes.AdmissionDecision
   alias Orchard.Nodes.Node, as: InventoryNode
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
@@ -964,6 +1022,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert decision["strategy"] == "multi_node"
     assert decision["runtime_client_target"] == runtime_client_target_map()
     refute Map.has_key?(decision, "runtime_endpoint_target")
+    refute Map.has_key?(decision, "dispatch_capacity_input")
+    refute Map.has_key?(decision, "dispatch_capacity_evaluation")
+    refute Map.has_key?(decision, "dispatch_capacity_acquisition_input_provider")
+    refute Map.has_key?(decision, "dispatch_capacity_input_provider")
+    refute Map.has_key?(decision, "dispatch_capacity_authority")
     refute inspect(decision) =~ "must-not-persist-runtime-target"
     refute inspect(decision) =~ "tenant-secret"
   end
@@ -1287,12 +1350,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(decision, "selected_memory_estimated_headroom_bytes")
   end
 
-  test "execute/3 overwrites scheduler-selected node attribution with runtime-resolved node id",
+  test "execute/3 preserves scheduler-selected attribution when runtime identity matches",
        %{bundle: bundle} do
     put_multi_node_scheduler_config()
 
     runtime_node_id = Orchard.Node.node_id()
-    refute runtime_node_id == scheduled_node_id()
+    assert runtime_node_id == scheduled_node_id()
 
     model = create_active_model!(bundle, "request-orchestrator-multi-node")
     canonical = canonical_request("request-orchestrator-multi-node", stream?: false)
@@ -1304,7 +1367,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     assert request.scheduler_decision["node_id"] == scheduled_node_id()
     assert request.node_id == runtime_node_id
-    refute request.node_id == request.scheduler_decision["node_id"]
+    assert request.node_id == request.scheduler_decision["node_id"]
   end
 
   test "execute/3 reconciles queue grant from scheduler node before dispatch", %{
@@ -3088,6 +3151,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   defp insert_runtime_node!(target) do
     unique = System.unique_integer([:positive])
+    observed_at = DateTime.utc_now()
 
     attrs = %{
       id: Ecto.UUID.generate(),
@@ -3098,12 +3162,48 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       state: :active,
       health: :healthy,
       capabilities: %{},
-      last_heartbeat_at: DateTime.utc_now()
+      last_heartbeat_at: observed_at
     }
 
-    %InventoryNode{}
-    |> InventoryNode.changeset(attrs)
+    node =
+      %InventoryNode{}
+      |> InventoryNode.changeset(attrs)
+      |> Repo.insert!()
+
+    decision =
+      %AdmissionDecision{}
+      |> AdmissionDecision.changeset(%{
+        node_id: node.id,
+        decision: :admitted,
+        actor_type: "system",
+        actor_id: "request-orchestrator-test",
+        observed_identity: %{},
+        metadata: %{},
+        decided_at: observed_at
+      })
+      |> Repo.insert!()
+
+    %Policy{}
+    |> Policy.approved_explicit_changeset(%{
+      node_id: node.id,
+      admission_decision_id: decision.id,
+      controller_dispatch_ceiling: 4,
+      approved_by_actor_type: "system",
+      approved_by_actor_id: "request-orchestrator-test",
+      approved_at: observed_at,
+      approval_reason: "request orchestrator production-capacity fixture"
+    })
     |> Repo.insert!()
+
+    assert {:ok, _evidence} =
+             DispatchCapacity.record_capacity_evidence(node.id, %{
+               active_request_count: 0,
+               observed_at: observed_at,
+               runtime_concurrency_limit: 4,
+               validity: :valid
+             })
+
+    node
   end
 
   defp stub_runtime_status(target, response) do

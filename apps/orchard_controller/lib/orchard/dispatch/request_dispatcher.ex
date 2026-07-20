@@ -25,8 +25,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     ExecuteInferenceRequest
   }
 
+  alias Orchard.DispatchCapacity.{AllocationAuthority, Evaluator}
   alias Orchard.Inference
   alias Orchard.Inference.ModelLoadFailure
+  alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
 
   alias Orchard.RuntimeEndpoint.{
@@ -41,6 +43,36 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   alias Orchard.Tokenizer.Telemetry
 
   require Logger
+
+  @maximum_cancel_drain_timeout_ms 5_000
+
+  @doc "Returns this consumer's shared dispatch-capacity evaluation."
+  @spec evaluate_dispatch_capacity(
+          GenServer.server(),
+          Ecto.UUID.t() | nil,
+          Evaluator.Input.t()
+        ) ::
+          Evaluator.Result.t()
+  def evaluate_dispatch_capacity(authority, node_id, input),
+    do: AllocationAuthority.evaluate(authority, node_id, input)
+
+  @doc "Revalidates a recognized dispatch claim through the production QueueManager seam."
+  @spec revalidate_dispatch_capacity(
+          AllocationAuthority.Claim.t(),
+          Evaluator.Input.t(),
+          keyword()
+        ) ::
+          {:ok, Evaluator.Result.t()}
+          | {:error, :dispatch_capacity_revalidation_failed, Evaluator.Result.t()}
+  def revalidate_dispatch_capacity(claim, input, opts \\ []) do
+    QueueManager.revalidate_dispatch_capacity(claim, input, opts)
+  end
+
+  @doc "Returns the dispatch-capacity conformance contract version used by this consumer."
+  def dispatch_capacity_contract_version, do: 1
+
+  @doc "Identifies RequestDispatcher's final dispatch-revalidation wiring."
+  def dispatch_capacity_wiring, do: :final_dispatch_revalidation
 
   # Metrics structure for timing instrumentation
   defmodule Metrics do
@@ -168,6 +200,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
                            Exceptions and exits are logged and ignored; return value is ignored.
   - `:client_impl` - Runtime Endpoint client module
                      (default: `Inference.runtime_endpoint_client/0`)
+  - `:cancel_drain_timeout_ms` - bounded cancellation reconciliation grace period
+                                 (default: the lesser of request timeout and 5 seconds)
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
   or `{:error, reason}` if dispatch fails before streaming begins.
@@ -195,6 +229,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     on_node_resolved = Keyword.get(opts, :on_node_resolved)
     client = Keyword.get(opts, :client_impl, Inference.runtime_endpoint_client())
 
+    cancel_drain_timeout_ms =
+      cancel_drain_timeout_ms(Keyword.get(opts, :cancel_drain_timeout_ms), timeout_ms)
+
     # Initialize timing metrics
     metrics =
       Metrics.new(
@@ -217,13 +254,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       model_load_timeout: model_load_timeout,
       timeout_ms: timeout_ms,
       caller: caller,
+      cancel_drain_timeout_ms: cancel_drain_timeout_ms,
       event_handler: event_handler,
       on_node_resolved: on_node_resolved
     }
 
     case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
       :ok ->
-        dispatch_after_preensure_gate(context)
+        dispatch_with_capacity_claim(context)
 
       {:error, reason} ->
         error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
@@ -234,6 +272,113 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   # -- Private ---------------------------------------------------------------
+
+  defp dispatch_with_capacity_claim(%{schedule: schedule} = context) do
+    case acquire_capacity_claim(schedule) do
+      {:ok, nil} ->
+        dispatch_after_preensure_gate(context)
+
+      {:ok, claim} ->
+        try do
+          dispatch_after_preensure_gate(Map.put(context, :capacity_claim, claim))
+        after
+          release_capacity_claim(schedule, claim)
+        end
+
+      {:error, _result} ->
+        handle_dispatch_result(
+          {:error, {:dispatch_failed, :dispatch_capacity_unavailable}},
+          context.metrics,
+          context.target
+        )
+    end
+  end
+
+  defp acquire_capacity_claim(
+         %{
+           node_id: node_id,
+           request_id: request_id
+         } = schedule
+       )
+       when is_binary(node_id) and is_binary(request_id) do
+    case dispatch_capacity_acquisition_input(schedule) do
+      %Orchard.DispatchCapacity.Evaluator.Input{} = input ->
+        opts = capacity_authority_opts(schedule)
+
+        case QueueManager.acquire_dispatch_capacity(node_id, request_id, input, opts) do
+          {:ok, claim, _result} -> {:ok, claim}
+          {:error, :dispatch_capacity_unavailable, result} -> {:error, result}
+          {:error, :dispatch_capacity_request_already_claimed, result} -> {:error, result}
+        end
+
+      _missing_input ->
+        {:error, nil}
+    end
+  end
+
+  defp acquire_capacity_claim(
+         %{
+           dispatch_capacity_input: %Orchard.DispatchCapacity.Evaluator.Input{} = input,
+           dispatch_capacity_evaluation: %Orchard.DispatchCapacity.Evaluator.Result{} = result,
+           request_id: request_id
+         } = schedule
+       )
+       when is_binary(request_id) do
+    with true <- unmanaged_dispatch_authorized?(input, result),
+         %Orchard.DispatchCapacity.Evaluator.Input{} = fresh_input <-
+           dispatch_capacity_acquisition_input(schedule),
+         fresh_result <-
+           evaluate_dispatch_capacity(capacity_authority(schedule), nil, fresh_input),
+         true <- unmanaged_dispatch_authorized?(fresh_input, fresh_result) do
+      {:ok, nil}
+    else
+      _unavailable -> {:error, result}
+    end
+  end
+
+  defp acquire_capacity_claim(_schedule), do: {:error, nil}
+
+  defp dispatch_capacity_acquisition_input(schedule) do
+    case Map.get(schedule, :dispatch_capacity_acquisition_input_provider) do
+      provider when is_function(provider, 0) -> provider.()
+      _provider -> nil
+    end
+  rescue
+    _error -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp unmanaged_dispatch_authorized?(
+         %Orchard.DispatchCapacity.Evaluator.Input{
+           management_classification: {:ok, management_class}
+         },
+         %Orchard.DispatchCapacity.Evaluator.Result{
+           authority_decision: authority_decision,
+           management_class: management_class,
+           eligible?: true,
+           available_slots: slots
+         }
+       )
+       when management_class in [:unmanaged_source_development, :unmanaged_compatibility] and
+              authority_decision == management_class and slots > 0,
+       do: true
+
+  defp unmanaged_dispatch_authorized?(_input, _result), do: false
+
+  defp release_capacity_claim(schedule, claim) do
+    QueueManager.release_dispatch_capacity(claim, capacity_authority_opts(schedule))
+  end
+
+  defp capacity_authority_opts(schedule) do
+    case Map.get(schedule, :dispatch_capacity_authority) do
+      nil -> []
+      authority -> [authority: authority]
+    end
+  end
+
+  defp capacity_authority(schedule),
+    do: Map.get(schedule, :dispatch_capacity_authority, AllocationAuthority)
 
   defp dispatch_after_preensure_gate(%{client: client, target: target} = context) do
     case authorize_dispatch_target(target) do
@@ -282,20 +427,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp disconnect_best_effort(client, channel) do
-    client.disconnect(channel)
-    :ok
+    case client.disconnect(channel) do
+      :ok -> :ok
+      _unconfirmed -> {:error, :disconnect_unconfirmed}
+    end
   rescue
     error ->
       Logger.warning("Runtime endpoint disconnect failed: #{exception_name(error)}")
-      :ok
+      {:error, :disconnect_failed}
   catch
     :exit, _reason ->
       Logger.warning("Runtime endpoint disconnect exited")
-      :ok
+      {:error, :disconnect_failed}
 
     _kind, _reason ->
       Logger.warning("Runtime endpoint disconnect threw")
-      :ok
+      {:error, :disconnect_failed}
   end
 
   defp do_dispatch_with_channel(%{} = context) do
@@ -304,6 +451,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
            context.channel,
            context.target,
            context.model_load_request,
+           claimed_node_id(context),
            context.on_node_resolved,
            context.metrics
          ) do
@@ -341,28 +489,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
     put_ensure_model_load_completed_context(metrics)
 
-    result =
-      case gate_prompt_token_ids(
-             context.execute_request,
-             ensure_load_meta,
-             context.schedule,
-             context.model_load_request
-           ) do
-        {:ok, gated_execute_request} ->
-          do_execute_and_stream(
-            context.client,
-            context.channel,
-            context.target,
-            gated_execute_request,
-            metrics,
-            context.timeout_ms,
-            context.caller,
-            context.event_handler
-          )
-
-        {:error, reason} ->
-          {:error, {:dispatch_failed, reason}}
-      end
+    result = execute_loaded_request(context, ensure_load_meta, metrics)
 
     handle_dispatch_result(result, metrics, context.target)
   end
@@ -380,6 +507,100 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     put_dispatch_terminal_context(error_metrics, context.target)
     emit_timing_log(error_metrics, {:error, {:model_load_failed, reason}})
     {:error, {:model_load_failed, reason}}
+  end
+
+  defp execute_loaded_request(context, ensure_load_meta, metrics) do
+    with :ok <- revalidate_capacity_claim(context),
+         {:ok, gated_execute_request} <-
+           gate_prompt_token_ids(
+             context.execute_request,
+             ensure_load_meta,
+             context.schedule,
+             context.model_load_request
+           ),
+         {:ok, acceptance_gate} <- acquire_dispatch_acceptance_gate(context),
+         :ok <- revalidate_capacity_claim(context) do
+      try do
+        stream_context = %{
+          acceptance_gate: acceptance_gate,
+          caller: context.caller,
+          cancel_drain_timeout_ms: context.cancel_drain_timeout_ms,
+          capacity_authority: capacity_authority(context.schedule),
+          capacity_node_id: Map.get(context.schedule, :node_id),
+          channel: context.channel,
+          client: context.client,
+          event_handler: context.event_handler,
+          target: context.target,
+          timeout_ms: context.timeout_ms
+        }
+
+        do_execute_and_stream(stream_context, gated_execute_request, metrics)
+      after
+        release_dispatch_acceptance_gate(acceptance_gate)
+      end
+    else
+      {:error, :dispatch_capacity_revalidation_failed, _result} ->
+        {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}}
+
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
+    end
+  end
+
+  defp revalidate_capacity_claim(%{capacity_claim: claim, schedule: schedule}) do
+    with %Orchard.DispatchCapacity.Evaluator.Input{} = input <-
+           dispatch_capacity_revalidation_input(schedule),
+         result <-
+           revalidate_dispatch_capacity(
+             claim,
+             input,
+             capacity_authority_opts(schedule)
+           ) do
+      case result do
+        {:ok, _evaluation} -> :ok
+        {:error, :dispatch_capacity_revalidation_failed, _evaluation} = error -> error
+      end
+    else
+      _missing_input -> {:error, :dispatch_capacity_revalidation_failed, nil}
+    end
+  end
+
+  defp revalidate_capacity_claim(%{schedule: schedule}) do
+    with %Orchard.DispatchCapacity.Evaluator.Input{} = input <-
+           dispatch_capacity_revalidation_input(schedule),
+         result <- evaluate_dispatch_capacity(capacity_authority(schedule), nil, input),
+         true <- unmanaged_dispatch_authorized?(input, result) do
+      :ok
+    else
+      _unavailable -> {:error, :dispatch_capacity_revalidation_failed, nil}
+    end
+  end
+
+  defp dispatch_capacity_revalidation_input(schedule) do
+    case Map.get(schedule, :dispatch_capacity_input_provider) do
+      provider when is_function(provider, 0) -> provider.()
+      _provider -> nil
+    end
+  rescue
+    _error -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp acquire_dispatch_acceptance_gate(%{capacity_claim: claim, schedule: schedule}) do
+    opts = capacity_authority_opts(schedule)
+
+    case QueueManager.acquire_acceptance_gate(claim.node_id, opts) do
+      {:ok, lease} -> {:ok, {lease, opts}}
+    end
+  end
+
+  defp acquire_dispatch_acceptance_gate(_context), do: {:ok, nil}
+
+  defp release_dispatch_acceptance_gate(nil), do: :ok
+
+  defp release_dispatch_acceptance_gate({lease, opts}) do
+    QueueManager.release_acceptance_gate(lease, opts)
   end
 
   defp handle_dispatch_result({:ok, events, final_metrics}, _metrics, target) do
@@ -411,12 +632,20 @@ defmodule Orchard.Dispatch.RequestDispatcher do
          channel,
          target,
          model_load_request,
+         claimed_node_id,
          on_node_resolved,
          metrics
        ) do
     case client.status(channel, timeout: @status_probe_timeout_ms) do
       {:ok, response} ->
-        resolve_probe_status(response, target, model_load_request, on_node_resolved, metrics)
+        resolve_probe_status(
+          response,
+          target,
+          model_load_request,
+          claimed_node_id,
+          on_node_resolved,
+          metrics
+        )
 
       {:error, :authenticated_observation_rejected} ->
         {:error, :authenticated_observation_rejected, metrics}
@@ -431,7 +660,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {:ok, model_load_request, metrics}
   end
 
-  defp resolve_probe_status(response, target, model_load_request, on_node_resolved, metrics) do
+  defp resolve_probe_status(
+         response,
+         target,
+         model_load_request,
+         claimed_node_id,
+         on_node_resolved,
+         metrics
+       ) do
     observed_at = DateTime.utc_now()
     observation = normalize_status_observation(target, response)
 
@@ -440,17 +676,29 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         {:error, reason, metrics}
 
       identity_result ->
-        persist_resolved_probe(
-          identity_result,
-          target,
-          observation,
-          observed_at,
-          model_load_request,
-          on_node_resolved,
-          metrics
-        )
+        if dispatch_probe_identity_matches?(identity_result, claimed_node_id) do
+          persist_resolved_probe(
+            identity_result,
+            target,
+            observation,
+            observed_at,
+            model_load_request,
+            on_node_resolved,
+            metrics
+          )
+        else
+          {:error, :dispatch_capacity_node_identity_mismatch, metrics}
+        end
     end
   end
+
+  defp claimed_node_id(%{capacity_claim: %{node_id: node_id}}), do: node_id
+  defp claimed_node_id(_context), do: nil
+
+  defp dispatch_probe_identity_matches?({:ok, node_id}, node_id), do: true
+  defp dispatch_probe_identity_matches?(:missing, _claimed_node_id), do: true
+  defp dispatch_probe_identity_matches?(_identity_result, nil), do: true
+  defp dispatch_probe_identity_matches?(_identity_result, _claimed_node_id), do: false
 
   defp persist_resolved_probe(
          identity_result,
@@ -619,44 +867,62 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp normalize_placement_state(:failed), do: :failed
   defp normalize_placement_state(other), do: {:unexpected, other}
 
-  defp do_execute_and_stream(
-         client,
-         channel,
-         target,
-         request,
-         metrics,
-         timeout_ms,
-         caller,
-         event_handler
-       ) do
+  defp do_execute_and_stream(stream_context, request, metrics) do
+    %{
+      acceptance_gate: acceptance_gate,
+      cancel_drain_timeout_ms: cancel_drain_timeout_ms,
+      capacity_authority: capacity_authority,
+      capacity_node_id: capacity_node_id,
+      caller: caller,
+      channel: channel,
+      client: client,
+      event_handler: event_handler,
+      target: target,
+      timeout_ms: timeout_ms
+    } = stream_context
+
     caller_ref = Process.monitor(caller)
     timer_ref = start_timeout_timer(timeout_ms)
 
     execute_request = execute_operation(request)
-    {:ok, task_ref} = client.execute_inference(channel, execute_request, owner: self())
 
-    loop_ctx = %{
-      caller_ref: caller_ref,
-      channel: channel,
-      client: client,
-      controller_session_id: execute_request.controller_session_id,
-      event_handler: event_handler,
-      metrics: metrics,
-      target: target,
-      task_ref: task_ref,
-      timer_ref: timer_ref
-    }
+    try do
+      case client.execute_inference(channel, execute_request, owner: self()) do
+        {:ok, task_ref} ->
+          receive_loop(
+            %{
+              caller_ref: caller_ref,
+              channel: channel,
+              client: client,
+              controller_session_id: execute_request.controller_session_id,
+              event_handler: event_handler,
+              accepted?: false,
+              acceptance_gate: acceptance_gate,
+              cancel_drain_timeout_ms: cancel_drain_timeout_ms,
+              capacity_authority: capacity_authority,
+              capacity_node_id: capacity_node_id,
+              cancellation_started_before_acceptance?: false,
+              metrics: metrics,
+              target: target,
+              task_ref: task_ref,
+              timer_ref: timer_ref
+            },
+            []
+          )
 
-    result = receive_loop(loop_ctx, [])
+        {:error, reason} ->
+          {:error, {:dispatch_failed, reason}}
 
-    cleanup(timer_ref, caller_ref)
-    result
+        _invalid ->
+          {:error, {:dispatch_failed, :runtime_endpoint_protocol_error}}
+      end
+    after
+      cleanup(timer_ref, caller_ref)
+    end
   end
 
   defp receive_loop(%{} = loop_ctx, events) do
     %{
-      client: client,
-      channel: channel,
       target: target,
       metrics: metrics,
       task_ref: task_ref,
@@ -669,19 +935,24 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
     receive do
       {:runtime_endpoint_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
-        handler_result = emit_event(event, request_id, event_handler)
+        loop_ctx = maybe_record_acceptance(loop_ctx, event)
         events = [event | events]
         metrics = update_metrics_for_event(metrics, event)
+        handler_result = emit_event_safely(event, request_id, event_handler)
 
         cond do
           InferenceEvent.terminal?(event) ->
-            {:ok, Enum.reverse(events), metrics}
+            stream_terminal_result(loop_ctx, events, metrics)
+
+          handler_failed?(handler_result) ->
+            cancel_and_drain(
+              %{loop_ctx | metrics: metrics},
+              events,
+              :event_handler_failed
+            )
 
           cancelled_by_handler?(handler_result) ->
-            put_cancel_sent_context(metrics, :client_disconnect)
-            _ = cancel_inference(client, channel, request_id, loop_ctx.controller_session_id)
-
-            drain_until_terminal_or_done(
+            cancel_and_drain(
               %{loop_ctx | metrics: metrics},
               events,
               :client_disconnect
@@ -692,113 +963,210 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         end
 
       {:runtime_endpoint_done, ^task_ref, :ok} ->
-        {:ok, Enum.reverse(events), metrics}
+        stream_completion_result(loop_ctx, events, metrics)
 
       {:runtime_endpoint_done, ^task_ref, {:error, reason}} ->
         mark_transport_failure(target, reason)
 
-        if events == [] do
-          {:error, {:dispatch_failed, reason}}
-        else
-          has_terminal? = Enum.any?(events, &InferenceEvent.terminal?/1)
+        failed_event =
+          InferenceEvent.failed(
+            "stream_error",
+            "stream ended with error: #{inspect(reason)}",
+            false
+          )
 
-          if has_terminal? do
-            {:ok, Enum.reverse(events), metrics}
-          else
-            failed_event =
-              InferenceEvent.failed(
-                "stream_error",
-                "stream ended with error: #{inspect(reason)}",
-                false
-              )
-
-            emit_event(failed_event, request_id, event_handler)
-            metrics = update_metrics_for_terminal(metrics, failed_event, :stream)
-            {:ok, Enum.reverse([failed_event | events]), metrics}
-          end
-        end
+        _handler_result = emit_event_safely(failed_event, request_id, event_handler)
+        metrics = update_metrics_for_terminal(metrics, failed_event, :stream)
+        stream_terminal_result(loop_ctx, [failed_event | events], metrics)
 
       {:dispatch_timeout, ^timer_ref} ->
-        put_cancel_sent_context(metrics, :timeout)
-        _ = cancel_inference(client, channel, request_id, loop_ctx.controller_session_id)
-        drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, :timeout)
+        cancel_and_drain(%{loop_ctx | metrics: metrics}, events, :timeout)
 
       {:DOWN, ^caller_ref, :process, _pid, _reason} ->
-        put_cancel_sent_context(metrics, :caller_disconnect)
-        _ = cancel_inference(client, channel, request_id, loop_ctx.controller_session_id)
-        drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, :caller_disconnect)
+        cancel_and_drain(%{loop_ctx | metrics: metrics}, events, :caller_disconnect)
     end
+  end
+
+  defp maybe_record_acceptance(
+         %{acceptance_gate: acceptance_gate} = loop_ctx,
+         %InferenceEvent{event: %InferenceEvent.Accepted{}}
+       ) do
+    release_dispatch_acceptance_gate(acceptance_gate)
+    %{loop_ctx | acceptance_gate: nil, accepted?: true}
+  end
+
+  defp maybe_record_acceptance(loop_ctx, _event), do: loop_ctx
+
+  defp stream_terminal_result(
+         %{accepted?: true, cancellation_started_before_acceptance?: false},
+         events,
+         metrics
+       ),
+       do: {:ok, Enum.reverse(events), metrics}
+
+  defp stream_terminal_result(_loop_ctx, _events, _metrics),
+    do: {:error, {:dispatch_failed, :node_acceptance_missing}}
+
+  defp stream_completion_result(
+         %{accepted?: true, cancellation_started_before_acceptance?: false},
+         events,
+         metrics
+       ),
+       do: {:ok, Enum.reverse(events), metrics}
+
+  defp stream_completion_result(_loop_ctx, _events, _metrics),
+    do: {:error, {:dispatch_failed, :node_acceptance_missing}}
+
+  defp cancel_and_drain(loop_ctx, events, cancel_reason) do
+    %{client: client, channel: channel, metrics: metrics} = loop_ctx
+    request_id = metrics.request_id
+
+    loop_ctx = %{
+      loop_ctx
+      | cancellation_started_before_acceptance?: not loop_ctx.accepted?
+    }
+
+    put_cancel_sent_context(metrics, cancel_reason)
+    cancel_inference_safely(client, channel, request_id, loop_ctx.controller_session_id)
+
+    cancel_deadline =
+      System.monotonic_time(:millisecond) + loop_ctx.cancel_drain_timeout_ms
+
+    result = drain_until_terminal_or_done(loop_ctx, events, cancel_reason, cancel_deadline)
+
+    if cancel_reason == :event_handler_failed do
+      case result do
+        {:ok, _events, _metrics} -> {:error, {:dispatch_failed, :event_handler_failed}}
+        {:error, _reason} = error -> error
+      end
+    else
+      result
+    end
+  end
+
+  defp cancel_inference_safely(client, channel, request_id, controller_session_id) do
+    _result = cancel_inference(client, channel, request_id, controller_session_id)
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   # After sending cancel (due to timeout or disconnect), drain remaining events
   # until we get a terminal event or the stream completes.
-  defp drain_until_terminal_or_done(%{} = loop_ctx, events, cancel_reason) do
-    %{task_ref: task_ref, metrics: metrics, event_handler: event_handler} = loop_ctx
+  defp drain_until_terminal_or_done(%{} = loop_ctx, events, cancel_reason, cancel_deadline) do
+    %{
+      task_ref: task_ref,
+      metrics: metrics,
+      event_handler: event_handler
+    } = loop_ctx
+
     request_id = metrics.request_id
+    remaining_ms = cancel_deadline - System.monotonic_time(:millisecond)
 
-    receive do
-      {:runtime_endpoint_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
-        emit_event(event, request_id, event_handler)
-        events = [event | events]
-        metrics = update_metrics_for_event(metrics, event)
+    if remaining_ms > 0 do
+      receive do
+        {:runtime_endpoint_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
+          loop_ctx = maybe_record_acceptance(loop_ctx, event)
+          _handler_result = emit_event_safely(event, request_id, event_handler)
+          events = [event | events]
+          metrics = update_metrics_for_event(metrics, event)
 
-        if InferenceEvent.terminal?(event) do
-          {:ok, Enum.reverse(events), metrics}
-        else
-          drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, cancel_reason)
-        end
+          if InferenceEvent.terminal?(event) do
+            stream_terminal_result(loop_ctx, events, metrics)
+          else
+            drain_until_terminal_or_done(
+              %{loop_ctx | metrics: metrics},
+              events,
+              cancel_reason,
+              cancel_deadline
+            )
+          end
 
-      {:runtime_endpoint_done, ^task_ref, _result} ->
-        # Stream ended without a terminal event after cancel.
-        # Synthesize a terminal event so the caller always gets one.
-        timeout_event =
-          InferenceEvent.failed(
-            "request_#{cancel_reason}",
-            "request #{cancel_reason}",
-            false
-          )
-
-        emit_event(timeout_event, request_id, event_handler)
-
-        metrics =
-          metrics
-          |> increment_event_count()
-          |> update_metrics_for_terminal(timeout_event, :synthesized)
-
-        put_terminal_synthesized_context(metrics, cancel_reason)
-
-        {:ok, Enum.reverse([timeout_event | events]), metrics}
-    after
-      5_000 ->
-        # Safety valve: if neither terminal event nor stream completion
-        # arrives within 5s after cancel, synthesize and return.
-        timeout_event =
-          InferenceEvent.failed(
-            "request_#{cancel_reason}",
-            "request #{cancel_reason} (drain timeout)",
-            false
-          )
-
-        emit_event(timeout_event, request_id, event_handler)
-
-        metrics =
-          metrics
-          |> increment_event_count()
-          |> update_metrics_for_terminal(timeout_event, :synthesized)
-
-        put_terminal_synthesized_context(metrics, cancel_reason)
-
-        {:ok, Enum.reverse([timeout_event | events]), metrics}
+        {:runtime_endpoint_done, ^task_ref, _result} ->
+          synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
+      after
+        remaining_ms -> cancel_drain_timeout_result(loop_ctx, events, cancel_reason)
+      end
+    else
+      cancel_drain_timeout_result(loop_ctx, events, cancel_reason)
     end
   end
 
+  defp cancel_drain_timeout_result(loop_ctx, events, cancel_reason) do
+    reconcile_cancel_drain_timeout(loop_ctx)
+    synthesize_cancel_terminal(loop_ctx, events, cancel_reason, " after drain timeout")
+  end
+
+  defp synthesize_cancel_terminal(loop_ctx, events, cancel_reason, message_suffix) do
+    %{metrics: metrics, event_handler: event_handler} = loop_ctx
+    request_id = metrics.request_id
+
+    timeout_event =
+      InferenceEvent.failed(
+        "request_#{cancel_reason}",
+        "request #{cancel_reason}#{message_suffix}",
+        false
+      )
+
+    _handler_result = emit_event_safely(timeout_event, request_id, event_handler)
+
+    metrics =
+      metrics
+      |> increment_event_count()
+      |> update_metrics_for_terminal(timeout_event, :synthesized)
+
+    put_terminal_synthesized_context(metrics, cancel_reason)
+    stream_terminal_result(loop_ctx, [timeout_event | events], metrics)
+  end
+
+  defp reconcile_cancel_drain_timeout(%{
+         capacity_authority: authority,
+         capacity_node_id: node_id,
+         client: client,
+         channel: channel,
+         target: target
+       }) do
+    disconnect_result = disconnect_best_effort(client, channel)
+    failure_result = mark_transport_failure(target, :node_timeout)
+
+    unless disconnect_result == :ok and
+             durable_reconciliation_confirmed?(failure_result, node_id) do
+      AllocationAuthority.quarantine_node(authority, node_id)
+    end
+
+    :ok
+  end
+
+  defp durable_reconciliation_confirmed?(
+         {:ok, %{id: node_id, health: health}},
+         node_id
+       )
+       when health in [:unhealthy, :unreachable],
+       do: true
+
+  defp durable_reconciliation_confirmed?(_result, _node_id), do: false
+
+  defp cancel_drain_timeout_ms(timeout, _request_timeout_ms)
+       when is_integer(timeout) and timeout > 0,
+       do: timeout
+
+  defp cancel_drain_timeout_ms(_timeout, request_timeout_ms),
+    do: min(request_timeout_ms, @maximum_cancel_drain_timeout_ms)
+
   defp mark_transport_failure(target, reason) do
-    Orchard.Nodes.record_transport_failure(target, reason, DateTime.utc_now())
+    case Orchard.Nodes.record_transport_failure(target, reason, DateTime.utc_now()) do
+      {:ok, _node} = confirmed -> confirmed
+      _unconfirmed -> :noop
+    end
   rescue
     error ->
       Logger.warning(
         "Failed to mark runtime endpoint transport failure: #{exception_name(error)}"
       )
+
+      :noop
   end
 
   defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
@@ -809,7 +1177,18 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     handler.(request_id, event)
   end
 
-  defp cancelled_by_handler?(handler_result), do: handler_result == :cancel
+  defp emit_event_safely(event, request_id, handler) do
+    {:ok, emit_event(event, request_id, handler)}
+  rescue
+    _error -> {:error, :event_handler_failed}
+  catch
+    _kind, _reason -> {:error, :event_handler_failed}
+  end
+
+  defp cancelled_by_handler?({:ok, handler_result}), do: handler_result == :cancel
+
+  defp handler_failed?({:error, :event_handler_failed}), do: true
+  defp handler_failed?(_handler_result), do: false
 
   defp start_timeout_timer(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0 do
     ref = make_ref()

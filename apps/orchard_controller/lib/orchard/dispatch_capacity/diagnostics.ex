@@ -13,14 +13,12 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
   """
 
   alias Orchard.DispatchCapacity
-  alias Orchard.DispatchCapacity.{Authority, CapacityEvidence, Policy}
+  alias Orchard.DispatchCapacity.{Authorization, CapacityEvidence, Policy}
   alias Orchard.DispatchCapacity.Evaluator
-  alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.DispatchCapacity.ManagementClassifier
   alias Orchard.DispatchCapacity.ManagementClassifier.Input, as: ClassificationInput
+  alias Orchard.Nodes.Node
   alias Orchard.Repo
-  alias Orchard.RuntimeEndpoint.PlacementCapacity
-
   import Ecto.Query, only: [from: 2]
 
   require Logger
@@ -84,32 +82,17 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
     now = Keyword.get_lazy(opts, :now, &utc_now/0)
     freshness_threshold_ms = Keyword.get(opts, :freshness_threshold_ms, freshness_threshold_ms())
 
+    evaluation_opts =
+      opts
+      |> Keyword.put(:now, now)
+      |> Keyword.put(:freshness_threshold_ms, freshness_threshold_ms)
+      |> Keyword.put(:management_classification, management_classification(node, opts))
+      |> Keyword.put_new(:controller_accounted_allocation, :missing)
+
     evaluation =
-      %Input{
-        authority_phase: authority_phase(authority),
-        policy_presence: policy_presence(policy),
-        policy_state: policy_state(policy),
-        management_classification: management_classification(node, opts),
-        trusted_identity?: Keyword.get(opts, :trusted_identity?, trusted_identity?(node)),
-        lifecycle_state: field(node, :state),
-        health: field(node, :health),
-        heartbeat_fresh?: fresh?(field(node, :last_heartbeat_at), now, freshness_threshold_ms),
-        capacity_observation_fresh?:
-          fresh?(evidence_observed_at(evidence), now, freshness_threshold_ms),
-        observation_time: evidence_observed_at(evidence),
-        runtime_concurrency_limit: runtime_limit(evidence),
-        aggregate_active_count: active_count(evidence),
-        controller_dispatch_ceiling: controller_ceiling(policy),
-        controller_accounted_allocation:
-          Keyword.get(opts, :controller_accounted_allocation, :missing),
-        placement_capacity:
-          normalize_placement(Keyword.get(opts, :placement_capacity, :not_applicable)),
-        temporary_legacy_claim_count: Keyword.get(opts, :temporary_legacy_claim_count, 0),
-        pool_eligible?: Keyword.get(opts, :pool_eligible?, true),
-        format_eligible?: Keyword.get(opts, :format_eligible?, true),
-        memory_eligible?: Keyword.get(opts, :memory_eligible?, true),
-        breaker_eligible?: Keyword.get(opts, :breaker_eligible?, true)
-      }
+      node
+      |> diagnostic_node()
+      |> Authorization.from_facts(authority, policy, evidence, evaluation_opts)
       |> Evaluator.evaluate()
 
     %Snapshot{counterfactual?: true, consumers_ready?: false, evaluation: evaluation}
@@ -160,80 +143,16 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
     if field(node, :state) in @admitted_states, do: :admitted, else: :not_admitted
   end
 
-  defp trusted_identity?(node), do: field(node, :state) in @admitted_states
+  defp diagnostic_node(%Node{} = node), do: node
 
-  defp authority_phase(%Authority{enforcement_phase: phase}), do: phase
-  defp authority_phase(_authority), do: :invalid
-
-  defp policy_presence(%Policy{}), do: :present
-  defp policy_presence(_policy), do: :missing
-
-  defp policy_state(%Policy{policy_state: state}), do: state
-  defp policy_state(_policy), do: :missing
-
-  defp controller_ceiling(%Policy{
-         policy_state: :shadow_legacy,
-         controller_dispatch_ceiling: nil
-       }),
-       do: :missing
-
-  defp controller_ceiling(%Policy{controller_dispatch_ceiling: value})
-       when is_integer(value) and value >= 0,
-       do: {:valid, value}
-
-  defp controller_ceiling(%Policy{controller_dispatch_ceiling: nil}), do: :missing
-  defp controller_ceiling(%Policy{}), do: :invalid
-  defp controller_ceiling(_policy), do: :missing
-
-  defp runtime_limit(%CapacityEvidence{validity: :valid, runtime_concurrency_limit: value})
-       when is_integer(value) and value > 0,
-       do: {:valid, value}
-
-  defp runtime_limit(%CapacityEvidence{validity: :missing, runtime_concurrency_limit: nil}),
-    do: :missing
-
-  defp runtime_limit(%CapacityEvidence{validity: :missing, runtime_concurrency_limit: value})
-       when is_integer(value) and value > 0,
-       do: {:valid, value}
-
-  defp runtime_limit(%CapacityEvidence{}), do: :invalid
-  defp runtime_limit(_evidence), do: :missing
-
-  defp active_count(%CapacityEvidence{validity: :valid, active_request_count: value})
-       when is_integer(value) and value >= 0,
-       do: {:valid, value}
-
-  defp active_count(%CapacityEvidence{validity: :missing, active_request_count: nil}),
-    do: :missing
-
-  defp active_count(%CapacityEvidence{validity: :missing, active_request_count: value})
-       when is_integer(value) and value >= 0,
-       do: {:valid, value}
-
-  defp active_count(%CapacityEvidence{}), do: :invalid
-  defp active_count(_evidence), do: :missing
-
-  defp evidence_observed_at(%CapacityEvidence{observed_at: observed_at}), do: observed_at
-  defp evidence_observed_at(_evidence), do: nil
-
-  defp normalize_placement(%PlacementCapacity{
-         status: :known,
-         active_request_count: active,
-         max_concurrency: maximum
-       }),
-       do: {:valid, active, maximum}
-
-  defp normalize_placement(%PlacementCapacity{status: :unknown}), do: :unknown
-  defp normalize_placement(%PlacementCapacity{}), do: :invalid
-  defp normalize_placement(value), do: value
-
-  defp fresh?(%DateTime{} = observed_at, %DateTime{} = now, threshold_ms)
-       when is_integer(threshold_ms) and threshold_ms > 0 do
-    age_ms = DateTime.diff(now, observed_at, :millisecond)
-    age_ms >= 0 and age_ms <= threshold_ms
+  defp diagnostic_node(node) do
+    %Node{
+      id: field(node, :id),
+      state: field(node, :state),
+      health: field(node, :health),
+      last_heartbeat_at: field(node, :last_heartbeat_at)
+    }
   end
-
-  defp fresh?(_observed_at, _now, _threshold_ms), do: false
 
   defp freshness_threshold_ms, do: Orchard.Inference.node_freshness_threshold_ms()
 

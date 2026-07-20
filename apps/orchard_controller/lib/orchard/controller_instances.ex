@@ -14,8 +14,12 @@ defmodule Orchard.ControllerInstances do
 
   alias Orchard.BeamAuthorizationRoot.Store, as: AuthorizationRootStore
   alias Orchard.ControllerInstances.ControllerInstance
-  alias Orchard.{ControlPlane, NodeTrust, Repo, SchemaSupport}
+  alias Orchard.ControlPlane
+  alias Orchard.DispatchCapacity.Readiness
+  alias Orchard.NodeTrust
+  alias Orchard.Repo
   alias Orchard.RuntimeEndpoint.BeamNodeName
+  alias Orchard.SchemaSupport
   alias Orchard.TransportTLS.CertificateIdentity
 
   import Ecto.Query, only: [from: 2]
@@ -91,16 +95,15 @@ defmodule Orchard.ControllerInstances do
   Atomically refreshes membership and dispatch-capacity capability evidence for
   one authenticated local Controller identity.
 
-  `dispatch_capacity_consumers_ready` is forced to `false` rather than taken
-  from `attrs`: no consumer reads the shared evaluation in this non-enforcing
-  foundation, so no caller and no configuration may publish the readiness an
-  enforcement cutover would act on. The heartbeat is all-or-nothing, so a
-  partial `attrs` map is rejected instead of making stale evidence look fresh.
+  `dispatch_capacity_consumers_ready` may be true only when both the publisher
+  requests it and the running build passes the exact five-consumer readiness
+  proof. The heartbeat is all-or-nothing, so a partial `attrs` map is rejected
+  instead of making stale evidence look fresh.
   """
   @spec heartbeat_local(keyword(), map()) ::
           {:ok, ControllerInstance.t()} | {:error, term()}
   def heartbeat_local(opts, attrs) when is_list(opts) and is_map(attrs) do
-    attrs = force_consumers_not_ready(attrs)
+    attrs = verify_consumers_readiness(attrs)
 
     with :ok <- ControlPlane.authorize_membership_self_publication(),
          {:ok, local_identity} <- ensure_local(opts) do
@@ -112,10 +115,13 @@ defmodule Orchard.ControllerInstances do
     end
   end
 
-  defp force_consumers_not_ready(attrs) do
+  defp verify_consumers_readiness(attrs) do
+    attrs = SchemaSupport.normalize_attrs(attrs)
+    ready? = Map.get(attrs, "dispatch_capacity_consumers_ready") == true and Readiness.ready?()
+
     attrs
-    |> SchemaSupport.normalize_attrs()
-    |> Map.put("dispatch_capacity_consumers_ready", false)
+    |> Map.put("dispatch_capacity_contract_version", Readiness.contract_version())
+    |> Map.put("dispatch_capacity_consumers_ready", ready?)
   end
 
   defp refresh_local_identity(local_identity, attrs) do

@@ -3,6 +3,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.Scheduler.SingleNode
 
   defmodule StubClient do
@@ -25,7 +26,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     :ok
   end
 
-  test "SPEC.md §5.5 reports loaded placement max concurrency for single-node queue admission" do
+  test "SPEC.md §5.5 bounds loaded placement capacity by unmanaged aggregate fallback" do
     Process.put(:single_node_status, %{
       runtime_model_placements: [
         placement("single-capacity-model", "v1", active_request_count: 1, max_concurrency: 2)
@@ -35,12 +36,12 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:ok, schedule} =
              SingleNode.default_schedule(
                canonical_request("single-capacity-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
 
     assert schedule.strategy == :single_node
-    assert schedule.queue_lane_capacity == 2
+    assert schedule.queue_lane_capacity == 1
   end
 
   test "SPEC.md §5.5 constrains single-node queue capacity by node max concurrency" do
@@ -58,7 +59,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:ok, schedule} =
              SingleNode.default_schedule(
                canonical_request("single-node-capacity-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
 
@@ -81,12 +82,12 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:ok, schedule} =
              SingleNode.default_schedule(
                canonical_request("single-unrelated-load-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
 
     assert schedule.strategy == :single_node
-    assert schedule.queue_lane_capacity == 3
+    assert schedule.queue_lane_capacity == 2
   end
 
   test "SPEC.md §5.5 returns model_busy when multi-slot single-node capacity is exhausted" do
@@ -101,7 +102,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-node-busy-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
   end
@@ -121,7 +122,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-node-unrelated-busy-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
   end
@@ -136,7 +137,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-node-cold-busy-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
   end
@@ -156,7 +157,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-node-same-model-busy-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
   end
@@ -171,12 +172,12 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-busy-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
   end
 
-  test "SPEC.md §5.5 treats invalid single-node placement capacity as unknown" do
+  test "SPEC.md §5.5 rejects invalid single-node placement capacity" do
     Process.put(:single_node_status, %{
       active_request_count: 0,
       max_concurrency: 4,
@@ -188,18 +189,15 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:ok, schedule} =
+    assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-invalid-capacity-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
-
-    assert schedule.strategy == :single_node
-    refute Map.has_key?(schedule, :queue_lane_capacity)
   end
 
-  test "SPEC.md §5.5 treats duplicate single-node placement capacity as unknown" do
+  test "SPEC.md §5.5 rejects duplicate single-node placement capacity" do
     duplicate =
       placement("single-duplicate-capacity-model", "v1",
         active_request_count: 0,
@@ -212,18 +210,15 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       runtime_model_placements: [duplicate, duplicate]
     })
 
-    assert {:ok, schedule} =
+    assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-duplicate-capacity-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
-
-    assert schedule.strategy == :single_node
-    refute Map.has_key?(schedule, :queue_lane_capacity)
   end
 
-  test "SPEC.md §5.5 treats malformed matching single-node placement capacity as unknown" do
+  test "SPEC.md §5.5 rejects malformed matching single-node placement capacity" do
     Process.put(:single_node_status, %{
       active_request_count: 0,
       max_concurrency: 4,
@@ -232,29 +227,140 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:ok, schedule} =
+    assert {:error, :model_busy} =
              SingleNode.default_schedule(
                canonical_request("single-malformed-capacity-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
-
-    assert schedule.strategy == :single_node
-    refute Map.has_key?(schedule, :queue_lane_capacity)
   end
 
-  test "keeps conservative queue capacity when single-node status lacks placement capacity" do
+  test "SPEC.md §5.5 rejects a loaded model with missing Placement Capacity" do
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 4,
+      loaded_models: [%{model_id: "single-loaded-missing-capacity", version: "v1"}],
+      runtime_model_placements: []
+    })
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-loaded-missing-capacity"),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+  end
+
+  test "uses one conservative unmanaged slot when aggregate capacity is missing" do
     Process.put(:single_node_status, %{runtime_model_placements: []})
 
     assert {:ok, schedule} =
              SingleNode.default_schedule(
                canonical_request("single-legacy-model"),
-               [host: "127.0.0.1", port: 50_071],
+               SingleNode.target(),
                status_client: StubClient
              )
 
     assert schedule.strategy == :single_node
-    refute Map.has_key?(schedule, :queue_lane_capacity)
+    assert schedule.queue_lane_capacity == 1
+  end
+
+  test "SPEC.md §4.6.2 inventory failure cannot downgrade a target to unmanaged" do
+    Process.put(:single_node_status, %{active_request_count: 0, max_concurrency: 2})
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-inventory-failure-model"),
+               SingleNode.target(),
+               status_client: StubClient,
+               node_resolver: fn _target -> {:error, :node_inventory_unavailable} end
+             )
+  end
+
+  test "SPEC.md §5.9 post-load provider probes fresh placement capacity" do
+    model_id = "single-post-load-capacity-model"
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request(model_id),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    Process.put(:single_node_status, %{
+      active_request_count: 1,
+      max_concurrency: 2,
+      runtime_model_placements: [
+        placement(model_id, "v1", active_request_count: 1, max_concurrency: 1)
+      ]
+    })
+
+    refreshed = schedule.dispatch_capacity_input_provider.()
+    result = Evaluator.evaluate(refreshed)
+
+    assert result.placement_capacity == {:valid, 1, 1}
+    assert result.eligible? == false
+    assert :placement_capacity_exhausted in result.reason_codes
+  end
+
+  test "SPEC.md §5.9 acquisition provider probes fresh aggregate capacity before loading" do
+    model_id = "single-acquisition-capacity-model"
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request(model_id),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    Process.put(:single_node_status, %{
+      active_request_count: 2,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+
+    refreshed = schedule.dispatch_capacity_acquisition_input_provider.()
+    result = Evaluator.evaluate(refreshed)
+
+    assert result.placement_capacity == :not_applicable
+    refute result.eligible?
+    assert :runtime_concurrency_limit_exhausted in result.reason_codes
+  end
+
+  test "SPEC.md §5.9 post-load provider rejects missing matching Placement Capacity" do
+    model_id = "single-post-load-missing-placement-model"
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request(model_id),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    refreshed = schedule.dispatch_capacity_input_provider.()
+    result = Evaluator.evaluate(refreshed)
+
+    assert result.placement_capacity == :unknown
+    assert result.eligible? == false
+    assert :placement_capacity_unknown in result.reason_codes
   end
 
   defp canonical_request(model_id) do
