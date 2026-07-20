@@ -577,6 +577,11 @@ The read-only report of what the shared capacity evaluation would decide if F11 
 It is observability, never authorization, and it is distinct from the authorization the named capacity consumers actually perform.
 _Avoid_: dry-run enforcement, shadow enforcement, simulated dispatch, capacity forecast
 
+**Controller Allocation Authority**:
+The single serialized Controller-local owner of a Node's live dispatch claims, its claim revalidation, and its Node Acceptance Gate, which every named capacity consumer authorizes through instead of deriving capacity itself.
+It is Controller-local and process-lifetime scoped: it holds no durable dispatch permit and provides no leadership fencing.
+_Avoid_: durable dispatch permit, leader epoch, queue lane, scheduler, Controller Dispatch Ceiling
+
 **Node Acceptance Gate**:
 The Controller-local per-Node serialization point that per-Node capacity policy mutation and final dispatch revalidation both hold, so either Node acceptance or the policy change happens first without an authority gap.
 It is held from the final shared evaluation through Node acceptance or pre-acceptance failure, and it is not distributed leadership fencing.

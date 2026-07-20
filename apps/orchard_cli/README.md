@@ -27,7 +27,9 @@ This README is orientation only. Normative CLI requirements live in
   to `1` when omitted, persisting the Controller Dispatch Ceiling atomically
   with admission; that write holds the Node's acceptance gate, so it fails fast
   with `dispatch_capacity_acceptance_gate_busy` when a dispatch to the same Node
-  is mid-handoff and the command should be retried. `nodes inspect` renders a
+  is mid-handoff, or with `dispatch_capacity_authority_unavailable` when the
+  Controller's allocation authority is not running, and the command should be
+  retried in both cases. `nodes inspect` renders a
   counterfactual dispatch-capacity block that reports what F11 enforcement would
   decide without changing dispatch behavior, including the capacity management
   class, authority decision, Placement Capacity, and decision-specific available
