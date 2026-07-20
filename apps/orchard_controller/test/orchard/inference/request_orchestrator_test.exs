@@ -363,7 +363,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreUnavaila
        Map.put(schedule, :prefix_cache_score, %{
          status_code: "timeout",
          status_message:
-           "Traceback req_999 hmac-sha256:#{String.duplicate("e", 64)} /private/tmp/orchard",
+           "Traceback sensitive-request-id-must-not-persist " <>
+             "hmac-sha256:#{String.duplicate("e", 64)} /private/tmp/orchard",
          resident_fingerprint_match: true,
          score_tier: "resident_fingerprint",
          session_started_unix_ms: 1_713_726_400_987
@@ -1231,7 +1232,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     model = create_active_model!(bundle, "request-orchestrator-prefix-cache-score-timeout")
 
     canonical =
-      canonical_request("request-orchestrator-prefix-cache-score-timeout", stream?: false)
+      canonical_request("request-orchestrator-prefix-cache-score-timeout",
+        stream?: false,
+        public_id: "req_999_redaction-control"
+      )
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
     assert Enum.any?(events, &InferenceEvent.terminal?/1)
@@ -1250,7 +1254,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(decision, "selected_prefix_cache_score_session_started_unix_ms")
     refute inspect(decision) =~ "hmac-sha256"
     refute inspect(decision) =~ "/private/tmp"
-    refute inspect(decision) =~ "req_999"
+    refute inspect(decision) =~ "sensitive-request-id-must-not-persist"
   end
 
   test "execute/3 derives memory-admission tier from raw budget before persistence", %{
