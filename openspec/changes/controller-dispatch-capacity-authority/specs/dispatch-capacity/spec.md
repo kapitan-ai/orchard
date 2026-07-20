@@ -85,8 +85,11 @@ This requirement traces to `SPEC.md` §4.1, §4.4, §4.6.2, §8, §8.2, and §13
 Orchard SHALL provide one pure transport-independent evaluator that accepts normalized policy, phase, management class, eligibility, freshness, capacity, allocation, placement, and temporary-claim inputs.
 The evaluator SHALL return Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
 Operational cohort selection SHALL be owned by `Capacity Authority Persistence` before the operational evaluator is invoked.
-The evaluator SHALL remain total: a direct non-Active lifecycle input, including `removed`, SHALL return Effective Dispatch Limit `0`, Dispatch Headroom `0`, no positive decision-specific available slots, and eligibility false.
-That defensive result SHALL NOT re-add a qualifying removed tombstone to the operational cohort.
+Lifecycle eligibility SHALL require `active`.
+The evaluator SHALL remain total: a direct non-Active lifecycle input, including `removed`, SHALL return Effective Dispatch Limit `0`, Dispatch Headroom `0`, and eligibility false.
+Under `legacy_pre_cutover`, the evaluator MAY still expose the centrally calculated `legacy_pre_cutover_available_slots` counterfactually, including a positive value, but those slots SHALL NOT authorize temporary-claim acquisition or new work while eligibility is false.
+That defensive result SHALL NOT re-add a qualifying removed tombstone to the operational cohort or create any dispatch authority.
+Operational exclusion SHALL still require durable lifecycle `removed`, trust revocation, and an existing successful removal audit.
 In `pre_cutover`, canonical Effective Dispatch Limit and Dispatch Headroom SHALL remain `0` while the temporary legacy decision is calculated separately.
 In `enforcing`, the evaluator SHALL calculate the approved minimum and headroom formulas and fail closed for every missing or invalid production prerequisite.
 For a trusted, Active, healthy admitted production Node with scheduler-fresh heartbeat and capacity observations, durable cluster phase `enforcing`, in-force explicit policy, and valid runtime evidence, Orchard SHALL compute Effective Dispatch Limit as the smaller of Runtime Concurrency Enforcement Limit and Controller Dispatch Ceiling.
@@ -174,9 +177,10 @@ This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
 - **WHEN** a trusted Node input is `admitted`, `cordoned`, `draining`, `maintenance`, `decommissioning`, or `removed`
 - **THEN** its Effective Dispatch Limit is `0`
 - **AND** its Dispatch Headroom is `0`
-- **AND** it has no positive decision-specific available slots
 - **AND** its eligibility is false
-- **AND** that defensive result does not re-add a qualifying removed tombstone to the operational cohort
+- **AND** any `legacy_pre_cutover` available slots remain counterfactual and authorize no temporary-claim acquisition or new work
+- **AND** that defensive result does not re-add a qualifying removed tombstone to the operational cohort or create dispatch authority
+- **AND** operational exclusion still requires durable lifecycle `removed`, trust revocation, and an existing successful removal audit
 
 #### Scenario: Health is degraded or unhealthy
 - **WHEN** the decision is `f11_enforcing` and a trusted Active Node is `degraded`, `unhealthy`, or `unreachable`
@@ -342,7 +346,8 @@ This requirement traces to `SPEC.md` §4.6.2 and §7.3.5 and the shared cluster-
 ### Requirement: Node-Owned Runtime Concurrency Enforcement Limit
 The Node SHALL own and locally enforce the dynamic Runtime Concurrency Enforcement Limit.
 The Controller SHALL treat that limit as one input to Effective Dispatch Limit and SHALL NOT replace the Node's local enforcement.
-Missing, malformed, unavailable, or scheduler-stale runtime-limit evidence for an admitted production Node SHALL NOT prove positive capacity.
+Under `f11_enforcing`, missing, malformed, unavailable, or scheduler-stale Runtime Concurrency Enforcement Limit evidence for an admitted production Node SHALL yield Effective Dispatch Limit `0`, Dispatch Headroom `0`, and eligibility false.
+Orchard SHALL NOT apply the `legacy_pre_cutover` fallback limit of `1` or otherwise derive positive dispatch authority from that evidence under `f11_enforcing`.
 This refines `SPEC.md` §4.6.1, §4.6.2, and §7.5.3.
 
 #### Scenario: Runtime limit binds below the ceiling
@@ -357,12 +362,13 @@ This refines `SPEC.md` §4.6.1, §4.6.2, and §7.5.3.
 - **AND** every production eligibility gate passes
 - **THEN** its Effective Dispatch Limit is `3`
 
-#### Scenario: Missing or invalid runtime evidence fails closed
-- **WHEN** runtime-limit evidence for an admitted production Node is missing, malformed, unavailable, or scheduler-stale
-- **THEN** that evidence does not prove positive capacity
-- **AND** its Controller Dispatch Ceiling alone is not sufficient
-- **AND** its Effective Dispatch Limit and Dispatch Headroom are `0`
+#### Scenario: Enforcing runtime-limit evidence fails closed
+- **WHEN** an admitted production Node is evaluated under the `f11_enforcing` decision
+- **AND** its runtime-limit evidence is missing, malformed, unavailable, or scheduler-stale
+- **THEN** its Effective Dispatch Limit is `0`
+- **AND** its Dispatch Headroom is `0`
 - **AND** its eligibility is `false`
+- **AND** Orchard applies no `legacy_pre_cutover` fallback limit of `1` and derives no positive `f11_enforcing` authority
 
 ### Requirement: Capacity Policy Migration And Operator Approval
 Existing production Nodes SHALL migrate through `shadow_legacy`, `approved_explicit`, and `enforcing` in that order.
