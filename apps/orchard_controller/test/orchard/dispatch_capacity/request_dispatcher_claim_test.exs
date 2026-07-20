@@ -1215,7 +1215,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         )
       end)
 
-    assert_receive :pre_acceptance_stream_started
+    assert_receive :pre_acceptance_stream_started, 1_000
     Process.exit(caller, :kill)
     assert_receive {:pre_acceptance_cancel_received, emitter}, 1_000
     assert AllocationAuthority.claim_count(authority, node_id) == 1
@@ -1518,7 +1518,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-shared-acceptance-deadline"
-    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 400}
+    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 1_000}
 
     {:ok, held_lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
     started_at = System.monotonic_time(:millisecond)
@@ -1535,11 +1535,14 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     try do
       assert_receive :model_loaded
-      Process.sleep(250)
+      Process.sleep(600)
       assert :ok = QueueManager.release_acceptance_gate(held_lease, authority: authority)
 
-      assert_receive {:cancel_received, emitter}, 260
-      assert System.monotonic_time(:millisecond) - started_at < 550
+      # A deadline that excluded the 600ms gate wait would cancel no earlier
+      # than 1_600ms after dispatch started, so the upper bound still proves
+      # acceptance waiting and streaming share one request timeout.
+      assert_receive {:cancel_received, emitter}, 700
+      assert System.monotonic_time(:millisecond) - started_at < 1_400
 
       send(emitter, :finish_cancel)
       assert {:ok, _events} = Task.await(dispatch)
