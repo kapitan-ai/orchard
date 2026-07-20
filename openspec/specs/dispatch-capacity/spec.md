@@ -28,7 +28,7 @@ This requirement traces to `SPEC.md` §4.6.2 and §13.2.
 
 ### Requirement: Pure Shared Capacity Evaluation
 Orchard SHALL provide one pure transport-independent evaluator that accepts normalized policy, phase, management class, eligibility, freshness, capacity, allocation, placement, and temporary-claim inputs.
-The evaluator SHALL return Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
+The evaluator SHALL return Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
 In `pre_cutover`, canonical Effective Dispatch Limit and Dispatch Headroom SHALL remain `0` while the temporary legacy decision is calculated separately.
 In `enforcing`, the evaluator SHALL calculate the approved minimum and headroom formulas and fail closed for every missing or invalid production prerequisite.
 This requirement traces to `SPEC.md` §4.6.2, §5.4, and §5.5.

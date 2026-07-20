@@ -4,8 +4,9 @@
 Orchard SHALL persist one cluster-scoped dispatch-capacity authority singleton initialized in enforcement phase `pre_cutover`, with a positive required contract version.
 Orchard SHALL persist one policy for each governed admitted production Node and SHALL distinguish `shadow_legacy`, `approved_explicit`, and `enforcing` from missing policy.
 A policy ceiling MUST be a non-negative integer for `approved_explicit` and `enforcing` and MUST be null only for `shadow_legacy`.
-Only the approved enforcement-cutover workflow MAY advance the durable enforcement phase or any dispatch-capacity policy to `enforcing`.
-Every other repository operation MUST NOT advance the durable enforcement phase or any dispatch-capacity policy to `enforcing`.
+Only the approved enforcement-cutover workflow MAY advance the durable phase from `pre_cutover` to `enforcing` or transition an existing policy to `enforcing`.
+After the durable phase is `enforcing`, Node Admission MAY create a new policy whose initial state is `enforcing`, but it MUST NOT change the durable phase or transition any existing policy.
+Every other repository operation MUST NOT advance the durable phase, transition an existing policy to `enforcing`, or create a policy initially in `enforcing`.
 The workflow's mutating transition MUST remain unavailable until `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation all consume the shared evaluation and every non-retired Controller instance has fresh compatible capability evidence with `dispatch_capacity_consumers_ready = true`.
 Every admitted production Node SHALL have one durable Controller dispatch capacity policy.
 Registered but unadmitted production inventory SHALL NOT enter the migration cohort or require dispatch policy until Node Admission commits.

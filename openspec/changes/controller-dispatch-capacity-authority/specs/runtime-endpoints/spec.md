@@ -59,10 +59,13 @@ This requirement traces to `SPEC.md` §4.6.2, §5.9, and §7.5.
 - **AND** Orchard does not infer classification from transport, address, telemetry, or probe outcome, and never treats the invalid classification as an unmanaged exception
 
 #### Scenario: Production probe fails
-- **WHEN** a production-managed target cannot provide fresh trusted capacity evidence before dispatch
-- **THEN** probe failure never downgrades the target to unmanaged behavior
-- **AND** after the named consumers consume the shared evaluation, Orchard does not allocate or execute new work through a compatibility fallback
-- **AND** broader probe-failure fallback cleanup remains a separate implementation finding
+- **WHEN** a target resolves to admitted production inventory and is normalized `production_managed`
+- **AND** that target lacks fresh trusted capacity evidence before dispatch
+- **THEN** Orchard does not downgrade or reclassify the target to unmanaged behavior
+- **AND** Orchard does not allocate or execute new work through a compatibility fallback
+- **AND** that prohibition applies regardless of `dispatch_capacity_consumers_ready`
+- **AND** while readiness is false, the normalized classification remains diagnostics-only and does not otherwise change dispatch
+- **AND** broader production probe-failure direct scheduling fallback cleanup remains a separate implementation finding
 
 ### Requirement: Placement Capacity Observation
 Placement Capacity SHALL be a first-class Runtime Endpoint Observation for Model Placements.
@@ -74,7 +77,7 @@ Under `f11_enforcing`, no new Controller-accounted Allocation across all placeme
 Under `legacy_pre_cutover`, the central temporary legacy available slots SHALL subtract both reported allocation and serialized live temporary legacy claims across all placements and lanes while Effective Dispatch Limit remains counterfactual `0`.
 A lower ceiling MAY temporarily leave accepted, running, or streaming allocations above the new limit while they drain naturally.
 Placement Capacity SHALL NOT create aggregate Controller authority or increase Dispatch Headroom.
-This requirement traces to `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, §5.7, §7.5, and §7.5.3.
+This requirement traces to `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, §7.5, and §7.5.3.
 
 #### Scenario: Active loaded placement has spare capacity
 - **WHEN** exactly one matching Placement Capacity observation reports `active_request_count < max_concurrency`
