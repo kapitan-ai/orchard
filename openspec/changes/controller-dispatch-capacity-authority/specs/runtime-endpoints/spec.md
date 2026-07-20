@@ -110,6 +110,7 @@ This requirement traces to `SPEC.md` §4.6.1, §4.6.2, §5.4, §5.5, §7.5, and 
 ### Requirement: Admitted Production Evidence Safety
 Admitted production identity SHALL govern a Runtime Endpoint target at every stage, independently of the normalized `capacity_management_class`.
 When a target that resolves to admitted production inventory lacks fresh trusted capacity evidence before dispatch, Orchard SHALL NOT allocate or execute new work for that target through an unmanaged or compatibility fallback.
+For a target resolved to admitted production inventory, missing, stale, malformed, invalid, or unavailable required capacity evidence, including Runtime Endpoint capacity probe failure, SHALL fail closed for positive capacity and SHALL NOT downgrade or reclassify the target from `production_managed` to `unmanaged_source_development` or `unmanaged_compatibility`.
 `dispatch_capacity_consumers_ready` SHALL NOT weaken that prohibition in either state.
 This requirement SHALL remain always active and independent of the durable enforcement phase, of published readiness, and of the normalized `capacity_management_class`.
 Broader production probe-failure direct scheduling fallback cleanup remains a separate implementation finding and is not resolved by this requirement.

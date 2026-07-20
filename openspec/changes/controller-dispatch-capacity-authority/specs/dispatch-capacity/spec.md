@@ -357,6 +357,13 @@ This refines `SPEC.md` §4.6.1, §4.6.2, and §7.5.3.
 - **AND** every production eligibility gate passes
 - **THEN** its Effective Dispatch Limit is `3`
 
+#### Scenario: Missing or invalid runtime evidence fails closed
+- **WHEN** runtime-limit evidence for an admitted production Node is missing, malformed, unavailable, or scheduler-stale
+- **THEN** that evidence does not prove positive capacity
+- **AND** its Controller Dispatch Ceiling alone is not sufficient
+- **AND** its Effective Dispatch Limit and Dispatch Headroom are `0`
+- **AND** its eligibility is `false`
+
 ### Requirement: Capacity Policy Migration And Operator Approval
 Existing production Nodes SHALL migrate through `shadow_legacy`, `approved_explicit`, and `enforcing` in that order.
 Operator approval SHALL persist a ceiling, actor, timestamp, and reason before policy becomes `approved_explicit`.
