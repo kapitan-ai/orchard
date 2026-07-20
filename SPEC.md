@@ -4463,6 +4463,7 @@ On timeout:
 * if queued: remove and mark `timed_out`
 * if running/streaming: send cancel to node
 * if node fails to cancel within grace period, force kill worker
+* if the cancel drain times out without a resolved execution outcome, the Active Controller SHALL quarantine that Node per §4.6.2 so its unresolved occupancy is never redispatched as free capacity
 * usage charges only for tokens already emitted
 
 Default timeout:
