@@ -65,6 +65,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   require Logger
 
   @maximum_cancel_drain_timeout_ms 5_000
+  @pending_cancel_reconciliation_key {__MODULE__, :pending_cancel_reconciliation}
 
   @doc "Revalidates a recognized dispatch claim through the production QueueManager seam."
   @spec revalidate_dispatch_capacity(
@@ -435,9 +436,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp dispatch_with_channel(%{client: client, channel: channel} = context) do
-    do_dispatch_with_channel(context)
-  after
-    disconnect_best_effort(client, channel)
+    Process.delete(@pending_cancel_reconciliation_key)
+
+    try do
+      do_dispatch_with_channel(context)
+    after
+      disconnect_result = disconnect_best_effort(client, channel)
+      finalize_pending_cancel_reconciliation(disconnect_result)
+    end
   end
 
   defp disconnect_best_effort(client, channel) do
@@ -1192,12 +1198,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     disconnect_result = disconnect_best_effort(client, channel)
     failure_result = mark_transport_failure(target, :node_timeout)
 
-    unless disconnect_result == :ok and
+    unless disconnect_result == :ok or
              durable_reconciliation_confirmed?(failure_result, node_id) do
-      AllocationAuthority.quarantine_node(authority, node_id)
+      Process.put(@pending_cancel_reconciliation_key, {authority, node_id})
     end
 
     :ok
+  end
+
+  defp finalize_pending_cancel_reconciliation(disconnect_result) do
+    case Process.delete(@pending_cancel_reconciliation_key) do
+      {authority, node_id} when disconnect_result != :ok ->
+        AllocationAuthority.quarantine_node(authority, node_id)
+
+      _reconciled_or_not_pending ->
+        :ok
+    end
   end
 
   defp durable_reconciliation_confirmed?(

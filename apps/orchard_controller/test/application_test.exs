@@ -1,7 +1,13 @@
 defmodule OrchardApplicationTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, QuarantineStore}
+  alias Orchard.DispatchCapacity.{
+    AllocationAuthority,
+    ConformanceFixture,
+    QuarantineStore,
+    Readiness
+  }
+
   alias Orchard.Inference.QueueManager
 
   @sentry_dsn "https://public@example.invalid/1"
@@ -72,6 +78,11 @@ defmodule OrchardApplicationTest do
     assert is_pid(Process.whereis(QuarantineStore))
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
     assert is_pid(Process.whereis(OrchardConsole.ModelHubDownloadCoordinator))
+  end
+
+  test "SPEC 4.8 readiness proof is independent of root quarantine startup order" do
+    assert Process.whereis(QuarantineStore) == nil
+    assert Readiness.ready?(required_contract_version: Readiness.contract_version())
   end
 
   test "SPEC 4.5 root-owned quarantine store loss leaves the live authority fail-closed" do

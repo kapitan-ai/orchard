@@ -9,7 +9,15 @@ defmodule Orchard.DispatchCapacity.Readiness do
   require Logger
 
   alias Orchard.Dispatch.RequestDispatcher
-  alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Consumer, Evaluator}
+
+  alias Orchard.DispatchCapacity.{
+    AllocationAuthority,
+    ConformanceFixture,
+    Consumer,
+    Evaluator,
+    QuarantineStore
+  }
+
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
   alias Orchard.Scheduler.{MultiNode, SingleNode}
@@ -106,15 +114,22 @@ defmodule Orchard.DispatchCapacity.Readiness do
 
   defp fixture_proof(manifest, input) do
     node_id = "00000000-0000-0000-0000-000000000001"
-    {:ok, authority} = AllocationAuthority.start_link(name: nil)
+    {:ok, quarantine_store} = QuarantineStore.start_link(name: nil)
 
     try do
-      expected = AllocationAuthority.evaluate(authority, node_id, input)
+      {:ok, authority} =
+        AllocationAuthority.start_link(name: nil, quarantine_store: quarantine_store)
 
-      consumers_conform?(manifest, authority, node_id, input, expected) and
-        revalidation_conforms?(authority, node_id, input, expected)
+      try do
+        expected = AllocationAuthority.evaluate(authority, node_id, input)
+
+        consumers_conform?(manifest, authority, node_id, input, expected) and
+          revalidation_conforms?(authority, node_id, input, expected)
+      after
+        GenServer.stop(authority)
+      end
     after
-      GenServer.stop(authority)
+      GenServer.stop(quarantine_store)
     end
   end
 

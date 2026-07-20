@@ -111,16 +111,15 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     contenders =
       for request_id <- ["request-a", "request-b"] do
         Task.async(fn ->
-          send(parent, {:ready, self()})
-          receive do: (:go -> :ok)
-
-          QueueManager.acquire_dispatch_capacity(
-            node_id,
-            request_id,
-            enforcing_input({:valid, 0, 4})
-            |> Map.put(:controller_dispatch_ceiling, {:valid, 1}),
-            authority: authority
-          )
+          hold_acquisition(parent, fn ->
+            QueueManager.acquire_dispatch_capacity(
+              node_id,
+              request_id,
+              enforcing_input({:valid, 0, 4})
+              |> Map.put(:controller_dispatch_ceiling, {:valid, 1}),
+              authority: authority
+            )
+          end)
         end)
       end
 
@@ -131,7 +130,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
       end)
 
     Enum.each(contender_pids, &send(&1, :go))
-    results = Enum.map(contenders, &Task.await/1)
+    results = await_held_acquisitions(contenders)
 
     assert Enum.count(results, &match?({:ok, _, _}, &1)) == 1
 
@@ -147,6 +146,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
       {:error, :dispatch_capacity_unavailable, result} ->
         assert result.dispatch_headroom == 0
     end)
+
+    finish_held_acquisitions(contenders)
   end
 
   test "SPEC 4.6.2 two legacy lanes racing for the final slot allow one temporary claim" do
@@ -157,15 +158,14 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     contenders =
       for request_id <- ["legacy-a", "legacy-b"] do
         Task.async(fn ->
-          send(parent, {:ready, self()})
-          receive do: (:go -> :ok)
-
-          QueueManager.acquire_dispatch_capacity(
-            node_id,
-            request_id,
-            legacy_input(),
-            authority: authority
-          )
+          hold_acquisition(parent, fn ->
+            QueueManager.acquire_dispatch_capacity(
+              node_id,
+              request_id,
+              legacy_input(),
+              authority: authority
+            )
+          end)
         end)
       end
 
@@ -176,7 +176,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
       end)
 
     Enum.each(contender_pids, &send(&1, :go))
-    results = Enum.map(contenders, &Task.await/1)
+    results = await_held_acquisitions(contenders)
 
     assert Enum.count(results, &match?({:ok, _, _}, &1)) == 1
 
@@ -195,6 +195,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
       {:error, :dispatch_capacity_unavailable, result} ->
         assert result.legacy_pre_cutover_available_slots == 0
     end)
+
+    finish_held_acquisitions(contenders)
   end
 
   test "SPEC 4.6.2 one logical request cannot hold concurrent claims across Nodes" do
@@ -651,6 +653,28 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
                authority: authority,
                gate_timeout_ms: 60
              )
+  end
+
+  defp hold_acquisition(parent, acquisition) do
+    send(parent, {:ready, self()})
+    receive do: (:go -> :ok)
+
+    result = acquisition.()
+    send(parent, {:acquisition_result, self(), result})
+    receive do: (:finish -> result)
+  end
+
+  defp await_held_acquisitions(contenders) do
+    Enum.map(contenders, fn task ->
+      contender_pid = task.pid
+      assert_receive {:acquisition_result, ^contender_pid, result}, 1_000
+      result
+    end)
+  end
+
+  defp finish_held_acquisitions(contenders) do
+    Enum.each(contenders, &send(&1.pid, :finish))
+    Enum.each(contenders, &Task.await/1)
   end
 
   defp unmanaged_input do

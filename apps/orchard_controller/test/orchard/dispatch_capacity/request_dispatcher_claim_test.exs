@@ -296,22 +296,53 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.PreAcceptanceCance
   def configure(test_pid, opts \\ []) do
     :persistent_term.put({__MODULE__, :test_pid}, test_pid)
     :persistent_term.put({__MODULE__, :cancel_failure}, Keyword.get(opts, :cancel_failure))
+
+    :persistent_term.put(
+      {__MODULE__, :disconnect_failure},
+      Keyword.get(opts, :disconnect_failure)
+    )
+
+    :persistent_term.put({__MODULE__, :probe_ready?}, Keyword.get(opts, :probe_ready?, true))
+
+    :persistent_term.put(
+      {__MODULE__, :disconnect_results},
+      Keyword.get(opts, :disconnect_results, [])
+    )
   end
 
   def clear do
     :persistent_term.erase({__MODULE__, :test_pid})
     :persistent_term.erase({__MODULE__, :emitter})
     :persistent_term.erase({__MODULE__, :cancel_failure})
+    :persistent_term.erase({__MODULE__, :disconnect_failure})
+    :persistent_term.erase({__MODULE__, :probe_ready?})
+    :persistent_term.erase({__MODULE__, :disconnect_results})
   end
 
   defdelegate connect(target), to: GateClient
 
   def disconnect(channel) do
     send(:persistent_term.get({__MODULE__, :test_pid}), :pre_acceptance_disconnected)
-    GateClient.disconnect(channel)
+
+    case :persistent_term.get({__MODULE__, :disconnect_results}, []) do
+      [result | remaining] ->
+        :persistent_term.put({__MODULE__, :disconnect_results}, remaining)
+        result
+
+      [] ->
+        case :persistent_term.get({__MODULE__, :disconnect_failure}, nil) do
+          nil -> GateClient.disconnect(channel)
+          failure -> {:error, failure}
+        end
+    end
   end
 
-  defdelegate status(channel, opts), to: GateClient
+  def status(channel, opts) do
+    {:ok, response} = GateClient.status(channel, opts)
+    ready? = :persistent_term.get({__MODULE__, :probe_ready?}, true)
+    {:ok, %{response | runtime_health: %{ready: ready?}}}
+  end
+
   defdelegate ensure_model_loaded(channel, request, opts), to: GateClient
 
   def execute_inference(_channel, request, opts) do
@@ -1125,7 +1156,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     end
   end
 
-  test "SPEC 4.5 an unresponsive cancellation reconciles fail closed before release" do
+  test "SPEC 4.5 a clean disconnect after cancel drain timeout does not quarantine" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-cancel-drain-timeout"
@@ -1153,7 +1184,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
 
-    assert {:error, :dispatch_capacity_unavailable, quarantined} =
+    assert {:ok, claim, available} =
              QueueManager.acquire_dispatch_capacity(
                node_id,
                "request-after-cancel-timeout",
@@ -1161,7 +1192,99 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
                authority: authority
              )
 
-    assert :node_health_unhealthy in quarantined.reason_codes
+    assert available.eligible?
+    refute :node_health_unhealthy in available.reason_codes
+    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+  end
+
+  test "SPEC 4.5 a later cleanup disconnect reconciles an earlier disconnect failure" do
+    @pre_acceptance_cancel_client.configure(self(),
+      disconnect_results: [{:error, :disconnect_failed}, :ok]
+    )
+
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-cancel-drain-later-clean-disconnect"
+
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: @expiring_request_timeout_ms
+    }
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          schedule,
+          execute_request(request_id),
+          model_load_request(node_id),
+          client_impl: @pre_acceptance_cancel_client,
+          cancel_drain_timeout_ms: 20
+        )
+      end)
+
+    assert_receive {:pre_acceptance_cancel_received, _emitter}, 1_000
+    assert_receive :pre_acceptance_disconnected, 1_000
+    assert_receive :pre_acceptance_disconnected, 1_000
+    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+
+    assert {:ok, claim, available} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-later-clean-disconnect",
+               enforcing_input(),
+               authority: authority
+             )
+
+    assert available.eligible?
+    refute :node_health_unhealthy in available.reason_codes
+    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+  end
+
+  test "SPEC 4.5 a durable unhealthy transition reconciles a failed disconnect" do
+    @pre_acceptance_cancel_client.configure(self(),
+      disconnect_failure: :disconnect_failed,
+      probe_ready?: false
+    )
+
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    target = Inference.runtime_client_target()
+    heartbeat_at = DateTime.utc_now()
+    node_id = claim_node_id()
+    node = insert_admitted_node!(target, heartbeat_at, node_id)
+    request_id = "request-cancel-drain-durable-unreachable"
+
+    schedule = %{
+      capacity_schedule(authority, node.id, request_id)
+      | request_timeout_ms: @expiring_request_timeout_ms
+    }
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          schedule,
+          execute_request(request_id),
+          model_load_request(node.id),
+          client_impl: @pre_acceptance_cancel_client,
+          cancel_drain_timeout_ms: 20
+        )
+      end)
+
+    assert_receive {:pre_acceptance_cancel_received, _emitter}, 1_000
+    assert_receive :pre_acceptance_disconnected, 1_000
+    assert {:error, {:dispatch_failed, :node_acceptance_missing}} = Task.await(dispatch)
+    assert Repo.get!(Node, node.id).health == :unhealthy
+
+    assert {:ok, claim, available} =
+             QueueManager.acquire_dispatch_capacity(
+               node.id,
+               "request-after-durable-cancel-reconciliation",
+               enforcing_input(),
+               authority: authority
+             )
+
+    assert available.eligible?
+    refute :node_health_unhealthy in available.reason_codes
+    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 
   test "SPEC 4.5 cancellation drain deadline is not extended by nonterminal events" do
@@ -1193,7 +1316,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
-  test "SPEC 4.5 reconciliation quarantines the claimed Node when inventory resolves another" do
+  test "SPEC 4.5 no clean disconnect or matching durable health quarantines the claimed Node" do
+    @pre_acceptance_cancel_client.configure(self(), disconnect_failure: :disconnect_failed)
     authority = start_supervised!({AllocationAuthority, name: nil})
     target = Inference.runtime_client_target()
     inventory_node = insert_admitted_node!(target, DateTime.utc_now())
@@ -1700,7 +1824,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     Application.put_env(:orchard_controller, :inference, Keyword.merge(config, overrides))
   end
 
-  defp insert_admitted_node!(target, now) do
+  defp insert_admitted_node!(target, now, node_id \\ Ecto.UUID.generate()) do
     host = Keyword.fetch!(target, :host)
     port = Keyword.fetch!(target, :port)
     unique = System.unique_integer([:positive])
@@ -1710,7 +1834,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         node =
           %Node{}
           |> Node.changeset(%{
-            id: Ecto.UUID.generate(),
+            id: node_id,
             hostname: "dispatch-#{unique}.local",
             display_name: "dispatch-#{unique}",
             advertise_addr: host,
