@@ -11,6 +11,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.DispatchCapacity.Evaluator.Input
 
+  require Logger
+
   defmodule Claim do
     @moduledoc "Opaque ownership proof for one live Node capacity claim."
 
@@ -46,6 +48,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @gate_poll_interval_ms 25
   @gate_response_margin_ms 1
   @gate_cleanup_timeout_ms 25
+  @default_quarantine_ttl_ms 60_000
 
   @type acceptance_gate_error ::
           :dispatch_capacity_acceptance_gate_busy
@@ -86,11 +89,16 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   end
 
   @doc """
-  Blocks new acquisition and revalidation for a Node until this authority restarts.
+  Blocks new acquisition and revalidation for a Node for a bounded window.
 
   Quarantine is per-Node. `nil` is not a Node identity — unmanaged and
   compatibility evaluations share it — so quarantining `nil` is a no-op rather
   than a cluster-wide block on every unmanaged evaluation.
+
+  The block expires after `ttl_ms` so that one unreconciled dispatch cannot
+  remove a recovered Node from scheduling for the lifetime of the Controller.
+  Operators can inspect the live set with `quarantined_nodes/0,1` and clear it
+  early with `release_node_quarantine/1,2`.
   """
   @spec quarantine_node(Ecto.UUID.t() | nil) :: :ok
   def quarantine_node(node_id), do: quarantine_node(__MODULE__, node_id)
@@ -99,8 +107,34 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   def quarantine_node(_server, nil), do: :ok
 
   def quarantine_node(server, node_id) when is_binary(node_id) do
-    GenServer.call(server, {:quarantine_node, node_id})
+    quarantine_node(server, node_id, @default_quarantine_ttl_ms)
   end
+
+  @spec quarantine_node(GenServer.server(), Ecto.UUID.t() | nil, pos_integer()) :: :ok
+  def quarantine_node(_server, nil, ttl_ms) when is_integer(ttl_ms) and ttl_ms > 0, do: :ok
+
+  def quarantine_node(server, node_id, ttl_ms)
+      when is_binary(node_id) and is_integer(ttl_ms) and ttl_ms > 0 do
+    GenServer.call(server, {:quarantine_node, node_id, ttl_ms})
+  end
+
+  @doc "Clears one Node's quarantine early, idempotently."
+  @spec release_node_quarantine(Ecto.UUID.t() | nil) :: :ok
+  def release_node_quarantine(node_id), do: release_node_quarantine(__MODULE__, node_id)
+
+  @spec release_node_quarantine(GenServer.server(), Ecto.UUID.t() | nil) :: :ok
+  def release_node_quarantine(_server, nil), do: :ok
+
+  def release_node_quarantine(server, node_id) when is_binary(node_id) do
+    GenServer.call(server, {:release_node_quarantine, node_id})
+  end
+
+  @doc "Returns each currently quarantined Node with its remaining block in milliseconds."
+  @spec quarantined_nodes() :: %{Ecto.UUID.t() => non_neg_integer()}
+  def quarantined_nodes, do: quarantined_nodes(__MODULE__)
+
+  @spec quarantined_nodes(GenServer.server()) :: %{Ecto.UUID.t() => non_neg_integer()}
+  def quarantined_nodes(server), do: GenServer.call(server, :quarantined_nodes)
 
   @doc "Returns the number of live claims owned for one Node."
   @spec claim_count(Ecto.UUID.t()) :: non_neg_integer()
@@ -363,7 +397,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
        monitors: %{},
        gates: %{},
        gate_monitors: %{},
-       quarantined_nodes: MapSet.new()
+       quarantined_nodes: %{}
      }}
   end
 
@@ -404,9 +438,33 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     {:reply, :ok, remove_claim(state, token)}
   end
 
-  def handle_call({:quarantine_node, node_id}, _from, state) when is_binary(node_id) do
-    quarantined_nodes = MapSet.put(state.quarantined_nodes, node_id)
+  def handle_call({:quarantine_node, node_id, ttl_ms}, _from, state) when is_binary(node_id) do
+    expires_at = System.monotonic_time(:millisecond) + ttl_ms
+
+    Logger.warning(
+      "dispatch-capacity authority quarantined node #{node_id} for #{ttl_ms}ms after an " <>
+        "unreconciled dispatch; it is excluded from acquisition until the block expires"
+    )
+
+    state = prune_quarantine(state)
+
+    quarantined_nodes =
+      Map.update(state.quarantined_nodes, node_id, expires_at, &max(&1, expires_at))
+
     {:reply, :ok, %{state | quarantined_nodes: quarantined_nodes}}
+  end
+
+  def handle_call({:release_node_quarantine, node_id}, _from, state) when is_binary(node_id) do
+    state = prune_quarantine(state)
+    quarantined_nodes = Map.delete(state.quarantined_nodes, node_id)
+    {:reply, :ok, %{state | quarantined_nodes: quarantined_nodes}}
+  end
+
+  def handle_call(:quarantined_nodes, _from, state) do
+    state = prune_quarantine(state)
+    now = System.monotonic_time(:millisecond)
+    remaining = Map.new(state.quarantined_nodes, fn {node_id, at} -> {node_id, at - now} end)
+    {:reply, remaining, state}
   end
 
   def handle_call({:claim_count, node_id}, _from, state) do
@@ -505,7 +563,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     {f11_count, legacy_count} = claim_counts(state.claims, node_id, excluded_token)
 
     input =
-      if MapSet.member?(state.quarantined_nodes, node_id),
+      if quarantined?(state, node_id),
         do: %{input | health: :unreachable},
         else: input
 
@@ -513,6 +571,19 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     |> Map.put(:controller_accounted_allocation, f11_count)
     |> Map.put(:temporary_legacy_claim_count, legacy_count)
     |> Evaluator.evaluate()
+  end
+
+  defp quarantined?(state, node_id) do
+    case Map.get(state.quarantined_nodes, node_id) do
+      nil -> false
+      expires_at -> expires_at > System.monotonic_time(:millisecond)
+    end
+  end
+
+  defp prune_quarantine(state) do
+    now = System.monotonic_time(:millisecond)
+    quarantined_nodes = Map.reject(state.quarantined_nodes, fn {_id, at} -> at <= now end)
+    %{state | quarantined_nodes: quarantined_nodes}
   end
 
   defp claim_counts(claims, node_id, excluded_token) do

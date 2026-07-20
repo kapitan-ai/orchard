@@ -4,7 +4,20 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.DispatchCapacity.Evaluator
+  alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.SingleNode
+
+  defmodule RuntimeEndpointStubClient do
+    @moduledoc false
+
+    def connect(target) do
+      send(self(), {:runtime_endpoint_connect, target})
+      {:error, :unavailable}
+    end
+
+    def status(_channel, _opts), do: {:error, :unavailable}
+    def disconnect(_channel), do: :ok
+  end
 
   defmodule StubClient do
     @moduledoc false
@@ -361,6 +374,29 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert result.placement_capacity == :unknown
     assert result.eligible? == false
     assert :placement_capacity_unknown in result.reason_codes
+  end
+
+  test "SPEC.md §5.5 probes a Runtime Endpoint target with the Runtime Endpoint client" do
+    previous = Application.get_env(:orchard_controller, :inference, [])
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(previous, :runtime_endpoint_client_impl, RuntimeEndpointStubClient)
+    )
+
+    on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous) end)
+
+    target = %Target{
+      id: Ecto.UUID.generate(),
+      transport: :beam,
+      address: :"orchard_node_agent@127.0.0.1"
+    }
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(canonical_request("beam-fallback-model"), target)
+
+    assert_received {:runtime_endpoint_connect, ^target}
   end
 
   defp canonical_request(model_id) do

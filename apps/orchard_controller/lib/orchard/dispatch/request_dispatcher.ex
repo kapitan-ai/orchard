@@ -20,7 +20,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   request timeout, falling back to 30 seconds, and fails the dispatch with
   `:dispatch_capacity_acceptance_gate_busy` rather than waiting behind another
   in-flight dispatch to the same Node indefinitely. Unavailable capacity fails
-  the dispatch with `:dispatch_capacity_unavailable` rather than proceeding.
+  the dispatch rather than proceeding, and reports the authority's own reason —
+  `:dispatch_capacity_unavailable`, `:dispatch_capacity_request_already_claimed`
+  for a request whose prior claim was never released, or
+  `:dispatch_capacity_facts_unavailable` when the schedule carries no
+  acquisition input — so an operator is not sent to look at Node capacity for a
+  leaked claim.
 
   Transport failures during connect, pre-dispatch status, model load, or stream
   execution are recorded through node inventory so stale capacity for the failed
@@ -305,9 +310,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           release_capacity_claim(schedule, claim)
         end
 
-      {:error, _result} ->
+      {:error, reason} ->
         handle_dispatch_result(
-          {:error, {:dispatch_failed, :dispatch_capacity_unavailable}},
+          {:error, {:dispatch_failed, reason}},
           context.metrics,
           context.target
         )
@@ -327,12 +332,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
         case QueueManager.acquire_dispatch_capacity(node_id, request_id, input, opts) do
           {:ok, claim, _result} -> {:ok, claim}
-          {:error, :dispatch_capacity_unavailable, result} -> {:error, result}
-          {:error, :dispatch_capacity_request_already_claimed, result} -> {:error, result}
+          {:error, reason, _result} -> {:error, reason}
         end
 
       _missing_input ->
-        {:error, nil}
+        {:error, :dispatch_capacity_facts_unavailable}
     end
   end
 
@@ -352,11 +356,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
          true <- unmanaged_dispatch_authorized?(fresh_input, fresh_result) do
       {:ok, nil}
     else
-      _unavailable -> {:error, result}
+      _unavailable -> {:error, :dispatch_capacity_unavailable}
     end
   end
 
-  defp acquire_capacity_claim(_schedule), do: {:error, nil}
+  defp acquire_capacity_claim(_schedule), do: {:error, :dispatch_capacity_facts_unavailable}
 
   defp dispatch_capacity_acquisition_input(schedule) do
     case Map.get(schedule, :dispatch_capacity_acquisition_input_provider) do

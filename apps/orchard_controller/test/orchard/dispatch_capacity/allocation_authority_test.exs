@@ -298,6 +298,44 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 
+  test "SPEC 4.5 local Node quarantine expires so a recovered Node returns to acquisition" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    input = enforcing_input({:valid, 0, 4})
+
+    assert :ok = AllocationAuthority.quarantine_node(authority, node_id, 1)
+    assert %{^node_id => remaining} = AllocationAuthority.quarantined_nodes(authority)
+    assert remaining <= 1
+    Process.sleep(2)
+
+    assert AllocationAuthority.quarantined_nodes(authority) == %{}
+
+    assert {:ok, claim, _result} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-quarantine-expiry",
+               input,
+               authority: authority
+             )
+
+    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+  end
+
+  test "SPEC 4.5 an operator can clear a local Node quarantine before it expires" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    input = enforcing_input({:valid, 0, 4})
+
+    assert :ok = AllocationAuthority.quarantine_node(authority, node_id)
+    assert Map.has_key?(AllocationAuthority.quarantined_nodes(authority), node_id)
+    refute AllocationAuthority.evaluate(authority, node_id, input).eligible?
+
+    assert :ok = AllocationAuthority.release_node_quarantine(authority, node_id)
+
+    assert AllocationAuthority.quarantined_nodes(authority) == %{}
+    assert AllocationAuthority.evaluate(authority, node_id, input).eligible?
+  end
+
   test "SPEC 4.5 quarantine of an absent Node identity leaves unmanaged evaluation open" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     input = unmanaged_input()

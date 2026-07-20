@@ -20,7 +20,7 @@ defmodule Orchard.Scheduler.SingleNode do
   alias Orchard.DispatchCapacity.{AllocationAuthority, Authorization, Evaluator}
   alias Orchard.Inference
   alias Orchard.Nodes
-  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Observation, Target}
+  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
 
   @callback schedule(CanonicalRequest.t()) :: {:ok, map()} | {:error, term()}
 
@@ -66,7 +66,9 @@ defmodule Orchard.Scheduler.SingleNode do
   Options:
   - `:probe_status?` - set to `false` to skip live capacity probing
   - `:status_client` - module implementing `connect/1`, `status/2`, and
-    `disconnect/1` (default: `GrpcNodeRuntimeClient`)
+    `disconnect/1`. Defaults to `GrpcNodeRuntimeClient` for address-style
+    targets and to the configured Runtime Endpoint client for `Target` structs,
+    which `GrpcNodeRuntimeClient` cannot address.
   - `:status_timeout_ms` - timeout for the status probe
   """
   def default_schedule(%CanonicalRequest{} = request) do
@@ -115,7 +117,7 @@ defmodule Orchard.Scheduler.SingleNode do
 
   defp authorize_schedule(schedule, request, target, node, opts) do
     if Keyword.get(opts, :probe_status?, true) do
-      client = Keyword.get(opts, :status_client, GrpcNodeRuntimeClient)
+      client = status_client(target, opts)
       timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
       opts = Keyword.put(opts, :observed_at, DateTime.utc_now())
 
@@ -309,8 +311,15 @@ defmodule Orchard.Scheduler.SingleNode do
   defp refreshed_placement_capacity(response, model_ref, :revalidation),
     do: post_load_placement_capacity_for(response, model_ref)
 
+  defp status_client(target, opts) do
+    Keyword.get_lazy(opts, :status_client, fn -> default_status_client(target) end)
+  end
+
+  defp default_status_client(%Target{}), do: Inference.runtime_endpoint_client()
+  defp default_status_client(_target), do: GrpcNodeRuntimeClient
+
   defp fresh_status(target, opts) do
-    client = Keyword.get(opts, :status_client, GrpcNodeRuntimeClient)
+    client = status_client(target, opts)
     timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
 
     case client.connect(target) do
@@ -424,14 +433,34 @@ defmodule Orchard.Scheduler.SingleNode do
     end
   end
 
+  defp model_placement_capacity_for(
+         %Observation{} = observation,
+         %CanonicalRequest.ModelRef{} = model_ref
+       ) do
+    if model_loaded?(observation, model_ref) do
+      Observation.placement_capacity_for(observation, runtime_model_ref(model_ref))
+    else
+      :not_applicable
+    end
+  end
+
   defp model_placement_capacity_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
     missing = if model_loaded?(response, model_ref), do: :unknown, else: :not_applicable
     matching_placement_capacity(response, model_ref, missing)
   end
 
+  defp post_load_placement_capacity_for(
+         %Observation{} = observation,
+         %CanonicalRequest.ModelRef{} = model_ref
+       ),
+       do: Observation.placement_capacity_for(observation, runtime_model_ref(model_ref))
+
   defp post_load_placement_capacity_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
     matching_placement_capacity(response, model_ref, :unknown)
   end
+
+  defp runtime_model_ref(%CanonicalRequest.ModelRef{} = model_ref),
+    do: ModelRef.new!(model_ref.model_id, model_ref.version)
 
   defp matching_placement_capacity(response, model_ref, missing) do
     response
@@ -453,6 +482,10 @@ defmodule Orchard.Scheduler.SingleNode do
 
   defp matching_model_placements(placements, model_ref) when is_list(placements),
     do: Enum.filter(placements, &model_placement_matches?(&1, model_ref))
+
+  defp model_loaded?(%Observation{} = observation, model_ref) do
+    Observation.loaded_placement(observation, runtime_model_ref(model_ref)) != nil
+  end
 
   defp model_loaded?(response, model_ref) do
     response

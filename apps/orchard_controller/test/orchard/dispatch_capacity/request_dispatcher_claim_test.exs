@@ -799,7 +799,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         :dispatch_capacity_input_provider
       ])
 
-    assert {:error, {:dispatch_failed, :dispatch_capacity_unavailable}} =
+    assert {:error, {:dispatch_failed, :dispatch_capacity_facts_unavailable}} =
              RequestDispatcher.dispatch(
                schedule,
                execute_request(request_id),
@@ -1309,7 +1309,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       remapped_post_load_status
     )
 
-    assert {:error, {:dispatch_failed, :dispatch_capacity_unavailable}} =
+    assert {:error, {:dispatch_failed, :dispatch_capacity_facts_unavailable}} =
              RequestDispatcher.dispatch(
                schedule,
                execute_request(schedule.request_id),
