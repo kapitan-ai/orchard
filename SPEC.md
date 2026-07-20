@@ -1005,7 +1005,6 @@ These gates define one live Active Controller's F11 linearization boundary and a
 
 One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, explicit authority decision of `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`, decision-specific available slots, eligibility, and stable reason codes.
 For a `production_managed` target, only `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom SHALL authorize dispatch.
-A valid explicitly classified unmanaged target SHALL be authorized only through its matching `unmanaged_source_development` or `unmanaged_compatibility` decision and its documented unmanaged legacy-capacity behavior.
 `fail_closed` SHALL NEVER authorize dispatch.
 `Orchard.Scheduler.MultiNode`, admitted `Orchard.Scheduler.SingleNode`, Node observation queue-source refresh, `Orchard.Inference.QueueManager`, and dispatch-time revalidation SHALL consume that evaluation without re-deriving the formulas or defaulting missing production policy to `1`.
 Transport selection SHALL NOT classify capacity authority.
@@ -1245,18 +1244,17 @@ BEAM Runtime Endpoint observations MAY refresh queue capacity only when the targ
 Runtime Endpoint Admission Candidates SHALL NOT publish queue lane capacity.
 Queue lane capacity SHALL come only from trusted active Nodes or Runtime Endpoints resolved to trusted active Nodes.
 Configured base lane capacity and live capacity sources SHALL NOT authorize production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
-A valid explicitly classified unmanaged target SHALL instead be bounded by its matching `unmanaged_source_development` or `unmanaged_compatibility` decision and that decision's available slots.
 
 ### 5.5 Eligibility filter
 
 A node is eligible only if all conditions are true:
 
 * node state = `active`
-* node health = `healthy`, or node health in `{healthy, degraded}` while the shared capacity authority decision is `legacy_pre_cutover`, `unmanaged_source_development`, or `unmanaged_compatibility`
+* node health = `healthy`, or node health in `{healthy, degraded}` while the shared capacity authority decision is `legacy_pre_cutover`
 * pool is allowed by routing policy
 * model format is supported by node runtime
 * node has enough memory headroom
-* for a `production_managed` target, the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom; for a valid explicitly classified unmanaged target, the decision is its matching `unmanaged_source_development` or `unmanaged_compatibility` with positive available slots
+* the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom
 * model placement concurrency not exceeded
 * no placement/node circuit breaker suppresses dispatch
 
@@ -1281,7 +1279,7 @@ Eligibility condition:
 available_memory_bytes >= required_bytes
 ```
 
-Endpoint node concurrency is not exceeded only when the shared capacity evaluation returns, for a `production_managed` target, `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with Dispatch Headroom greater than `0`, or, for a valid explicitly classified unmanaged target, its matching `unmanaged_source_development` or `unmanaged_compatibility` decision with positive available slots.
+Endpoint node concurrency is not exceeded only when the shared capacity evaluation returns `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with Dispatch Headroom greater than `0`.
 `fail_closed` never satisfies this condition.
 Under `f11_enforcing`, a degraded, unhealthy, unreachable, non-Active, untrusted, scheduler-stale, or policy-missing admitted production Node SHALL have Effective Dispatch Limit `0` and SHALL be ineligible for new work.
 Model placement concurrency is evaluated independently through valid matching Placement Capacity.
@@ -1416,18 +1414,16 @@ schedule(req):
 
 ### 5.9 Dispatch rules
 
-Dispatch sequence for a `production_managed` target:
+Dispatch sequence:
 
 1. reserve request in request FSM (`scheduled`)
 2. resolve trusted admitted production inventory and identity before applying configured classification, then consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots; `fail_closed` SHALL NOT proceed to `ExecuteInference`
-3. if placement not `loaded`, call `EnsureModelLoaded` while retaining any allocation or temporary legacy claim the decision established
-4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, and `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
-5. if revalidation fails, release any held allocation or temporary legacy claim exactly once and requeue or fail under the existing queue deadline and public error contract
+3. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
+4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
+5. if revalidation fails, release the allocation exactly once and requeue or fail under the existing queue deadline and public error contract
 6. call `ExecuteInference`
 7. wait for `accepted` while retaining the Node acceptance gate, or treat failure before `accepted` as pre-acceptance failure
-8. after `accepted`, release the acceptance gate, retain any allocation or temporary legacy claim the decision established through terminal completion, and transition request to `running`
-
-A valid explicitly classified unmanaged target remains on its documented unmanaged legacy dispatch contract and is outside this Controller allocation, temporary legacy-claim, and per-Node acceptance-gate contract; `fail_closed` still never dispatches.
+8. after `accepted`, release the acceptance gate, retain the allocation or temporary legacy claim through terminal completion, and transition request to `running`
 
 Retry rule:
 

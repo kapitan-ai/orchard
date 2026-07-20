@@ -111,7 +111,7 @@ Final revalidation SHALL share a per-Node acceptance gate with policy mutation a
 Orchard SHALL require MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation to consume that single evaluation.
 No named consumer SHALL re-derive the formulas, default missing production policy to `1`, or use configured queue capacity as dispatch authority.
 For a `production_managed` target, every consumer SHALL accept either `legacy_pre_cutover` with positive centrally calculated temporary slots and successful serialized temporary-claim acquisition or `f11_enforcing` with positive Dispatch Headroom.
-A valid explicitly classified unmanaged target SHALL use `unmanaged_source_development` or `unmanaged_compatibility` only through its documented unmanaged legacy-capacity contract, and SHALL NOT be authorized under the production-managed paths.
+A valid explicitly classified unmanaged target SHALL remain outside this production allocation, temporary legacy-claim, and per-Node acceptance-gate contract under the existing `SPEC.md` §4.6.2 legacy exception.
 `fail_closed` SHALL NEVER authorize dispatch.
 Every existing routing, placement, breaker, liveness, loadability, and phase gate SHALL continue to apply under every decision.
 For a `production_managed` target, dispatch SHALL re-run the same decision after model loading and immediately before `ExecuteInference`, using held-claim revalidation under both production-managed decisions and retaining the per-Node acceptance gate through Node acceptance.
