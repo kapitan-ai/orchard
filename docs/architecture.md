@@ -34,8 +34,10 @@ product/system/build contract.
   group, when a matching Runtime Endpoint snapshot reports memory-budget
   telemetry and failing open to omission otherwise.
   `orchardctl nodes inspect` surfaces a counterfactual dispatch-capacity block
-  showing what F11 enforcement would decide; every capacity consumer stays on
-  its current behavior in this non-enforcing slice.
+  showing what F11 enforcement would decide; the block stays read-only
+  observability, reporting `consumers_ready` as `false` rather than the
+  Controller capability declaration, and reporting Effective Dispatch Limit and
+  Dispatch Headroom as `0` while the cluster phase is `pre_cutover`.
   `orchardctl nodes cordon`, `orchardctl nodes uncordon`,
   `orchardctl nodes drain`, `orchardctl nodes cancel-drain`,
   `orchardctl nodes maintenance`, `orchardctl nodes resume`, and
@@ -159,7 +161,12 @@ Scheduler and dispatch orchestration crashes after request validation terminaliz
 
 Alongside that Node-owned limit, the controller persists its own durable per-Node Controller Dispatch Ceiling and a cluster-wide dispatch-capacity enforcement phase, and evaluates both through one pure shared evaluator.
 The evaluator first normalizes the target's Controller-owned capacity management class — admitted inventory always resolves to `production_managed`, and an unmanaged source-development or compatibility class requires explicit configuration — and then returns one authority decision (`legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`) with that decision's available slots, Placement Capacity, and stable reason codes.
-That evaluation is counterfactual today: the phase stays `pre_cutover`, the evaluator feeds diagnostics only, and scheduling, queue admission, and dispatch keep consuming the capacity telemetry described above.
+A supervised `Orchard.DispatchCapacity.AllocationAuthority` owns the live Controller-local side of that evaluation: per-Node claims acquired and released under one serialized owner, revalidation that excludes the caller's own recognized claim instead of counting it twice, and one acceptance gate per Node.
+It starts ahead of the request supervisor and `Orchard.Inference.QueueManager` under a `rest_for_one` supervisor, so losing the authority also restarts the processes whose claims it tracked instead of leaving orphaned claims behind.
+Five consumers now authorize through that one contract rather than deriving capacity themselves: `Orchard.Scheduler.MultiNode` eligibility and lane contribution, admitted `Orchard.Scheduler.SingleNode`, `Orchard.Nodes` queue-source refresh, `Orchard.Inference.QueueManager` aggregate allocation, and `Orchard.Dispatch.RequestDispatcher` final revalidation before `ExecuteInference`.
+Each consumer declares its wiring and contract version, and `Orchard.DispatchCapacity.Readiness` republishes `dispatch_capacity_consumers_ready` on the Controller membership heartbeat only when the exact five-consumer manifest, the contract version, and a shared deterministic conformance fixture all agree.
+Authorization is fail-closed: a Node whose Controller-owned facts cannot be assembled from current authenticated evidence is rejected with the `dispatch_capacity_facts_unavailable` scheduler reason code rather than falling back to telemetry, and Node admission serializes its policy write through the same per-Node acceptance gate, failing with `dispatch_capacity_acceptance_gate_busy` instead of blocking behind an in-flight dispatch.
+The durable phase still stays `pre_cutover`, so production-managed targets are authorized by the shared `legacy_pre_cutover` decision and its centrally calculated temporary legacy slots while F11 Effective Dispatch Limit and Dispatch Headroom remain counterfactual `0`; the diagnostics block described above stays read-only.
 See `SPEC.md` §4.6.2 and `docs/decisions/0013-controller-dispatch-capacity-authority.md` for the target authority boundary.
 
 Runtime Endpoint and worker runtime contracts are separate:

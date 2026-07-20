@@ -6,6 +6,14 @@ defmodule Orchard.Nodes do
 
   First-observed Runtime Endpoint metadata is persisted as admission candidate
   evidence until a trusted node registration and explicit admission path exists.
+
+  This context is also the queue-source-refresh capacity consumer: observed
+  Runtime Endpoint capacity is republished as bounded queue sources only when
+  the shared dispatch-capacity evaluation is eligible with positive available
+  slots, and Node-owned sources are cleared on trust, lifecycle, health,
+  freshness, policy, or runtime-limit loss. Node admission serializes its
+  capacity-policy write through the same per-Node acceptance gate dispatch
+  holds.
   """
 
   import Ecto.Query

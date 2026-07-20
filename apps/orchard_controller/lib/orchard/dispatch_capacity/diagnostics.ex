@@ -26,7 +26,14 @@ defmodule Orchard.DispatchCapacity.Diagnostics do
   @admitted_states [:admitted, :active, :cordoned, :draining, :maintenance, :decommissioning]
 
   defmodule Snapshot do
-    @moduledoc "Typed read-only wrapper around one complete counterfactual evaluation."
+    @moduledoc """
+    Typed read-only wrapper around one complete counterfactual evaluation.
+
+    `consumers_ready?` is pinned `false` here. Live consumer readiness is
+    `Orchard.DispatchCapacity.Readiness`, published as Controller capability
+    evidence on the membership heartbeat; this snapshot describes only what a
+    counterfactual F11 evaluation would decide for one Node.
+    """
 
     @enforce_keys [:counterfactual?, :consumers_ready?, :evaluation]
     defstruct @enforce_keys

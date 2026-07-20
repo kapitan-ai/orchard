@@ -16,6 +16,11 @@ defmodule Orchard.Inference.QueueManager do
   loaded-placement and cold/no-placement slots from being double-counted until
   node assignment, accepted runtime events, release, or later observations
   reconcile them.
+
+  Lane capacity and source reservations are scheduling hints only. Every
+  dispatch on a Node still passes through this module's aggregate
+  allocation-authority functions, so all placements and lanes on one Node share
+  a single bound owned by `Orchard.DispatchCapacity.AllocationAuthority`.
   """
 
   use GenServer

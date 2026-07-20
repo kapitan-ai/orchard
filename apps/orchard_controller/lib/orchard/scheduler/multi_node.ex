@@ -28,9 +28,14 @@ defmodule Orchard.Scheduler.MultiNode do
   metadata also fail closed as `:cluster_busy` instead of falling back to a
   different identity.
 
-  Successful schedules include `:queue_lane_capacity`, derived from loaded
-  candidates with live node and placement room plus eligible cold candidates
-  with remaining aggregate node capacity.
+  Every candidate is first annotated with the shared dispatch-capacity
+  evaluation and excluded unless that evaluation is eligible with positive
+  available slots. A candidate whose Controller-owned capacity facts cannot be
+  built is rejected with `dispatch_capacity_facts_unavailable` rather than
+  falling back to probe telemetry.
+
+  Successful schedules include `:queue_lane_capacity`, the sum of the shared
+  evaluation's available slots across the remaining eligible candidates.
   gRPC compatibility schedules include legacy `:runtime_client_target`;
   BEAM schedules carry only `:runtime_endpoint_target`.
 

@@ -10,6 +10,15 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - Request timeout → sends CancelInference to the node
   - Caller process exit → sends CancelInference to the node
 
+  A managed schedule acquires exactly one Node-scoped capacity claim from the
+  shared allocation authority before model loading, holds it through acceptance
+  and terminal completion, and releases it exactly once on failure,
+  cancellation, retry, or completion. Immediately before `ExecuteInference` the
+  dispatcher takes that Node's acceptance gate, revalidates the recognized
+  claim without counting it twice, and holds the gate until the node accepts or
+  the attempt fails pre-acceptance. Unavailable capacity fails the dispatch with
+  `:dispatch_capacity_unavailable` rather than proceeding.
+
   Transport failures during connect, pre-dispatch status, model load, or stream
   execution are recorded through node inventory so stale capacity for the failed
   target is cleared.
