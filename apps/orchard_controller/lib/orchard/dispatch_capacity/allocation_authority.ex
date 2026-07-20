@@ -8,7 +8,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
   use GenServer
 
-  alias Orchard.DispatchCapacity.Evaluator
+  alias Orchard.DispatchCapacity.{Evaluator, QuarantineStore}
   alias Orchard.DispatchCapacity.Evaluator.Input
 
   require Logger
@@ -48,7 +48,6 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @gate_poll_interval_ms 25
   @gate_response_margin_ms 1
   @gate_cleanup_timeout_ms 25
-  @default_quarantine_ttl_ms 60_000
 
   @type acceptance_gate_error ::
           :dispatch_capacity_acceptance_gate_busy
@@ -60,11 +59,15 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
           | {:error, :dispatch_capacity_unavailable, Evaluator.Result.t()}
           | {:error, :dispatch_capacity_request_already_claimed, Evaluator.Result.t()}
 
+  @type quarantine_error :: :dispatch_capacity_quarantine_store_unavailable
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
+    init_arg = %{quarantine_store: Keyword.get(opts, :quarantine_store, QuarantineStore)}
+
     case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, %{})
-      name -> GenServer.start_link(__MODULE__, %{}, name: name)
+      nil -> GenServer.start_link(__MODULE__, init_arg)
+      name -> GenServer.start_link(__MODULE__, init_arg, name: name)
     end
   end
 
@@ -89,51 +92,33 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   end
 
   @doc """
-  Blocks new acquisition and revalidation for a Node for a bounded window.
+  Blocks new acquisition and revalidation for a Node after unresolved execution.
 
   Quarantine is per-Node. `nil` is not a Node identity — unmanaged and
   compatibility evaluations share it — so quarantining `nil` is a no-op rather
   than a cluster-wide block on every unmanaged evaluation.
 
-  The block expires after `ttl_ms` so that one unreconciled dispatch cannot
-  remove a recovered Node from scheduling for the lifetime of the Controller.
-  Operators can inspect the live set with `quarantined_nodes/0,1` and clear it
-  early with `release_node_quarantine/1,2`.
+  The block does not expire or expose an unauthenticated operator-release seam.
+  Recovery requires verified reconciliation that proves the unresolved runtime
+  execution is absent. That durable recovery flow remains outside this tracer.
   """
-  @spec quarantine_node(Ecto.UUID.t() | nil) :: :ok
+  @spec quarantine_node(Ecto.UUID.t() | nil) :: :ok | {:error, quarantine_error()}
   def quarantine_node(node_id), do: quarantine_node(__MODULE__, node_id)
 
-  @spec quarantine_node(GenServer.server(), Ecto.UUID.t() | nil) :: :ok
+  @spec quarantine_node(GenServer.server(), Ecto.UUID.t() | nil) ::
+          :ok | {:error, quarantine_error()}
   def quarantine_node(_server, nil), do: :ok
 
   def quarantine_node(server, node_id) when is_binary(node_id) do
-    quarantine_node(server, node_id, @default_quarantine_ttl_ms)
+    GenServer.call(server, {:quarantine_node, node_id})
   end
 
-  @spec quarantine_node(GenServer.server(), Ecto.UUID.t() | nil, pos_integer()) :: :ok
-  def quarantine_node(_server, nil, ttl_ms) when is_integer(ttl_ms) and ttl_ms > 0, do: :ok
-
-  def quarantine_node(server, node_id, ttl_ms)
-      when is_binary(node_id) and is_integer(ttl_ms) and ttl_ms > 0 do
-    GenServer.call(server, {:quarantine_node, node_id, ttl_ms})
-  end
-
-  @doc "Clears one Node's quarantine early, idempotently."
-  @spec release_node_quarantine(Ecto.UUID.t() | nil) :: :ok
-  def release_node_quarantine(node_id), do: release_node_quarantine(__MODULE__, node_id)
-
-  @spec release_node_quarantine(GenServer.server(), Ecto.UUID.t() | nil) :: :ok
-  def release_node_quarantine(_server, nil), do: :ok
-
-  def release_node_quarantine(server, node_id) when is_binary(node_id) do
-    GenServer.call(server, {:release_node_quarantine, node_id})
-  end
-
-  @doc "Returns each currently quarantined Node with its remaining block in milliseconds."
-  @spec quarantined_nodes() :: %{Ecto.UUID.t() => non_neg_integer()}
+  @doc "Returns the Node identities blocked by unresolved execution."
+  @spec quarantined_nodes() :: MapSet.t(Ecto.UUID.t()) | {:error, quarantine_error()}
   def quarantined_nodes, do: quarantined_nodes(__MODULE__)
 
-  @spec quarantined_nodes(GenServer.server()) :: %{Ecto.UUID.t() => non_neg_integer()}
+  @spec quarantined_nodes(GenServer.server()) ::
+          MapSet.t(Ecto.UUID.t()) | {:error, quarantine_error()}
   def quarantined_nodes(server), do: GenServer.call(server, :quarantined_nodes)
 
   @doc "Returns the number of live claims owned for one Node."
@@ -389,16 +374,26 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   defp release_guardian(%AcceptanceLease{}), do: :ok
 
   @impl true
-  def init(_init_arg) do
-    {:ok,
-     %{
-       claims: %{},
-       request_claims: %{},
-       monitors: %{},
-       gates: %{},
-       gate_monitors: %{},
-       quarantined_nodes: %{}
-     }}
+  def init(%{quarantine_store: quarantine_store}) do
+    case resolve_quarantine_store(quarantine_store) do
+      {:ok, quarantine_store_pid} ->
+        quarantine_store_monitor_ref = Process.monitor(quarantine_store_pid)
+
+        {:ok,
+         %{
+           claims: %{},
+           request_claims: %{},
+           monitors: %{},
+           gates: %{},
+           gate_monitors: %{},
+           quarantine_store: quarantine_store_pid,
+           quarantine_store_available?: true,
+           quarantine_store_monitor_ref: quarantine_store_monitor_ref
+         }}
+
+      :error ->
+        {:stop, :dispatch_capacity_quarantine_store_unavailable}
+    end
   end
 
   @impl true
@@ -438,33 +433,20 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     {:reply, :ok, remove_claim(state, token)}
   end
 
-  def handle_call({:quarantine_node, node_id, ttl_ms}, _from, state) when is_binary(node_id) do
-    expires_at = System.monotonic_time(:millisecond) + ttl_ms
-
+  def handle_call({:quarantine_node, node_id}, _from, state) when is_binary(node_id) do
     Logger.warning(
-      "dispatch-capacity authority quarantined node #{node_id} for #{ttl_ms}ms after an " <>
-        "unreconciled dispatch; it is excluded from acquisition until the block expires"
+      "dispatch-capacity authority quarantined node #{node_id} after an unreconciled " <>
+        "dispatch; it remains excluded until verified reconciliation proves the runtime " <>
+        "execution is absent"
     )
 
-    state = prune_quarantine(state)
-
-    quarantined_nodes =
-      Map.update(state.quarantined_nodes, node_id, expires_at, &max(&1, expires_at))
-
-    {:reply, :ok, %{state | quarantined_nodes: quarantined_nodes}}
-  end
-
-  def handle_call({:release_node_quarantine, node_id}, _from, state) when is_binary(node_id) do
-    state = prune_quarantine(state)
-    quarantined_nodes = Map.delete(state.quarantined_nodes, node_id)
-    {:reply, :ok, %{state | quarantined_nodes: quarantined_nodes}}
+    {reply, state} = quarantine_node_in_store(state, node_id)
+    {:reply, reply, state}
   end
 
   def handle_call(:quarantined_nodes, _from, state) do
-    state = prune_quarantine(state)
-    now = System.monotonic_time(:millisecond)
-    remaining = Map.new(state.quarantined_nodes, fn {node_id, at} -> {node_id, at - now} end)
-    {:reply, remaining, state}
+    {reply, state} = quarantined_nodes_from_store(state)
+    {:reply, reply, state}
   end
 
   def handle_call({:claim_count, node_id}, _from, state) do
@@ -544,6 +526,14 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @impl true
   def handle_info({:DOWN, monitor_ref, :process, _owner, _reason}, state) do
     cond do
+      state.quarantine_store_monitor_ref == monitor_ref ->
+        Logger.error(
+          "dispatch-capacity quarantine store stopped; all dispatch remains blocked until " <>
+            "the Controller is recovered through a verified reconciliation path"
+        )
+
+        {:noreply, mark_quarantine_store_unavailable(state)}
+
       Map.has_key?(state.monitors, monitor_ref) ->
         token = Map.fetch!(state.monitors, monitor_ref)
         {:noreply, remove_claim(state, token)}
@@ -563,9 +553,11 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     {f11_count, legacy_count} = claim_counts(state.claims, node_id, excluded_token)
 
     input =
-      if quarantined?(state, node_id),
-        do: %{input | health: :unreachable},
-        else: input
+      case quarantine_status(state, node_id) do
+        false -> input
+        true -> %{input | health: :unreachable}
+        :unavailable -> %{input | health: :unreachable}
+      end
 
     input
     |> Map.put(:controller_accounted_allocation, f11_count)
@@ -573,17 +565,87 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     |> Evaluator.evaluate()
   end
 
-  defp quarantined?(state, node_id) do
-    case Map.get(state.quarantined_nodes, node_id) do
-      nil -> false
-      expires_at -> expires_at > System.monotonic_time(:millisecond)
+  defp resolve_quarantine_store(quarantine_store) do
+    quarantine_store
+    |> quarantine_store_pid()
+    |> probe_quarantine_store()
+  end
+
+  defp probe_quarantine_store(pid) when is_pid(pid) do
+    case safe_quarantine_store_call(fn -> QuarantineStore.quarantined_nodes(pid) end) do
+      {:ok, %MapSet{}} -> {:ok, pid}
+      _unavailable -> :error
     end
   end
 
-  defp prune_quarantine(state) do
-    now = System.monotonic_time(:millisecond)
-    quarantined_nodes = Map.reject(state.quarantined_nodes, fn {_id, at} -> at <= now end)
-    %{state | quarantined_nodes: quarantined_nodes}
+  defp probe_quarantine_store(_missing), do: :error
+
+  defp quarantine_store_pid(pid) when is_pid(pid), do: pid
+  defp quarantine_store_pid(name) when is_atom(name), do: Process.whereis(name)
+
+  defp quarantine_store_pid({:global, name}) do
+    case :global.whereis_name(name) do
+      pid when is_pid(pid) -> pid
+      :undefined -> nil
+    end
+  end
+
+  defp quarantine_store_pid({:via, module, name}) do
+    case module.whereis_name(name) do
+      pid when is_pid(pid) -> pid
+      _missing -> nil
+    end
+  end
+
+  defp quarantine_store_pid(_unsupported), do: nil
+
+  defp quarantine_node_in_store(state, node_id) do
+    call_quarantine_store(state, fn store -> QuarantineStore.quarantine(store, node_id) end)
+  end
+
+  defp quarantined_nodes_from_store(state) do
+    call_quarantine_store(state, &QuarantineStore.quarantined_nodes/1)
+  end
+
+  defp call_quarantine_store(%{quarantine_store_available?: false} = state, _call) do
+    {{:error, :dispatch_capacity_quarantine_store_unavailable}, state}
+  end
+
+  defp call_quarantine_store(state, call) do
+    case safe_quarantine_store_call(fn -> call.(state.quarantine_store) end) do
+      {:ok, reply} ->
+        {reply, state}
+
+      :error ->
+        {{:error, :dispatch_capacity_quarantine_store_unavailable},
+         mark_quarantine_store_unavailable(state)}
+    end
+  end
+
+  defp quarantine_status(%{quarantine_store_available?: false}, _node_id), do: :unavailable
+
+  defp quarantine_status(state, node_id) do
+    case safe_quarantine_store_call(fn ->
+           QuarantineStore.quarantined?(state.quarantine_store, node_id)
+         end) do
+      {:ok, quarantined?} -> quarantined?
+      :error -> :unavailable
+    end
+  end
+
+  defp safe_quarantine_store_call(call) do
+    {:ok, call.()}
+  catch
+    :exit, _reason -> :error
+  end
+
+  defp mark_quarantine_store_unavailable(state) do
+    %{
+      state
+      | quarantine_store: nil,
+        quarantine_store_available?: false,
+        quarantine_store_monitor_ref: nil
+    }
   end
 
   defp claim_counts(claims, node_id, excluded_token) do

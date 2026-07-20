@@ -1,7 +1,7 @@
 defmodule OrchardApplicationTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture}
+  alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, QuarantineStore}
   alias Orchard.Inference.QueueManager
 
   @sentry_dsn "https://public@example.invalid/1"
@@ -62,14 +62,45 @@ defmodule OrchardApplicationTest do
       |> Enum.map(fn {id, _pid, _type, _modules} -> id end)
 
     assert Orchard.Inference in child_ids
+    assert QuarantineStore in child_ids
     assert Phoenix.PubSub.Supervisor in child_ids
     assert OrchardConsole.ModelHubDownloadCoordinator in child_ids
     refute Orchard.Repo in child_ids
     refute Orchard.API.Endpoint in child_ids
 
     assert is_pid(Process.whereis(Orchard.Inference))
+    assert is_pid(Process.whereis(QuarantineStore))
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
     assert is_pid(Process.whereis(OrchardConsole.ModelHubDownloadCoordinator))
+  end
+
+  test "SPEC 4.5 root-owned quarantine store loss leaves the live authority fail-closed" do
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+
+    supervisor = Process.whereis(Orchard.Supervisor)
+    authority = Process.whereis(AllocationAuthority)
+    store = Process.whereis(QuarantineStore)
+    node_id = Ecto.UUID.generate()
+
+    assert %{restart: :temporary} = QuarantineStore.child_spec([])
+
+    store_ref = Process.monitor(store)
+    Process.exit(store, :kill)
+    assert_receive {:DOWN, ^store_ref, :process, ^store, :killed}
+
+    assert Process.whereis(QuarantineStore) == nil
+    assert Process.whereis(AllocationAuthority) == authority
+    assert Process.alive?(supervisor)
+
+    assert {:error, :dispatch_capacity_unavailable, blocked} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-root-quarantine-store-loss",
+               ConformanceFixture.input()
+             )
+
+    refute blocked.eligible?
+    assert :node_health_unhealthy in blocked.reason_codes
   end
 
   test "SPEC 4.5 authority loss restarts every live capacity-dependent owner" do

@@ -136,6 +136,7 @@ defmodule Orchard.Application do
           {GRPC.Client.Supervisor, []},
           Orchard.Tokenizer.CompatibilityCache,
           Orchard.Tokenizer.TelemetryCounters,
+          Orchard.DispatchCapacity.QuarantineStore,
           Orchard.Inference
         ]
     end

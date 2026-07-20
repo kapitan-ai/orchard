@@ -2,7 +2,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
   use ExUnit.Case, async: true
 
   alias Orchard.DispatchCapacity
-  alias Orchard.DispatchCapacity.AllocationAuthority
+  alias Orchard.DispatchCapacity.{AllocationAuthority, QuarantineStore}
   alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.Inference.QueueManager
 
@@ -298,46 +298,183 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 
-  test "SPEC 4.5 local Node quarantine expires so a recovered Node returns to acquisition" do
-    authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = Ecto.UUID.generate()
-    input = enforcing_input({:valid, 0, 4})
-
-    # The window has to outlast scheduling jitter between quarantining and
-    # reading the block back, or the entry expires before it can be observed.
-    quarantine_ms = 50
-
-    assert :ok = AllocationAuthority.quarantine_node(authority, node_id, quarantine_ms)
-    assert %{^node_id => remaining} = AllocationAuthority.quarantined_nodes(authority)
-    assert remaining <= quarantine_ms
-    Process.sleep(quarantine_ms * 3)
-
-    assert AllocationAuthority.quarantined_nodes(authority) == %{}
-
-    assert {:ok, claim, _result} =
-             QueueManager.acquire_dispatch_capacity(
-               node_id,
-               "request-after-quarantine-expiry",
-               input,
-               authority: authority
-             )
-
-    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
-  end
-
-  test "SPEC 4.5 an operator can clear a local Node quarantine before it expires" do
+  test "SPEC 4.5 unresolved execution quarantine cannot expire or be released without reconciliation" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = Ecto.UUID.generate()
     input = enforcing_input({:valid, 0, 4})
 
     assert :ok = AllocationAuthority.quarantine_node(authority, node_id)
-    assert Map.has_key?(AllocationAuthority.quarantined_nodes(authority), node_id)
-    refute AllocationAuthority.evaluate(authority, node_id, input).eligible?
+    assert MapSet.member?(AllocationAuthority.quarantined_nodes(authority), node_id)
+    refute function_exported?(AllocationAuthority, :release_node_quarantine, 2)
 
-    assert :ok = AllocationAuthority.release_node_quarantine(authority, node_id)
+    Process.sleep(75)
 
-    assert AllocationAuthority.quarantined_nodes(authority) == %{}
-    assert AllocationAuthority.evaluate(authority, node_id, input).eligible?
+    assert MapSet.member?(AllocationAuthority.quarantined_nodes(authority), node_id)
+
+    assert {:error, :dispatch_capacity_unavailable, blocked} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-without-terminal-reconciliation",
+               input,
+               authority: authority
+             )
+
+    refute blocked.eligible?
+    assert :node_health_unhealthy in blocked.reason_codes
+  end
+
+  test "SPEC 4.5 unresolved execution quarantine survives allocation authority restart" do
+    store = start_supervised!({QuarantineStore, name: nil})
+    node_id = Ecto.UUID.generate()
+    other_node_id = Ecto.UUID.generate()
+    input = enforcing_input({:valid, 0, 4})
+    authority_key = {__MODULE__, self(), make_ref()}
+    authority_name = {:global, authority_key}
+
+    authority =
+      start_supervised!({AllocationAuthority, name: authority_name, quarantine_store: store})
+
+    assert {:ok, claim, _result} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-before-authority-restart",
+               input,
+               authority: authority
+             )
+
+    assert :ok = AllocationAuthority.quarantine_node(authority, node_id)
+
+    monitor_ref = Process.monitor(authority)
+    Process.exit(authority, :kill)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^authority, :killed}
+
+    replacement =
+      Enum.reduce_while(1..100, nil, fn _attempt, _replacement ->
+        case :global.whereis_name(authority_key) do
+          pid when is_pid(pid) and pid != authority -> {:halt, pid}
+          _missing -> Process.sleep(10) && {:cont, nil}
+        end
+      end)
+
+    assert is_pid(replacement)
+    assert AllocationAuthority.quarantined_nodes(replacement) == MapSet.new([node_id])
+
+    assert {:error, :dispatch_capacity_revalidation_failed, revalidation} =
+             QueueManager.revalidate_dispatch_capacity(claim, input, authority: replacement)
+
+    refute revalidation.eligible?
+    assert :node_health_unhealthy in revalidation.reason_codes
+
+    assert {:error, :dispatch_capacity_unavailable, blocked} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-authority-restart",
+               input,
+               authority: replacement
+             )
+
+    refute blocked.eligible?
+
+    assert {:ok, other_claim, _result} =
+             QueueManager.acquire_dispatch_capacity(
+               other_node_id,
+               "other-node-after-authority-restart",
+               input,
+               authority: replacement
+             )
+
+    assert :ok = QueueManager.release_dispatch_capacity(other_claim, authority: replacement)
+  end
+
+  test "SPEC 4.5 quarantine store loss keeps dispatch globally fail-closed" do
+    node_id = Ecto.UUID.generate()
+    other_node_id = Ecto.UUID.generate()
+    input = enforcing_input({:valid, 0, 4})
+    store_key = {QuarantineStore, self(), make_ref()}
+    authority_key = {AllocationAuthority, self(), make_ref()}
+    store_name = {:global, store_key}
+    authority_name = {:global, authority_key}
+
+    children = [
+      Supervisor.child_spec(
+        {QuarantineStore, name: store_name},
+        id: :quarantine_store
+      ),
+      Supervisor.child_spec(
+        {AllocationAuthority, name: authority_name, quarantine_store: store_name},
+        id: :allocation_authority
+      )
+    ]
+
+    assert %{restart: :temporary} = QuarantineStore.child_spec(name: store_name)
+
+    {:ok, supervisor} = Supervisor.start_link(children, strategy: :one_for_one)
+    assert Process.alive?(supervisor)
+
+    store = :global.whereis_name(store_key)
+    authority = :global.whereis_name(authority_key)
+
+    assert {:ok, claim, _result} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-before-store-restart",
+               input,
+               authority: authority
+             )
+
+    assert :ok = AllocationAuthority.quarantine_node(authority, node_id)
+
+    store_monitor_ref = Process.monitor(store)
+    authority_monitor_ref = Process.monitor(authority)
+    Process.exit(store, :kill)
+    assert_receive {:DOWN, ^store_monitor_ref, :process, ^store, :killed}
+    refute_receive {:DOWN, ^authority_monitor_ref, :process, ^authority, _reason}, 100
+
+    assert Process.alive?(authority)
+    assert :global.whereis_name(store_key) == :undefined
+
+    refute Enum.any?(
+             Supervisor.which_children(supervisor),
+             &match?({:quarantine_store, _, _, _}, &1)
+           )
+
+    assert :ets.whereis(QuarantineStore) == :undefined
+    refute function_exported?(AllocationAuthority, :release_node_quarantine, 2)
+
+    assert {:error, :dispatch_capacity_quarantine_store_unavailable} =
+             AllocationAuthority.quarantined_nodes(authority)
+
+    assert {:error, :dispatch_capacity_revalidation_failed, revalidation} =
+             QueueManager.revalidate_dispatch_capacity(
+               claim,
+               input,
+               authority: authority
+             )
+
+    refute revalidation.eligible?
+    assert :node_health_unhealthy in revalidation.reason_codes
+
+    assert {:error, :dispatch_capacity_unavailable, blocked} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-store-loss",
+               input,
+               authority: authority
+             )
+
+    refute blocked.eligible?
+    assert :node_health_unhealthy in blocked.reason_codes
+
+    assert {:error, :dispatch_capacity_unavailable, other_blocked} =
+             QueueManager.acquire_dispatch_capacity(
+               other_node_id,
+               "other-node-after-store-loss",
+               input,
+               authority: authority
+             )
+
+    refute other_blocked.eligible?
+    assert :node_health_unhealthy in other_blocked.reason_codes
   end
 
   test "SPEC 4.5 quarantine of an absent Node identity leaves unmanaged evaluation open" do
