@@ -680,6 +680,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | BEAM RPC times out or is unreachable | Distribution listener port is blocked | Check TCP `52171` for the controller and TCP `52172` for node-agents, or check your overridden range. |
 | BEAM Console shows stale gRPC expectations | gRPC targets were configured as a comparison path | Use Console Runtime Endpoint target diagnostics and remember that `ORCHARD_RUNTIME_CLIENT_TARGETS` is not a BEAM fallback. |
 | Remote gRPC node-agent unreachable | Listen host still `127.0.0.1` | Set `ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0` for the gRPC compatibility flow. |
+| Requests to an admitted Node return busy instead of dispatching | The Controller could not assemble that Node's capacity facts from current authenticated evidence — probe failure, stale observation, or missing policy — so capacity authorization fails closed rather than trusting telemetry | Check the Node's trust, lifecycle, health, and observation freshness, and read the persisted scheduler explanation for `dispatch_capacity_facts_unavailable` with `orchardctl requests inspect <request-id>`. |
 | Remote node fails on MLX | mise toolchain not installed or no `uv sync` | Use `ORCHARD_WORKER_BACKEND=stub` or run `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx`. |
 | Port conflict on remote gRPC node-agent | Another BEAM or node-agent owns the gRPC port | Change `ORCHARD_NODE_AGENT_LISTEN_PORT`. |
 

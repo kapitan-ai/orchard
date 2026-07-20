@@ -1,6 +1,12 @@
 defmodule Orchard.Inference do
   @moduledoc """
   Controller-side inference supervision subtree and seam lookup helpers.
+
+  The subtree is `rest_for_one` with
+  `Orchard.DispatchCapacity.AllocationAuthority` started ahead of the request
+  supervisor and `Orchard.Inference.QueueManager`, so losing the authority also
+  restarts the processes whose claims it tracked instead of leaving orphaned
+  claims behind.
   """
 
   use Supervisor

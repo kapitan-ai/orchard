@@ -2,11 +2,12 @@ defmodule Orchard.DispatchCapacity do
   @moduledoc """
   Domain boundary for durable dispatch-capacity authority, policy, and evidence.
 
-  The reads are open to any caller; the three writing seams are deliberately
-  narrow. `lock_authority/0` and `approve_admission_policy/1` exist only for the
-  Node Admission transaction, and `record_capacity_evidence/2` persists
-  Node-owned runtime evidence that never becomes policy. This foundation exposes
-  no transition to `enforcing`, for either the durable phase or a policy.
+  The reads are open to any caller; the writing seams are deliberately narrow.
+  `lock_authority/0` and `approve_admission_policy/1` exist only for the Node
+  Admission transaction, `with_policy_mutation_gate/3` serializes a policy write
+  against the dispatch handoff on the same Node, and `record_capacity_evidence/2`
+  persists Node-owned runtime evidence that never becomes policy. This module
+  exposes no transition to `enforcing`, for either the durable phase or a policy.
   """
 
   alias Orchard.DispatchCapacity.{AllocationAuthority, Authority, CapacityEvidence, Policy}

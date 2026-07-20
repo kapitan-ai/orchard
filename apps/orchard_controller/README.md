@@ -17,9 +17,13 @@ This README is orientation only. Normative behavior lives in
 - Durable Controller membership identity and the supervised membership owner
   that republishes `last_seen_at` and this Controller's dispatch-capacity
   capability evidence on every heartbeat.
-- Durable dispatch-capacity policy, the cluster enforcement phase, and the
-  shared capacity evaluation that currently produces counterfactual
-  diagnostics only.
+- Durable dispatch-capacity policy, the cluster enforcement phase, the shared
+  capacity evaluation, and the supervised allocation authority that owns
+  per-Node claims and the per-Node acceptance gate.
+- Fail-closed capacity authorization for the five named consumers — MultiNode,
+  admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch
+  revalidation — plus the read-only counterfactual diagnostics that stay
+  observability rather than authorization.
 - Governance persistence and lifecycle APIs for Organizations, tenant-direct API Tokens, API Clients, service-account-owned API Tokens, role bindings, and provisioning batches.
 - Request canonicalization, tokenization orchestration, admission, scheduling,
   dispatch, lifecycle persistence, and public response serialization.

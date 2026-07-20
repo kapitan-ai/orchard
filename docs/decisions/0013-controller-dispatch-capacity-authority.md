@@ -59,6 +59,7 @@ It never adopts live legacy work across the phase boundary and never derives dur
 The supervised Controller membership owner refreshes the complete capability tuple every `10000` ms, and the leader-only admin retirement surface supplies the audited recovery path for a stale non-Active, non-last Controller.
 
 One shared transport-independent evaluation supplies the capacity semantics to MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation.
+A consumer that cannot assemble the Controller-owned facts for that evaluation from current authenticated evidence fails closed with the stable scheduler rejection reason code `dispatch_capacity_facts_unavailable` instead of falling back to telemetry or a permissive default.
 Transport selection does not create an exemption for an admitted production Node.
 Every normalized target carries Controller-owned `capacity_management_class`, admitted inventory always forces `production_managed`, and absent, invalid, or inferred classification fails closed.
 Only a valid explicitly classified unmanaged source-development or compatibility target may retain legacy capacity behavior.
@@ -67,6 +68,7 @@ The normative management surfaces are Operator API policy reads for cluster `ope
 API mutations require cluster `admin`, while local CLI admission uses the established Controller-runtime authority boundary; both require Action Preview, explicit confirmation when consequences require it, mutation-time revalidation, and atomic cluster-scoped audit persistence.
 Per-Node policy mutation and final dispatch revalidation share one Controller-local acceptance gate that remains held through Node acceptance or pre-acceptance failure.
 This makes either acceptance or the policy change happen first without an authority gap, while leaving distributed leadership fencing to M7.
+Both gate consumers are bounded rather than blocking: policy mutation and dispatch each fail with `dispatch_capacity_acceptance_gate_busy` when they cannot acquire the gate within their own bound, so neither waits behind an in-flight dispatch to the same Node.
 
 ## Rejected alternatives
 
