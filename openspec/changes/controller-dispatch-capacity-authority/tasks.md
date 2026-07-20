@@ -38,6 +38,8 @@ No Operator policy mutation, Controller retirement, cutover, quiescence, accepta
 ## 3. Operator approval and migration cutover
 
 - [ ] 3.1 Add the specified Operator API policy and Controller-instance reads, leader-only admin-authorized approval/update, cutover, and Controller retirement endpoints, Admin admission ceiling and reason fields, and matching `orchardctl nodes admit` flags with shared Action Previews, confirmations, actor provenance, and cluster-scoped audit writes.
+  Partial after PR #93, reviewed 2026-07-20; PR #93 merged at `7d76ccd1` on 2026-07-17: the Admin Node Admission API/UI and local `orchardctl nodes admit` surfaces landed the optional Controller Dispatch Ceiling, required capacity policy reason, shared Action Preview and confirmation behavior, local operator actor provenance, and Console drawer verification.
+  Remaining work includes Operator API policy and Controller-instance reads, policy approval/update, enforcement cutover, and Controller retirement endpoints, with required authorization, leadership, optimistic concurrency, confirmation, and atomic audit behavior, so 3.1 remains unchecked.
 - [ ] 3.2 Add optimistic concurrency, mutation-time authorization, leadership, durable-phase and policy revalidation, and explicit support for an audited ceiling of `0`.
 - [ ] 3.3 Add cutover preview and preflight proving every non-removed admitted legacy Node has an approved ceiling and every non-retired Controller has fresh capability evidence at the required contract version with all five consumers ready; exclude only durably removed Nodes with revoked trust and successful removal audit.
 - [ ] 3.4 Under the migration advisory lock and Controller-local transition barrier, quiesce new legacy claims, wait for zero live temporary claims and new fresh zero-active aggregate observations, acquire every per-Node acceptance gate in stable order, revalidate, then atomically advance approved policies and the durable phase or reopen legacy dispatch unchanged on failure.
@@ -80,11 +82,23 @@ No Operator policy mutation, Controller retirement, cutover, quiescence, accepta
 - [x] 6.1 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate controller-dispatch-capacity-authority --type change --strict --no-interactive`.
   Validation passed for this contract PR.
 - [ ] 6.2 For implementation slices, run `mise exec -- mix format`.
+  Foundation evidence reviewed 2026-07-20 for PR #93, merged at `7d76ccd1` on 2026-07-17: PR #93 does not durably list an exact successful `mise exec -- mix format` run.
+  This gate is recurring and remains open.
 - [ ] 6.3 For implementation slices, run `mise exec -- mix compile --warnings-as-errors`.
+  Foundation evidence reviewed 2026-07-20 for PR #93, merged at `7d76ccd1` on 2026-07-17: PR #93 does not durably list an exact successful `mise exec -- mix compile --warnings-as-errors` run.
+  This gate is recurring and remains open.
 - [ ] 6.4 For implementation slices, run `mise exec -- mix credo --strict`.
+  Foundation evidence reviewed 2026-07-20 for PR #93, merged at `7d76ccd1` on 2026-07-17: PR #93 does not durably list an exact successful `mise exec -- mix credo --strict` run.
+  This gate is recurring and remains open.
 - [ ] 6.5 For implementation slices, run `mise exec -- mix dialyzer`.
+  Foundation evidence reviewed 2026-07-20 for PR #93, merged at `7d76ccd1` on 2026-07-17: PR #93 does not durably list an exact successful `mise exec -- mix dialyzer` run.
+  This gate is recurring and remains open.
 - [ ] 6.6 For implementation slices, run `mise exec -- mix test`.
+  Foundation evidence reviewed 2026-07-20 for PR #93, merged at `7d76ccd1` on 2026-07-17: PR #93 durably reports a successful full umbrella `mix test` run with 645 tests and 10 excluded after stale temporary directories were removed, plus targeted suites and the real Repo-restart E2E.
+  This gate is recurring and remains open.
 - [ ] 6.7 For implementation slices, run `mise exec -- mix test --cover`.
+  Foundation evidence reviewed 2026-07-20 for PR #93, merged at `7d76ccd1` on 2026-07-17: PR #93 does not durably list an exact successful `mise exec -- mix test --cover` run.
+  This gate is recurring and remains open.
 - [ ] 6.8 After archive or sync, run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive` and remove placeholder prose such as `Purpose TBD`.
   Foundation evidence, 2026-07-20: after the foundation tracer sync and archive, all nine remaining validation items, comprising six active changes and three main specs, passed strict validation with no placeholder prose.
   This gate is recurring and remains open: it must repeat at every later sync of this change and again at parent archive.
