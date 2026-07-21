@@ -278,6 +278,28 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert schedule.queue_lane_capacity == 1
   end
 
+  test "SPEC.md §4.6.2 fails closed when authority is down after a successful unmanaged probe" do
+    Process.put(:single_node_status, %{runtime_model_placements: []})
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-authority-down-after-probe"),
+               SingleNode.target(),
+               status_client: StubClient,
+               dispatch_capacity_authority: stopped_authority()
+             )
+  end
+
+  test "SPEC.md §4.6.2 fails closed when authority is down after a failed unmanaged probe" do
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-authority-down-after-probe-failure"),
+               SingleNode.target(),
+               status_client: StubClient,
+               dispatch_capacity_authority: stopped_authority()
+             )
+  end
+
   test "SPEC.md §4.6.2 inventory failure cannot downgrade a target to unmanaged" do
     Process.put(:single_node_status, %{active_request_count: 0, max_concurrency: 2})
 
@@ -416,5 +438,12 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       active_request_count: Keyword.fetch!(attrs, :active_request_count),
       max_concurrency: Keyword.fetch!(attrs, :max_concurrency)
     }
+  end
+
+  defp stopped_authority do
+    pid = spawn(fn -> :ok end)
+    monitor = Process.monitor(pid)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}
+    pid
   end
 end

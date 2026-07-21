@@ -101,7 +101,6 @@ defmodule Orchard.DispatchCapacity.Evaluator do
             | :node_lifecycle_not_active
             | :node_health_invalid
             | :node_health_unhealthy
-            | :node_health_not_healthy
             | :node_health_degraded
             | :node_heartbeat_stale
             | :runtime_capacity_observation_stale
@@ -441,7 +440,7 @@ defmodule Orchard.DispatchCapacity.Evaluator do
   defp add_health_reason(reasons, :healthy, _decision), do: reasons
 
   defp add_health_reason(reasons, :degraded, :f11_enforcing),
-    do: [:node_health_not_healthy | reasons]
+    do: [:node_health_degraded | reasons]
 
   defp add_health_reason(reasons, :degraded, decision)
        when decision in [
@@ -475,7 +474,7 @@ defmodule Orchard.DispatchCapacity.Evaluator do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp health_blocker(:degraded), do: :node_health_not_healthy
+  defp health_blocker(:degraded), do: :node_health_degraded
 
   defp health_blocker(health) when health in [:unhealthy, :unreachable],
     do: :node_health_unhealthy

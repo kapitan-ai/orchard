@@ -353,7 +353,7 @@ defmodule Orchard.Scheduler.SingleNode do
 
   defp authorize_unprobed_unmanaged(schedule, capacity_target, input, opts) do
     authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
-    result = evaluate_dispatch_capacity(authority, nil, input)
+    result = safe_unmanaged_evaluation(authority, input)
 
     if Consumer.authorized?(result) do
       provider = fn -> unprobed_unmanaged_input_or_nil(capacity_target, opts) end
@@ -371,6 +371,12 @@ defmodule Orchard.Scheduler.SingleNode do
     else
       {:error, :model_busy}
     end
+  end
+
+  defp safe_unmanaged_evaluation(authority, input) do
+    evaluate_dispatch_capacity(authority, nil, input)
+  catch
+    :exit, _reason -> nil
   end
 
   defp unprobed_unmanaged_input_or_nil(capacity_target, opts) do

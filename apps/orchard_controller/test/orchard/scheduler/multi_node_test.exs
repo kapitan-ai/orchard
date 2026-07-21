@@ -248,6 +248,31 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     node
   end
 
+  defp production_capacity_input(health, placement_capacity) do
+    %Evaluator.Input{
+      authority_phase: :enforcing,
+      policy_presence: :present,
+      policy_state: :enforcing,
+      management_classification: {:ok, :production_managed},
+      trusted_identity?: true,
+      lifecycle_state: :active,
+      health: health,
+      heartbeat_fresh?: true,
+      capacity_observation_fresh?: true,
+      observation_time: DateTime.utc_now(),
+      runtime_concurrency_limit: {:valid, 4},
+      aggregate_active_count: {:valid, 0},
+      controller_dispatch_ceiling: {:valid, 4},
+      controller_accounted_allocation: 0,
+      placement_capacity: placement_capacity,
+      temporary_legacy_claim_count: 0,
+      pool_eligible?: true,
+      format_eligible?: true,
+      memory_eligible?: true,
+      breaker_eligible?: true
+    }
+  end
+
   defp make_status(node_id, opts) do
     loaded_models = Keyword.get(opts, :loaded_models, [])
     active_request_count = Keyword.get(opts, :active_request_count, 0)
@@ -1062,6 +1087,49 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                  node_id: node_a.id,
                  reason_codes: ["lower_tier_not_considered"]
                }
+             ]
+    end
+
+    test "SPEC.md §4.6.2 rejected candidates expose degraded node health" do
+      healthy = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      degraded =
+        insert_node!(%{
+          advertise_addr: "10.0.0.2",
+          rpc_port: 50_062,
+          health: :degraded
+        })
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(healthy.id, host: "10.0.0.1", port: 50_061)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(degraded.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+        )
+      )
+
+      input_provider = fn node, _observation, placement_capacity ->
+        production_capacity_input(node.health, placement_capacity)
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 dispatch_capacity_input_provider: input_provider
+               )
+
+      assert schedule.node_id == healthy.id
+
+      assert schedule.rejected_candidates == [
+               %{node_id: degraded.id, reason_codes: ["node_health_degraded"]}
              ]
     end
 

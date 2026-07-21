@@ -103,7 +103,6 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     node_lifecycle_not_active
     node_health_invalid
     node_health_unhealthy
-    node_health_not_healthy
     node_health_degraded
     node_heartbeat_stale
     runtime_capacity_observation_stale
