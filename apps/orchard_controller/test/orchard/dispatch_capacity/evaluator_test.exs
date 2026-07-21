@@ -193,7 +193,7 @@ defmodule Orchard.DispatchCapacity.EvaluatorTest do
       cases = [
         {%{trusted_identity?: false}, :runtime_endpoint_identity_untrusted},
         {%{lifecycle_state: :removed}, :node_lifecycle_not_active},
-        {%{health: :degraded}, :node_health_not_healthy},
+        {%{health: :degraded}, :node_health_degraded},
         {%{health: :unhealthy}, :node_health_unhealthy},
         {%{health: :unknown}, :node_health_invalid},
         {%{heartbeat_fresh?: false}, :node_heartbeat_stale},

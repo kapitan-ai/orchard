@@ -70,6 +70,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   @stub_client Orchard.Dispatch.DispatchCapabilityGateTest.StubClient
   @prompt_ids [101, 102, 103]
@@ -242,13 +243,13 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
   end
 
   defp schedule(request_id) do
-    %{
+    DispatchCapacityFixtures.authorize_unmanaged_schedule(%{
       strategy: :single_node,
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
       model_load_timeout_ms: 5_000
-    }
+    })
   end
 
   defp execute_request(request_id) do

@@ -1,0 +1,308 @@
+defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
+  use Orchard.DataCase, async: false
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.AllocationAuthority
+  alias Orchard.DispatchCapacity.Evaluator.Input
+  alias Orchard.DispatchCapacity.Policy
+  alias Orchard.Nodes.{AdmissionDecision, Node}
+  alias Orchard.Scheduler.MultiNode
+  alias Orchard.Scheduler.SingleNode
+
+  defmodule StatusClient do
+    @moduledoc false
+
+    def connect(target), do: {:ok, target}
+    def status(_target, _opts), do: {:ok, Process.get(:capacity_status)}
+    def disconnect(_channel), do: :ok
+  end
+
+  setup do
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    Process.put(:capacity_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+
+    on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous_inference) end)
+
+    :ok
+  end
+
+  test "SPEC 4.2 admitted SingleNode scheduling uses shared capacity values" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+    input = enforcing_input(2)
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(canonical_request(), target(node),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _response, _placement ->
+                 {:ok, input}
+               end
+             )
+
+    assert schedule.node_id == node.id
+    assert schedule.queue_lane_capacity == 2
+    assert schedule.dispatch_capacity_input == input
+    assert schedule.dispatch_capacity_evaluation.authority_decision == :f11_enforcing
+  end
+
+  test "SPEC 4.2 admitted SingleNode authorization failure has no direct-schedule fallback" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(canonical_request(), target(node),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _response, _placement ->
+                 {:ok, enforcing_input(0)}
+               end
+             )
+  end
+
+  test "SPEC 4.1 MultiNode eligibility and lane contribution use the shared evaluation" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+    configure_target(node)
+    put_status(node)
+    input = enforcing_input(1)
+
+    assert {:ok, schedule} =
+             MultiNode.schedule(canonical_request(),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _observation, _placement ->
+                 {:ok, input}
+               end
+             )
+
+    assert schedule.node_id == node.id
+    assert schedule.queue_lane_capacity == 1
+    assert schedule.dispatch_capacity_input == input
+    assert schedule.dispatch_capacity_evaluation.available_slots == 1
+  end
+
+  test "SPEC 4.1 MultiNode does not fall back around a failed shared evaluation" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+    configure_target(node)
+    put_status(node)
+
+    assert {:error, :cluster_busy} =
+             MultiNode.schedule(canonical_request(),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _observation, _placement ->
+                 {:ok, enforcing_input(0)}
+               end
+             )
+  end
+
+  test "SPEC 4.1 MultiNode never rejects and selects the same candidate" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+    configure_target(node)
+    put_status(node)
+
+    status = Process.get(:capacity_status)
+    Process.put(:capacity_status, %{status | active_request_count: 2, max_concurrency: 2})
+
+    assert {:ok, schedule} =
+             MultiNode.schedule(canonical_request(),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _observation, _placement ->
+                 {:ok, enforcing_input(2)}
+               end
+             )
+
+    assert schedule.node_id == node.id
+    assert schedule.rejected_candidates == []
+    assert Enum.all?(schedule.scored_candidates, & &1.eligible)
+  end
+
+  test "SPEC 4.1 MultiNode reports a busy cluster when the authority is unavailable" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node = insert_node!()
+    configure_target(node)
+    put_status(node)
+    stop_supervised!(AllocationAuthority)
+
+    assert {:error, :cluster_busy} =
+             MultiNode.schedule(canonical_request(),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               dispatch_capacity_input_provider: fn _node, _observation, _placement ->
+                 {:ok, enforcing_input(2)}
+               end
+             )
+  end
+
+  test "SPEC 4.6.2 SingleNode rejects a probe not bound to current authenticated evidence" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    evidence_at = DateTime.add(DateTime.utc_now(), -1, :second)
+    observed_at = DateTime.utc_now()
+    node = insert_node!(evidence_observed_at: evidence_at)
+    put_status(node)
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(canonical_request(), target(node),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               observed_at: observed_at
+             )
+  end
+
+  test "SPEC 4.6.2 MultiNode rejects a probe not bound to current authenticated evidence" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    evidence_at = DateTime.add(DateTime.utc_now(), -1, :second)
+    observed_at = DateTime.utc_now()
+    node = insert_node!(evidence_observed_at: evidence_at)
+    configure_target(node)
+    put_status(node)
+
+    assert {:error, :cluster_busy} =
+             MultiNode.schedule(canonical_request(),
+               status_client: StatusClient,
+               dispatch_capacity_authority: authority,
+               observed_at: observed_at
+             )
+  end
+
+  defp insert_node!(opts \\ []) do
+    unique = System.unique_integer([:positive])
+    now = DateTime.utc_now()
+
+    node =
+      %Node{}
+      |> Node.changeset(%{
+        id: Ecto.UUID.generate(),
+        hostname: "capacity-#{unique}.local",
+        display_name: "capacity-#{unique}",
+        advertise_addr: "10.44.0.#{rem(unique, 200) + 1}",
+        rpc_port: 50_071,
+        state: :active,
+        health: :healthy,
+        capabilities: %{},
+        last_heartbeat_at: Keyword.get(opts, :evidence_observed_at, now)
+      })
+      |> Repo.insert!()
+
+    decision =
+      %AdmissionDecision{}
+      |> AdmissionDecision.changeset(%{
+        node_id: node.id,
+        decision: :admitted,
+        actor_type: "system",
+        actor_id: "scheduler-authorization-test",
+        observed_identity: %{},
+        metadata: %{},
+        decided_at: now
+      })
+      |> Repo.insert!()
+
+    %Policy{}
+    |> Policy.approved_explicit_changeset(%{
+      node_id: node.id,
+      admission_decision_id: decision.id,
+      controller_dispatch_ceiling: 2,
+      approved_by_actor_type: "system",
+      approved_by_actor_id: "scheduler-authorization-test",
+      approved_at: now,
+      approval_reason: "scheduler authorization fixture"
+    })
+    |> Repo.insert!()
+
+    case Keyword.fetch(opts, :evidence_observed_at) do
+      {:ok, evidence_observed_at} ->
+        {:ok, _evidence} =
+          DispatchCapacity.record_capacity_evidence(node.id, %{
+            active_request_count: 0,
+            observed_at: evidence_observed_at,
+            runtime_concurrency_limit: 2,
+            validity: :valid
+          })
+
+      :error ->
+        :ok
+    end
+
+    node
+  end
+
+  defp target(node), do: [host: node.advertise_addr, port: node.rpc_port]
+
+  defp configure_target(node) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(inference,
+        runtime_client_target: target(node),
+        runtime_client_targets: [target(node)],
+        runtime_endpoint_targets: []
+      )
+    )
+  end
+
+  defp put_status(node) do
+    Process.put(:capacity_status, %{
+      node_metadata: %{
+        node_id: node.id,
+        display_name: node.display_name,
+        hostname: node.hostname,
+        agent_version: "test",
+        listen_host: node.advertise_addr,
+        listen_port: node.rpc_port,
+        worker_backend: "mlx"
+      },
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+  end
+
+  defp canonical_request do
+    CanonicalRequest.new(%{
+      internal_id: "internal-capacity",
+      public_id: "public-capacity",
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %ModelRef{model_id: "test/model", version: "v1"},
+      rendered_prompt: "hello"
+    })
+  end
+
+  defp enforcing_input(ceiling) do
+    %Input{
+      authority_phase: :enforcing,
+      policy_presence: :present,
+      policy_state: :enforcing,
+      management_classification: {:ok, :production_managed},
+      trusted_identity?: true,
+      lifecycle_state: :active,
+      health: :healthy,
+      heartbeat_fresh?: true,
+      capacity_observation_fresh?: true,
+      observation_time: ~U[2026-07-20 00:00:00.000000Z],
+      runtime_concurrency_limit: {:valid, 2},
+      aggregate_active_count: {:valid, 0},
+      controller_dispatch_ceiling: {:valid, ceiling},
+      controller_accounted_allocation: 0,
+      placement_capacity: :not_applicable,
+      temporary_legacy_claim_count: 0,
+      pool_eligible?: true,
+      format_eligible?: true,
+      memory_eligible?: true,
+      breaker_eligible?: true
+    }
+  end
+end

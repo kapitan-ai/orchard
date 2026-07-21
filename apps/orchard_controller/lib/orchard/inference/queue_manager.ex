@@ -16,15 +16,100 @@ defmodule Orchard.Inference.QueueManager do
   loaded-placement and cold/no-placement slots from being double-counted until
   node assignment, accepted runtime events, release, or later observations
   reconcile them.
+
+  Lane capacity and source reservations are scheduling hints only. Every
+  dispatch on a Node still passes through this module's aggregate
+  allocation-authority functions, so all placements and lanes on one Node share
+  a single bound owned by `Orchard.DispatchCapacity.AllocationAuthority`.
   """
 
   use GenServer
-
-  import Ecto.Query
+  use Orchard.DispatchCapacity.Consumer, wiring: :aggregate_allocation_authority
 
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{Request, RequestServer}
+
+  @doc "Acquires one live Node capacity claim through the shared authority."
+  @spec acquire_dispatch_capacity(
+          Ecto.UUID.t(),
+          String.t(),
+          Evaluator.Input.t(),
+          keyword()
+        ) :: AllocationAuthority.acquire_result()
+  def acquire_dispatch_capacity(node_id, request_id, input, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+
+    AllocationAuthority.acquire(
+      authority,
+      node_id,
+      request_id,
+      input
+    )
+  end
+
+  @doc "Releases one live Node capacity claim idempotently."
+  @spec release_dispatch_capacity(
+          AllocationAuthority.Claim.t(),
+          keyword()
+        ) :: :ok
+  def release_dispatch_capacity(claim, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    AllocationAuthority.release(authority, claim)
+  end
+
+  @doc "Revalidates a recognized claim without counting it twice."
+  @spec revalidate_dispatch_capacity(
+          AllocationAuthority.Claim.t(),
+          Evaluator.Input.t(),
+          keyword()
+        ) ::
+          {:ok, Evaluator.Result.t()}
+          | {:error, :dispatch_capacity_revalidation_failed, Evaluator.Result.t()}
+  def revalidate_dispatch_capacity(claim, input, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    AllocationAuthority.revalidate(authority, claim, input)
+  end
+
+  @doc """
+  Acquires one Node's acceptance gate.
+
+  Pass `:gate_timeout_ms` to bound the wait. Dispatch holds the gate until the
+  Node accepts, so callers on the dispatch path must bound it and surface
+  `:dispatch_capacity_acceptance_gate_busy` rather than queue unboundedly.
+  """
+  @spec acquire_acceptance_gate(Ecto.UUID.t(), keyword()) ::
+          {:ok, AllocationAuthority.AcceptanceLease.t()}
+          | {:error, AllocationAuthority.acceptance_gate_error()}
+  def acquire_acceptance_gate(node_id, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+
+    case Keyword.fetch(opts, :gate_timeout_ms) do
+      {:ok, timeout_ms} when is_integer(timeout_ms) and timeout_ms >= 0 ->
+        AllocationAuthority.try_acquire_acceptance_gate(
+          authority,
+          node_id,
+          timeout_ms,
+          Keyword.get(opts, :abort_monitor_ref),
+          Keyword.get(opts, :abort_pid)
+        )
+
+      _unbounded ->
+        AllocationAuthority.acquire_acceptance_gate(authority, node_id)
+    end
+  end
+
+  @doc "Releases one Node acceptance-gate lease idempotently."
+  @spec release_acceptance_gate(
+          AllocationAuthority.AcceptanceLease.t(),
+          keyword()
+        ) :: :ok
+  def release_acceptance_gate(lease, opts \\ []) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    AllocationAuthority.release_acceptance_gate(authority, lease)
+  end
+
+  import Ecto.Query
 
   require Logger
 

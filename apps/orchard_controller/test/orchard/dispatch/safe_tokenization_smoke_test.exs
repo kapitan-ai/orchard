@@ -10,6 +10,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
 
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.DispatchCapacityFixtures
 
   def connect(target) do
     key = target_key(target)
@@ -22,8 +23,12 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
     send(capture_pid(), {:status_target, key})
 
     case Process.get({:safe_smoke_status, key}) do
-      nil -> {:error, :unavailable}
-      response -> {:ok, response}
+      nil ->
+        {:error, :unavailable}
+
+      response ->
+        DispatchCapacityFixtures.record_authenticated_probe_evidence(response)
+        {:ok, response}
     end
   end
 
@@ -40,6 +45,24 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
     response =
       Process.get({:safe_smoke_status, key}) ||
         raise "missing safe smoke status for #{inspect(key)}"
+
+    model = %{model_id: request.model_ref.model_id, version: request.model_ref.version}
+
+    placement = %{
+      model_ref: model,
+      placement_state: :loaded,
+      active_request_count: 0,
+      max_concurrency: 4
+    }
+
+    Process.put(
+      {:safe_smoke_status, key},
+      %{
+        response
+        | loaded_models: [model],
+          runtime_model_placements: [placement]
+      }
+    )
 
     send(capture_pid(), {:captured_ensure_model_loaded_target, key, request})
 
@@ -122,11 +145,13 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
   }
 
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.DispatchCapacity.Policy
   alias Orchard.ModelManifest
   alias Orchard.ModelManifest.{ChatTemplate, RuntimeRequirements, SafeTokenization, Tokenizer}
-  alias Orchard.Nodes.Node
+  alias Orchard.Nodes.{AdmissionDecision, Node}
   alias Orchard.RuntimeEndpoint.Operation
   alias Orchard.Scheduler.MultiNode
+  alias Orchard.TestSupport.DispatchCapacityFixtures
   alias Orchard.Tokenizer.Client
 
   @moduletag :safe_tokenization_smoke
@@ -355,14 +380,13 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
   end
 
   defp single_node_schedule(request_id, {host, port}) do
-    %{
+    DispatchCapacityFixtures.authorize_unmanaged_schedule(%{
       strategy: :single_node,
       request_id: request_id,
       runtime_client_target: [host: host, port: port],
       request_timeout_ms: 5_000,
-      model_load_timeout_ms: 5_000,
-      node_id: "00000000-0000-0000-0000-000000000099"
-    }
+      model_load_timeout_ms: 5_000
+    })
   end
 
   defp status_response(node_id, {host, port}, opts) do
@@ -377,6 +401,9 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
         worker_backend: "mlx"
       },
       active_request_count: 0,
+      max_concurrency: 4,
+      loaded_models: [],
+      runtime_model_placements: [],
       supports_prompt_token_ids: Keyword.fetch!(opts, :supports_prompt_token_ids)
     }
   end
@@ -400,9 +427,39 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
         overrides
       )
 
-    %Node{}
-    |> Node.changeset(attrs)
+    now = DateTime.utc_now()
+
+    node =
+      %Node{}
+      |> Node.changeset(attrs)
+      |> Repo.insert!()
+
+    decision =
+      %AdmissionDecision{}
+      |> AdmissionDecision.changeset(%{
+        node_id: node.id,
+        decision: :admitted,
+        actor_type: "system",
+        actor_id: "safe-tokenization-smoke",
+        observed_identity: %{},
+        metadata: %{},
+        decided_at: now
+      })
+      |> Repo.insert!()
+
+    %Policy{}
+    |> Policy.approved_explicit_changeset(%{
+      node_id: node.id,
+      admission_decision_id: decision.id,
+      controller_dispatch_ceiling: 4,
+      approved_by_actor_type: "system",
+      approved_by_actor_id: "safe-tokenization-smoke",
+      approved_at: now,
+      approval_reason: "safe tokenization capacity fixture"
+    })
     |> Repo.insert!()
+
+    node
   end
 
   defp stub_status({host, port} = key, %StatusResponse{} = response) do

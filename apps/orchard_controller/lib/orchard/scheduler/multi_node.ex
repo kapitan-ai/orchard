@@ -28,9 +28,14 @@ defmodule Orchard.Scheduler.MultiNode do
   metadata also fail closed as `:cluster_busy` instead of falling back to a
   different identity.
 
-  Successful schedules include `:queue_lane_capacity`, derived from loaded
-  candidates with live node and placement room plus eligible cold candidates
-  with remaining aggregate node capacity.
+  Every candidate is first annotated with the shared dispatch-capacity
+  evaluation and excluded unless that evaluation is eligible with positive
+  available slots. A candidate whose Controller-owned capacity facts cannot be
+  built is rejected with `dispatch_capacity_facts_unavailable` rather than
+  falling back to probe telemetry.
+
+  Successful schedules include `:queue_lane_capacity`, the sum of the shared
+  evaluation's available slots across the remaining eligible candidates.
   gRPC compatibility schedules include legacy `:runtime_client_target`;
   BEAM schedules carry only `:runtime_endpoint_target`.
 
@@ -41,7 +46,10 @@ defmodule Orchard.Scheduler.MultiNode do
   candidate or change the scheduling outcome.
   """
 
+  use Orchard.DispatchCapacity.Consumer, wiring: :multi_node_eligibility_and_lane
+
   alias Orchard.CanonicalRequest
+  alias Orchard.DispatchCapacity.Authorization
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes
@@ -135,8 +143,9 @@ defmodule Orchard.Scheduler.MultiNode do
       probe_results
       |> Enum.filter(&Map.has_key?(schedulable_map, &1.node_id))
       |> Enum.map(&Map.put(&1, :node, schedulable_map[&1.node_id]))
+      |> Enum.map(&annotate_dispatch_capacity(&1, opts, observed_at))
 
-    available_candidates = Enum.reject(candidates, &candidate_full?/1)
+    available_candidates = Enum.filter(candidates, &dispatch_capacity_eligible?/1)
 
     case selection_state(
            candidates,
@@ -206,9 +215,16 @@ defmodule Orchard.Scheduler.MultiNode do
             node_id: selected.node_id,
             candidate_count: length(ranked),
             queue_lane_capacity: queue_lane_capacity(available_candidates),
-            selected_tier: selected_tier
+            selected_tier: selected_tier,
+            dispatch_capacity_input: selected.dispatch_capacity_input,
+            dispatch_capacity_acquisition_input_provider:
+              dispatch_capacity_input_provider(selected, request, :acquisition, opts),
+            dispatch_capacity_input_provider:
+              dispatch_capacity_input_provider(selected, request, :revalidation, opts),
+            dispatch_capacity_evaluation: selected.dispatch_capacity_evaluation
           }
           |> maybe_put_runtime_client_target(selected.target)
+          |> Consumer.put_authority(opts)
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
           |> maybe_put_prefix_cache_fingerprint_match(
             selected,
@@ -380,13 +396,35 @@ defmodule Orchard.Scheduler.MultiNode do
   defp skipped_candidates(_candidates, _selected_tier), do: []
 
   defp rejection_reason_codes(candidate) do
-    [
-      rejection_reason(candidate, &runtime_endpoint_unavailable?/1, "runtime_not_ready"),
-      rejection_reason(candidate, &node_concurrency_full?/1, "node_concurrency_exhausted"),
-      rejection_reason(candidate, &placement_capacity_full?/1, "placement_concurrency_exhausted"),
-      rejection_reason(candidate, &active_without_known_capacity?/1, "unknown_capacity")
-    ]
-    |> Enum.reject(&is_nil/1)
+    if dispatch_capacity_eligible?(candidate) do
+      []
+    else
+      ineligible_reason_codes(candidate)
+    end
+  end
+
+  defp ineligible_reason_codes(candidate) do
+    capacity_reason_codes =
+      case Map.get(candidate, :dispatch_capacity_evaluation) do
+        %{eligible?: true} -> []
+        %{reason_codes: reason_codes} -> Enum.map(reason_codes, &Atom.to_string/1)
+        _missing -> ["dispatch_capacity_facts_unavailable"]
+      end
+
+    legacy_reason_codes =
+      [
+        rejection_reason(candidate, &runtime_endpoint_unavailable?/1, "runtime_not_ready"),
+        rejection_reason(candidate, &node_concurrency_full?/1, "node_concurrency_exhausted"),
+        rejection_reason(
+          candidate,
+          &placement_capacity_full?/1,
+          "placement_concurrency_exhausted"
+        ),
+        rejection_reason(candidate, &active_without_known_capacity?/1, "unknown_capacity")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    Enum.uniq(capacity_reason_codes ++ legacy_reason_codes)
   end
 
   defp rejection_reason(candidate, predicate, code) do
@@ -449,6 +487,7 @@ defmodule Orchard.Scheduler.MultiNode do
          %{
            node_id: node_id,
            target: schedule_target(target, node_id),
+           observation: observation,
            availability: observation.availability,
            loaded_model?: loaded_model?,
            active_request_count: observation.aggregate_active_request_count,
@@ -480,11 +519,124 @@ defmodule Orchard.Scheduler.MultiNode do
       :ok
   end
 
-  defp candidate_full?(candidate) do
-    runtime_endpoint_unavailable?(candidate) or node_concurrency_full?(candidate) or
-      placement_capacity_full?(candidate) or
-      active_without_known_capacity?(candidate)
+  defp annotate_dispatch_capacity(candidate, opts, observed_at) do
+    placement_capacity =
+      Map.get(candidate, :model_placement_capacity, placement_default(candidate, :acquisition))
+
+    case dispatch_capacity_input(candidate, placement_capacity, opts, observed_at) do
+      {:ok, input} ->
+        authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
+
+        candidate
+        |> Map.put(:dispatch_capacity_input, input)
+        |> Map.put(
+          :dispatch_capacity_evaluation,
+          safe_evaluate_dispatch_capacity(authority, candidate.node_id, input)
+        )
+
+      {:error, _reason} ->
+        candidate
+        |> Map.put(:dispatch_capacity_input, nil)
+        |> Map.put(:dispatch_capacity_evaluation, nil)
+    end
   end
+
+  defp safe_evaluate_dispatch_capacity(authority, node_id, input) do
+    evaluate_dispatch_capacity(authority, node_id, input)
+  catch
+    :exit, reason ->
+      Logger.warning("Dispatch-capacity authority unavailable: #{inspect(reason)}")
+      nil
+  end
+
+  defp dispatch_capacity_input(candidate, placement_capacity, opts, observed_at) do
+    case Keyword.get(opts, :dispatch_capacity_input_provider) do
+      provider when is_function(provider, 3) ->
+        Consumer.normalize_input(
+          provider.(candidate.node, candidate.observation, placement_capacity)
+        )
+
+      provider when is_function(provider, 0) ->
+        Consumer.normalize_input(provider.())
+
+      nil ->
+        observation_capacity_input(candidate, placement_capacity, observed_at)
+    end
+  end
+
+  defp observation_capacity_input(
+         %{node: %Nodes.Node{} = node} = candidate,
+         placement_capacity,
+         observed_at
+       ) do
+    Authorization.input_for_observation(node, candidate.observation,
+      minimum_evidence_observed_at: observed_at,
+      placement_capacity: placement_capacity
+    )
+  end
+
+  defp observation_capacity_input(candidate, placement_capacity, observed_at) do
+    Authorization.input_for_node_observation(candidate.node_id, candidate.observation,
+      minimum_evidence_observed_at: observed_at,
+      placement_capacity: placement_capacity
+    )
+  end
+
+  defp dispatch_capacity_eligible?(%{dispatch_capacity_evaluation: evaluation}),
+    do: Consumer.authorized?(evaluation)
+
+  defp dispatch_capacity_eligible?(_candidate), do: false
+
+  defp dispatch_capacity_input_provider(candidate, request, phase, opts) do
+    placement_capacity =
+      Map.get(candidate, :model_placement_capacity, placement_default(candidate, phase))
+
+    if Keyword.has_key?(opts, :dispatch_capacity_input_provider) do
+      configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts)
+    else
+      fresh_dispatch_capacity_input_provider(candidate, request, phase, opts)
+    end
+  end
+
+  defp configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts) do
+    fn ->
+      case dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()) do
+        {:ok, input} -> input
+        {:error, _reason} -> nil
+      end
+    end
+  end
+
+  defp fresh_dispatch_capacity_input_provider(candidate, request, phase, opts) do
+    client = Keyword.get(opts, :status_client, Inference.runtime_endpoint_client())
+    timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
+
+    fn -> fresh_dispatch_capacity_input(candidate, request, phase, opts, client, timeout) end
+  end
+
+  defp fresh_dispatch_capacity_input(candidate, request, phase, opts, client, timeout) do
+    observed_at = DateTime.utc_now()
+
+    with {:candidate, refreshed} <-
+           probe_target(candidate.target, client, timeout, observed_at, request),
+         true <- refreshed.node_id == candidate.node_id,
+         refreshed_placement <-
+           Map.get(
+             refreshed,
+             :model_placement_capacity,
+             placement_default(refreshed, phase)
+           ),
+         {:ok, input} <-
+           dispatch_capacity_input(refreshed, refreshed_placement, opts, observed_at) do
+      input
+    else
+      _unavailable -> nil
+    end
+  end
+
+  defp placement_default(_candidate, :revalidation), do: :unknown
+  defp placement_default(%{loaded_model?: true}, :acquisition), do: :unknown
+  defp placement_default(_candidate, :acquisition), do: :not_applicable
 
   defp runtime_endpoint_unavailable?(%{availability: availability}),
     do: availability not in [:available, :degraded]
@@ -528,74 +680,10 @@ defmodule Orchard.Scheduler.MultiNode do
   defp active_without_known_capacity?(_candidate), do: false
 
   defp queue_lane_capacity(candidates) do
-    loaded_capacity =
-      candidates
-      |> Enum.filter(& &1.loaded_model?)
-      |> Enum.map(&effective_model_capacity_for_queue/1)
-      |> Enum.sum()
-
-    cold_capacity =
-      candidates
-      |> Enum.reject(& &1.loaded_model?)
-      |> Enum.count(&node_has_available_capacity?/1)
-
-    case loaded_capacity + cold_capacity do
-      capacity when capacity > 0 -> capacity
-      _capacity -> 1
-    end
+    Enum.reduce(candidates, 0, fn candidate, total ->
+      total + candidate.dispatch_capacity_evaluation.available_slots
+    end)
   end
-
-  defp effective_model_capacity_for_queue(%{
-         active_request_count: node_active,
-         max_concurrency: node_max,
-         model_placement_capacity: %PlacementCapacity{
-           status: :known,
-           active_request_count: model_active,
-           max_concurrency: placement_max
-         }
-       })
-       when is_integer(node_active) and is_integer(node_max) and is_integer(model_active) and
-              is_integer(placement_max) do
-    remaining_node_capacity = max(node_max - node_active, 0)
-    min(placement_max, max(model_active, 0) + remaining_node_capacity)
-  end
-
-  defp effective_model_capacity_for_queue(%{
-         model_placement_capacity: %PlacementCapacity{}
-       }),
-       do: 1
-
-  defp effective_model_capacity_for_queue(%{
-         active_request_count: node_active,
-         max_concurrency: node_max,
-         model_placement_capacity: %{
-           active_request_count: model_active,
-           max_concurrency: placement_max
-         }
-       })
-       when is_integer(node_active) and is_integer(node_max) and is_integer(model_active) and
-              is_integer(placement_max) do
-    remaining_node_capacity = max(node_max - node_active, 0)
-    min(placement_max, max(model_active, 0) + remaining_node_capacity)
-  end
-
-  defp effective_model_capacity_for_queue(%{
-         model_placement_capacity: %{max_concurrency: placement_max}
-       })
-       when is_integer(placement_max) and placement_max > 0,
-       do: placement_max
-
-  defp effective_model_capacity_for_queue(%{loaded_model?: true, active_request_count: active})
-       when is_integer(active) and active > 0,
-       do: 0
-
-  defp effective_model_capacity_for_queue(_candidate), do: 1
-
-  defp node_has_available_capacity?(%{active_request_count: active, max_concurrency: max})
-       when is_integer(active) and is_integer(max) and max > 0,
-       do: active < max
-
-  defp node_has_available_capacity?(_candidate), do: true
 
   defp node_max_concurrency(%Observation{aggregate_max_concurrency: value}) do
     case value do
@@ -1103,8 +1191,8 @@ defmodule Orchard.Scheduler.MultiNode do
     SingleNode.default_schedule(request, dispatch_target(single_target), opts)
   end
 
-  defp fallback_schedule(request, [%Target{} = single_target], _opts) do
-    runtime_endpoint_fallback_schedule(request, single_target)
+  defp fallback_schedule(request, [%Target{} = single_target], opts) do
+    SingleNode.default_schedule(request, single_target, opts)
   end
 
   defp fallback_schedule(request, [single_target], opts) do
@@ -1114,24 +1202,12 @@ defmodule Orchard.Scheduler.MultiNode do
   defp fallback_schedule(request, [%Target{} | _] = targets, opts) do
     case Enum.find(targets, &runtime_endpoint_fallback_target?/1) do
       nil -> SingleNode.default_schedule(request, SingleNode.target(), opts)
-      %Target{} = target -> runtime_endpoint_fallback_schedule(request, target)
+      %Target{} = target -> SingleNode.default_schedule(request, target, opts)
     end
   end
 
   defp fallback_schedule(request, _targets, opts) do
     SingleNode.default_schedule(request, SingleNode.target(), opts)
-  end
-
-  defp runtime_endpoint_fallback_schedule(request, target) do
-    {:ok,
-     %{
-       strategy: :single_node,
-       request_id: request.public_id,
-       runtime_endpoint_target: target,
-       request_timeout_ms: Inference.request_timeout_ms(),
-       model_load_timeout_ms: Inference.model_load_timeout_ms(),
-       node_id: runtime_endpoint_node_id(target)
-     }}
   end
 
   defp runtime_endpoint_fallback_target?(%Target{transport: :grpc_compat}), do: false
@@ -1158,13 +1234,6 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp dispatch_target(%Target{transport: :grpc_compat, address: address}), do: address
   defp dispatch_target(target), do: target
-
-  defp runtime_endpoint_node_id(%Target{} = target) do
-    case Nodes.lookup_by_target(target) do
-      %{id: id} -> id
-      nil -> nil
-    end
-  end
 
   defp observation_target(%Target{transport: :grpc_compat, address: address}), do: address
   defp observation_target(target), do: target

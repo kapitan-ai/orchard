@@ -815,6 +815,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp strip_scheduler_runtime_metadata(schedule) do
     schedule
     |> strip_runtime_endpoint_metadata()
+    |> strip_dispatch_capacity_metadata()
     |> strip_prefix_cache_metadata()
     |> strip_memory_admission_metadata()
   end
@@ -826,6 +827,32 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp runtime_endpoint_metadata_key?(:runtime_endpoint_target), do: true
   defp runtime_endpoint_metadata_key?("runtime_endpoint_target"), do: true
   defp runtime_endpoint_metadata_key?(_key), do: false
+
+  defp strip_dispatch_capacity_metadata(schedule) do
+    Map.reject(schedule, fn {key, _value} -> dispatch_capacity_metadata_key?(key) end)
+  end
+
+  defp dispatch_capacity_metadata_key?(key)
+       when key in [
+              :dispatch_capacity_input,
+              :dispatch_capacity_evaluation,
+              :dispatch_capacity_acquisition_input_provider,
+              :dispatch_capacity_input_provider,
+              :dispatch_capacity_authority
+            ],
+       do: true
+
+  defp dispatch_capacity_metadata_key?(key) when is_binary(key) do
+    key in [
+      "dispatch_capacity_input",
+      "dispatch_capacity_evaluation",
+      "dispatch_capacity_acquisition_input_provider",
+      "dispatch_capacity_input_provider",
+      "dispatch_capacity_authority"
+    ]
+  end
+
+  defp dispatch_capacity_metadata_key?(_key), do: false
 
   defp strip_prefix_cache_metadata(schedule) do
     Map.reject(schedule, fn {key, _value} -> prefix_cache_metadata_key?(key) end)

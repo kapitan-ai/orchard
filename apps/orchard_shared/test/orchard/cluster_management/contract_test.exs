@@ -180,6 +180,52 @@ defmodule Orchard.ClusterManagement.ContractTest do
              })
   end
 
+  test "scheduler explanation accepts shared dispatch-capacity rejection codes" do
+    assert {:ok, explanation} =
+             SchedulerExplanation.new(%{
+               rejected_candidates: [
+                 %{
+                   node_id: "node-1",
+                   reason_codes: [
+                     "runtime_capacity_observation_stale",
+                     "dispatch_capacity_pre_cutover_legacy"
+                   ]
+                 }
+               ]
+             })
+
+    assert explanation.rejected_candidates == [
+             %{
+               node_id: "node-1",
+               target_ref: nil,
+               eligible: false,
+               tier: nil,
+               score: nil,
+               components: %{},
+               diagnostics: %{},
+               reason_codes: [
+                 "runtime_capacity_observation_stale",
+                 "dispatch_capacity_pre_cutover_legacy"
+               ]
+             }
+           ]
+  end
+
+  test "scheduler explanation accepts an unavailable dispatch-capacity fact rejection" do
+    assert {:ok, explanation} =
+             SchedulerExplanation.new(%{
+               rejected_candidates: [
+                 %{
+                   node_id: "node-1",
+                   reason_codes: ["dispatch_capacity_facts_unavailable"]
+                 }
+               ]
+             })
+
+    assert [%{reason_codes: ["dispatch_capacity_facts_unavailable"]}] =
+             explanation.rejected_candidates
+  end
+
   test "scheduler explanation keeps skipped candidates out of rejection vocabulary" do
     assert {:error, {:unknown_code, :scheduler_skip, "node_not_active"}} =
              SchedulerExplanation.new(%{

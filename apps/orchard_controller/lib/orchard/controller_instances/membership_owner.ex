@@ -41,11 +41,10 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
   require Logger
 
   alias Orchard.ControllerInstances
+  alias Orchard.DispatchCapacity.Readiness
 
   @heartbeat_interval_ms 10_000
   @failure_log_interval_ms 300_000
-  @dispatch_capacity_contract_version 1
-  @dispatch_capacity_consumers_ready false
 
   # SQLSTATE class 08 is connection exception. 57P01/57P02/57P03 are admin
   # shutdown, crash shutdown, and cannot-connect-now; 53300 is too-many-connections.
@@ -275,8 +274,8 @@ defmodule Orchard.ControllerInstances.MembershipOwner do
     publisher(opts).(opts, %{
       last_seen_at: observed_at,
       software_version: software_version(),
-      dispatch_capacity_contract_version: @dispatch_capacity_contract_version,
-      dispatch_capacity_consumers_ready: @dispatch_capacity_consumers_ready,
+      dispatch_capacity_contract_version: Readiness.contract_version(),
+      dispatch_capacity_consumers_ready: true,
       dispatch_capacity_capability_observed_at: observed_at
     })
   end

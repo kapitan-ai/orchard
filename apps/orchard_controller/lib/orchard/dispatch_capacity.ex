@@ -2,17 +2,20 @@ defmodule Orchard.DispatchCapacity do
   @moduledoc """
   Domain boundary for durable dispatch-capacity authority, policy, and evidence.
 
-  The reads are open to any caller; the three writing seams are deliberately
-  narrow. `lock_authority/0` and `approve_admission_policy/1` exist only for the
-  Node Admission transaction, and `record_capacity_evidence/2` persists
-  Node-owned runtime evidence that never becomes policy. This foundation exposes
-  no transition to `enforcing`, for either the durable phase or a policy.
+  The reads are open to any caller; the writing seams are deliberately narrow.
+  `lock_authority/0` and `approve_admission_policy/1` exist only for the Node
+  Admission transaction, `with_policy_mutation_gate/3` serializes a policy write
+  against the dispatch handoff on the same Node, and `record_capacity_evidence/2`
+  persists Node-owned runtime evidence that never becomes policy. This module
+  exposes no transition to `enforcing`, for either the durable phase or a policy.
   """
 
-  alias Orchard.DispatchCapacity.{Authority, CapacityEvidence, Policy}
+  alias Orchard.DispatchCapacity.{AllocationAuthority, Authority, CapacityEvidence, Policy}
   alias Orchard.Repo
 
   import Ecto.Query, only: [from: 2]
+
+  @policy_mutation_gate_timeout_ms 5_000
 
   @doc """
   Returns the singleton durable authority row, or `nil` if persistence is corrupt.
@@ -62,6 +65,35 @@ defmodule Orchard.DispatchCapacity do
     %Policy{}
     |> Policy.approved_explicit_changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc """
+  Runs a policy mutation while holding the target Node's acceptance gate.
+
+  Dispatch holds the same gate until the Node accepts, so acquisition is
+  bounded by `:gate_timeout_ms` and reported as
+  `{:error, :dispatch_capacity_acceptance_gate_busy}` instead of blocking the
+  caller for a whole request. An unavailable authority yields
+  `{:error, :dispatch_capacity_authority_unavailable}`.
+  """
+  @spec with_policy_mutation_gate(Ecto.UUID.t(), (-> result), keyword()) ::
+          result | {:error, AllocationAuthority.acceptance_gate_error()}
+        when result: term()
+  def with_policy_mutation_gate(node_id, fun, opts \\ []) when is_function(fun, 0) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    timeout_ms = Keyword.get(opts, :gate_timeout_ms, @policy_mutation_gate_timeout_ms)
+
+    case AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, timeout_ms) do
+      {:ok, lease} ->
+        try do
+          fun.()
+        after
+          AllocationAuthority.release_acceptance_gate(authority, lease)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @doc """

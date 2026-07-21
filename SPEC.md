@@ -242,9 +242,13 @@ Orchard.Application
 ├─ Orchard.API.Endpoint
 ├─ Orchard.RPC.ControllerServer
 ├─ Orchard.RPC.NodeClientPool
-├─ Orchard.RequestSupervisor
+├─ Orchard.DispatchCapacity.QuarantineStore
+├─ Orchard.Inference                                  # rest_for_one
+│  ├─ Orchard.Requests.Registry
+│  ├─ Orchard.DispatchCapacity.AllocationAuthority
+│  ├─ Orchard.Requests.Supervisor
+│  └─ Orchard.Inference.QueueManager
 ├─ Orchard.Scheduler.Supervisor
-│  ├─ Orchard.Scheduler.QueueManager
 │  ├─ Orchard.Scheduler.Dispatcher
 │  └─ Orchard.Scheduler.PlacementReconciler
 ├─ Orchard.NodeSupervisor
@@ -256,6 +260,9 @@ Orchard.Application
    ├─ Orchard.Leader.QuotaSweeper
    └─ Orchard.Leader.SupportBundleManager
 ```
+
+The inference subtree SHALL start `Orchard.DispatchCapacity.AllocationAuthority` ahead of the request supervisor and queue manager under a `rest_for_one` strategy, so losing the Controller allocation authority also restarts the processes whose dispatch claims it tracked instead of leaving orphaned claims behind.
+`Orchard.DispatchCapacity.QuarantineStore` SHALL be supervised by the Controller root ahead of that subtree so an allocation authority restart cannot resume dispatch from a clean quarantine set, as required by §4.6.2.
 
 ### 3.3 Controller leadership
 
@@ -1003,6 +1010,13 @@ If policy mutation holds the gate first, later revalidation SHALL observe the ne
 Enforcement cutover SHALL use the cluster transition barrier and every Node acceptance gate in stable order so no temporary legacy claim or pre-acceptance handoff can cross the phase change.
 These gates define one live Active Controller's F11 linearization boundary and are not a substitute for M7 leadership fencing or durable dispatch permits.
 
+A dispatch that cannot establish whether its runtime execution ended — a cancel drain that times out without a transport-proven clean disconnect and without a durably recorded `unhealthy` or `unreachable` Node — SHALL quarantine that Node in the Active Controller's local quarantine set.
+A transport disconnect counts as proof only when the Runtime Endpoint client affirmatively reports the runtime stream closed; a best-effort `:ok` from a transport that cannot observe closure SHALL be treated as unreconciled.
+Quarantine is keyed by admitted Node identity, so an evaluation without a Node identity, such as an unmanaged source-development or compatibility target, SHALL NOT be quarantined.
+Every later shared evaluation for a quarantined Node SHALL supply health `unreachable` rather than counting the unresolved execution as free capacity, and SHALL therefore fail closed with the existing `node_health_unhealthy` reason code.
+The quarantine set SHALL be supervised outside the inference subtree so restarting the allocation authority cannot resume dispatch from a clean quarantine set, and an unavailable quarantine set SHALL make every Node evaluate as unreachable rather than as free capacity.
+Within F11, quarantine SHALL NOT expire on a timer and SHALL NOT be released through an unauthenticated operator surface; recovery is a Controller restart after the operator confirms no orphaned execution remains.
+
 One shared transport-independent capacity evaluation SHALL produce the Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, explicit authority decision of `legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`, decision-specific available slots, eligibility, and stable reason codes.
 For a `production_managed` target, only `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom SHALL authorize dispatch.
 `fail_closed` SHALL NEVER authorize dispatch.
@@ -1051,9 +1065,11 @@ The migration SHALL NOT assign existing Nodes a ceiling of `1`, infer a ceiling 
 Operator diagnostics SHALL expose durable enforcement phase, policy state, normalized target management class, authority decision, Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, decision-specific available slots, eligibility, the relevant observation time, and stable reason codes.
 While the decision is `legacy_pre_cutover`, diagnostics SHALL additionally expose `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state as temporary non-authoritative migration evidence and SHALL keep Effective Dispatch Limit and Dispatch Headroom at `0`.
 Stable capacity reason codes SHALL include `node_health_degraded`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_not_yet_enforcing`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_pre_cutover_legacy`, `dispatch_capacity_phase_policy_mismatch`, `dispatch_capacity_cutover_quiescing`, `dispatch_capacity_cutover_occupancy_not_zero`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
+A consumer that cannot assemble the Controller-owned facts required for the shared evaluation from current authenticated evidence SHALL fail closed and expose the scheduler rejection reason code `dispatch_capacity_facts_unavailable` rather than falling back to telemetry or a permissive default.
+Serialized per-Node capacity policy mutation that cannot acquire the Node acceptance gate SHALL fail fast with `dispatch_capacity_acceptance_gate_busy` rather than block behind an in-flight dispatch.
 The term `Admitted Capacity` SHALL NOT be used for any of these concepts.
 
-Durable dispatch permits, leadership epochs and dispatch fencing, crash or handover reservation recovery, and compromised-node occupancy integrity are M7-aligned follow-ups outside F11.
+Durable dispatch permits, leadership epochs and dispatch fencing, crash or handover reservation recovery, durable quarantine survival across Controller restart, audited quarantine release after verified reconciliation, and compromised-node occupancy integrity are M7-aligned follow-ups outside F11.
 Malformed aggregate active-count handling, production probe-failure direct scheduling fallback, queue-source expiry and reservation provenance, and configured-base versus live-capacity provenance are separate follow-ups outside F11.
 
 ### 4.7 Pool model
@@ -2295,7 +2311,8 @@ Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and
 Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
 Rejected candidates SHALL include at least one stable rejection reason code.
 Skipped candidates SHALL be represented in `skipped_candidates` outside the rejected-candidate list and SHALL include at least one stable skip reason code.
-The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_degraded`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, `unknown_capacity`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_phase_policy_mismatch`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
+The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_degraded`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, `unknown_capacity`, `dispatch_capacity_facts_unavailable`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_phase_policy_mismatch`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
+The scheduler rejection vocabulary SHALL additionally accept every stable capacity reason code when a shared dispatch-capacity evaluation excludes a candidate.
 The initial scheduler skip vocabulary SHALL include `lower_tier_not_considered`, `not_scored_after_selection`, `not_applicable_to_request`, and `candidate_limit_reached`.
 Queue-waitable capacity outcomes SHALL preserve whether the wait reason is live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
 Scored candidates SHALL be listed in the scheduler's actual selection ranking order.
@@ -4447,6 +4464,7 @@ On timeout:
 * if queued: remove and mark `timed_out`
 * if running/streaming: send cancel to node
 * if node fails to cancel within grace period, force kill worker
+* if the cancel drain times out without a resolved execution outcome, the Active Controller SHALL quarantine that Node per §4.6.2 so its unresolved occupancy is never redispatched as free capacity
 * usage charges only for tokens already emitted
 
 Default timeout:

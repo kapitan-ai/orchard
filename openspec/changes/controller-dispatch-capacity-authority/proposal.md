@@ -34,13 +34,17 @@ It closes the matching §7.3.5 operator-diagnostics enumeration gap by exposing 
 It also reconciles the shared authority-decision vocabulary in §4.6.2 with the shipped evaluator by naming `unmanaged_source_development`, `unmanaged_compatibility`, and `fail_closed`, while stating that only `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom authorizes a `production_managed` target and that `fail_closed` never authorizes dispatch or proceeds to `ExecuteInference`.
 It introduces no unmanaged authorization or unmanaged dispatch mechanism: §5.4, §5.5, and the §5.9 dispatch sequence keep their existing production-managed authorization, eligibility, degraded-health, and lifecycle semantics, and the existing §4.6.2 legacy exception continues to govern valid explicitly classified unmanaged targets.
 The one further §5.9 change is ordering: trusted admitted production inventory and identity SHALL resolve before configured classification is applied, matching §4.6.2.
+It further states the fail-closed unresolved-execution Node quarantine in §4.6.2 and records its supervision placement in §3.2, so the behavior the enforcing tracer already ships is normative rather than implementation-only.
 It makes no further `SPEC.md` behavior change beyond these reconciliations.
-The active OpenSpec delta is covered by and traces to the current exact union `SPEC.md` §3.3, §4.1, §4.4, §4.5, §4.6.1, §4.6.2, §5.4, §5.5, §5.9, §7.3.1, §7.3.5, §7.4.1, §7.5, §7.5.3, §8, §8.2, §10.9, §11.9, and §13.2.
+The active OpenSpec delta is covered by and traces to the current exact union `SPEC.md` §3.2, §3.3, §4.1, §4.4, §4.5, §4.6.1, §4.6.2, §5.4, §5.5, §5.9, §7.3.1, §7.3.5, §7.4.1, §7.5, §7.5.3, §8, §8.2, §10.9, §11.9, and §13.2.
 `SPEC.md` remains the apex contract, and these OpenSpec deltas define the remaining implementation and acceptance intent beneath it.
 
 ## Delivery state
 
 PR #93 delivered the non-enforcing foundation only.
+The following slice delivered the first enforcing five-consumer vertical tracer: the Controller-owned allocation authority with serialized per-Node claims, the per-Node acceptance gate shared by policy mutation and the final dispatch handoff, shared-evaluation wiring for MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch revalidation, and contract-versioned all-five-consumers readiness published on the Controller membership heartbeat.
+That tracer does not advance the durable phase, so production-managed targets still authorize through `legacy_pre_cutover`.
+Operator policy mutation surfaces, Controller retirement, enforcement cutover, and legacy quiescence remain unimplemented, and every out-of-scope item below is unchanged.
 The remaining product-code implementation remains active in this parent change.
 
 ## Out of scope

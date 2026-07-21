@@ -49,21 +49,21 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     assert local.last_seen_at == observed_at
     assert local.software_version == to_string(Application.spec(:orchard_controller, :vsn))
     assert local.dispatch_capacity_contract_version == 1
-    assert local.dispatch_capacity_consumers_ready == false
+    assert local.dispatch_capacity_consumers_ready == true
     assert local.dispatch_capacity_capability_observed_at == observed_at
     assert unchanged.last_seen_at == nil
     assert unchanged.dispatch_capacity_capability_observed_at == nil
   end
 
-  test "SPEC.md §13.2 runtime configuration cannot promote foundation readiness", %{root: root} do
+  test "SPEC.md §13.2 runtime configuration cannot override code-derived readiness", %{root: root} do
     {opts, trust} = identity_opts(root)
-    Application.put_env(:orchard_controller, :dispatch_capacity_consumers_ready, true)
+    Application.put_env(:orchard_controller, :dispatch_capacity_consumers_ready, false)
 
     start_supervised!({MembershipOwner, opts})
     await_capability(trust.controller_id)
 
     assert Repo.get!(ControllerInstance, trust.controller_id).dispatch_capacity_consumers_ready ==
-             false
+             true
   end
 
   test "SPEC.md §8.3 incomplete capability write leaves membership freshness unchanged", %{
@@ -141,7 +141,22 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     refreshed = Repo.get!(ControllerInstance, trust.controller_id)
     assert refreshed.dispatch_capacity_capability_observed_at == next
     assert refreshed.dispatch_capacity_contract_version == 1
-    assert refreshed.dispatch_capacity_consumers_ready == false
+    assert refreshed.dispatch_capacity_consumers_ready == true
+  end
+
+  test "SPEC.md §8.3 heartbeat rejects a partial dispatch-capacity attrs map", %{root: root} do
+    {opts, _trust} = identity_opts(root)
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+
+    assert {:error, changeset} =
+             ControllerInstances.heartbeat_local(opts, %{
+               last_seen_at: observed_at,
+               software_version: "0.5.0-dev",
+               dispatch_capacity_consumers_ready: true,
+               dispatch_capacity_capability_observed_at: observed_at
+             })
+
+    assert errors_on(changeset).dispatch_capacity_contract_version == ["can't be blank"]
   end
 
   test "SPEC.md §8.3 caller cannot select another Controller identity", %{root: root} do
@@ -160,8 +175,25 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
              })
 
     assert local.id == trust.controller_id
-    assert local.dispatch_capacity_consumers_ready == false
+    assert local.dispatch_capacity_consumers_ready == true
     assert Repo.get!(ControllerInstance, other.id).last_seen_at == nil
+  end
+
+  test "SPEC.md §8.3 heartbeat binds readiness to the running contract version", %{root: root} do
+    {opts, _trust} = identity_opts(root)
+    observed_at = ~U[2026-07-16 01:02:03.000000Z]
+
+    assert {:ok, local} =
+             ControllerInstances.heartbeat_local(opts, %{
+               last_seen_at: observed_at,
+               software_version: "0.5.0-dev",
+               dispatch_capacity_contract_version: 99,
+               dispatch_capacity_consumers_ready: true,
+               dispatch_capacity_capability_observed_at: observed_at
+             })
+
+    assert local.dispatch_capacity_contract_version == 1
+    assert local.dispatch_capacity_consumers_ready == true
   end
 
   test "SPEC.md §8.3 Standby Controller publishes only its own membership", %{root: root} do
@@ -250,7 +282,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     published = Repo.get!(ControllerInstance, trust.controller_id)
 
     assert published.dispatch_capacity_capability_observed_at == observed_at
-    assert published.dispatch_capacity_consumers_ready == false
+    assert published.dispatch_capacity_consumers_ready == true
   end
 
   test "SPEC.md §8.3 a changed failure reason is logged without waiting for the interval", %{
@@ -357,7 +389,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
     published = Repo.get!(ControllerInstance, trust.controller_id)
 
     assert published.dispatch_capacity_capability_observed_at == observed_at
-    assert published.dispatch_capacity_consumers_ready == false
+    assert published.dispatch_capacity_consumers_ready == true
   end
 
   test "SPEC.md §8.3 the deferred first publication schedules the fixed heartbeat retry", %{
@@ -840,7 +872,7 @@ defmodule Orchard.ControllerInstances.MembershipOwnerTest do
 
   defp await_capability(instance_id, attempts) do
     case Repo.get(ControllerInstance, instance_id) do
-      %ControllerInstance{dispatch_capacity_consumers_ready: false} ->
+      %ControllerInstance{dispatch_capacity_consumers_ready: true} ->
         :ok
 
       _other ->

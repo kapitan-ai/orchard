@@ -123,6 +123,37 @@ defmodule Orchard.DispatchCapacity.DiagnosticsTest do
     assert log =~ "fell back to fail-closed facts"
   end
 
+  test "operator snapshot preserves the public string-keyed map input contract" do
+    node = %{
+      "id" => "550e8400-e29b-41d4-a716-446655440000",
+      "state" => :active,
+      "health" => :healthy,
+      "last_heartbeat_at" => @now
+    }
+
+    snapshot =
+      Diagnostics.snapshot(node,
+        authority: authority(),
+        policy: approved_policy(2),
+        evidence: evidence(),
+        management_classification: {:ok, :production_managed},
+        controller_accounted_allocation: 0,
+        placement_capacity: :not_applicable,
+        now: @now,
+        freshness_threshold_ms: 30_000
+      )
+
+    assert snapshot.evaluation.authority_decision == :legacy_pre_cutover
+    assert snapshot.evaluation.eligible?
+  end
+
+  test "SPEC.md section 7.3.5 keeps an admitted Node identity trusted without capacity evidence" do
+    snapshot = snapshot(evidence: nil)
+
+    refute :runtime_endpoint_identity_untrusted in snapshot.evaluation.reason_codes
+    assert :runtime_capacity_observation_stale in snapshot.evaluation.reason_codes
+  end
+
   defp snapshot(overrides) do
     node = Keyword.get(overrides, :node, node_fixture())
 

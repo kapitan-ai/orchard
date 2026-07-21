@@ -113,6 +113,9 @@ No named consumer SHALL re-derive the formulas, default missing production polic
 For a `production_managed` target, every consumer SHALL accept either `legacy_pre_cutover` with positive centrally calculated temporary slots and successful serialized temporary-claim acquisition or `f11_enforcing` with positive Dispatch Headroom.
 A valid explicitly classified unmanaged target SHALL remain outside this production allocation, temporary legacy-claim, and per-Node acceptance-gate contract under the existing `SPEC.md` §4.6.2 legacy exception.
 `fail_closed` SHALL NEVER authorize dispatch.
+A consumer that cannot assemble the Controller-owned facts required for that evaluation from current authenticated evidence SHALL reject the target with the stable scheduler rejection reason code `dispatch_capacity_facts_unavailable` rather than fall back to telemetry or a permissive default.
+Serialized per-Node policy mutation that cannot acquire the shared acceptance gate within its bound SHALL fail fast with `dispatch_capacity_acceptance_gate_busy` rather than block behind an in-flight dispatch.
+Dispatch that cannot acquire the shared acceptance gate within its own request-timeout bound SHALL likewise fail with `dispatch_capacity_acceptance_gate_busy` rather than queue unboundedly behind another in-flight dispatch to the same Node.
 Every existing routing, placement, breaker, liveness, loadability, and phase gate SHALL continue to apply under every decision.
 For a `production_managed` target, dispatch SHALL re-run the same decision after model loading and immediately before `ExecuteInference`, using held-claim revalidation under both production-managed decisions and retaining the per-Node acceptance gate through Node acceptance.
 This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
@@ -315,6 +318,7 @@ This requirement traces to `SPEC.md` §3.3, §8.2, and §13.2.
 Shared operator Node status SHALL expose the complete evaluator result together with its observation time.
 Under `pre_cutover`, diagnostics SHALL label the result counterfactual, keep canonical enforcing values at `0`, and expose temporary legacy available slots separately.
 Counterfactual diagnostics MUST NOT mutate scheduler, queue, placement, reservation, or dispatch authorization behavior.
+The counterfactual block's `consumers_ready` field describes the counterfactual evaluation itself and SHALL remain `false`; the authoritative all-five-consumers readiness declaration is the Controller capability evidence published on the membership heartbeat, and operators SHALL NOT read the diagnostics field as that declaration.
 The complete evaluator result SHALL include Runtime Concurrency Enforcement Limit, Controller Dispatch Ceiling, Effective Dispatch Limit, Controller-accounted Allocation, Dispatch Headroom, Placement Capacity, durable enforcement phase, policy state, normalized target management class, authority decision, decision-specific available slots, eligibility, and ordered stable reason codes.
 Under `legacy_pre_cutover`, diagnostics SHALL expose temporary `legacy_pre_cutover_available_slots`, live temporary legacy claim count, and cutover quiescing state while keeping the canonical F11 Effective Dispatch Limit and Dispatch Headroom at `0`.
 The stable reason vocabulary SHALL distinguish degraded health, missing policy, invalid policy, explicit zero, ceiling exhaustion, runtime-limit uncertainty or exhaustion, headroom exhaustion, placement exhaustion, revalidation failure, pre-cutover legacy mode, phase-policy mismatch, missing or invalid target management class, shadow mismatch, and unapproved policy.
@@ -514,3 +518,38 @@ This refines `SPEC.md` §4.6.2 and §5.4.
 - **THEN** the shared per-Node gate linearizes the operations
 - **AND** either Node acceptance completes before the mutation and the work drains naturally, or the mutation completes first and dispatch revalidates under the new policy
 - **AND** pre-acceptance work never executes under an obsolete authority decision
+
+### Requirement: Unresolved Execution Node Quarantine
+A dispatch that cannot establish whether its runtime execution ended SHALL quarantine that Node in the Active Controller's local quarantine set.
+An unresolved execution SHALL mean a cancel drain that times out without a transport-proven clean disconnect and without a durably recorded `unhealthy` or `unreachable` Node.
+A transport disconnect SHALL count as proof only when the Runtime Endpoint client affirmatively reports the runtime stream closed.
+Quarantine SHALL be keyed by admitted Node identity, and an evaluation without a Node identity SHALL NOT be quarantined.
+Every later shared evaluation for a quarantined Node SHALL supply health `unreachable` so the decision fails closed with the stable reason code `node_health_unhealthy` instead of counting the unresolved execution as free capacity.
+The quarantine set SHALL be supervised outside the inference subtree so restarting the allocation authority SHALL NOT resume dispatch from a clean quarantine set.
+An unavailable quarantine set SHALL make every Node evaluate as unreachable rather than as free capacity.
+Quarantine SHALL NOT expire on a timer and SHALL NOT be released through an unauthenticated operator surface within this change.
+Durable quarantine survival across Controller restart and audited release after verified reconciliation remain M7-aligned follow-ups.
+This refines `SPEC.md` §4.6.2.
+
+#### Scenario: Cancel drain times out without reconciliation
+- **WHEN** a cancelled request's drain times out
+- **AND** the transport cannot prove it disconnected cleanly
+- **AND** the Node is not durably recorded `unhealthy` or `unreachable`
+- **THEN** Orchard quarantines that Node
+- **AND** later capacity evaluation of that Node fails closed with `node_health_unhealthy`
+
+#### Scenario: Reconciled cancel drain does not quarantine
+- **WHEN** a cancelled request's drain ends with a transport-proven clean disconnect
+- **OR** the Node is durably recorded `unhealthy` or `unreachable`
+- **THEN** Orchard does not quarantine that Node
+- **AND** later capacity evaluation follows the normal shared decision
+
+#### Scenario: Allocation authority restart preserves quarantine
+- **WHEN** the allocation authority restarts after a Node was quarantined
+- **THEN** the quarantine set survives the restart
+- **AND** dispatch to that Node remains blocked
+
+#### Scenario: Quarantine set becomes unavailable
+- **WHEN** the quarantine set stops
+- **THEN** every Node evaluates as unreachable
+- **AND** Orchard authorizes no new dispatch until the Controller restarts

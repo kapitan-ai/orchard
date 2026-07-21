@@ -59,6 +59,7 @@ It never adopts live legacy work across the phase boundary and never derives dur
 The supervised Controller membership owner refreshes the complete capability tuple every `10000` ms, and the leader-only admin retirement surface supplies the audited recovery path for a stale non-Active, non-last Controller.
 
 One shared transport-independent evaluation supplies the capacity semantics to MultiNode, admitted SingleNode, Node queue-source refresh, QueueManager, and dispatch-time revalidation.
+A consumer that cannot assemble the Controller-owned facts for that evaluation from current authenticated evidence fails closed with the stable scheduler rejection reason code `dispatch_capacity_facts_unavailable` instead of falling back to telemetry or a permissive default.
 Transport selection does not create an exemption for an admitted production Node.
 Every normalized target carries Controller-owned `capacity_management_class`, admitted inventory always forces `production_managed`, and absent, invalid, or inferred classification fails closed.
 Only a valid explicitly classified unmanaged source-development or compatibility target may retain legacy capacity behavior.
@@ -67,6 +68,9 @@ The normative management surfaces are Operator API policy reads for cluster `ope
 API mutations require cluster `admin`, while local CLI admission uses the established Controller-runtime authority boundary; both require Action Preview, explicit confirmation when consequences require it, mutation-time revalidation, and atomic cluster-scoped audit persistence.
 Per-Node policy mutation and final dispatch revalidation share one Controller-local acceptance gate that remains held through Node acceptance or pre-acceptance failure.
 This makes either acceptance or the policy change happen first without an authority gap, while leaving distributed leadership fencing to M7.
+Both gate consumers are bounded rather than blocking: policy mutation and dispatch each fail with `dispatch_capacity_acceptance_gate_busy` when they cannot acquire the gate within their own bound, so neither waits behind an in-flight dispatch to the same Node.
+A dispatch that cannot establish whether its runtime execution ended quarantines that Node Controller-locally, so every later evaluation treats it as unreachable instead of counting an unresolved execution as free capacity; the quarantine does not expire and exposes no operator-release seam, which keeps release out of unauthenticated operator reach; today it survives an allocation authority restart and clears only with the Controller, and durable survival plus audited release after verified reconciliation land with durable permits and crash recovery in M7.
+`SPEC.md` §4.6.2 states this quarantine contract normatively, and §3.2 places the quarantine store at the Controller root ahead of the inference subtree.
 
 ## Rejected alternatives
 
@@ -85,6 +89,7 @@ Node Admission and operator policy changes become auditable capacity-authority w
 Diagnostics must show the separate runtime limit, Controller ceiling, effective limit, Controller allocation, headroom, Placement Capacity, policy state, management class, authority decision, decision-specific available slots, eligibility, and reason codes.
 Production capacity becomes fail-closed when policy, trust, health, freshness, or runtime evidence is missing.
 Source-development and compatibility exceptions require explicit unmanaged classification and cannot be inferred from transport.
+A target that an operator explicitly enabled as a static Controller-owned runtime endpoint, and that resolves to no admitted inventory, counts as that explicit compatibility configuration; nothing about its transport, address shape, or probe outcome contributes to the class.
 
 F11 provides durable Controller policy and a serialized Controller-local bound on new allocations by one live Active Controller.
 It does not provide a durable distributed dispatch permit, leader epoch, Node-verifiable token, crash-recoverable reservation ledger, or proof of actual Node occupancy.

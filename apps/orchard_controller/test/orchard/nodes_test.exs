@@ -33,6 +33,7 @@ defmodule Orchard.NodesTest do
   import ExUnit.CaptureLog
 
   alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance.AuditLog
   alias Orchard.Inference.QueueManager
@@ -98,7 +99,43 @@ defmodule Orchard.NodesTest do
       }
       |> Map.merge(overrides)
 
-    Repo.get(Node, attrs.id) || insert_node!(attrs)
+    node = Repo.get(Node, attrs.id) || insert_node!(attrs)
+    ensure_legacy_capacity_policy!(node)
+  end
+
+  defp ensure_legacy_capacity_policy!(%Node{} = node) do
+    case Repo.get(Policy, node.id) do
+      %Policy{} ->
+        node
+
+      nil ->
+        admitted_at = DateTime.utc_now()
+
+        decision =
+          %AdmissionDecision{}
+          |> AdmissionDecision.changeset(%{
+            node_id: node.id,
+            decision: :admitted,
+            actor_type: "system",
+            actor_id: "nodes-test-legacy-policy",
+            observed_identity: %{},
+            metadata: %{},
+            decided_at: admitted_at
+          })
+          |> Repo.insert!()
+
+        %Policy{
+          node_id: node.id,
+          admission_decision_id: decision.id,
+          policy_state: :shadow_legacy,
+          controller_dispatch_ceiling: nil,
+          legacy_admitted_at: admitted_at,
+          version: 1
+        }
+        |> Repo.insert!()
+
+        node
+    end
   end
 
   defp status_metadata(%Observation{metadata: metadata}), do: metadata
@@ -113,6 +150,96 @@ defmodule Orchard.NodesTest do
   end
 
   defp make_target(host, port), do: [host: host, port: port]
+
+  defp observe_status(target, status, observed_at, opts \\ []) do
+    opts = Keyword.put_new(opts, :dispatch_capacity_input, capacity_input(status, observed_at))
+    Nodes.observe_status(target, status, observed_at, opts)
+  end
+
+  defp capacity_input(status, observed_at) do
+    %Input{
+      authority_phase: :pre_cutover,
+      policy_presence: :present,
+      policy_state: :shadow_legacy,
+      management_classification: {:ok, :production_managed},
+      trusted_identity?: true,
+      lifecycle_state: capacity_node_state(status),
+      health: capacity_health(status),
+      heartbeat_fresh?: true,
+      capacity_observation_fresh?: true,
+      observation_time: observed_at,
+      runtime_concurrency_limit: capacity_runtime_limit(status),
+      aggregate_active_count: capacity_active_count(status),
+      controller_dispatch_ceiling: :missing,
+      controller_accounted_allocation: 0,
+      placement_capacity: :not_applicable,
+      temporary_legacy_claim_count: 0,
+      pool_eligible?: true,
+      format_eligible?: true,
+      memory_eligible?: true,
+      breaker_eligible?: true
+    }
+  end
+
+  defp capacity_node_state(status) do
+    with node_id when is_binary(node_id) <- capacity_node_id(status),
+         {:ok, node_id} <- Ecto.UUID.cast(node_id),
+         %Node{state: state} <- Repo.get(Node, node_id) do
+      state
+    else
+      _missing_or_invalid -> :active
+    end
+  end
+
+  defp capacity_node_id(%Observation{} = observation), do: Observation.node_id(observation)
+
+  defp capacity_node_id(%{} = status) do
+    metadata = Map.get(status, :node_metadata) || Map.get(status, "node_metadata") || %{}
+    Map.get(metadata, :node_id) || Map.get(metadata, "node_id")
+  end
+
+  defp capacity_runtime_limit(%Observation{aggregate_capacity_evidence: evidence}),
+    do: capacity_evidence(evidence, :runtime_concurrency_limit, &(&1 > 0))
+
+  defp capacity_runtime_limit(status),
+    do: capacity_evidence(status, :max_concurrency, &(&1 > 0))
+
+  defp capacity_active_count(%Observation{aggregate_capacity_evidence: evidence}),
+    do: capacity_evidence(evidence, :active_request_count, &(&1 >= 0))
+
+  defp capacity_active_count(status),
+    do: capacity_evidence(status, :active_request_count, &(&1 >= 0))
+
+  defp capacity_evidence(values, key, valid?) do
+    value = Map.get(values, key) || Map.get(values, Atom.to_string(key))
+
+    cond do
+      is_integer(value) and valid?.(value) -> {:valid, value}
+      is_nil(value) -> :missing
+      true -> :invalid
+    end
+  end
+
+  defp capacity_health(%Observation{availability: :degraded}), do: :degraded
+
+  defp capacity_health(%Observation{availability: availability})
+       when availability in [:unavailable, :unknown],
+       do: :unhealthy
+
+  defp capacity_health(%Observation{}), do: :healthy
+
+  defp capacity_health(status) do
+    health = Map.get(status, :runtime_health) || Map.get(status, "runtime_health") || %{}
+    ready = Map.get(health, :ready, Map.get(health, "ready"))
+    code = Map.get(health, :health_code, Map.get(health, "health_code", ""))
+    message = Map.get(health, :health_message, Map.get(health, "health_message", ""))
+
+    cond do
+      ready == false -> :unhealthy
+      code not in [nil, ""] or message not in [nil, ""] -> :degraded
+      true -> :healthy
+    end
+  end
 
   defp admission_opts do
     [actor_type: "service_account", actor_id: "admin-api-principal"]
@@ -521,7 +648,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, observed_at)
+      assert :noop = observe_status(target, status, observed_at)
       assert Repo.get(Node, node_id) == nil
 
       assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
@@ -550,8 +677,8 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, first_observed_at)
-      assert :noop = Nodes.observe_status(target, status, second_observed_at)
+      assert :noop = observe_status(target, status, first_observed_at)
+      assert :noop = observe_status(target, status, second_observed_at)
 
       assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
       assert candidate.observed_identity["claimed_node_id"] == node_id
@@ -595,9 +722,9 @@ defmodule Orchard.NodesTest do
           agent_version: "0.2.0"
         })
 
-      assert :noop = Nodes.observe_status(target, newer_status, newer_observed_at)
-      assert :noop = Nodes.observe_status(target, older_status, older_observed_at)
-      assert :noop = Nodes.observe_status(target, equal_timestamp_status, newer_observed_at)
+      assert :noop = observe_status(target, newer_status, newer_observed_at)
+      assert :noop = observe_status(target, older_status, older_observed_at)
+      assert :noop = observe_status(target, equal_timestamp_status, newer_observed_at)
 
       assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
       assert candidate.observed_identity["claimed_node_id"] == node_id
@@ -662,7 +789,7 @@ defmodule Orchard.NodesTest do
           hosted_tool_capability(multibyte, "2026-06-28", "mcp")
         ])
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
 
       agent_version = candidate.observed_identity["agent_version"]
@@ -697,7 +824,7 @@ defmodule Orchard.NodesTest do
         })
         |> Map.put(:hosted_tool_capabilities, tools)
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
 
       hosted_tools = candidate.inventory["capabilities"]["hosted_tools"]
@@ -735,7 +862,7 @@ defmodule Orchard.NodesTest do
         })
         |> Map.put(:hosted_tool_capabilities, tools)
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
 
       hosted_tools = candidate.inventory["capabilities"]["hosted_tools"]
@@ -760,7 +887,7 @@ defmodule Orchard.NodesTest do
         |> Enum.map(fn index -> {"evidence_#{index}", "value-#{index}"} end)
         |> Map.new()
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       [candidate] = Nodes.list_admission_candidates()
       assert {:ok, rejected} = Nodes.reject_admission(candidate.id, %{reason: "needs review"})
 
@@ -796,7 +923,7 @@ defmodule Orchard.NodesTest do
         |> Enum.map(fn index -> {"evidence_#{index}", "value-#{index}"} end)
         |> Map.new()
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       [candidate] = Nodes.list_admission_candidates()
       assert {:ok, rejected} = Nodes.reject_admission(candidate.id, %{reason: "needs review"})
 
@@ -818,7 +945,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       [candidate] = Nodes.list_admission_candidates()
 
       assert {:ok, result} =
@@ -879,7 +1006,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, observed_at)
+      assert :noop = observe_status(target, status, observed_at)
       [candidate] = Nodes.list_admission_candidates()
 
       assert {:ok, rejected} =
@@ -888,7 +1015,7 @@ defmodule Orchard.NodesTest do
       assert rejected.candidate.admission_category == :rejected
 
       later = DateTime.add(observed_at, 1, :second)
-      assert :noop = Nodes.observe_status(target, status, later)
+      assert :noop = observe_status(target, status, later)
 
       assert [refreshed] = Nodes.list_admission_candidates()
       assert refreshed.id == candidate.id
@@ -919,7 +1046,7 @@ defmodule Orchard.NodesTest do
           placements: []
         })
 
-      assert :noop = Nodes.observe_status(target, observation, observed_at)
+      assert :noop = observe_status(target, observation, observed_at)
       assert Repo.get(Node, node_id) == nil
 
       assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
@@ -1135,7 +1262,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       [candidate] = Nodes.list_admission_candidates()
 
       assert {:ok, result} =
@@ -1162,7 +1289,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       [candidate] = Nodes.list_admission_candidates()
 
       assert {:ok, result} =
@@ -1230,7 +1357,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       [candidate] = Nodes.list_admission_candidates()
 
       assert {:ok, result} =
@@ -1325,7 +1452,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert {:ok, observed} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, observed} = observe_status(target, status, DateTime.utc_now())
       assert observed.state == :admitted
       assert DispatchCapacity.get_capacity_evidence(node.id) == nil
     end
@@ -1349,7 +1476,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, now)
+      assert {:ok, node} = observe_status(target, status, now)
       assert node.id == node_id
       assert node.state == :active
       assert node.display_name == "test-node"
@@ -1375,7 +1502,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, now)
+      assert {:ok, node} = observe_status(target, status, now)
       assert node.advertise_addr == "0.0.0.0"
       assert node.rpc_port == 50_071
       assert node.connect_host == "100.90.207.78"
@@ -1387,7 +1514,7 @@ defmodule Orchard.NodesTest do
       status = make_status_response(%{listen_host: "10.0.0.2"}, nil)
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.health == :healthy
     end
 
@@ -1396,7 +1523,7 @@ defmodule Orchard.NodesTest do
       status = make_status_response(%{listen_host: "10.0.0.3"}, %{ready: false})
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.health == :unhealthy
     end
 
@@ -1410,7 +1537,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.health == :degraded
     end
 
@@ -1421,7 +1548,7 @@ defmodule Orchard.NodesTest do
         make_status_response(%{listen_host: "10.0.0.5", worker_backend: "mlx"})
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
 
       assert node.capabilities == %{
                "worker_backend" => "mlx",
@@ -1440,7 +1567,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:supports_prompt_token_ids, true)
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.capabilities["supports_prompt_token_ids"] == true
     end
 
@@ -1452,7 +1579,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:supports_prompt_token_ids, false)
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.capabilities["supports_prompt_token_ids"] == false
     end
 
@@ -1463,7 +1590,7 @@ defmodule Orchard.NodesTest do
         make_status_response(%{listen_host: "10.0.0.6", worker_backend: ""})
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.capabilities == %{"supports_prompt_token_ids" => false, "hosted_tools" => []}
       assert node.tool_readiness == %{}
     end
@@ -1497,7 +1624,7 @@ defmodule Orchard.NodesTest do
       }
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
 
       assert node.capabilities == %{
                "worker_backend" => "mlx",
@@ -1538,7 +1665,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.id == node_id
     end
 
@@ -1565,7 +1692,7 @@ defmodule Orchard.NodesTest do
       }
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
 
       assert node.capabilities["hosted_tools"] == [
                %{
@@ -1604,7 +1731,7 @@ defmodule Orchard.NodesTest do
       }
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
 
       assert node.capabilities["hosted_tools"] == [
                %{
@@ -1645,7 +1772,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, status)
-      assert {:ok, updated} = Nodes.observe_status(target, status, later)
+      assert {:ok, updated} = observe_status(target, status, later)
       assert updated.id == existing.id
       assert updated.display_name == "updated-name"
       assert updated.agent_version == "0.2.0"
@@ -1666,7 +1793,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, status)
-      assert {:ok, updated} = Nodes.observe_status(target, status, later)
+      assert {:ok, updated} = observe_status(target, status, later)
       assert updated.state == :cordoned
     end
 
@@ -1700,7 +1827,7 @@ defmodule Orchard.NodesTest do
       insert_node_from_status!(target, status)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.utc_now())
+               observe_status(target, status, DateTime.utc_now())
 
       assert {:ok, grant} = Task.await(awaiter, 2_000)
       assert grant.queue_result == :queued
@@ -1734,7 +1861,7 @@ defmodule Orchard.NodesTest do
       insert_node_from_status!(target_a, status_a)
 
       assert {:ok, node_a} =
-               Nodes.observe_status(target_a, status_a, DateTime.utc_now())
+               observe_status(target_a, status_a, DateTime.utc_now())
 
       assert_receive {:first_aggregate_result, {:ok, first_grant}}, 2_000
       assert :ok = QueueManager.mark_grant_node(first_grant, node_a.id)
@@ -1747,7 +1874,7 @@ defmodule Orchard.NodesTest do
       insert_node_from_status!(target_b, status_b)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target_b, status_b, DateTime.utc_now())
+               observe_status(target_b, status_b, DateTime.utc_now())
 
       assert_receive {:second_aggregate_result, {:ok, second_grant}}, 2_000
 
@@ -1786,7 +1913,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:max_concurrency, 2)
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, status, DateTime.utc_now())
 
       assert_receive {:first_node_cap_result, {:ok, first_grant}}, 2_000
       refute_receive {:second_node_cap_result, _result}, 100
@@ -1794,7 +1921,7 @@ defmodule Orchard.NodesTest do
       refreshed_status = Map.put(status, :active_request_count, 0)
 
       insert_node_from_status!(target, refreshed_status)
-      assert {:ok, _node} = Nodes.observe_status(target, refreshed_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, refreshed_status, DateTime.utc_now())
       assert_receive {:second_node_cap_result, {:ok, second_grant}}, 2_000
 
       assert first_grant.queue_result == :queued
@@ -1844,7 +1971,7 @@ defmodule Orchard.NodesTest do
         ])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+      assert {:ok, _node} = observe_status(target, status, observed_at)
 
       {granted_lane, first_grant} =
         receive do
@@ -1860,7 +1987,7 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(first_grant)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+               observe_status(target, status, DateTime.add(observed_at, 1, :second))
 
       second_grant =
         case granted_lane do
@@ -1911,7 +2038,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, status, DateTime.utc_now())
       refute Task.yield(awaiter, 100)
 
       assert :ok = QueueManager.release(active_grant)
@@ -1921,7 +2048,7 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(queued_grant)
     end
 
-    test "SPEC.md §5.5 observed source reservation leaves spare node capacity available" do
+    test "SPEC.md §5.5 aggregate headroom does not republish an observed source reservation" do
       QueueManager.reset()
 
       assert {:queued, first_ticket} =
@@ -1947,7 +2074,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:max_concurrency, 1)
 
       insert_node_from_status!(target, initial_status)
-      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert {:ok, _node} = observe_status(target, initial_status, observed_at)
       assert_receive {:first_observed_source_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
       assert :ok = QueueManager.mark_capacity_source_observed(first_grant)
@@ -1960,18 +2087,16 @@ defmodule Orchard.NodesTest do
         |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 1)
 
       assert {:ok, _node} =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  refreshed_status,
                  DateTime.add(observed_at, 1, :second)
                )
 
-      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
-      assert second_grant.queue_result == :queued
-      assert second_grant.queue_key == "observed-source-model@v1"
+      assert {:error, :queue_timeout, metadata} = Task.await(second_awaiter, 2_000)
+      assert metadata.queue_key == "observed-source-model@v1"
 
       assert :ok = QueueManager.release(first_grant)
-      assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
     end
 
@@ -2002,7 +2127,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, initial_status)
-      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert {:ok, _node} = observe_status(target, initial_status, observed_at)
       assert_receive {:first_unobserved_source_result, {:ok, first_grant}}, 2_000
       refute_receive {:second_unobserved_source_result, _result}, 50
 
@@ -2012,7 +2137,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:max_concurrency, 2)
 
       assert {:ok, _node} =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  refreshed_status,
                  DateTime.add(observed_at, 1, :second)
@@ -2065,7 +2190,7 @@ defmodule Orchard.NodesTest do
         ])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, status, DateTime.utc_now())
 
       assert_receive {:first_multislot_result, {:ok, first_grant}}, 2_000
       assert_receive {:second_multislot_result, {:ok, second_grant}}, 2_000
@@ -2115,7 +2240,7 @@ defmodule Orchard.NodesTest do
         ])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+      assert {:ok, _node} = observe_status(target, status, observed_at)
 
       assert_receive {:first_head_order_result, {:ok, first_grant}}, 2_000
       refute_receive {:second_head_order_result, _result}, 100
@@ -2123,7 +2248,7 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(first_grant)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+               observe_status(target, status, DateTime.add(observed_at, 1, :second))
 
       assert_receive {:second_head_order_result, {:ok, second_grant}}, 2_000
 
@@ -2151,13 +2276,13 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, full_status)
-      assert {:ok, _node} = Nodes.observe_status(target, full_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, full_status, DateTime.utc_now())
       refute Task.yield(awaiter, 100)
 
       available_status = Map.put(full_status, :active_request_count, 0)
 
       insert_node_from_status!(target, available_status)
-      assert {:ok, _node} = Nodes.observe_status(target, available_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, available_status, DateTime.utc_now())
       assert {:ok, grant} = Task.await(awaiter, 2_000)
       assert grant.queue_result == :queued
       assert grant.queue_key == "cold-wake-model@v1"
@@ -2191,7 +2316,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, status, DateTime.utc_now())
       assert_receive {:first_cold_one_slot_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 100)
 
@@ -2231,7 +2356,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+      assert {:ok, _node} = observe_status(target, status, observed_at)
 
       {granted_lane, first_grant} =
         receive do
@@ -2247,7 +2372,7 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(first_grant)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+               observe_status(target, status, DateTime.add(observed_at, 1, :second))
 
       second_grant =
         case granted_lane do
@@ -2291,7 +2416,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, status, DateTime.utc_now())
       assert_receive {:first_release_cold_lane_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
@@ -2304,7 +2429,7 @@ defmodule Orchard.NodesTest do
       send(first_awaiter, :stop)
     end
 
-    test "SPEC.md §5.5 empty queue heartbeat preserves observed cold source capacity" do
+    test "SPEC.md §5.5 exhausted aggregate heartbeat clears observed cold source capacity" do
       QueueManager.reset()
 
       assert {:queued, first_ticket} =
@@ -2324,14 +2449,14 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, initial_status)
-      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert {:ok, _node} = observe_status(target, initial_status, observed_at)
       assert_receive {:first_empty_source_result, {:ok, first_grant}}, 2_000
       assert :ok = QueueManager.mark_capacity_source_observed(first_grant)
 
       active_status = Map.put(initial_status, :active_request_count, 1)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, active_status, DateTime.add(observed_at, 1, :second))
+               observe_status(target, active_status, DateTime.add(observed_at, 1, :second))
 
       assert {:queued, second_ticket} =
                QueueManager.acquire(
@@ -2344,10 +2469,8 @@ defmodule Orchard.NodesTest do
       refute Task.yield(second_awaiter, 50)
 
       assert :ok = QueueManager.release(first_grant)
-      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
-      assert second_grant.queue_key == "empty-source-b@v1"
-
-      assert :ok = QueueManager.release(second_grant)
+      assert {:error, :queue_timeout, metadata} = Task.await(second_awaiter, 2_000)
+      assert metadata.queue_key == "empty-source-b@v1"
       send(first_awaiter, :stop)
     end
 
@@ -2378,7 +2501,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+      assert {:ok, _node} = observe_status(target, status, observed_at)
 
       {granted_lane, first_grant} =
         receive do
@@ -2389,7 +2512,7 @@ defmodule Orchard.NodesTest do
         end
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+               observe_status(target, status, DateTime.add(observed_at, 1, :second))
 
       refute_receive {:first_repeat_cold_lane_result, _result}, 100
       refute_receive {:second_repeat_cold_lane_result, _result}, 100
@@ -2397,7 +2520,7 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(first_grant)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+               observe_status(target, status, DateTime.add(observed_at, 2, :second))
 
       second_grant =
         case granted_lane do
@@ -2447,12 +2570,12 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, status, DateTime.utc_now())
       assert_receive {:first_repeat_cold_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(DateTime.utc_now(), 1, :second))
+               observe_status(target, status, DateTime.add(DateTime.utc_now(), 1, :second))
 
       assert :ok = QueueManager.release(first_grant)
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
@@ -2491,7 +2614,7 @@ defmodule Orchard.NodesTest do
       insert_node_from_status!(target_a, status_a)
 
       assert {:ok, node_a} =
-               Nodes.observe_status(target_a, status_a, DateTime.utc_now())
+               observe_status(target_a, status_a, DateTime.utc_now())
 
       assert_receive {:first_cold_aggregate_result, {:ok, first_grant}}, 2_000
       assert :ok = QueueManager.mark_grant_node(first_grant, node_a.id)
@@ -2507,7 +2630,7 @@ defmodule Orchard.NodesTest do
       insert_node_from_status!(target_b, status_b)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target_b, status_b, DateTime.utc_now())
+               observe_status(target_b, status_b, DateTime.utc_now())
 
       assert_receive {:second_cold_aggregate_result, {:ok, second_grant}}, 2_000
 
@@ -2544,7 +2667,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.health == :degraded
       assert {:ok, grant} = Task.await(awaiter, 2_000)
       assert grant.queue_result == :queued
@@ -2586,7 +2709,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, updated} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, updated} = observe_status(target, status, DateTime.utc_now())
       assert updated.state == :cordoned
       refute Task.yield(awaiter, 100)
 
@@ -2597,7 +2720,7 @@ defmodule Orchard.NodesTest do
       later = DateTime.add(DateTime.utc_now(), 1, :second)
 
       insert_node_from_status!(target, status)
-      assert {:ok, active_node} = Nodes.observe_status(target, status, later)
+      assert {:ok, active_node} = observe_status(target, status, later)
       assert active_node.state == :active
       assert {:ok, grant} = Task.await(awaiter, 2_000)
       assert grant.queue_result == :queued
@@ -2647,7 +2770,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       assert {:ok, _active_node} =
-               Nodes.observe_status(target, healthy_status, DateTime.utc_now())
+               observe_status(target, healthy_status, DateTime.utc_now())
 
       assert_receive {:first_stale_cold_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
@@ -2659,7 +2782,7 @@ defmodule Orchard.NodesTest do
       later = DateTime.add(DateTime.utc_now(), 1, :second)
 
       insert_node_from_status!(target, healthy_status)
-      assert {:ok, cordoned_node} = Nodes.observe_status(target, healthy_status, later)
+      assert {:ok, cordoned_node} = observe_status(target, healthy_status, later)
       assert cordoned_node.state == :cordoned
       assert :ok = QueueManager.release(first_grant)
       refute Task.yield(second_awaiter, 100)
@@ -2671,7 +2794,7 @@ defmodule Orchard.NodesTest do
       newest = DateTime.add(later, 1, :second)
 
       insert_node_from_status!(target, healthy_status)
-      assert {:ok, _active_node} = Nodes.observe_status(target, healthy_status, newest)
+      assert {:ok, _active_node} = observe_status(target, healthy_status, newest)
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
       assert second_grant.queue_key == "stale-cold-model@v1"
@@ -2699,7 +2822,7 @@ defmodule Orchard.NodesTest do
         placement_status("10.0.0.58", "invalid-cap-model", max_concurrency: 0)
 
       insert_node_from_status!(target, invalid_status)
-      assert {:ok, _node} = Nodes.observe_status(target, invalid_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, invalid_status, DateTime.utc_now())
       refute Task.yield(awaiter, 100)
 
       valid_status =
@@ -2710,7 +2833,7 @@ defmodule Orchard.NodesTest do
         )
 
       insert_node_from_status!(target, valid_status)
-      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, valid_status, DateTime.utc_now())
       assert {:ok, grant} = Task.await(awaiter, 2_000)
       assert grant.queue_result == :queued
 
@@ -2758,7 +2881,7 @@ defmodule Orchard.NodesTest do
       observation = GrpcCompatibilityMapper.observation_from_status(target, status)
 
       insert_node_from_status!(target, observation)
-      assert {:ok, _node} = Nodes.observe_status(target, observation, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, observation, DateTime.utc_now())
       assert_receive {:first_observation_placement_result, {:ok, first_grant}}, 2_000
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
@@ -2818,7 +2941,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, observation)
-      assert {:ok, node} = Nodes.observe_status(target, observation, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, observation, DateTime.utc_now())
       assert node.id == node_id
       assert node.advertise_addr == "10.0.0.95"
       assert node.rpc_port == 9444
@@ -2884,7 +3007,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, observation)
-      assert {:ok, node} = Nodes.observe_status(target, observation, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, observation, DateTime.utc_now())
       assert node.id == node_id
       assert {:error, :queue_timeout, metadata} = Task.await(awaiter, 2_000)
       assert metadata.queue_result == :queue_timeout
@@ -2927,14 +3050,14 @@ defmodule Orchard.NodesTest do
       observation = GrpcCompatibilityMapper.observation_from_status(target, status)
 
       insert_node_from_status!(target, observation)
-      assert {:ok, _node} = Nodes.observe_status(target, observation, observed_at)
+      assert {:ok, _node} = observe_status(target, observation, observed_at)
       assert_receive {:first_unavailable_observation_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
       unavailable_observation = %{observation | availability: :unavailable}
 
       assert {:ok, _node} =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  unavailable_observation,
                  DateTime.add(observed_at, 1, :second)
@@ -2944,7 +3067,7 @@ defmodule Orchard.NodesTest do
       refute Task.yield(second_awaiter, 100)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, observation, DateTime.add(observed_at, 2, :second))
+               observe_status(target, observation, DateTime.add(observed_at, 2, :second))
 
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
@@ -2973,7 +3096,7 @@ defmodule Orchard.NodesTest do
         |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 1)
 
       insert_node_from_status!(target, full_status)
-      assert {:ok, _node} = Nodes.observe_status(target, full_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, full_status, DateTime.utc_now())
       refute Task.yield(awaiter, 100)
 
       available_status =
@@ -2982,7 +3105,7 @@ defmodule Orchard.NodesTest do
         |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 0)
 
       insert_node_from_status!(target, available_status)
-      assert {:ok, _node} = Nodes.observe_status(target, available_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, available_status, DateTime.utc_now())
       assert {:ok, grant} = Task.await(awaiter, 2_000)
       assert grant.queue_result == :queued
       assert grant.queue_key == "full-model@v1"
@@ -3013,7 +3136,7 @@ defmodule Orchard.NodesTest do
 
       target = make_target("10.0.0.55", 9444)
       insert_node_from_status!(target, loaded_status)
-      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, loaded_status, DateTime.utc_now())
       assert_receive {:first_clear_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
@@ -3025,7 +3148,7 @@ defmodule Orchard.NodesTest do
         )
 
       insert_node_from_status!(target, cached_status)
-      assert {:ok, _node} = Nodes.observe_status(target, cached_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, cached_status, DateTime.utc_now())
       assert :ok = QueueManager.release(first_grant)
       refute Task.yield(second_awaiter, 100)
 
@@ -3037,7 +3160,7 @@ defmodule Orchard.NodesTest do
         )
 
       insert_node_from_status!(target, reloaded_status)
-      assert {:ok, _node} = Nodes.observe_status(target, reloaded_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, reloaded_status, DateTime.utc_now())
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
 
@@ -3067,19 +3190,19 @@ defmodule Orchard.NodesTest do
       loaded_status = placement_status("10.0.0.57", "omitted-model", max_concurrency: 1)
 
       insert_node_from_status!(target, loaded_status)
-      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, loaded_status, DateTime.utc_now())
       assert_receive {:first_omitted_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
       omitted_status = Map.put(loaded_status, :runtime_model_placements, [])
 
       insert_node_from_status!(target, omitted_status)
-      assert {:ok, _node} = Nodes.observe_status(target, omitted_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, omitted_status, DateTime.utc_now())
       assert :ok = QueueManager.release(first_grant)
       refute Task.yield(second_awaiter, 100)
 
       insert_node_from_status!(target, loaded_status)
-      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, loaded_status, DateTime.utc_now())
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
 
@@ -3108,7 +3231,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, missing_placement_status)
-      assert {:ok, _node} = Nodes.observe_status(target, missing_placement_status, observed_at)
+      assert {:ok, _node} = observe_status(target, missing_placement_status, observed_at)
       refute Task.yield(awaiter, 100)
 
       placement_status =
@@ -3122,7 +3245,7 @@ defmodule Orchard.NodesTest do
         ])
 
       assert {:ok, _node} =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  placement_status,
                  DateTime.add(observed_at, 1, :second)
@@ -3181,12 +3304,12 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.add(observed_at, 1))
+      assert {:ok, _node} = observe_status(target, status, DateTime.add(observed_at, 1))
       assert_receive {:first_stale_metadata_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
       assert :noop =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  %{node_metadata: nil, runtime_health: nil},
                  observed_at
@@ -3236,7 +3359,7 @@ defmodule Orchard.NodesTest do
         ]
       }
 
-      assert :noop = Nodes.observe_status(target, status, earlier)
+      assert :noop = observe_status(target, status, earlier)
 
       reloaded = Repo.get!(Node, node_id)
       assert reloaded.capabilities == existing.capabilities
@@ -3263,7 +3386,7 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert :noop = Nodes.observe_status(target, status, now)
+      assert :noop = observe_status(target, status, now)
     end
   end
 
@@ -3316,7 +3439,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, valid_status)
-      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, valid_status, DateTime.utc_now())
       assert_receive {:first_identity_conflict_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
@@ -3333,7 +3456,7 @@ defmodule Orchard.NodesTest do
       log =
         capture_log(fn ->
           assert :noop =
-                   Nodes.observe_status(
+                   observe_status(
                      target,
                      conflicting_status,
                      DateTime.add(DateTime.utc_now(), 1, :second)
@@ -3345,7 +3468,7 @@ defmodule Orchard.NodesTest do
       refute Task.yield(second_awaiter, 100)
 
       assert {:ok, _node} =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  valid_status,
                  DateTime.add(DateTime.utc_now(), 2, :second)
@@ -3372,7 +3495,7 @@ defmodule Orchard.NodesTest do
 
       log =
         capture_log(fn ->
-          assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+          assert :noop = observe_status(target, status, DateTime.utc_now())
         end)
 
       assert log =~ "identity conflict"
@@ -3399,7 +3522,7 @@ defmodule Orchard.NodesTest do
         })
 
       insert_node_from_status!(target, status)
-      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert {:ok, node} = observe_status(target, status, DateTime.utc_now())
       assert node.id == different_id
       assert node.advertise_addr == "0.0.0.0"
       assert node.connect_host == "100.90.207.79"
@@ -3419,7 +3542,7 @@ defmodule Orchard.NodesTest do
 
       log =
         capture_log(fn ->
-          assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+          assert :noop = observe_status(target, status, DateTime.utc_now())
         end)
 
       assert log =~ "identity conflict"
@@ -3455,7 +3578,7 @@ defmodule Orchard.NodesTest do
       # The observe should noop due to target identity conflict
       log =
         capture_log(fn ->
-          assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+          assert :noop = observe_status(target, status, DateTime.utc_now())
         end)
 
       assert log =~ "identity conflict"
@@ -3505,12 +3628,12 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, valid_status)
-      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert {:ok, _node} = observe_status(target, valid_status, DateTime.utc_now())
       assert_receive {:first_invalid_metadata_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
       assert :noop =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  %{node_metadata: nil, runtime_health: nil},
                  DateTime.add(DateTime.utc_now(), 1, :second)
@@ -3520,7 +3643,7 @@ defmodule Orchard.NodesTest do
       refute Task.yield(second_awaiter, 100)
 
       assert {:ok, _node} =
-               Nodes.observe_status(
+               observe_status(
                  target,
                  valid_status,
                  DateTime.add(DateTime.utc_now(), 2, :second)
@@ -3586,12 +3709,12 @@ defmodule Orchard.NodesTest do
           |> Map.put(:runtime_model_placements, [])
 
         insert_node_from_status!(target, valid_status)
-        assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+        assert {:ok, _node} = observe_status(target, valid_status, DateTime.utc_now())
         assert_receive {{:first_invalid_map_result, ^suffix}, {:ok, first_grant}}, 2_000
         refute Task.yield(second_awaiter, 50)
 
         assert :noop =
-                 Nodes.observe_status(
+                 observe_status(
                    target,
                    invalid_status,
                    DateTime.add(DateTime.utc_now(), 1, :second)
@@ -3601,7 +3724,7 @@ defmodule Orchard.NodesTest do
         refute Task.yield(second_awaiter, 100)
 
         assert {:ok, _node} =
-                 Nodes.observe_status(
+                 observe_status(
                    target,
                    valid_status,
                    DateTime.add(DateTime.utc_now(), 2, :second)
@@ -3619,7 +3742,7 @@ defmodule Orchard.NodesTest do
       target = make_target("10.0.0.40", 9444)
       status = %{node_metadata: nil, runtime_health: nil}
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       assert Nodes.list_nodes() == []
     end
 
@@ -3629,7 +3752,7 @@ defmodule Orchard.NodesTest do
       status =
         make_status_response(%{node_id: "not-a-uuid", listen_host: "10.0.0.41"})
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       assert Nodes.list_nodes() == []
     end
 
@@ -3643,7 +3766,7 @@ defmodule Orchard.NodesTest do
           listen_host: "10.0.0.42"
         })
 
-      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert :noop = observe_status(target, status, DateTime.utc_now())
       assert Nodes.list_nodes() == []
     end
   end
@@ -3775,7 +3898,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, heartbeat_at)
+      assert {:ok, _node} = observe_status(target, status, heartbeat_at)
       assert_receive {:first_unreachable_capacity_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
@@ -3791,7 +3914,7 @@ defmodule Orchard.NodesTest do
       restored_at = DateTime.add(unreachable_at, 1, :second)
 
       insert_node_from_status!(target, status)
-      assert {:ok, restored_node} = Nodes.observe_status(target, status, restored_at)
+      assert {:ok, restored_node} = observe_status(target, status, restored_at)
       assert restored_node.health == :healthy
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
@@ -3839,7 +3962,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, heartbeat_at)
+      assert {:ok, _node} = observe_status(target, status, heartbeat_at)
       assert_receive {:first_transport_capacity_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
@@ -3861,7 +3984,7 @@ defmodule Orchard.NodesTest do
       restored_at = DateTime.add(unreachable_at, 1, :second)
 
       insert_node_from_status!(target, status)
-      assert {:ok, restored_node} = Nodes.observe_status(target, status, restored_at)
+      assert {:ok, restored_node} = observe_status(target, status, restored_at)
       assert restored_node.health == :healthy
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
@@ -3900,7 +4023,7 @@ defmodule Orchard.NodesTest do
       status = placement_status("10.0.0.70", "transport-placement-model", max_concurrency: 1)
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, heartbeat_at)
+      assert {:ok, _node} = observe_status(target, status, heartbeat_at)
       assert_receive {:first_transport_placement_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
@@ -3922,7 +4045,7 @@ defmodule Orchard.NodesTest do
       restored_at = DateTime.add(unreachable_at, 1, :second)
 
       insert_node_from_status!(target, status)
-      assert {:ok, restored_node} = Nodes.observe_status(target, status, restored_at)
+      assert {:ok, restored_node} = observe_status(target, status, restored_at)
       assert restored_node.health == :healthy
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
@@ -4194,7 +4317,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       insert_node_from_status!(target, status)
-      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+      assert {:ok, _node} = observe_status(target, status, observed_at)
       assert_receive {:first_failure_clear_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
 
@@ -4210,7 +4333,7 @@ defmodule Orchard.NodesTest do
       refute Task.yield(second_awaiter, 100)
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+               observe_status(target, status, DateTime.add(observed_at, 2, :second))
 
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
@@ -4273,7 +4396,7 @@ defmodule Orchard.NodesTest do
         |> Map.put(:runtime_model_placements, [])
 
       assert {:ok, _node} =
-               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+               observe_status(target, status, DateTime.add(observed_at, 2, :second))
 
       assert_receive {^tag, {:ok, grant}}, 2_000
       assert :ok = QueueManager.release(grant)

@@ -52,6 +52,23 @@ defmodule Orchard.Dispatch.DispatchTest.NoConnectClient do
   def connect(_target), do: raise("activation target must not receive dispatch operations")
 end
 
+defmodule Orchard.Dispatch.DispatchTest.NeverAcceptClient do
+  @moduledoc false
+
+  alias Orchard.RuntimeEndpoint.GrpcCompatibilityClient, as: Client
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: Client
+  defdelegate status(channel, opts), to: Client
+  defdelegate ensure_model_loaded(channel, request, opts), to: Client
+  defdelegate disconnect(channel), to: Client
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{}, _opts),
+    do: {:ok, make_ref()}
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts), do: :ok
+end
+
 defmodule Orchard.Dispatch.DispatchTest do
   @moduledoc """
   Tests for R6: single-node dispatch and cancellation.
@@ -77,6 +94,8 @@ defmodule Orchard.Dispatch.DispatchTest do
 
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: Client
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Evaluator}
+  alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.Inference
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
@@ -93,11 +112,14 @@ defmodule Orchard.Dispatch.DispatchTest do
     # Reset node-agent state between tests to avoid model-already-loaded
     ModelManager.reset()
     bundle = stage_test_bundle!()
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    Process.put({__MODULE__, :capacity_authority}, authority)
 
     on_exit(fn ->
       File.rm_rf(bundle.cache_path)
       File.rm_rf(bundle.source_path)
       File.rm_rf(Path.join(Node.models_root(), ".staging"))
+      Process.delete({__MODULE__, :capacity_authority})
     end)
 
     %{bundle: bundle}
@@ -211,6 +233,8 @@ defmodule Orchard.Dispatch.DispatchTest do
         "req-admitted-dispatch-rejected"
         |> build_schedule()
         |> Map.put(:runtime_endpoint_target, target)
+        |> Map.put(:node_id, target.node_id)
+        |> put_capacity_input(ConformanceFixture.input())
 
       assert {:error, {:dispatch_failed, :node_not_active}} =
                RequestDispatcher.dispatch(
@@ -309,22 +333,18 @@ defmodule Orchard.Dispatch.DispatchTest do
       end)
     end
 
-    test "timeout fires cancellation and returns events with terminal", %{bundle: bundle} do
-      # Use a very short timeout to trigger it
-      schedule = build_schedule("req-dispatch-timeout", request_timeout_ms: 1)
+    test "timeout fails closed and keeps the timeout classification", %{
+      bundle: bundle
+    } do
+      # Leave enough budget to begin execution, then time out before acceptance.
+      schedule = build_schedule("req-dispatch-timeout", request_timeout_ms: 100)
       execute = execute_request("req-dispatch-timeout")
       model_load = model_load_request(bundle)
 
-      assert {:ok, events} = RequestDispatcher.dispatch(schedule, execute, model_load)
-
-      # Should have at least a terminal event (either from cancel or timeout synthesis)
-      assert events != []
-      terminal = List.last(events)
-      assert InferenceEvent.terminal?(terminal)
-
-      # Exactly one terminal event in the stream (Task 4 guarantee)
-      terminal_count = Enum.count(events, &InferenceEvent.terminal?/1)
-      assert terminal_count == 1, "expected exactly 1 terminal, got #{terminal_count}"
+      assert {:error, {:dispatch_failed, :request_timeout}} =
+               RequestDispatcher.dispatch(schedule, execute, model_load,
+                 client_impl: Orchard.Dispatch.DispatchTest.NeverAcceptClient
+               )
     end
 
     test "caller disconnect triggers cancellation", %{bundle: bundle} do
@@ -386,13 +406,10 @@ defmodule Orchard.Dispatch.DispatchTest do
 
       on_exit(fn -> Application.put_env(:orchard_controller, :inference, inference) end)
 
-      schedule = %{
-        strategy: :single_node,
-        request_id: "req-connect-fail",
-        runtime_client_target: [host: "127.0.0.1", port: 1],
-        request_timeout_ms: 5_000,
-        model_load_timeout_ms: 5_000
-      }
+      schedule =
+        "req-connect-fail"
+        |> build_schedule()
+        |> Map.put(:runtime_client_target, host: "127.0.0.1", port: 1)
 
       execute = execute_request("req-connect-fail")
 
@@ -478,7 +495,43 @@ defmodule Orchard.Dispatch.DispatchTest do
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: Keyword.get(opts, :request_timeout_ms, 5_000),
-      model_load_timeout_ms: Keyword.get(opts, :model_load_timeout_ms, 5_000)
+      model_load_timeout_ms: Keyword.get(opts, :model_load_timeout_ms, 5_000),
+      dispatch_capacity_authority: Process.get({__MODULE__, :capacity_authority})
+    }
+    |> put_capacity_input(unmanaged_capacity_input())
+  end
+
+  defp put_capacity_input(schedule, input) do
+    Map.merge(schedule, %{
+      dispatch_capacity_input: input,
+      dispatch_capacity_evaluation: Evaluator.evaluate(input),
+      dispatch_capacity_acquisition_input_provider: fn -> input end,
+      dispatch_capacity_input_provider: fn -> input end
+    })
+  end
+
+  defp unmanaged_capacity_input do
+    %Input{
+      authority_phase: :invalid,
+      policy_presence: :missing,
+      policy_state: :missing,
+      management_classification: {:ok, :unmanaged_source_development},
+      trusted_identity?: true,
+      lifecycle_state: :active,
+      health: :healthy,
+      heartbeat_fresh?: true,
+      capacity_observation_fresh?: true,
+      observation_time: DateTime.utc_now(),
+      runtime_concurrency_limit: {:valid, 1},
+      aggregate_active_count: {:valid, 0},
+      controller_dispatch_ceiling: :missing,
+      controller_accounted_allocation: 0,
+      placement_capacity: :not_applicable,
+      temporary_legacy_claim_count: 0,
+      pool_eligible?: true,
+      format_eligible?: true,
+      memory_eligible?: true,
+      breaker_eligible?: true
     }
   end
 

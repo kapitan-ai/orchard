@@ -1,6 +1,15 @@
 defmodule OrchardApplicationTest do
   use ExUnit.Case, async: false
 
+  alias Orchard.DispatchCapacity.{
+    AllocationAuthority,
+    ConformanceFixture,
+    QuarantineStore,
+    Readiness
+  }
+
+  alias Orchard.Inference.QueueManager
+
   @sentry_dsn "https://public@example.invalid/1"
 
   setup do
@@ -59,14 +68,169 @@ defmodule OrchardApplicationTest do
       |> Enum.map(fn {id, _pid, _type, _modules} -> id end)
 
     assert Orchard.Inference in child_ids
+    assert QuarantineStore in child_ids
     assert Phoenix.PubSub.Supervisor in child_ids
     assert OrchardConsole.ModelHubDownloadCoordinator in child_ids
     refute Orchard.Repo in child_ids
     refute Orchard.API.Endpoint in child_ids
 
     assert is_pid(Process.whereis(Orchard.Inference))
+    assert is_pid(Process.whereis(QuarantineStore))
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
     assert is_pid(Process.whereis(OrchardConsole.ModelHubDownloadCoordinator))
+  end
+
+  test "SPEC 4.8 readiness proof is independent of root quarantine startup order" do
+    assert Process.whereis(QuarantineStore) == nil
+    assert Readiness.ready?(required_contract_version: Readiness.contract_version())
+  end
+
+  test "SPEC 4.5 root-owned quarantine store loss leaves the live authority fail-closed" do
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+
+    supervisor = Process.whereis(Orchard.Supervisor)
+    authority = Process.whereis(AllocationAuthority)
+    store = Process.whereis(QuarantineStore)
+    node_id = Ecto.UUID.generate()
+
+    assert %{restart: :temporary} = QuarantineStore.child_spec([])
+
+    store_ref = Process.monitor(store)
+    Process.exit(store, :kill)
+    assert_receive {:DOWN, ^store_ref, :process, ^store, :killed}
+
+    assert Process.whereis(QuarantineStore) == nil
+    assert Process.whereis(AllocationAuthority) == authority
+    assert Process.alive?(supervisor)
+
+    assert {:error, :dispatch_capacity_unavailable, blocked} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-root-quarantine-store-loss",
+               ConformanceFixture.input()
+             )
+
+    refute blocked.eligible?
+    assert :node_health_unhealthy in blocked.reason_codes
+  end
+
+  test "SPEC 4.5 authority loss restarts every live capacity-dependent owner" do
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+
+    authority = Process.whereis(AllocationAuthority)
+    requests_supervisor = Process.whereis(Orchard.Requests.Supervisor)
+    queue_manager = Process.whereis(QueueManager)
+    node_id = Ecto.UUID.generate()
+    parent = self()
+
+    owner_spec = %{
+      id: make_ref(),
+      restart: :temporary,
+      start:
+        {Task, :start_link,
+         [
+           fn ->
+             result =
+               QueueManager.acquire_dispatch_capacity(
+                 node_id,
+                 "request-authority-loss",
+                 ConformanceFixture.input()
+               )
+
+             send(parent, {:authority_loss_claimed, self(), result})
+             Process.sleep(:infinity)
+           end
+         ]}
+    }
+
+    assert {:ok, owner} =
+             DynamicSupervisor.start_child(Orchard.Requests.Supervisor, owner_spec)
+
+    owner_ref = Process.monitor(owner)
+    assert_receive {:authority_loss_claimed, ^owner, {:ok, _claim, _result}}
+
+    Process.exit(authority, :kill)
+
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, _reason}, 1_000
+
+    replacement_authority =
+      wait_for_replacement(AllocationAuthority, authority)
+
+    replacement_requests = wait_for_replacement(Orchard.Requests.Supervisor, requests_supervisor)
+    replacement_queue = wait_for_replacement(QueueManager, queue_manager)
+
+    assert AllocationAuthority.claim_count(
+             replacement_authority,
+             node_id
+           ) == 0
+
+    assert {:ok, clean_claim, _result} =
+             QueueManager.acquire_dispatch_capacity(
+               node_id,
+               "request-after-authority-restart",
+               ConformanceFixture.input()
+             )
+
+    assert :ok =
+             QueueManager.release_dispatch_capacity(clean_claim,
+               authority: replacement_authority
+             )
+
+    assert is_pid(replacement_requests)
+    assert is_pid(replacement_queue)
+  end
+
+  test "SPEC 4.5 queue loss preserves authority and live request ownership" do
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+
+    authority = Process.whereis(AllocationAuthority)
+    requests_supervisor = Process.whereis(Orchard.Requests.Supervisor)
+    queue_manager = Process.whereis(QueueManager)
+    node_id = Ecto.UUID.generate()
+    parent = self()
+
+    owner_spec = %{
+      id: make_ref(),
+      restart: :temporary,
+      start:
+        {Task, :start_link,
+         [
+           fn ->
+             result =
+               QueueManager.acquire_dispatch_capacity(
+                 node_id,
+                 "request-queue-loss",
+                 ConformanceFixture.input()
+               )
+
+             send(parent, {:queue_loss_claimed, self(), result})
+
+             receive do
+               :stop -> :ok
+             end
+           end
+         ]}
+    }
+
+    assert {:ok, owner} =
+             DynamicSupervisor.start_child(Orchard.Requests.Supervisor, owner_spec)
+
+    owner_ref = Process.monitor(owner)
+    assert_receive {:queue_loss_claimed, ^owner, {:ok, _claim, _result}}
+
+    Process.exit(queue_manager, :kill)
+
+    replacement_queue = wait_for_replacement(QueueManager, queue_manager)
+
+    assert Process.whereis(AllocationAuthority) == authority
+    assert Process.whereis(Orchard.Requests.Supervisor) == requests_supervisor
+    assert Process.alive?(owner)
+    refute_receive {:DOWN, ^owner_ref, :process, ^owner, _reason}
+    assert AllocationAuthority.claim_count(authority, node_id) == 1
+    assert is_pid(replacement_queue)
+
+    send(owner, :stop)
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :normal}
   end
 
   test "SPEC.md §7.5.0 production grants add the configured control listener child" do
@@ -390,6 +554,21 @@ defmodule OrchardApplicationTest do
 
   defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp wait_for_replacement(name, previous, attempts \\ 100)
+
+  defp wait_for_replacement(_name, _previous, 0), do: flunk("supervised process was not replaced")
+
+  defp wait_for_replacement(name, previous, attempts) do
+    case Process.whereis(name) do
+      replacement when is_pid(replacement) and replacement != previous ->
+        replacement
+
+      _unavailable ->
+        Process.sleep(10)
+        wait_for_replacement(name, previous, attempts - 1)
+    end
+  end
 
   defp test_runtime_client_target do
     [host: "127.0.0.1", port: test_node_agent_port()]

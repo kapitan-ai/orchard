@@ -25,10 +25,17 @@ This README is orientation only. Normative CLI requirements live in
   `--reason`. `nodes admit` requires a nonblank `--capacity-policy-reason` and
   accepts an optional non-negative `--controller-dispatch-ceiling` that defaults
   to `1` when omitted, persisting the Controller Dispatch Ceiling atomically
-  with admission. `nodes inspect` renders a counterfactual dispatch-capacity
-  block that reports what F11 enforcement would decide without changing dispatch
-  behavior, including the capacity management class, authority decision,
-  Placement Capacity, and decision-specific available slots.
+  with admission; that write holds the Node's acceptance gate, so it fails fast
+  with `dispatch_capacity_acceptance_gate_busy` when a dispatch to the same Node
+  is mid-handoff, or with `dispatch_capacity_authority_unavailable` when the
+  Controller's allocation authority is not running, and the command should be
+  retried in both cases. `nodes inspect` renders a
+  counterfactual dispatch-capacity block that reports what F11 enforcement would
+  decide without changing dispatch behavior, including the capacity management
+  class, authority decision, Placement Capacity, and decision-specific available
+  slots; its `consumers_ready` field stays `false` because the block is
+  observability, not the Controller capability declaration published on the
+  membership heartbeat.
 - Node lifecycle commands (`nodes cordon`, `nodes uncordon`, `nodes drain`,
   `nodes cancel-drain`, `nodes maintenance`, `nodes resume`,
   `nodes decommission`) on the shared Action Preview contract, with

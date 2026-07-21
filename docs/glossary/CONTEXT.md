@@ -573,9 +573,29 @@ A production-managed target dispatches only under `legacy_pre_cutover` or `f11_e
 _Avoid_: Capacity Management Class, Dispatch Capacity Enforcement Phase, Dispatch Capacity Policy State, Scheduler Reason Code
 
 **Counterfactual Capacity Diagnostics**:
-The read-only report of what the shared capacity evaluation would decide if enforcement were live, exposed while every capacity consumer keeps its current behavior.
-It is observability, never authorization.
+The read-only report of what the shared capacity evaluation would decide if F11 enforcement were live, exposed while the durable phase is still `pre_cutover`.
+It is observability, never authorization, and it is distinct from the authorization the named capacity consumers actually perform.
 _Avoid_: dry-run enforcement, shadow enforcement, simulated dispatch, capacity forecast
+
+**Controller Allocation Authority**:
+The single serialized Controller-local owner of a Node's live dispatch claims, its claim revalidation, and its Node Acceptance Gate, which every named capacity consumer authorizes through instead of deriving capacity itself.
+It is Controller-local and process-lifetime scoped: it holds no durable dispatch permit and provides no leadership fencing.
+_Avoid_: durable dispatch permit, leader epoch, queue lane, scheduler, Controller Dispatch Ceiling
+
+**Node Acceptance Gate**:
+The Controller-local per-Node serialization point that per-Node capacity policy mutation and final dispatch revalidation both hold, so either Node acceptance or the policy change happens first without an authority gap.
+It is held from the final shared evaluation through Node acceptance or pre-acceptance failure, and it is not distributed leadership fencing.
+_Avoid_: advisory lock, leader epoch, durable dispatch permit, queue lane, cluster transition barrier
+
+**Unresolved Execution Quarantine**:
+The Controller-local per-Node block applied when a dispatch cannot establish whether its runtime execution ended, after which every capacity evaluation for that Node is treated as unreachable instead of as free capacity.
+It does not expire and is never lifted by an operator override; today it clears only when the Controller restarts, and audited release after verified reconciliation is a later slice.
+_Avoid_: Cordon, Drain, Node Circuit Breaker, Maintenance, Node Health
+
+**Capacity Consumer Readiness**:
+The Controller capability declaration that this running build wires all five named capacity consumers to the shared evaluation as one indivisible contract-versioned capability.
+It is proved against an exact consumer manifest, an exact contract version, and a shared deterministic conformance fixture, and it gates enforcement cutover rather than describing the current phase.
+_Avoid_: Dispatch Capacity Enforcement Phase, Dispatch Capacity Policy State, feature flag, health check
 
 **Candidate Tier**:
 A scheduling group based on model residency, such as loaded, cached, or cold.

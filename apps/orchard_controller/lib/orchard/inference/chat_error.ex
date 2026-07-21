@@ -121,6 +121,12 @@ defmodule Orchard.Inference.ChatError do
   def from_execute_error({:orchestration_crash, metadata}),
     do: build(:orchestration_crash, detail: metadata)
 
+  def from_execute_error({:dispatch_failed, :request_timeout}),
+    do: build(:request_timed_out, source_code: "request_timeout")
+
+  def from_execute_error({:dispatch_failed, :request_caller_disconnect}),
+    do: build(:request_interrupted, source_code: "request_caller_disconnect")
+
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
   @spec from_failed_event(InferenceEvent.t()) :: t()

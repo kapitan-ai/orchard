@@ -6,9 +6,47 @@ defmodule Orchard.Nodes do
 
   First-observed Runtime Endpoint metadata is persisted as admission candidate
   evidence until a trusted node registration and explicit admission path exists.
+
+  This context is also the queue-source-refresh capacity consumer: observed
+  Runtime Endpoint capacity is republished as bounded queue sources only when
+  the shared dispatch-capacity evaluation is eligible with positive available
+  slots, and Node-owned sources are cleared on trust, lifecycle, health,
+  freshness, policy, or runtime-limit loss. Node admission serializes its
+  capacity-policy write through the same per-Node acceptance gate dispatch
+  holds.
   """
 
+  use Orchard.DispatchCapacity.Consumer, wiring: :node_queue_source_refresh
+
   import Ecto.Query
+
+  @doc "Refreshes or clears Node-owned queue sources from one shared capacity evaluation."
+  @spec refresh_dispatch_capacity_sources(
+          map(),
+          Evaluator.Input.t(),
+          map(),
+          keyword()
+        ) :: Evaluator.Result.t()
+  def refresh_dispatch_capacity_sources(node, input, refresh, opts \\ [])
+      when is_map(node) and is_map(refresh) and is_list(opts) do
+    authority = Keyword.get(opts, :authority, AllocationAuthority)
+    queue_manager = Keyword.get(opts, :queue_manager, Orchard.Inference.queue_manager())
+    node_id = Map.get(node, :id) || Map.get(node, "id")
+
+    result = evaluate_dispatch_capacity(authority, node_id, input)
+
+    if Consumer.authorized?(result) do
+      refresh
+      |> Map.put(:node_active, 0)
+      |> Map.put(:node_max, result.available_slots)
+      |> Map.put(:dispatch_capacity_evaluation, result)
+      |> queue_manager.refresh_node_capacity_sources()
+    else
+      queue_manager.clear_capacity_sources(Map.fetch!(refresh, :clear_sources), promote?: true)
+    end
+
+    result
+  end
 
   require Logger
 
@@ -17,6 +55,7 @@ defmodule Orchard.Nodes do
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.ControlPlane
   alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.Authorization
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Enrollment, Node}
@@ -308,14 +347,27 @@ defmodule Orchard.Nodes do
   """
   @spec lookup_by_target(keyword() | Target.t()) :: Node.t() | nil
   def lookup_by_target(target) do
+    case lookup_by_target_result(target) do
+      {:ok, node} -> node
+      {:error, :node_inventory_unavailable} -> nil
+    end
+  end
+
+  @doc "Resolves target inventory without conflating absence with repository failure."
+  @spec lookup_by_target_result(keyword() | Target.t()) ::
+          {:ok, Node.t() | nil} | {:error, :node_inventory_unavailable}
+  def lookup_by_target_result(target) do
     with true <- repo_available?(),
          {:ok, target_lookup} <- target_lookup(target) do
-      lookup_node_by_target_lookup(target_lookup)
+      {:ok, lookup_node_by_target_lookup(target_lookup)}
     else
-      _ -> nil
+      false -> {:error, :node_inventory_unavailable}
+      :error -> {:ok, nil}
     end
   rescue
-    _ -> nil
+    _error -> {:error, :node_inventory_unavailable}
+  catch
+    _kind, _reason -> {:error, :node_inventory_unavailable}
   end
 
   # -- Observational Write APIs --
@@ -489,6 +541,12 @@ defmodule Orchard.Nodes do
 
   @doc """
   Admits a registered node without activating it.
+
+  The capacity-policy write runs while holding that Node's acceptance gate, so
+  admission returns `{:error, :dispatch_capacity_acceptance_gate_busy}` when a
+  dispatch holds the gate longer than the bounded wait, and
+  `{:error, :dispatch_capacity_authority_unavailable}` when the allocation
+  authority is not running. Both are retryable.
   """
   @spec admit_node(Ecto.UUID.t(), map() | keyword(), keyword()) ::
           {:ok,
@@ -502,10 +560,17 @@ defmodule Orchard.Nodes do
   def admit_node(node_id, attrs \\ %{}, opts \\ []) do
     attrs = normalize_attrs(attrs)
 
-    with :ok <- ControlPlane.authorize_write_path(:node_admission) do
-      Repo.transaction(fn -> admit_node_locked(node_id, attrs, opts) end)
-      |> unwrap_transaction_result()
+    case ControlPlane.authorize_write_path(:node_admission) do
+      :ok -> admit_node_with_policy_gate(node_id, attrs, opts)
+      {:error, _reason} = error -> error
     end
+  end
+
+  defp admit_node_with_policy_gate(node_id, attrs, opts) do
+    DispatchCapacity.with_policy_mutation_gate(node_id, fn ->
+      Repo.transaction(fn -> admit_node_locked(node_id, attrs, opts) end)
+    end)
+    |> unwrap_transaction_result()
   end
 
   defp admit_node_locked(node_id, attrs, opts) do
@@ -892,29 +957,42 @@ defmodule Orchard.Nodes do
   end
 
   defp refresh_observed_queue_capacities(target, %Node{} = node, status_response, opts) do
-    queue_manager = Orchard.Inference.queue_manager()
+    queue_manager = Keyword.get(opts, :queue_manager, Orchard.Inference.queue_manager())
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
+
+    refresh = %{
+      clear_sources: node_queue_capacity_sources(node),
+      node_source: {:node, node.id},
+      placement_source: placement_source,
+      cold_source: cold_source,
+      node_id: node.id,
+      node_active: observed_node_active(status_response),
+      node_max: observed_node_max(status_response),
+      placements: placement_observations(status_response),
+      reserve_unassigned_node_grants?: Keyword.get(opts, :reserve_unassigned_node_grants?, true),
+      reserve_unassigned_source_grants?:
+        Keyword.get(opts, :reserve_unassigned_source_grants?, true)
+    }
 
     if queue_capacity_refresh_target?(target, node) and
          queue_capacity_eligible_node?(node) and
          queue_capacity_eligible_observation?(status_response) do
-      queue_manager.refresh_node_capacity_sources(%{
-        clear_sources: node_queue_capacity_sources(node),
-        node_source: {:node, node.id},
-        placement_source: placement_source,
-        cold_source: cold_source,
-        node_id: node.id,
-        node_active: observed_node_active(status_response),
-        node_max: observed_node_max(status_response),
-        placements: placement_observations(status_response),
-        reserve_unassigned_node_grants?:
-          Keyword.get(opts, :reserve_unassigned_node_grants?, true),
-        reserve_unassigned_source_grants?:
-          Keyword.get(opts, :reserve_unassigned_source_grants?, true)
-      })
+      case observation_capacity_input(node, status_response, opts) do
+        {:ok, input} ->
+          refresh_or_clear_dispatch_capacity_sources(
+            node,
+            input,
+            refresh,
+            queue_manager,
+            opts
+          )
+
+        {:error, _reason} ->
+          queue_manager.clear_capacity_sources(refresh.clear_sources, promote?: true)
+      end
     else
-      clear_node_queue_capacity_sources(node)
+      queue_manager.clear_capacity_sources(refresh.clear_sources, promote?: true)
     end
   rescue
     error ->
@@ -924,6 +1002,39 @@ defmodule Orchard.Nodes do
     :exit, reason ->
       Logger.debug("Queue capacity refresh from node observation exited: #{inspect(reason)}")
       :ok
+  end
+
+  defp refresh_or_clear_dispatch_capacity_sources(node, input, refresh, queue_manager, opts) do
+    authority =
+      Keyword.get(opts, :dispatch_capacity_authority, DispatchCapacity.AllocationAuthority)
+
+    refresh_dispatch_capacity_sources(node, input, refresh,
+      authority: authority,
+      queue_manager: queue_manager
+    )
+  rescue
+    error ->
+      Logger.debug("Dispatch-capacity source refresh failed: #{inspect(error)}")
+      queue_manager.clear_capacity_sources(refresh.clear_sources, promote?: true)
+  catch
+    :exit, reason ->
+      Logger.debug("Dispatch-capacity source refresh exited: #{inspect(reason)}")
+      queue_manager.clear_capacity_sources(refresh.clear_sources, promote?: true)
+  end
+
+  defp observation_capacity_input(node, status_response, opts) do
+    case Keyword.fetch(opts, :dispatch_capacity_input) do
+      {:ok, %Orchard.DispatchCapacity.Evaluator.Input{} = input} ->
+        {:ok, input}
+
+      {:ok, _invalid} ->
+        {:error, :dispatch_capacity_facts_unavailable}
+
+      :error ->
+        Authorization.input_for_observation(node, status_response,
+          minimum_evidence_observed_at: node.last_heartbeat_at
+        )
+    end
   end
 
   defp queue_capacity_refresh_target?(%Target{transport: :beam} = target, %Node{id: node_id}) do
@@ -1929,7 +2040,7 @@ defmodule Orchard.Nodes do
     |> Repo.one()
   end
 
-  @doc false
+  @doc "Locks one Node row for transaction-scoped capacity and lifecycle mutation."
   @spec lock_node(Ecto.UUID.t()) :: {:ok, Node.t()} | {:error, :node_not_found}
   def lock_node(node_id) do
     with {:ok, node_id} <- normalize_uuid(node_id, :node_not_found) do
