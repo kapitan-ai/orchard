@@ -19,8 +19,8 @@ jobs:
     # Orchard is an Apple Silicon macOS-native product: the suite exercises
     # macOS system binaries (BSD `date -j -f`, `/usr/bin/lockf`, launchctl) and
     # BEAM TLS Distribution behavior that only pass on macOS. Run the required
-    # check on a GitHub-hosted Apple Silicon runner.
-    runs-on: macos-15
+    # check on a pinned Apple Silicon runner.
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 60
     env:
       ORCHARD_TEST_NODE_AGENT_PORT: "50171"
