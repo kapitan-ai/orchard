@@ -29,7 +29,6 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE_TEST: orchard_test
-      PGDATA: ${{ runner.temp }}/pgdata
 
     steps:
       - name: Check out repository
@@ -46,9 +45,9 @@ jobs:
 
       - name: Start Postgres
         run: |
-          rm -rf "$PGDATA"
-          initdb --username="$PGUSER" --auth=trust --encoding=UTF8 --pgdata="$PGDATA"
-          pg_ctl --pgdata="$PGDATA" --log="$RUNNER_TEMP/postgres.log" \
+          pgdata="$RUNNER_TEMP/pgdata"
+          initdb --username="$PGUSER" --auth=trust --encoding=UTF8 --pgdata="$pgdata"
+          pg_ctl --pgdata="$pgdata" --log="$RUNNER_TEMP/postgres.log" \
             --options="-p $PGPORT -k $RUNNER_TEMP" --wait start
           for _ in $(seq 1 30); do
             pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" && break
