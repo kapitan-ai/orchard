@@ -16,7 +16,11 @@ concurrency:
 jobs:
   required-validation:
     name: Required Orchard validation
-    runs-on: ubuntu-24.04
+    # Orchard is an Apple Silicon macOS-native product: the suite exercises
+    # macOS system binaries (BSD `date -j -f`, `/usr/bin/lockf`, launchctl) and
+    # BEAM TLS Distribution behavior that only pass on macOS. Run the required
+    # check on a GitHub-hosted Apple Silicon runner.
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       ORCHARD_TEST_NODE_AGENT_PORT: "50171"
@@ -25,26 +29,32 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE_TEST: orchard_test
-    services:
-      postgres:
-        image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
-        env:
-          POSTGRES_DB: postgres
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+      PGDATA: ${{ runner.temp }}/pgdata
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Provision deterministic Postgres
+        run: |
+          # macOS runners have no Docker service containers. Provision a fresh,
+          # reproducible Postgres 16 cluster with trust auth on a fixed port.
+          brew install postgresql@16
+          echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
+
+      - name: Start Postgres
+        run: |
+          rm -rf "$PGDATA"
+          initdb --username="$PGUSER" --auth=trust --encoding=UTF8 --pgdata="$PGDATA"
+          pg_ctl --pgdata="$PGDATA" --log="$RUNNER_TEMP/postgres.log" \
+            --options="-p $PGPORT -k $RUNNER_TEMP" --wait start
+          for _ in $(seq 1 30); do
+            pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" && break
+            sleep 1
+          done
+          pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
 
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
