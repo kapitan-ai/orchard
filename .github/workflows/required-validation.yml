@@ -1,0 +1,92 @@
+name: Orchard CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orchard-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required-validation:
+    name: Required Orchard validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ORCHARD_TEST_NODE_AGENT_PORT: "50171"
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE_TEST: orchard_test
+    services:
+      postgres:
+        image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          cache: false
+
+      - name: Install Elixir dependencies
+        run: make setup-elixir
+
+      - name: Bootstrap native environments from lockfiles
+        run: |
+          mise exec -- uv sync --locked --directory native/orchard_tokenizer
+          mise exec -- uv sync --locked --directory native/orchard_worker_mlx
+          mise exec -- native/orchard_worker_mlx/bin/orchard-worker-mlx --help >/dev/null
+
+      - name: Install OpenSpec dependencies
+        run: make setup-openspec
+
+      - name: Prepare test database
+        run: |
+          MIX_ENV=test mise exec -- mix ecto.create
+          MIX_ENV=test mise exec -- mix ecto.migrate
+
+      - name: Check formatting
+        run: mise exec -- mix format --check-formatted
+
+      - name: Compile without warnings
+        run: mise exec -- mix compile --warnings-as-errors
+
+      - name: Run Credo
+        run: mise exec -- mix credo --strict
+
+      - name: Run Dialyzer
+        run: mise exec -- mix dialyzer
+
+      - name: Run tests
+        run: mise exec -- mix test
+
+      - name: Run coverage
+        run: mise exec -- mix test --cover
+
+      - name: Validate OpenSpec
+        env:
+          OPENSPEC_TELEMETRY: "0"
+        run: mise exec -- npm run openspec -- validate --all --strict --no-interactive
