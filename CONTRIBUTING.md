@@ -50,6 +50,11 @@ subordinate to `SPEC.md`.
 Run the relevant validation workflow from `AGENTS.md` and report exact commands
 and outcomes in the PR. For bug fixes, include a regression test when practical.
 
+Pull requests and `main` are gated by the required Orchard CI check
+(`.github/workflows/required-validation.yml`), which runs the same pinned
+validation sequence on a fresh checkout. Local validation must still pass before
+handoff; CI is a backstop, not a substitute.
+
 For OpenSpec-backed work, also run:
 
 ```sh
