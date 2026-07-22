@@ -104,6 +104,14 @@ defmodule OrchardCLI.Commands.NodesTest do
   alias Orchard.Repo
   alias OrchardCLI.Commands.Nodes, as: NodesCmd
   alias OrchardCLI.Commands.NodesTest.FailingAuditLog
+  alias OrchardCLI.TestTemp
+
+  setup_all do
+    test_run = TestTemp.create_run!(prefix: "orchard-cli-node-trust")
+    on_exit(fn -> TestTemp.cleanup!(test_run) end)
+
+    {:ok, node_trust_test_run: test_run}
+  end
 
   setup do
     previous_console = Application.get_env(:orchard_controller, :console, [])
@@ -631,8 +639,10 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert Repo.get!(Node, node.id).state == :registered
     end
 
-    test "SPEC.md §4.7 yes execution admits a registered node and emits action result json" do
-      trust = establish_local_controller_identity!()
+    test "SPEC.md §4.7 yes execution admits a registered node and emits action result json", %{
+      node_trust_test_run: test_run
+    } do
+      trust = establish_local_controller_identity!(test_run)
       node = insert_node!(state: :registered, display_name: "admit-execute-node")
 
       assert {:ok, output} =
@@ -996,8 +1006,8 @@ defmodule OrchardCLI.Commands.NodesTest do
   end
 
   describe "action persistence failures" do
-    setup do
-      establish_local_controller_identity!()
+    setup %{node_trust_test_run: test_run} do
+      establish_local_controller_identity!(test_run)
       Application.put_env(:orchard_controller, :governance_audit_log_impl, FailingAuditLog)
       on_exit(fn -> Application.delete_env(:orchard_controller, :governance_audit_log_impl) end)
       :ok
@@ -1096,22 +1106,14 @@ defmodule OrchardCLI.Commands.NodesTest do
     end
   end
 
-  defp establish_local_controller_identity! do
+  defp establish_local_controller_identity!(test_run) do
     previous_trust = Application.get_env(:orchard_controller, :node_trust)
-
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "orchard-cli-node-trust-#{System.unique_integer([:positive, :monotonic])}"
-      )
-
-    File.mkdir!(root)
-    File.chmod!(root, 0o700)
-    trust_root = Path.join(root, "node-trust")
+    artifact = TestTemp.create_child!(test_run, prefix: "controller")
+    trust_root = TestTemp.path(artifact, "node-trust")
     Application.put_env(:orchard_controller, :node_trust, root: trust_root)
 
     on_exit(fn ->
-      File.rm_rf!(root)
+      TestTemp.cleanup!(artifact)
 
       if previous_trust do
         Application.put_env(:orchard_controller, :node_trust, previous_trust)
