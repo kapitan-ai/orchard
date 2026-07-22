@@ -86,6 +86,15 @@ jobs:
       - name: Run Credo
         run: mise exec -- mix credo --strict
 
+      - name: Cache Dialyzer PLTs
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.mix/dialyxir_erlang-*.plt
+            _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt
+            _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt.hash
+          key: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+
       - name: Run Dialyzer
         run: mise exec -- mix dialyzer
 
