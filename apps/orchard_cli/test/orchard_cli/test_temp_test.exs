@@ -48,17 +48,22 @@ defmodule OrchardCLI.TestTempTest do
   test "an abandoned held run bounds its wait and cleans up only its owned root", %{base: base} do
     label = "abandoned-run"
     ready = Path.join(base, "#{label}.ready")
+    armed = Path.join(base, "#{label}.armed")
     release = Path.join(base, "#{label}.release")
 
     task =
       Task.async(fn ->
-        run_fresh_beam(["hold", base, label, ready, release], [
+        run_fresh_beam(["hold", base, label, ready, armed, release], [
           {"ORCHARD_TEST_TEMP_HOLD_TIMEOUT_MS", "100"}
         ])
       end)
 
     root = await_ready!(task, ready, System.monotonic_time(:millisecond) + 5_000)
     assert File.dir?(root)
+
+    Process.sleep(150)
+    assert File.dir?(root)
+    OrchardCLI.TestTemp.atomic_write!(armed, "armed")
 
     {output, status} = Task.await(task, 5_000)
 
@@ -76,14 +81,17 @@ defmodule OrchardCLI.TestTempTest do
 
   defp start_held_run!(base, label) do
     ready = Path.join(base, "#{label}.ready")
+    armed = Path.join(base, "#{label}.armed")
     release = Path.join(base, "#{label}.release")
 
     task =
       Task.async(fn ->
-        run_fresh_beam(["hold", base, label, ready, release])
+        run_fresh_beam(["hold", base, label, ready, armed, release])
       end)
 
     root = await_ready!(task, ready, System.monotonic_time(:millisecond) + 5_000)
+    assert File.dir?(root)
+    OrchardCLI.TestTemp.atomic_write!(armed, "armed")
     %{release: release, root: root, task: task}
   end
 

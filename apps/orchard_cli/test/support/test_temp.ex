@@ -87,6 +87,7 @@ defmodule OrchardCLI.TestTempProcess do
 
   alias OrchardCLI.TestTemp
 
+  @arm_timeout_ms 60_000
   @hold_timeout_ms 60_000
 
   @spec main([String.t()]) :: :ok
@@ -101,12 +102,19 @@ defmodule OrchardCLI.TestTempProcess do
     IO.write(root)
   end
 
-  def main(["hold", base, label, ready, release]) do
+  def main(["hold", base, label, ready, armed, release]) do
     owner = create_marked_run!(base, label)
-    TestTemp.atomic_write!(ready, TestTemp.root(owner))
 
-    await_cleanup!(release, System.monotonic_time(:millisecond) + hold_timeout_ms())
-    TestTemp.cleanup!(owner)
+    try do
+      TestTemp.atomic_write!(ready, TestTemp.root(owner))
+
+      case await_signal!(armed, "armed", deadline(@arm_timeout_ms)) do
+        :ok -> await_signal!(release, "cleanup", deadline(hold_timeout_ms()))
+        :timeout -> :ok
+      end
+    after
+      TestTemp.cleanup!(owner)
+    end
   end
 
   defp hold_timeout_ms do
@@ -123,24 +131,26 @@ defmodule OrchardCLI.TestTempProcess do
     owner
   end
 
-  defp await_cleanup!(release, deadline) do
-    case File.read(release) do
-      {:ok, "cleanup"} ->
+  defp deadline(timeout_ms), do: System.monotonic_time(:millisecond) + timeout_ms
+
+  defp await_signal!(path, expected, deadline) do
+    case File.read(path) do
+      {:ok, ^expected} ->
         :ok
 
       {:error, :enoent} ->
         if System.monotonic_time(:millisecond) >= deadline do
-          :ok
+          :timeout
         else
           Process.sleep(10)
-          await_cleanup!(release, deadline)
+          await_signal!(path, expected, deadline)
         end
 
       {:ok, command} ->
-        raise "unexpected test-temp process command: #{inspect(command)}"
+        raise "unexpected test-temp process command in #{path}: #{inspect(command)}"
 
       {:error, reason} ->
-        raise File.Error, reason: reason, action: "read test-temp process command", path: release
+        raise File.Error, reason: reason, action: "read test-temp process command", path: path
     end
   end
 end
