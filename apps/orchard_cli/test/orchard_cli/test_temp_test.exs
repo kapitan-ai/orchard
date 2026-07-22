@@ -45,6 +45,28 @@ defmodule OrchardCLI.TestTempTest do
     end
   end
 
+  test "an abandoned held run bounds its wait and cleans up only its owned root", %{base: base} do
+    label = "abandoned-run"
+    ready = Path.join(base, "#{label}.ready")
+    release = Path.join(base, "#{label}.release")
+
+    task =
+      Task.async(fn ->
+        run_fresh_beam(["hold", base, label, ready, release], [
+          {"ORCHARD_TEST_TEMP_HOLD_TIMEOUT_MS", "100"}
+        ])
+      end)
+
+    root = await_ready!(task, ready, System.monotonic_time(:millisecond) + 5_000)
+    assert File.dir?(root)
+
+    {output, status} = Task.await(task, 5_000)
+
+    assert status == 0, "abandoned held run failed (status #{status}):\n#{output}"
+    refute File.exists?(release)
+    refute File.exists?(root)
+  end
+
   defp run_in_fresh_beam!(base, label, cleanup) do
     {output, status} = run_fresh_beam(["run", base, label, cleanup])
 
@@ -87,7 +109,7 @@ defmodule OrchardCLI.TestTempTest do
 
   defp release_and_await!(run) do
     if Process.alive?(run.task.pid) do
-      File.write!(run.release, "cleanup")
+      OrchardCLI.TestTemp.atomic_write!(run.release, "cleanup")
       {output, status} = Task.await(run.task, 5_000)
       assert status == 0, "fresh BEAM cleanup failed (status #{status}):\n#{output}"
     end
@@ -95,7 +117,7 @@ defmodule OrchardCLI.TestTempTest do
     :ok
   end
 
-  defp run_fresh_beam(args) do
+  defp run_fresh_beam(args, env \\ []) do
     elixir = System.find_executable("elixir") || flunk("elixir executable not found")
 
     System.cmd(
@@ -107,6 +129,7 @@ defmodule OrchardCLI.TestTempTest do
         "OrchardCLI.TestTempProcess.main(System.argv())",
         "--" | args
       ],
+      env: env,
       stderr_to_stdout: true
     )
   end

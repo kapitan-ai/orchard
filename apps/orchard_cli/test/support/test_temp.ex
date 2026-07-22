@@ -34,6 +34,14 @@ defmodule OrchardCLI.TestTemp do
     :ok
   end
 
+  @spec atomic_write!(String.t(), iodata()) :: :ok
+  def atomic_write!(path, contents) do
+    tmp = "#{path}.tmp-#{random_suffix()}"
+    File.write!(tmp, contents)
+    File.rename!(tmp, path)
+    :ok
+  end
+
   defp create_owned_root!(_base, _prefix, 0) do
     raise File.Error,
       reason: :eexist,
@@ -79,6 +87,8 @@ defmodule OrchardCLI.TestTempProcess do
 
   alias OrchardCLI.TestTemp
 
+  @hold_timeout_ms 60_000
+
   @spec main([String.t()]) :: :ok
   def main(["run", base, label, cleanup]) do
     owner = create_marked_run!(base, label)
@@ -93,10 +103,17 @@ defmodule OrchardCLI.TestTempProcess do
 
   def main(["hold", base, label, ready, release]) do
     owner = create_marked_run!(base, label)
-    File.write!(ready, TestTemp.root(owner))
+    TestTemp.atomic_write!(ready, TestTemp.root(owner))
 
-    await_cleanup!(release)
+    await_cleanup!(release, System.monotonic_time(:millisecond) + hold_timeout_ms())
     TestTemp.cleanup!(owner)
+  end
+
+  defp hold_timeout_ms do
+    case System.get_env("ORCHARD_TEST_TEMP_HOLD_TIMEOUT_MS") do
+      nil -> @hold_timeout_ms
+      value -> String.to_integer(value)
+    end
   end
 
   defp create_marked_run!(base, label) do
@@ -106,14 +123,18 @@ defmodule OrchardCLI.TestTempProcess do
     owner
   end
 
-  defp await_cleanup!(release) do
+  defp await_cleanup!(release, deadline) do
     case File.read(release) do
       {:ok, "cleanup"} ->
         :ok
 
       {:error, :enoent} ->
-        Process.sleep(10)
-        await_cleanup!(release)
+        if System.monotonic_time(:millisecond) >= deadline do
+          :ok
+        else
+          Process.sleep(10)
+          await_cleanup!(release, deadline)
+        end
 
       {:ok, command} ->
         raise "unexpected test-temp process command: #{inspect(command)}"
