@@ -3489,9 +3489,16 @@ defmodule Orchard.Inference.QueueManagerTest do
 
   defp manager_restarted?(manager, previous_pid) do
     case GenServer.whereis(manager) do
-      pid when is_pid(pid) and pid != previous_pid -> true
+      pid when is_pid(pid) and pid != previous_pid -> manager_ready?(pid)
       _other -> false
     end
+  end
+
+  defp manager_ready?(pid) do
+    :sys.get_state(pid, 100)
+    true
+  catch
+    :exit, _reason -> false
   end
 
   defp resume_manager(manager) do
