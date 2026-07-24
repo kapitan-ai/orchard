@@ -221,15 +221,15 @@ defmodule OrchardCLI.Commands.Cluster do
          :ok <- ops.ln(tmp_path, path) do
       case cleanup_tmp(tmp_path, ops) do
         :ok -> :ok
-        {:error, reason} -> contain_failed_cleanup(tmp_path, path, reason, ops)
+        {:error, reason} -> contain_failed_cleanup(tmp_path, reason, ops)
       end
     else
       {:error, reason} ->
-        contain_failed_output(tmp_path, path, reason, ops)
+        contain_failed_output(tmp_path, reason, ops)
     end
   end
 
-  defp contain_failed_output(tmp_path, output_path, reason, ops) do
+  defp contain_failed_output(tmp_path, reason, ops) do
     message =
       "cluster init minted a credential but One-time Secret Output failed: " <>
         format_file_error(reason)
@@ -240,16 +240,15 @@ defmodule OrchardCLI.Commands.Cluster do
 
       {:error, cleanup_reason} ->
         {:error, cleanup_message} =
-          contain_failed_cleanup(tmp_path, output_path, cleanup_reason, ops)
+          contain_failed_cleanup(tmp_path, cleanup_reason, ops)
 
         {:error, message <> "; " <> cleanup_message}
     end
   end
 
-  defp contain_failed_cleanup(tmp_path, output_path, reason, ops) do
+  defp contain_failed_cleanup(tmp_path, reason, ops) do
     containment = [
       plaintext_redaction: redact_file(tmp_path, ops),
-      output_cleanup: cleanup_tmp(output_path, ops),
       temporary_cleanup_retry: cleanup_tmp(tmp_path, ops)
     ]
 
