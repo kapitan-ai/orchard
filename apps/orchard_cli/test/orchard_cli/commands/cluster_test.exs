@@ -15,20 +15,42 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def open(path, modes), do: File.open(path, modes)
     def chmod(path, mode), do: File.chmod(path, mode)
     def close(file), do: File.close(file)
-    def rm(path), do: File.rm(path)
+
+    def rm(path) do
+      if fail_remove?(path) do
+        {:error, :eperm}
+      else
+        File.rm(path)
+      end
+    end
 
     def ln(source, target) do
-      if Process.get(:cluster_file_ops_fail_link) do
-        source
-        |> File.read!()
-        |> Jason.decode!()
-        |> Map.fetch!("api_token")
-        |> then(&Process.put(:cluster_file_ops_failed_token, &1))
+      if Process.get(:cluster_file_ops_capture_token) or
+           Process.get(:cluster_file_ops_fail_link) do
+        capture_token(source)
+      end
 
+      if Process.get(:cluster_file_ops_fail_link) do
         {:error, :eperm}
       else
         File.ln(source, target)
       end
+    end
+
+    defp fail_remove?(path) do
+      case Process.get(:cluster_file_ops_fail_remove) do
+        :preflight -> String.contains?(Path.basename(path), ".preflight-")
+        :temporary_secret -> String.contains?(Path.basename(path), ".tmp-")
+        _other -> false
+      end
+    end
+
+    defp capture_token(source) do
+      source
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.fetch!("api_token")
+      |> then(&Process.put(:cluster_file_ops_failed_token, &1))
     end
   end
 
@@ -120,6 +142,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute log =~ token
       refute log =~ "orchard_sk_"
       assert token_occurrences(File.read!(output_path), token) == 1
+      assert residual_files(tmp_dir) == [output_path]
     end
 
     test "SPEC.md §10.2 post-mint output failure never logs or returns plaintext", %{
@@ -166,6 +189,26 @@ defmodule OrchardCLI.Commands.ClusterTest do
       output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
       assert output_failed.payload["api_token_prefix"] =~ ~r/^orchard_kp_/
       refute inspect(Repo.all(AuditLog)) =~ token
+    end
+
+    test "SPEC.md §10.2 temporary unlink failure returns failure with no plaintext residual",
+         %{tmp_dir: tmp_dir} do
+      assert_failed_delivery_has_no_plaintext(
+        tmp_dir,
+        "failed-cleanup-admin",
+        capture_token: true,
+        fail_remove: :temporary_secret
+      )
+    end
+
+    test "SPEC.md §10.2 link and cleanup failures leave no plaintext residual",
+         %{tmp_dir: tmp_dir} do
+      assert_failed_delivery_has_no_plaintext(
+        tmp_dir,
+        "failed-link-cleanup-admin",
+        fail_link: true,
+        fail_remove: :temporary_secret
+      )
     end
 
     test "SPEC.md §11.9 force-new-admin requires yes and then mints recovery additively", %{
@@ -248,6 +291,39 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
       assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §11.9 preflight removal failure prevents minting and leaves no plaintext",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "admin.json")
+
+      {log, result} =
+        with_configurable_file_ops([fail_remove: :preflight], fn ->
+          log =
+            capture_log(fn ->
+              send(
+                self(),
+                {:cluster_result, ClusterCmd.run(["init", "--output", output_path, "--json"])}
+              )
+            end)
+
+          assert_receive {:cluster_result, result}
+          {log, result}
+        end)
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ "orchard_sk_"
+      end
     end
 
     test "SPEC.md §11.9 --json missing --output emits a stable JSON error object" do
@@ -495,13 +571,20 @@ defmodule OrchardCLI.Commands.ClusterTest do
     |> Kernel.-(1)
   end
 
-  defp with_configurable_file_ops(fun) do
+  defp with_configurable_file_ops(fun),
+    do: with_configurable_file_ops([fail_link: true], fun)
+
+  defp with_configurable_file_ops(settings, fun) do
     previous_impl = Application.get_env(:orchard_cli, :cluster_file_ops)
     previous_fail_link = Process.get(:cluster_file_ops_fail_link)
+    previous_fail_remove = Process.get(:cluster_file_ops_fail_remove)
+    previous_capture_token = Process.get(:cluster_file_ops_capture_token)
     previous_failed_token = Process.get(:cluster_file_ops_failed_token)
 
     Application.put_env(:orchard_cli, :cluster_file_ops, ConfigurableFileOps)
-    Process.put(:cluster_file_ops_fail_link, true)
+    Process.put(:cluster_file_ops_fail_link, Keyword.get(settings, :fail_link, false))
+    restore_process_setting(:cluster_file_ops_fail_remove, settings[:fail_remove])
+    Process.put(:cluster_file_ops_capture_token, Keyword.get(settings, :capture_token, false))
     Process.delete(:cluster_file_ops_failed_token)
 
     try do
@@ -509,8 +592,63 @@ defmodule OrchardCLI.Commands.ClusterTest do
     after
       restore_app_env(:cluster_file_ops, previous_impl)
       restore_process_setting(:cluster_file_ops_fail_link, previous_fail_link)
+      restore_process_setting(:cluster_file_ops_fail_remove, previous_fail_remove)
+      restore_process_setting(:cluster_file_ops_capture_token, previous_capture_token)
       restore_process_setting(:cluster_file_ops_failed_token, previous_failed_token)
     end
+  end
+
+  defp assert_failed_delivery_has_no_plaintext(tmp_dir, client_name, settings) do
+    output_path = Path.join(tmp_dir, "#{client_name}.json")
+
+    {log, result, token} =
+      with_configurable_file_ops(settings, fn ->
+        log =
+          capture_log(fn ->
+            send(
+              self(),
+              {:cluster_result,
+               ClusterCmd.run([
+                 "init",
+                 "--output",
+                 output_path,
+                 "--json",
+                 "--client-name",
+                 client_name
+               ])}
+            )
+          end)
+
+        assert_receive {:cluster_result, result}
+        token = Process.get(:cluster_file_ops_failed_token)
+        assert is_binary(token)
+        {log, result, token}
+      end)
+
+    assert {:error, message, 1} = result
+    assert Jason.decode!(message)["code"] == "one_time_secret_output_failed"
+    refute message =~ token
+    refute log =~ token
+    refute log =~ "orchard_sk_"
+    refute File.exists?(output_path)
+
+    for path <- residual_files(tmp_dir) do
+      refute File.read!(path) =~ token
+      refute File.read!(path) =~ "orchard_sk_"
+    end
+
+    assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+    assert Repo.aggregate(ApiKey, :count, :id) == 1
+    assert Repo.aggregate(RoleBinding, :count, :id) == 1
+    assert Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+    refute inspect(Repo.all(AuditLog)) =~ token
+  end
+
+  defp residual_files(tmp_dir) do
+    tmp_dir
+    |> File.ls!()
+    |> Enum.map(&Path.join(tmp_dir, &1))
+    |> Enum.filter(&File.regular?/1)
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:orchard_cli, key)

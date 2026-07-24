@@ -112,13 +112,11 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp verify_preflight_probe_closed(close_result, probe, parent, ops) do
-    ops.rm(probe)
-
-    case close_result do
-      :ok ->
+    case {close_result, cleanup_tmp(probe, ops)} do
+      {:ok, :ok} ->
         :ok
 
-      {:error, _reason} ->
+      {_close_result, _cleanup_result} ->
         {:error, :output_parent_not_writable,
          "output parent directory is not writable: #{parent}", 1}
     end
@@ -163,10 +161,7 @@ defmodule OrchardCLI.Commands.Cluster do
   defp write_output_and_render(result, output_path, json?) do
     case write_output(output_path, result) do
       :ok ->
-        {:ok, render_init_success(result, output_path, json?, [])}
-
-      {:ok, {:tmp_cleanup_failed, tmp_path}} ->
-        {:ok, render_init_success(result, output_path, json?, [tmp_leftover_warning(tmp_path)])}
+        {:ok, render_init_success(result, output_path, json?)}
 
       {:error, message} ->
         message =
@@ -204,10 +199,6 @@ defmodule OrchardCLI.Commands.Cluster do
   defp format_persistence_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_persistence_error(reason), do: inspect(reason)
 
-  defp tmp_leftover_warning(tmp_path) do
-    "credential was written but the temporary secret file #{tmp_path} could not be removed; delete it manually."
-  end
-
   defp write_output(path, result) do
     ops = file_ops()
 
@@ -230,14 +221,52 @@ defmodule OrchardCLI.Commands.Cluster do
          :ok <- ops.ln(tmp_path, path) do
       case cleanup_tmp(tmp_path, ops) do
         :ok -> :ok
-        {:error, _reason} -> {:ok, {:tmp_cleanup_failed, tmp_path}}
+        {:error, reason} -> contain_failed_cleanup(tmp_path, path, reason, ops)
       end
     else
       {:error, reason} ->
-        ops.rm(tmp_path)
+        contain_failed_output(tmp_path, path, reason, ops)
+    end
+  end
 
-        {:error,
-         "cluster init minted a credential but One-time Secret Output failed: #{format_file_error(reason)}"}
+  defp contain_failed_output(tmp_path, output_path, reason, ops) do
+    message =
+      "cluster init minted a credential but One-time Secret Output failed: " <>
+        format_file_error(reason)
+
+    case cleanup_tmp(tmp_path, ops) do
+      :ok ->
+        {:error, message}
+
+      {:error, cleanup_reason} ->
+        {:error, cleanup_message} =
+          contain_failed_cleanup(tmp_path, output_path, cleanup_reason, ops)
+
+        {:error, message <> "; " <> cleanup_message}
+    end
+  end
+
+  defp contain_failed_cleanup(tmp_path, output_path, reason, ops) do
+    containment = [
+      plaintext_redaction: redact_file(tmp_path, ops),
+      output_cleanup: cleanup_tmp(output_path, ops),
+      temporary_cleanup_retry: cleanup_tmp(tmp_path, ops)
+    ]
+
+    detail =
+      containment
+      |> Enum.reject(fn {_step, result} -> result == :ok end)
+      |> inspect()
+
+    {:error,
+     "cluster init minted a credential but temporary secret cleanup failed: " <>
+       "#{format_file_error(reason)}; containment=#{detail}"}
+  end
+
+  defp redact_file(path, ops) do
+    case ops.open(path, [:write, :binary]) do
+      {:ok, file} -> ops.close(file)
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -265,27 +294,26 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp render_init_success(result, output_path, true, warnings) do
-    base = %{
-      object: @cluster_init_object,
-      contract_version: @cluster_init_contract_version,
-      api_client_id: result.api_client_id,
-      api_token_id: result.api_token_id,
-      api_token_prefix: result.api_token_prefix,
-      recovery: result.recovery?,
-      output_path: output_path,
-      next_steps: [
-        "Provision named admin API Clients for regular operators.",
-        "Revoke this bootstrap credential after named admin access is verified."
-      ]
-    }
-
-    base
-    |> maybe_put_warnings(warnings)
-    |> Jason.encode!(pretty: true)
+  defp render_init_success(result, output_path, true) do
+    Jason.encode!(
+      %{
+        object: @cluster_init_object,
+        contract_version: @cluster_init_contract_version,
+        api_client_id: result.api_client_id,
+        api_token_id: result.api_token_id,
+        api_token_prefix: result.api_token_prefix,
+        recovery: result.recovery?,
+        output_path: output_path,
+        next_steps: [
+          "Provision named admin API Clients for regular operators.",
+          "Revoke this bootstrap credential after named admin access is verified."
+        ]
+      },
+      pretty: true
+    )
   end
 
-  defp render_init_success(result, output_path, false, warnings) do
+  defp render_init_success(result, output_path, false) do
     lines = [
       "Cluster admin credential minted.",
       "One-time Secret Output: #{output_path}",
@@ -296,12 +324,8 @@ defmodule OrchardCLI.Commands.Cluster do
       "Next: provision named admin API Clients for regular operators, verify access, then revoke this bootstrap credential."
     ]
 
-    (lines ++ Enum.map(warnings, &"Warning: #{&1}"))
-    |> Enum.join("\n")
+    Enum.join(lines, "\n")
   end
-
-  defp maybe_put_warnings(base, []), do: base
-  defp maybe_put_warnings(base, warnings), do: Map.put(base, :warnings, warnings)
 
   defp render_init_error(code, message, exit_code, true) do
     {:error,
