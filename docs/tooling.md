@@ -67,11 +67,16 @@ make dev
 make dev-controller
 make dev-node-agent
 make openspec
+make validate-product-version
 make check-elixir
 ```
 
 Use the documented `mise exec --` commands as the authority when a Makefile
 target and this guide disagree.
+
+`make validate-product-version` is a read-only normal source validation command.
+It validates the exact root `VERSION` grammar and requires the umbrella plus every discovered first-party OTP application to report the same Product Version.
+Passing this command does not establish or require a release transition, tag, candidate, artifact, credential, or publication state.
 
 Elixir validation:
 

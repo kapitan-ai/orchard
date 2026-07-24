@@ -60,6 +60,9 @@ jobs:
         with:
           cache: false
 
+      - name: Validate Product Version consistency
+        run: make validate-product-version
+
       - name: Install Elixir dependencies
         run: make setup-elixir
 

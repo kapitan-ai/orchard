@@ -4517,6 +4517,11 @@ The system SHALL guarantee:
 
 ### 13.1 Versioning rules
 
+* Orchard Product Version is distinct from REST API path versions, gRPC package versions, Build Provenance, Apple build numbers, and independently versioned internal components.
+* The root `VERSION` file is the canonical Orchard Product Version storage and SHALL contain exactly one ASCII pre-1.0 SemVer line followed by one terminal newline, with no comments, surrounding whitespace, additional lines, or build metadata.
+* The umbrella and every first-party OTP application SHALL derive Mix project version metadata from root `VERSION`, and normal validation SHALL fail on any disagreement.
+* Ordinary commits and merges SHALL retain the current Product Version and use the full source commit, build date, and build channel as distinct Build Provenance.
+* Normal source validation SHALL accept a valid development Product Version without requiring or creating a release transition, tag, candidate, artifact, or publication state.
 * external REST API path version: `/v1`
 * internal gRPC package version: `cluster.v1`
 * schema migrations are forward-only

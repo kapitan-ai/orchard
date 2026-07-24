@@ -1,4 +1,4 @@
-.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec format compile credo dialyzer test cover check-elixir
+.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version format compile credo dialyzer test cover check-elixir
 
 MIX_BOOTSTRAP_ERL_AFLAGS = -ssl protocol_version \"['tlsv1.2']\"
 
@@ -10,6 +10,7 @@ help:
 	  '  make dev-controller Run source-dev controller host' \
 	  '  make dev-node-agent Run source-dev node-agent host' \
 	  '  make openspec       Run pinned OpenSpec validation' \
+	  '  make validate-product-version Validate Product Version consistency' \
 	  '  make format         Run Elixir formatter' \
 	  '  make test           Run default test suite' \
 	  '  make check-elixir   Run full Elixir quality workflow'
@@ -41,6 +42,9 @@ dev-node-agent:
 
 openspec:
 	OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive
+
+validate-product-version:
+	mise exec -- elixir scripts/validate-product-version.exs
 
 format:
 	mise exec -- mix format

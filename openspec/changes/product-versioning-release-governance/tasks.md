@@ -21,8 +21,8 @@
 
 ## 3. Product-Version Authority And Normal Validation
 
-- [ ] 3.1 Introduce root `VERSION` with the current Product Version and the exact file grammar without changing its value.
-- [ ] 3.2 Derive or validate the umbrella and all first-party Mix application versions against the canonical authority.
+- [x] 3.1 Introduce root `VERSION` with the current Product Version and the exact file grammar without changing its value.
+- [x] 3.2 Derive or validate the umbrella and all first-party Mix application versions against the canonical authority.
 - [ ] 3.3 Derive or validate runtime version reporting, controller membership evidence, node-agent advertisement, and CLI fallback reporting against the canonical authority.
 - [ ] 3.4 Add a repository command that validates Product Version grammar, dedicated transition evidence, canonical detached approvals, one-channel signed-tag rules, first-party agreement, compatibility declarations, Apple allocation, and packaging mappings without mutating files.
 - [ ] 3.5 Add public-interface regression tests that fail on root, child Mix, runtime, PKG, or app product-version drift.
