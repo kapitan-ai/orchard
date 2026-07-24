@@ -169,9 +169,27 @@ defmodule Orchard.API.Ops.SchedulerExplanationsControllerTest do
                ]
              }
     end
+
+    test "preserves a legacy persisted degraded health bonus" do
+      token = operator_token!("ops-scheduler-legacy-health-bonus")
+
+      request =
+        persist_valid_explanation!(
+          "resp_scheduler_legacy_health_bonus",
+          %{health_bonus: 10}
+        )
+
+      conn = get_explanation(token, request.public_id)
+
+      assert conn.status == 200
+
+      assert [
+               %{"components" => %{"health_bonus" => 10}}
+             ] = Jason.decode!(conn.resp_body)["scored_candidates"]
+    end
   end
 
-  defp persist_valid_explanation!(public_id) do
+  defp persist_valid_explanation!(public_id, components \\ %{pool_bonus: 200}) do
     request = create_request!(%{public_id: public_id})
 
     assert {:ok, request} =
@@ -185,7 +203,7 @@ defmodule Orchard.API.Ops.SchedulerExplanationsControllerTest do
                    eligible: true,
                    tier: :loaded,
                    score: 842,
-                   components: %{pool_bonus: 200},
+                   components: components,
                    reason_codes: []
                  }
                ],
