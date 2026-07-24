@@ -980,10 +980,186 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp remove_owned_path(path, identity, ops),
-    do: remove_owned(path, identity, ops, :rm)
+    do: remove_owned_via_quarantine(path, identity, :regular, ops, :rm)
 
   defp remove_owned_directory(path, identity, ops),
-    do: remove_owned(path, identity, ops, :rmdir)
+    do: remove_owned_via_quarantine(path, identity, :directory, ops, :rmdir)
+
+  defp remove_owned_via_quarantine(path, identity, type, ops, operation) do
+    case ops.lstat(path) do
+      {:ok, stat} ->
+        quarantine_if_identity_matches(path, stat, identity, type, ops, operation)
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp quarantine_if_identity_matches(path, stat, identity, type, ops, operation) do
+    if file_identity(stat) == identity and stat.type == type do
+      create_cleanup_quarantine(path, identity, type, ops, operation, @reservation_attempts)
+    else
+      {:error, :path_identity_changed}
+    end
+  end
+
+  defp create_cleanup_quarantine(_path, _identity, _type, _ops, _operation, 0),
+    do: {:error, :cleanup_quarantine_collision}
+
+  defp create_cleanup_quarantine(path, identity, type, ops, operation, attempts_left) do
+    quarantine_dir =
+      Path.join(
+        Path.dirname(path),
+        ".orchard-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    case ops.mkdir(quarantine_dir) do
+      :ok ->
+        prepare_cleanup_quarantine(path, identity, type, quarantine_dir, ops, operation)
+
+      {:error, :eexist} ->
+        create_cleanup_quarantine(path, identity, type, ops, operation, attempts_left - 1)
+
+      {:error, reason} ->
+        {:error, {:cleanup_quarantine_create, reason}}
+    end
+  end
+
+  defp prepare_cleanup_quarantine(path, identity, type, quarantine_dir, ops, operation) do
+    case ops.lstat(quarantine_dir) do
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        directory_identity = file_identity(stat)
+
+        case secure_cleanup_quarantine(quarantine_dir, directory_identity, ops) do
+          :ok ->
+            move_to_cleanup_quarantine(
+              path,
+              identity,
+              type,
+              quarantine_dir,
+              directory_identity,
+              ops,
+              operation
+            )
+
+          {:error, reason} ->
+            cleanup = remove_owned(quarantine_dir, directory_identity, ops, :rmdir)
+
+            {:error,
+             preserve_cleanup_result(
+               {:cleanup_quarantine_prepare, reason},
+               cleanup_quarantine: cleanup
+             )}
+        end
+
+      {:ok, _stat} ->
+        {:error, :cleanup_quarantine_type_changed}
+
+      {:error, reason} ->
+        {:error, {:cleanup_quarantine_stat, reason}}
+    end
+  end
+
+  defp secure_cleanup_quarantine(quarantine_dir, directory_identity, ops) do
+    with :ok <- ops.chmod(quarantine_dir, 0o700) do
+      verify_path(quarantine_dir, directory_identity, :directory, 0o700, ops)
+    end
+  end
+
+  defp move_to_cleanup_quarantine(
+         path,
+         identity,
+         type,
+         quarantine_dir,
+         directory_identity,
+         ops,
+         operation
+       ) do
+    quarantine_path = Path.join(quarantine_dir, Path.basename(path))
+
+    case ops.rename(path, quarantine_path) do
+      :ok ->
+        verify_and_remove_quarantined(
+          identity,
+          type,
+          quarantine_path,
+          quarantine_dir,
+          directory_identity,
+          ops,
+          operation
+        )
+
+      {:error, reason} ->
+        cleanup = remove_owned(quarantine_dir, directory_identity, ops, :rmdir)
+
+        {:error,
+         preserve_cleanup_result(
+           {:cleanup_quarantine_move, reason},
+           cleanup_quarantine: cleanup
+         )}
+    end
+  end
+
+  defp verify_and_remove_quarantined(
+         identity,
+         type,
+         quarantine_path,
+         quarantine_dir,
+         directory_identity,
+         ops,
+         operation
+       ) do
+    case ops.lstat(quarantine_path) do
+      {:ok, stat} when stat.type == type ->
+        if file_identity(stat) == identity do
+          remove_quarantined(
+            identity,
+            quarantine_path,
+            quarantine_dir,
+            directory_identity,
+            ops,
+            operation
+          )
+        else
+          {:error, {:path_identity_changed, {:preserved_at, quarantine_path}}}
+        end
+
+      {:ok, _stat} ->
+        {:error, {:unexpected_path_type, {:preserved_at, quarantine_path}}}
+
+      {:error, reason} ->
+        {:error, {:cleanup_quarantine_verify, reason}}
+    end
+  end
+
+  defp remove_quarantined(
+         identity,
+         quarantine_path,
+         quarantine_dir,
+         directory_identity,
+         ops,
+         operation
+       ) do
+    case remove_verified_path(quarantine_path, ops, operation) do
+      :ok ->
+        remove_owned(quarantine_dir, directory_identity, ops, :rmdir)
+
+      {:error, reason} ->
+        redaction =
+          if operation == :rm,
+            do: redact_identity_bound_path([quarantine_path], identity, ops),
+            else: :ok
+
+        {:error,
+         preserve_cleanup_result(
+           {:cleanup_quarantine_remove, reason},
+           plaintext_redaction: redaction
+         )}
+    end
+  end
 
   defp remove_owned(path, identity, ops, operation) do
     case ops.lstat(path) do

@@ -15,11 +15,14 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def lstat(path) do
       case File.lstat(path) do
         {:ok, stat} ->
-          if Process.get(:cluster_file_ops_foreign_owner_symlink) == path do
-            {:ok, %{stat | uid: stat.uid + 1}}
-          else
-            {:ok, stat}
-          end
+          maybe_swap_after_lstat(path, stat)
+
+          returned_stat =
+            if Process.get(:cluster_file_ops_foreign_owner_symlink) == path,
+              do: %{stat | uid: stat.uid + 1},
+              else: stat
+
+          {:ok, returned_stat}
 
         error ->
           error
@@ -68,6 +71,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def chmod(path, mode), do: File.chmod(path, mode)
+    def rename(source, target), do: File.rename(source, target)
 
     def close(file) do
       result = File.close(file)
@@ -137,6 +141,43 @@ defmodule OrchardCLI.Commands.ClusterTest do
         :temporary_secret -> String.contains?(Path.basename(path), ".tmp-")
         _other -> false
       end
+    end
+
+    defp maybe_swap_after_lstat(path, %File.Stat{type: :regular}) do
+      if Process.get(:cluster_file_ops_swap_after_lstat) == :preflight_file and
+           String.contains?(Path.basename(path), ".preflight-") and
+           increment_matching_lstat_count() == 2 do
+        foreign_contents = "unrelated preflight replacement"
+        File.rm!(path)
+        File.write!(path, foreign_contents)
+        Process.put(:cluster_file_ops_swapped_path, path)
+        Process.put(:cluster_file_ops_swapped_contents, foreign_contents)
+      end
+    end
+
+    defp maybe_swap_after_lstat(path, %File.Stat{type: :directory}) do
+      if Process.get(:cluster_file_ops_swap_after_lstat) == :preflight_directory and
+           String.contains?(Path.basename(path), ".preflight-dir-") and
+           increment_matching_lstat_count() == 3 do
+        File.rmdir!(path)
+        File.mkdir!(path)
+        File.chmod!(path, 0o700)
+        replacement = File.lstat!(path)
+
+        Process.put(
+          :cluster_file_ops_swapped_identity,
+          {replacement.type, replacement.major_device, replacement.minor_device,
+           replacement.inode}
+        )
+      end
+    end
+
+    defp maybe_swap_after_lstat(_path, _stat), do: :ok
+
+    defp increment_matching_lstat_count do
+      count = Process.get(:cluster_file_ops_matching_lstat_count, 0) + 1
+      Process.put(:cluster_file_ops_matching_lstat_count, count)
+      count
     end
 
     defp capture_token(source) do
@@ -340,7 +381,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
         end)
 
       assert {:error, message, 1} = result
-      assert File.read!(foreign_path) == foreign_contents
+      assert_preserved_file_contents(tmp_dir, foreign_path, foreign_contents)
       assert Jason.decode!(message)["code"] == "output_parent_not_writable"
       assert Jason.decode!(message)["message"] =~ "cleanup_unresolved"
       refute message =~ "orchard_sk_"
@@ -633,6 +674,44 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end
 
+    test "SPEC.md §11.9 preflight file cleanup preserves a pathname replacement",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "admin.json")
+
+      {log, result, swapped_path, swapped_contents} =
+        with_configurable_file_ops([swap_after_lstat: :preflight_file], fn ->
+          log =
+            capture_log(fn ->
+              send(
+                self(),
+                {:cluster_result, ClusterCmd.run(["init", "--output", output_path, "--json"])}
+              )
+            end)
+
+          assert_receive {:cluster_result, result}
+
+          {log, result, Process.get(:cluster_file_ops_swapped_path),
+           Process.get(:cluster_file_ops_swapped_contents)}
+        end)
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+      refute File.exists?(output_path)
+      assert is_binary(swapped_path)
+
+      assert Enum.any?(
+               residual_files(tmp_dir),
+               &(File.read!(&1) == swapped_contents)
+             )
+
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
     test "SPEC.md §11.9 parent directory removal failure prevents minting",
          %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "admin.json")
@@ -656,6 +735,37 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute message =~ "orchard_sk_"
       refute log =~ "orchard_sk_"
       refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §11.9 preflight directory cleanup preserves a pathname replacement",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "admin.json")
+
+      {log, result, swapped_identity} =
+        with_configurable_file_ops([swap_after_lstat: :preflight_directory], fn ->
+          log =
+            capture_log(fn ->
+              send(
+                self(),
+                {:cluster_result, ClusterCmd.run(["init", "--output", output_path, "--json"])}
+              )
+            end)
+
+          assert_receive {:cluster_result, result}
+          {log, result, Process.get(:cluster_file_ops_swapped_identity)}
+        end)
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+      refute File.exists?(output_path)
+      assert is_tuple(swapped_identity)
+      assert swapped_identity in residual_directory_identities(tmp_dir)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 0
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
@@ -931,6 +1041,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
     previous_close_failure_injected = Process.get(:cluster_file_ops_close_failure_injected)
     previous_foreign_owner_parent = Process.get(:cluster_file_ops_foreign_owner_parent)
     previous_foreign_owner_symlink = Process.get(:cluster_file_ops_foreign_owner_symlink)
+    previous_swap_after_lstat = Process.get(:cluster_file_ops_swap_after_lstat)
+    previous_matching_lstat_count = Process.get(:cluster_file_ops_matching_lstat_count)
+    previous_swapped_path = Process.get(:cluster_file_ops_swapped_path)
+    previous_swapped_contents = Process.get(:cluster_file_ops_swapped_contents)
+    previous_swapped_identity = Process.get(:cluster_file_ops_swapped_identity)
     previous_failed_token = Process.get(:cluster_file_ops_failed_token)
 
     Application.put_env(:orchard_cli, :cluster_file_ops, ConfigurableFileOps)
@@ -962,10 +1077,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
       settings[:foreign_owner_symlink]
     )
 
+    restore_process_setting(:cluster_file_ops_swap_after_lstat, settings[:swap_after_lstat])
+
     Process.delete(:cluster_file_ops_foreign_temporary_path)
     Process.delete(:cluster_file_ops_foreign_temporary_after_link_path)
     Process.delete(:cluster_file_ops_link_succeeded)
     Process.delete(:cluster_file_ops_close_failure_injected)
+    Process.delete(:cluster_file_ops_matching_lstat_count)
+    Process.delete(:cluster_file_ops_swapped_path)
+    Process.delete(:cluster_file_ops_swapped_contents)
+    Process.delete(:cluster_file_ops_swapped_identity)
     Process.delete(:cluster_file_ops_failed_token)
 
     try do
@@ -1016,6 +1137,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
         previous_foreign_owner_symlink
       )
 
+      restore_process_setting(:cluster_file_ops_swap_after_lstat, previous_swap_after_lstat)
+
+      restore_process_setting(
+        :cluster_file_ops_matching_lstat_count,
+        previous_matching_lstat_count
+      )
+
+      restore_process_setting(:cluster_file_ops_swapped_path, previous_swapped_path)
+      restore_process_setting(:cluster_file_ops_swapped_contents, previous_swapped_contents)
+      restore_process_setting(:cluster_file_ops_swapped_identity, previous_swapped_identity)
       restore_process_setting(:cluster_file_ops_failed_token, previous_failed_token)
     end
   end
@@ -1056,6 +1187,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
     assert_output_state(output_path, Keyword.get(settings, :expected_output, :absent))
 
     assert_foreign_temporary(
+      tmp_dir,
       foreign_temporary_path,
       Keyword.get(settings, :expected_foreign_temporary)
     )
@@ -1075,11 +1207,20 @@ defmodule OrchardCLI.Commands.ClusterTest do
   defp assert_output_state(output_path, :absent), do: refute(File.exists?(output_path))
   defp assert_output_state(output_path, contents), do: assert(File.read!(output_path) == contents)
 
-  defp assert_foreign_temporary(_path, nil), do: :ok
+  defp assert_foreign_temporary(_tmp_dir, _path, nil), do: :ok
 
-  defp assert_foreign_temporary(path, contents) do
+  defp assert_foreign_temporary(tmp_dir, path, contents) do
     assert is_binary(path)
-    assert File.read!(path) == contents
+    assert_preserved_file_contents(tmp_dir, path, contents)
+  end
+
+  defp assert_preserved_file_contents(tmp_dir, original_path, contents) do
+    paths =
+      if File.regular?(original_path),
+        do: [original_path | residual_files(tmp_dir)],
+        else: residual_files(tmp_dir)
+
+    assert Enum.any?(paths, &(File.read!(&1) == contents))
   end
 
   defp residual_files(tmp_dir) do
@@ -1095,6 +1236,23 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end)
     |> Enum.sort()
+  end
+
+  defp residual_directory_identities(tmp_dir) do
+    tmp_dir
+    |> File.ls!()
+    |> Enum.flat_map(fn entry ->
+      path = Path.join(tmp_dir, entry)
+
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :directory} = stat} ->
+          identity = {stat.type, stat.major_device, stat.minor_device, stat.inode}
+          [identity | residual_directory_identities(path)]
+
+        _other ->
+          []
+      end
+    end)
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:orchard_cli, key)
