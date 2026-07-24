@@ -1,10 +1,12 @@
+Code.require_file("../../config/product_version.exs", __DIR__)
+
 defmodule OrchardCLI.MixProject do
   use Mix.Project
 
   def project do
     [
       app: :orchard_cli,
-      version: "0.5.0-dev",
+      version: Orchard.ProductVersion.read!(),
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
