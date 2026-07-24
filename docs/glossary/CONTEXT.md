@@ -709,6 +709,70 @@ _Avoid_: Blocker, permission grant
 
 ### Packaging, Trust, and Operations
 
+**Product Version**:
+The canonical semantic version that identifies an Orchard development line, release candidate, or final release.
+_Avoid_: build number, Git SHA, component package version
+
+**Build Provenance**:
+The evidence that distinguishes one Orchard build by its source, channel, build sequence, components, verification, and artifact identities.
+_Avoid_: Product Version, release notes
+
+**Release Line**:
+An explicitly approved Orchard compatibility family identified by a product-version major and minor pair.
+_Avoid_: Milestone, numerically inferred previous version
+
+**Previous Supported Release Line**:
+The one explicitly named earlier Release Line that the current Controller release must support for Node Agent compatibility.
+_Avoid_: automatic minor-version subtraction, every historical release
+
+**Release Candidate**:
+A pre-final Orchard Product Version whose ordered `rc` identifier names its maturity relative to the corresponding final version.
+_Avoid_: Candidate, development build, GitHub draft
+
+**Candidate**:
+One immutable signed version tag, source commit, and Release Channel that is eligible for governed Orchard artifact construction.
+_Avoid_: untagged build, mutable channel promotion, GitHub draft
+
+**Verified Candidate**:
+A Candidate whose final artifact identities and required evidence are sealed in an immutable Candidate Manifest.
+_Avoid_: published release, successful build attempt
+
+**Release Channel**:
+The complete contract for a release audience, eligible version form, required artifacts, verification level, publication surfaces, and completion condition.
+_Avoid_: build metadata only, deployment environment
+
+**Candidate Manifest**:
+The immutable machine-readable identity and verification record for one Verified Candidate.
+_Avoid_: mutable release status, checksum sidecar, State Attestation
+
+**State Attestation**:
+Append-only evidence of a release approval, attempt, surface observation, or state transition for one Candidate Manifest.
+_Avoid_: Candidate Manifest, mutable current-state field
+
+**Promotion**:
+The movement of exact Verified Candidate bytes to a required release surface without rebuilding, resigning, or repackaging them.
+_Avoid_: rebuild, artifact replacement
+
+**Partially Published Release**:
+A release for which at least one required publication surface is live while another required surface remains incomplete.
+_Avoid_: Published Release, Draft, failed build
+
+**Delivered Distribution**:
+A channel distribution that has reached every required restricted-delivery surface without representing a Published Release.
+_Avoid_: Published Release, partial delivery, build completion
+
+**Published Release**:
+A release whose exact approved bytes have reached every publication surface required by its Release Channel.
+_Avoid_: valid tag, Verified Candidate, one-surface publication
+
+**Solo-owner Custodianship**:
+The current operating model in which the Repository Owner holds all release, signing, publication, allocation, and trust-administration roles while preserving separate actions and evidence.
+_Avoid_: two-person control, unrestricted manual release
+
+**Single-owner Exception**:
+A Candidate-bound authorization that permits Solo-owner Custodianship for one exact trial, pilot, or release distribution under mandatory compensating controls.
+_Avoid_: permanent waiver, reusable approval, two-person control
+
 **Transport Mode**:
 The public API listener mode: reverse proxy, direct HTTPS, or degraded loopback HTTP.
 _Avoid_: Certificate Source, internal mTLS
