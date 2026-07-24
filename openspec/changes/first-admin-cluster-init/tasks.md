@@ -15,9 +15,9 @@
 ## 3. Tests
 
 - [x] 3.1 Governance tests: happy path with exact ADR 0004 binding shape; one-shot guard; guard race safety; recovery path adds without mutating existing credentials; hash-only persistence; audit event; non-leader refusal. Cite SPEC §11.9 and §10.2 where natural.
-  Completion note: Added governance tests for fresh minting, stable second-init refusal, concurrent guard race safety, additive recovery, hash-only persistence, cluster audit, and shared write-gate refusal.
+  Completion note: Added governance tests for fresh minting, stable second-init refusal, concurrent guard race safety with distinct PostgreSQL backend sessions proven to wait on the held advisory lock, additive recovery, hash-only token persistence under the canonical API Token contract, cluster audit, and shared write-gate refusal.
 - [x] 3.2 CLI tests: output preflight failure before any mint; `cluster_already_initialized` error contract; `--force-new-admin` confirmation gate; JSON contract stability; secret emitted exactly once and never logged.
-  Completion note: Added CLI tests for output preflight, JSON success shape, one-time secret file content, stdout secret suppression, stable second-init error, and recovery confirmation.
+  Completion note: Added CLI tests for output preflight, JSON success shape, one-time secret file content, stdout secret suppression, captured-log redaction on success and deterministic post-mint output failure, stable second-init error, and recovery confirmation.
 
 ## 4. Validation
 

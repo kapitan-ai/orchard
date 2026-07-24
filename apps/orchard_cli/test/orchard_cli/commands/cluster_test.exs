@@ -1,10 +1,36 @@
 defmodule OrchardCLI.Commands.ClusterTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance.{ApiKey, AuditLog, RoleBinding, ServiceAccount}
   alias Orchard.Repo
   alias OrchardCLI.Commands.Cluster, as: ClusterCmd
+
+  defmodule ConfigurableFileOps do
+    def exists?(path), do: File.exists?(path)
+    def dir?(path), do: File.dir?(path)
+    def lstat(path), do: File.lstat(path)
+    def open(path, modes), do: File.open(path, modes)
+    def chmod(path, mode), do: File.chmod(path, mode)
+    def close(file), do: File.close(file)
+    def rm(path), do: File.rm(path)
+
+    def ln(source, target) do
+      if Process.get(:cluster_file_ops_fail_link) do
+        source
+        |> File.read!()
+        |> Jason.decode!()
+        |> Map.fetch!("api_token")
+        |> then(&Process.put(:cluster_file_ops_failed_token, &1))
+
+        {:error, :eperm}
+      else
+        File.ln(source, target)
+      end
+    end
+  end
 
   setup do
     :ok = Sandbox.checkout(Repo)
@@ -59,15 +85,23 @@ defmodule OrchardCLI.Commands.ClusterTest do
     } do
       output_path = Path.join(tmp_dir, "admin.json")
 
-      assert {:ok, message} =
-               ClusterCmd.run([
-                 "init",
-                 "--output",
-                 output_path,
-                 "--json",
-                 "--client-name",
-                 "json-admin"
-               ])
+      log =
+        capture_log(fn ->
+          send(
+            self(),
+            {:cluster_result,
+             ClusterCmd.run([
+               "init",
+               "--output",
+               output_path,
+               "--json",
+               "--client-name",
+               "json-admin"
+             ])}
+          )
+        end)
+
+      assert_receive {:cluster_result, {:ok, message}}
 
       decoded = Jason.decode!(message)
       credential = Jason.decode!(File.read!(output_path))
@@ -81,9 +115,57 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["recovery"] == false
       assert decoded["output_path"] == output_path
       assert decoded["next_steps"] != []
-      assert token =~ "orch_"
+      assert token =~ ~r/^orchard_sk_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]{43}$/
       refute message =~ token
+      refute log =~ token
+      refute log =~ "orchard_sk_"
       assert token_occurrences(File.read!(output_path), token) == 1
+    end
+
+    test "SPEC.md §10.2 post-mint output failure never logs or returns plaintext", %{
+      tmp_dir: tmp_dir
+    } do
+      output_path = Path.join(tmp_dir, "failed-admin.json")
+
+      {log, result, token} =
+        with_configurable_file_ops(fn ->
+          log =
+            capture_log(fn ->
+              send(
+                self(),
+                {:cluster_result,
+                 ClusterCmd.run([
+                   "init",
+                   "--output",
+                   output_path,
+                   "--json",
+                   "--client-name",
+                   "output-failure-admin"
+                 ])}
+              )
+            end)
+
+          assert_receive {:cluster_result, result}
+          token = Process.get(:cluster_file_ops_failed_token)
+          assert is_binary(token)
+          {log, result, token}
+        end)
+
+      assert {:error, message, 1} = result
+      assert message =~ "one_time_secret_output_failed"
+      refute message =~ token
+      refute log =~ token
+      refute log =~ "orchard_sk_"
+      refute File.exists?(output_path)
+      assert Path.wildcard(Path.join(tmp_dir, ".*.tmp-*")) == []
+
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+      assert Repo.aggregate(ApiKey, :count, :id) == 1
+      assert Repo.aggregate(RoleBinding, :count, :id) == 1
+
+      output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+      assert output_failed.payload["api_token_prefix"] =~ ~r/^orchard_kp_/
+      refute inspect(Repo.all(AuditLog)) =~ token
     end
 
     test "SPEC.md §11.9 force-new-admin requires yes and then mints recovery additively", %{
@@ -412,4 +494,28 @@ defmodule OrchardCLI.Commands.ClusterTest do
     |> length()
     |> Kernel.-(1)
   end
+
+  defp with_configurable_file_ops(fun) do
+    previous_impl = Application.get_env(:orchard_cli, :cluster_file_ops)
+    previous_fail_link = Process.get(:cluster_file_ops_fail_link)
+    previous_failed_token = Process.get(:cluster_file_ops_failed_token)
+
+    Application.put_env(:orchard_cli, :cluster_file_ops, ConfigurableFileOps)
+    Process.put(:cluster_file_ops_fail_link, true)
+    Process.delete(:cluster_file_ops_failed_token)
+
+    try do
+      fun.()
+    after
+      restore_app_env(:cluster_file_ops, previous_impl)
+      restore_process_setting(:cluster_file_ops_fail_link, previous_fail_link)
+      restore_process_setting(:cluster_file_ops_failed_token, previous_failed_token)
+    end
+  end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:orchard_cli, key)
+  defp restore_app_env(key, value), do: Application.put_env(:orchard_cli, key, value)
+
+  defp restore_process_setting(key, nil), do: Process.delete(key)
+  defp restore_process_setting(key, value), do: Process.put(key, value)
 end

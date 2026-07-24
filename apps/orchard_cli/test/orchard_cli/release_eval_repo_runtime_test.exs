@@ -280,7 +280,9 @@ defmodule OrchardCLI.ReleaseEvalRepoRuntimeTest do
     assert File.regular?(output_path)
 
     decoded = output_path |> File.read!() |> Jason.decode!()
-    assert decoded["api_token"] =~ "orch_"
+
+    assert decoded["api_token"] =~
+             ~r/^orchard_sk_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]{43}$/
   end
 
   test "packaged release eval runs model import list and delete without starting listeners" do

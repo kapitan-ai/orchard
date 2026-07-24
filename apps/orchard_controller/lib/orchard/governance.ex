@@ -1093,7 +1093,7 @@ defmodule Orchard.Governance do
     do: normalize_generated_secret(token)
 
   defp normalize_generated_secret(token) when is_binary(token) do
-    case ApiKeySecret.token_prefix(token) do
+    case ApiKeySecret.canonical_token_prefix(token) do
       {:ok, token_prefix} ->
         {:ok, %{token: token, token_prefix: token_prefix, secret_hash: ApiKeySecret.hash(token)}}
 

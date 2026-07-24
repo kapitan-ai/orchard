@@ -116,7 +116,7 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
     output = headers |> Enum.zip(row) |> Map.new()
     token = Map.fetch!(output, "api_token")
 
-    assert token =~ "orch_"
+    assert token =~ ~r/^orchard_sk_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]{43}$/
     refute message =~ token
     assert Bitwise.band(File.stat!(output_path).mode, 0o777) == 0o600
 
@@ -259,7 +259,9 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
 
     {[headers], [row]} = read_output_csv!(output_path)
     output = headers |> Enum.zip(row) |> Map.new()
-    assert Map.fetch!(output, "api_token") =~ "orch_"
+
+    assert Map.fetch!(output, "api_token") =~
+             ~r/^orchard_sk_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]{43}$/
   end
 
   test "apply surfaces output_failed persistence failure with prefix recovery only", %{
