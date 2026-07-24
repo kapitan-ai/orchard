@@ -64,22 +64,14 @@ side-effect free.
 
 `orchardctl cluster init` mints the first cluster-admin API Client credential as
 a local, one-shot, audited controller-host operation behind the leader-only
-write gate. It requires a `--output` path for One-time Secret Output; the token
-is written only to that file (never stdout) and only its hash and prefix
-persist. Before minting, the command reserves that exact path with an exclusive
-owner-only (`0600`) descriptor and refuses a path that already exists, a missing
-parent directory, a group- or world-writable parent, or an ancestor directory
-that is not owned by the output owner or root or is cross-user writable without
-the sticky bit. Every subsequent write and re-verification goes through the
-reserved descriptor, so a delivery failure redacts the reserved file instead of
-leaving plaintext behind, and reports the unresolved cleanup rather than a
-success when that redaction cannot be completed. It refuses with a stable
-`cluster_already_initialized` error once an enabled cluster-scoped admin exists,
-`--force-new-admin --yes` mints an additional recovery admin without mutating
-existing credentials, and `--client-name` overrides the default bootstrap
-client name. Successful output directs operators to provision named admin API
-Clients and then revoke the bootstrap credential; `--json` emits the same
-contract for automation.
+write gate. It requires a `--output` path for One-time Secret Output with
+preflight; the token is written only to that file (never stdout) and only its
+hash and prefix persist. It refuses with a stable `cluster_already_initialized`
+error once an enabled cluster-scoped admin exists, `--force-new-admin --yes`
+mints an additional recovery admin without mutating existing credentials, and
+`--client-name` overrides the default bootstrap client name. Successful output
+directs operators to provision named admin API Clients and then revoke the
+bootstrap credential; `--json` emits the same contract for automation.
 
 `orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for the request.
 Use `--json` for the same stable explanation map exposed by the Operator API presenter.

@@ -1242,10 +1242,7 @@ written only to that file, never stdout), refuses a second init with
 `cluster_already_initialized`, and supports `--force-new-admin --yes` recovery
 minting, `--client-name`, and `--json`. It is credential-only: TLS material and
 role/service setup remain separate, and `postinstall` never seeds admin
-credentials. The `--output` path is validated and reserved before any credential
-is minted; see
-[`../../apps/orchard_cli/README.md`](../../apps/orchard_cli/README.md) for the
-exact path, parent, and ancestor requirements it enforces.
+credentials.
 
 `orchardctl nodes trust init` initializes the distinct internal Node trust
 authority on the controller host after migrations. It is local, leader-gated,
