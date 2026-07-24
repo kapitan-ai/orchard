@@ -134,18 +134,126 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp reserve_output_in_parent(path, parent, ops) do
-    case create_reservation(path, parent, ops, @reservation_attempts) do
-      {:ok, reservation} ->
-        verify_reservation_cleanup(reservation)
-
-      {:error, reason} ->
-        reservation_error(parent, reason)
+    with {:ok, parent_identity} <- protected_parent_identity(parent, ops),
+         :ok <- verify_parent_directory_cleanup(path, parent, parent_identity, ops),
+         {:ok, reservation} <-
+           create_reservation(path, parent, parent_identity, ops, @reservation_attempts) do
+      verify_reservation_cleanup(reservation)
+    else
+      {:error, reason} -> reservation_error(parent, reason)
     end
   end
 
-  defp create_reservation(_path, _parent, _ops, 0), do: {:error, :staging_collision}
+  defp verify_parent_directory_cleanup(path, parent, parent_identity, ops) do
+    case create_parent_probe(path, parent, parent_identity, ops, @reservation_attempts) do
+      {:ok, probe_path, probe_identity} ->
+        case remove_owned_directory(probe_path, probe_identity, ops) do
+          :ok ->
+            verify_protected_parent(parent, parent_identity, ops)
 
-  defp create_reservation(path, parent, ops, attempts_left) do
+          {:error, reason} ->
+            cleanup_retry = remove_owned_directory(probe_path, probe_identity, ops)
+
+            {:error,
+             preserve_cleanup_result(
+               {:parent_directory_probe_cleanup, reason},
+               parent_probe_cleanup_retry: cleanup_retry
+             )}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp create_parent_probe(_path, _parent, _parent_identity, _ops, 0),
+    do: {:error, :parent_directory_probe_collision}
+
+  defp create_parent_probe(path, parent, parent_identity, ops, attempts_left) do
+    probe_path =
+      Path.join(
+        parent,
+        ".#{Path.basename(path)}.preflight-dir-#{System.unique_integer([:positive])}"
+      )
+
+    case ops.mkdir(probe_path) do
+      :ok ->
+        prepare_parent_probe(probe_path, parent, parent_identity, ops)
+
+      {:error, :eexist} ->
+        create_parent_probe(path, parent, parent_identity, ops, attempts_left - 1)
+
+      {:error, reason} ->
+        {:error, {:parent_directory_probe_create, reason}}
+    end
+  end
+
+  defp prepare_parent_probe(probe_path, parent, parent_identity, ops) do
+    case ops.lstat(probe_path) do
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        probe_identity = file_identity(stat)
+
+        result =
+          with :ok <- ops.chmod(probe_path, 0o700),
+               :ok <- verify_path(probe_path, probe_identity, :directory, 0o700, ops),
+               :ok <- verify_protected_parent(parent, parent_identity, ops) do
+            {:ok, probe_path, probe_identity}
+          end
+
+        cleanup_failed_parent_probe(result, probe_path, probe_identity, ops)
+
+      {:ok, _stat} ->
+        {:error, :parent_directory_probe_type_changed}
+
+      {:error, reason} ->
+        {:error, {:parent_directory_probe_stat, reason}}
+    end
+  end
+
+  defp cleanup_failed_parent_probe(
+         {:ok, _result_path, _result_identity} = success,
+         _argument_path,
+         _argument_identity,
+         _ops
+       ),
+       do: success
+
+  defp cleanup_failed_parent_probe(
+         {:error, reason},
+         probe_path,
+         probe_identity,
+         ops
+       ) do
+    cleanup = remove_owned_directory(probe_path, probe_identity, ops)
+
+    {:error,
+     preserve_cleanup_result(
+       {:parent_directory_probe_prepare, reason},
+       parent_probe_cleanup: cleanup
+     )}
+  end
+
+  defp protected_parent_identity(parent, ops) do
+    case ops.lstat(parent) do
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        if Bitwise.band(stat.mode, 0o022) == 0 do
+          {:ok, file_identity(stat)}
+        else
+          {:error, :output_parent_cross_user_writable}
+        end
+
+      {:ok, _stat} ->
+        {:error, :unexpected_path_type}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp create_reservation(_path, _parent, _parent_identity, _ops, 0),
+    do: {:error, :staging_collision}
+
+  defp create_reservation(path, parent, parent_identity, ops, attempts_left) do
     staging_dir =
       Path.join(
         parent,
@@ -154,30 +262,74 @@ defmodule OrchardCLI.Commands.Cluster do
 
     case ops.mkdir(staging_dir) do
       :ok ->
-        build_reservation(path, parent, staging_dir, ops)
+        build_reservation(path, parent, parent_identity, staging_dir, ops)
 
       {:error, :eexist} ->
-        create_reservation(path, parent, ops, attempts_left - 1)
+        create_reservation(path, parent, parent_identity, ops, attempts_left - 1)
 
       {:error, reason} ->
         {:error, {:staging_directory_create, reason}}
     end
   end
 
-  defp build_reservation(path, parent, staging_dir, ops) do
-    with {:ok, directory_stat} <- ops.lstat(staging_dir),
-         :ok <- require_type(directory_stat, :directory),
-         directory_identity = file_identity(directory_stat),
-         :ok <- ops.chmod(staging_dir, 0o700),
-         :ok <- verify_path(staging_dir, directory_identity, :directory, 0o700, ops) do
-      open_reserved_file(path, parent, staging_dir, directory_identity, ops)
-    else
+  defp build_reservation(path, parent, parent_identity, staging_dir, ops) do
+    case ops.lstat(staging_dir) do
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        prepare_staging_directory(
+          path,
+          parent,
+          parent_identity,
+          staging_dir,
+          file_identity(stat),
+          ops
+        )
+
+      {:ok, _stat} ->
+        {:error, {:staging_directory_prepare, :unexpected_path_type}}
+
       {:error, reason} ->
-        {:error, {:staging_directory_prepare, reason}}
+        {:error, {:staging_directory_stat, reason}}
     end
   end
 
-  defp open_reserved_file(path, parent, staging_dir, directory_identity, ops) do
+  defp prepare_staging_directory(
+         path,
+         parent,
+         parent_identity,
+         staging_dir,
+         directory_identity,
+         ops
+       ) do
+    with :ok <- ops.chmod(staging_dir, 0o700),
+         :ok <- verify_path(staging_dir, directory_identity, :directory, 0o700, ops) do
+      open_reserved_file(
+        path,
+        parent,
+        parent_identity,
+        staging_dir,
+        directory_identity,
+        ops
+      )
+    else
+      {:error, reason} ->
+        cleanup = remove_owned_directory(staging_dir, directory_identity, ops)
+
+        {:error,
+         preserve_cleanup_result(
+           {:staging_directory_prepare, reason},
+           staging_directory_cleanup: cleanup
+         )}
+    end
+  end
+
+  defp open_reserved_file(
+         path,
+         parent,
+         parent_identity,
+         staging_dir,
+         directory_identity,
+         ops
+       ) do
     staging_path =
       Path.join(
         staging_dir,
@@ -189,6 +341,7 @@ defmodule OrchardCLI.Commands.Cluster do
         secure_reserved_file(
           path,
           parent,
+          parent_identity,
           staging_dir,
           staging_path,
           directory_identity,
@@ -197,14 +350,20 @@ defmodule OrchardCLI.Commands.Cluster do
         )
 
       {:error, reason} ->
-        _cleanup = remove_owned_directory(staging_dir, directory_identity, ops)
-        {:error, {:staging_file_create, reason}}
+        cleanup = remove_owned_directory(staging_dir, directory_identity, ops)
+
+        {:error,
+         preserve_cleanup_result(
+           {:staging_file_create, reason},
+           staging_directory_cleanup: cleanup
+         )}
     end
   end
 
   defp secure_reserved_file(
          path,
          parent,
+         parent_identity,
          staging_dir,
          staging_path,
          directory_identity,
@@ -221,6 +380,7 @@ defmodule OrchardCLI.Commands.Cluster do
              %{
                output_path: path,
                parent: parent,
+               parent_identity: parent_identity,
                staging_dir: staging_dir,
                staging_path: staging_path,
                directory_identity: directory_identity,
@@ -241,9 +401,15 @@ defmodule OrchardCLI.Commands.Cluster do
         )
 
       {:error, reason} ->
-        _close = ops.close(io)
-        _directory_cleanup = remove_owned_directory(staging_dir, directory_identity, ops)
-        {:error, {:staging_descriptor_stat, reason}}
+        close_result = ops.close(io)
+        directory_cleanup = remove_owned_directory(staging_dir, directory_identity, ops)
+
+        {:error,
+         preserve_cleanup_result(
+           {:staging_descriptor_stat, reason},
+           descriptor_close: close_result,
+           staging_directory_cleanup: directory_cleanup
+         )}
     end
   end
 
@@ -267,10 +433,17 @@ defmodule OrchardCLI.Commands.Cluster do
          directory_identity,
          ops
        ) do
-    _close = ops.close(io)
-    _staging_cleanup = remove_owned_path(staging_path, staging_identity, ops)
-    _directory_cleanup = remove_owned_directory(staging_dir, directory_identity, ops)
-    {:error, {:staging_file_prepare, reason}}
+    close_result = ops.close(io)
+    staging_cleanup = remove_owned_path(staging_path, staging_identity, ops)
+    directory_cleanup = remove_owned_directory(staging_dir, directory_identity, ops)
+
+    {:error,
+     preserve_cleanup_result(
+       {:staging_file_prepare, reason},
+       descriptor_close: close_result,
+       staging_file_cleanup: staging_cleanup,
+       staging_directory_cleanup: directory_cleanup
+     )}
   end
 
   defp verify_reservation_cleanup(reservation) do
@@ -305,19 +478,37 @@ defmodule OrchardCLI.Commands.Cluster do
             {:ok, reservation}
 
           {:error, reason} ->
-            _cleanup_retry = remove_owned_path(probe_path, probe_identity, reservation.ops)
-            fail_reservation_probe(reservation, {:probe_cleanup, reason})
+            cleanup_retry = remove_owned_path(probe_path, probe_identity, reservation.ops)
+
+            fail_reservation_probe(
+              reservation,
+              preserve_cleanup_result(
+                {:probe_cleanup, reason},
+                probe_cleanup_retry: cleanup_retry
+              )
+            )
         end
 
       {:error, reason} ->
-        _close = reservation.ops.close(io)
-        fail_reservation_probe(reservation, {:probe_descriptor_stat, reason})
+        close_result = reservation.ops.close(io)
+
+        fail_reservation_probe(
+          reservation,
+          preserve_cleanup_result(
+            {:probe_descriptor_stat, reason},
+            probe_descriptor_close: close_result
+          )
+        )
     end
   end
 
   defp fail_reservation_probe(reservation, reason) do
-    _release = release_reservation(reservation)
-    reservation_error(reservation.parent, reason)
+    release_result = release_reservation(reservation)
+
+    reservation_error(
+      reservation.parent,
+      preserve_cleanup_result(reason, reservation_release: release_result)
+    )
   end
 
   defp reservation_error(parent, reason) do
@@ -412,7 +603,8 @@ defmodule OrchardCLI.Commands.Cluster do
         api_token: result.token
       })
 
-    with :ok <-
+    with :ok <- verify_protected_parent(reservation),
+         :ok <-
            verify_path(
              reservation.staging_path,
              reservation.staging_identity,
@@ -444,7 +636,9 @@ defmodule OrchardCLI.Commands.Cluster do
              reservation.directory_identity,
              reservation.ops
            ),
-         :ok <- reservation.ops.close(reservation.io) do
+         :ok <- reservation.ops.close(reservation.io),
+         :ok <- verify_protected_parent(reservation),
+         :ok <- verify_published_output(reservation) do
       :ok
     else
       {:error, reason} ->
@@ -463,7 +657,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp contain_failed_cleanup(reservation) do
     containment = [
-      plaintext_redaction: redact_descriptor(reservation.io),
+      plaintext_redaction: redact_reservation(reservation),
       descriptor_close: reservation.ops.close(reservation.io),
       temporary_cleanup_retry:
         remove_owned_path(
@@ -491,7 +685,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp release_reservation(reservation) do
     results = [
-      plaintext_redaction: redact_descriptor(reservation.io),
+      plaintext_redaction: redact_reservation(reservation),
       descriptor_close: reservation.ops.close(reservation.io),
       temporary_cleanup:
         remove_owned_path(
@@ -523,6 +717,57 @@ defmodule OrchardCLI.Commands.Cluster do
          do: :file.sync(io)
   end
 
+  defp redact_reservation(reservation) do
+    case redact_descriptor(reservation.io) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        paths = [reservation.staging_path, reservation.output_path]
+
+        case redact_identity_bound_path(paths, reservation.staging_identity, reservation.ops) do
+          :ok -> {:error, {:descriptor_redaction_failed, reason, :fallback_redacted}}
+          {:error, fallback} -> {:error, {:plaintext_redaction_unresolved, reason, fallback}}
+        end
+    end
+  end
+
+  defp redact_identity_bound_path(paths, identity, ops),
+    do: redact_identity_bound_path(paths, identity, ops, [])
+
+  defp redact_identity_bound_path([], _identity, _ops, failures),
+    do: {:error, Enum.reverse(failures)}
+
+  defp redact_identity_bound_path([path | rest], identity, ops, failures) do
+    case redact_opened_path(path, identity, ops) do
+      :ok ->
+        :ok
+
+      {:redacted, close_error} ->
+        {:error, [{path, {:descriptor_close, close_error}} | failures]}
+
+      {:error, reason} ->
+        redact_identity_bound_path(rest, identity, ops, [{path, reason} | failures])
+    end
+  end
+
+  defp redact_opened_path(path, identity, ops) do
+    case ops.open(path, [:read, :write, :binary]) do
+      {:ok, io} ->
+        verification = verify_descriptor(io, identity)
+        redaction = if verification == :ok, do: redact_descriptor(io), else: verification
+        close_result = ops.close(io)
+        opened_path_redaction_result(redaction, close_result)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp opened_path_redaction_result(:ok, :ok), do: :ok
+  defp opened_path_redaction_result(:ok, {:error, reason}), do: {:redacted, reason}
+  defp opened_path_redaction_result({:error, reason}, _close_result), do: {:error, reason}
+
   defp verify_descriptor(io, identity) do
     case descriptor_identity(io) do
       {:ok, ^identity} -> :ok
@@ -539,6 +784,40 @@ defmodule OrchardCLI.Commands.Cluster do
       0o600,
       reservation.ops
     )
+  end
+
+  defp verify_protected_parent(reservation) do
+    verify_protected_parent(
+      reservation.parent,
+      reservation.parent_identity,
+      reservation.ops
+    )
+  end
+
+  defp verify_protected_parent(parent, expected_identity, ops) do
+    with :ok <-
+           verify_path(
+             parent,
+             expected_identity,
+             :directory,
+             nil,
+             ops
+           ),
+         {:ok, parent_identity} <-
+           protected_parent_identity(parent, ops),
+         true <- parent_identity == expected_identity do
+      :ok
+    else
+      false -> {:error, :output_parent_identity_changed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp preserve_cleanup_result(reason, cleanup_results) do
+    case Enum.reject(cleanup_results, fn {_step, result} -> result == :ok end) do
+      [] -> reason
+      failures -> {:cleanup_unresolved, reason, failures}
+    end
   end
 
   defp descriptor_identity(io) do
@@ -562,9 +841,6 @@ defmodule OrchardCLI.Commands.Cluster do
         {:error, reason}
     end
   end
-
-  defp require_type(%File.Stat{type: type}, type), do: :ok
-  defp require_type(_stat, _type), do: {:error, :unexpected_path_type}
 
   defp file_identity(%File.Stat{} = stat) do
     {stat.type, stat.major_device, stat.minor_device, stat.inode}

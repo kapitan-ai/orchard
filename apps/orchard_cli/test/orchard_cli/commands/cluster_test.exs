@@ -30,9 +30,30 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def mkdir(path), do: File.mkdir(path)
-    def rmdir(path), do: File.rmdir(path)
+
+    def rmdir(path) do
+      if Process.get(:cluster_file_ops_fail_rmdir) == :preflight_parent and
+           String.contains?(Path.basename(path), ".preflight-dir-") do
+        {:error, :eperm}
+      else
+        File.rmdir(path)
+      end
+    end
+
     def chmod(path, mode), do: File.chmod(path, mode)
-    def close(file), do: File.close(file)
+
+    def close(file) do
+      result = File.close(file)
+
+      if result == :ok && Process.get(:cluster_file_ops_fail_close_after_link) &&
+           Process.get(:cluster_file_ops_link_succeeded) &&
+           !Process.get(:cluster_file_ops_close_failure_injected) do
+        Process.put(:cluster_file_ops_close_failure_injected, true)
+        {:error, :eio}
+      else
+        result
+      end
+    end
 
     def rm(path) do
       if fail_remove?(path) do
@@ -67,6 +88,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp replace_temporary_after_link(:ok, source) do
+      Process.put(:cluster_file_ops_link_succeeded, true)
+
       case Process.get(:cluster_file_ops_foreign_temporary_after_link) do
         contents when is_binary(contents) ->
           File.rm!(source)
@@ -108,6 +131,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       Path.join(System.tmp_dir!(), "orchard-cluster-test-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(tmp_dir)
+    File.chmod!(tmp_dir, 0o700)
 
     on_exit(fn ->
       File.rm_rf(tmp_dir)
@@ -291,6 +315,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = result
       assert File.read!(foreign_path) == foreign_contents
       assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      assert Jason.decode!(message)["message"] =~ "cleanup_unresolved"
       refute message =~ "orchard_sk_"
       refute log =~ "orchard_sk_"
       refute File.exists?(output_path)
@@ -307,6 +332,17 @@ defmodule OrchardCLI.Commands.ClusterTest do
         "staging-replacement-admin",
         foreign_temporary_after_link: "unrelated replacement data",
         expected_foreign_temporary: "unrelated replacement data",
+        expected_output: ""
+      )
+    end
+
+    test "SPEC.md §10.2 close failure after publication leaves no plaintext",
+         %{tmp_dir: tmp_dir} do
+      assert_failed_delivery_has_no_plaintext(
+        tmp_dir,
+        "close-failure-admin",
+        capture_token: true,
+        fail_close_after_link: true,
         expected_output: ""
       )
     end
@@ -393,6 +429,24 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
 
+    test "SPEC.md §11.9 rejects a cross-user-writable output parent before minting",
+         %{tmp_dir: tmp_dir} do
+      shared_dir = Path.join(tmp_dir, "shared")
+      File.mkdir!(shared_dir)
+      File.chmod!(shared_dir, 0o777)
+      output_path = Path.join(shared_dir, "admin.json")
+
+      assert {:error, message, 1} =
+               ClusterCmd.run(["init", "--output", output_path, "--json"])
+
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
     test "SPEC.md §11.9 preflight removal failure prevents minting and leaves no plaintext",
          %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "admin.json")
@@ -424,6 +478,35 @@ defmodule OrchardCLI.Commands.ClusterTest do
       for path <- residual_files(tmp_dir) do
         refute File.read!(path) =~ "orchard_sk_"
       end
+    end
+
+    test "SPEC.md §11.9 parent directory removal failure prevents minting",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "admin.json")
+
+      {log, result} =
+        with_configurable_file_ops([fail_rmdir: :preflight_parent], fn ->
+          log =
+            capture_log(fn ->
+              send(
+                self(),
+                {:cluster_result, ClusterCmd.run(["init", "--output", output_path, "--json"])}
+              )
+            end)
+
+          assert_receive {:cluster_result, result}
+          {log, result}
+        end)
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
 
     test "SPEC.md §11.9 --json missing --output emits a stable JSON error object" do
@@ -689,6 +772,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
     previous_foreign_temporary_after_link_path =
       Process.get(:cluster_file_ops_foreign_temporary_after_link_path)
 
+    previous_fail_close_after_link = Process.get(:cluster_file_ops_fail_close_after_link)
+    previous_fail_rmdir = Process.get(:cluster_file_ops_fail_rmdir)
+    previous_link_succeeded = Process.get(:cluster_file_ops_link_succeeded)
+    previous_close_failure_injected = Process.get(:cluster_file_ops_close_failure_injected)
     previous_failed_token = Process.get(:cluster_file_ops_failed_token)
 
     Application.put_env(:orchard_cli, :cluster_file_ops, ConfigurableFileOps)
@@ -703,8 +790,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
       settings[:foreign_temporary_after_link]
     )
 
+    Process.put(
+      :cluster_file_ops_fail_close_after_link,
+      Keyword.get(settings, :fail_close_after_link, false)
+    )
+
+    restore_process_setting(:cluster_file_ops_fail_rmdir, settings[:fail_rmdir])
     Process.delete(:cluster_file_ops_foreign_temporary_path)
     Process.delete(:cluster_file_ops_foreign_temporary_after_link_path)
+    Process.delete(:cluster_file_ops_link_succeeded)
+    Process.delete(:cluster_file_ops_close_failure_injected)
     Process.delete(:cluster_file_ops_failed_token)
 
     try do
@@ -730,6 +825,19 @@ defmodule OrchardCLI.Commands.ClusterTest do
       restore_process_setting(
         :cluster_file_ops_foreign_temporary_after_link_path,
         previous_foreign_temporary_after_link_path
+      )
+
+      restore_process_setting(
+        :cluster_file_ops_fail_close_after_link,
+        previous_fail_close_after_link
+      )
+
+      restore_process_setting(:cluster_file_ops_fail_rmdir, previous_fail_rmdir)
+      restore_process_setting(:cluster_file_ops_link_succeeded, previous_link_succeeded)
+
+      restore_process_setting(
+        :cluster_file_ops_close_failure_injected,
+        previous_close_failure_injected
       )
 
       restore_process_setting(:cluster_file_ops_failed_token, previous_failed_token)
