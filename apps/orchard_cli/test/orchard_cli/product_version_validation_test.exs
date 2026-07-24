@@ -62,11 +62,7 @@ defmodule OrchardCLI.ProductVersionValidationTest do
     fixture_root = fixture_root!()
     File.write!(Path.join(fixture_root, "VERSION"), "0.5.1-dev\n")
 
-    assert {output, 0} =
-             System.cmd("make", ["validate-product-version"],
-               cd: fixture_root,
-               stderr_to_stdout: true
-             )
+    assert {output, 0} = run_validation(fixture_root)
 
     assert output =~
              "Product Version validation passed: 0.5.1-dev; 5 Mix project surfaces agree"
@@ -102,10 +98,14 @@ defmodule OrchardCLI.ProductVersionValidationTest do
   end
 
   defp run_validation(fixture_root) do
-    System.cmd("make", ["validate-product-version"],
+    System.cmd(elixir_executable!(), ["scripts/validate-product-version.exs"],
       cd: fixture_root,
       stderr_to_stdout: true
     )
+  end
+
+  defp elixir_executable! do
+    System.find_executable("elixir") || raise "Elixir executable is not available on PATH"
   end
 
   defp fixture_root! do
@@ -129,7 +129,6 @@ defmodule OrchardCLI.ProductVersionValidationTest do
 
   defp fixture_files do
     [
-      "Makefile",
       "VERSION",
       "config/product_version.exs",
       "scripts/validate-product-version.exs"
