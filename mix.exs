@@ -1,3 +1,5 @@
+Code.require_file("config/product_version.exs", __DIR__)
+
 defmodule Orchard.MixProject do
   use Mix.Project
 
@@ -6,7 +8,7 @@ defmodule Orchard.MixProject do
   def project do
     [
       apps_path: "apps",
-      version: "0.5.0-dev",
+      version: Orchard.ProductVersion.read!(),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
