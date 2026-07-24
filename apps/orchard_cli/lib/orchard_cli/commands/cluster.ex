@@ -887,29 +887,51 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp trusted_parent_component(path, owner_uid, ops) do
-    case ops.stat(path) do
-      {:ok, %File.Stat{type: :directory} = stat} ->
-        if trusted_parent_owner?(stat.uid, owner_uid) and trusted_parent_mode?(stat.mode) do
-          {:ok, {path, file_identity(stat)}}
-        else
-          {:error, :output_parent_hierarchy_untrusted}
-        end
-
-      {:ok, _stat} ->
-        {:error, :unexpected_path_type}
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, lexical_stat} <- ops.lstat(path),
+         :ok <- verify_lexical_parent_component(lexical_stat, owner_uid, path),
+         {:ok, %File.Stat{type: :directory} = target_stat} <- ops.stat(path),
+         true <-
+           trusted_parent_owner?(target_stat.uid, owner_uid) and
+             trusted_parent_mode?(target_stat.mode) do
+      {:ok, {path, file_identity(lexical_stat), file_identity(target_stat)}}
+    else
+      false -> {:error, {:output_parent_hierarchy_untrusted, path}}
+      {:ok, _stat} -> {:error, :unexpected_path_type}
+      {:error, reason} -> {:error, reason}
     end
   end
 
+  defp verify_lexical_parent_component(
+         %File.Stat{type: :directory, uid: uid, mode: mode},
+         owner_uid,
+         path
+       ) do
+    if trusted_parent_owner?(uid, owner_uid) and trusted_parent_mode?(mode),
+      do: :ok,
+      else: {:error, {:output_parent_hierarchy_untrusted, path}}
+  end
+
+  defp verify_lexical_parent_component(
+         %File.Stat{type: :symlink, uid: uid},
+         owner_uid,
+         path
+       ) do
+    if trusted_parent_owner?(uid, owner_uid),
+      do: :ok,
+      else: {:error, {:output_parent_hierarchy_untrusted, path}}
+  end
+
+  defp verify_lexical_parent_component(_stat, _owner_uid, _path),
+    do: {:error, :unexpected_path_type}
+
   defp verify_parent_hierarchy(hierarchy, owner_uid, ops) do
-    Enum.reduce_while(hierarchy, :ok, fn {path, expected_identity}, :ok ->
-      case trusted_parent_component(path, owner_uid, ops) do
-        {:ok, {^path, ^expected_identity}} -> {:cont, :ok}
-        {:ok, _other} -> {:halt, {:error, :output_parent_identity_changed}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
+    Enum.reduce_while(hierarchy, :ok, fn
+      {path, expected_lexical_identity, expected_target_identity}, :ok ->
+        case trusted_parent_component(path, owner_uid, ops) do
+          {:ok, {^path, ^expected_lexical_identity, ^expected_target_identity}} -> {:cont, :ok}
+          {:ok, _other} -> {:halt, {:error, :output_parent_identity_changed}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
     end)
   end
 

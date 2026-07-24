@@ -11,7 +11,20 @@ defmodule OrchardCLI.Commands.ClusterTest do
   defmodule ConfigurableFileOps do
     def exists?(path), do: File.exists?(path)
     def dir?(path), do: File.dir?(path)
-    def lstat(path), do: File.lstat(path)
+
+    def lstat(path) do
+      case File.lstat(path) do
+        {:ok, stat} ->
+          if Process.get(:cluster_file_ops_foreign_owner_symlink) == path do
+            {:ok, %{stat | uid: stat.uid + 1}}
+          else
+            {:ok, stat}
+          end
+
+        error ->
+          error
+      end
+    end
 
     def stat(path) do
       case File.stat(path) do
@@ -554,6 +567,39 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
 
+    test "SPEC.md §11.9 rejects a foreign-owned ancestor symlink before minting",
+         %{tmp_dir: tmp_dir} do
+      safe_dir = Path.join(tmp_dir, "safe")
+      output_dir = Path.join(safe_dir, "out")
+
+      link_path =
+        Path.join("/tmp", "orchard-cluster-attacker-link-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(output_dir)
+      File.ln_s!(safe_dir, link_path)
+      on_exit(fn -> File.rm(link_path) end)
+      output_path = Path.join([link_path, "out", "admin.json"])
+
+      result =
+        with_configurable_file_ops([foreign_owner_symlink: link_path], fn ->
+          ClusterCmd.run(["init", "--output", output_path, "--json"])
+        end)
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute File.exists?(output_path)
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ "orchard_sk_"
+      end
+
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
     test "SPEC.md §11.9 preflight removal failure prevents minting and leaves no plaintext",
          %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "admin.json")
@@ -884,6 +930,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
     previous_link_succeeded = Process.get(:cluster_file_ops_link_succeeded)
     previous_close_failure_injected = Process.get(:cluster_file_ops_close_failure_injected)
     previous_foreign_owner_parent = Process.get(:cluster_file_ops_foreign_owner_parent)
+    previous_foreign_owner_symlink = Process.get(:cluster_file_ops_foreign_owner_symlink)
     previous_failed_token = Process.get(:cluster_file_ops_failed_token)
 
     Application.put_env(:orchard_cli, :cluster_file_ops, ConfigurableFileOps)
@@ -908,6 +955,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
     restore_process_setting(
       :cluster_file_ops_foreign_owner_parent,
       settings[:foreign_owner_parent]
+    )
+
+    restore_process_setting(
+      :cluster_file_ops_foreign_owner_symlink,
+      settings[:foreign_owner_symlink]
     )
 
     Process.delete(:cluster_file_ops_foreign_temporary_path)
@@ -957,6 +1009,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
       restore_process_setting(
         :cluster_file_ops_foreign_owner_parent,
         previous_foreign_owner_parent
+      )
+
+      restore_process_setting(
+        :cluster_file_ops_foreign_owner_symlink,
+        previous_foreign_owner_symlink
       )
 
       restore_process_setting(:cluster_file_ops_failed_token, previous_failed_token)
