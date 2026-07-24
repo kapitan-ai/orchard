@@ -365,7 +365,7 @@ defmodule Orchard.Scheduler.MultiNode do
   defp load_bonus(candidate), do: max(40 - active_request_rank(candidate) * 10, 0)
 
   defp health_bonus(%{node: %{health: :healthy}}), do: 30
-  defp health_bonus(%{node: %{health: :degraded}}), do: 10
+  defp health_bonus(%{node: %{health: :degraded}}), do: 0
   defp health_bonus(_candidate), do: 0
 
   defp maybe_put_score_component(components, _key, _value, false), do: components

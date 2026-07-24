@@ -4167,6 +4167,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.strategy == :multi_node
       assert schedule.node_id == node_a.id
       assert schedule.candidate_count == 2
+
+      selected = Enum.find(schedule.scored_candidates, &(&1.node_id == node_a.id))
+      assert selected.components.health_bonus == 0
     end
 
     test "prefers loaded model even when all degraded" do
