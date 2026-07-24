@@ -1,15 +1,26 @@
 defmodule Orchard.GovernanceTest.CollisionSecret do
   alias Orchard.Governance.ApiKeySecret
 
-  @token "orch_collision.fixedsecret"
+  @public_part String.duplicate("A", 16)
+  @token "orchard_sk_#{@public_part}_#{String.duplicate("A", 43)}"
 
   def generate do
     %{
       token: @token,
-      token_prefix: "orch_collision",
+      token_prefix: "orchard_kp_#{@public_part}",
       secret_hash: ApiKeySecret.hash(@token)
     }
   end
+end
+
+defmodule Orchard.GovernanceTest.LegacyGeneratedSecret do
+  def generate, do: %{token: "orch_generatedLegacy.fixedsecret"}
+end
+
+defmodule Orchard.GovernanceTest.NewlineCanonicalSecret do
+  @token "orchard_sk_#{String.duplicate("D", 16)}_#{String.duplicate("A", 43)}\n"
+
+  def generate, do: %{token: @token}
 end
 
 defmodule Orchard.GovernanceTest.InvalidAuditLog do
@@ -449,7 +460,7 @@ defmodule Orchard.GovernanceTest do
 
     test "surfaces prefix collisions without retrying and leaves no extra rows behind" do
       tenant = create_tenant!("tenant-collision")
-      create_api_key_record!(tenant, %{token_prefix: "orch_collision"})
+      create_api_key_record!(tenant, %{token_prefix: "orchard_kp_#{String.duplicate("A", 16)}"})
 
       with_env(:governance_api_key_secret_impl, Orchard.GovernanceTest.CollisionSecret, fn ->
         assert {:error, changeset} = Governance.create_api_key(tenant.id, %{name: "Collision"})
@@ -485,6 +496,38 @@ defmodule Orchard.GovernanceTest do
       assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
 
+    test "SPEC.md §10.2 rejects legacy-format tokens from new issuance" do
+      tenant = create_tenant!("tenant-legacy-generated-secret")
+
+      with_env(
+        :governance_api_key_secret_impl,
+        Orchard.GovernanceTest.LegacyGeneratedSecret,
+        fn ->
+          assert {:error, :invalid_api_key_secret} =
+                   Governance.create_api_key(tenant.id, %{name: "Primary"})
+        end
+      )
+
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §10.2 rejects newline-suffixed canonical tokens from new issuance" do
+      tenant = create_tenant!("tenant-newline-canonical-secret")
+
+      with_env(
+        :governance_api_key_secret_impl,
+        Orchard.GovernanceTest.NewlineCanonicalSecret,
+        fn ->
+          assert {:error, :invalid_api_key_secret} =
+                   Governance.create_api_key(tenant.id, %{name: "Primary"})
+        end
+      )
+
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
     test "rolls back the api key insert when audit log creation fails" do
       tenant = create_tenant!("tenant-create-audit-fail")
 
@@ -514,6 +557,25 @@ defmodule Orchard.GovernanceTest do
     test "rejects unknown and malformed tokens" do
       assert {:error, :invalid_api_key} = Governance.authenticate_api_key("orch_missing.secret")
       assert {:error, :invalid_api_key} = Governance.authenticate_api_key("not-a-token")
+    end
+
+    test "SPEC.md §10.2 authenticates an independently persisted legacy credential" do
+      tenant = create_tenant!("tenant-auth-legacy")
+      token = "orch_existingPublic.existingSecret"
+
+      secret_hash =
+        "sha256$" <>
+          Base.url_encode64(:crypto.hash(:sha256, token), padding: false)
+
+      api_key =
+        create_api_key_record!(tenant, %{
+          token_prefix: "orch_existingPublic",
+          secret_hash: secret_hash
+        })
+
+      assert {:ok, auth_context} = Governance.authenticate_api_key(token)
+      assert auth_context.tenant_id == tenant.id
+      assert auth_context.api_key_id == api_key.id
     end
 
     test "SPEC.md §10.2 revocation is immediate for subsequent authentication attempts" do

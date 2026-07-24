@@ -2411,8 +2411,8 @@ Response:
 ```json
 {
   "id": "uuid",
-  "token_prefix": "orchard_kp_01J...",
-  "secret": "orchard_sk_01J....<secret>",
+  "token_prefix": "orchard_kp_<16-character-public>",
+  "secret": "orchard_sk_<16-character-public>_<43-character-secret>",
   "expires_at": "2026-12-31T00:00:00Z"
 }
 ```
@@ -4008,15 +4008,20 @@ orchard_sk_<prefix>_<secret>
 
 Requirements:
 
-* secret entropy: 32 random bytes minimum
+* `<prefix>` is the canonical unpadded base64url encoding of 12 random bytes and is exactly 16 characters
+* `<secret>` is the canonical unpadded base64url encoding of 32 random bytes and is exactly 43 characters
+* persisted and displayed `token_prefix = orchard_kp_<prefix>`
 * DB stores:
 
   * `token_prefix`
-  * `secret_hash = sha256(secret)`
+  * `secret_hash = sha256(<secret>)`, where the hash input is the exact encoded 43-character secret component
 * comparison MUST be constant-time
 * key secret displayed once only at creation
 * revocation is immediate
 * plaintext secrets MUST NOT be stored in Postgres, audit logs, provisioning batches, support bundles, or durable local evidence artifacts
+
+Previously issued `orch_<public>.<secret>` API Tokens SHALL remain valid compatibility credentials.
+Compatibility authentication SHALL preserve their existing `orch_<public>` lookup prefix and complete-token SHA-256 semantics without rewriting persisted credentials.
 
 Tenant-direct API Keys SHALL remain supported for manual, bootstrap, and compatibility paths.
 Bulk provisioning SHALL create service-account-owned API Tokens by default.

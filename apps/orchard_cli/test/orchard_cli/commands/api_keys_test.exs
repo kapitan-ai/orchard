@@ -1,12 +1,13 @@
 defmodule OrchardCLI.Commands.ApiKeysTest.CollisionSecret do
   alias Orchard.Governance.ApiKeySecret
 
-  @token "orch_collision.fixedsecret"
+  @public_part String.duplicate("C", 16)
+  @token "orchard_sk_#{@public_part}_#{String.duplicate("A", 43)}"
 
   def generate do
     %{
       token: @token,
-      token_prefix: "orch_collision",
+      token_prefix: "orchard_kp_#{@public_part}",
       secret_hash: ApiKeySecret.hash(@token)
     }
   end
@@ -136,7 +137,7 @@ defmodule OrchardCLI.Commands.ApiKeysTest do
 
   test "create error paths do not leak generated tokens" do
     tenant = create_tenant!("tenant-collision")
-    create_api_key_record!(tenant, %{token_prefix: "orch_collision"})
+    create_api_key_record!(tenant, %{token_prefix: "orchard_kp_#{String.duplicate("C", 16)}"})
     token = CollisionSecret.token()
 
     with_env(

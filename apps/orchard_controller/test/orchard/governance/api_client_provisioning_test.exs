@@ -1,12 +1,13 @@
 defmodule Orchard.Governance.ApiClientProvisioningTest.CollisionSecret do
   alias Orchard.Governance.ApiKeySecret
 
-  @token "orch_bulk_collision.fixedsecret"
+  @public_part String.duplicate("B", 16)
+  @token "orchard_sk_#{@public_part}_#{String.duplicate("A", 43)}"
 
   def generate do
     %{
       token: @token,
-      token_prefix: "orch_bulk_collision",
+      token_prefix: "orchard_kp_#{@public_part}",
       secret_hash: ApiKeySecret.hash(@token)
     }
   end
@@ -257,7 +258,9 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     assert [output_row] = result.output_rows
     assert output_row.organization == tenant.slug
     assert output_row.api_client == "client-b"
-    assert output_row.api_token =~ "orch_"
+
+    assert output_row.api_token =~
+             ~r/^orchard_sk_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]{43}$/
 
     batch = Repo.get!(ProvisioningBatch, result.batch.id)
     assert batch.status == :applied
@@ -556,8 +559,9 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     |> ApiKey.tenant_direct_changeset(%{
       tenant_id: tenant.id,
       name: "collision-source",
-      token_prefix: "orch_bulk_collision",
-      secret_hash: ApiKeySecret.hash("orch_bulk_collision.fixedsecret")
+      token_prefix: "orchard_kp_#{String.duplicate("B", 16)}",
+      secret_hash:
+        ApiKeySecret.hash("orchard_sk_#{String.duplicate("B", 16)}_#{String.duplicate("A", 43)}")
     })
     |> Repo.insert!()
 

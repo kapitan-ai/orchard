@@ -82,27 +82,28 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp preflight_output(path) do
+    ops = file_ops()
     parent = Path.dirname(path)
 
     cond do
-      File.exists?(path) or match?({:ok, _stat}, File.lstat(path)) ->
+      ops.exists?(path) or match?({:ok, _stat}, ops.lstat(path)) ->
         {:error, :output_path_exists, "output path already exists: #{path}", 1}
 
-      not File.dir?(parent) ->
+      not ops.dir?(parent) ->
         {:error, :output_parent_missing, "output parent directory does not exist: #{parent}", 1}
 
       true ->
-        preflight_output_parent(path, parent)
+        preflight_output_parent(path, parent, ops)
     end
   end
 
-  defp preflight_output_parent(path, parent) do
+  defp preflight_output_parent(path, parent, ops) do
     probe =
       Path.join(parent, ".#{Path.basename(path)}.preflight-#{System.unique_integer([:positive])}")
 
-    case File.open(probe, [:write, :exclusive, :binary]) do
+    case ops.open(probe, [:write, :exclusive, :binary]) do
       {:ok, file} ->
-        verify_preflight_probe_closed(File.close(file), probe, parent)
+        verify_preflight_probe_closed(ops.close(file), probe, parent, ops)
 
       {:error, reason} ->
         {:error, :output_parent_not_writable,
@@ -110,8 +111,8 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp verify_preflight_probe_closed(close_result, probe, parent) do
-    File.rm(probe)
+  defp verify_preflight_probe_closed(close_result, probe, parent, ops) do
+    ops.rm(probe)
 
     case close_result do
       :ok ->
@@ -208,6 +209,8 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp write_output(path, result) do
+    ops = file_ops()
+
     payload =
       Jason.encode!(%{
         object: "cluster_management.cluster_admin_credential",
@@ -223,26 +226,26 @@ defmodule OrchardCLI.Commands.Cluster do
         ".#{Path.basename(path)}.tmp-#{System.unique_integer([:positive])}"
       )
 
-    with :ok <- write_exclusive_file(tmp_path, payload),
-         :ok <- File.ln(tmp_path, path) do
-      case cleanup_tmp(tmp_path) do
+    with :ok <- write_exclusive_file(tmp_path, payload, ops),
+         :ok <- ops.ln(tmp_path, path) do
+      case cleanup_tmp(tmp_path, ops) do
         :ok -> :ok
         {:error, _reason} -> {:ok, {:tmp_cleanup_failed, tmp_path}}
       end
     else
       {:error, reason} ->
-        File.rm(tmp_path)
+        ops.rm(tmp_path)
 
         {:error,
          "cluster init minted a credential but One-time Secret Output failed: #{format_file_error(reason)}"}
     end
   end
 
-  defp write_exclusive_file(path, contents) do
-    case File.open(path, [:write, :exclusive, :binary]) do
+  defp write_exclusive_file(path, contents, ops) do
+    case ops.open(path, [:write, :exclusive, :binary]) do
       {:ok, file} ->
-        result = with :ok <- File.chmod(path, 0o600), do: IO.binwrite(file, contents)
-        close_result = File.close(file)
+        result = with :ok <- ops.chmod(path, 0o600), do: IO.binwrite(file, contents)
+        close_result = ops.close(file)
         write_file_result(result, close_result)
 
       {:error, reason} ->
@@ -254,8 +257,8 @@ defmodule OrchardCLI.Commands.Cluster do
   defp write_file_result({:error, reason}, _close_result), do: {:error, reason}
   defp write_file_result(:ok, {:error, reason}), do: {:error, reason}
 
-  defp cleanup_tmp(path) do
-    case File.rm(path) do
+  defp cleanup_tmp(path, ops) do
+    case ops.rm(path) do
       :ok -> :ok
       {:error, :enoent} -> :ok
       {:error, reason} -> {:error, reason}
@@ -450,6 +453,8 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp format_file_error(reason) when is_atom(reason),
     do: reason |> :file.format_error() |> to_string()
+
+  defp file_ops, do: Application.get_env(:orchard_cli, :cluster_file_ops, File)
 
   defp group_usage do
     """

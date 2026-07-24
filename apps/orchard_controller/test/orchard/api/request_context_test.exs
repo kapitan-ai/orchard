@@ -7,7 +7,7 @@ defmodule Orchard.API.RequestContextTest do
   alias Orchard.API.RequestContext
   alias Orchard.API.Router
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, AuditLog}
+  alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog}
   alias Orchard.Inference.ChatRequestNormalizer
   alias Orchard.Repo
   alias Orchard.SentryContext
@@ -31,6 +31,39 @@ defmodule Orchard.API.RequestContextTest do
       assert conn.assigns[:principal_type] == :tenant
       assert conn.assigns[:principal_id] == tenant.id
       assert conn.assigns[:service_account_id] == nil
+      assert conn.assigns[:api_key_id] == api_key.id
+    end
+
+    test "SPEC.md §10.2 authenticates a persisted legacy bearer key" do
+      {:ok, tenant} =
+        Governance.create_tenant(%{
+          slug: "request-context-legacy",
+          name: "Request Context Legacy"
+        })
+
+      token = "orch_requestContextLegacy.existingSecret"
+
+      secret_hash =
+        "sha256$" <>
+          Base.url_encode64(:crypto.hash(:sha256, token), padding: false)
+
+      api_key =
+        %ApiKey{}
+        |> ApiKey.tenant_direct_changeset(%{
+          tenant_id: tenant.id,
+          name: "Legacy",
+          token_prefix: "orch_requestContextLegacy",
+          secret_hash: secret_hash
+        })
+        |> Repo.insert!()
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      refute conn.halted
+      assert conn.assigns[:tenant_id] == tenant.id
       assert conn.assigns[:api_key_id] == api_key.id
     end
 
@@ -344,7 +377,15 @@ defmodule Orchard.API.RequestContextTest do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp swap_token_secret(token) do
-    [prefix, _secret] = String.split(token, ".", parts: 2)
-    prefix <> ".tamperedsecret"
+    if String.starts_with?(token, "orchard_sk_") do
+      replacement_secret =
+        ApiKeySecret.generate().token
+        |> String.slice(-43, 43)
+
+      String.slice(token, 0, byte_size(token) - 43) <> replacement_secret
+    else
+      [prefix, _secret] = String.split(token, ".", parts: 2)
+      prefix <> ".tamperedsecret"
+    end
   end
 end

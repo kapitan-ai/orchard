@@ -113,7 +113,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       # Secret card shown
       assert html =~ "tenant-api-key-secret-card"
       assert html =~ "API Token Created"
-      assert html =~ "orch_"
+      assert html =~ ~r/orchard_sk_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]{43}/
       assert html =~ "only once"
       assert html =~ "Not yet copied"
     end
