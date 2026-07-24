@@ -12,7 +12,25 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def exists?(path), do: File.exists?(path)
     def dir?(path), do: File.dir?(path)
     def lstat(path), do: File.lstat(path)
-    def open(path, modes), do: File.open(path, modes)
+
+    def open(path, modes) do
+      case Process.get(:cluster_file_ops_foreign_temporary) do
+        contents when is_binary(contents) ->
+          if :exclusive in modes and String.contains?(Path.basename(path), ".tmp-") do
+            File.write!(path, contents)
+            Process.put(:cluster_file_ops_foreign_temporary_path, path)
+            {:error, :eexist}
+          else
+            File.open(path, modes)
+          end
+
+        _other ->
+          File.open(path, modes)
+      end
+    end
+
+    def mkdir(path), do: File.mkdir(path)
+    def rmdir(path), do: File.rmdir(path)
     def chmod(path, mode), do: File.chmod(path, mode)
     def close(file), do: File.close(file)
 
@@ -25,9 +43,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def ln(source, target) do
-      if Process.get(:cluster_file_ops_capture_token) or
-           Process.get(:cluster_file_ops_fail_link) or
-           Process.get(:cluster_file_ops_foreign_target) do
+      if Process.get(:cluster_file_ops_capture_token) ||
+           Process.get(:cluster_file_ops_fail_link) ||
+           Process.get(:cluster_file_ops_foreign_target) ||
+           Process.get(:cluster_file_ops_foreign_temporary_after_link) do
         capture_token(source)
       end
 
@@ -40,10 +59,27 @@ defmodule OrchardCLI.Commands.ClusterTest do
           if Process.get(:cluster_file_ops_fail_link) do
             {:error, :eperm}
           else
-            File.ln(source, target)
+            source
+            |> File.ln(target)
+            |> replace_temporary_after_link(source)
           end
       end
     end
+
+    defp replace_temporary_after_link(:ok, source) do
+      case Process.get(:cluster_file_ops_foreign_temporary_after_link) do
+        contents when is_binary(contents) ->
+          File.rm!(source)
+          File.write!(source, contents)
+          Process.put(:cluster_file_ops_foreign_temporary_after_link_path, source)
+          :ok
+
+        _other ->
+          :ok
+      end
+    end
+
+    defp replace_temporary_after_link(result, _source), do: result
 
     defp fail_remove?(path) do
       case Process.get(:cluster_file_ops_fail_remove) do
@@ -228,6 +264,50 @@ defmodule OrchardCLI.Commands.ClusterTest do
         fail_remove: :temporary_secret,
         foreign_target: "unrelated operator data",
         expected_output: "unrelated operator data"
+      )
+    end
+
+    test "SPEC.md §10.2 generated staging collision preserves the foreign file before minting",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "staging-collision-admin.json")
+      foreign_contents = "unrelated staging data"
+
+      {log, result, foreign_path} =
+        with_configurable_file_ops([foreign_temporary: foreign_contents], fn ->
+          log =
+            capture_log(fn ->
+              send(
+                self(),
+                {:cluster_result, ClusterCmd.run(["init", "--output", output_path, "--json"])}
+              )
+            end)
+
+          assert_receive {:cluster_result, result}
+          foreign_path = Process.get(:cluster_file_ops_foreign_temporary_path)
+          assert is_binary(foreign_path)
+          {log, result, foreign_path}
+        end)
+
+      assert {:error, message, 1} = result
+      assert File.read!(foreign_path) == foreign_contents
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §10.2 staging replacement after publication is preserved and plaintext is redacted",
+         %{tmp_dir: tmp_dir} do
+      assert_failed_delivery_has_no_plaintext(
+        tmp_dir,
+        "staging-replacement-admin",
+        foreign_temporary_after_link: "unrelated replacement data",
+        expected_foreign_temporary: "unrelated replacement data",
+        expected_output: ""
       )
     end
 
@@ -600,6 +680,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
     previous_fail_remove = Process.get(:cluster_file_ops_fail_remove)
     previous_capture_token = Process.get(:cluster_file_ops_capture_token)
     previous_foreign_target = Process.get(:cluster_file_ops_foreign_target)
+    previous_foreign_temporary = Process.get(:cluster_file_ops_foreign_temporary)
+    previous_foreign_temporary_path = Process.get(:cluster_file_ops_foreign_temporary_path)
+
+    previous_foreign_temporary_after_link =
+      Process.get(:cluster_file_ops_foreign_temporary_after_link)
+
+    previous_foreign_temporary_after_link_path =
+      Process.get(:cluster_file_ops_foreign_temporary_after_link_path)
+
     previous_failed_token = Process.get(:cluster_file_ops_failed_token)
 
     Application.put_env(:orchard_cli, :cluster_file_ops, ConfigurableFileOps)
@@ -607,6 +696,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
     restore_process_setting(:cluster_file_ops_fail_remove, settings[:fail_remove])
     Process.put(:cluster_file_ops_capture_token, Keyword.get(settings, :capture_token, false))
     restore_process_setting(:cluster_file_ops_foreign_target, settings[:foreign_target])
+    restore_process_setting(:cluster_file_ops_foreign_temporary, settings[:foreign_temporary])
+
+    restore_process_setting(
+      :cluster_file_ops_foreign_temporary_after_link,
+      settings[:foreign_temporary_after_link]
+    )
+
+    Process.delete(:cluster_file_ops_foreign_temporary_path)
+    Process.delete(:cluster_file_ops_foreign_temporary_after_link_path)
     Process.delete(:cluster_file_ops_failed_token)
 
     try do
@@ -617,6 +715,23 @@ defmodule OrchardCLI.Commands.ClusterTest do
       restore_process_setting(:cluster_file_ops_fail_remove, previous_fail_remove)
       restore_process_setting(:cluster_file_ops_capture_token, previous_capture_token)
       restore_process_setting(:cluster_file_ops_foreign_target, previous_foreign_target)
+      restore_process_setting(:cluster_file_ops_foreign_temporary, previous_foreign_temporary)
+
+      restore_process_setting(
+        :cluster_file_ops_foreign_temporary_path,
+        previous_foreign_temporary_path
+      )
+
+      restore_process_setting(
+        :cluster_file_ops_foreign_temporary_after_link,
+        previous_foreign_temporary_after_link
+      )
+
+      restore_process_setting(
+        :cluster_file_ops_foreign_temporary_after_link_path,
+        previous_foreign_temporary_after_link_path
+      )
+
       restore_process_setting(:cluster_file_ops_failed_token, previous_failed_token)
     end
   end
@@ -624,7 +739,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
   defp assert_failed_delivery_has_no_plaintext(tmp_dir, client_name, settings) do
     output_path = Path.join(tmp_dir, "#{client_name}.json")
 
-    {log, result, token} =
+    {log, result, token, foreign_temporary_path} =
       with_configurable_file_ops(settings, fn ->
         log =
           capture_log(fn ->
@@ -645,7 +760,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
         assert_receive {:cluster_result, result}
         token = Process.get(:cluster_file_ops_failed_token)
         assert is_binary(token)
-        {log, result, token}
+
+        {log, result, token, Process.get(:cluster_file_ops_foreign_temporary_after_link_path)}
       end)
 
     assert {:error, message, 1} = result
@@ -654,6 +770,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
     refute log =~ token
     refute log =~ "orchard_sk_"
     assert_output_state(output_path, Keyword.get(settings, :expected_output, :absent))
+
+    assert_foreign_temporary(
+      foreign_temporary_path,
+      Keyword.get(settings, :expected_foreign_temporary)
+    )
 
     for path <- residual_files(tmp_dir) do
       refute File.read!(path) =~ token
@@ -670,11 +791,26 @@ defmodule OrchardCLI.Commands.ClusterTest do
   defp assert_output_state(output_path, :absent), do: refute(File.exists?(output_path))
   defp assert_output_state(output_path, contents), do: assert(File.read!(output_path) == contents)
 
+  defp assert_foreign_temporary(_path, nil), do: :ok
+
+  defp assert_foreign_temporary(path, contents) do
+    assert is_binary(path)
+    assert File.read!(path) == contents
+  end
+
   defp residual_files(tmp_dir) do
     tmp_dir
     |> File.ls!()
-    |> Enum.map(&Path.join(tmp_dir, &1))
-    |> Enum.filter(&File.regular?/1)
+    |> Enum.flat_map(fn entry ->
+      path = Path.join(tmp_dir, entry)
+
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :directory}} -> residual_files(path)
+        {:ok, %File.Stat{type: :regular}} -> [path]
+        _other -> []
+      end
+    end)
+    |> Enum.sort()
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:orchard_cli, key)
