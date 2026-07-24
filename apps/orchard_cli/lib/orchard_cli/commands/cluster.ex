@@ -48,6 +48,9 @@ defmodule OrchardCLI.Commands.Cluster do
       {:ok, _message} = success ->
         success
 
+      {:cleanup_unresolved, primary_error, cleanup_error} ->
+        render_cleanup_unresolved(primary_error, cleanup_error, json?)
+
       {:error, code, message, exit_code} ->
         render_init_error(code, message, exit_code, json?)
 
@@ -82,10 +85,30 @@ defmodule OrchardCLI.Commands.Cluster do
         result
 
       {:error, reason} ->
-        {:error, :output_parent_not_writable,
-         "failed to clean reserved credential output: #{inspect(reason)}", 1}
+        {:cleanup_unresolved, result, reason}
     end
   end
+
+  defp render_cleanup_unresolved(primary_error, cleanup_error, json?) do
+    {:error, message, exit_code} = render_primary_init_error(primary_error, json?)
+    cleanup_detail = format_file_error(cleanup_error)
+
+    if json? do
+      payload =
+        message
+        |> Jason.decode!()
+        |> Map.put("cleanup_unresolved", cleanup_detail)
+
+      {:error, Jason.encode!(payload, pretty: true), exit_code}
+    else
+      {:error, message <> "\nCleanup unresolved: " <> cleanup_detail, exit_code}
+    end
+  end
+
+  defp render_primary_init_error({:error, code, message, exit_code}, json?),
+    do: render_init_error(code, message, exit_code, json?)
+
+  defp render_primary_init_error({:error, reason}, json?), do: init_error(reason, json?)
 
   defp parse_init_args(args) do
     switches = [
@@ -134,8 +157,9 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp reserve_output_in_parent(path, parent, ops) do
-    with {:ok, parent_identity} <- protected_parent_identity(parent, ops),
-         :ok <- verify_parent_directory_cleanup(path, parent, parent_identity, ops),
+    with {:ok, initial_parent_identity} <- protected_parent_identity(parent, ops),
+         {:ok, parent_identity} <-
+           verify_parent_directory_cleanup(path, parent, initial_parent_identity, ops),
          {:ok, reservation} <-
            create_reservation(path, parent, parent_identity, ops, @reservation_attempts) do
       verify_reservation_cleanup(reservation)
@@ -146,23 +170,43 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp verify_parent_directory_cleanup(path, parent, parent_identity, ops) do
     case create_parent_probe(path, parent, parent_identity, ops, @reservation_attempts) do
-      {:ok, probe_path, probe_identity} ->
-        case remove_owned_directory(probe_path, probe_identity, ops) do
-          :ok ->
-            verify_protected_parent(parent, parent_identity, ops)
-
-          {:error, reason} ->
-            cleanup_retry = remove_owned_directory(probe_path, probe_identity, ops)
-
-            {:error,
-             preserve_cleanup_result(
-               {:parent_directory_probe_cleanup, reason},
-               parent_probe_cleanup_retry: cleanup_retry
-             )}
-        end
+      {:ok, probe_path, probe_identity, owner_uid, hierarchy} ->
+        complete_parent_probe(
+          probe_path,
+          probe_identity,
+          owner_uid,
+          hierarchy,
+          parent_identity,
+          ops
+        )
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp complete_parent_probe(
+         probe_path,
+         probe_identity,
+         owner_uid,
+         hierarchy,
+         parent_identity,
+         ops
+       ) do
+    case remove_owned_directory(probe_path, probe_identity, ops) do
+      :ok ->
+        with :ok <- verify_parent_hierarchy(hierarchy, owner_uid, ops) do
+          {:ok, %{parent_identity | hierarchy: hierarchy, owner_uid: owner_uid}}
+        end
+
+      {:error, reason} ->
+        cleanup_retry = remove_owned_directory(probe_path, probe_identity, ops)
+
+        {:error,
+         preserve_cleanup_result(
+           {:parent_directory_probe_cleanup, reason},
+           parent_probe_cleanup_retry: cleanup_retry
+         )}
     end
   end
 
@@ -196,8 +240,9 @@ defmodule OrchardCLI.Commands.Cluster do
         result =
           with :ok <- ops.chmod(probe_path, 0o700),
                :ok <- verify_path(probe_path, probe_identity, :directory, 0o700, ops),
-               :ok <- verify_protected_parent(parent, parent_identity, ops) do
-            {:ok, probe_path, probe_identity}
+               :ok <- verify_protected_parent(parent, parent_identity, ops),
+               {:ok, hierarchy} <- trusted_parent_hierarchy(parent, stat.uid, ops) do
+            {:ok, probe_path, probe_identity, stat.uid, hierarchy}
           end
 
         cleanup_failed_parent_probe(result, probe_path, probe_identity, ops)
@@ -211,7 +256,7 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp cleanup_failed_parent_probe(
-         {:ok, _result_path, _result_identity} = success,
+         {:ok, _result_path, _result_identity, _owner_uid, _hierarchy} = success,
          _argument_path,
          _argument_identity,
          _ops
@@ -237,7 +282,12 @@ defmodule OrchardCLI.Commands.Cluster do
     case ops.lstat(parent) do
       {:ok, %File.Stat{type: :directory} = stat} ->
         if Bitwise.band(stat.mode, 0o022) == 0 do
-          {:ok, file_identity(stat)}
+          {:ok,
+           %{
+             immediate: file_identity(stat),
+             hierarchy: nil,
+             owner_uid: nil
+           }}
         else
           {:error, :output_parent_cross_user_writable}
         end
@@ -794,7 +844,15 @@ defmodule OrchardCLI.Commands.Cluster do
     )
   end
 
-  defp verify_protected_parent(parent, expected_identity, ops) do
+  defp verify_protected_parent(
+         _parent,
+         %{hierarchy: hierarchy, owner_uid: owner_uid},
+         ops
+       )
+       when is_list(hierarchy) and is_integer(owner_uid),
+       do: verify_parent_hierarchy(hierarchy, owner_uid, ops)
+
+  defp verify_protected_parent(parent, %{immediate: expected_identity}, ops) do
     with :ok <-
            verify_path(
              parent,
@@ -805,12 +863,65 @@ defmodule OrchardCLI.Commands.Cluster do
            ),
          {:ok, parent_identity} <-
            protected_parent_identity(parent, ops),
-         true <- parent_identity == expected_identity do
+         true <- parent_identity.immediate == expected_identity do
       :ok
     else
       false -> {:error, :output_parent_identity_changed}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp trusted_parent_hierarchy(parent, owner_uid, ops) do
+    parent
+    |> parent_component_paths()
+    |> Enum.reduce_while({:ok, []}, fn path, {:ok, hierarchy} ->
+      case trusted_parent_component(path, owner_uid, ops) do
+        {:ok, component} -> {:cont, {:ok, [component | hierarchy]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, hierarchy} -> {:ok, Enum.reverse(hierarchy)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp trusted_parent_component(path, owner_uid, ops) do
+    case ops.stat(path) do
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        if trusted_parent_owner?(stat.uid, owner_uid) and trusted_parent_mode?(stat.mode) do
+          {:ok, {path, file_identity(stat)}}
+        else
+          {:error, :output_parent_hierarchy_untrusted}
+        end
+
+      {:ok, _stat} ->
+        {:error, :unexpected_path_type}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp verify_parent_hierarchy(hierarchy, owner_uid, ops) do
+    Enum.reduce_while(hierarchy, :ok, fn {path, expected_identity}, :ok ->
+      case trusted_parent_component(path, owner_uid, ops) do
+        {:ok, {^path, ^expected_identity}} -> {:cont, :ok}
+        {:ok, _other} -> {:halt, {:error, :output_parent_identity_changed}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp trusted_parent_owner?(uid, owner_uid), do: uid == owner_uid or uid == 0
+
+  defp trusted_parent_mode?(mode) do
+    Bitwise.band(mode, 0o022) == 0 or Bitwise.band(mode, 0o1000) != 0
+  end
+
+  defp parent_component_paths(parent) do
+    [root | components] = Path.split(parent)
+    [root | Enum.scan(components, root, fn component, path -> Path.join(path, component) end)]
   end
 
   defp preserve_cleanup_result(reason, cleanup_results) do

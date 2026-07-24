@@ -13,6 +13,20 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def dir?(path), do: File.dir?(path)
     def lstat(path), do: File.lstat(path)
 
+    def stat(path) do
+      case File.stat(path) do
+        {:ok, stat} ->
+          if Process.get(:cluster_file_ops_foreign_owner_parent) == path do
+            {:ok, %{stat | uid: stat.uid + 1}}
+          else
+            {:ok, stat}
+          end
+
+        error ->
+          error
+      end
+    end
+
     def open(path, modes) do
       case Process.get(:cluster_file_ops_foreign_temporary) do
         contents when is_binary(contents) ->
@@ -416,6 +430,45 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(ApiKey, :count, :id) == 1
     end
 
+    test "SPEC.md §11.9 second init preserves its stable error when cleanup fails", %{
+      tmp_dir: tmp_dir
+    } do
+      first_output = Path.join(tmp_dir, "first-admin.json")
+      second_output = Path.join(tmp_dir, "second-admin.json")
+
+      assert {:ok, _message} = ClusterCmd.run(["init", "--output", first_output])
+      first_token = first_output |> File.read!() |> Jason.decode!() |> Map.fetch!("api_token")
+
+      {log, result} =
+        with_configurable_file_ops([fail_remove: :temporary_secret], fn ->
+          log =
+            capture_log(fn ->
+              send(
+                self(),
+                {:cluster_result, ClusterCmd.run(["init", "--output", second_output, "--json"])}
+              )
+            end)
+
+          assert_receive {:cluster_result, result}
+          {log, result}
+        end)
+
+      assert {:error, message, 1} = result
+      payload = Jason.decode!(message)
+      assert payload["code"] == "cluster_already_initialized"
+      assert payload["cleanup_unresolved"]
+      refute message =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+
+      for path <- residual_files(tmp_dir), path != first_output do
+        refute File.read!(path) =~ first_token
+        refute File.read!(path) =~ "orchard_sk_"
+      end
+
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+      assert Repo.aggregate(ApiKey, :count, :id) == 1
+    end
+
     test "SPEC.md §11.9 preflights output path before minting", %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "admin.json")
       File.write!(output_path, "existing")
@@ -441,6 +494,60 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       assert Jason.decode!(message)["code"] == "output_parent_not_writable"
       refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §11.9 rejects a foreign-owned private output parent before minting",
+         %{tmp_dir: tmp_dir} do
+      foreign_dir = Path.join(tmp_dir, "foreign-private")
+      File.mkdir!(foreign_dir)
+      File.chmod!(foreign_dir, 0o700)
+      output_path = Path.join(foreign_dir, "admin.json")
+
+      result =
+        with_configurable_file_ops([foreign_owner_parent: foreign_dir], fn ->
+          ClusterCmd.run(["init", "--output", output_path, "--json"])
+        end)
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute File.exists?(output_path)
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ "orchard_sk_"
+      end
+
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §11.9 rejects a foreign-owned output ancestor before minting",
+         %{tmp_dir: tmp_dir} do
+      output_dir = Path.join(tmp_dir, "operator-private")
+      File.mkdir!(output_dir)
+      File.chmod!(output_dir, 0o700)
+      output_path = Path.join(output_dir, "admin.json")
+
+      result =
+        with_configurable_file_ops([foreign_owner_parent: tmp_dir], fn ->
+          ClusterCmd.run(["init", "--output", output_path, "--json"])
+        end)
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      refute message =~ "orchard_sk_"
+      refute File.exists?(output_path)
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ "orchard_sk_"
+      end
+
       assert Repo.aggregate(ServiceAccount, :count, :id) == 0
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
@@ -776,6 +883,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
     previous_fail_rmdir = Process.get(:cluster_file_ops_fail_rmdir)
     previous_link_succeeded = Process.get(:cluster_file_ops_link_succeeded)
     previous_close_failure_injected = Process.get(:cluster_file_ops_close_failure_injected)
+    previous_foreign_owner_parent = Process.get(:cluster_file_ops_foreign_owner_parent)
     previous_failed_token = Process.get(:cluster_file_ops_failed_token)
 
     Application.put_env(:orchard_cli, :cluster_file_ops, ConfigurableFileOps)
@@ -796,6 +904,12 @@ defmodule OrchardCLI.Commands.ClusterTest do
     )
 
     restore_process_setting(:cluster_file_ops_fail_rmdir, settings[:fail_rmdir])
+
+    restore_process_setting(
+      :cluster_file_ops_foreign_owner_parent,
+      settings[:foreign_owner_parent]
+    )
+
     Process.delete(:cluster_file_ops_foreign_temporary_path)
     Process.delete(:cluster_file_ops_foreign_temporary_after_link_path)
     Process.delete(:cluster_file_ops_link_succeeded)
@@ -838,6 +952,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
       restore_process_setting(
         :cluster_file_ops_close_failure_injected,
         previous_close_failure_injected
+      )
+
+      restore_process_setting(
+        :cluster_file_ops_foreign_owner_parent,
+        previous_foreign_owner_parent
       )
 
       restore_process_setting(:cluster_file_ops_failed_token, previous_failed_token)
