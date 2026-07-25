@@ -43,6 +43,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def open(path, modes) do
       result = File.open(path, modes)
 
+      case result do
+        {:ok, file} ->
+          role = if :exclusive in modes, do: :publication, else: :cleanup
+          Process.put({:cluster_file_ops_descriptor_role, file}, role)
+
+        {:error, _reason} ->
+          :ok
+      end
+
       if match?({:ok, _file}, result) and :exclusive in modes and
            (is_binary(Process.get(:cluster_file_ops_foreign_output_after_lstat)) or
               is_binary(Process.get(:cluster_file_ops_foreign_output_before_close))) do
@@ -70,8 +79,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def sync(file) do
+      role = Process.get({:cluster_file_ops_descriptor_role, file})
+
       cond do
-        Process.get(:cluster_file_ops_fail_preflight_sync) and
+        Process.get(:cluster_file_ops_fail_cleanup_preflight_sync) and
+          role == :cleanup and
           Process.get(:cluster_file_ops_descriptor_write_completed) != true and
             !Process.get(:cluster_file_ops_sync_failure_injected) ->
           Process.put(:cluster_file_ops_sync_failure_injected, true)
@@ -91,11 +103,23 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def chmod(path, mode), do: File.chmod(path, mode)
 
     def close(file) do
+      role = Process.get({:cluster_file_ops_descriptor_role, file})
+
       cond do
-        replace_output_on_close?() -> replace_output_on_close()
-        fail_close_after_write?() -> inject_close_failure()
-        fail_close_before_write?() -> inject_close_failure()
-        true -> File.close(file)
+        role == :publication and replace_output_on_close?() ->
+          replace_output_on_close(file)
+
+        role == :publication and fail_close_after_write?() ->
+          inject_invalidating_close_failure(file)
+
+        role == :cleanup and fail_cleanup_close_after_commit?() ->
+          inject_cleanup_close_anomaly(file)
+
+        fail_close_before_write?() ->
+          inject_close_failure()
+
+        true ->
+          close_descriptor(file, role)
       end
     end
 
@@ -105,14 +129,14 @@ defmodule OrchardCLI.Commands.ClusterTest do
         !Process.get(:cluster_file_ops_close_replacement_injected)
     end
 
-    defp replace_output_on_close do
+    defp replace_output_on_close(file) do
       path = Process.get(:cluster_file_ops_foreign_output_path)
       moved_path = path <> ".reserved-at-close"
       File.rename!(path, moved_path)
       File.write!(path, Process.get(:cluster_file_ops_foreign_output_before_close))
       Process.put(:cluster_file_ops_foreign_output_moved_path, moved_path)
       Process.put(:cluster_file_ops_close_replacement_injected, true)
-      {:error, :path_identity_changed}
+      close_descriptor(file, :publication)
     end
 
     defp fail_close_after_write? do
@@ -127,23 +151,47 @@ defmodule OrchardCLI.Commands.ClusterTest do
         !Process.get(:cluster_file_ops_close_failure_injected)
     end
 
+    defp fail_cleanup_close_after_commit? do
+      Process.get(:cluster_file_ops_fail_cleanup_close_after_commit) and
+        Process.get(:cluster_file_ops_publication_close_completed) == true and
+        !Process.get(:cluster_file_ops_cleanup_close_failure_injected)
+    end
+
     defp inject_close_failure do
       Process.put(:cluster_file_ops_close_failure_injected, true)
       {:error, :eio}
     end
 
+    defp inject_invalidating_close_failure(file) do
+      Process.put(:cluster_file_ops_close_failure_injected, true)
+      :ok = File.close(file)
+      {:error, :eio}
+    end
+
+    defp inject_cleanup_close_anomaly(file) do
+      Process.put(:cluster_file_ops_cleanup_close_failure_injected, true)
+      :ok = File.close(file)
+      {:error, :eio}
+    end
+
+    defp close_descriptor(file, role) do
+      result = File.close(file)
+
+      if role == :publication and result == :ok,
+        do: Process.put(:cluster_file_ops_publication_close_completed, true)
+
+      result
+    end
+
     defp maybe_replace_output_after_lstat(path, %File.Stat{type: :regular}) do
       if Process.get(:cluster_file_ops_foreign_output_path) == path and
-           is_binary(Process.get(:cluster_file_ops_foreign_output_after_lstat)) do
-        count = Process.get(:cluster_file_ops_foreign_output_lstat_count, 0) + 1
-        Process.put(:cluster_file_ops_foreign_output_lstat_count, count)
-
-        if count == 3 do
-          moved_path = path <> ".reserved"
-          File.rename!(path, moved_path)
-          File.write!(path, Process.get(:cluster_file_ops_foreign_output_after_lstat))
-          Process.put(:cluster_file_ops_foreign_output_moved_path, moved_path)
-        end
+           is_binary(Process.get(:cluster_file_ops_foreign_output_after_lstat)) and
+           Process.get(:cluster_file_ops_descriptor_write_completed) == true and
+           is_nil(Process.get(:cluster_file_ops_foreign_output_moved_path)) do
+        moved_path = path <> ".reserved"
+        File.rename!(path, moved_path)
+        File.write!(path, Process.get(:cluster_file_ops_foreign_output_after_lstat))
+        Process.put(:cluster_file_ops_foreign_output_moved_path, moved_path)
       end
     end
 
@@ -337,6 +385,47 @@ defmodule OrchardCLI.Commands.ClusterTest do
         fail_close_after_write: true,
         expected_output: ""
       )
+    end
+
+    test "SPEC.md §10.2 recovery descriptor close anomaly preserves committed output once",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "cleanup-close-anomaly-admin.json")
+
+      {log, result, token} =
+        with_configurable_file_ops(
+          [capture_token: true, fail_cleanup_close_after_commit: true],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result,
+                   ClusterCmd.run([
+                     "init",
+                     "--output",
+                     output_path,
+                     "--json",
+                     "--client-name",
+                     "cleanup-close-anomaly-admin"
+                   ])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+            {log, result, Process.get(:cluster_file_ops_failed_token)}
+          end
+        )
+
+      assert {:ok, output} = result
+      assert is_binary(token)
+      assert Jason.decode!(output)["api_token_prefix"] =~ ~r/^orchard_kp_/
+      assert log =~ "recovery descriptor close failed after output commit"
+      assert token_occurrences(File.read!(output_path), token) == 1
+      assert residual_files(tmp_dir) == [output_path]
+      refute output =~ token
+      refute log =~ token
+      refute log =~ "orchard_sk_"
+      refute inspect(Repo.all(AuditLog)) =~ token
     end
 
     test "SPEC.md §11.9 force-new-admin requires yes and then mints recovery additively", %{
@@ -570,12 +659,12 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
 
-    test "SPEC.md §11.9 descriptor preflight sync failure prevents minting",
+    test "SPEC.md §11.9 cleanup-descriptor preflight sync failure prevents minting",
          %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "admin.json")
 
       {log, result} =
-        with_configurable_file_ops([fail_preflight_sync: true], fn ->
+        with_configurable_file_ops([fail_cleanup_preflight_sync: true], fn ->
           log =
             capture_log(fn ->
               send(
@@ -860,18 +949,22 @@ defmodule OrchardCLI.Commands.ClusterTest do
         Keyword.get(settings, :fail_close_after_write, false),
       cluster_file_ops_fail_close_before_write:
         Keyword.get(settings, :fail_close_before_write, false),
+      cluster_file_ops_fail_cleanup_close_after_commit:
+        Keyword.get(settings, :fail_cleanup_close_after_commit, false),
       cluster_file_ops_fail_write_after_persist:
         Keyword.get(settings, :fail_write_after_persist, false),
       cluster_file_ops_fail_sync_after_write:
         Keyword.get(settings, :fail_sync_after_write, false),
-      cluster_file_ops_fail_preflight_sync: Keyword.get(settings, :fail_preflight_sync, false),
+      cluster_file_ops_fail_cleanup_preflight_sync:
+        Keyword.get(settings, :fail_cleanup_preflight_sync, false),
       cluster_file_ops_foreign_owner_parent: settings[:foreign_owner_parent],
       cluster_file_ops_foreign_owner_symlink: settings[:foreign_owner_symlink],
       cluster_file_ops_foreign_output_path: nil,
-      cluster_file_ops_foreign_output_lstat_count: nil,
       cluster_file_ops_foreign_output_moved_path: nil,
       cluster_file_ops_close_failure_injected: nil,
+      cluster_file_ops_cleanup_close_failure_injected: nil,
       cluster_file_ops_close_replacement_injected: nil,
+      cluster_file_ops_publication_close_completed: nil,
       cluster_file_ops_write_failure_injected: nil,
       cluster_file_ops_sync_failure_injected: nil,
       cluster_file_ops_descriptor_write_completed: nil,

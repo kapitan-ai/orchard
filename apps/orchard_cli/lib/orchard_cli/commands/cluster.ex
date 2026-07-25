@@ -1,6 +1,8 @@
 defmodule OrchardCLI.Commands.Cluster do
   @moduledoc false
 
+  require Logger
+
   alias Orchard.ClusterManagement.ControlPlaneStatus
   alias Orchard.ControlPlane
   alias Orchard.Governance.ClusterBootstrap
@@ -204,6 +206,7 @@ defmodule OrchardCLI.Commands.Cluster do
           parent: parent,
           parent_identity: parent_identity,
           io: io,
+          cleanup_io: nil,
           ops: ops
         }
 
@@ -219,7 +222,7 @@ defmodule OrchardCLI.Commands.Cluster do
                reservation = %{reservation | parent_identity: parent_identity},
                :ok <- verify_protected_parent(reservation),
                :ok <- preflight_descriptor(reservation) do
-            {:ok, reservation}
+            bind_cleanup_descriptor(reservation)
           end
 
         close_failed_reservation(result, reservation)
@@ -254,6 +257,40 @@ defmodule OrchardCLI.Commands.Cluster do
         0o600,
         reservation.ops
       )
+    end
+  end
+
+  defp bind_cleanup_descriptor(reservation) do
+    case reservation.ops.open(reservation.output_path, [:read, :write, :binary]) do
+      {:ok, cleanup_io} ->
+        prepare_cleanup_descriptor(%{reservation | cleanup_io: cleanup_io})
+
+      {:error, reason} ->
+        {:error, {:cleanup_descriptor_open, reason}}
+    end
+  end
+
+  defp prepare_cleanup_descriptor(reservation) do
+    result =
+      with :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
+           :ok <- redact_descriptor(reservation.ops, reservation.cleanup_io),
+           :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
+           :ok <- verify_protected_parent(reservation) do
+        verify_reserved_output(reservation)
+      end
+
+    case result do
+      :ok ->
+        {:ok, reservation}
+
+      {:error, reason} ->
+        cleanup = reservation.ops.close(reservation.cleanup_io)
+
+        {:error,
+         preserve_cleanup_result(
+           {:cleanup_descriptor_prepare, reason},
+           cleanup_descriptor_close: cleanup
+         )}
     end
   end
 
@@ -351,31 +388,72 @@ defmodule OrchardCLI.Commands.Cluster do
 
     with :ok <- verify_protected_parent(reservation),
          :ok <- verify_reserved_output(reservation),
+         :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
          :ok <- write_descriptor(reservation, payload),
          :ok <- verify_descriptor(reservation.io, reservation.output_identity),
+         :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
          :ok <- verify_protected_parent(reservation),
-         :ok <- verify_reserved_output(reservation),
-         :ok <- reservation.ops.close(reservation.io) do
-      :ok
+         :ok <- verify_reserved_output(reservation) do
+      close_publication_descriptor(reservation)
     else
       {:error, reason} ->
-        contain_failed_output(reservation, reason)
+        contain_failed_output(reservation, reason, false)
     end
   end
 
-  defp contain_failed_output(reservation, reason) do
+  defp close_publication_descriptor(reservation) do
+    case reservation.ops.close(reservation.io) do
+      :ok ->
+        finish_committed_output(reservation)
+
+      {:error, reason} ->
+        contain_failed_output(reservation, reason, true)
+    end
+  end
+
+  defp finish_committed_output(reservation) do
+    with :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
+         :ok <- verify_protected_parent(reservation),
+         :ok <- verify_reserved_output(reservation) do
+      close_cleanup_after_commit(reservation)
+    else
+      {:error, reason} ->
+        contain_failed_output(reservation, reason, true)
+    end
+  end
+
+  defp close_cleanup_after_commit(reservation) do
+    case reservation.ops.close(reservation.cleanup_io) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "cluster init recovery descriptor close failed after output commit: " <>
+            format_file_error(reason)
+        )
+
+        :ok
+    end
+  end
+
+  defp contain_failed_output(reservation, reason, publication_close_attempted?) do
     message =
       "cluster init minted a credential but One-time Secret Output failed: " <>
         format_file_error(reason)
 
-    {:error, cleanup_message} = contain_failed_cleanup(reservation)
+    {:error, cleanup_message} =
+      contain_failed_cleanup(reservation, publication_close_attempted?)
+
     {:error, message <> "; " <> cleanup_message}
   end
 
-  defp contain_failed_cleanup(reservation) do
+  defp contain_failed_cleanup(reservation, publication_close_attempted?) do
     containment = [
       plaintext_redaction: redact_reservation(reservation),
-      descriptor_close: close_descriptor(reservation)
+      publication_descriptor_close:
+        close_publication_after_abort(reservation, publication_close_attempted?),
+      cleanup_descriptor_close: close_cleanup_descriptor(reservation)
     ]
 
     detail =
@@ -391,7 +469,8 @@ defmodule OrchardCLI.Commands.Cluster do
   defp release_reservation(reservation) do
     results = [
       plaintext_redaction: redact_reservation(reservation),
-      descriptor_close: close_descriptor(reservation)
+      publication_descriptor_close: reservation.ops.close(reservation.io),
+      cleanup_descriptor_close: close_cleanup_descriptor(reservation)
     ]
 
     case Enum.reject(results, fn {_step, result} -> result == :ok end) do
@@ -400,15 +479,15 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp close_descriptor(reservation) do
-    case reservation.ops.close(reservation.io) do
-      :ok ->
-        :ok
+  defp close_publication_after_abort(_reservation, true), do: :ok
 
-      {:error, reason} ->
-        {:error, {reason, {:retry, reservation.ops.close(reservation.io)}}}
-    end
-  end
+  defp close_publication_after_abort(reservation, false),
+    do: reservation.ops.close(reservation.io)
+
+  defp close_cleanup_descriptor(%{cleanup_io: nil}), do: :ok
+
+  defp close_cleanup_descriptor(reservation),
+    do: reservation.ops.close(reservation.cleanup_io)
 
   defp write_descriptor(reservation, contents) do
     with :ok <- descriptor_write(reservation.ops, reservation.io, contents),
@@ -422,7 +501,10 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp redact_reservation(reservation) do
-    redact_descriptor(reservation.ops, reservation.io)
+    redact_descriptor(
+      reservation.ops,
+      reservation.cleanup_io || reservation.io
+    )
   end
 
   defp descriptor_write(ops, io, contents) do
