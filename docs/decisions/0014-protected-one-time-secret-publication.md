@@ -7,7 +7,7 @@ Accepted.
 ## Context
 
 `SPEC.md` §7.4.4 requires file-backed One-time Secret Output after a successful credential or provisioning commit.
-`SPEC.md` §11.9 applies that pattern to `orchardctl cluster init`.
+`SPEC.md` §11.9 applies that pattern to `orchardctl cluster init` and owns the cluster-init-only protected publication profile.
 Creating the operator-selected final inode before reducing its mode allows a local reader to retain a descriptor and later observe plaintext written through the same inode.
 Treating a nonzero CLI result as proof of rollback is also incorrect after the database credential commit because filesystem publication and cleanup can fail independently.
 POSIX file operations may fail without erasing or durably removing previously written bytes.
@@ -23,6 +23,8 @@ The staged inode is made and verified mode `0600` before plaintext is written.
 Orchard retains a second descriptor bound to the same inode for logical containment until publication commits.
 Pathname cleanup moves a candidate into a unique quarantine pathname and verifies identity after that move.
 A discrete foreign regular entry is restored with a no-clobber link when safe or retained in quarantine, and a foreign directory is retained in quarantine.
+A successful restore releases the quarantine link so the entry keeps exactly its original pathname, and a blocked restore is reported distinctly so the operator can locate the retained quarantine pathname in stderr.
+Cleanup of a staging namespace whose protection never established revalidates the bound parent, matches the namespace by identity rather than by the mode and ACL state that failed to apply, and removes only a matching empty directory.
 Either mismatch returns nonzero rather than intentionally deleting the foreign entry.
 The supported pathname APIs cannot make deletion conditional on inode identity against a continuously adversarial root or same-account process racing every syscall, so that actor is outside this bounded cleanup guarantee.
 
@@ -49,5 +51,5 @@ Recovery therefore begins by revoking the reported API Token prefix before retry
 
 ## SPEC.md impact
 
-§7.4.4 defines the protected file-backed publication protocol, bounded fault model, and exactly-once meaning.
-§11.9 defines the `orchard.cluster_management.cluster_init.v2` outcome axes and post-commit recovery behavior.
+§7.4.4 keeps the bulk One-time Secret Output contract and bridges to the cluster-init-only profile without restating it.
+§11.9 defines the protected file-backed publication protocol, bounded fault model, exactly-once meaning, cleanup reporting, the `orchard.cluster_management.cluster_init.v2` outcome axes, and post-commit recovery behavior.

@@ -171,7 +171,7 @@ defmodule OrchardCLI.Commands.Cluster do
   defp reserve_output_in_parent(path, parent, ops) do
     with {:ok, parent_identity} <- protected_parent_identity(parent, ops),
          {:ok, staging_dir, staging_dir_identity, staging_path, io} <-
-           open_output_reservation(parent, ops),
+           open_output_reservation(parent, parent_identity, ops),
          {:ok, reservation} <-
            prepare_output_reservation(
              path,
@@ -214,50 +214,77 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp open_output_reservation(parent, ops) do
+  defp open_output_reservation(parent, parent_identity, ops) do
     staging_dir =
       Path.join(parent, ".orchard-cluster-init-#{Ecto.UUID.generate()}")
 
     staging_path = Path.join(staging_dir, "credential")
+    parent_binding = %{parent: parent, parent_identity: parent_identity, ops: ops}
 
     case ops.mkdir(staging_dir) do
-      :ok -> open_created_output_reservation(staging_dir, staging_path, ops)
+      :ok -> open_created_output_reservation(parent_binding, staging_dir, staging_path)
       {:error, reason} -> {:error, {:staging_directory_create, reason}}
     end
   end
 
-  defp open_created_output_reservation(staging_dir, staging_path, ops) do
-    case created_directory_identity(staging_dir, ops) do
+  defp open_created_output_reservation(parent_binding, staging_dir, staging_path) do
+    case created_directory_identity(staging_dir, parent_binding.ops) do
       {:ok, staging_identity} ->
-        result =
-          with :ok <-
-                 protect_created_path(
-                   staging_dir,
-                   staging_identity,
-                   :directory,
-                   @private_directory_mode,
-                   ops
-                 ),
-               {:ok, io} <- open_staging_credential(staging_path, ops) do
-            {:ok, staging_dir, staging_identity, staging_path, io}
-          end
-
-        case result do
-          {:ok, _staging_dir, _staging_identity, _staging_path, _io} = success ->
-            success
-
-          {:error, reason} ->
-            cleanup =
-              cleanup_unopened_staging_directory(staging_dir, staging_identity, ops)
-
-            {:error, preserve_cleanup_result(reason, staging_cleanup: cleanup)}
-        end
+        staging_dir
+        |> protect_and_open_staging(staging_identity, staging_path, parent_binding.ops)
+        |> release_unopened_staging(parent_binding, staging_dir, staging_identity)
 
       {:error, reason} ->
         {:error,
          preserve_cleanup_result(reason,
            staging_cleanup: {:error, :staging_directory_identity_unbound}
          )}
+    end
+  end
+
+  defp protect_and_open_staging(staging_dir, staging_identity, staging_path, ops) do
+    with :ok <-
+           protect_created_path(
+             staging_dir,
+             staging_identity,
+             :directory,
+             @private_directory_mode,
+             ops
+           ),
+         {:ok, io} <- open_staging_credential(staging_path, ops) do
+      {:ok, staging_dir, staging_identity, staging_path, io}
+    end
+  end
+
+  defp release_unopened_staging(
+         {:ok, _opened_dir, _opened_identity, _staging_path, _io} = success,
+         _parent_binding,
+         _staging_dir,
+         _staging_identity
+       ),
+       do: success
+
+  defp release_unopened_staging({:error, reason}, parent_binding, staging_dir, staging_identity) do
+    cleanup = cleanup_unprotected_staging_directory(parent_binding, staging_dir, staging_identity)
+    {:error, preserve_cleanup_result(reason, staging_cleanup: cleanup)}
+  end
+
+  defp cleanup_unprotected_staging_directory(parent_binding, staging_dir, staging_identity) do
+    case verify_protected_parent(
+           parent_binding.parent,
+           parent_binding.parent_identity,
+           parent_binding.ops
+         ) do
+      :ok ->
+        remove_identified_staging_directory(
+          staging_dir,
+          staging_identity,
+          nil,
+          parent_binding.ops
+        )
+
+      {:error, reason} ->
+        {:error, {:staging_parent_revalidation, reason}}
     end
   end
 
@@ -632,6 +659,8 @@ defmodule OrchardCLI.Commands.Cluster do
   defp failure_category({:output_parent_hierarchy_untrusted, _path}),
     do: "output_parent_hierarchy_untrusted"
 
+  defp failure_category({:foreign_path_retained, _quarantine_path}), do: "foreign_path_retained"
+
   defp failure_category({step, reason}) when is_atom(step),
     do: Atom.to_string(step) <> "." <> failure_category(reason)
 
@@ -717,7 +746,7 @@ defmodule OrchardCLI.Commands.Cluster do
       close_publication_descriptor(reservation)
     else
       {:error, reason} ->
-        contain_failed_output(reservation, reason, false)
+        contain_failed_output(reservation, reason, :pending)
     end
   end
 
@@ -729,11 +758,11 @@ defmodule OrchardCLI.Commands.Cluster do
             finish_committed_output(committed_reservation)
 
           {:error, reason} ->
-            contain_failed_output(reservation, reason, true)
+            contain_failed_output(reservation, reason, :ok)
         end
 
-      {:error, reason} ->
-        contain_failed_output(reservation, reason, true)
+      {:error, reason} = close_result ->
+        contain_failed_output(reservation, reason, close_result)
     end
   end
 
@@ -744,7 +773,7 @@ defmodule OrchardCLI.Commands.Cluster do
       close_cleanup_after_commit(reservation)
     else
       {:error, reason} ->
-        contain_failed_output(reservation, reason, true)
+        contain_failed_output(reservation, reason, :ok)
     end
   end
 
@@ -763,26 +792,25 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp contain_failed_output(reservation, reason, publication_close_attempted?) do
+  defp contain_failed_output(reservation, reason, publication_close) do
     {:error,
      %{
        reason: reason,
-       containment: contain_reservation(reservation, publication_close_attempted?)
+       containment: contain_reservation(reservation, publication_close)
      }}
   end
 
-  defp contain_reservation(reservation, publication_close_attempted?) do
+  defp contain_reservation(reservation, publication_close) do
     [
-      plaintext_redaction: redact_reservation(reservation, not publication_close_attempted?),
-      publication_descriptor_close:
-        close_publication_after_abort(reservation, publication_close_attempted?),
+      plaintext_redaction: redact_reservation(reservation, publication_close == :pending),
+      publication_descriptor_close: close_publication_after_abort(reservation, publication_close),
       cleanup_descriptor_close: close_cleanup_descriptor(reservation),
       staging_metadata_cleanup: cleanup_staging_metadata(reservation)
     ]
   end
 
   defp release_reservation(reservation) do
-    containment = contain_reservation(reservation, false)
+    containment = contain_reservation(reservation, :pending)
 
     case containment_failures(containment) do
       [] -> :ok
@@ -790,10 +818,10 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp close_publication_after_abort(_reservation, true), do: :ok
-
-  defp close_publication_after_abort(reservation, false),
+  defp close_publication_after_abort(reservation, :pending),
     do: reservation.ops.close(reservation.io)
+
+  defp close_publication_after_abort(_reservation, publication_close), do: publication_close
 
   defp close_cleanup_descriptor(%{cleanup_io: nil}), do: :ok
 
@@ -875,15 +903,16 @@ defmodule OrchardCLI.Commands.Cluster do
       {:ok, directory} ->
         sync_result = :file.sync(directory)
         close_result = :file.close(directory)
-
-        if sync_result == :ok and close_result == :ok,
-          do: :ok,
-          else: {:error, :eio}
+        directory_sync_result(sync_result, close_result)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp directory_sync_result({:error, reason}, _close_result), do: {:error, reason}
+  defp directory_sync_result(:ok, {:error, reason}), do: {:error, {:directory_sync_close, reason}}
+  defp directory_sync_result(:ok, :ok), do: :ok
 
   defp descriptor_ops?(ops, function, arity) do
     ops != File and Code.ensure_loaded?(ops) and function_exported?(ops, function, arity)
@@ -1031,25 +1060,13 @@ defmodule OrchardCLI.Commands.Cluster do
   defp cleanup_staging_metadata(%{staging_dir: nil, staging_path: nil}), do: :ok
 
   defp cleanup_staging_metadata(reservation) do
-    path_result = remove_reserved_staging_if_present(reservation)
-    directory_result = remove_staging_directory_if_present(reservation)
-
-    preserve_cleanup_result(:staging_cleanup,
-      staging_path: path_result,
-      staging_dir: directory_result
-    )
-    |> case do
-      :staging_cleanup -> :ok
-      {:cleanup_unresolved, :staging_cleanup, failures} -> {:error, failures}
+    case containment_failures(
+           staging_path: remove_reserved_staging_if_present(reservation),
+           staging_dir: remove_staging_directory_if_present(reservation)
+         ) do
+      [] -> :ok
+      failures -> {:error, failures}
     end
-  end
-
-  defp cleanup_unopened_staging_directory(staging_dir, staging_dir_identity, ops) do
-    remove_staging_directory_if_present(%{
-      staging_dir: staging_dir,
-      staging_dir_identity: staging_dir_identity,
-      ops: ops
-    })
   end
 
   defp remove_reserved_staging_if_present(reservation) do
@@ -1091,10 +1108,11 @@ defmodule OrchardCLI.Commands.Cluster do
   defp preserve_quarantined_foreign_regular(original_path, quarantine_path, ops) do
     with {:ok, %File.Stat{type: :regular} = stat} <- ops.lstat(quarantine_path),
          :ok <-
-           restore_quarantined_regular(original_path, quarantine_path, file_identity(stat), ops) do
-      {:error, :foreign_path_quarantined}
+           restore_quarantined_regular(original_path, quarantine_path, file_identity(stat), ops),
+         :ok <- remove_if_present(quarantine_path, ops) do
+      {:error, :foreign_path_restored}
     else
-      _result -> {:error, :foreign_path_quarantined}
+      _result -> {:error, {:foreign_path_retained, quarantine_path}}
     end
   end
 
@@ -1116,20 +1134,19 @@ defmodule OrchardCLI.Commands.Cluster do
   defp remove_staging_directory_if_present(%{staging_dir: nil}), do: :ok
 
   defp remove_staging_directory_if_present(reservation) do
-    case verify_path(
-           reservation.staging_dir,
-           reservation.staging_dir_identity,
-           :directory,
-           @private_directory_mode,
-           reservation.ops
-         ) do
+    remove_identified_staging_directory(
+      reservation.staging_dir,
+      reservation.staging_dir_identity,
+      @private_directory_mode,
+      reservation.ops
+    )
+  end
+
+  defp remove_identified_staging_directory(path, identity, mode, ops) do
+    case verify_path(path, identity, :directory, mode, ops) do
       :ok ->
-        with :ok <- verify_acl_absent(reservation.staging_dir, reservation.ops) do
-          quarantine_reserved_directory_path(
-            reservation.staging_dir,
-            reservation.staging_dir_identity,
-            reservation.ops
-          )
+        with :ok <- verify_staging_directory_acl(path, mode, ops) do
+          quarantine_reserved_directory_path(path, identity, mode, ops)
         end
 
       {:error, :enoent} ->
@@ -1143,18 +1160,21 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp quarantine_reserved_directory_path(path, identity, ops) do
+  defp verify_staging_directory_acl(_path, nil, _ops), do: :ok
+  defp verify_staging_directory_acl(path, _mode, ops), do: verify_acl_absent(path, ops)
+
+  defp quarantine_reserved_directory_path(path, identity, mode, ops) do
     quarantine_path = path <> ".quarantine-" <> Ecto.UUID.generate()
 
     case ops.rename(path, quarantine_path) do
-      :ok -> release_quarantined_directory_path(quarantine_path, identity, ops)
+      :ok -> release_quarantined_directory_path(quarantine_path, identity, mode, ops)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp release_quarantined_directory_path(path, identity, ops) do
-    with :ok <- verify_path(path, identity, :directory, @private_directory_mode, ops),
-         :ok <- verify_acl_absent(path, ops) do
+  defp release_quarantined_directory_path(path, identity, mode, ops) do
+    with :ok <- verify_path(path, identity, :directory, mode, ops),
+         :ok <- verify_staging_directory_acl(path, mode, ops) do
       remove_directory_if_present(path, ops)
     else
       {:error, _reason} -> {:error, :foreign_directory_quarantined}

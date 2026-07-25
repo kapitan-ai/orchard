@@ -52,8 +52,22 @@ defmodule OrchardCLI.Commands.ClusterTest do
       maybe_replace_preflight_probe_before_quarantine(source, destination)
       maybe_replace_staging_before_quarantine(source, destination)
       maybe_replace_staging_directory_before_quarantine(source, destination)
-      File.rename(source, destination)
+      result = File.rename(source, destination)
+      maybe_block_staging_restore(source, destination, result)
+      result
     end
+
+    defp maybe_block_staging_restore(source, destination, :ok) do
+      blocker = Process.get(:cluster_file_ops_block_staging_restore)
+
+      if is_binary(blocker) and source == Process.get(:cluster_file_ops_staging_path) and
+           destination == Process.get(:cluster_file_ops_foreign_staging_path) do
+        File.write!(source, blocker)
+        Process.put(:cluster_file_ops_blocked_restore_path, source)
+      end
+    end
+
+    defp maybe_block_staging_restore(_source, _destination, _result), do: :ok
 
     defp maybe_replace_preflight_probe_before_quarantine(source, destination) do
       if is_binary(Process.get(:cluster_file_ops_foreign_preflight_probe_before_quarantine)) and
@@ -328,7 +342,43 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end
 
-    def chmod(path, mode), do: File.chmod(path, mode)
+    def chmod(path, mode) do
+      if staging_protection_target?(path, :cluster_file_ops_fail_staging_chmod) do
+        Process.put(:cluster_file_ops_unprotected_staging_dir, path)
+        {:error, :eio}
+      else
+        File.chmod(path, mode)
+      end
+    end
+
+    def remove_acl(path) do
+      if staging_protection_target?(path, :cluster_file_ops_fail_staging_acl_removal) do
+        Process.put(:cluster_file_ops_unprotected_staging_dir, path)
+        maybe_replace_unprotected_staging(path)
+        {:error, :acl_removal_failed}
+      else
+        strip_acl(path)
+      end
+    end
+
+    defp maybe_replace_unprotected_staging(path) do
+      if Process.get(:cluster_file_ops_replace_unprotected_staging_before_cleanup) do
+        File.rename!(path, path <> ".owned")
+        File.mkdir!(path)
+        File.write!(Path.join(path, "unrelated.txt"), "unrelated operator data")
+      end
+    end
+
+    defp staging_protection_target?(path, key) do
+      Process.get(key) == true and path == Process.get(:cluster_file_ops_staging_dir)
+    end
+
+    defp strip_acl(path) do
+      case System.cmd("/bin/chmod", ["-N", path], stderr_to_stdout: true) do
+        {_output, 0} -> :ok
+        {_output, _status} -> {:error, :acl_removal_failed}
+      end
+    end
 
     def sync_directory(_path) do
       if Process.get(:cluster_file_ops_descriptor_write_completed) == true,
@@ -998,12 +1048,85 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       assert halt_code == 1
       assert stdout == ""
-      assert Jason.decode!(stderr)["containment"] == "confirmed_logical"
+      decoded = Jason.decode!(stderr)
+      assert decoded["containment"] == "confirmed_logical"
+      assert decoded["failure_category"] == "foreign_path_restored"
+      refute inspect(decoded["cleanup_failures"]) =~ tmp_dir
       assert is_binary(token)
 
       residuals = residual_files(tmp_dir)
-      assert Enum.any?(residuals, &(File.read!(&1) == foreign_contents))
+
+      assert Enum.any?(
+               residuals,
+               &(Path.basename(&1) == "credential" and File.read!(&1) == foreign_contents)
+             )
+
+      refute Enum.any?(residuals, &String.contains?(Path.basename(&1), "credential.quarantine-"))
       assert Enum.any?(residuals, &(Path.basename(&1) == owned_basename and File.read!(&1) == ""))
+      assert File.read!(output_path) == ""
+      refute stderr =~ token
+      refute log =~ token
+
+      for path <- residuals do
+        refute File.read!(path) =~ token
+      end
+
+      output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+      assert_path_free_output_failure(output_failed, tmp_dir, token)
+    end
+
+    test "SPEC.md §11.9 blocked foreign staging restore is retained and reported distinctly",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "blocked-restore-admin.json")
+      foreign_contents = "unrelated staging data"
+      blocker_contents = "unrelated blocking data"
+
+      {stdout, stderr, log, halt_code, token} =
+        with_configurable_file_ops(
+          [
+            capture_token: true,
+            output_path: output_path,
+            foreign_staging_before_cleanup: foreign_contents,
+            block_staging_restore: blocker_contents
+          ],
+          fn ->
+            {stdout, stderr, log, halt_code} =
+              run_public_cluster_init([
+                "cluster",
+                "init",
+                "--output",
+                output_path,
+                "--json",
+                "--client-name",
+                "blocked-restore-admin"
+              ])
+
+            {stdout, stderr, log, halt_code, Process.get(:cluster_file_ops_failed_token)}
+          end
+        )
+
+      assert halt_code == 1
+      assert stdout == ""
+      decoded = Jason.decode!(stderr)
+      assert decoded["containment"] == "confirmed_logical"
+      assert decoded["failure_category"] == "foreign_path_retained"
+      assert decoded["message"] =~ ".quarantine-"
+      refute inspect(decoded["cleanup_failures"]) =~ tmp_dir
+      assert is_binary(token)
+
+      residuals = residual_files(tmp_dir)
+
+      assert Enum.any?(
+               residuals,
+               &(String.contains?(Path.basename(&1), "credential.quarantine-") and
+                   File.read!(&1) == foreign_contents)
+             )
+
+      assert Enum.any?(
+               residuals,
+               &(Path.basename(&1) == "credential" and File.read!(&1) == blocker_contents)
+             )
+
       assert File.read!(output_path) == ""
       refute stderr =~ token
       refute log =~ token
@@ -1053,7 +1176,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       assert halt_code == 1
       assert stdout == ""
-      assert Jason.decode!(stderr)["containment"] == "confirmed_logical"
+      decoded = Jason.decode!(stderr)
+      assert decoded["containment"] == "confirmed_logical"
+      assert decoded["failure_category"] == "foreign_directory_quarantined"
+      refute inspect(decoded["cleanup_failures"]) =~ tmp_dir
       assert is_binary(token)
       assert File.dir?(foreign_dir)
       assert Bitwise.band(File.stat!(foreign_dir).mode, 0o777) == 0o711
@@ -1108,6 +1234,54 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
       refute stderr =~ "orchard_sk_"
       refute log =~ "orchard_sk_"
+    end
+
+    test "SPEC.md §11.9 public init removes its staging namespace after ACL removal fails",
+         %{tmp_dir: tmp_dir} do
+      assert_unprotected_staging_is_removed(tmp_dir, "acl-cleanup-admin",
+        fail_staging_acl_removal: true
+      )
+    end
+
+    test "SPEC.md §11.9 public init removes its staging namespace after chmod fails",
+         %{tmp_dir: tmp_dir} do
+      assert_unprotected_staging_is_removed(tmp_dir, "chmod-cleanup-admin",
+        fail_staging_chmod: true
+      )
+    end
+
+    test "SPEC.md §11.9 public init retains an unprotected staging namespace it does not own",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "unprotected-foreign-admin.json")
+
+      {stderr, halt_code, staging_dir} =
+        with_configurable_file_ops(
+          [fail_staging_acl_removal: true, replace_unprotected_staging_before_cleanup: true],
+          fn ->
+            {_stdout, stderr, _log, halt_code} =
+              run_public_cluster_init([
+                "cluster",
+                "init",
+                "--output",
+                output_path,
+                "--json",
+                "--client-name",
+                "unprotected-foreign-admin"
+              ])
+
+            {stderr, halt_code, Process.get(:cluster_file_ops_unprotected_staging_dir)}
+          end
+        )
+
+      assert halt_code == 1
+      decoded = Jason.decode!(stderr)
+      assert decoded["code"] == "output_reservation_failed"
+      assert decoded["cleanup_unresolved"] =~ "staging_cleanup"
+      assert File.dir?(staging_dir)
+      assert File.read!(Path.join(staging_dir, "unrelated.txt")) == "unrelated operator data"
+      refute File.exists?(output_path)
+      assert_no_credential_minted()
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
 
     test "SPEC.md §10.2 descriptor close failure leaves no plaintext",
@@ -1978,6 +2152,14 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_staging_replacement_injected: nil,
       cluster_file_ops_foreign_staging_path: nil,
       cluster_file_ops_owned_staging_moved_path: nil,
+      cluster_file_ops_block_staging_restore: settings[:block_staging_restore],
+      cluster_file_ops_blocked_restore_path: nil,
+      cluster_file_ops_fail_staging_acl_removal:
+        Keyword.get(settings, :fail_staging_acl_removal, false),
+      cluster_file_ops_fail_staging_chmod: Keyword.get(settings, :fail_staging_chmod, false),
+      cluster_file_ops_replace_unprotected_staging_before_cleanup:
+        Keyword.get(settings, :replace_unprotected_staging_before_cleanup, false),
+      cluster_file_ops_unprotected_staging_dir: nil,
       cluster_file_ops_staging_dir: nil,
       cluster_file_ops_replace_staging_directory_before_cleanup:
         Keyword.get(settings, :replace_staging_directory_before_cleanup, false),
@@ -2128,6 +2310,40 @@ defmodule OrchardCLI.Commands.ClusterTest do
     refute File.exists?(output_path)
     assert File.read!(foreign_path) == foreign_contents
     assert residual_files(tmp_dir) == [foreign_path]
+    assert_no_credential_minted()
+    assert Repo.aggregate(AuditLog, :count, :id) == 0
+    refute stderr =~ "orchard_sk_"
+    refute log =~ "orchard_sk_"
+  end
+
+  defp assert_unprotected_staging_is_removed(tmp_dir, client_name, settings) do
+    output_path = Path.join(tmp_dir, "#{client_name}.json")
+
+    {stdout, stderr, log, halt_code, staging_dir} =
+      with_configurable_file_ops(settings, fn ->
+        {stdout, stderr, log, halt_code} =
+          run_public_cluster_init([
+            "cluster",
+            "init",
+            "--output",
+            output_path,
+            "--json",
+            "--client-name",
+            client_name
+          ])
+
+        {stdout, stderr, log, halt_code, Process.get(:cluster_file_ops_unprotected_staging_dir)}
+      end)
+
+    assert halt_code == 1
+    assert stdout == ""
+    decoded = Jason.decode!(stderr)
+    assert decoded["code"] == "output_reservation_failed"
+    refute Map.has_key?(decoded, "cleanup_unresolved")
+    assert is_binary(staging_dir)
+    refute File.exists?(staging_dir)
+    refute File.exists?(output_path)
+    assert File.ls!(tmp_dir) == []
     assert_no_credential_minted()
     assert Repo.aggregate(AuditLog, :count, :id) == 0
     refute stderr =~ "orchard_sk_"
