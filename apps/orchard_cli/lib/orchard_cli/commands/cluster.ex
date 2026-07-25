@@ -74,7 +74,7 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp release_before_return(reservation, result) do
-    case release_reservation(reservation) do
+    case release_contained_reservation(reservation).result do
       :ok -> result
       {:error, reason} -> {:cleanup_unresolved, result, reason}
     end
@@ -279,7 +279,7 @@ defmodule OrchardCLI.Commands.Cluster do
         remove_identified_staging_directory(
           staging_dir,
           staging_identity,
-          nil,
+          :identity_only,
           parent_binding.ops
         )
 
@@ -351,8 +351,9 @@ defmodule OrchardCLI.Commands.Cluster do
   defp close_failed_reservation({:ok, _prepared} = success, _original), do: success
 
   defp close_failed_reservation({:error, reason}, reservation) do
-    cleanup = release_reservation(reservation)
-    {:error, preserve_cleanup_result(reason, reservation_release: cleanup)}
+    release = release_contained_reservation(reservation)
+    located = relocate_located_path(reason, reservation, release.staging_directory)
+    {:error, preserve_cleanup_result(located, reservation_release: release.result)}
   end
 
   defp preflight_descriptor(reservation) do
@@ -488,6 +489,8 @@ defmodule OrchardCLI.Commands.Cluster do
   defp reservation_category({:output_parent_hierarchy_untrusted, _path}), do: :parent_untrusted
   defp reservation_category(:output_parent_cross_user_writable), do: :parent_untrusted
   defp reservation_category(:output_parent_acl_unsafe), do: :parent_untrusted
+
+  defp reservation_category({:located, reason, _path}), do: reservation_category(reason)
 
   defp reservation_category({:reserved_output_path, reason}), do: reserved_path_category(reason)
 
@@ -659,7 +662,7 @@ defmodule OrchardCLI.Commands.Cluster do
   defp failure_category({:output_parent_hierarchy_untrusted, _path}),
     do: "output_parent_hierarchy_untrusted"
 
-  defp failure_category({:foreign_path_retained, _quarantine_path}), do: "foreign_path_retained"
+  defp failure_category({:located, reason, _path}), do: failure_category(reason)
 
   defp failure_category({step, reason}) when is_atom(step),
     do: Atom.to_string(step) <> "." <> failure_category(reason)
@@ -793,26 +796,43 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp contain_failed_output(reservation, reason, publication_close) do
+    contained = contain_reservation(reservation, publication_close)
+
     {:error,
      %{
-       reason: reason,
-       containment: contain_reservation(reservation, publication_close)
+       reason: relocate_located_path(reason, reservation, contained.staging_directory),
+       containment: contained.containment
      }}
   end
 
   defp contain_reservation(reservation, publication_close) do
-    [
-      plaintext_redaction: redact_reservation(reservation, publication_close == :pending),
-      publication_descriptor_close: close_publication_after_abort(reservation, publication_close),
-      cleanup_descriptor_close: close_cleanup_descriptor(reservation),
-      staging_metadata_cleanup: cleanup_staging_metadata(reservation)
-    ]
+    redaction = redact_reservation(reservation, publication_close == :pending)
+    publication_result = close_publication_after_abort(reservation, publication_close)
+    cleanup_close = close_cleanup_descriptor(reservation)
+    staging = cleanup_staging_metadata(reservation)
+
+    %{
+      containment: [
+        plaintext_redaction: redaction,
+        publication_descriptor_close: publication_result,
+        cleanup_descriptor_close: cleanup_close,
+        staging_metadata_cleanup: staging.result
+      ],
+      staging_directory: staging.directory
+    }
   end
 
-  defp release_reservation(reservation) do
-    containment = contain_reservation(reservation, :pending)
+  defp release_contained_reservation(reservation) do
+    contained = contain_reservation(reservation, :pending)
 
-    case containment_failures(containment) do
+    %{
+      result: cleanup_result(contained.containment),
+      staging_directory: contained.staging_directory
+    }
+  end
+
+  defp cleanup_result(results) do
+    case containment_failures(results) do
       [] -> :ok
       failures -> {:error, failures}
     end
@@ -1057,15 +1077,56 @@ defmodule OrchardCLI.Commands.Cluster do
     Bitwise.band(mode, 0o022) == 0 or Bitwise.band(mode, 0o1000) != 0
   end
 
-  defp cleanup_staging_metadata(%{staging_dir: nil, staging_path: nil}), do: :ok
+  defp cleanup_staging_metadata(%{staging_dir: nil, staging_path: nil}),
+    do: %{result: :ok, directory: :ok}
 
   defp cleanup_staging_metadata(reservation) do
-    case containment_failures(
-           staging_path: remove_reserved_staging_if_present(reservation),
-           staging_dir: remove_staging_directory_if_present(reservation)
+    path_result = remove_reserved_staging_if_present(reservation)
+    directory_result = remove_staging_directory_if_present(reservation)
+
+    %{
+      result:
+        cleanup_result(
+          staging_path: relocate_cleanup_result(path_result, reservation, directory_result),
+          staging_dir: directory_result
+        ),
+      directory: directory_result
+    }
+  end
+
+  defp relocate_cleanup_result({:error, reason}, reservation, directory_result),
+    do: {:error, relocate_located_path(reason, reservation, directory_result)}
+
+  defp relocate_cleanup_result(result, _reservation, _directory_result), do: result
+
+  defp relocate_located_path({:located, reason, path}, reservation, directory_result) do
+    case retained_location(path, reservation, directory_result) do
+      {:ok, location} -> {:located, reason, location}
+      :unknown -> reason
+    end
+  end
+
+  defp relocate_located_path({step, reason}, reservation, directory_result) when is_atom(step),
+    do: {step, relocate_located_path(reason, reservation, directory_result)}
+
+  defp relocate_located_path(reason, _reservation, _directory_result), do: reason
+
+  defp retained_location(_path, reservation, {:error, {:located, _reason, directory_path}}) do
+    case verify_staging_directory(
+           directory_path,
+           reservation.staging_dir_identity,
+           :identity_only,
+           reservation.ops
          ) do
-      [] -> :ok
-      failures -> {:error, failures}
+      :ok -> {:ok, directory_path}
+      {:error, _reason} -> :unknown
+    end
+  end
+
+  defp retained_location(path, reservation, _directory_result) do
+    case reservation.ops.lstat(path) do
+      {:ok, _stat} -> {:ok, path}
+      {:error, _reason} -> :unknown
     end
   end
 
@@ -1112,7 +1173,7 @@ defmodule OrchardCLI.Commands.Cluster do
          :ok <- remove_if_present(quarantine_path, ops) do
       {:error, :foreign_path_restored}
     else
-      _result -> {:error, {:foreign_path_retained, quarantine_path}}
+      _result -> {:error, {:located, :foreign_path_retained, quarantine_path}}
     end
   end
 
@@ -1137,17 +1198,15 @@ defmodule OrchardCLI.Commands.Cluster do
     remove_identified_staging_directory(
       reservation.staging_dir,
       reservation.staging_dir_identity,
-      @private_directory_mode,
+      :protected,
       reservation.ops
     )
   end
 
-  defp remove_identified_staging_directory(path, identity, mode, ops) do
-    case verify_path(path, identity, :directory, mode, ops) do
+  defp remove_identified_staging_directory(path, identity, policy, ops) do
+    case verify_staging_directory(path, identity, policy, ops) do
       :ok ->
-        with :ok <- verify_staging_directory_acl(path, mode, ops) do
-          quarantine_reserved_directory_path(path, identity, mode, ops)
-        end
+        quarantine_reserved_directory_path(path, identity, policy, ops)
 
       {:error, :enoent} ->
         :ok
@@ -1160,32 +1219,39 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp verify_staging_directory_acl(_path, nil, _ops), do: :ok
-  defp verify_staging_directory_acl(path, _mode, ops), do: verify_acl_absent(path, ops)
+  defp verify_staging_directory(path, identity, policy, ops) do
+    with :ok <- verify_path(path, identity, :directory, staging_directory_mode(policy), ops) do
+      verify_staging_directory_acl(path, policy, ops)
+    end
+  end
 
-  defp quarantine_reserved_directory_path(path, identity, mode, ops) do
+  defp staging_directory_mode(:protected), do: @private_directory_mode
+  defp staging_directory_mode(:identity_only), do: nil
+
+  defp verify_staging_directory_acl(path, :protected, ops), do: verify_acl_absent(path, ops)
+  defp verify_staging_directory_acl(_path, :identity_only, _ops), do: :ok
+
+  defp quarantine_reserved_directory_path(path, identity, policy, ops) do
     quarantine_path = path <> ".quarantine-" <> Ecto.UUID.generate()
 
     case ops.rename(path, quarantine_path) do
-      :ok -> release_quarantined_directory_path(quarantine_path, identity, mode, ops)
+      :ok -> release_quarantined_directory_path(quarantine_path, identity, policy, ops)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp release_quarantined_directory_path(path, identity, mode, ops) do
-    with :ok <- verify_path(path, identity, :directory, mode, ops),
-         :ok <- verify_staging_directory_acl(path, mode, ops) do
-      remove_directory_if_present(path, ops)
-    else
-      {:error, _reason} -> {:error, :foreign_directory_quarantined}
+  defp release_quarantined_directory_path(path, identity, policy, ops) do
+    case verify_staging_directory(path, identity, policy, ops) do
+      :ok -> remove_quarantined_directory(path, ops)
+      {:error, _reason} -> {:error, {:located, :foreign_directory_quarantined, path}}
     end
   end
 
-  defp remove_directory_if_present(path, ops) do
+  defp remove_quarantined_directory(path, ops) do
     case ops.rmdir(path) do
       :ok -> :ok
       {:error, :enoent} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> {:error, {:located, reason, path}}
     end
   end
 
@@ -1512,6 +1578,9 @@ defmodule OrchardCLI.Commands.Cluster do
   defp encode_json(payload), do: Jason.encode!(payload, pretty: true)
 
   defp format_unknown_flag(flag), do: to_string(flag)
+
+  defp format_file_error({:located, reason, path}),
+    do: "#{format_file_error(reason)} at #{path}"
 
   defp format_file_error({step, reason}),
     do: "#{step}: #{format_file_error(reason)}"

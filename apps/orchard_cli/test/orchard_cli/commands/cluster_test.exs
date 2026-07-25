@@ -54,6 +54,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       maybe_replace_staging_directory_before_quarantine(source, destination)
       result = File.rename(source, destination)
       maybe_block_staging_restore(source, destination, result)
+      maybe_block_probe_restore(source, destination, result)
       result
     end
 
@@ -68,6 +69,18 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp maybe_block_staging_restore(_source, _destination, _result), do: :ok
+
+    defp maybe_block_probe_restore(source, destination, :ok) do
+      blocker = Process.get(:cluster_file_ops_block_probe_restore)
+
+      if is_binary(blocker) and
+           destination == Process.get(:cluster_file_ops_foreign_preflight_probe_path) do
+        File.write!(source, blocker)
+        Process.put(:cluster_file_ops_blocked_probe_restore_path, source)
+      end
+    end
+
+    defp maybe_block_probe_restore(_source, _destination, _result), do: :ok
 
     defp maybe_replace_preflight_probe_before_quarantine(source, destination) do
       if is_binary(Process.get(:cluster_file_ops_foreign_preflight_probe_before_quarantine)) and
@@ -758,6 +771,58 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute log =~ "orchard_sk_"
     end
 
+    test "SPEC.md §11.9 blocked probe restore names the final retained directory before minting",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "probe-retained-admin.json")
+      foreign_contents = "unrelated probe data"
+      blocker_contents = "unrelated blocking data"
+
+      {stdout, stderr, log, halt_code, stale_child_path} =
+        with_configurable_file_ops(
+          [
+            output_path: output_path,
+            foreign_preflight_probe_before_quarantine: foreign_contents,
+            block_probe_restore: blocker_contents
+          ],
+          fn ->
+            {stdout, stderr, log, halt_code} =
+              run_public_cluster_init([
+                "cluster",
+                "init",
+                "--output",
+                output_path,
+                "--json",
+                "--client-name",
+                "probe-retained-admin"
+              ])
+
+            {stdout, stderr, log, halt_code,
+             Process.get(:cluster_file_ops_foreign_preflight_probe_path)}
+          end
+        )
+
+      assert halt_code == 1
+      assert stdout == ""
+      decoded = Jason.decode!(stderr)
+      assert decoded["code"] == "output_reservation_failed"
+
+      assert decoded["message"] =~ "foreign_path_retained"
+      assert [retained_dir] = quarantined_directories(tmp_dir)
+      assert decoded["message"] =~ retained_dir
+      assert File.dir?(retained_dir)
+      assert Enum.any?(residual_files(retained_dir), &(File.read!(&1) == foreign_contents))
+
+      assert is_binary(stale_child_path)
+      refute File.exists?(stale_child_path)
+      refute stderr =~ stale_child_path
+
+      refute File.exists?(output_path)
+      assert_no_credential_minted()
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+      refute stderr =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+    end
+
     test "SPEC.md §10.2 partial descriptor write failure leaves no plaintext", %{
       tmp_dir: tmp_dir
     } do
@@ -1081,7 +1146,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       foreign_contents = "unrelated staging data"
       blocker_contents = "unrelated blocking data"
 
-      {stdout, stderr, log, halt_code, token} =
+      {stdout, stderr, log, halt_code, {token, stale_child_path}} =
         with_configurable_file_ops(
           [
             capture_token: true,
@@ -1101,7 +1166,9 @@ defmodule OrchardCLI.Commands.ClusterTest do
                 "blocked-restore-admin"
               ])
 
-            {stdout, stderr, log, halt_code, Process.get(:cluster_file_ops_failed_token)}
+            {stdout, stderr, log, halt_code,
+             {Process.get(:cluster_file_ops_failed_token),
+              Process.get(:cluster_file_ops_foreign_staging_path)}}
           end
         )
 
@@ -1110,9 +1177,17 @@ defmodule OrchardCLI.Commands.ClusterTest do
       decoded = Jason.decode!(stderr)
       assert decoded["containment"] == "confirmed_logical"
       assert decoded["failure_category"] == "foreign_path_retained"
-      assert decoded["message"] =~ ".quarantine-"
       refute inspect(decoded["cleanup_failures"]) =~ tmp_dir
       assert is_binary(token)
+
+      assert [retained_dir] = quarantined_directories(tmp_dir)
+      assert decoded["message"] =~ "foreign_path_retained"
+      assert decoded["message"] =~ retained_dir
+      assert File.dir?(retained_dir)
+
+      assert is_binary(stale_child_path)
+      refute File.exists?(stale_child_path)
+      refute stderr =~ stale_child_path
 
       residuals = residual_files(tmp_dir)
 
@@ -2175,6 +2250,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_preflight_link_calls: nil,
       cluster_file_ops_foreign_preflight_probe_before_quarantine:
         settings[:foreign_preflight_probe_before_quarantine],
+      cluster_file_ops_block_probe_restore: settings[:block_probe_restore],
+      cluster_file_ops_blocked_probe_restore_path: nil,
       cluster_file_ops_preflight_probe_replacement_injected: nil,
       cluster_file_ops_owned_preflight_probe_path: nil,
       cluster_file_ops_foreign_preflight_probe_path: nil,
@@ -2445,6 +2522,14 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
   defp assert_output_state(output_path, :absent), do: refute(File.exists?(output_path))
   defp assert_output_state(output_path, contents), do: assert(File.read!(output_path) == contents)
+
+  defp quarantined_directories(tmp_dir) do
+    tmp_dir
+    |> File.ls!()
+    |> Enum.map(&Path.join(tmp_dir, &1))
+    |> Enum.filter(&(File.dir?(&1) and String.contains?(Path.basename(&1), ".quarantine-")))
+    |> Enum.sort()
+  end
 
   defp residual_files(tmp_dir) do
     tmp_dir
