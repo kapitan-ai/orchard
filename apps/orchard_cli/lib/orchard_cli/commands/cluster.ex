@@ -450,7 +450,7 @@ defmodule OrchardCLI.Commands.Cluster do
        do: located
 
   defp locate_retained_probe(reason, path, identity, ops) do
-    case verify_reserved_path(path, identity, ops) do
+    case verify_path(path, identity, :regular, nil, ops) do
       :ok -> {:located, reason, path}
       {:error, _reason} -> reason
     end

@@ -467,6 +467,38 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end
 
+    def acl_entries(path) do
+      if output_parent_probe_acl_inspection_failure?(path) do
+        Process.put(:cluster_file_ops_retained_output_parent_probe_path, path)
+        {:error, :acl_inspection_failed}
+      else
+        case System.cmd("/bin/ls", ["-lde", path], stderr_to_stdout: true) do
+          {output, 0} ->
+            entries =
+              output
+              |> String.split("\n", trim: true)
+              |> Enum.filter(&Regex.match?(~r/^\s+\d+:\s/, &1))
+
+            {:ok, entries}
+
+          {_output, _status} ->
+            {:error, :acl_inspection_failed}
+        end
+      end
+    end
+
+    defp output_parent_probe_acl_inspection_failure?(path) do
+      output_path = Process.get(:cluster_file_ops_output_path)
+
+      Process.get(:cluster_file_ops_fail_output_parent_probe_acl_inspection) and
+        is_binary(output_path) and
+        Path.dirname(path) == Path.dirname(output_path) and
+        String.starts_with?(
+          Path.basename(path),
+          ".orchard-cluster-init-link-preflight-"
+        )
+    end
+
     defp maybe_replace_unprotected_staging(path) do
       if Process.get(:cluster_file_ops_replace_unprotected_staging_before_cleanup) do
         File.rename!(path, path <> ".owned")
@@ -838,6 +870,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
         tmp_dir,
         "parent-probe-verification-admin",
         fail_output_parent_probe_verification: true
+      )
+    end
+
+    test "SPEC.md §11.9 public init locates a parent probe despite persistent ACL failure",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_reports_retained_parent_probe(
+        tmp_dir,
+        "parent-probe-acl-inspection-admin",
+        fail_output_parent_probe_acl_inspection: true
       )
     end
 
@@ -2409,6 +2450,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
         Keyword.get(settings, :fail_output_parent_ln, false),
       cluster_file_ops_fail_output_parent_probe_cleanup_rm:
         Keyword.get(settings, :fail_output_parent_probe_cleanup_rm, false),
+      cluster_file_ops_fail_output_parent_probe_acl_inspection:
+        Keyword.get(settings, :fail_output_parent_probe_acl_inspection, false),
       cluster_file_ops_fail_output_parent_probe_quarantine_rename:
         Keyword.get(settings, :fail_output_parent_probe_quarantine_rename, false),
       cluster_file_ops_fail_output_parent_probe_verification:
