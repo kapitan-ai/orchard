@@ -34,4 +34,6 @@ Post-mint output failure SHALL retain only non-secret recovery evidence.
 #### Scenario: Secret delivery paths do not log plaintext
 - **WHEN** first-admin secret delivery succeeds or fails after minting
 - **THEN** captured logs exclude the plaintext API Token
-- **AND** returned output, audit records, and leftover files expose no plaintext beyond the successful operator-chosen output file
+- **AND** returned output and audit records exclude the plaintext API Token
+- **AND** successful publication leaves the operator-chosen output as the only intentional plaintext pathname
+- **AND** failed publication reports confirmed logical containment or unresolved containment without claiming that arbitrary filesystem refusal erased all bytes
