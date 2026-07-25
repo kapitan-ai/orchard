@@ -15,6 +15,17 @@ defmodule OrchardCLI.Commands.Cluster do
   @cluster_init_object "cluster_management.cluster_init"
   @cluster_init_contract_version "orchard.cluster_management.cluster_init.v2"
 
+  @acl_mutation_rights ~w(
+    add_file
+    add_subdirectory
+    append
+    delete
+    delete_child
+    write
+    writeattr
+    writeextattr
+    writeowner
+  )
   @private_directory_mode 0o700
   @secret_file_mode 0o600
   @spec run([String.t()]) :: OrchardCLI.command_result()
@@ -158,13 +169,15 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp reserve_output_in_parent(path, parent, ops) do
     with {:ok, parent_identity} <- protected_parent_identity(parent, ops),
-         {:ok, staging_dir, staging_path, io} <- open_output_reservation(parent, ops),
+         {:ok, staging_dir, staging_dir_identity, staging_path, io} <-
+           open_output_reservation(parent, ops),
          {:ok, reservation} <-
            prepare_output_reservation(
              path,
              parent,
              parent_identity,
              staging_dir,
+             staging_dir_identity,
              staging_path,
              io,
              ops
@@ -182,7 +195,8 @@ defmodule OrchardCLI.Commands.Cluster do
   defp protected_parent_identity(parent, ops) do
     case ops.lstat(parent) do
       {:ok, %File.Stat{type: :directory} = stat} ->
-        if Bitwise.band(stat.mode, 0o022) == 0 do
+        with true <- Bitwise.band(stat.mode, 0o022) == 0,
+             :ok <- verify_parent_acl_safe(parent, ops) do
           {:ok,
            %{
              immediate: file_identity(stat),
@@ -190,7 +204,8 @@ defmodule OrchardCLI.Commands.Cluster do
              owner_uid: nil
            }}
         else
-          {:error, :output_parent_cross_user_writable}
+          false -> {:error, :output_parent_cross_user_writable}
+          {:error, reason} -> {:error, reason}
         end
 
       {:ok, _stat} ->
@@ -207,14 +222,44 @@ defmodule OrchardCLI.Commands.Cluster do
 
     staging_path = Path.join(staging_dir, "credential")
 
-    with :ok <- ops.mkdir(staging_dir),
-         :ok <- ops.chmod(staging_dir, @private_directory_mode),
-         {:ok, io} <- ops.open(staging_path, [:write, :exclusive, :binary]) do
-      {:ok, staging_dir, staging_path, io}
-    else
+    case ops.mkdir(staging_dir) do
+      :ok -> open_created_output_reservation(staging_dir, staging_path, ops)
+      {:error, reason} -> {:error, {:staging_directory_create, reason}}
+    end
+  end
+
+  defp open_created_output_reservation(staging_dir, staging_path, ops) do
+    case created_directory_identity(staging_dir, ops) do
+      {:ok, staging_identity} ->
+        result =
+          with :ok <-
+                 protect_created_path(
+                   staging_dir,
+                   staging_identity,
+                   :directory,
+                   @private_directory_mode,
+                   ops
+                 ),
+               {:ok, io} <- ops.open(staging_path, [:write, :exclusive, :binary]) do
+            {:ok, staging_dir, staging_identity, staging_path, io}
+          end
+
+        case result do
+          {:ok, _staging_dir, _staging_identity, _staging_path, _io} = success ->
+            success
+
+          {:error, reason} ->
+            cleanup =
+              cleanup_unopened_staging_directory(staging_dir, staging_identity, ops)
+
+            {:error, preserve_cleanup_result(reason, staging_cleanup: cleanup)}
+        end
+
       {:error, reason} ->
-        cleanup = cleanup_unopened_staging_directory(staging_dir, ops)
-        {:error, preserve_cleanup_result(reason, staging_cleanup: cleanup)}
+        {:error,
+         preserve_cleanup_result(reason,
+           staging_cleanup: {:error, :staging_directory_identity_unbound}
+         )}
     end
   end
 
@@ -223,6 +268,7 @@ defmodule OrchardCLI.Commands.Cluster do
          parent,
          parent_identity,
          staging_dir,
+         staging_dir_identity,
          staging_path,
          io,
          ops
@@ -235,6 +281,7 @@ defmodule OrchardCLI.Commands.Cluster do
           parent: parent,
           parent_identity: parent_identity,
           staging_dir: staging_dir,
+          staging_dir_identity: staging_dir_identity,
           staging_path: staging_path,
           io: io,
           cleanup_io: nil,
@@ -242,7 +289,7 @@ defmodule OrchardCLI.Commands.Cluster do
         }
 
         result =
-          with :ok <- ops.chmod(staging_path, @secret_file_mode),
+          with :ok <- protect_reserved_output(reservation),
                :ok <- verify_bound_output(reservation),
                {:ok, hierarchy} <- trusted_parent_hierarchy(parent, stat.uid, ops),
                parent_identity = %{
@@ -291,9 +338,15 @@ defmodule OrchardCLI.Commands.Cluster do
          :ok <- sync_output_directory(reservation),
          :ok <- verify_bound_output(reservation),
          :ok <- reservation.ops.rm(reservation.staging_path),
-         :ok <- reservation.ops.rmdir(reservation.staging_dir),
+         :ok <- remove_staging_directory_if_present(reservation),
          :ok <- sync_output_directory(reservation) do
-      {:ok, %{reservation | staging_dir: nil, staging_path: nil}}
+      {:ok,
+       %{
+         reservation
+         | staging_dir: nil,
+           staging_dir_identity: nil,
+           staging_path: nil
+       }}
     end
   end
 
@@ -362,6 +415,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp reservation_category({:output_parent_hierarchy_untrusted, _path}), do: :parent_untrusted
   defp reservation_category(:output_parent_cross_user_writable), do: :parent_untrusted
+  defp reservation_category(:output_parent_acl_unsafe), do: :parent_untrusted
 
   defp reservation_category({:reserved_output_path, reason}), do: reserved_path_category(reason)
 
@@ -382,7 +436,7 @@ defmodule OrchardCLI.Commands.Cluster do
             ],
        do: :identity_changed
 
-  defp reservation_category(:unsafe_mode), do: :mode_changed
+  defp reservation_category(reason) when reason in [:unsafe_acl, :unsafe_mode], do: :mode_changed
   defp reservation_category({_step, reason}), do: reservation_category(reason)
   defp reservation_category(_reason), do: :reservation_failed
 
@@ -804,8 +858,10 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp verify_reserved_path(path, identity, ops) do
-    case verify_path(path, identity, :regular, 0o600, ops) do
-      :ok -> :ok
+    with :ok <- verify_path(path, identity, :regular, @secret_file_mode, ops),
+         :ok <- verify_acl_absent(path, ops) do
+      :ok
+    else
       {:error, reason} -> {:error, {:reserved_output_path, reason}}
     end
   end
@@ -866,7 +922,8 @@ defmodule OrchardCLI.Commands.Cluster do
          {:ok, %File.Stat{type: :directory} = target_stat} <- ops.stat(path),
          true <-
            trusted_parent_owner?(target_stat.uid, owner_uid) and
-             trusted_parent_mode?(target_stat.mode) do
+             trusted_parent_mode?(target_stat.mode),
+         :ok <- verify_parent_acl_safe(path, ops) do
       {:ok, {path, file_identity(lexical_stat), file_identity(target_stat)}}
     else
       false -> {:error, {:output_parent_hierarchy_untrusted, path}}
@@ -919,7 +976,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp cleanup_staging_metadata(reservation) do
     path_result = remove_reserved_staging_if_present(reservation)
-    directory_result = remove_directory_if_present(reservation.staging_dir, reservation.ops)
+    directory_result = remove_staging_directory_if_present(reservation)
 
     preserve_cleanup_result(:staging_cleanup,
       staging_path: path_result,
@@ -931,8 +988,13 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp cleanup_unopened_staging_directory(staging_dir, ops),
-    do: remove_directory_if_present(staging_dir, ops)
+  defp cleanup_unopened_staging_directory(staging_dir, staging_dir_identity, ops) do
+    remove_staging_directory_if_present(%{
+      staging_dir: staging_dir,
+      staging_dir_identity: staging_dir_identity,
+      ops: ops
+    })
+  end
 
   defp remove_reserved_staging_if_present(reservation) do
     case verify_bound_output(reservation) do
@@ -947,6 +1009,32 @@ defmodule OrchardCLI.Commands.Cluster do
       :ok -> :ok
       {:error, :enoent} -> :ok
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp remove_staging_directory_if_present(%{staging_dir: nil}), do: :ok
+
+  defp remove_staging_directory_if_present(reservation) do
+    case verify_path(
+           reservation.staging_dir,
+           reservation.staging_dir_identity,
+           :directory,
+           @private_directory_mode,
+           reservation.ops
+         ) do
+      :ok ->
+        with :ok <- verify_acl_absent(reservation.staging_dir, reservation.ops) do
+          remove_directory_if_present(reservation.staging_dir, reservation.ops)
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, :path_identity_changed} ->
+        {:error, :staging_directory_identity_changed}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -978,6 +1066,99 @@ defmodule OrchardCLI.Commands.Cluster do
     case :file.read_file_info(io) do
       {:ok, record} -> {:ok, File.Stat.from_record(record)}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp created_directory_identity(path, ops) do
+    case ops.lstat(path) do
+      {:ok, %File.Stat{type: :directory} = stat} -> {:ok, file_identity(stat)}
+      {:ok, _stat} -> {:error, :unexpected_path_type}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp protect_created_path(path, identity, type, mode, ops) do
+    with :ok <- verify_path(path, identity, type, nil, ops),
+         :ok <- remove_extended_acl(path, ops),
+         :ok <- verify_path(path, identity, type, nil, ops),
+         :ok <- ops.chmod(path, mode),
+         :ok <- verify_path(path, identity, type, mode, ops) do
+      verify_acl_absent(path, ops)
+    end
+  end
+
+  defp protect_reserved_output(reservation) do
+    case protect_created_path(
+           reservation.staging_path,
+           reservation.output_identity,
+           :regular,
+           @secret_file_mode,
+           reservation.ops
+         ) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:reserved_output_path, reason}}
+    end
+  end
+
+  defp remove_extended_acl(path, ops) do
+    if descriptor_ops?(ops, :remove_acl, 1) do
+      ops.remove_acl(path)
+    else
+      case System.cmd("/bin/chmod", ["-N", path], stderr_to_stdout: true) do
+        {_output, 0} -> :ok
+        {_output, _status} -> {:error, :acl_removal_failed}
+      end
+    end
+  end
+
+  defp verify_acl_absent(path, ops) do
+    with {:ok, entries} <- acl_entries(path, ops),
+         true <- entries == [] do
+      :ok
+    else
+      false -> {:error, :unsafe_acl}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp verify_parent_acl_safe(path, ops) do
+    with {:ok, entries} <- acl_entries(path, ops),
+         false <- Enum.any?(entries, &acl_grants_mutation?/1) do
+      :ok
+    else
+      true -> {:error, :output_parent_acl_unsafe}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp acl_entries(path, ops) do
+    if descriptor_ops?(ops, :acl_entries, 1) do
+      ops.acl_entries(path)
+    else
+      case System.cmd("/bin/ls", ["-lde", path], stderr_to_stdout: true) do
+        {output, 0} ->
+          entries =
+            output
+            |> String.split("\n", trim: true)
+            |> Enum.filter(&Regex.match?(~r/^\s+\d+:\s/, &1))
+
+          {:ok, entries}
+
+        {_output, _status} ->
+          {:error, :acl_inspection_failed}
+      end
+    end
+  end
+
+  defp acl_grants_mutation?(entry) do
+    case String.split(entry, ~r/\s+allow\s+/, parts: 2) do
+      [_principal, rights] ->
+        rights
+        |> String.split([",", " "], trim: true)
+        |> Enum.any?(&(&1 in @acl_mutation_rights))
+
+      _other ->
+        false
     end
   end
 

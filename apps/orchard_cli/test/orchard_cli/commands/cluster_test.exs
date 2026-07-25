@@ -1,6 +1,7 @@
 defmodule OrchardCLI.Commands.ClusterTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureIO
   import ExUnit.CaptureLog
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -11,8 +12,25 @@ defmodule OrchardCLI.Commands.ClusterTest do
   defmodule ConfigurableFileOps do
     def exists?(path), do: File.exists?(path)
     def dir?(path), do: File.dir?(path)
-    def mkdir(path), do: File.mkdir(path)
-    def rmdir(path), do: File.rmdir(path)
+
+    def mkdir(path) do
+      if Process.get(:cluster_file_ops_fail_mkdir_after_foreign_create) do
+        File.mkdir!(path)
+        File.chmod!(path, 0o711)
+        Process.put(:cluster_file_ops_foreign_failed_mkdir_directory, path)
+        {:error, :eexist}
+      else
+        result = File.mkdir(path)
+        if result == :ok, do: Process.put(:cluster_file_ops_staging_dir, path)
+        result
+      end
+    end
+
+    def rmdir(path) do
+      maybe_replace_staging_directory_before_cleanup(path)
+      File.rmdir(path)
+    end
+
     def ln(source, destination), do: File.ln(source, destination)
 
     def rm(path) do
@@ -53,6 +71,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     defp real_lstat(path) do
       maybe_replace_staging_before_cleanup(path)
+      maybe_replace_staging_directory_before_cleanup(path)
 
       case File.lstat(path) do
         {:ok, stat} ->
@@ -368,6 +387,21 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end
 
+    defp maybe_replace_staging_directory_before_cleanup(path) do
+      if path == Process.get(:cluster_file_ops_staging_dir) and
+           Process.get(:cluster_file_ops_replace_staging_directory_before_cleanup) and
+           (Process.get(:cluster_file_ops_directory_sync_calls) || 0) >= 1 and
+           !Process.get(:cluster_file_ops_staging_directory_replacement_injected) do
+        moved_path = path <> ".owned"
+        File.rename!(path, moved_path)
+        File.mkdir!(path)
+        File.chmod!(path, 0o711)
+        Process.put(:cluster_file_ops_foreign_staging_directory, path)
+        Process.put(:cluster_file_ops_owned_staging_directory, moved_path)
+        Process.put(:cluster_file_ops_staging_directory_replacement_injected, true)
+      end
+    end
+
     defp capture_token_payload(contents) do
       contents
       |> Jason.decode!()
@@ -515,6 +549,67 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute message =~ token
       refute log =~ token
       assert token_occurrences(File.read!(output_path), token) == 1
+    end
+
+    test "SPEC.md §7.4.4 public init strips inherited non-owner read ACL before minting",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "acl-protected-admin.json")
+      :ok = add_inheritable_read_acl(tmp_dir)
+      assert acl_entries(tmp_dir) != []
+
+      {stdout, stderr, log, halt_code} =
+        run_public_cluster_init([
+          "cluster",
+          "init",
+          "--output",
+          output_path,
+          "--json",
+          "--client-name",
+          "acl-protected-admin"
+        ])
+
+      credential = Jason.decode!(File.read!(output_path))
+      token = Map.fetch!(credential, "api_token")
+
+      assert halt_code == nil
+      assert stderr == ""
+      assert acl_entries(output_path) == []
+      assert token_occurrences(File.read!(output_path), token) == 1
+      assert residual_files(tmp_dir) == [output_path]
+      refute stdout =~ token
+      refute stderr =~ token
+      refute log =~ token
+      refute log =~ "orchard_sk_"
+    end
+
+    test "SPEC.md §7.4.4 public init rejects a parent ACL granting non-owner mutation",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "acl-mutation-admin.json")
+      :ok = add_mutation_acl(tmp_dir)
+      assert acl_entries(tmp_dir) != []
+
+      {stdout, stderr, log, halt_code} =
+        run_public_cluster_init([
+          "cluster",
+          "init",
+          "--output",
+          output_path,
+          "--json",
+          "--client-name",
+          "acl-mutation-admin"
+        ])
+
+      decoded = Jason.decode!(stderr)
+
+      assert halt_code == 1
+      assert stdout == ""
+      assert decoded["code"] == "output_parent_not_writable"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      refute stderr =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
     end
 
     test "SPEC.md §10.2 partial descriptor write failure leaves no plaintext", %{
@@ -826,6 +921,100 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
       assert_path_free_output_failure(output_failed, tmp_dir, token)
+    end
+
+    test "SPEC.md §7.4.4 public init preserves a replaced staging directory",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "staging-directory-race-admin.json")
+
+      {stdout, stderr, log, halt_code, token, foreign_dir, owned_dir} =
+        with_configurable_file_ops(
+          [
+            capture_token: true,
+            output_path: output_path,
+            replace_staging_directory_before_cleanup: true
+          ],
+          fn ->
+            {stdout, stderr, log, halt_code} =
+              run_public_cluster_init([
+                "cluster",
+                "init",
+                "--output",
+                output_path,
+                "--json",
+                "--client-name",
+                "staging-directory-race-admin"
+              ])
+
+            {
+              stdout,
+              stderr,
+              log,
+              halt_code,
+              Process.get(:cluster_file_ops_failed_token),
+              Process.get(:cluster_file_ops_foreign_staging_directory),
+              Process.get(:cluster_file_ops_owned_staging_directory)
+            }
+          end
+        )
+
+      assert halt_code == 1
+      assert stdout == ""
+      assert Jason.decode!(stderr)["containment"] == "confirmed_logical"
+      assert is_binary(token)
+      assert File.dir?(foreign_dir)
+      assert Bitwise.band(File.stat!(foreign_dir).mode, 0o777) == 0o711
+      assert File.dir?(owned_dir)
+      assert File.read!(output_path) == ""
+      refute stderr =~ token
+      refute log =~ token
+      refute log =~ "orchard_sk_"
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ token
+      end
+
+      output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+      assert_path_free_output_failure(output_failed, tmp_dir, token)
+    end
+
+    test "SPEC.md §7.4.4 public init never removes a foreign directory after failed mkdir",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "failed-mkdir-admin.json")
+
+      {stdout, stderr, log, halt_code, foreign_dir} =
+        with_configurable_file_ops([fail_mkdir_after_foreign_create: true], fn ->
+          {stdout, stderr, log, halt_code} =
+            run_public_cluster_init([
+              "cluster",
+              "init",
+              "--output",
+              output_path,
+              "--json",
+              "--client-name",
+              "failed-mkdir-admin"
+            ])
+
+          {
+            stdout,
+            stderr,
+            log,
+            halt_code,
+            Process.get(:cluster_file_ops_foreign_failed_mkdir_directory)
+          }
+        end)
+
+      assert halt_code == 1
+      assert stdout == ""
+      assert Jason.decode!(stderr)["code"] == "output_reservation_failed"
+      assert File.dir?(foreign_dir)
+      assert Bitwise.band(File.stat!(foreign_dir).mode, 0o777) == 0o711
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+      refute stderr =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
     end
 
     test "SPEC.md §10.2 descriptor close failure leaves no plaintext",
@@ -1689,6 +1878,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_staging_replacement_injected: nil,
       cluster_file_ops_foreign_staging_path: nil,
       cluster_file_ops_owned_staging_moved_path: nil,
+      cluster_file_ops_staging_dir: nil,
+      cluster_file_ops_replace_staging_directory_before_cleanup:
+        Keyword.get(settings, :replace_staging_directory_before_cleanup, false),
+      cluster_file_ops_staging_directory_replacement_injected: nil,
+      cluster_file_ops_foreign_staging_directory: nil,
+      cluster_file_ops_owned_staging_directory: nil,
+      cluster_file_ops_fail_mkdir_after_foreign_create:
+        Keyword.get(settings, :fail_mkdir_after_foreign_create, false),
+      cluster_file_ops_foreign_failed_mkdir_directory: nil,
       cluster_file_ops_fail_directory_sync_call: settings[:fail_directory_sync_call],
       cluster_file_ops_directory_sync_calls: nil,
       cluster_file_ops_descriptor_write_completed: nil,
@@ -1797,6 +1995,70 @@ defmodule OrchardCLI.Commands.ClusterTest do
         contents = IO.binread(io, :eof)
         :ok = File.close(io)
         contents
+    end
+  end
+
+  defp run_public_cluster_init(args) do
+    caller = self()
+    log = capture_log(fn -> capture_public_cli_io(args, caller) end)
+
+    assert_receive {:cluster_stdout, stdout}
+    assert_receive {:cluster_stderr, stderr}
+
+    halt_code =
+      receive do
+        {:cluster_halt, code} -> code
+      after
+        0 -> nil
+      end
+
+    {stdout, stderr, log, halt_code}
+  end
+
+  defp capture_public_cli_io(args, caller) do
+    stderr = capture_io(:stderr, fn -> capture_public_cli_stdout(args, caller) end)
+    send(caller, {:cluster_stderr, stderr})
+  end
+
+  defp capture_public_cli_stdout(args, caller) do
+    stdout =
+      capture_io(fn ->
+        :ok = OrchardCLI.main(args, &send(caller, {:cluster_halt, &1}))
+      end)
+
+    send(caller, {:cluster_stdout, stdout})
+  end
+
+  defp add_inheritable_read_acl(path) do
+    acl =
+      "everyone allow read,readattr,readextattr,readsecurity,file_inherit,directory_inherit"
+
+    add_acl(path, acl)
+  end
+
+  defp add_mutation_acl(path) do
+    acl =
+      "everyone allow add_file,add_subdirectory,delete_child,file_inherit,directory_inherit"
+
+    add_acl(path, acl)
+  end
+
+  defp add_acl(path, acl) do
+    case System.cmd("/bin/chmod", ["+a", acl, path], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, status} -> flunk("failed to configure test ACL (#{status}): #{output}")
+    end
+  end
+
+  defp acl_entries(path) do
+    case System.cmd("/bin/ls", ["-lde", path], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&Regex.match?(~r/^\s+\d+:\s/, &1))
+
+      {output, status} ->
+        flunk("failed to inspect test ACL (#{status}): #{output}")
     end
   end
 
