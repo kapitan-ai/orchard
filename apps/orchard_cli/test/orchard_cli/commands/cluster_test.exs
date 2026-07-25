@@ -28,7 +28,23 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end
 
-    def rmdir(path), do: File.rmdir(path)
+    def rmdir(path) do
+      if staging_directory_cleanup_rmdir_failure?(path) do
+        Process.put(:cluster_file_ops_retained_staging_directory, path)
+        {:error, :eio}
+      else
+        File.rmdir(path)
+      end
+    end
+
+    defp staging_directory_cleanup_rmdir_failure?(path) do
+      staging_dir = Process.get(:cluster_file_ops_staging_dir)
+
+      Process.get(:cluster_file_ops_fail_staging_directory_cleanup_rmdir_before_write) and
+        is_binary(staging_dir) and
+        String.starts_with?(path, staging_dir <> ".quarantine-") and
+        Process.get(:cluster_file_ops_descriptor_write_completed) != true
+    end
 
     def ln(source, destination) do
       cond do
@@ -62,13 +78,31 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def rename(source, destination) do
-      maybe_replace_preflight_probe_before_quarantine(source, destination)
-      maybe_replace_staging_before_quarantine(source, destination)
-      maybe_replace_staging_directory_before_quarantine(source, destination)
-      result = File.rename(source, destination)
-      maybe_block_staging_restore(source, destination, result)
-      maybe_block_probe_restore(source, destination, result)
-      result
+      if output_parent_probe_quarantine_rename_failure?(source, destination) do
+        Process.put(:cluster_file_ops_retained_output_parent_probe_path, source)
+        {:error, :eacces}
+      else
+        maybe_replace_preflight_probe_before_quarantine(source, destination)
+        maybe_replace_staging_before_quarantine(source, destination)
+        maybe_replace_staging_directory_before_quarantine(source, destination)
+        result = File.rename(source, destination)
+        maybe_block_staging_restore(source, destination, result)
+        maybe_block_probe_restore(source, destination, result)
+        result
+      end
+    end
+
+    defp output_parent_probe_quarantine_rename_failure?(source, destination) do
+      output_path = Process.get(:cluster_file_ops_output_path)
+
+      Process.get(:cluster_file_ops_fail_output_parent_probe_quarantine_rename) and
+        is_binary(output_path) and
+        Path.dirname(source) == Path.dirname(output_path) and
+        String.starts_with?(
+          Path.basename(source),
+          ".orchard-cluster-init-link-preflight-"
+        ) and
+        String.starts_with?(destination, source <> ".quarantine-")
     end
 
     defp maybe_block_staging_restore(source, destination, :ok) do
@@ -143,11 +177,25 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def rm(path) do
-      if staging_cleanup_rm_failure?(path) do
-        {:error, :eio}
-      else
-        File.rm(path)
+      cond do
+        output_parent_probe_cleanup_rm_failure?(path) ->
+          Process.put(:cluster_file_ops_retained_output_parent_probe_path, path)
+          {:error, :eio}
+
+        staging_cleanup_rm_failure?(path) ->
+          {:error, :eio}
+
+        true ->
+          File.rm(path)
       end
+    end
+
+    defp output_parent_probe_cleanup_rm_failure?(path) do
+      basename = Path.basename(path)
+
+      Process.get(:cluster_file_ops_fail_output_parent_probe_cleanup_rm) and
+        String.starts_with?(basename, ".orchard-cluster-init-link-preflight-") and
+        String.contains?(basename, ".quarantine-")
     end
 
     defp staging_cleanup_rm_failure?(path) do
@@ -162,12 +210,32 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def lstat(path) do
-      if vanish_output_path?(path) do
-        Process.put(:cluster_file_ops_vanish_injected, true)
-        {:error, :enoent}
-      else
-        real_lstat(path)
+      cond do
+        output_parent_probe_verification_failure?(path) ->
+          Process.put(:cluster_file_ops_output_parent_probe_verification_failure_injected, true)
+          Process.put(:cluster_file_ops_retained_output_parent_probe_path, path)
+          {:error, :eio}
+
+        vanish_output_path?(path) ->
+          Process.put(:cluster_file_ops_vanish_injected, true)
+          {:error, :enoent}
+
+        true ->
+          real_lstat(path)
       end
+    end
+
+    defp output_parent_probe_verification_failure?(path) do
+      output_path = Process.get(:cluster_file_ops_output_path)
+
+      Process.get(:cluster_file_ops_fail_output_parent_probe_verification) and
+        is_binary(output_path) and
+        Path.dirname(path) == Path.dirname(output_path) and
+        String.starts_with?(
+          Path.basename(path),
+          ".orchard-cluster-init-link-preflight-"
+        ) and
+        !Process.get(:cluster_file_ops_output_parent_probe_verification_failure_injected)
     end
 
     defp vanish_output_path?(path) do
@@ -752,6 +820,45 @@ defmodule OrchardCLI.Commands.ClusterTest do
         fail_output_parent_ln: true,
         expected_code: "output_parent_not_writable",
         expected_detail: "output_link_preflight: " <> to_string(:file.format_error(:eacces))
+      )
+    end
+
+    test "SPEC.md §11.9 public init reports a retained output-parent probe before minting",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_reports_retained_parent_probe(
+        tmp_dir,
+        "parent-probe-cleanup-admin",
+        fail_output_parent_probe_cleanup_rm: true
+      )
+    end
+
+    test "SPEC.md §11.9 public init reports a parent probe whose verification fails",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_reports_retained_parent_probe(
+        tmp_dir,
+        "parent-probe-verification-admin",
+        fail_output_parent_probe_verification: true
+      )
+    end
+
+    test "SPEC.md §11.9 public init reports a parent probe whose quarantine rename fails",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_reports_retained_parent_probe(
+        tmp_dir,
+        "parent-probe-rename-admin",
+        fail_output_parent_probe_quarantine_rename: true,
+        expected_code: "output_parent_not_writable"
+      )
+    end
+
+    test "SPEC.md §11.9 public init does not remap a retained parent probe to staging",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_reports_retained_parent_probe(
+        tmp_dir,
+        "parent-probe-compound-cleanup-admin",
+        fail_output_parent_probe_cleanup_rm: true,
+        fail_staging_directory_cleanup_rmdir_before_write: true,
+        expect_retained_staging: true
       )
     end
 
@@ -2252,6 +2359,9 @@ defmodule OrchardCLI.Commands.ClusterTest do
         Keyword.get(settings, :fail_staging_cleanup_rm, false),
       cluster_file_ops_fail_staging_cleanup_rm_before_write:
         Keyword.get(settings, :fail_staging_cleanup_rm_before_write, false),
+      cluster_file_ops_fail_staging_directory_cleanup_rmdir_before_write:
+        Keyword.get(settings, :fail_staging_directory_cleanup_rmdir_before_write, false),
+      cluster_file_ops_retained_staging_directory: nil,
       cluster_file_ops_drift_output_identity: settings[:drift_output_identity],
       cluster_file_ops_identity_drift_injected: nil,
       cluster_file_ops_vanish_output_path: settings[:vanish_output_path],
@@ -2297,6 +2407,14 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_fail_preflight_ln: Keyword.get(settings, :fail_preflight_ln, false),
       cluster_file_ops_fail_output_parent_ln:
         Keyword.get(settings, :fail_output_parent_ln, false),
+      cluster_file_ops_fail_output_parent_probe_cleanup_rm:
+        Keyword.get(settings, :fail_output_parent_probe_cleanup_rm, false),
+      cluster_file_ops_fail_output_parent_probe_quarantine_rename:
+        Keyword.get(settings, :fail_output_parent_probe_quarantine_rename, false),
+      cluster_file_ops_fail_output_parent_probe_verification:
+        Keyword.get(settings, :fail_output_parent_probe_verification, false),
+      cluster_file_ops_output_parent_probe_verification_failure_injected: nil,
+      cluster_file_ops_retained_output_parent_probe_path: nil,
       cluster_file_ops_preflight_link_calls: nil,
       cluster_file_ops_foreign_preflight_probe_before_quarantine:
         settings[:foreign_preflight_probe_before_quarantine],
@@ -2444,6 +2562,57 @@ defmodule OrchardCLI.Commands.ClusterTest do
     assert Repo.aggregate(AuditLog, :count, :id) == 0
     refute stderr =~ "orchard_sk_"
     refute log =~ "orchard_sk_"
+  end
+
+  defp assert_public_init_reports_retained_parent_probe(tmp_dir, client_name, settings) do
+    output_path = Path.join(tmp_dir, "#{client_name}.json")
+
+    file_ops_settings =
+      settings
+      |> Keyword.drop([:expect_retained_staging, :expected_code])
+      |> Keyword.put(:output_path, output_path)
+
+    {stdout, stderr, log, halt_code, retained_probe_path, retained_staging_directory} =
+      with_configurable_file_ops(file_ops_settings, fn ->
+        {stdout, stderr, log, halt_code} =
+          run_public_cluster_init([
+            "cluster",
+            "init",
+            "--output",
+            output_path,
+            "--json",
+            "--client-name",
+            client_name
+          ])
+
+        {stdout, stderr, log, halt_code,
+         Process.get(:cluster_file_ops_retained_output_parent_probe_path),
+         Process.get(:cluster_file_ops_retained_staging_directory)}
+      end)
+
+    assert halt_code == 1
+    assert stdout == ""
+    decoded = Jason.decode!(stderr)
+    assert decoded["code"] == Keyword.get(settings, :expected_code, "output_reservation_failed")
+    assert is_binary(retained_probe_path)
+    assert decoded["message"] =~ retained_probe_path
+    assert File.read!(retained_probe_path) == ""
+    assert_retained_staging_directory(retained_staging_directory, settings)
+    refute stderr =~ "unknown POSIX error"
+    refute File.exists?(output_path)
+    assert_no_credential_minted()
+    assert Repo.aggregate(AuditLog, :count, :id) == 0
+    refute stderr =~ "orchard_sk_"
+    refute log =~ "orchard_sk_"
+  end
+
+  defp assert_retained_staging_directory(path, settings) do
+    if Keyword.get(settings, :expect_retained_staging, false) do
+      assert is_binary(path)
+      assert File.dir?(path)
+    else
+      assert is_nil(path)
+    end
   end
 
   defp assert_error_detail(_message, nil), do: :ok

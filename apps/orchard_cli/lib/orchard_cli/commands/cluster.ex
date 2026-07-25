@@ -411,17 +411,48 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp release_link_probe(reservation, probe_path) do
-    with :ok <-
-           verify_reserved_path(probe_path, reservation.output_identity, reservation.ops),
-         :ok <-
-           quarantine_reserved_regular_path(
-             probe_path,
-             reservation.output_identity,
-             reservation.ops
-           ) do
-      :ok
-    else
-      {:error, reason} -> {:error, {:output_link_preflight, reason}}
+    case verify_reserved_path(probe_path, reservation.output_identity, reservation.ops) do
+      :ok ->
+        case quarantine_reserved_regular_path(
+               probe_path,
+               reservation.output_identity,
+               reservation.ops
+             ) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            located_reason =
+              locate_retained_probe(
+                reason,
+                probe_path,
+                reservation.output_identity,
+                reservation.ops
+              )
+
+            {:error, {:output_link_preflight, located_reason}}
+        end
+
+      {:error, reason} ->
+        located_reason =
+          locate_retained_probe(reason, probe_path, reservation.output_identity, reservation.ops)
+
+        {:error, {:output_link_preflight, located_reason}}
+    end
+  end
+
+  defp locate_retained_probe(
+         {:located, _reason, _located_path} = located,
+         _probe_path,
+         _identity,
+         _ops
+       ),
+       do: located
+
+  defp locate_retained_probe(reason, path, identity, ops) do
+    case verify_reserved_path(path, identity, ops) do
+      :ok -> {:located, reason, path}
+      {:error, _reason} -> reason
     end
   end
 
@@ -1143,19 +1174,31 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp relocate_located_path(reason, _reservation, _directory_result), do: reason
 
-  defp retained_location(_path, reservation, {:error, {:located, _reason, directory_path}}) do
-    case verify_staging_directory(
-           directory_path,
-           reservation.staging_dir_identity,
-           :identity_only,
-           reservation.ops
-         ) do
-      :ok -> {:ok, directory_path}
-      {:error, _reason} -> :unknown
+  defp retained_location(path, reservation, {:error, {:located, _reason, directory_path}}) do
+    if staging_metadata_path?(path, reservation) do
+      case verify_staging_directory(
+             directory_path,
+             reservation.staging_dir_identity,
+             :identity_only,
+             reservation.ops
+           ) do
+        :ok -> {:ok, directory_path}
+        {:error, _reason} -> :unknown
+      end
+    else
+      retained_path_location(path, reservation)
     end
   end
 
   defp retained_location(path, reservation, _directory_result) do
+    retained_path_location(path, reservation)
+  end
+
+  defp staging_metadata_path?(path, reservation) do
+    path == reservation.staging_dir or Path.dirname(path) == reservation.staging_dir
+  end
+
+  defp retained_path_location(path, reservation) do
     case reservation.ops.lstat(path) do
       {:ok, _stat} -> {:ok, path}
       {:error, _reason} -> :unknown
@@ -1191,7 +1234,10 @@ defmodule OrchardCLI.Commands.Cluster do
   defp release_quarantined_regular_path(original_path, quarantine_path, identity, ops) do
     case verify_reserved_path(quarantine_path, identity, ops) do
       :ok ->
-        remove_if_present(quarantine_path, ops)
+        case remove_if_present(quarantine_path, ops) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:located, reason, quarantine_path}}
+        end
 
       {:error, _reason} ->
         preserve_quarantined_foreign_regular(original_path, quarantine_path, ops)
