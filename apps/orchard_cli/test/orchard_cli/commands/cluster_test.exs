@@ -11,6 +11,27 @@ defmodule OrchardCLI.Commands.ClusterTest do
   defmodule ConfigurableFileOps do
     def exists?(path), do: File.exists?(path)
     def dir?(path), do: File.dir?(path)
+    def mkdir(path), do: File.mkdir(path)
+    def rmdir(path), do: File.rmdir(path)
+    def ln(source, destination), do: File.ln(source, destination)
+
+    def rm(path) do
+      maybe_replace_staging_before_cleanup(path)
+
+      if staging_cleanup_rm_failure?(path) do
+        {:error, :eio}
+      else
+        File.rm(path)
+      end
+    end
+
+    defp staging_cleanup_rm_failure?(path) do
+      path == Process.get(:cluster_file_ops_staging_path) and
+        ((Process.get(:cluster_file_ops_fail_staging_cleanup_rm) and
+            Process.get(:cluster_file_ops_descriptor_write_completed) == true) or
+           (Process.get(:cluster_file_ops_fail_staging_cleanup_rm_before_write) and
+              Process.get(:cluster_file_ops_descriptor_write_completed) != true))
+    end
 
     def lstat(path) do
       if vanish_output_path?(path) do
@@ -22,12 +43,17 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp vanish_output_path?(path) do
-      Process.get(:cluster_file_ops_vanish_output_path) == path and
+      injection_targets_reservation?(
+        Process.get(:cluster_file_ops_vanish_output_path),
+        path
+      ) and
         Process.get(:cluster_file_ops_reservation_opened) == true and
         !Process.get(:cluster_file_ops_vanish_injected)
     end
 
     defp real_lstat(path) do
+      maybe_replace_staging_before_cleanup(path)
+
       case File.lstat(path) do
         {:ok, stat} ->
           maybe_replace_output_after_lstat(path, stat)
@@ -50,8 +76,18 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp drift_output_identity?(path) do
-      Process.get(:cluster_file_ops_drift_output_identity) == path and
+      injection_targets_reservation?(
+        Process.get(:cluster_file_ops_drift_output_identity),
+        path
+      ) and
         !Process.get(:cluster_file_ops_identity_drift_injected)
+    end
+
+    defp injection_targets_reservation?(configured_path, actual_path) do
+      is_binary(configured_path) and
+        (configured_path == actual_path or
+           (configured_path == Process.get(:cluster_file_ops_output_path) and
+              actual_path == Process.get(:cluster_file_ops_staging_path)))
     end
 
     def stat(path) do
@@ -79,22 +115,62 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       case result do
         {:ok, file} ->
-          role = if :exclusive in modes, do: :publication, else: :cleanup
-          Process.put({:cluster_file_ops_descriptor_role, file}, role)
-          if role == :publication, do: Process.put(:cluster_file_ops_reservation_opened, true)
+          record_opened_descriptor(file, path, modes)
+          maybe_track_foreign_output_path(path, modes)
 
         {:error, _reason} ->
           :ok
       end
 
-      if match?({:ok, _file}, result) and :exclusive in modes and
-           (is_binary(Process.get(:cluster_file_ops_foreign_output_after_lstat)) or
-              is_binary(Process.get(:cluster_file_ops_foreign_output_before_close))) do
-        Process.put(:cluster_file_ops_foreign_output_path, path)
-      end
-
       result
     end
+
+    defp record_opened_descriptor(file, path, modes) do
+      role = if :exclusive in modes, do: :publication, else: :cleanup
+      Process.put({:cluster_file_ops_descriptor_role, file}, role)
+
+      if role == :publication do
+        Process.put(:cluster_file_ops_reservation_opened, true)
+        Process.put(:cluster_file_ops_staging_path, path)
+      end
+
+      maybe_retain_readable_creation_descriptor(path, role)
+    end
+
+    defp maybe_track_foreign_output_path(path, modes) do
+      if :exclusive in modes and foreign_output_injection?() do
+        Process.put(
+          :cluster_file_ops_foreign_output_path,
+          Process.get(:cluster_file_ops_output_path) || path
+        )
+      end
+    end
+
+    defp foreign_output_injection? do
+      is_binary(Process.get(:cluster_file_ops_foreign_output_after_lstat)) or
+        is_binary(Process.get(:cluster_file_ops_foreign_output_before_close))
+    end
+
+    defp maybe_retain_readable_creation_descriptor(path, :publication) do
+      case Process.get(:cluster_file_ops_creation_attack_output_path) do
+        output_path when is_binary(output_path) ->
+          File.chmod!(path, 0o644)
+          Process.put(:cluster_file_ops_creation_mode, Bitwise.band(File.stat!(path).mode, 0o777))
+
+          case File.open(output_path, [:read, :binary]) do
+            {:ok, attacker_io} ->
+              Process.put(:cluster_file_ops_creation_attacker_io, attacker_io)
+
+            {:error, _reason} ->
+              :ok
+          end
+
+        _other ->
+          :ok
+      end
+    end
+
+    defp maybe_retain_readable_creation_descriptor(_path, _role), do: :ok
 
     def write(file, contents) do
       if Process.get(:cluster_file_ops_capture_token), do: capture_token_payload(contents)
@@ -116,24 +192,46 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def sync(file) do
       role = Process.get({:cluster_file_ops_descriptor_role, file})
 
-      cond do
-        Process.get(:cluster_file_ops_fail_cleanup_preflight_sync) and
-          role == :cleanup and
-          Process.get(:cluster_file_ops_descriptor_write_completed) != true and
-            !Process.get(:cluster_file_ops_sync_failure_injected) ->
-          Process.put(:cluster_file_ops_sync_failure_injected, true)
-          {:error, :eio}
+      result =
+        cond do
+          Process.get(:cluster_file_ops_fail_cleanup_preflight_sync) and
+            role == :cleanup and
+            Process.get(:cluster_file_ops_descriptor_write_completed) != true and
+              !Process.get(:cluster_file_ops_sync_failure_injected) ->
+            Process.put(:cluster_file_ops_sync_failure_injected, true)
+            {:error, :eio}
 
-        Process.get(:cluster_file_ops_fail_sync_after_write) and
-          Process.get(:cluster_file_ops_descriptor_write_completed) == true and
-            !Process.get(:cluster_file_ops_sync_failure_injected) ->
-          Process.put(:cluster_file_ops_sync_failure_injected, true)
-          {:error, :eio}
+          Process.get(:cluster_file_ops_fail_sync_after_write) and
+            Process.get(:cluster_file_ops_descriptor_write_completed) == true and
+              !Process.get(:cluster_file_ops_sync_failure_injected) ->
+            Process.put(:cluster_file_ops_sync_failure_injected, true)
+            {:error, :eio}
 
-        true ->
-          :file.sync(file)
+          true ->
+            :file.sync(file)
+        end
+
+      maybe_create_foreign_output_after_stage_sync(role, result)
+      result
+    end
+
+    defp maybe_create_foreign_output_after_stage_sync(:publication, :ok) do
+      if Process.get(:cluster_file_ops_descriptor_write_completed) == true and
+           is_binary(Process.get(:cluster_file_ops_foreign_output_after_stage_sync)) and
+           !Process.get(:cluster_file_ops_stage_sync_race_injected) do
+        result =
+          File.write(
+            Process.get(:cluster_file_ops_output_path),
+            Process.get(:cluster_file_ops_foreign_output_after_stage_sync),
+            [:exclusive]
+          )
+
+        Process.put(:cluster_file_ops_stage_sync_race_result, result)
+        Process.put(:cluster_file_ops_stage_sync_race_injected, true)
       end
     end
+
+    defp maybe_create_foreign_output_after_stage_sync(_role, _result), do: :ok
 
     def truncate(file) do
       if Process.get(:cluster_file_ops_fail_redaction_truncate) and
@@ -145,6 +243,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     def chmod(path, mode), do: File.chmod(path, mode)
+
+    def sync_directory(_path) do
+      call = (Process.get(:cluster_file_ops_directory_sync_calls) || 0) + 1
+      Process.put(:cluster_file_ops_directory_sync_calls, call)
+
+      if Process.get(:cluster_file_ops_fail_directory_sync_call) == call,
+        do: {:error, :eio},
+        else: :ok
+    end
 
     def close(file) do
       role = Process.get({:cluster_file_ops_descriptor_role, file})
@@ -175,10 +282,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     defp replace_output_on_close(file) do
       path = Process.get(:cluster_file_ops_foreign_output_path)
-      moved_path = path <> ".reserved-at-close"
-      File.rename!(path, moved_path)
-      File.write!(path, Process.get(:cluster_file_ops_foreign_output_before_close))
-      Process.put(:cluster_file_ops_foreign_output_moved_path, moved_path)
+
+      case File.rename(path, path <> ".reserved-at-close") do
+        :ok ->
+          Process.put(:cluster_file_ops_foreign_output_moved_path, path <> ".reserved-at-close")
+
+        {:error, :enoent} ->
+          :ok
+      end
+
+      File.write!(path, Process.get(:cluster_file_ops_foreign_output_before_close), [:exclusive])
       Process.put(:cluster_file_ops_close_replacement_injected, true)
       close_descriptor(file, :publication)
     end
@@ -240,6 +353,20 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp maybe_replace_output_after_lstat(_path, _stat), do: :ok
+
+    defp maybe_replace_staging_before_cleanup(path) do
+      if path == Process.get(:cluster_file_ops_staging_path) and
+           is_binary(Process.get(:cluster_file_ops_foreign_staging_before_cleanup)) and
+           (Process.get(:cluster_file_ops_directory_sync_calls) || 0) >= 1 and
+           !Process.get(:cluster_file_ops_staging_replacement_injected) do
+        moved_path = path <> ".owned"
+        File.rename!(path, moved_path)
+        File.write!(path, Process.get(:cluster_file_ops_foreign_staging_before_cleanup))
+        Process.put(:cluster_file_ops_foreign_staging_path, path)
+        Process.put(:cluster_file_ops_owned_staging_moved_path, moved_path)
+        Process.put(:cluster_file_ops_staging_replacement_injected, true)
+      end
+    end
 
     defp capture_token_payload(contents) do
       contents
@@ -326,7 +453,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
       token = Map.fetch!(credential, "api_token")
 
       assert decoded["object"] == "cluster_management.cluster_init"
-      assert decoded["contract_version"] == "orchard.cluster_management.cluster_init.v1"
+      assert decoded["contract_version"] == "orchard.cluster_management.cluster_init.v2"
+      assert decoded["credential_authority"] == "committed_active"
+      assert decoded["publication"] == "confirmed"
+      assert decoded["containment"] == "not_required"
+      assert decoded["warnings"] == []
       assert decoded["api_client_id"] == credential["api_client_id"]
       assert decoded["api_token_id"] == credential["api_token_id"]
       assert decoded["api_token_prefix"] == credential["api_token_prefix"]
@@ -339,6 +470,51 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute log =~ "orchard_sk_"
       assert token_occurrences(File.read!(output_path), token) == 1
       assert residual_files(tmp_dir) == [output_path]
+    end
+
+    test "SPEC.md §7.4.4 protected output never exposes a readable final inode before chmod",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "protected-admin.json")
+
+      {log, result, token, attacker_contents, creation_mode} =
+        with_configurable_file_ops(
+          [capture_token: true, creation_attack_output_path: output_path],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result,
+                   ClusterCmd.run([
+                     "init",
+                     "--output",
+                     output_path,
+                     "--json",
+                     "--client-name",
+                     "protected-admin"
+                   ])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+
+            {
+              log,
+              result,
+              Process.get(:cluster_file_ops_failed_token),
+              read_retained_creation_descriptor(),
+              Process.get(:cluster_file_ops_creation_mode)
+            }
+          end
+        )
+
+      assert {:ok, message} = result
+      assert creation_mode == 0o644
+      assert is_binary(token)
+      refute is_binary(attacker_contents) and String.contains?(attacker_contents, token)
+      refute message =~ token
+      refute log =~ token
+      assert token_occurrences(File.read!(output_path), token) == 1
     end
 
     test "SPEC.md §10.2 partial descriptor write failure leaves no plaintext", %{
@@ -371,12 +547,14 @@ defmodule OrchardCLI.Commands.ClusterTest do
         end)
 
       assert {:error, message, 1} = result
-      assert message =~ "one_time_secret_output_failed"
+      decoded = Jason.decode!(message)
+      assert decoded["code"] == "one_time_secret_output_unconfirmed"
+      assert decoded["containment"] == "confirmed_logical"
       refute message =~ token
       refute log =~ token
       refute log =~ "orchard_sk_"
-      assert File.read!(output_path) == ""
-      assert residual_files(tmp_dir) == [output_path]
+      refute File.exists?(output_path)
+      assert residual_files(tmp_dir) == []
 
       assert Repo.aggregate(ServiceAccount, :count, :id) == 1
       assert Repo.aggregate(ApiKey, :count, :id) == 1
@@ -387,6 +565,178 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute inspect(Repo.all(AuditLog)) =~ token
     end
 
+    test "SPEC.md §7.4.4 final installation is no-clobber after staged file sync",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "no-clobber-admin.json")
+      foreign_contents = "unrelated operator data"
+
+      {log, result, token, race_result} =
+        with_configurable_file_ops(
+          [
+            capture_token: true,
+            output_path: output_path,
+            foreign_output_after_stage_sync: foreign_contents
+          ],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result,
+                   ClusterCmd.run([
+                     "init",
+                     "--output",
+                     output_path,
+                     "--json",
+                     "--client-name",
+                     "no-clobber-admin"
+                   ])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+
+            {
+              log,
+              result,
+              Process.get(:cluster_file_ops_failed_token),
+              Process.get(:cluster_file_ops_stage_sync_race_result)
+            }
+          end
+        )
+
+      assert {:error, message, 1} = result
+      assert race_result == :ok
+      assert File.read!(output_path) == foreign_contents
+      assert is_binary(token)
+      refute message =~ token
+      refute log =~ token
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ token
+      end
+    end
+
+    test "SPEC.md §7.4.4 final publication is unconfirmed when its directory sync fails",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "directory-sync-admin.json")
+
+      {log, result, token, sync_calls} =
+        with_configurable_file_ops(
+          [capture_token: true, output_path: output_path, fail_directory_sync_call: 1],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result,
+                   ClusterCmd.run([
+                     "init",
+                     "--output",
+                     output_path,
+                     "--json",
+                     "--client-name",
+                     "directory-sync-admin"
+                   ])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+
+            {
+              log,
+              result,
+              Process.get(:cluster_file_ops_failed_token),
+              Process.get(:cluster_file_ops_directory_sync_calls)
+            }
+          end
+        )
+
+      assert {:error, message, 1} = result
+      decoded = Jason.decode!(message)
+      assert decoded["contract_version"] == "orchard.cluster_management.cluster_init.v2"
+      assert decoded["code"] == "one_time_secret_output_unconfirmed"
+      assert decoded["credential_authority"] == "committed_active"
+      assert decoded["publication"] == "unconfirmed"
+      assert decoded["containment"] == "confirmed_logical"
+      assert decoded["plaintext_may_remain"] == true
+      assert decoded["recovery_required"] == true
+      assert decoded["api_token_prefix"] =~ ~r/^orchard_kp_/
+      assert decoded["message"] =~ "Plaintext may remain"
+      refute Map.has_key?(decoded, "api_client_id")
+      refute Map.has_key?(decoded, "api_token_id")
+      assert sync_calls == 1
+      assert is_binary(token)
+      refute message =~ token
+      refute log =~ token
+      assert File.read!(output_path) == ""
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ token
+      end
+
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+      assert Repo.aggregate(ApiKey, :count, :id) == 1
+      assert Repo.aggregate(RoleBinding, :count, :id) == 1
+
+      output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+      assert_path_free_output_failure(output_failed, tmp_dir, token)
+    end
+
+    test "SPEC.md §7.4.4 staging-link removal is unconfirmed when its directory sync fails",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "staging-removal-sync-admin.json")
+
+      {log, result, token, sync_calls} =
+        with_configurable_file_ops(
+          [capture_token: true, output_path: output_path, fail_directory_sync_call: 2],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result,
+                   ClusterCmd.run([
+                     "init",
+                     "--output",
+                     output_path,
+                     "--json",
+                     "--client-name",
+                     "staging-removal-sync-admin"
+                   ])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+
+            {
+              log,
+              result,
+              Process.get(:cluster_file_ops_failed_token),
+              Process.get(:cluster_file_ops_directory_sync_calls)
+            }
+          end
+        )
+
+      assert {:error, message, 1} = result
+      assert sync_calls == 2
+      assert is_binary(token)
+      refute message =~ token
+      refute log =~ token
+      assert File.read!(output_path) == ""
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ token
+      end
+
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+      assert Repo.aggregate(ApiKey, :count, :id) == 1
+      assert Repo.aggregate(RoleBinding, :count, :id) == 1
+
+      output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+      assert_path_free_output_failure(output_failed, tmp_dir, token)
+    end
+
     test "SPEC.md §10.2 descriptor sync failure returns failure with no plaintext residual",
          %{tmp_dir: tmp_dir} do
       assert_failed_delivery_has_no_plaintext(
@@ -394,7 +744,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
         "failed-sync-admin",
         capture_token: true,
         fail_sync_after_write: true,
-        expected_output: ""
+        expected_output: :absent
       )
     end
 
@@ -420,6 +770,64 @@ defmodule OrchardCLI.Commands.ClusterTest do
       )
     end
 
+    test "SPEC.md §7.4.4 same-UID staging replacement is preserved during cleanup",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "staging-race-admin.json")
+      foreign_contents = "unrelated staging data"
+
+      {log, result, token, foreign_path, owned_path} =
+        with_configurable_file_ops(
+          [
+            capture_token: true,
+            output_path: output_path,
+            foreign_staging_before_cleanup: foreign_contents
+          ],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result,
+                   ClusterCmd.run([
+                     "init",
+                     "--output",
+                     output_path,
+                     "--json",
+                     "--client-name",
+                     "staging-race-admin"
+                   ])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+
+            {
+              log,
+              result,
+              Process.get(:cluster_file_ops_failed_token),
+              Process.get(:cluster_file_ops_foreign_staging_path),
+              Process.get(:cluster_file_ops_owned_staging_moved_path)
+            }
+          end
+        )
+
+      assert {:error, message, 1} = result
+      assert Jason.decode!(message)["containment"] == "confirmed_logical"
+      assert is_binary(token)
+      assert File.read!(foreign_path) == foreign_contents
+      assert File.read!(owned_path) == ""
+      assert File.read!(output_path) == ""
+      refute message =~ token
+      refute log =~ token
+
+      for path <- residual_files(tmp_dir) do
+        refute File.read!(path) =~ token
+      end
+
+      output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+      assert_path_free_output_failure(output_failed, tmp_dir, token)
+    end
+
     test "SPEC.md §10.2 descriptor close failure leaves no plaintext",
          %{tmp_dir: tmp_dir} do
       assert_failed_delivery_has_no_plaintext(
@@ -427,7 +835,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
         "close-failure-admin",
         capture_token: true,
         fail_close_after_write: true,
-        expected_output: ""
+        expected_output: :absent
       )
     end
 
@@ -435,9 +843,13 @@ defmodule OrchardCLI.Commands.ClusterTest do
          %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "cleanup-close-anomaly-admin.json")
 
-      {log, result, token} =
+      {log, result, token, sync_calls} =
         with_configurable_file_ops(
-          [capture_token: true, fail_cleanup_close_after_commit: true],
+          [
+            capture_token: true,
+            output_path: output_path,
+            fail_cleanup_close_after_commit: true
+          ],
           fn ->
             log =
               capture_log(fn ->
@@ -456,13 +868,25 @@ defmodule OrchardCLI.Commands.ClusterTest do
               end)
 
             assert_receive {:cluster_result, result}
-            {log, result, Process.get(:cluster_file_ops_failed_token)}
+
+            {
+              log,
+              result,
+              Process.get(:cluster_file_ops_failed_token),
+              Process.get(:cluster_file_ops_directory_sync_calls)
+            }
           end
         )
 
       assert {:ok, output} = result
       assert is_binary(token)
-      assert Jason.decode!(output)["api_token_prefix"] =~ ~r/^orchard_kp_/
+      decoded = Jason.decode!(output)
+      assert decoded["api_token_prefix"] =~ ~r/^orchard_kp_/
+      assert decoded["credential_authority"] == "committed_active"
+      assert decoded["publication"] == "confirmed"
+      assert decoded["containment"] == "not_required"
+      assert decoded["warnings"] == ["cleanup_descriptor_close_unconfirmed"]
+      assert sync_calls == 2
       assert log =~ "recovery descriptor close failed after output commit"
       assert token_occurrences(File.read!(output_path), token) == 1
       assert residual_files(tmp_dir) == [output_path]
@@ -536,10 +960,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = ClusterCmd.run(["init", "--output", second_output])
 
       assert message =~ "Error: cluster_already_initialized"
-      assert message =~ "Retained output reservation"
-      assert message =~ "only after verifying"
-      assert message =~ second_output
-      assert_empty_reservation(second_output)
+      refute message =~ "Retained output reservation"
+      refute File.exists?(second_output)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 1
       assert Repo.aggregate(ApiKey, :count, :id) == 1
     end
@@ -574,11 +996,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
       payload = Jason.decode!(message)
       assert payload["code"] == "cluster_already_initialized"
       assert payload["cleanup_unresolved"] =~ "descriptor_close"
-      assert payload["output_reservation_retained"] == second_output
+      refute Map.has_key?(payload, "output_reservation_retained")
       refute message =~ first_token
       refute log =~ first_token
-      assert File.read!(second_output) == ""
-      assert Bitwise.band(File.stat!(second_output).mode, 0o777) == 0o600
+      refute File.exists?(second_output)
 
       for path <- residual_files(tmp_dir), path != first_output do
         refute File.read!(path) =~ "orchard_sk_"
@@ -635,7 +1056,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = result
       assert Jason.decode!(message)["code"] == "output_parent_not_writable"
       refute message =~ "orchard_sk_"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
 
       for path <- residual_files(tmp_dir) do
         refute File.read!(path) =~ "orchard_sk_"
@@ -662,7 +1083,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = result
       assert Jason.decode!(message)["code"] == "output_parent_not_writable"
       refute message =~ "orchard_sk_"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
 
       for path <- residual_files(tmp_dir) do
         refute File.read!(path) =~ "orchard_sk_"
@@ -695,7 +1116,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = result
       assert Jason.decode!(message)["code"] == "output_parent_not_writable"
       refute message =~ "orchard_sk_"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
 
       for path <- residual_files(tmp_dir) do
         refute File.read!(path) =~ "orchard_sk_"
@@ -731,7 +1152,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["message"] =~ "reservation failed"
       refute message =~ "orchard_sk_"
       refute log =~ "orchard_sk_"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 0
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
@@ -747,9 +1168,12 @@ defmodule OrchardCLI.Commands.ClusterTest do
       output_path = Path.join(tmp_dir, "identity-drift-admin.json")
 
       result =
-        with_configurable_file_ops([drift_output_identity: output_path], fn ->
-          ClusterCmd.run(["init", "--output", output_path, "--json"])
-        end)
+        with_configurable_file_ops(
+          [output_path: output_path, drift_output_identity: output_path],
+          fn ->
+            ClusterCmd.run(["init", "--output", output_path, "--json"])
+          end
+        )
 
       assert {:error, message, 1} = result
       decoded = Jason.decode!(message)
@@ -757,7 +1181,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["code"] == "output_path_identity_changed"
       assert decoded["message"] =~ "identity changed during reservation"
       refute message =~ "orchard_sk_"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 0
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(AuditLog, :count, :id) == 0
@@ -769,7 +1193,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       {log, result} =
         with_configurable_file_ops(
-          [fail_cleanup_preflight_sync: true, fail_close_before_write: true],
+          [
+            fail_cleanup_preflight_sync: true,
+            fail_staging_cleanup_rm_before_write: true
+          ],
           fn ->
             log =
               capture_log(fn ->
@@ -788,10 +1215,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
       decoded = Jason.decode!(message)
 
       assert decoded["code"] == "output_reservation_failed"
-      assert decoded["cleanup_unresolved"] =~ "cleanup_descriptor_close"
+      assert decoded["cleanup_unresolved"] =~ "staging_metadata_cleanup"
+      assert decoded["cleanup_unresolved"] =~ "staging_path"
       refute message =~ "orchard_sk_"
       refute log =~ "orchard_sk_"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
+
+      residuals = residual_files(tmp_dir)
+      assert length(residuals) == 1
+      assert File.read!(hd(residuals)) == ""
+      assert Bitwise.band(File.stat!(hd(residuals)).mode, 0o777) == 0o600
       assert Repo.aggregate(ServiceAccount, :count, :id) == 0
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(AuditLog, :count, :id) == 0
@@ -803,7 +1236,12 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       {log, result, token} =
         with_configurable_file_ops(
-          [capture_token: true, fail_sync_after_write: true, fail_redaction_truncate: true],
+          [
+            capture_token: true,
+            fail_sync_after_write: true,
+            fail_redaction_truncate: true,
+            fail_staging_cleanup_rm: true
+          ],
           fn ->
             log =
               capture_log(fn ->
@@ -831,24 +1269,43 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = result
       decoded = Jason.decode!(message)
 
-      assert decoded["code"] == "one_time_secret_output_failed"
+      assert decoded["contract_version"] == "orchard.cluster_management.cluster_init.v2"
+      assert decoded["code"] == "one_time_secret_containment_unresolved"
+      assert decoded["credential_authority"] == "committed_active"
+      assert decoded["publication"] == "unconfirmed"
+      assert decoded["containment"] == "unresolved"
+      assert decoded["plaintext_may_remain"] == true
+      assert decoded["recovery_required"] == true
+      assert decoded["api_token_prefix"] =~ ~r/^orchard_kp_/
       assert decoded["message"] =~ "Manual containment required"
-      assert decoded["message"] =~ output_path
-      assert decoded["message"] =~ "may now name unrelated data"
+      assert decoded["message"] =~ "protected staging namespace"
+      assert decoded["message"] =~ "may name unrelated data"
       assert decoded["message"] =~ tmp_dir
       assert decoded["message"] =~ ~r/orchard_kp_/
       assert decoded["message"] =~ "plaintext_redaction"
-      refute Map.has_key?(decoded, "output_reservation_retained")
+      refute Map.has_key?(decoded, "api_client_id")
+      refute Map.has_key?(decoded, "api_token_id")
       refute message =~ token
       refute log =~ token
       refute log =~ "orchard_sk_"
-      assert File.read!(output_path) =~ token
+      refute File.exists?(output_path)
+
+      residuals = residual_files(tmp_dir)
+      assert length(residuals) == 1
+      assert Enum.any?(residuals, &(File.read!(&1) =~ token))
 
       output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
       persisted_reason = output_failed.payload["error_summary"]["reason"]
 
       assert persisted_reason =~ "containment_unresolved:plaintext_redaction=eio"
-      assert_path_free_output_failure(output_failed, tmp_dir, token)
+
+      assert_path_free_output_failure(
+        output_failed,
+        tmp_dir,
+        token,
+        "one_time_secret_containment_unresolved"
+      )
+
       refute inspect(Repo.all(AuditLog)) =~ token
     end
 
@@ -886,14 +1343,17 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = result
       decoded = Jason.decode!(message)
 
-      assert decoded["code"] == "one_time_secret_output_failed"
+      assert decoded["code"] == "one_time_secret_output_unconfirmed"
+      assert decoded["credential_authority"] == "committed_active"
+      assert decoded["publication"] == "unconfirmed"
+      assert decoded["containment"] == "confirmed_logical"
       assert decoded["message"] =~ "output_parent_hierarchy_untrusted"
-      assert decoded["output_reservation_retained"] == output_path
-      assert decoded["message"] =~ "may remain occupied"
+      refute Map.has_key?(decoded, "output_reservation_retained")
+      assert decoded["message"] =~ "Logical plaintext containment was confirmed"
       refute message =~ token
       refute log =~ token
       refute log =~ "orchard_sk_"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
 
       output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
       persisted_reason = output_failed.payload["error_summary"]["reason"]
@@ -908,9 +1368,12 @@ defmodule OrchardCLI.Commands.ClusterTest do
       output_path = Path.join(tmp_dir, "vanished-admin.json")
 
       result =
-        with_configurable_file_ops([vanish_output_path: output_path], fn ->
-          ClusterCmd.run(["init", "--output", output_path, "--json"])
-        end)
+        with_configurable_file_ops(
+          [output_path: output_path, vanish_output_path: output_path],
+          fn ->
+            ClusterCmd.run(["init", "--output", output_path, "--json"])
+          end
+        )
 
       assert {:error, message, 1} = result
       decoded = Jason.decode!(message)
@@ -1005,7 +1468,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["object"] == "error"
       assert decoded["code"] == "cluster_init_invalid"
       assert decoded["errors"] != []
-      assert_empty_reservation(recovery_output)
+      refute File.exists?(recovery_output)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 1
       assert Repo.aggregate(ApiKey, :count, :id) == 1
     end
@@ -1029,7 +1492,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = ClusterCmd.run(["init", "--output", output_path])
 
       assert message =~ "cluster_init_invalid"
-      assert_empty_reservation(output_path)
+      refute File.exists?(output_path)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 1
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
@@ -1176,8 +1639,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     process_settings = %{
       cluster_file_ops_capture_token: Keyword.get(settings, :capture_token, false),
+      cluster_file_ops_creation_attack_output_path: settings[:creation_attack_output_path],
+      cluster_file_ops_creation_attacker_io: nil,
+      cluster_file_ops_creation_mode: nil,
+      cluster_file_ops_output_path: settings[:output_path],
       cluster_file_ops_foreign_output_after_lstat: settings[:foreign_output_after_lstat],
       cluster_file_ops_foreign_output_before_close: settings[:foreign_output_before_close],
+      cluster_file_ops_foreign_output_after_stage_sync:
+        settings[:foreign_output_after_stage_sync],
+      cluster_file_ops_foreign_staging_before_cleanup: settings[:foreign_staging_before_cleanup],
       cluster_file_ops_fail_close_after_write:
         Keyword.get(settings, :fail_close_after_write, false),
       cluster_file_ops_fail_close_before_write:
@@ -1192,11 +1662,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
         Keyword.get(settings, :fail_cleanup_preflight_sync, false),
       cluster_file_ops_fail_redaction_truncate:
         Keyword.get(settings, :fail_redaction_truncate, false),
+      cluster_file_ops_fail_staging_cleanup_rm:
+        Keyword.get(settings, :fail_staging_cleanup_rm, false),
+      cluster_file_ops_fail_staging_cleanup_rm_before_write:
+        Keyword.get(settings, :fail_staging_cleanup_rm_before_write, false),
       cluster_file_ops_drift_output_identity: settings[:drift_output_identity],
       cluster_file_ops_identity_drift_injected: nil,
       cluster_file_ops_vanish_output_path: settings[:vanish_output_path],
       cluster_file_ops_vanish_injected: nil,
       cluster_file_ops_reservation_opened: nil,
+      cluster_file_ops_staging_path: nil,
       cluster_file_ops_foreign_owner_parent: settings[:foreign_owner_parent],
       cluster_file_ops_foreign_owner_parent_after_write:
         settings[:foreign_owner_parent_after_write],
@@ -1209,6 +1684,13 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_publication_close_completed: nil,
       cluster_file_ops_write_failure_injected: nil,
       cluster_file_ops_sync_failure_injected: nil,
+      cluster_file_ops_stage_sync_race_injected: nil,
+      cluster_file_ops_stage_sync_race_result: nil,
+      cluster_file_ops_staging_replacement_injected: nil,
+      cluster_file_ops_foreign_staging_path: nil,
+      cluster_file_ops_owned_staging_moved_path: nil,
+      cluster_file_ops_fail_directory_sync_call: settings[:fail_directory_sync_call],
+      cluster_file_ops_directory_sync_calls: nil,
       cluster_file_ops_descriptor_write_completed: nil,
       cluster_file_ops_failed_token: nil
     }
@@ -1231,7 +1713,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
     output_path = Path.join(tmp_dir, "#{client_name}.json")
 
     {log, result, token} =
-      with_configurable_file_ops(settings, fn ->
+      with_configurable_file_ops(Keyword.put(settings, :output_path, output_path), fn ->
         log =
           capture_log(fn ->
             send(
@@ -1257,10 +1739,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     assert {:error, message, 1} = result
     decoded = Jason.decode!(message)
-    assert decoded["code"] == "one_time_secret_output_failed"
-    assert decoded["output_reservation_retained"] == output_path
-    assert decoded["message"] =~ "may remain occupied"
-    assert decoded["message"] =~ "may now name unrelated data"
+    assert decoded["contract_version"] == "orchard.cluster_management.cluster_init.v2"
+    assert decoded["code"] == "one_time_secret_output_unconfirmed"
+    assert decoded["credential_authority"] == "committed_active"
+    assert decoded["publication"] == "unconfirmed"
+    assert decoded["containment"] == "confirmed_logical"
+    assert decoded["plaintext_may_remain"] == true
+    assert decoded["recovery_required"] == true
+    refute Map.has_key?(decoded, "output_reservation_retained")
+    assert decoded["message"] =~ "Logical plaintext containment was confirmed"
+    assert decoded["message"] =~ "may name unrelated data"
     assert decoded["message"] =~ ~r/orchard_kp_/
     refute decoded["message"] =~ "Manual containment required"
     refute message =~ token
@@ -1282,10 +1770,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
     refute inspect(Repo.all(AuditLog)) =~ token
   end
 
-  defp assert_path_free_output_failure(output_failed, tmp_dir, token) do
+  defp assert_path_free_output_failure(
+         output_failed,
+         tmp_dir,
+         token,
+         expected_code \\ "one_time_secret_output_unconfirmed"
+       ) do
     persisted_reason = output_failed.payload["error_summary"]["reason"]
 
-    assert persisted_reason =~ "one_time_secret_output_failed:"
+    assert persisted_reason =~ expected_code <> ":"
     assert output_failed.payload["error_summary"]["api_token_prefix"] =~ ~r/^orchard_kp_/
     refute persisted_reason =~ tmp_dir
     refute persisted_reason =~ token
@@ -1294,13 +1787,21 @@ defmodule OrchardCLI.Commands.ClusterTest do
     refute persisted_reason =~ "Manual containment"
   end
 
+  defp read_retained_creation_descriptor do
+    case Process.get(:cluster_file_ops_creation_attacker_io) do
+      nil ->
+        :not_opened
+
+      io ->
+        {:ok, 0} = :file.position(io, :bof)
+        contents = IO.binread(io, :eof)
+        :ok = File.close(io)
+        contents
+    end
+  end
+
   defp assert_output_state(output_path, :absent), do: refute(File.exists?(output_path))
   defp assert_output_state(output_path, contents), do: assert(File.read!(output_path) == contents)
-
-  defp assert_empty_reservation(path) do
-    assert File.read!(path) == ""
-    assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
-  end
 
   defp residual_files(tmp_dir) do
     tmp_dir

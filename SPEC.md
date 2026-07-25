@@ -2432,7 +2432,16 @@ Dry Run SHALL validate Organizations, API Client identity, duplicate API Token n
 Apply SHALL validate the output path before mutation and commit all provisioning changes as one batch.
 Apply SHALL write One-time Secret Output only after the batch succeeds.
 One-time Secret Output SHALL be a CSV with `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at` columns.
+File-backed One-time Secret Output SHALL create its credential-bearing inode only inside an owner-only staging namespace that is mode `0700` before the inode exists.
+The staged inode SHALL be mode `0600` and identity-verified before plaintext is written.
+Orchard SHALL write and sync the complete payload through a descriptor bound to that inode, close the publication descriptor, install the inode at the operator-selected path without clobbering an existing entry, verify the final identity and protection, sync the containing directory, remove the staging link, and sync the containing directory again before confirming publication.
+A successful file-backed publication SHALL leave the operator-selected path as the only intentional plaintext pathname created by that operation.
+This exactly-once guarantee does not assert that a failed operation had no filesystem side effects.
+Metadata cleanup SHALL remove a pathname only while it is verified to name the bound Orchard inode and SHALL preserve foreign or replaced pathnames.
 If One-time Secret Output delivery fails after a committed Apply, Orchard SHALL mark the Provisioning Batch as `output_failed`, write a redacted audit event, and return recovery guidance that names API Token prefixes for revocation or rotation.
+Credential-authority commit, output publication, and logical containment are independent outcome axes.
+After credential-authority commit, unconfirmed publication or unresolved containment SHALL return nonzero, state that plaintext may remain, and expose only the affected API Token prefix plus secret-free recovery guidance.
+Logical containment is best effort through the bound inode descriptor and does not claim physical-media sanitization or guaranteed byte erasure when the filesystem refuses truncation, sync, close, link, or unlink operations.
 The output-failed recovery path SHALL NOT persist plaintext API Token secrets.
 Repeated provisioning SHALL match API Clients by Organization plus External Reference when present, otherwise by Organization plus API Client name.
 Repeated provisioning SHALL reject duplicate active API Token names unless explicit Key Rotation mode is enabled.
@@ -4386,7 +4395,14 @@ Node lifecycle CLI commands use the same local controller-runtime authority boun
 Manual `draining -> maintenance` execution SHALL remain blocked with a `drain_completion_unverified` blocker until drain completion can be verified.
 
 `orchardctl cluster init` SHALL mint the first cluster-admin credential as a local, one-shot, audited controller-host operation.
-It SHALL create a service-account-owned API Client holding a cluster-scoped `admin` RoleBinding and an API Token whose secret is emitted exactly once through a required operator-chosen `--output` path with preflight, persisting only the token hash and prefix.
+It SHALL create a service-account-owned API Client holding a cluster-scoped `admin` RoleBinding and an API Token whose secret is intentionally published exactly once through a required operator-chosen `--output` path with preflight, persisting only the token hash and prefix.
+The command SHALL follow the protected file-backed One-time Secret Output protocol in §7.4.4.
+Credential issuance commits independently of filesystem publication and the issued credential remains active if a post-commit publication or containment step fails.
+JSON contract `orchard.cluster_management.cluster_init.v2` SHALL report `credential_authority`, `publication`, and `containment` independently.
+Confirmed publication SHALL return success only after file sync, no-clobber final-path installation, final identity and mode verification, staging-link removal, and both containing-directory syncs.
+A cleanup-descriptor close anomaly after confirmed publication SHALL remain success with a warning.
+Unconfirmed publication or unresolved containment after credential commit SHALL return nonzero, state that plaintext may remain, omit plaintext and secret-bearing identifiers from diagnostics and audit records, identify the credential only by its API Token prefix, and provide revocation and recovery guidance.
+The command SHALL distinguish confirmed logical containment from unresolved containment and SHALL NOT claim rollback, absence of all filesystem side effects, or physical-storage sanitization.
 It SHALL refuse with a stable `cluster_already_initialized` error when an enabled cluster-scoped `admin` RoleBinding already exists.
 An explicit `--force-new-admin` recovery flag SHALL mint an additional admin credential without resetting, deleting, or mutating existing credentials, and SHALL require confirmation and record a cluster-scoped audit event.
 `orchardctl cluster init` uses the same local controller-runtime authority boundary and leader-only write-path gate as node-admission CLI commands.

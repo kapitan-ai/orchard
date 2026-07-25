@@ -11,7 +11,7 @@
 ## 3. First-admin regression evidence
 
 - [x] 3.1 Prove canonical first-admin minting and race safety across independent PostgreSQL sessions with distinct backend process identifiers.
-- [x] 3.2 Prove successful and post-mint output-failure paths exclude plaintext credentials from captured logs, returned output, audits, and leftover files.
+- [x] 3.2 Prove successful and post-mint output-failure paths exclude plaintext credentials from captured logs, returned output, and audits; inspect residual files and distinguish confirmed logical containment from unresolved containment under injected filesystem refusal.
 
 ## 4. Validation and review
 

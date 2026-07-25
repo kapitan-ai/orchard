@@ -13,9 +13,10 @@ defmodule OrchardCLI.Commands.Cluster do
   @cluster_status_contract_version "orchard.cluster_management.cluster_status.v1"
 
   @cluster_init_object "cluster_management.cluster_init"
-  @cluster_init_contract_version "orchard.cluster_management.cluster_init.v1"
+  @cluster_init_contract_version "orchard.cluster_management.cluster_init.v2"
 
-  @retained_reservation_label "Retained output reservation, remove it only after verifying it is still the expected empty 0600 file in a trusted parent"
+  @private_directory_mode 0o700
+  @secret_file_mode 0o600
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(["status" | rest]), do: run_status(rest)
   def run(["help"]), do: {:ok, group_usage()}
@@ -61,27 +62,13 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp release_before_return(reservation, result) do
-    retained =
-      case release_reservation(reservation) do
-        :ok -> result
-        {:error, reason} -> {:cleanup_unresolved, result, reason}
-      end
-
-    {:retained_reservation, reservation.output_path, retained}
+    case release_reservation(reservation) do
+      :ok -> result
+      {:error, reason} -> {:cleanup_unresolved, result, reason}
+    end
   end
 
   defp render_init_result({:ok, _message} = success, _json?), do: success
-
-  defp render_init_result({:retained_reservation, path, result}, json?) do
-    result
-    |> render_init_result(json?)
-    |> decorate_error(
-      json?,
-      "output_reservation_retained",
-      @retained_reservation_label,
-      path
-    )
-  end
 
   defp render_init_result({:cleanup_unresolved, primary_error, cleanup_error}, json?) do
     primary_error
@@ -93,6 +80,22 @@ defmodule OrchardCLI.Commands.Cluster do
       format_file_error(cleanup_error)
     )
   end
+
+  defp render_init_result({:output_failure, code, message, details, exit_code}, true) do
+    payload =
+      details
+      |> Map.merge(%{
+        object: "error",
+        contract_version: @cluster_init_contract_version,
+        code: Atom.to_string(code),
+        message: message
+      })
+
+    {:error, Jason.encode!(payload, pretty: true), exit_code}
+  end
+
+  defp render_init_result({:output_failure, _code, message, _details, exit_code}, false),
+    do: {:error, "Error: " <> message, exit_code}
 
   defp render_init_result({:error, code, message, exit_code}, json?),
     do: render_init_error(code, message, exit_code, json?)
@@ -155,9 +158,17 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp reserve_output_in_parent(path, parent, ops) do
     with {:ok, parent_identity} <- protected_parent_identity(parent, ops),
-         {:ok, io} <- open_output_reservation(path, ops),
+         {:ok, staging_dir, staging_path, io} <- open_output_reservation(parent, ops),
          {:ok, reservation} <-
-           prepare_output_reservation(path, parent, parent_identity, io, ops) do
+           prepare_output_reservation(
+             path,
+             parent,
+             parent_identity,
+             staging_dir,
+             staging_path,
+             io,
+             ops
+           ) do
       {:ok, reservation}
     else
       {:error, :eexist} ->
@@ -190,11 +201,32 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp open_output_reservation(path, ops) do
-    ops.open(path, [:write, :exclusive, :binary])
+  defp open_output_reservation(parent, ops) do
+    staging_dir =
+      Path.join(parent, ".orchard-cluster-init-#{Ecto.UUID.generate()}")
+
+    staging_path = Path.join(staging_dir, "credential")
+
+    with :ok <- ops.mkdir(staging_dir),
+         :ok <- ops.chmod(staging_dir, @private_directory_mode),
+         {:ok, io} <- ops.open(staging_path, [:write, :exclusive, :binary]) do
+      {:ok, staging_dir, staging_path, io}
+    else
+      {:error, reason} ->
+        cleanup = cleanup_unopened_staging_directory(staging_dir, ops)
+        {:error, preserve_cleanup_result(reason, staging_cleanup: cleanup)}
+    end
   end
 
-  defp prepare_output_reservation(path, parent, parent_identity, io, ops) do
+  defp prepare_output_reservation(
+         path,
+         parent,
+         parent_identity,
+         staging_dir,
+         staging_path,
+         io,
+         ops
+       ) do
     case descriptor_stat(io) do
       {:ok, stat} ->
         reservation = %{
@@ -202,14 +234,16 @@ defmodule OrchardCLI.Commands.Cluster do
           output_identity: file_identity(stat),
           parent: parent,
           parent_identity: parent_identity,
+          staging_dir: staging_dir,
+          staging_path: staging_path,
           io: io,
           cleanup_io: nil,
           ops: ops
         }
 
         result =
-          with :ok <- ops.chmod(path, 0o600),
-               :ok <- verify_reserved_path(path, reservation.output_identity, ops),
+          with :ok <- ops.chmod(staging_path, @secret_file_mode),
+               :ok <- verify_bound_output(reservation),
                {:ok, hierarchy} <- trusted_parent_hierarchy(parent, stat.uid, ops),
                parent_identity = %{
                  parent_identity
@@ -247,12 +281,24 @@ defmodule OrchardCLI.Commands.Cluster do
          :ok <- descriptor_truncate(reservation.ops, reservation.io),
          :ok <- descriptor_sync(reservation.ops, reservation.io),
          :ok <- verify_descriptor(reservation.io, reservation.output_identity) do
-      verify_reserved_output(reservation)
+      verify_bound_output(reservation)
+    end
+  end
+
+  defp install_reserved_output(reservation) do
+    with :ok <- reservation.ops.ln(reservation.staging_path, reservation.output_path),
+         :ok <- verify_reserved_output(reservation),
+         :ok <- sync_output_directory(reservation),
+         :ok <- verify_bound_output(reservation),
+         :ok <- reservation.ops.rm(reservation.staging_path),
+         :ok <- reservation.ops.rmdir(reservation.staging_dir),
+         :ok <- sync_output_directory(reservation) do
+      {:ok, %{reservation | staging_dir: nil, staging_path: nil}}
     end
   end
 
   defp bind_cleanup_descriptor(reservation) do
-    case reservation.ops.open(reservation.output_path, [:read, :write, :binary]) do
+    case reservation.ops.open(reservation.staging_path, [:read, :write, :binary]) do
       {:ok, cleanup_io} ->
         prepare_cleanup_descriptor(%{reservation | cleanup_io: cleanup_io})
 
@@ -267,7 +313,7 @@ defmodule OrchardCLI.Commands.Cluster do
            :ok <- redact_descriptor(reservation.ops, reservation.cleanup_io),
            :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
            :ok <- verify_protected_parent(reservation) do
-        verify_reserved_output(reservation)
+        verify_bound_output(reservation)
       end
 
     case result do
@@ -381,8 +427,8 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp write_output_and_render(result, reservation, json?) do
     case write_output(reservation, result) do
-      :ok ->
-        {:ok, render_init_success(result, reservation.output_path, json?)}
+      {:ok, warnings} ->
+        {:ok, render_init_success(result, reservation.output_path, warnings, json?)}
 
       {:error, failure} ->
         render_output_failure(result, reservation, failure)
@@ -390,12 +436,13 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp render_output_failure(result, reservation, failure) do
-    redacted? = Keyword.get(failure.containment, :plaintext_redaction) == :ok
+    contained? = plaintext_contained?(failure)
+    code = output_failure_code(contained?)
 
     message =
       [
         operator_output_failure(failure),
-        containment_guidance(reservation, result, redacted?),
+        containment_guidance(reservation, result, contained?),
         output_failed_persistence_warning(
           mark_output_failed(result, persisted_output_failure(failure))
         )
@@ -403,9 +450,46 @@ defmodule OrchardCLI.Commands.Cluster do
       |> Enum.reject(&is_nil/1)
       |> Enum.join("\n")
 
-    error = {:error, :one_time_secret_output_failed, message, 1}
+    {:output_failure, code, message,
+     output_failure_details(result, reservation, failure, contained?), 1}
+  end
 
-    if redacted?, do: {:retained_reservation, reservation.output_path, error}, else: error
+  defp plaintext_contained?(failure),
+    do: Keyword.get(failure.containment, :plaintext_redaction) == :ok
+
+  defp output_failure_code(true), do: :one_time_secret_output_unconfirmed
+  defp output_failure_code(false), do: :one_time_secret_containment_unresolved
+
+  defp output_failure_details(result, reservation, failure, contained?) do
+    %{
+      credential_authority: "committed_active",
+      publication: "unconfirmed",
+      containment: if(contained?, do: "confirmed_logical", else: "unresolved"),
+      plaintext_may_remain: true,
+      recovery_required: true,
+      api_token_prefix: result.api_token_prefix,
+      output_path: reservation.output_path,
+      failure_category: failure_category(failure.reason),
+      cleanup_failures: public_containment_failures(failure.containment),
+      recovery_actions: recovery_actions(result, reservation)
+    }
+  end
+
+  defp public_containment_failures(containment) do
+    Enum.map(containment_failures(containment), fn {step, result} ->
+      %{
+        step: Atom.to_string(step),
+        category: containment_result_category(result)
+      }
+    end)
+  end
+
+  defp recovery_actions(result, reservation) do
+    [
+      "Revoke API token prefix #{result.api_token_prefix}.",
+      "Inspect #{reservation.parent} before cleanup; never delete the selected pathname unless its identity is independently verified.",
+      "After revocation, retry with --force-new-admin --yes and a different --output path."
+    ]
   end
 
   defp operator_output_failure(failure) do
@@ -423,7 +507,12 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp persisted_output_failure(failure) do
-    category = "one_time_secret_output_failed:" <> failure_category(failure.reason)
+    category =
+      failure
+      |> plaintext_contained?()
+      |> output_failure_code()
+      |> Atom.to_string()
+      |> Kernel.<>(":" <> failure_category(failure.reason))
 
     case containment_failures(failure.containment) do
       [] ->
@@ -454,20 +543,21 @@ defmodule OrchardCLI.Commands.Cluster do
     do: Enum.reject(containment, fn {_step, result} -> result == :ok end)
 
   defp containment_guidance(reservation, result, true) do
-    "Delivery failed after minting: the selected pathname #{reservation.output_path} may remain " <>
-      "occupied by the empty 0600 reservation this run created. Retry against a different " <>
-      "--output path using the recovery flow (--force-new-admin --yes) and revoke API token " <>
-      "prefix #{result.api_token_prefix}. Remove the original pathname only after independently " <>
-      "verifying it is still that empty reservation inside the trusted parent " <>
-      "#{reservation.parent}; it may now name unrelated data."
+    "Publication is unconfirmed after credential commit. Logical plaintext containment was " <>
+      "confirmed through the bound descriptor. Plaintext may remain on storage media because " <>
+      "this is not a physical-media sanitization claim. Revoke API token prefix " <>
+      "#{result.api_token_prefix}, inspect #{reservation.parent}, and retry with " <>
+      "--force-new-admin --yes against a different --output path. Never delete " <>
+      "#{reservation.output_path} unless its identity is independently verified because it " <>
+      "may name unrelated data."
   end
 
   defp containment_guidance(reservation, result, false) do
     "Manual containment required: descriptor-bound redaction failed, so plaintext may remain " <>
-      "at the originally selected output location #{reservation.output_path}. That pathname " <>
-      "may now name unrelated data if it was replaced during the run; secure and inspect " <>
-      "#{reservation.parent} before deleting anything there. Revoke API token prefix " <>
-      "#{result.api_token_prefix} regardless."
+      "in the protected staging namespace within #{reservation.parent} or through an externally " <>
+      "retained descriptor. Revoke API token prefix #{result.api_token_prefix} before retrying. " <>
+      "Never delete #{reservation.output_path} unless its identity is independently verified " <>
+      "because it may name unrelated data."
   end
 
   defp mark_output_failed(result, message) do
@@ -507,13 +597,13 @@ defmodule OrchardCLI.Commands.Cluster do
       })
 
     with :ok <- verify_protected_parent(reservation),
-         :ok <- verify_reserved_output(reservation),
+         :ok <- verify_bound_output(reservation),
          :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
          :ok <- write_descriptor(reservation, payload),
          :ok <- verify_descriptor(reservation.io, reservation.output_identity),
          :ok <- verify_descriptor(reservation.cleanup_io, reservation.output_identity),
          :ok <- verify_protected_parent(reservation),
-         :ok <- verify_reserved_output(reservation) do
+         :ok <- verify_bound_output(reservation) do
       close_publication_descriptor(reservation)
     else
       {:error, reason} ->
@@ -524,7 +614,13 @@ defmodule OrchardCLI.Commands.Cluster do
   defp close_publication_descriptor(reservation) do
     case reservation.ops.close(reservation.io) do
       :ok ->
-        finish_committed_output(reservation)
+        case install_reserved_output(reservation) do
+          {:ok, committed_reservation} ->
+            finish_committed_output(committed_reservation)
+
+          {:error, reason} ->
+            contain_failed_output(reservation, reason, true)
+        end
 
       {:error, reason} ->
         contain_failed_output(reservation, reason, true)
@@ -545,7 +641,7 @@ defmodule OrchardCLI.Commands.Cluster do
   defp close_cleanup_after_commit(reservation) do
     case reservation.ops.close(reservation.cleanup_io) do
       :ok ->
-        :ok
+        {:ok, []}
 
       {:error, reason} ->
         Logger.warning(
@@ -553,7 +649,7 @@ defmodule OrchardCLI.Commands.Cluster do
             format_file_error(reason)
         )
 
-        :ok
+        {:ok, ["cleanup_descriptor_close_unconfirmed"]}
     end
   end
 
@@ -570,12 +666,15 @@ defmodule OrchardCLI.Commands.Cluster do
       plaintext_redaction: redact_reservation(reservation, not publication_close_attempted?),
       publication_descriptor_close:
         close_publication_after_abort(reservation, publication_close_attempted?),
-      cleanup_descriptor_close: close_cleanup_descriptor(reservation)
+      cleanup_descriptor_close: close_cleanup_descriptor(reservation),
+      staging_metadata_cleanup: cleanup_staging_metadata(reservation)
     ]
   end
 
   defp release_reservation(reservation) do
-    case containment_failures(contain_reservation(reservation, false)) do
+    containment = contain_reservation(reservation, false)
+
+    case containment_failures(containment) do
       [] -> :ok
       failures -> {:error, failures}
     end
@@ -655,6 +754,27 @@ defmodule OrchardCLI.Commands.Cluster do
       else: :file.truncate(io)
   end
 
+  defp sync_output_directory(reservation) do
+    if descriptor_ops?(reservation.ops, :sync_directory, 1),
+      do: reservation.ops.sync_directory(reservation.parent),
+      else: sync_directory(reservation.parent)
+  end
+
+  defp sync_directory(path) do
+    case :file.open(String.to_charlist(path), [:read, :raw, :directory]) do
+      {:ok, directory} ->
+        sync_result = :file.sync(directory)
+        close_result = :file.close(directory)
+
+        if sync_result == :ok and close_result == :ok,
+          do: :ok,
+          else: {:error, :eio}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp descriptor_ops?(ops, function, arity) do
     ops != File and Code.ensure_loaded?(ops) and function_exported?(ops, function, arity)
   end
@@ -670,6 +790,14 @@ defmodule OrchardCLI.Commands.Cluster do
   defp verify_reserved_output(reservation) do
     verify_reserved_path(
       reservation.output_path,
+      reservation.output_identity,
+      reservation.ops
+    )
+  end
+
+  defp verify_bound_output(reservation) do
+    verify_reserved_path(
+      reservation.staging_path,
       reservation.output_identity,
       reservation.ops
     )
@@ -787,6 +915,49 @@ defmodule OrchardCLI.Commands.Cluster do
     Bitwise.band(mode, 0o022) == 0 or Bitwise.band(mode, 0o1000) != 0
   end
 
+  defp cleanup_staging_metadata(%{staging_dir: nil, staging_path: nil}), do: :ok
+
+  defp cleanup_staging_metadata(reservation) do
+    path_result = remove_reserved_staging_if_present(reservation)
+    directory_result = remove_directory_if_present(reservation.staging_dir, reservation.ops)
+
+    preserve_cleanup_result(:staging_cleanup,
+      staging_path: path_result,
+      staging_dir: directory_result
+    )
+    |> case do
+      :staging_cleanup -> :ok
+      {:cleanup_unresolved, :staging_cleanup, failures} -> {:error, failures}
+    end
+  end
+
+  defp cleanup_unopened_staging_directory(staging_dir, ops),
+    do: remove_directory_if_present(staging_dir, ops)
+
+  defp remove_reserved_staging_if_present(reservation) do
+    case verify_bound_output(reservation) do
+      :ok -> remove_if_present(reservation.staging_path, reservation.ops)
+      {:error, {:reserved_output_path, :enoent}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp remove_if_present(path, ops) do
+    case ops.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp remove_directory_if_present(path, ops) do
+    case ops.rmdir(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp parent_component_paths(parent) do
     [root | components] = Path.split(parent)
     [root | Enum.scan(components, root, fn component, path -> Path.join(path, component) end)]
@@ -829,16 +1000,20 @@ defmodule OrchardCLI.Commands.Cluster do
     {stat.type, stat.major_device, stat.minor_device, stat.inode}
   end
 
-  defp render_init_success(result, output_path, true) do
+  defp render_init_success(result, output_path, warnings, true) do
     Jason.encode!(
       %{
         object: @cluster_init_object,
         contract_version: @cluster_init_contract_version,
+        credential_authority: "committed_active",
+        publication: "confirmed",
+        containment: "not_required",
         api_client_id: result.api_client_id,
         api_token_id: result.api_token_id,
         api_token_prefix: result.api_token_prefix,
         recovery: result.recovery?,
         output_path: output_path,
+        warnings: warnings,
         next_steps: [
           "Provision named admin API Clients for regular operators.",
           "Revoke this bootstrap credential after named admin access is verified."
@@ -848,16 +1023,20 @@ defmodule OrchardCLI.Commands.Cluster do
     )
   end
 
-  defp render_init_success(result, output_path, false) do
-    lines = [
-      "Cluster admin credential minted.",
-      "One-time Secret Output: #{output_path}",
-      "API Client ID: #{result.api_client_id}",
-      "API Token ID: #{result.api_token_id}",
-      "API Token prefix: #{result.api_token_prefix}",
-      "Recovery credential: #{if(result.recovery?, do: "yes", else: "no")}",
-      "Next: provision named admin API Clients for regular operators, verify access, then revoke this bootstrap credential."
-    ]
+  defp render_init_success(result, output_path, warnings, false) do
+    lines =
+      [
+        "Cluster admin credential minted.",
+        "Credential authority: committed_active",
+        "Publication: confirmed",
+        "Containment: not_required",
+        "One-time Secret Output: #{output_path}",
+        "API Client ID: #{result.api_client_id}",
+        "API Token ID: #{result.api_token_id}",
+        "API Token prefix: #{result.api_token_prefix}",
+        "Recovery credential: #{if(result.recovery?, do: "yes", else: "no")}",
+        "Next: provision named admin API Clients for regular operators, verify access, then revoke this bootstrap credential."
+      ] ++ Enum.map(warnings, &"Warning: #{&1}")
 
     Enum.join(lines, "\n")
   end

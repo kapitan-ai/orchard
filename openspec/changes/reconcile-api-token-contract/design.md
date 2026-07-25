@@ -59,7 +59,8 @@ Committed fixtures are cleaned explicitly without removing the legacy Tenant.
 
 Cluster CLI output operations use a configurable file-operations module that defaults to `File`.
 Tests can allow preflight and then force final publication failure after minting.
-Captured logs, returned output, audit data, and remaining files must exclude the plaintext credential.
+Captured logs, returned output, and audit data must exclude the plaintext credential.
+Successful publication leaves one intentional plaintext pathname, while failed publication inspects residual files and reports confirmed logical containment or unresolved containment without claiming guaranteed erasure under arbitrary filesystem refusal.
 
 ## Risks / Trade-offs
 
