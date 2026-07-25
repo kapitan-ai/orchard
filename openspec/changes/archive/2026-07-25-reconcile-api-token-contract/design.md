@@ -1,6 +1,6 @@
 ## Context
 
-`SPEC.md` §10.2 requires canonical API Tokens, at least 32 random secret bytes, secret-component SHA-256 semantics, constant-time verification, and hash-only persistence.
+`SPEC.md` §10.2 requires canonical API Tokens, exactly 32 random secret bytes, secret-component SHA-256 semantics, constant-time verification, and hash-only persistence.
 The shared `ApiKeySecret` codec instead emits `orch_<public>.<secret>` credentials with 24 secret bytes and hashes the complete token.
 Already-issued credentials cannot be rehashed because Orchard intentionally does not retain their plaintext.
 

@@ -14,9 +14,9 @@ The recovery path (`--force-new-admin`) skips the guard by design and is additiv
 
 ### Secret handling
 
-The token secret exists in memory once: generated, written to the preflighted `--output` destination, and returned to the operator.
+Before minting, `orchardctl cluster init` prepares a protected staging namespace and a bound owner-only credential inode, validates the destination, and exercises the required filesystem boundaries without secret bytes, following SPEC §11.9 and ADR 0014.
+Credential authority commits independently from plaintext publication; after authority commit, publication or containment failure returns nonzero, reports prefix-only recovery and containment state, and may report protected plaintext residue under bounded filesystem refusal.
 Postgres stores hash and prefix only (ADR 0002 / SPEC §10.2 discipline).
-Output preflight runs before any database mutation so a failed write cannot strand a minted-but-unsaved credential; if the output write fails after mint, follow the `mark_output_failed` precedent from `ApiClientProvisioning`.
 No default expiry: rotation is guidance, not enforcement, per ADR 0011.
 
 ### Active/Standby

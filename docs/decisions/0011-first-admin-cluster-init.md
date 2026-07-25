@@ -3,6 +3,7 @@
 ## Status
 
 Accepted. Implementation closes GitHub issue #75.
+Refined by ADR 0014, which owns the cluster-init-only protected One-time Secret Output profile and its two commit points.
 
 ## Context
 
@@ -21,7 +22,7 @@ Fixed contract points:
 
 * One-shot by default: refuse with a stable `cluster_already_initialized` error when an enabled cluster-scoped `admin` RoleBinding already exists.
 * Explicit break-glass: a `--force-new-admin` flag mints an additional admin credential, never resets, deletes, or mutates existing credentials, requires confirmation, and records a cluster-scoped audit event. This is the lost-all-tokens recovery path; local host access under ADR 0006 is the recovery authority.
-* One-time secret output: required operator-chosen `--output` path with preflight per the §7.4.4 pattern; only the token hash and prefix persist.
+* One-time secret output: required operator-chosen `--output` path; only the token hash and prefix persist. `SPEC.md` §11.9 and ADR 0014 own the publication protocol, its bounded fault model, and post-commit recovery behavior; the cluster-init profile does not modify the §7.4.4 bulk contract.
 * Leader-only write gate: same boundary as node-admission and lifecycle CLI commands, so the command is Active/Standby-safe from day one.
 * No default token expiry: rotation is encouraged through post-setup output guidance (provision named admin API Clients, then revoke the bootstrap credential) rather than a forced expiry that could brick the admin path on an appliance. This follows the ADR 0002 precedent of encouraging, not requiring, expiry.
 * Credential-only scope: TLS material remains provisioned separately (`orchardctl tls init` local-CA helper or operator-provided material per §11.4), and this slice ships CLI-only with any first-admin bootstrap UI deferred.

@@ -198,7 +198,7 @@ A product-facing grouping label stored as API Client metadata for filtering, rep
 _Avoid_: Tenant, Quota boundary, Routing Policy, RBAC Role
 
 **Service Account**:
-A non-interactive principal that may own API Tokens and tenant-scoped RBAC Roles.
+A non-interactive principal that may own API Tokens and tenant-scoped or cluster-scoped RBAC Roles.
 Product-facing label: API Client.
 _Avoid_: User account, Tenant, API Key, Team
 
