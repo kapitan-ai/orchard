@@ -1,7 +1,7 @@
 ## 1. Canonical API Token contract
 
 - [x] 1.1 Clarify `SPEC.md` §10.2 with the canonical component grammar, `orchard_kp` prefix mapping, encoded-secret hash input, and indefinite legacy compatibility.
-- [x] 1.2 Implement canonical API Token generation and parsing with at least 32 random secret bytes, constant-time verification, and exact legacy verification compatibility.
+- [x] 1.2 Implement canonical API Token generation and parsing with exactly 32 random secret bytes, constant-time verification, and exact legacy verification compatibility.
 
 ## 2. Governance and authentication
 

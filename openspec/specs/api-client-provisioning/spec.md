@@ -7,7 +7,7 @@ These requirements cover canonical credential issuance with legacy compatibility
 ## Requirements
 ### Requirement: API Clients are non-interactive principals
 Orchard SHALL support API Clients as product-facing Service Accounts within an Organization.
-An API Client SHALL be a non-interactive principal that may own API Tokens, tenant-scoped Access Levels, and cluster-scoped RBAC Roles where explicitly authorized.
+An API Client SHALL be a non-interactive principal that may own API Tokens and tenant-scoped or cluster-scoped Access Levels where explicitly authorized.
 Owner Contact and Team SHALL be metadata on the API Client and SHALL NOT authenticate, authorize, own quota, define model access, define routing policy, or create a nested Tenant.
 This changes `SPEC.md` §10.3 and §10.4 by making the service-account principal path the default for bulk-provisioned public inference access.
 
@@ -19,7 +19,7 @@ This changes `SPEC.md` §10.3 and §10.4 by making the service-account principal
 ### Requirement: API Tokens use canonical issuance with legacy authentication compatibility
 New API Tokens SHALL use the `orchard_sk_<public>_<secret>` format defined by `SPEC.md` §10.2.
 The public component SHALL be the canonical unpadded base64url encoding of 12 random bytes.
-The secret component SHALL be the canonical unpadded base64url encoding of at least 32 random bytes.
+The secret component SHALL be the canonical unpadded base64url encoding of exactly 32 random bytes.
 The persisted and displayed token prefix SHALL be `orchard_kp_<public>`.
 Orchard SHALL persist a versioned SHA-256 digest of the exact encoded secret component and SHALL compare digests in constant time.
 Orchard SHALL continue authenticating already-issued `orch_<public>.<secret>` credentials by their existing prefix and complete-token hash semantics.
@@ -27,7 +27,7 @@ Legacy compatibility SHALL NOT require a database migration or forced credential
 
 #### Scenario: New credential uses the canonical contract
 - **WHEN** Orchard creates a tenant-direct, API Client, bulk-provisioned, or first-admin API Token
-- **THEN** the credential uses the canonical `orchard_sk` grammar with at least 32 random secret bytes
+- **THEN** the credential uses the canonical `orchard_sk` grammar with exactly 32 random secret bytes
 - **AND** Orchard persists the corresponding `orchard_kp` prefix and secret-component digest only
 
 #### Scenario: Existing credential remains valid

@@ -64,9 +64,14 @@ side-effect free.
 
 `orchardctl cluster init` mints the first cluster-admin API Client credential as
 a local, one-shot, audited controller-host operation behind the leader-only
-write gate. It requires a `--output` path for One-time Secret Output with
-preflight; the token is written only to that file (never stdout) and only its
-hash and prefix persist. It refuses with a stable `cluster_already_initialized`
+write gate. It requires a `--output` path for One-time Secret Output, and only
+the token hash and prefix persist. Confirmed success leaves the chosen
+destination as the only intentional plaintext path and never writes the token to
+stdout. If publication cannot be confirmed after credential authority commits,
+the command returns nonzero, reports the token prefix and containment state
+without plaintext, and may report protected residue that requires recovery
+beginning with prefix revocation.
+It refuses with a stable `cluster_already_initialized`
 error once an enabled cluster-scoped admin exists, `--force-new-admin --yes`
 mints an additional recovery admin without mutating existing credentials, and
 `--client-name` overrides the default bootstrap client name. Successful output
