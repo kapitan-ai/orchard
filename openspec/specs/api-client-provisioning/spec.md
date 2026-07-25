@@ -1,13 +1,13 @@
 # api-client-provisioning Specification
 
 ## Purpose
-Define how Orchard provisions and governs API Clients: non-interactive Service Account principals that own API Tokens and tenant-scoped Access Levels within an Organization.
-These requirements cover the bulk CSV provisioning workflow (dry run, all-or-nothing apply, stable identity on rerun), one-time secret output handling, typed principal resolution at request time, API Client Disablement, audit redaction, and the Console management surface.
+Define how Orchard issues and authenticates API Tokens and provisions and governs API Clients, including first-cluster-admin and bulk workflows.
+These requirements cover canonical credential issuance with legacy compatibility, first-admin cluster initialization, bulk CSV provisioning, one-time secret output handling, typed principal resolution at request time, API Client Disablement, audit redaction, and the Console management surface.
 
 ## Requirements
 ### Requirement: API Clients are non-interactive principals
 Orchard SHALL support API Clients as product-facing Service Accounts within an Organization.
-An API Client SHALL be a non-interactive principal that may own API Tokens and tenant-scoped Access Levels.
+An API Client SHALL be a non-interactive principal that may own API Tokens, tenant-scoped Access Levels, and cluster-scoped RBAC Roles where explicitly authorized.
 Owner Contact and Team SHALL be metadata on the API Client and SHALL NOT authenticate, authorize, own quota, define model access, define routing policy, or create a nested Tenant.
 This changes `SPEC.md` §10.3 and §10.4 by making the service-account principal path the default for bulk-provisioned public inference access.
 
@@ -15,6 +15,78 @@ This changes `SPEC.md` §10.3 and §10.4 by making the service-account principal
 - **WHEN** an operator provisions an API Client with Owner Contact `alice@example.com` and Team `Platform`
 - **THEN** Orchard records those values as API Client metadata only
 - **AND** Orchard does not create a human user, Tenant, role principal, quota boundary, routing policy, or login identity from those values
+
+### Requirement: API Tokens use canonical issuance with legacy authentication compatibility
+New API Tokens SHALL use the `orchard_sk_<public>_<secret>` format defined by `SPEC.md` §10.2.
+The public component SHALL be the canonical unpadded base64url encoding of 12 random bytes.
+The secret component SHALL be the canonical unpadded base64url encoding of at least 32 random bytes.
+The persisted and displayed token prefix SHALL be `orchard_kp_<public>`.
+Orchard SHALL persist a versioned SHA-256 digest of the exact encoded secret component and SHALL compare digests in constant time.
+Orchard SHALL continue authenticating already-issued `orch_<public>.<secret>` credentials by their existing prefix and complete-token hash semantics.
+Legacy compatibility SHALL NOT require a database migration or forced credential rotation.
+
+#### Scenario: New credential uses the canonical contract
+- **WHEN** Orchard creates a tenant-direct, API Client, bulk-provisioned, or first-admin API Token
+- **THEN** the credential uses the canonical `orchard_sk` grammar with at least 32 random secret bytes
+- **AND** Orchard persists the corresponding `orchard_kp` prefix and secret-component digest only
+
+#### Scenario: Existing credential remains valid
+- **WHEN** an API request presents an existing valid `orch_<public>.<secret>` credential
+- **THEN** Orchard resolves its existing persisted prefix
+- **AND** Orchard verifies its existing complete-token digest in constant time
+- **AND** Orchard does not rewrite the credential row
+
+### Requirement: First Cluster-Admin Credential Provisioning
+Orchard SHALL provision the first cluster-admin credential through `orchardctl cluster init` as a local, one-shot, audited controller-host operation.
+`orchardctl cluster init` SHALL create a service-account-owned API Client holding a cluster-scoped `admin` RoleBinding and an API Token persisted as hash and prefix only.
+The token secret SHALL be intentionally published once to a required operator-chosen output path only after protected publication reaches the success commit defined by `SPEC.md` §11.9 and ADR 0014.
+Initialization SHALL refuse with a stable `cluster_already_initialized` error when an enabled cluster-scoped `admin` RoleBinding already exists, and the one-shot guard SHALL be race-safe under concurrent initialization attempts.
+An explicit recovery flag SHALL mint an additional admin credential without resetting, deleting, or mutating existing credentials, SHALL require confirmation, and SHALL record a cluster-scoped audit event.
+Initialization SHALL execute under the local controller-runtime authority boundary with the leader-only write-path gate.
+First-admin provisioning SHALL NOT be exposed as an Admin API endpoint, SHALL NOT be seeded by installer packaging, and SHALL NOT repurpose node-join Bootstrap Tokens.
+Failed publication after authority commits SHALL return nonzero, preserve hash-and-prefix-only control-plane persistence, report prefix-only recovery and containment state, and SHALL NOT claim that arbitrary filesystem refusal erased all plaintext bytes.
+This refines `SPEC.md` §10.1, §10.2, §11.4, and §11.9 per ADR 0011 and ADR 0014.
+
+#### Scenario: Fresh cluster mints the first admin credential
+- **WHEN** an operator runs `orchardctl cluster init` with a writable output path on a cluster with no enabled cluster-scoped `admin` RoleBinding
+- **THEN** Orchard creates the service-account-owned API Client, cluster-scoped `admin` RoleBinding, and API Token in one transaction
+- **AND** Orchard intentionally publishes the token secret once to the operator-chosen output path after the protected publication commit
+- **AND** Orchard persists only the token hash and prefix
+- **AND** Orchard records a cluster-scoped audit event
+
+#### Scenario: Second initialization refuses
+- **WHEN** an operator runs `orchardctl cluster init` on a cluster that already has an enabled cluster-scoped `admin` RoleBinding
+- **THEN** Orchard refuses with the stable `cluster_already_initialized` error
+- **AND** Orchard mutates no credential state
+
+#### Scenario: Recovery mint is additive
+- **WHEN** an operator runs `orchardctl cluster init` with the recovery flag and confirms
+- **THEN** Orchard mints an additional admin credential
+- **AND** Orchard does not reset, delete, or mutate existing credentials
+- **AND** Orchard records a cluster-scoped audit event for the recovery mint
+
+#### Scenario: Non-leader controller refuses
+- **WHEN** an operator runs `orchardctl cluster init` on a standby controller or a configured leader without proven advisory-lock leadership
+- **THEN** Orchard refuses through the shared leader-only write-path gate semantics
+- **AND** Orchard mutates no credential state
+
+### Requirement: First-admin evidence covers independent contention and secret redaction
+The first-admin one-shot guard SHALL be tested through independent PostgreSQL sessions.
+Successful and failed first-admin One-time Secret Output delivery SHALL capture logs and prove that plaintext API Token credentials are absent.
+Post-mint output failure diagnostics and durable control-plane recovery evidence SHALL contain no plaintext API Token.
+
+#### Scenario: Concurrent initialization uses independent sessions
+- **WHEN** two first-admin initialization attempts race on distinct PostgreSQL sessions
+- **THEN** exactly one attempt succeeds
+- **AND** the other attempt fails with `cluster_already_initialized`
+- **AND** exactly one first-admin credential set persists
+
+#### Scenario: Secret delivery paths do not log plaintext
+- **WHEN** first-admin secret delivery succeeds or fails after minting
+- **THEN** captured logs exclude the plaintext API Token
+- **AND** returned output and audit records exclude the plaintext API Token
+- **AND** successful publication leaves the operator-chosen output as the only intentional plaintext pathname
+- **AND** failed publication reports confirmed logical containment or unresolved containment without claiming that arbitrary filesystem refusal erased all bytes
 
 ### Requirement: Bulk provisioning creates service-account-owned API Tokens
 Bulk provisioning SHALL create service-account-owned API Tokens by default.
@@ -147,4 +219,3 @@ This changes `SPEC.md` §2.3 and §10.3 by defining the initial Console manageme
 - **WHEN** an operator opens an Organization's API Client management view
 - **THEN** Orchard Console shows each API Client with Team and Owner Contact metadata
 - **AND** Orchard Console shows owned API Tokens by prefix without plaintext token secrets
-

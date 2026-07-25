@@ -1237,12 +1237,19 @@ Change it to a private interface address or `0.0.0.0` only when explicitly using
 
 `orchardctl cluster init` mints the first cluster-admin API Client credential as
 a local, one-shot, audited controller-host operation after migrations are
-applied. It requires a `--output` One-time Secret Output path (the token is
-written only to that file, never stdout), refuses a second init with
-`cluster_already_initialized`, and supports `--force-new-admin --yes` recovery
-minting, `--client-name`, and `--json`. It is credential-only: TLS material and
-role/service setup remain separate, and `postinstall` never seeds admin
-credentials.
+applied.
+It requires a `--output` One-time Secret Output path.
+Confirmed success leaves the chosen destination as the only intentional
+plaintext path and never writes the token to stdout.
+If publication cannot be confirmed after credential authority commits, the
+command returns nonzero, reports the token prefix and containment state without
+plaintext, and may report protected residue that requires recovery beginning
+with prefix revocation.
+The command refuses a second init with `cluster_already_initialized` and
+supports `--force-new-admin --yes` recovery minting, `--client-name`, and
+`--json`.
+It is credential-only: TLS material and role/service setup remain separate,
+and `postinstall` never seeds admin credentials.
 
 `orchardctl nodes trust init` initializes the distinct internal Node trust
 authority on the controller host after migrations. It is local, leader-gated,
