@@ -17,13 +17,26 @@ defmodule OrchardCLI.Commands.ClusterTest do
         {:ok, stat} ->
           maybe_replace_output_after_lstat(path, stat)
 
-          if Process.get(:cluster_file_ops_foreign_owner_symlink) == path,
-            do: {:ok, %{stat | uid: stat.uid + 1}},
-            else: {:ok, stat}
+          cond do
+            Process.get(:cluster_file_ops_foreign_owner_symlink) == path ->
+              {:ok, %{stat | uid: stat.uid + 1}}
+
+            drift_output_identity?(path) ->
+              Process.put(:cluster_file_ops_identity_drift_injected, true)
+              {:ok, %{stat | inode: stat.inode + 1}}
+
+            true ->
+              {:ok, stat}
+          end
 
         error ->
           error
       end
+    end
+
+    defp drift_output_identity?(path) do
+      Process.get(:cluster_file_ops_drift_output_identity) == path and
+        !Process.get(:cluster_file_ops_identity_drift_injected)
     end
 
     def stat(path) do
@@ -97,6 +110,15 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
         true ->
           :file.sync(file)
+      end
+    end
+
+    def truncate(file) do
+      if Process.get(:cluster_file_ops_fail_redaction_truncate) and
+           Process.get(:cluster_file_ops_descriptor_write_completed) == true do
+        {:error, :eio}
+      else
+        :file.truncate(file)
       end
     end
 
@@ -453,7 +475,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
                ClusterCmd.run(["init", "--output", blocked_output, "--force-new-admin"])
 
       assert blocked_message =~ "--force-new-admin requires --yes"
-      assert_empty_reservation(blocked_output)
+      refute File.exists?(blocked_output)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 2
 
       assert {:ok, recovery_message} =
@@ -491,7 +513,9 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:ok, _message} = ClusterCmd.run(["init", "--output", first_output])
       assert {:error, message, 1} = ClusterCmd.run(["init", "--output", second_output])
 
-      assert message == "Error: cluster_already_initialized"
+      assert message =~ "Error: cluster_already_initialized"
+      assert message =~ "Retained empty output reservation"
+      assert message =~ second_output
       assert_empty_reservation(second_output)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 1
       assert Repo.aggregate(ApiKey, :count, :id) == 1
@@ -527,6 +551,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       payload = Jason.decode!(message)
       assert payload["code"] == "cluster_already_initialized"
       assert payload["cleanup_unresolved"] =~ "descriptor_close"
+      assert payload["output_reservation_retained"] == second_output
       refute message =~ first_token
       refute log =~ first_token
       assert File.read!(second_output) == ""
@@ -678,11 +703,12 @@ defmodule OrchardCLI.Commands.ClusterTest do
         end)
 
       assert {:error, message, 1} = result
-      assert Jason.decode!(message)["code"] == "output_parent_not_writable"
+      decoded = Jason.decode!(message)
+      assert decoded["code"] == "output_reservation_failed"
+      assert decoded["message"] =~ "reservation failed"
       refute message =~ "orchard_sk_"
       refute log =~ "orchard_sk_"
-      assert File.read!(output_path) == ""
-      assert Bitwise.band(File.stat!(output_path).mode, 0o777) == 0o600
+      assert_empty_reservation(output_path)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 0
       assert Repo.aggregate(ApiKey, :count, :id) == 0
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
@@ -691,6 +717,117 @@ defmodule OrchardCLI.Commands.ClusterTest do
       for path <- residual_files(tmp_dir) do
         refute File.read!(path) =~ "orchard_sk_"
       end
+    end
+
+    test "SPEC.md §11.9 reservation identity drift reports a distinct stable error",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "identity-drift-admin.json")
+
+      result =
+        with_configurable_file_ops([drift_output_identity: output_path], fn ->
+          ClusterCmd.run(["init", "--output", output_path, "--json"])
+        end)
+
+      assert {:error, message, 1} = result
+      decoded = Jason.decode!(message)
+
+      assert decoded["code"] == "output_path_identity_changed"
+      assert decoded["message"] =~ "identity changed during reservation"
+      refute message =~ "orchard_sk_"
+      assert_empty_reservation(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §10.2 reservation-stage cleanup failure surfaces top-level cleanup_unresolved",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "reservation-cleanup-admin.json")
+
+      {log, result} =
+        with_configurable_file_ops(
+          [fail_cleanup_preflight_sync: true, fail_close_before_write: true],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result, ClusterCmd.run(["init", "--output", output_path, "--json"])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+            {log, result}
+          end
+        )
+
+      assert {:error, message, 1} = result
+      decoded = Jason.decode!(message)
+
+      assert decoded["code"] == "output_reservation_failed"
+      assert decoded["cleanup_unresolved"] =~ "cleanup_descriptor_close"
+      refute message =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
+      assert_empty_reservation(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "SPEC.md §10.2 unredactable plaintext renders qualified non-secret operator guidance",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "unredactable-admin.json")
+
+      {log, result, token} =
+        with_configurable_file_ops(
+          [capture_token: true, fail_sync_after_write: true, fail_redaction_truncate: true],
+          fn ->
+            log =
+              capture_log(fn ->
+                send(
+                  self(),
+                  {:cluster_result,
+                   ClusterCmd.run([
+                     "init",
+                     "--output",
+                     output_path,
+                     "--json",
+                     "--client-name",
+                     "unredactable-admin"
+                   ])}
+                )
+              end)
+
+            assert_receive {:cluster_result, result}
+            token = Process.get(:cluster_file_ops_failed_token)
+            assert is_binary(token)
+            {log, result, token}
+          end
+        )
+
+      assert {:error, message, 1} = result
+      decoded = Jason.decode!(message)
+
+      assert decoded["code"] == "one_time_secret_output_failed"
+      assert decoded["message"] =~ "Manual containment required"
+      assert decoded["message"] =~ output_path
+      assert decoded["message"] =~ "may now name unrelated data"
+      assert decoded["message"] =~ tmp_dir
+      assert decoded["message"] =~ ~r/orchard_kp_/
+      assert decoded["message"] =~ "plaintext_redaction"
+      refute message =~ token
+      refute log =~ token
+      refute log =~ "orchard_sk_"
+      assert File.read!(output_path) =~ token
+
+      output_failed = Repo.get_by!(AuditLog, action: "cluster_admin_bootstrap.output_failed")
+      persisted_reason = output_failed.payload["error_summary"]["reason"]
+
+      assert persisted_reason =~ "One-time Secret Output failed"
+      assert persisted_reason =~ "plaintext_redaction"
+      refute persisted_reason =~ output_path
+      refute persisted_reason =~ "Manual containment"
+      refute inspect(Repo.all(AuditLog)) =~ token
     end
 
     test "SPEC.md §11.9 --json missing --output emits a stable JSON error object" do
@@ -733,7 +870,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["object"] == "error"
       assert decoded["code"] == "recovery_confirmation_required"
       assert decoded["message"] =~ "--yes"
-      assert_empty_reservation(output_path)
+      refute Map.has_key?(decoded, "output_reservation_retained")
+      refute File.exists?(output_path)
       assert Repo.aggregate(ServiceAccount, :count, :id) == 0
     end
 
@@ -957,6 +1095,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
         Keyword.get(settings, :fail_sync_after_write, false),
       cluster_file_ops_fail_cleanup_preflight_sync:
         Keyword.get(settings, :fail_cleanup_preflight_sync, false),
+      cluster_file_ops_fail_redaction_truncate:
+        Keyword.get(settings, :fail_redaction_truncate, false),
+      cluster_file_ops_drift_output_identity: settings[:drift_output_identity],
+      cluster_file_ops_identity_drift_injected: nil,
       cluster_file_ops_foreign_owner_parent: settings[:foreign_owner_parent],
       cluster_file_ops_foreign_owner_symlink: settings[:foreign_owner_symlink],
       cluster_file_ops_foreign_output_path: nil,

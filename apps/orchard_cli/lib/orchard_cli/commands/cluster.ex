@@ -40,33 +40,12 @@ defmodule OrchardCLI.Commands.Cluster do
 
     result =
       with {:ok, output_path} <- fetch_required_output(opts),
+           :ok <- confirm_recovery(opts),
            {:ok, reservation} <- reserve_output(output_path) do
-        run_reserved_init(opts, reservation, json?)
+        mint_reserved_admin(opts, reservation, json?)
       end
 
-    case result do
-      {:ok, _message} = success ->
-        success
-
-      {:cleanup_unresolved, primary_error, cleanup_error} ->
-        render_cleanup_unresolved(primary_error, cleanup_error, json?)
-
-      {:error, code, message, exit_code} ->
-        render_init_error(code, message, exit_code, json?)
-
-      {:error, reason} ->
-        init_error(reason, json?)
-    end
-  end
-
-  defp run_reserved_init(opts, reservation, json?) do
-    case confirm_recovery(opts) do
-      :ok ->
-        mint_reserved_admin(opts, reservation, json?)
-
-      error ->
-        release_before_return(reservation, error)
-    end
+    render_init_result(result, json?)
   end
 
   defp mint_reserved_admin(opts, reservation, json?) do
@@ -80,35 +59,51 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp release_before_return(reservation, result) do
-    case release_reservation(reservation) do
-      :ok ->
-        result
+    retained =
+      case release_reservation(reservation) do
+        :ok -> result
+        {:error, reason} -> {:cleanup_unresolved, result, reason}
+      end
 
-      {:error, reason} ->
-        {:cleanup_unresolved, result, reason}
-    end
+    {:retained_reservation, reservation.output_path, retained}
   end
 
-  defp render_cleanup_unresolved(primary_error, cleanup_error, json?) do
-    {:error, message, exit_code} = render_primary_init_error(primary_error, json?)
-    cleanup_detail = format_file_error(cleanup_error)
+  defp render_init_result({:ok, _message} = success, _json?), do: success
 
-    if json? do
-      payload =
-        message
-        |> Jason.decode!()
-        |> Map.put("cleanup_unresolved", cleanup_detail)
-
-      {:error, Jason.encode!(payload, pretty: true), exit_code}
-    else
-      {:error, message <> "\nCleanup unresolved: " <> cleanup_detail, exit_code}
-    end
+  defp render_init_result({:retained_reservation, path, result}, json?) do
+    result
+    |> render_init_result(json?)
+    |> decorate_error(
+      json?,
+      "output_reservation_retained",
+      "Retained empty output reservation, remove it before retrying this path",
+      path
+    )
   end
 
-  defp render_primary_init_error({:error, code, message, exit_code}, json?),
+  defp render_init_result({:cleanup_unresolved, primary_error, cleanup_error}, json?) do
+    primary_error
+    |> render_init_result(json?)
+    |> decorate_error(
+      json?,
+      "cleanup_unresolved",
+      "Cleanup unresolved",
+      format_file_error(cleanup_error)
+    )
+  end
+
+  defp render_init_result({:error, code, message, exit_code}, json?),
     do: render_init_error(code, message, exit_code, json?)
 
-  defp render_primary_init_error({:error, reason}, json?), do: init_error(reason, json?)
+  defp render_init_result({:error, reason}, json?), do: init_error(reason, json?)
+
+  defp decorate_error({:error, message, exit_code}, true, key, _label, detail) do
+    payload = message |> Jason.decode!() |> Map.put(key, detail)
+    {:error, Jason.encode!(payload, pretty: true), exit_code}
+  end
+
+  defp decorate_error({:error, message, exit_code}, false, _key, label, detail),
+    do: {:error, message <> "\n" <> label <> ": " <> detail, exit_code}
 
   defp parse_init_args(args) do
     switches = [
@@ -167,7 +162,7 @@ defmodule OrchardCLI.Commands.Cluster do
         {:error, :output_path_exists, "output path already exists: #{path}", 1}
 
       {:error, reason} ->
-        reservation_error(parent, reason)
+        reservation_error(path, parent, reason)
     end
   end
 
@@ -294,10 +289,51 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp reservation_error(parent, reason) do
-    {:error, :output_parent_not_writable,
-     "output parent directory is not writable: #{parent}: #{format_file_error(reason)}", 1}
+  defp reservation_error(path, parent, {:cleanup_unresolved, reason, failures}),
+    do: {:cleanup_unresolved, reservation_error(path, parent, reason), failures}
+
+  defp reservation_error(path, parent, reason) do
+    detail = format_file_error(reason)
+
+    case reservation_category(reason) do
+      :parent_untrusted ->
+        {:error, :output_parent_not_writable,
+         "output parent directory is not writable: #{parent}: #{detail}", 1}
+
+      :parent_missing ->
+        {:error, :output_parent_missing,
+         "output parent directory does not exist: #{parent}: #{detail}", 1}
+
+      :identity_changed ->
+        {:error, :output_path_identity_changed,
+         "output path identity changed during reservation: #{path}: #{detail}", 1}
+
+      :reservation_failed ->
+        {:error, :output_reservation_failed, "output path reservation failed: #{path}: #{detail}",
+         1}
+    end
   end
+
+  defp reservation_category({:output_parent_hierarchy_untrusted, _path}), do: :parent_untrusted
+  defp reservation_category(:output_parent_cross_user_writable), do: :parent_untrusted
+
+  defp reservation_category(reason) when reason in [:eacces, :eperm, :erofs],
+    do: :parent_untrusted
+
+  defp reservation_category(reason) when reason in [:enoent, :enotdir], do: :parent_missing
+
+  defp reservation_category(reason)
+       when reason in [
+              :path_identity_changed,
+              :output_parent_identity_changed,
+              :output_descriptor_identity_changed,
+              :unexpected_path_type,
+              :unsafe_mode
+            ],
+       do: :identity_changed
+
+  defp reservation_category({_step, reason}), do: reservation_category(reason)
+  defp reservation_category(_reason), do: :reservation_failed
 
   defp confirm_recovery(opts) do
     if Keyword.get(opts, :force_new_admin, false) and not Keyword.get(opts, :yes, false) do
@@ -340,13 +376,44 @@ defmodule OrchardCLI.Commands.Cluster do
       :ok ->
         {:ok, render_init_success(result, reservation.output_path, json?)}
 
-      {:error, message} ->
+      {:error, reason_text, containment} ->
+        redacted_reason = redacted_output_failure(reason_text, containment)
+
         message =
-          [message, output_failed_persistence_warning(mark_output_failed(result, message))]
+          [
+            redacted_reason,
+            manual_containment_guidance(reservation, result, containment),
+            output_failed_persistence_warning(mark_output_failed(result, redacted_reason))
+          ]
           |> Enum.reject(&is_nil/1)
           |> Enum.join("\n")
 
         {:error, :one_time_secret_output_failed, message, 1}
+    end
+  end
+
+  defp redacted_output_failure(reason_text, containment) do
+    case containment_failures(containment) do
+      [] ->
+        reason_text
+
+      failures ->
+        reason_text <> "; descriptor-bound containment incomplete: " <> inspect(failures)
+    end
+  end
+
+  defp containment_failures(containment),
+    do: Enum.reject(containment, fn {_step, result} -> result == :ok end)
+
+  defp manual_containment_guidance(reservation, result, containment) do
+    if Keyword.get(containment, :plaintext_redaction) == :ok do
+      nil
+    else
+      "Manual containment required: descriptor-bound redaction failed, so plaintext may remain " <>
+        "at the originally selected output location #{reservation.output_path}. That pathname " <>
+        "may now name unrelated data if it was replaced during the run; secure and inspect " <>
+        "#{reservation.parent} before deleting anything there. Revoke API token prefix " <>
+        "#{result.api_token_prefix} regardless."
     end
   end
 
@@ -438,42 +505,24 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp contain_failed_output(reservation, reason, publication_close_attempted?) do
-    message =
+    reason_text =
       "cluster init minted a credential but One-time Secret Output failed: " <>
         format_file_error(reason)
 
-    {:error, cleanup_message} =
-      contain_failed_cleanup(reservation, publication_close_attempted?)
-
-    {:error, message <> "; " <> cleanup_message}
+    {:error, reason_text, contain_reservation(reservation, publication_close_attempted?)}
   end
 
-  defp contain_failed_cleanup(reservation, publication_close_attempted?) do
-    containment = [
-      plaintext_redaction: redact_reservation(reservation),
+  defp contain_reservation(reservation, publication_close_attempted?) do
+    [
+      plaintext_redaction: redact_reservation(reservation, not publication_close_attempted?),
       publication_descriptor_close:
         close_publication_after_abort(reservation, publication_close_attempted?),
       cleanup_descriptor_close: close_cleanup_descriptor(reservation)
     ]
-
-    detail =
-      containment
-      |> Enum.reject(fn {_step, result} -> result == :ok end)
-      |> inspect()
-
-    {:error,
-     "cluster init minted a credential but descriptor-bound cleanup was required; " <>
-       "containment=#{detail}"}
   end
 
   defp release_reservation(reservation) do
-    results = [
-      plaintext_redaction: redact_reservation(reservation),
-      publication_descriptor_close: reservation.ops.close(reservation.io),
-      cleanup_descriptor_close: close_cleanup_descriptor(reservation)
-    ]
-
-    case Enum.reject(results, fn {_step, result} -> result == :ok end) do
+    case containment_failures(contain_reservation(reservation, false)) do
       [] -> :ok
       failures -> {:error, failures}
     end
@@ -500,28 +549,44 @@ defmodule OrchardCLI.Commands.Cluster do
          do: descriptor_sync(ops, io)
   end
 
-  defp redact_reservation(reservation) do
-    redact_descriptor(
-      reservation.ops,
-      reservation.cleanup_io || reservation.io
-    )
+  defp redact_reservation(reservation, publication_usable?) do
+    primary = reservation.cleanup_io || reservation.io
+
+    case redact_descriptor(reservation.ops, primary) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        redact_via_publication(reservation, primary, publication_usable?, reason)
+    end
+  end
+
+  defp redact_via_publication(reservation, primary, publication_usable?, reason) do
+    if publication_usable? and primary != reservation.io do
+      case redact_descriptor(reservation.ops, reservation.io) do
+        :ok -> :ok
+        {:error, _fallback_reason} -> {:error, reason}
+      end
+    else
+      {:error, reason}
+    end
   end
 
   defp descriptor_write(ops, io, contents) do
-    if ops != File and function_exported?(ops, :write, 2),
+    if descriptor_ops?(ops, :write, 2),
       do: ops.write(io, contents),
       else: IO.binwrite(io, contents)
   end
 
   defp descriptor_sync(ops, io) do
-    if ops != File and function_exported?(ops, :sync, 1),
+    if descriptor_ops?(ops, :sync, 1),
       do: ops.sync(io),
       else: :file.sync(io)
   end
 
   defp descriptor_position(ops, io, position) do
     result =
-      if ops != File and function_exported?(ops, :position, 2),
+      if descriptor_ops?(ops, :position, 2),
         do: ops.position(io, position),
         else: :file.position(io, position)
 
@@ -532,9 +597,13 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp descriptor_truncate(ops, io) do
-    if ops != File and function_exported?(ops, :truncate, 1),
+    if descriptor_ops?(ops, :truncate, 1),
       do: ops.truncate(io),
       else: :file.truncate(io)
+  end
+
+  defp descriptor_ops?(ops, function, arity) do
+    ops != File and Code.ensure_loaded?(ops) and function_exported?(ops, function, arity)
   end
 
   defp verify_descriptor(io, identity) do
