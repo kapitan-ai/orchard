@@ -353,7 +353,12 @@ defmodule OrchardCLI.Commands.Cluster do
   defp release_staging_link_probe(reservation, probe_path) do
     with :ok <-
            verify_reserved_path(probe_path, reservation.output_identity, reservation.ops),
-         :ok <- remove_if_present(probe_path, reservation.ops) do
+         :ok <-
+           quarantine_reserved_regular_path(
+             probe_path,
+             reservation.output_identity,
+             reservation.ops
+           ) do
       :ok
     else
       {:error, reason} -> {:error, {:output_link_preflight, reason}}
@@ -372,7 +377,12 @@ defmodule OrchardCLI.Commands.Cluster do
          :ok <- verify_reserved_output(reservation),
          :ok <- sync_output_directory(reservation),
          :ok <- verify_bound_output(reservation),
-         :ok <- reservation.ops.rm(reservation.staging_path),
+         :ok <-
+           quarantine_reserved_regular_path(
+             reservation.staging_path,
+             reservation.output_identity,
+             reservation.ops
+           ),
          :ok <- remove_staging_directory_if_present(reservation),
          :ok <- sync_output_directory(reservation) do
       {:ok,
@@ -1044,8 +1054,53 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp remove_reserved_staging_if_present(reservation) do
     case verify_bound_output(reservation) do
-      :ok -> remove_if_present(reservation.staging_path, reservation.ops)
-      {:error, {:reserved_output_path, :enoent}} -> :ok
+      :ok ->
+        quarantine_reserved_regular_path(
+          reservation.staging_path,
+          reservation.output_identity,
+          reservation.ops
+        )
+
+      {:error, {:reserved_output_path, :enoent}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp quarantine_reserved_regular_path(path, identity, ops) do
+    quarantine_path = path <> ".quarantine-" <> Ecto.UUID.generate()
+
+    case ops.rename(path, quarantine_path) do
+      :ok -> release_quarantined_regular_path(path, quarantine_path, identity, ops)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp release_quarantined_regular_path(original_path, quarantine_path, identity, ops) do
+    case verify_reserved_path(quarantine_path, identity, ops) do
+      :ok ->
+        remove_if_present(quarantine_path, ops)
+
+      {:error, _reason} ->
+        preserve_quarantined_foreign_regular(original_path, quarantine_path, ops)
+    end
+  end
+
+  defp preserve_quarantined_foreign_regular(original_path, quarantine_path, ops) do
+    with {:ok, %File.Stat{type: :regular} = stat} <- ops.lstat(quarantine_path),
+         :ok <-
+           restore_quarantined_regular(original_path, quarantine_path, file_identity(stat), ops) do
+      {:error, :foreign_path_quarantined}
+    else
+      _result -> {:error, :foreign_path_quarantined}
+    end
+  end
+
+  defp restore_quarantined_regular(original_path, quarantine_path, identity, ops) do
+    case ops.ln(quarantine_path, original_path) do
+      :ok -> verify_path(original_path, identity, :regular, nil, ops)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -1070,7 +1125,11 @@ defmodule OrchardCLI.Commands.Cluster do
          ) do
       :ok ->
         with :ok <- verify_acl_absent(reservation.staging_dir, reservation.ops) do
-          remove_directory_if_present(reservation.staging_dir, reservation.ops)
+          quarantine_reserved_directory_path(
+            reservation.staging_dir,
+            reservation.staging_dir_identity,
+            reservation.ops
+          )
         end
 
       {:error, :enoent} ->
@@ -1081,6 +1140,24 @@ defmodule OrchardCLI.Commands.Cluster do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp quarantine_reserved_directory_path(path, identity, ops) do
+    quarantine_path = path <> ".quarantine-" <> Ecto.UUID.generate()
+
+    case ops.rename(path, quarantine_path) do
+      :ok -> release_quarantined_directory_path(quarantine_path, identity, ops)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp release_quarantined_directory_path(path, identity, ops) do
+    with :ok <- verify_path(path, identity, :directory, @private_directory_mode, ops),
+         :ok <- verify_acl_absent(path, ops) do
+      remove_directory_if_present(path, ops)
+    else
+      {:error, _reason} -> {:error, :foreign_directory_quarantined}
     end
   end
 

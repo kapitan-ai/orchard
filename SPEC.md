@@ -2432,17 +2432,20 @@ Dry Run SHALL validate Organizations, API Client identity, duplicate API Token n
 Apply SHALL validate the output path before mutation and commit all provisioning changes as one batch.
 Apply SHALL write One-time Secret Output only after the batch succeeds.
 One-time Secret Output SHALL be a CSV with `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at` columns.
-File-backed One-time Secret Output SHALL create its credential-bearing inode only inside an owner-only staging namespace that is mode `0700` before the inode exists.
-The staged inode SHALL be mode `0600` and identity-verified before plaintext is written.
-Orchard SHALL write and sync the complete payload through a descriptor bound to that inode, close the publication descriptor, install the inode at the operator-selected path without clobbering an existing entry, verify the final identity and protection, sync the containing directory, remove the staging link, and sync the containing directory again before confirming publication.
-A successful file-backed publication SHALL leave the operator-selected path as the only intentional plaintext pathname created by that operation.
-This exactly-once guarantee does not assert that a failed operation had no filesystem side effects.
-Metadata cleanup SHALL remove a pathname only while it is verified to name the bound Orchard inode and SHALL preserve foreign or replaced pathnames.
 If One-time Secret Output delivery fails after a committed Apply, Orchard SHALL mark the Provisioning Batch as `output_failed`, write a redacted audit event, and return recovery guidance that names API Token prefixes for revocation or rotation.
-Credential-authority commit, output publication, and logical containment are independent outcome axes.
-After credential-authority commit, unconfirmed publication or unresolved containment SHALL return nonzero, state that plaintext may remain, and expose only the affected API Token prefix plus secret-free recovery guidance.
-Logical containment is best effort through the bound inode descriptor and does not claim physical-media sanitization or guaranteed byte erasure when the filesystem refuses truncation, sync, close, link, or unlink operations.
 The output-failed recovery path SHALL NOT persist plaintext API Token secrets.
+The following protected file-backed One-time Secret Output profile applies only to `orchardctl cluster init` as referenced by §11.9 and does not modify the bulk-provisioning or `OrchardCLI.ExclusiveOutput` contract.
+This profile SHALL create its credential-bearing inode only inside an owner-only staging namespace that is mode `0700` before the inode exists.
+The staged inode SHALL be ACL-free, mode `0600`, and identity-verified before plaintext is written.
+The command SHALL write and sync the complete payload through a descriptor bound to that inode, close the publication descriptor, install the inode at the operator-selected path without clobbering an existing entry, verify the final identity and protection, sync the containing directory, remove the staging link, and sync the containing directory again before confirming publication.
+A successful publication under this profile SHALL leave the operator-selected path as the only intentional plaintext pathname created by that operation.
+This exactly-once guarantee does not assert that a failed operation had no filesystem side effects.
+Metadata cleanup under this profile SHALL move a candidate into a unique quarantine pathname and verify its identity after that move before deletion.
+A discrete foreign or replaced entry discovered after quarantine SHALL be restored without clobbering when safe or retained in quarantine, and the command SHALL return nonzero rather than delete it.
+The supported pathname APIs do not provide atomic inode-conditional deletion against a continuously adversarial process running as root or the same operating-system account; that actor is outside this bounded cleanup guarantee.
+Credential-authority commit, output publication, and logical containment are independent outcome axes for this profile.
+After credential-authority commit, unconfirmed publication or unresolved containment SHALL return nonzero, state that plaintext may remain, and expose only the affected API Token prefix plus secret-free recovery guidance.
+Logical containment is best effort through the bound inode descriptor and does not claim physical-media sanitization or guaranteed byte erasure when the filesystem refuses truncation, sync, close, link, rename, or unlink operations.
 Repeated provisioning SHALL match API Clients by Organization plus External Reference when present, otherwise by Organization plus API Client name.
 Repeated provisioning SHALL reject duplicate active API Token names unless explicit Key Rotation mode is enabled.
 Key Rotation mode SHALL create a replacement API Token and revoke previous active API Tokens with the same API Client and token name.

@@ -1,4 +1,4 @@
-# ADR: Protected file-backed One-time Secret Output uses two commit points
+# ADR: Cluster init protected One-time Secret Output uses two commit points
 
 ## Status
 
@@ -14,14 +14,17 @@ POSIX file operations may fail without erasing or durably removing previously wr
 
 ## Decision
 
-File-backed secret publication uses two independent commit points.
+For `orchardctl cluster init`, file-backed secret publication uses two independent commit points.
 The authority commit makes the credential active and is not rolled back by later filesystem failure.
 The publication commit is confirmed only after an owner-only staging namespace exists, the staged inode is verified as mode `0600`, the complete payload is written and file-synced through its bound descriptor, the descriptor is closed, the inode is installed at the final path without clobbering, final identity and protection are verified, the containing directory is synced, the staging link is removed, and the containing directory is synced again.
 
 The staging namespace is mode `0700` before the credential-bearing inode is created.
 The staged inode is made and verified mode `0600` before plaintext is written.
 Orchard retains a second descriptor bound to the same inode for logical containment until publication commits.
-Pathname cleanup proceeds only after identity verification and never intentionally deletes a replaced or foreign pathname.
+Pathname cleanup moves a candidate into a unique quarantine pathname and verifies identity after that move.
+A discrete foreign regular entry is restored with a no-clobber link when safe or retained in quarantine, and a foreign directory is retained in quarantine.
+Either mismatch returns nonzero rather than intentionally deleting the foreign entry.
+The supported pathname APIs cannot make deletion conditional on inode identity against a continuously adversarial root or same-account process racing every syscall, so that actor is outside this bounded cleanup guarantee.
 
 Successful publication means one intentional plaintext pathname at the operator-selected destination.
 A failed command may have partial filesystem side effects.
@@ -34,10 +37,11 @@ It does not guarantee physical-media sanitization, erase storage history, or gua
 A close anomaly after publication commit is a warning and does not convert confirmed publication into failure.
 
 Pending credential activation, durable publication permits, and API-key lifecycle redesign are deferred.
+This decision does not change the bulk-provisioning or `OrchardCLI.ExclusiveOutput` contract.
 
 ## Consequences
 
-The final pathname never exposes an incompletely protected credential inode.
+The cluster-init final pathname never exposes an incompletely protected credential inode.
 No-clobber installation preserves pre-existing and racing foreign pathnames.
 Operators and automation can distinguish active credential authority, filesystem publication, and logical containment without parsing prose.
 An operator may receive a nonzero result while the credential is active and while empty or unresolved filesystem metadata remains.

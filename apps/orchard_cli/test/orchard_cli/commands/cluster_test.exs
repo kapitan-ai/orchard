@@ -26,10 +26,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end
 
-    def rmdir(path) do
-      maybe_replace_staging_directory_before_cleanup(path)
-      File.rmdir(path)
-    end
+    def rmdir(path), do: File.rmdir(path)
 
     def ln(source, destination) do
       cond do
@@ -51,9 +48,61 @@ defmodule OrchardCLI.Commands.ClusterTest do
       is_binary(staging_dir) and Path.dirname(destination) == staging_dir
     end
 
-    def rm(path) do
-      maybe_replace_staging_before_cleanup(path)
+    def rename(source, destination) do
+      maybe_replace_preflight_probe_before_quarantine(source, destination)
+      maybe_replace_staging_before_quarantine(source, destination)
+      maybe_replace_staging_directory_before_quarantine(source, destination)
+      File.rename(source, destination)
+    end
 
+    defp maybe_replace_preflight_probe_before_quarantine(source, destination) do
+      if is_binary(Process.get(:cluster_file_ops_foreign_preflight_probe_before_quarantine)) and
+           String.starts_with?(Path.basename(source), "link-preflight-") and
+           !Process.get(:cluster_file_ops_preflight_probe_replacement_injected) do
+        owned_path = source <> ".owned"
+        File.rename!(source, owned_path)
+
+        File.write!(
+          source,
+          Process.get(:cluster_file_ops_foreign_preflight_probe_before_quarantine)
+        )
+
+        Process.put(:cluster_file_ops_owned_preflight_probe_path, owned_path)
+        Process.put(:cluster_file_ops_foreign_preflight_probe_path, destination)
+        Process.put(:cluster_file_ops_preflight_probe_replacement_injected, true)
+      end
+    end
+
+    defp maybe_replace_staging_before_quarantine(source, destination) do
+      if source == Process.get(:cluster_file_ops_staging_path) and
+           is_binary(Process.get(:cluster_file_ops_foreign_staging_before_cleanup)) and
+           (Process.get(:cluster_file_ops_directory_sync_calls) || 0) >= 1 and
+           !Process.get(:cluster_file_ops_staging_replacement_injected) do
+        owned_path = source <> ".owned"
+        File.rename!(source, owned_path)
+        File.write!(source, Process.get(:cluster_file_ops_foreign_staging_before_cleanup))
+        Process.put(:cluster_file_ops_foreign_staging_path, destination)
+        Process.put(:cluster_file_ops_owned_staging_moved_path, owned_path)
+        Process.put(:cluster_file_ops_staging_replacement_injected, true)
+      end
+    end
+
+    defp maybe_replace_staging_directory_before_quarantine(source, destination) do
+      if source == Process.get(:cluster_file_ops_staging_dir) and
+           Process.get(:cluster_file_ops_replace_staging_directory_before_cleanup) and
+           (Process.get(:cluster_file_ops_directory_sync_calls) || 0) >= 1 and
+           !Process.get(:cluster_file_ops_staging_directory_replacement_injected) do
+        owned_path = source <> ".owned"
+        File.rename!(source, owned_path)
+        File.mkdir!(source)
+        File.chmod!(source, 0o711)
+        Process.put(:cluster_file_ops_foreign_staging_directory, destination)
+        Process.put(:cluster_file_ops_owned_staging_directory, owned_path)
+        Process.put(:cluster_file_ops_staging_directory_replacement_injected, true)
+      end
+    end
+
+    def rm(path) do
       if staging_cleanup_rm_failure?(path) do
         {:error, :eio}
       else
@@ -62,7 +111,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp staging_cleanup_rm_failure?(path) do
-      path == Process.get(:cluster_file_ops_staging_path) and
+      staging_path = Process.get(:cluster_file_ops_staging_path)
+
+      is_binary(staging_path) and
+        (path == staging_path or String.starts_with?(path, staging_path <> ".quarantine-")) and
         ((Process.get(:cluster_file_ops_fail_staging_cleanup_rm) and
             Process.get(:cluster_file_ops_descriptor_write_completed) == true) or
            (Process.get(:cluster_file_ops_fail_staging_cleanup_rm_before_write) and
@@ -88,9 +140,6 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp real_lstat(path) do
-      maybe_replace_staging_before_cleanup(path)
-      maybe_replace_staging_directory_before_cleanup(path)
-
       case File.lstat(path) do
         {:ok, stat} ->
           maybe_replace_output_after_lstat(path, stat)
@@ -406,35 +455,6 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     defp maybe_replace_output_after_lstat(_path, _stat), do: :ok
 
-    defp maybe_replace_staging_before_cleanup(path) do
-      if path == Process.get(:cluster_file_ops_staging_path) and
-           is_binary(Process.get(:cluster_file_ops_foreign_staging_before_cleanup)) and
-           (Process.get(:cluster_file_ops_directory_sync_calls) || 0) >= 1 and
-           !Process.get(:cluster_file_ops_staging_replacement_injected) do
-        moved_path = path <> ".owned"
-        File.rename!(path, moved_path)
-        File.write!(path, Process.get(:cluster_file_ops_foreign_staging_before_cleanup))
-        Process.put(:cluster_file_ops_foreign_staging_path, path)
-        Process.put(:cluster_file_ops_owned_staging_moved_path, moved_path)
-        Process.put(:cluster_file_ops_staging_replacement_injected, true)
-      end
-    end
-
-    defp maybe_replace_staging_directory_before_cleanup(path) do
-      if path == Process.get(:cluster_file_ops_staging_dir) and
-           Process.get(:cluster_file_ops_replace_staging_directory_before_cleanup) and
-           (Process.get(:cluster_file_ops_directory_sync_calls) || 0) >= 1 and
-           !Process.get(:cluster_file_ops_staging_directory_replacement_injected) do
-        moved_path = path <> ".owned"
-        File.rename!(path, moved_path)
-        File.mkdir!(path)
-        File.chmod!(path, 0o711)
-        Process.put(:cluster_file_ops_foreign_staging_directory, path)
-        Process.put(:cluster_file_ops_owned_staging_directory, moved_path)
-        Process.put(:cluster_file_ops_staging_directory_replacement_injected, true)
-      end
-    end
-
     defp capture_token_payload(contents) do
       contents
       |> Jason.decode!()
@@ -643,6 +663,49 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert_public_init_preflight_fails(tmp_dir, "directory-preflight-admin",
         fail_preflight_directory_sync: true
       )
+    end
+
+    test "SPEC.md §7.4.4 public init preserves a probe replaced after verification and does not mint",
+         %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "probe-race-admin.json")
+      foreign_contents = "unrelated probe data"
+
+      {stdout, stderr, log, halt_code} =
+        with_configurable_file_ops(
+          [
+            output_path: output_path,
+            foreign_preflight_probe_before_quarantine: foreign_contents
+          ],
+          fn ->
+            {stdout, stderr, log, halt_code} =
+              run_public_cluster_init([
+                "cluster",
+                "init",
+                "--output",
+                output_path,
+                "--json",
+                "--client-name",
+                "probe-race-admin"
+              ])
+
+            {stdout, stderr, log, halt_code}
+          end
+        )
+
+      assert halt_code == 1
+      assert stdout == ""
+      assert Jason.decode!(stderr)["code"] == "output_reservation_failed"
+
+      assert Enum.any?(
+               residual_files(tmp_dir),
+               &(File.read!(&1) == foreign_contents)
+             )
+
+      refute File.exists?(output_path)
+      assert_no_credential_minted()
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+      refute stderr =~ "orchard_sk_"
+      refute log =~ "orchard_sk_"
     end
 
     test "SPEC.md §10.2 partial descriptor write failure leaves no plaintext", %{
@@ -903,7 +966,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       output_path = Path.join(tmp_dir, "staging-race-admin.json")
       foreign_contents = "unrelated staging data"
 
-      {log, result, token, foreign_path, owned_path} =
+      {stdout, stderr, log, halt_code, token, owned_basename} =
         with_configurable_file_ops(
           [
             capture_token: true,
@@ -911,44 +974,41 @@ defmodule OrchardCLI.Commands.ClusterTest do
             foreign_staging_before_cleanup: foreign_contents
           ],
           fn ->
-            log =
-              capture_log(fn ->
-                send(
-                  self(),
-                  {:cluster_result,
-                   ClusterCmd.run([
-                     "init",
-                     "--output",
-                     output_path,
-                     "--json",
-                     "--client-name",
-                     "staging-race-admin"
-                   ])}
-                )
-              end)
-
-            assert_receive {:cluster_result, result}
+            {stdout, stderr, log, halt_code} =
+              run_public_cluster_init([
+                "cluster",
+                "init",
+                "--output",
+                output_path,
+                "--json",
+                "--client-name",
+                "staging-race-admin"
+              ])
 
             {
+              stdout,
+              stderr,
               log,
-              result,
+              halt_code,
               Process.get(:cluster_file_ops_failed_token),
-              Process.get(:cluster_file_ops_foreign_staging_path),
-              Process.get(:cluster_file_ops_owned_staging_moved_path)
+              Path.basename(Process.get(:cluster_file_ops_owned_staging_moved_path))
             }
           end
         )
 
-      assert {:error, message, 1} = result
-      assert Jason.decode!(message)["containment"] == "confirmed_logical"
+      assert halt_code == 1
+      assert stdout == ""
+      assert Jason.decode!(stderr)["containment"] == "confirmed_logical"
       assert is_binary(token)
-      assert File.read!(foreign_path) == foreign_contents
-      assert File.read!(owned_path) == ""
+
+      residuals = residual_files(tmp_dir)
+      assert Enum.any?(residuals, &(File.read!(&1) == foreign_contents))
+      assert Enum.any?(residuals, &(Path.basename(&1) == owned_basename and File.read!(&1) == ""))
       assert File.read!(output_path) == ""
-      refute message =~ token
+      refute stderr =~ token
       refute log =~ token
 
-      for path <- residual_files(tmp_dir) do
+      for path <- residuals do
         refute File.read!(path) =~ token
       end
 
@@ -1931,6 +1991,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_directory_sync_calls: nil,
       cluster_file_ops_fail_preflight_ln: Keyword.get(settings, :fail_preflight_ln, false),
       cluster_file_ops_preflight_link_calls: nil,
+      cluster_file_ops_foreign_preflight_probe_before_quarantine:
+        settings[:foreign_preflight_probe_before_quarantine],
+      cluster_file_ops_preflight_probe_replacement_injected: nil,
+      cluster_file_ops_owned_preflight_probe_path: nil,
+      cluster_file_ops_foreign_preflight_probe_path: nil,
       cluster_file_ops_fail_preflight_directory_sync:
         Keyword.get(settings, :fail_preflight_directory_sync, false),
       cluster_file_ops_preflight_directory_sync_calls: nil,
