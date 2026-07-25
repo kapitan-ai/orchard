@@ -31,7 +31,25 @@ defmodule OrchardCLI.Commands.ClusterTest do
       File.rmdir(path)
     end
 
-    def ln(source, destination), do: File.ln(source, destination)
+    def ln(source, destination) do
+      cond do
+        not preflight_link?(destination) ->
+          File.ln(source, destination)
+
+        Process.get(:cluster_file_ops_fail_preflight_ln) ->
+          {:error, :enotsup}
+
+        true ->
+          calls = (Process.get(:cluster_file_ops_preflight_link_calls) || 0) + 1
+          Process.put(:cluster_file_ops_preflight_link_calls, calls)
+          File.ln(source, destination)
+      end
+    end
+
+    defp preflight_link?(destination) do
+      staging_dir = Process.get(:cluster_file_ops_staging_dir)
+      is_binary(staging_dir) and Path.dirname(destination) == staging_dir
+    end
 
     def rm(path) do
       maybe_replace_staging_before_cleanup(path)
@@ -264,6 +282,21 @@ defmodule OrchardCLI.Commands.ClusterTest do
     def chmod(path, mode), do: File.chmod(path, mode)
 
     def sync_directory(_path) do
+      if Process.get(:cluster_file_ops_descriptor_write_completed) == true,
+        do: commit_directory_sync(),
+        else: preflight_directory_sync()
+    end
+
+    defp preflight_directory_sync do
+      calls = (Process.get(:cluster_file_ops_preflight_directory_sync_calls) || 0) + 1
+      Process.put(:cluster_file_ops_preflight_directory_sync_calls, calls)
+
+      if Process.get(:cluster_file_ops_fail_preflight_directory_sync),
+        do: {:error, :eio},
+        else: :ok
+    end
+
+    defp commit_directory_sync do
       call = (Process.get(:cluster_file_ops_directory_sync_calls) || 0) + 1
       Process.put(:cluster_file_ops_directory_sync_calls, call)
 
@@ -584,32 +617,32 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     test "SPEC.md §7.4.4 public init rejects a parent ACL granting non-owner mutation",
          %{tmp_dir: tmp_dir} do
-      output_path = Path.join(tmp_dir, "acl-mutation-admin.json")
-      :ok = add_mutation_acl(tmp_dir)
-      assert acl_entries(tmp_dir) != []
+      assert_public_init_rejects_parent_acl(
+        tmp_dir,
+        "acl-mutation-admin",
+        "everyone allow add_file,add_subdirectory,delete_child,file_inherit,directory_inherit"
+      )
+    end
 
-      {stdout, stderr, log, halt_code} =
-        run_public_cluster_init([
-          "cluster",
-          "init",
-          "--output",
-          output_path,
-          "--json",
-          "--client-name",
-          "acl-mutation-admin"
-        ])
+    test "SPEC.md §7.4.4 public init rejects a parent ACL granting non-owner ownership control",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_rejects_parent_acl(
+        tmp_dir,
+        "acl-ownership-admin",
+        "everyone allow chown,writesecurity,file_inherit,directory_inherit"
+      )
+    end
 
-      decoded = Jason.decode!(stderr)
+    test "SPEC.md §7.4.4 public init fails before minting when staging hard links are unsupported",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_preflight_fails(tmp_dir, "link-preflight-admin", fail_preflight_ln: true)
+    end
 
-      assert halt_code == 1
-      assert stdout == ""
-      assert decoded["code"] == "output_parent_not_writable"
-      refute File.exists?(output_path)
-      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
-      assert Repo.aggregate(ApiKey, :count, :id) == 0
-      assert Repo.aggregate(RoleBinding, :count, :id) == 0
-      refute stderr =~ "orchard_sk_"
-      refute log =~ "orchard_sk_"
+    test "SPEC.md §7.4.4 public init fails before minting when the parent directory sync fails",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_preflight_fails(tmp_dir, "directory-preflight-admin",
+        fail_preflight_directory_sync: true
+      )
     end
 
     test "SPEC.md §10.2 partial descriptor write failure leaves no plaintext", %{
@@ -1487,6 +1520,13 @@ defmodule OrchardCLI.Commands.ClusterTest do
       persisted_reason = output_failed.payload["error_summary"]["reason"]
 
       assert persisted_reason =~ "containment_unresolved:plaintext_redaction=eio"
+      assert persisted_reason =~ "staging_metadata_cleanup=staging_path.eio"
+
+      staging_cleanup =
+        Enum.find(decoded["cleanup_failures"], &(&1["step"] == "staging_metadata_cleanup"))
+
+      assert staging_cleanup["category"] =~ "staging_path.eio"
+      refute staging_cleanup["category"] =~ tmp_dir
 
       assert_path_free_output_failure(
         output_failed,
@@ -1889,6 +1929,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_foreign_failed_mkdir_directory: nil,
       cluster_file_ops_fail_directory_sync_call: settings[:fail_directory_sync_call],
       cluster_file_ops_directory_sync_calls: nil,
+      cluster_file_ops_fail_preflight_ln: Keyword.get(settings, :fail_preflight_ln, false),
+      cluster_file_ops_preflight_link_calls: nil,
+      cluster_file_ops_fail_preflight_directory_sync:
+        Keyword.get(settings, :fail_preflight_directory_sync, false),
+      cluster_file_ops_preflight_directory_sync_calls: nil,
       cluster_file_ops_descriptor_write_completed: nil,
       cluster_file_ops_failed_token: nil
     }
@@ -1968,6 +2013,68 @@ defmodule OrchardCLI.Commands.ClusterTest do
     refute inspect(Repo.all(AuditLog)) =~ token
   end
 
+  defp assert_public_init_rejects_parent_acl(tmp_dir, client_name, acl) do
+    output_path = Path.join(tmp_dir, "#{client_name}.json")
+    :ok = add_acl(tmp_dir, acl)
+    assert acl_entries(tmp_dir) != []
+
+    {stdout, stderr, log, halt_code} =
+      run_public_cluster_init([
+        "cluster",
+        "init",
+        "--output",
+        output_path,
+        "--json",
+        "--client-name",
+        client_name
+      ])
+
+    assert halt_code == 1
+    assert stdout == ""
+    assert Jason.decode!(stderr)["code"] == "output_parent_not_writable"
+    refute File.exists?(output_path)
+    assert_no_credential_minted()
+    refute stderr =~ "orchard_sk_"
+    refute log =~ "orchard_sk_"
+  end
+
+  defp assert_public_init_preflight_fails(tmp_dir, client_name, settings) do
+    output_path = Path.join(tmp_dir, "#{client_name}.json")
+    foreign_path = Path.join(tmp_dir, "#{client_name}-unrelated.txt")
+    foreign_contents = "unrelated operator data"
+    File.write!(foreign_path, foreign_contents)
+
+    {stdout, stderr, log, halt_code} =
+      with_configurable_file_ops(Keyword.put(settings, :output_path, output_path), fn ->
+        run_public_cluster_init([
+          "cluster",
+          "init",
+          "--output",
+          output_path,
+          "--json",
+          "--client-name",
+          client_name
+        ])
+      end)
+
+    assert halt_code == 1
+    assert stdout == ""
+    assert Jason.decode!(stderr)["code"] == "output_reservation_failed"
+    refute File.exists?(output_path)
+    assert File.read!(foreign_path) == foreign_contents
+    assert residual_files(tmp_dir) == [foreign_path]
+    assert_no_credential_minted()
+    assert Repo.aggregate(AuditLog, :count, :id) == 0
+    refute stderr =~ "orchard_sk_"
+    refute log =~ "orchard_sk_"
+  end
+
+  defp assert_no_credential_minted do
+    assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+    assert Repo.aggregate(ApiKey, :count, :id) == 0
+    assert Repo.aggregate(RoleBinding, :count, :id) == 0
+  end
+
   defp assert_path_free_output_failure(
          output_failed,
          tmp_dir,
@@ -2032,13 +2139,6 @@ defmodule OrchardCLI.Commands.ClusterTest do
   defp add_inheritable_read_acl(path) do
     acl =
       "everyone allow read,readattr,readextattr,readsecurity,file_inherit,directory_inherit"
-
-    add_acl(path, acl)
-  end
-
-  defp add_mutation_acl(path) do
-    acl =
-      "everyone allow add_file,add_subdirectory,delete_child,file_inherit,directory_inherit"
 
     add_acl(path, acl)
   end

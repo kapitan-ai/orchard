@@ -19,12 +19,13 @@ defmodule OrchardCLI.Commands.Cluster do
     add_file
     add_subdirectory
     append
+    chown
     delete
     delete_child
     write
     writeattr
     writeextattr
-    writeowner
+    writesecurity
   )
   @private_directory_mode 0o700
   @secret_file_mode 0o600
@@ -184,9 +185,6 @@ defmodule OrchardCLI.Commands.Cluster do
            ) do
       {:ok, reservation}
     else
-      {:error, :eexist} ->
-        {:error, :output_path_exists, "output path already exists: #{path}", 1}
-
       {:error, reason} ->
         reservation_error(path, parent, reason)
     end
@@ -240,7 +238,7 @@ defmodule OrchardCLI.Commands.Cluster do
                    @private_directory_mode,
                    ops
                  ),
-               {:ok, io} <- ops.open(staging_path, [:write, :exclusive, :binary]) do
+               {:ok, io} <- open_staging_credential(staging_path, ops) do
             {:ok, staging_dir, staging_identity, staging_path, io}
           end
 
@@ -260,6 +258,13 @@ defmodule OrchardCLI.Commands.Cluster do
          preserve_cleanup_result(reason,
            staging_cleanup: {:error, :staging_directory_identity_unbound}
          )}
+    end
+  end
+
+  defp open_staging_credential(staging_path, ops) do
+    case ops.open(staging_path, [:write, :exclusive, :binary]) do
+      {:ok, io} -> {:ok, io}
+      {:error, reason} -> {:error, {:staging_credential_create, reason}}
     end
   end
 
@@ -327,8 +332,38 @@ defmodule OrchardCLI.Commands.Cluster do
     with :ok <- descriptor_position(reservation.ops, reservation.io, :bof),
          :ok <- descriptor_truncate(reservation.ops, reservation.io),
          :ok <- descriptor_sync(reservation.ops, reservation.io),
-         :ok <- verify_descriptor(reservation.io, reservation.output_identity) do
+         :ok <- verify_descriptor(reservation.io, reservation.output_identity),
+         :ok <- verify_bound_output(reservation),
+         :ok <- preflight_staging_link(reservation),
+         :ok <- preflight_output_directory(reservation) do
       verify_bound_output(reservation)
+    end
+  end
+
+  defp preflight_staging_link(reservation) do
+    probe_path =
+      Path.join(reservation.staging_dir, "link-preflight-#{Ecto.UUID.generate()}")
+
+    case reservation.ops.ln(reservation.staging_path, probe_path) do
+      :ok -> release_staging_link_probe(reservation, probe_path)
+      {:error, reason} -> {:error, {:output_link_preflight, reason}}
+    end
+  end
+
+  defp release_staging_link_probe(reservation, probe_path) do
+    with :ok <-
+           verify_reserved_path(probe_path, reservation.output_identity, reservation.ops),
+         :ok <- remove_if_present(probe_path, reservation.ops) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:output_link_preflight, reason}}
+    end
+  end
+
+  defp preflight_output_directory(reservation) do
+    case sync_output_directory(reservation) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:output_directory_preflight, reason}}
     end
   end
 
@@ -591,6 +626,17 @@ defmodule OrchardCLI.Commands.Cluster do
     do: Atom.to_string(step) <> "." <> failure_category(reason)
 
   defp failure_category(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp failure_category(failures) when is_list(failures) do
+    if failures != [] and Keyword.keyword?(failures) do
+      Enum.map_join(failures, ",", fn {step, result} ->
+        Atom.to_string(step) <> "." <> containment_result_category(result)
+      end)
+    else
+      "unclassified"
+    end
+  end
+
   defp failure_category(_reason), do: "unclassified"
 
   defp containment_failures(containment),
