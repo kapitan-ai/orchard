@@ -724,7 +724,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
     test "SPEC.md §7.4.4 public init fails before minting when the parent directory sync fails",
          %{tmp_dir: tmp_dir} do
       assert_public_init_preflight_fails(tmp_dir, "directory-preflight-admin",
-        fail_preflight_directory_sync: true
+        fail_preflight_directory_sync: true,
+        expected_detail: "output_directory_preflight: " <> to_string(:file.format_error(:eio))
       )
     end
 
@@ -807,6 +808,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["code"] == "output_reservation_failed"
 
       assert decoded["message"] =~ "foreign_path_retained"
+      refute stderr =~ "unknown POSIX error"
       assert [retained_dir] = quarantined_directories(tmp_dir)
       assert decoded["message"] =~ retained_dir
       assert File.dir?(retained_dir)
@@ -1183,6 +1185,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert [retained_dir] = quarantined_directories(tmp_dir)
       assert decoded["message"] =~ "foreign_path_retained"
       assert decoded["message"] =~ retained_dir
+      refute stderr =~ "unknown POSIX error"
       assert File.dir?(retained_dir)
 
       assert is_binary(stale_child_path)
@@ -2383,7 +2386,10 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     assert halt_code == 1
     assert stdout == ""
-    assert Jason.decode!(stderr)["code"] == "output_reservation_failed"
+    decoded = Jason.decode!(stderr)
+    assert decoded["code"] == "output_reservation_failed"
+    assert_error_detail(decoded["message"], settings[:expected_detail])
+    refute stderr =~ "unknown POSIX error"
     refute File.exists?(output_path)
     assert File.read!(foreign_path) == foreign_contents
     assert residual_files(tmp_dir) == [foreign_path]
@@ -2392,6 +2398,9 @@ defmodule OrchardCLI.Commands.ClusterTest do
     refute stderr =~ "orchard_sk_"
     refute log =~ "orchard_sk_"
   end
+
+  defp assert_error_detail(_message, nil), do: :ok
+  defp assert_error_detail(message, detail), do: assert(message =~ detail)
 
   defp assert_unprotected_staging_is_removed(tmp_dir, client_name, settings) do
     output_path = Path.join(tmp_dir, "#{client_name}.json")

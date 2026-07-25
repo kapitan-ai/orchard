@@ -29,6 +29,7 @@ defmodule OrchardCLI.Commands.Cluster do
   )
   @private_directory_mode 0o700
   @secret_file_mode 0o600
+  @unknown_posix_error "unknown POSIX error"
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(["status" | rest]), do: run_status(rest)
   def run(["help"]), do: {:ok, group_usage()}
@@ -1585,8 +1586,13 @@ defmodule OrchardCLI.Commands.Cluster do
   defp format_file_error({step, reason}),
     do: "#{step}: #{format_file_error(reason)}"
 
-  defp format_file_error(reason) when is_atom(reason),
-    do: reason |> :file.format_error() |> to_string()
+  defp format_file_error(reason) when is_atom(reason) do
+    rendered = reason |> :file.format_error() |> to_string()
+
+    if String.starts_with?(rendered, @unknown_posix_error),
+      do: Atom.to_string(reason),
+      else: rendered
+  end
 
   defp format_file_error(reason), do: inspect(reason)
 
