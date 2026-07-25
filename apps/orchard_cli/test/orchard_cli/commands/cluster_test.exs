@@ -10,6 +10,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
   alias OrchardCLI.Commands.Cluster, as: ClusterCmd
 
   defmodule ConfigurableFileOps do
+    @descriptor_preflight_payload "orchard-cluster-init-write-preflight\n"
+
     def exists?(path), do: File.exists?(path)
     def dir?(path), do: File.dir?(path)
 
@@ -30,6 +32,9 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     def ln(source, destination) do
       cond do
+        output_parent_link_denied?(destination) ->
+          {:error, :eacces}
+
         not preflight_link?(destination) ->
           File.ln(source, destination)
 
@@ -41,6 +46,14 @@ defmodule OrchardCLI.Commands.ClusterTest do
           Process.put(:cluster_file_ops_preflight_link_calls, calls)
           File.ln(source, destination)
       end
+    end
+
+    defp output_parent_link_denied?(destination) do
+      output_path = Process.get(:cluster_file_ops_output_path)
+
+      Process.get(:cluster_file_ops_fail_output_parent_ln) and
+        is_binary(output_path) and
+        Path.dirname(destination) == Path.dirname(output_path)
     end
 
     defp preflight_link?(destination) do
@@ -284,6 +297,18 @@ defmodule OrchardCLI.Commands.ClusterTest do
     end
 
     defp maybe_retain_readable_creation_descriptor(_path, _role), do: :ok
+
+    def write(file, @descriptor_preflight_payload = contents) do
+      if Process.get(:cluster_file_ops_fail_preflight_write) and
+           !Process.get(:cluster_file_ops_preflight_write_failure_injected) do
+        Process.put(:cluster_file_ops_preflight_write_failure_injected, true)
+        {:error, :edquot}
+      else
+        result = IO.binwrite(file, contents)
+        if result == :ok, do: Process.put(:cluster_file_ops_preflight_write_completed, true)
+        result
+      end
+    end
 
     def write(file, contents) do
       if Process.get(:cluster_file_ops_capture_token), do: capture_token_payload(contents)
@@ -719,6 +744,23 @@ defmodule OrchardCLI.Commands.ClusterTest do
     test "SPEC.md §7.4.4 public init fails before minting when staging hard links are unsupported",
          %{tmp_dir: tmp_dir} do
       assert_public_init_preflight_fails(tmp_dir, "link-preflight-admin", fail_preflight_ln: true)
+    end
+
+    test "SPEC.md §7.4.4 public init fails before minting when the output parent denies links",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_preflight_fails(tmp_dir, "parent-link-preflight-admin",
+        fail_output_parent_ln: true,
+        expected_code: "output_parent_not_writable",
+        expected_detail: "output_link_preflight: " <> to_string(:file.format_error(:eacces))
+      )
+    end
+
+    test "SPEC.md §7.4.4 public init fails before minting when a non-empty descriptor write fails",
+         %{tmp_dir: tmp_dir} do
+      assert_public_init_preflight_fails(tmp_dir, "write-preflight-admin",
+        fail_preflight_write: true,
+        expected_detail: "output_write_preflight: " <> to_string(:file.format_error(:edquot))
+      )
     end
 
     test "SPEC.md §7.4.4 public init fails before minting when the parent directory sync fails",
@@ -2197,6 +2239,9 @@ defmodule OrchardCLI.Commands.ClusterTest do
         Keyword.get(settings, :fail_cleanup_close_after_commit, false),
       cluster_file_ops_fail_write_after_persist:
         Keyword.get(settings, :fail_write_after_persist, false),
+      cluster_file_ops_fail_preflight_write: Keyword.get(settings, :fail_preflight_write, false),
+      cluster_file_ops_preflight_write_failure_injected: nil,
+      cluster_file_ops_preflight_write_completed: nil,
       cluster_file_ops_fail_sync_after_write:
         Keyword.get(settings, :fail_sync_after_write, false),
       cluster_file_ops_fail_cleanup_preflight_sync:
@@ -2250,6 +2295,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
       cluster_file_ops_fail_directory_sync_call: settings[:fail_directory_sync_call],
       cluster_file_ops_directory_sync_calls: nil,
       cluster_file_ops_fail_preflight_ln: Keyword.get(settings, :fail_preflight_ln, false),
+      cluster_file_ops_fail_output_parent_ln:
+        Keyword.get(settings, :fail_output_parent_ln, false),
       cluster_file_ops_preflight_link_calls: nil,
       cluster_file_ops_foreign_preflight_probe_before_quarantine:
         settings[:foreign_preflight_probe_before_quarantine],
@@ -2387,7 +2434,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
     assert halt_code == 1
     assert stdout == ""
     decoded = Jason.decode!(stderr)
-    assert decoded["code"] == "output_reservation_failed"
+    assert decoded["code"] == Keyword.get(settings, :expected_code, "output_reservation_failed")
     assert_error_detail(decoded["message"], settings[:expected_detail])
     refute stderr =~ "unknown POSIX error"
     refute File.exists?(output_path)

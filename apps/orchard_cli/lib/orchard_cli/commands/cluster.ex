@@ -29,6 +29,7 @@ defmodule OrchardCLI.Commands.Cluster do
   )
   @private_directory_mode 0o700
   @secret_file_mode 0o600
+  @descriptor_preflight_payload "orchard-cluster-init-write-preflight\n"
   @unknown_posix_error "unknown POSIX error"
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(["status" | rest]), do: run_status(rest)
@@ -361,11 +362,28 @@ defmodule OrchardCLI.Commands.Cluster do
     with :ok <- descriptor_position(reservation.ops, reservation.io, :bof),
          :ok <- descriptor_truncate(reservation.ops, reservation.io),
          :ok <- descriptor_sync(reservation.ops, reservation.io),
+         :ok <- preflight_descriptor_write(reservation),
+         :ok <- descriptor_sync(reservation.ops, reservation.io),
+         :ok <- descriptor_position(reservation.ops, reservation.io, :bof),
+         :ok <- descriptor_truncate(reservation.ops, reservation.io),
+         :ok <- descriptor_sync(reservation.ops, reservation.io),
          :ok <- verify_descriptor(reservation.io, reservation.output_identity),
          :ok <- verify_bound_output(reservation),
          :ok <- preflight_staging_link(reservation),
+         :ok <- preflight_output_link(reservation),
          :ok <- preflight_output_directory(reservation) do
       verify_bound_output(reservation)
+    end
+  end
+
+  defp preflight_descriptor_write(reservation) do
+    case descriptor_write(
+           reservation.ops,
+           reservation.io,
+           @descriptor_preflight_payload
+         ) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:output_write_preflight, reason}}
     end
   end
 
@@ -374,12 +392,25 @@ defmodule OrchardCLI.Commands.Cluster do
       Path.join(reservation.staging_dir, "link-preflight-#{Ecto.UUID.generate()}")
 
     case reservation.ops.ln(reservation.staging_path, probe_path) do
-      :ok -> release_staging_link_probe(reservation, probe_path)
+      :ok -> release_link_probe(reservation, probe_path)
       {:error, reason} -> {:error, {:output_link_preflight, reason}}
     end
   end
 
-  defp release_staging_link_probe(reservation, probe_path) do
+  defp preflight_output_link(reservation) do
+    probe_path =
+      Path.join(
+        reservation.parent,
+        ".orchard-cluster-init-link-preflight-#{Ecto.UUID.generate()}"
+      )
+
+    case reservation.ops.ln(reservation.staging_path, probe_path) do
+      :ok -> release_link_probe(reservation, probe_path)
+      {:error, reason} -> {:error, {:output_link_preflight, reason}}
+    end
+  end
+
+  defp release_link_probe(reservation, probe_path) do
     with :ok <-
            verify_reserved_path(probe_path, reservation.output_identity, reservation.ops),
          :ok <-
