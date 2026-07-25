@@ -14,6 +14,8 @@ defmodule OrchardCLI.Commands.Cluster do
 
   @cluster_init_object "cluster_management.cluster_init"
   @cluster_init_contract_version "orchard.cluster_management.cluster_init.v1"
+
+  @retained_reservation_label "Retained output reservation, remove it only after verifying it is still the expected empty 0600 file in a trusted parent"
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(["status" | rest]), do: run_status(rest)
   def run(["help"]), do: {:ok, group_usage()}
@@ -76,7 +78,7 @@ defmodule OrchardCLI.Commands.Cluster do
     |> decorate_error(
       json?,
       "output_reservation_retained",
-      "Retained empty output reservation, remove it before retrying this path",
+      @retained_reservation_label,
       path
     )
   end
@@ -207,7 +209,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
         result =
           with :ok <- ops.chmod(path, 0o600),
-               :ok <- verify_path(path, reservation.output_identity, :regular, 0o600, ops),
+               :ok <- verify_reserved_path(path, reservation.output_identity, ops),
                {:ok, hierarchy} <- trusted_parent_hierarchy(parent, stat.uid, ops),
                parent_identity = %{
                  parent_identity
@@ -245,13 +247,7 @@ defmodule OrchardCLI.Commands.Cluster do
          :ok <- descriptor_truncate(reservation.ops, reservation.io),
          :ok <- descriptor_sync(reservation.ops, reservation.io),
          :ok <- verify_descriptor(reservation.io, reservation.output_identity) do
-      verify_path(
-        reservation.output_path,
-        reservation.output_identity,
-        :regular,
-        0o600,
-        reservation.ops
-      )
+      verify_reserved_output(reservation)
     end
   end
 
@@ -308,6 +304,10 @@ defmodule OrchardCLI.Commands.Cluster do
         {:error, :output_path_identity_changed,
          "output path identity changed during reservation: #{path}: #{detail}", 1}
 
+      :mode_changed ->
+        {:error, :output_path_mode_changed,
+         "output path protection is no longer 0600 during reservation: #{path}: #{detail}", 1}
+
       :reservation_failed ->
         {:error, :output_reservation_failed, "output path reservation failed: #{path}: #{detail}",
          1}
@@ -316,6 +316,11 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp reservation_category({:output_parent_hierarchy_untrusted, _path}), do: :parent_untrusted
   defp reservation_category(:output_parent_cross_user_writable), do: :parent_untrusted
+
+  defp reservation_category({:reserved_output_path, reason}), do: reserved_path_category(reason)
+
+  defp reservation_category({:cleanup_descriptor_open, reason}),
+    do: reserved_path_category(reason)
 
   defp reservation_category(reason) when reason in [:eacces, :eperm, :erofs],
     do: :parent_untrusted
@@ -327,13 +332,16 @@ defmodule OrchardCLI.Commands.Cluster do
               :path_identity_changed,
               :output_parent_identity_changed,
               :output_descriptor_identity_changed,
-              :unexpected_path_type,
-              :unsafe_mode
+              :unexpected_path_type
             ],
        do: :identity_changed
 
+  defp reservation_category(:unsafe_mode), do: :mode_changed
   defp reservation_category({_step, reason}), do: reservation_category(reason)
   defp reservation_category(_reason), do: :reservation_failed
+
+  defp reserved_path_category(reason) when reason in [:enoent, :enotdir], do: :identity_changed
+  defp reserved_path_category(reason), do: reservation_category(reason)
 
   defp confirm_recovery(opts) do
     if Keyword.get(opts, :force_new_admin, false) and not Keyword.get(opts, :yes, false) do
@@ -376,24 +384,36 @@ defmodule OrchardCLI.Commands.Cluster do
       :ok ->
         {:ok, render_init_success(result, reservation.output_path, json?)}
 
-      {:error, reason_text, containment} ->
-        redacted_reason = redacted_output_failure(reason_text, containment)
-
-        message =
-          [
-            redacted_reason,
-            manual_containment_guidance(reservation, result, containment),
-            output_failed_persistence_warning(mark_output_failed(result, redacted_reason))
-          ]
-          |> Enum.reject(&is_nil/1)
-          |> Enum.join("\n")
-
-        {:error, :one_time_secret_output_failed, message, 1}
+      {:error, failure} ->
+        render_output_failure(result, reservation, failure)
     end
   end
 
-  defp redacted_output_failure(reason_text, containment) do
-    case containment_failures(containment) do
+  defp render_output_failure(result, reservation, failure) do
+    redacted? = Keyword.get(failure.containment, :plaintext_redaction) == :ok
+
+    message =
+      [
+        operator_output_failure(failure),
+        containment_guidance(reservation, result, redacted?),
+        output_failed_persistence_warning(
+          mark_output_failed(result, persisted_output_failure(failure))
+        )
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+
+    error = {:error, :one_time_secret_output_failed, message, 1}
+
+    if redacted?, do: {:retained_reservation, reservation.output_path, error}, else: error
+  end
+
+  defp operator_output_failure(failure) do
+    reason_text =
+      "cluster init minted a credential but One-time Secret Output failed: " <>
+        format_file_error(failure.reason)
+
+    case containment_failures(failure.containment) do
       [] ->
         reason_text
 
@@ -402,19 +422,52 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
+  defp persisted_output_failure(failure) do
+    category = "one_time_secret_output_failed:" <> failure_category(failure.reason)
+
+    case containment_failures(failure.containment) do
+      [] ->
+        category
+
+      failures ->
+        category <>
+          "; containment_unresolved:" <>
+          Enum.map_join(failures, ",", fn {step, result} ->
+            Atom.to_string(step) <> "=" <> containment_result_category(result)
+          end)
+    end
+  end
+
+  defp containment_result_category({:error, reason}), do: failure_category(reason)
+  defp containment_result_category(_result), do: "unclassified"
+
+  defp failure_category({:output_parent_hierarchy_untrusted, _path}),
+    do: "output_parent_hierarchy_untrusted"
+
+  defp failure_category({step, reason}) when is_atom(step),
+    do: Atom.to_string(step) <> "." <> failure_category(reason)
+
+  defp failure_category(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp failure_category(_reason), do: "unclassified"
+
   defp containment_failures(containment),
     do: Enum.reject(containment, fn {_step, result} -> result == :ok end)
 
-  defp manual_containment_guidance(reservation, result, containment) do
-    if Keyword.get(containment, :plaintext_redaction) == :ok do
-      nil
-    else
-      "Manual containment required: descriptor-bound redaction failed, so plaintext may remain " <>
-        "at the originally selected output location #{reservation.output_path}. That pathname " <>
-        "may now name unrelated data if it was replaced during the run; secure and inspect " <>
-        "#{reservation.parent} before deleting anything there. Revoke API token prefix " <>
-        "#{result.api_token_prefix} regardless."
-    end
+  defp containment_guidance(reservation, result, true) do
+    "Delivery failed after minting: the selected pathname #{reservation.output_path} may remain " <>
+      "occupied by the empty 0600 reservation this run created. Retry against a different " <>
+      "--output path using the recovery flow (--force-new-admin --yes) and revoke API token " <>
+      "prefix #{result.api_token_prefix}. Remove the original pathname only after independently " <>
+      "verifying it is still that empty reservation inside the trusted parent " <>
+      "#{reservation.parent}; it may now name unrelated data."
+  end
+
+  defp containment_guidance(reservation, result, false) do
+    "Manual containment required: descriptor-bound redaction failed, so plaintext may remain " <>
+      "at the originally selected output location #{reservation.output_path}. That pathname " <>
+      "may now name unrelated data if it was replaced during the run; secure and inspect " <>
+      "#{reservation.parent} before deleting anything there. Revoke API token prefix " <>
+      "#{result.api_token_prefix} regardless."
   end
 
   defp mark_output_failed(result, message) do
@@ -505,11 +558,11 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp contain_failed_output(reservation, reason, publication_close_attempted?) do
-    reason_text =
-      "cluster init minted a credential but One-time Secret Output failed: " <>
-        format_file_error(reason)
-
-    {:error, reason_text, contain_reservation(reservation, publication_close_attempted?)}
+    {:error,
+     %{
+       reason: reason,
+       containment: contain_reservation(reservation, publication_close_attempted?)
+     }}
   end
 
   defp contain_reservation(reservation, publication_close_attempted?) do
@@ -615,13 +668,18 @@ defmodule OrchardCLI.Commands.Cluster do
   end
 
   defp verify_reserved_output(reservation) do
-    verify_path(
+    verify_reserved_path(
       reservation.output_path,
       reservation.output_identity,
-      :regular,
-      0o600,
       reservation.ops
     )
+  end
+
+  defp verify_reserved_path(path, identity, ops) do
+    case verify_path(path, identity, :regular, 0o600, ops) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:reserved_output_path, reason}}
+    end
   end
 
   defp verify_protected_parent(reservation) do
