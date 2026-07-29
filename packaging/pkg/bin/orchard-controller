@@ -94,21 +94,37 @@ beam_validate_ipv4() {
 
 beam_validate_cookie_file() {
     _cookie_file=$1
+    _cookie_label=$2
     if [ ! -f "$_cookie_file" ]; then
-        beam_fail "ORCHARD_BEAM_COOKIE_FILE must point to an existing regular file"
+        beam_fail "$_cookie_label must point to an existing regular file"
     fi
     if [ ! -s "$_cookie_file" ]; then
-        beam_fail "ORCHARD_BEAM_COOKIE_FILE must not be empty"
+        beam_fail "$_cookie_label must not be empty"
     fi
     _cookie_meta=$(stat -f '%u:%Lp' "$_cookie_file" 2>/dev/null) || \
-        beam_fail "could not inspect ORCHARD_BEAM_COOKIE_FILE"
+        beam_fail "could not inspect $_cookie_label"
     _cookie_uid=${_cookie_meta%%:*}
     _cookie_mode=${_cookie_meta#*:}
     if [ "$_cookie_uid" != "0" ]; then
-        beam_fail "ORCHARD_BEAM_COOKIE_FILE must be root-owned"
+        beam_fail "$_cookie_label must be root-owned"
     fi
     if [ "${_cookie_mode#?}" != "00" ]; then
-        beam_fail "ORCHARD_BEAM_COOKIE_FILE must be owner-only"
+        beam_fail "$_cookie_label must be owner-only"
+    fi
+}
+
+beam_validate_management_epmd_listener() {
+    _listener_port=$1
+    if ! _listeners=$(/usr/sbin/lsof -nP -iTCP:"$_listener_port" -sTCP:LISTEN 2>/dev/null); then
+        return 0
+    fi
+    if ! printf '%s\n' "$_listeners" |
+         grep -F -- "127.0.0.1:$_listener_port (LISTEN)" >/dev/null; then
+        beam_fail "existing Controller management EPMD listener must bind exclusively to loopback"
+    fi
+    if printf '%s\n' "$_listeners" | sed '1d' |
+       grep -Ev -- "(127\\.0\\.0\\.1|\\[::1\\]):$_listener_port \\(LISTEN\\)" | grep -q .; then
+        beam_fail "existing Controller management EPMD listener must bind exclusively to loopback"
     fi
 }
 
@@ -117,31 +133,44 @@ beam_configure_release() {
     case "$_transport" in
         ''|beam)
             ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
-            export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT
+            _node_label=ORCHARD_BEAM_NODE_NAME
+            _node_name=${ORCHARD_BEAM_NODE_NAME:-orchard_controller@127.0.0.1}
+            _cookie_label=ORCHARD_BEAM_COOKIE_FILE
+            _cookie_file=${ORCHARD_BEAM_COOKIE_FILE:-"$ORCHARD_ROOT/config/beam.cookie"}
+            _epmd_label=ORCHARD_BEAM_EPMD_PORT
+            _epmd_port=${ORCHARD_BEAM_EPMD_PORT:-4369}
+            _dist_min_label=ORCHARD_BEAM_DIST_PORT_MIN
+            _dist_max_label=ORCHARD_BEAM_DIST_PORT_MAX
+            _dist_min=${ORCHARD_BEAM_DIST_PORT_MIN:-52171}
+            _dist_max=${ORCHARD_BEAM_DIST_PORT_MAX:-52171}
+            _management_only=false
             ;;
         grpc)
-            RELEASE_DISTRIBUTION=none
-            export RELEASE_DISTRIBUTION
-            unset RELEASE_NODE
-            unset RELEASE_COOKIE
-            unset ERL_EPMD_PORT
-            unset ERL_AFLAGS
-            printf 'orchard-controller: Runtime Endpoint transport grpc; BEAM distribution disabled for compatibility fallback\n' >&2
-            return 0
+            _node_label=ORCHARD_CONTROLLER_MANAGEMENT_NODE_NAME
+            _node_name=${ORCHARD_CONTROLLER_MANAGEMENT_NODE_NAME:-orchard_controller_management@127.0.0.1}
+            _cookie_label=ORCHARD_CONTROLLER_MANAGEMENT_COOKIE_FILE
+            _cookie_file=${ORCHARD_CONTROLLER_MANAGEMENT_COOKIE_FILE:-"$ORCHARD_ROOT/config/beam.cookie"}
+            _epmd_label=ORCHARD_CONTROLLER_MANAGEMENT_EPMD_PORT
+            _epmd_port=${ORCHARD_CONTROLLER_MANAGEMENT_EPMD_PORT:-4369}
+            _dist_min_label=ORCHARD_CONTROLLER_MANAGEMENT_DIST_PORT
+            _dist_max_label=ORCHARD_CONTROLLER_MANAGEMENT_DIST_PORT
+            _dist_min=${ORCHARD_CONTROLLER_MANAGEMENT_DIST_PORT:-52171}
+            _dist_max=$_dist_min
+            _management_only=true
             ;;
         *)
             beam_fail "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT must be beam or grpc"
             ;;
     esac
+    export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT
 
-    _node_name=${ORCHARD_BEAM_NODE_NAME:-orchard_controller@127.0.0.1}
     case "$_node_name" in
         *@*)
             _service=${_node_name%@*}
             _host=${_node_name#*@}
             ;;
         *)
-            beam_fail "ORCHARD_BEAM_NODE_NAME must be a long BEAM node name in service@ipv4 form"
+            beam_fail "$_node_label must be a long BEAM node name in service@ipv4 form"
             ;;
     esac
 
@@ -151,23 +180,26 @@ beam_configure_release() {
     esac
     case "$_service" in
         *[!A-Za-z0-9_.-]*|'')
-            beam_fail "ORCHARD_BEAM_NODE_NAME service contains invalid characters"
+            beam_fail "$_node_label service contains invalid characters"
             ;;
     esac
-    beam_validate_ipv4 "ORCHARD_BEAM_NODE_NAME" "$_host"
+    beam_validate_ipv4 "$_node_label" "$_host"
+    if [ "$_management_only" = true ]; then
+        case "$_host" in
+            127.*) ;;
+            *) beam_fail "$_node_label must use a loopback IPv4 address" ;;
+        esac
+    fi
 
-    _cookie_file=${ORCHARD_BEAM_COOKIE_FILE:-"$ORCHARD_ROOT/config/beam.cookie"}
-    beam_validate_cookie_file "$_cookie_file"
-
-    _epmd_port=${ORCHARD_BEAM_EPMD_PORT:-4369}
-    beam_validate_port "ORCHARD_BEAM_EPMD_PORT" "$_epmd_port"
-
-    _dist_min=${ORCHARD_BEAM_DIST_PORT_MIN:-52171}
-    _dist_max=${ORCHARD_BEAM_DIST_PORT_MAX:-52171}
-    beam_validate_port "ORCHARD_BEAM_DIST_PORT_MIN" "$_dist_min"
-    beam_validate_port "ORCHARD_BEAM_DIST_PORT_MAX" "$_dist_max"
+    beam_validate_cookie_file "$_cookie_file" "$_cookie_label"
+    beam_validate_port "$_epmd_label" "$_epmd_port"
+    if [ "$_management_only" = true ]; then
+        beam_validate_management_epmd_listener "$_epmd_port"
+    fi
+    beam_validate_port "$_dist_min_label" "$_dist_min"
+    beam_validate_port "$_dist_max_label" "$_dist_max"
     if [ "$_dist_min" -gt "$_dist_max" ]; then
-        beam_fail "ORCHARD_BEAM_DIST_PORT_MIN must be less than or equal to ORCHARD_BEAM_DIST_PORT_MAX"
+        beam_fail "$_dist_min_label must be less than or equal to $_dist_max_label"
     fi
 
     _a=${_host%%.*}
@@ -185,13 +217,20 @@ beam_configure_release() {
     RELEASE_COOKIE=$(cat "$_cookie_file")
     export RELEASE_COOKIE
     export ERL_EPMD_PORT="$_epmd_port"
-    if [ -n "${ERL_AFLAGS:-}" ]; then
+    if [ "$_management_only" = true ]; then
+        export ERL_AFLAGS="$_beam_kernel_flags"
+        export ERL_EPMD_ADDRESS=127.0.0.1
+    elif [ -n "${ERL_AFLAGS:-}" ]; then
+        unset ERL_EPMD_ADDRESS
         export ERL_AFLAGS="$ERL_AFLAGS $_beam_kernel_flags"
     else
         export ERL_AFLAGS="$_beam_kernel_flags"
     fi
 
-    printf 'orchard-controller: Runtime Endpoint transport beam\n' >&2
+    printf 'orchard-controller: Runtime Endpoint transport %s\n' "$ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" >&2
+    if [ "$_management_only" = true ]; then
+        printf 'orchard-controller: loopback Controller management distribution enabled\n' >&2
+    fi
     printf 'orchard-controller: BEAM node name %s\n' "$RELEASE_NODE" >&2
     printf 'orchard-controller: BEAM cookie file %s\n' "$_cookie_file" >&2
     printf 'orchard-controller: BEAM EPMD port %s\n' "$_epmd_port" >&2

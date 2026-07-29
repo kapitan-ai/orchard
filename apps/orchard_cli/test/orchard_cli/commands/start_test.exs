@@ -363,39 +363,15 @@ defmodule OrchardCLI.Commands.StartTest do
     parent = self()
 
     runtime =
-      %{
-        uid: fn -> 0 end,
+      base_runtime(%{
+        services: nil,
         file_regular?: fn path ->
           String.ends_with?(path, "com.orchard.postgres.plist") or
             String.ends_with?(path, "com.orchard.node-agent.plist") or
             String.ends_with?(path, "com.orchard.controller.plist")
         end,
-        cmd: not_loaded_cmd(parent),
-        monotonic_ms: fn -> 0 end,
-        sleep: fn _ms -> :ok end,
-        ready_timeout_ms: 100,
-        poll_interval_ms: 10,
-        status_runtime: %{
-          version: fn -> "0.1.0" end,
-          endpoint_candidates: fn -> [%{base_url: "http://localhost:4000", ca_certfile: nil}] end,
-          request: fn _url, _opts ->
-            {:ok,
-             %{
-               status: 200,
-               body: %{
-                 "status" => "ok",
-                 "runtime" => %{
-                   "status" => "ok",
-                   "node_id" => "n1",
-                   "worker_state" => "idle",
-                   "counts" => %{"loaded_models" => 0},
-                   "health" => "healthy"
-                 }
-               }
-             }}
-          end
-        }
-      }
+        cmd: not_loaded_cmd(parent)
+      })
 
     assert {:ok, _banner} = Start.run([], runtime)
 
@@ -728,8 +704,8 @@ defmodule OrchardCLI.Commands.StartTest do
     parent = self()
 
     runtime =
-      %{
-        uid: fn -> 0 end,
+      base_runtime(%{
+        services: nil,
         file_regular?: fn path ->
           String.ends_with?(path, "com.orchard.postgres.plist") or
             String.ends_with?(path, "com.orchard.node-agent.plist") or
@@ -753,16 +729,12 @@ defmodule OrchardCLI.Commands.StartTest do
               {"\n", 0}
           end
         end,
-        monotonic_ms: fn -> 0 end,
-        sleep: fn _ms -> :ok end,
-        ready_timeout_ms: 100,
-        poll_interval_ms: 10,
         status_runtime: %{
           version: fn -> "0.1.0" end,
           endpoint_candidates: fn -> [%{base_url: "http://localhost:4000", ca_certfile: nil}] end,
           request: fn _url, _opts -> {:error, :econnrefused} end
         }
-      }
+      })
 
     assert {:error, msg, 1} = Start.run([], runtime)
     assert msg =~ "Node Agent was loaded into launchd but not rolled back"

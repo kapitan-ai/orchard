@@ -101,6 +101,12 @@ jobs:
       - name: Run Dialyzer
         run: mise exec -- mix dialyzer
 
+      - name: Test packaged orchardctl Controller runtime routing
+        run: scripts/test-packaged-orchardctl-controller-runtime.sh
+
+      - name: Test packaged orchardctl assembled Controller release RPC
+        run: scripts/test-packaged-orchardctl-controller-release.sh
+
       - name: Run tests
         run: mise exec -- mix test
 

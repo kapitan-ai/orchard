@@ -266,10 +266,8 @@ with the desired role and reinstall the universal PKG.
 
 ## Env File Overrides
 
-Wrapper scripts (`bin/orchard-node-agent`, `bin/orchard-controller`) source
-optional env files before starting the BEAM release. `bin/orchardctl` also
-sources `controller.env` so DB-backed CLI commands, including upgrade preflight,
-use the same database configuration as the controller:
+Wrapper scripts (`bin/orchard-node-agent`, `bin/orchard-controller`) source optional env files before starting the BEAM release.
+`bin/orchardctl` also sources `controller.env` so DB-backed CLI commands, including upgrade preflight, use the same database configuration as the controller:
 
 | Service | Env File |
 |---------|----------|
@@ -278,13 +276,21 @@ use the same database configuration as the controller:
 
 Format: plain `KEY=value` lines. Comments (`#`) and blank lines are fine.
 
-DB-backed CLI commands (for example `orchardctl nodes`, `models`, `requests`,
-`cluster status`, `cluster init`, `tenants`, `api-keys`, and `api-clients`)
-start the controller Repo on demand, so they must run as root (`sudo`) to read
-`controller.env` and its `DATABASE_URL`. When the database is unreachable or
-`DATABASE_URL` is unset, these commands fail with a `database_unavailable`
-error and remediation guidance rather than returning empty or "not found"
-output.
+The SPEC §11.9 node-admission commands (`nodes list`, `inspect`, `pending`, `admit`, and `reject`) and node-lifecycle commands execute through the already-running Controller release.
+This gives them the Controller-owned Repo, leader gate, audit path, and dispatch-capacity acceptance authority without starting a second Controller authority.
+Under the packaged BEAM Runtime Endpoint transport, these commands use the Controller's configured BEAM identity, root-owned cookie, and EPMD port.
+Under the gRPC compatibility transport, the Controller keeps inference traffic on gRPC and enables a separate loopback-only distribution endpoint for local management commands.
+Its EPMD listener, Controller distribution listener, and temporary release RPC client distribution listener are all restricted to loopback interfaces.
+The management endpoint defaults to `orchard_controller_management@127.0.0.1`, the packaged root-owned cookie, EPMD TCP `4369`, and distribution TCP `52171`.
+A Controller RPC has a 30-second watchdog and approximately 1 MiB captured-output limit per stream.
+Timeout, excessive output, invalid envelopes, or other RPC failures terminate and reap the client, remove captured files, emit a sanitized error, and fail closed without a standalone mutation fallback.
+Inspect Controller and node state before retrying because transport loss can be ambiguous after dispatch.
+Offline node help, `nodes enrollment`, and `nodes trust` continue to use the standalone CLI release.
+Unknown future `nodes` subcommands are denied by the package wrapper until they are explicitly classified as offline or Controller-authoritative.
+Unrelated commands continue to use the standalone CLI release.
+
+Other DB-backed CLI commands (for example `models`, `requests`, `cluster status`, `cluster init`, `tenants`, `api-keys`, and `api-clients`) start the controller Repo on demand, so they must run as root (`sudo`) to read `controller.env` and its `DATABASE_URL`.
+When the database is unreachable or `DATABASE_URL` is unset, these commands fail with a `database_unavailable` error and remediation guidance rather than returning empty or "not found" output.
 
 Primary use case: operational rollback of the worker backend without editing
 launchd plists or global environment.
@@ -422,6 +428,10 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
 | `ORCHARD_BEAM_COOKIE_FILE` | `/Library/Application Support/Orchard/config/beam.cookie` | Root-owned mode `0600` BEAM cookie file shared across controller and node-agent Macs. |
 | `ORCHARD_BEAM_EPMD_PORT` | `4369` | EPMD port. Set the same override on every Mac when needed. |
 | `ORCHARD_BEAM_DIST_PORT_MIN` / `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` | Controller BEAM distribution port range. |
+| `ORCHARD_CONTROLLER_MANAGEMENT_NODE_NAME` | `orchard_controller_management@127.0.0.1` | Local Controller management identity used only when the inference Runtime Endpoint transport is `grpc`. The host must be loopback. |
+| `ORCHARD_CONTROLLER_MANAGEMENT_COOKIE_FILE` | `/Library/Application Support/Orchard/config/beam.cookie` | Root-owned mode `0600` cookie used by the loopback management endpoint and local packaged `orchardctl`. |
+| `ORCHARD_CONTROLLER_MANAGEMENT_EPMD_PORT` | `4369` | EPMD port for the loopback management endpoint in gRPC compatibility mode. |
+| `ORCHARD_CONTROLLER_MANAGEMENT_DIST_PORT` | `52171` | Fixed loopback distribution port for the management endpoint in gRPC compatibility mode. |
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | unset | gRPC compatibility fallback only. Comma-separated node-agent `host:port` values. |
 | `ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK` | `false` | Compatibility escape hatch. When `true`, the controller schedules `ORCHARD_RUNTIME_CLIENT_TARGETS` while no enrolled Node is admitted; the packaged happy path leaves this `false` and derives targets from trusted Node inventory. |
 | `ORCHARD_NODE_TRUST_ROOT` | `/Library/Application Support/Orchard/config/node-trust` | Controller root for internal Node trust material initialized by `orchardctl nodes trust init`; rare override when the support-root layout is intentionally changed. |

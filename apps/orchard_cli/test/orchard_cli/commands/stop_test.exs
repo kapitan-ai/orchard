@@ -233,15 +233,16 @@ defmodule OrchardCLI.Commands.StopTest do
       end
     end
 
-    runtime = %{
-      uid: fn -> 0 end,
-      file_regular?: fn path ->
-        String.ends_with?(path, "com.orchard.postgres.plist") or
-          String.ends_with?(path, "com.orchard.node-agent.plist") or
-          String.ends_with?(path, "com.orchard.controller.plist")
-      end,
-      cmd: cmd_fn
-    }
+    runtime =
+      base_runtime(%{
+        services: nil,
+        file_regular?: fn path ->
+          String.ends_with?(path, "com.orchard.postgres.plist") or
+            String.ends_with?(path, "com.orchard.node-agent.plist") or
+            String.ends_with?(path, "com.orchard.controller.plist")
+        end,
+        cmd: cmd_fn
+      })
 
     assert {:ok, msg} = Stop.run([], runtime)
     assert msg =~ "Stopped Orchard services."
