@@ -162,6 +162,7 @@ gRPC compatibility fallback:
 - Configure controller `ORCHARD_RUNTIME_CLIENT_TARGETS` with comma-separated node-agent `host:port` values.
 - Enroll and admit the node so the controller schedules it from trusted Node inventory; the certificate-backed gRPC path requires the issued Node Certificate, so `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc"` selects mutual TLS automatically.
 - Set `ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK="true"` only to schedule static `ORCHARD_RUNTIME_CLIENT_TARGETS` without an enrolled, admitted node; it is off by default.
+- The controller still enables a loopback-only management distribution endpoint so local `orchardctl` node commands keep executing in the running Controller; see "Env File Overrides" for its defaults, overrides, and startup gate.
 - Use this path only for compatibility or diagnostic fallback, not as the packaged happy path.
 
 Explicit deferrals:
@@ -452,6 +453,8 @@ not overwritten during package upgrades.
 | Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo orchardctl migrate` |
 | DB-backed CLI command fails with `database_unavailable` | Command run without `sudo`, `DATABASE_URL` unset, DB unreachable, or migrations pending | Re-run with `sudo`; verify `DATABASE_URL` in `controller.env` and `psql "$DATABASE_URL" -c 'select 1'`; run `sudo orchardctl migrate` if pending |
 | `WARNING: ignoring env file` in controller.log | File not root-owned or has group/world permission bits | `sudo chown root:wheel <file> && sudo chmod 600 <file>` |
+| `sudo orchardctl nodes ...` fails with `controller_runtime_unavailable` | Controller service not running, management identity/cookie mismatch, or the Controller RPC hit its 30-second watchdog or output limit | Check `orchardctl status` and `controller.log`, confirm the root-owned cookie and any `ORCHARD_CONTROLLER_MANAGEMENT_*` overrides, then inspect Controller and node state before retrying |
+| Controller exits `78` with `existing Controller management EPMD listener must bind exclusively to loopback` | With `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc"`, a pre-existing EPMD on the management port is bound to a wildcard or routable address | Stop the foreign `epmd`, or set `ORCHARD_CONTROLLER_MANAGEMENT_EPMD_PORT` to a free port so the Controller owns a loopback-only listener |
 
 ## Upgrade Preflight
 
