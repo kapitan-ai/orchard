@@ -815,6 +815,36 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "controller wrapper clears inherited ERL_EPMD_ADDRESS for cluster distribution" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_controller@10.0.0.10
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        ORCHARD_CONSOLE_ENABLED=false
+        ERL_EPMD_ADDRESS=127.0.0.1
+        """
+      )
+
+      for inherited <- [[], [{"ERL_AFLAGS", "-kernel inet_dist_listen_min 52300"}]] do
+        assert {output, 0} =
+                 run_controller_wrapper(
+                   script,
+                   ctx,
+                   [
+                     {"CONTROLLER_ENV_STAT_UID", "0"},
+                     {"CONTROLLER_ENV_STAT_MODE", "600"}
+                   ] ++ inherited
+                 )
+
+        assert output =~ "fake epmd address=\n"
+        assert output =~ "inet_dist_use_interface {10,0,0,10}"
+      end
+    end)
+  end
+
   test "controller wrapper makes BEAM release identity authoritative over inherited env" do
     with_temp_controller_wrapper(fn %{script: script} = ctx ->
       File.write!(
@@ -889,6 +919,52 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert output =~
                "existing Controller management EPMD listener must bind exclusively to loopback"
 
+      refute output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper fails closed when management EPMD inspection errors" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONTROLLER_EPMD_LISTENER_MODE", "inspection-error"}
+               ])
+
+      assert output =~ "could not inspect the Controller management EPMD listener"
+      refute output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper fails closed when the management EPMD inspector is unavailable" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      File.rm!(Path.join(ctx.fake_bin, "lsof"))
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "could not inspect the Controller management EPMD listener"
+      assert output =~ "is not executable"
       refute output =~ "fake orchard_controller start"
     end)
   end

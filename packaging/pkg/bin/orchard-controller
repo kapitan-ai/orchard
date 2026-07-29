@@ -115,9 +115,29 @@ beam_validate_cookie_file() {
 
 beam_validate_management_epmd_listener() {
     _listener_port=$1
-    if ! _listeners=$(/usr/sbin/lsof -nP -iTCP:"$_listener_port" -sTCP:LISTEN 2>/dev/null); then
-        return 0
+    _listener_lsof=/usr/sbin/lsof
+
+    if [ ! -x "$_listener_lsof" ]; then
+        beam_fail "could not inspect the Controller management EPMD listener: $_listener_lsof is not executable"
     fi
+
+    _listener_err=$(mktemp "${TMPDIR:-/tmp}/orchard-epmd-listener.XXXXXX") || \
+        beam_fail "could not inspect the Controller management EPMD listener"
+
+    _listener_status=0
+    _listeners=$("$_listener_lsof" -nP -iTCP:"$_listener_port" -sTCP:LISTEN 2>"$_listener_err") ||
+        _listener_status=$?
+    _listener_diagnostics=$(cat "$_listener_err" 2>/dev/null) || _listener_diagnostics=""
+    rm -f "$_listener_err"
+
+    if [ "$_listener_status" -ne 0 ]; then
+        if [ "$_listener_status" -eq 1 ] && [ -z "$_listeners" ] &&
+           [ -z "$_listener_diagnostics" ]; then
+            return 0
+        fi
+        beam_fail "could not inspect the Controller management EPMD listener"
+    fi
+
     if ! printf '%s\n' "$_listeners" |
          grep -F -- "127.0.0.1:$_listener_port (LISTEN)" >/dev/null; then
         beam_fail "existing Controller management EPMD listener must bind exclusively to loopback"
@@ -220,11 +240,13 @@ beam_configure_release() {
     if [ "$_management_only" = true ]; then
         export ERL_AFLAGS="$_beam_kernel_flags"
         export ERL_EPMD_ADDRESS=127.0.0.1
-    elif [ -n "${ERL_AFLAGS:-}" ]; then
-        unset ERL_EPMD_ADDRESS
-        export ERL_AFLAGS="$ERL_AFLAGS $_beam_kernel_flags"
     else
-        export ERL_AFLAGS="$_beam_kernel_flags"
+        unset ERL_EPMD_ADDRESS
+        if [ -n "${ERL_AFLAGS:-}" ]; then
+            export ERL_AFLAGS="$ERL_AFLAGS $_beam_kernel_flags"
+        else
+            export ERL_AFLAGS="$_beam_kernel_flags"
+        fi
     fi
 
     printf 'orchard-controller: Runtime Endpoint transport %s\n' "$ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" >&2

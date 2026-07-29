@@ -16,7 +16,6 @@ RPC_OUTPUT_LIMIT_BLOCKS=2048
 SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 PATH=$SAFE_PATH
 export PATH
-umask 077
 
 # Source controller env for DB-backed CLI commands and Controller RPC discovery.
 # Env files must be root-owned with no group/world permissions (e.g. 0600).
@@ -277,6 +276,8 @@ rpc_abort() {
 }
 
 run_in_controller() {
+    umask 077
+
     configure_controller_rpc || {
         controller_runtime_error "$@"
         return 1

@@ -126,6 +126,7 @@ chmod +x "$TOOLS/lsof"
 cat > "$PACKAGE_ROOT/releases/orchard_cli/bin/orchard_cli" <<'SH'
 #!/bin/sh
 printf 'standalone:%s\n' "$*" >> "$FAKE_INVOCATIONS"
+printf 'standalone_umask=%s\n' "$(umask)" >> "$FAKE_INVOCATIONS"
 printf 'standalone cli\n'
 SH
 chmod +x "$PACKAGE_ROOT/releases/orchard_cli/bin/orchard_cli"
@@ -138,6 +139,7 @@ printf 'release_cookie=%s\n' "${RELEASE_COOKIE:-missing}" >> "$FAKE_INVOCATIONS"
 printf 'epmd_port=%s\n' "${ERL_EPMD_PORT:-missing}" >> "$FAKE_INVOCATIONS"
 printf 'epmd_address=%s\n' "${ERL_EPMD_ADDRESS:-missing}" >> "$FAKE_INVOCATIONS"
 printf 'erl_aflags=%s\n' "${ERL_AFLAGS:-missing}" >> "$FAKE_INVOCATIONS"
+printf 'rpc_umask=%s\n' "$(umask)" >> "$FAKE_INVOCATIONS"
 
 case "$FAKE_RPC_MODE" in
   success)
@@ -374,5 +376,11 @@ run_case configured success nodes pending
 assert_invocation "release_node=orchard_controller@127.0.0.1"
 assert_invocation "release_cookie=controller-cookie"
 assert_invocation "epmd_port=4369"
+assert_invocation "rpc_umask=0077"
+
+caller_umask="$(umask)"
+run_case umask-standalone success status
+[[ "$RUN_STATUS" -eq 0 ]] || fail "expected standalone invocation to succeed"
+assert_invocation "standalone_umask=$caller_umask"
 
 printf 'packaged orchardctl Controller-runtime routing tests passed\n'
