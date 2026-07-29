@@ -815,6 +815,36 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "controller wrapper clears inherited ERL_EPMD_ADDRESS for cluster distribution" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_controller@10.0.0.10
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        ORCHARD_CONSOLE_ENABLED=false
+        ERL_EPMD_ADDRESS=127.0.0.1
+        """
+      )
+
+      for inherited <- [[], [{"ERL_AFLAGS", "-kernel inet_dist_listen_min 52300"}]] do
+        assert {output, 0} =
+                 run_controller_wrapper(
+                   script,
+                   ctx,
+                   [
+                     {"CONTROLLER_ENV_STAT_UID", "0"},
+                     {"CONTROLLER_ENV_STAT_MODE", "600"}
+                   ] ++ inherited
+                 )
+
+        assert output =~ "fake epmd address=\n"
+        assert output =~ "inet_dist_use_interface {10,0,0,10}"
+      end
+    end)
+  end
+
   test "controller wrapper makes BEAM release identity authoritative over inherited env" do
     with_temp_controller_wrapper(fn %{script: script} = ctx ->
       File.write!(
@@ -841,7 +871,7 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
-  test "controller wrapper demotes gRPC compatibility fallback to non-distributed release" do
+  test "controller wrapper keeps loopback management distribution in gRPC compatibility mode" do
     with_temp_controller_wrapper(fn %{script: script} = ctx ->
       File.write!(
         Path.join([ctx.root, "config", "controller.env"]),
@@ -858,14 +888,156 @@ defmodule OrchardCLI.PackagingScriptTest do
                ])
 
       assert output =~ "Runtime Endpoint transport grpc"
-      assert output =~ "compatibility fallback"
-      assert output =~ "fake release distribution=none"
-      assert output =~ "fake release node="
-      assert output =~ "fake release cookie=unset"
+      assert output =~ "loopback Controller management distribution enabled"
+      assert output =~ "fake release distribution=name"
+      assert output =~ "fake release node=orchard_controller_management@127.0.0.1"
+      assert output =~ "fake release cookie=set"
+      assert output =~ "fake epmd port=4369"
+      assert output =~ "fake epmd address=127.0.0.1"
+      assert output =~ "inet_dist_use_interface {127,0,0,1}"
+      assert output =~ "inet_dist_listen_min 52171"
     end)
   end
 
-  test "controller wrapper makes gRPC fallback authoritative over inherited release env" do
+  test "controller wrapper rejects a pre-existing wildcard management EPMD listener" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONTROLLER_EPMD_LISTENER_MODE", "wildcard"}
+               ])
+
+      assert output =~
+               "existing Controller management EPMD listener must bind exclusively to loopback"
+
+      refute output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper accepts a pre-existing loopback management EPMD listener" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONTROLLER_EPMD_LISTENER_MODE", "loopback"}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+      assert output =~ "fake release node=orchard_controller_management@127.0.0.1"
+    end)
+  end
+
+  test "controller wrapper starts when EPMD inspection emits only benign advisories" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONTROLLER_EPMD_LISTENER_MODE", "none-with-advisory"}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+      refute output =~ "could not inspect the Controller management EPMD listener"
+      refute output =~ "Output information may be incomplete"
+    end)
+  end
+
+  test "controller wrapper ignores a hostile TMPDIR while inspecting the EPMD listener" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        TMPDIR="#{Path.join(ctx.root, "no-such-tmpdir")}"
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"TMPDIR", "/nonexistent/orchard-hostile-tmpdir"}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+      refute output =~ "could not inspect the Controller management EPMD listener"
+    end)
+  end
+
+  test "controller wrapper fails closed when management EPMD inspection errors" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONTROLLER_EPMD_LISTENER_MODE", "inspection-error"}
+               ])
+
+      assert output =~ "could not inspect the Controller management EPMD listener"
+      refute output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper fails closed when the management EPMD inspector is unavailable" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      File.rm!(Path.join(ctx.fake_bin, "lsof"))
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "could not inspect the Controller management EPMD listener"
+      assert output =~ "is not executable"
+      refute output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper makes gRPC management identity authoritative over inherited release env" do
     with_temp_controller_wrapper(fn %{script: script} = ctx ->
       File.write!(
         Path.join([ctx.root, "config", "controller.env"]),
@@ -886,13 +1058,36 @@ defmodule OrchardCLI.PackagingScriptTest do
                  {"ERL_AFLAGS", "-name wrong@10.0.0.99 -setcookie inherited-cookie"}
                ])
 
-      assert output =~ "fake release distribution=none"
-      assert output =~ "fake release node="
-      assert output =~ "fake release cookie=unset"
-      assert output =~ "fake epmd port="
-      assert output =~ "fake erl aflags=\n"
+      assert output =~ "fake release distribution=name"
+      assert output =~ "fake release node=orchard_controller_management@127.0.0.1"
+      assert output =~ "fake release cookie=set"
+      assert output =~ "fake epmd port=4369"
+      assert output =~ "fake epmd address=127.0.0.1"
+      assert output =~ "inet_dist_use_interface {127,0,0,1}"
       refute output =~ "wrong@10.0.0.99"
       refute output =~ "inherited-cookie"
+    end)
+  end
+
+  test "controller wrapper rejects non-loopback gRPC management identity" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONTROLLER_MANAGEMENT_NODE_NAME=orchard_controller_management@10.0.0.10
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "ORCHARD_CONTROLLER_MANAGEMENT_NODE_NAME must use a loopback IPv4 address"
+      refute output =~ "fake orchard_controller start"
     end)
   end
 
@@ -1650,12 +1845,14 @@ defmodule OrchardCLI.PackagingScriptTest do
         printf 'fake release cookie=unset\\n'
       fi
       printf 'fake epmd port=%s\\n' "${ERL_EPMD_PORT:-}"
+      printf 'fake epmd address=%s\\n' "${ERL_EPMD_ADDRESS:-}"
       printf 'fake erl aflags=%s\\n' "${ERL_AFLAGS:-}"
       exit 0
       """)
 
       File.chmod!(release, 0o755)
       write_fake_controller_stat!(ctx)
+      write_fake_controller_lsof!(ctx)
       write_test_controller_wrapper!(ctx)
       fun.(ctx)
     after
@@ -1671,6 +1868,7 @@ defmodule OrchardCLI.PackagingScriptTest do
         ~s(ORCHARD_ROOT="/Library/Application Support/Orchard"),
         ~s(ORCHARD_ROOT="#{ctx.root}")
       )
+      |> String.replace("/usr/sbin/lsof", Path.join(ctx.fake_bin, "lsof"))
 
     File.write!(ctx.script, content)
     File.chmod!(ctx.script, 0o755)
@@ -1705,6 +1903,38 @@ defmodule OrchardCLI.PackagingScriptTest do
     """)
 
     File.chmod!(Path.join(ctx.fake_bin, "stat"), 0o755)
+  end
+
+  defp write_fake_controller_lsof!(ctx) do
+    File.write!(Path.join(ctx.fake_bin, "lsof"), """
+    #!/bin/sh
+    warn=true
+    for arg in "$@"; do
+      case "$arg" in
+        -w) warn=false ;;
+        -iTCP:*) port=${arg#-iTCP:} ;;
+      esac
+    done
+
+    case "${CONTROLLER_EPMD_LISTENER_MODE:-none}" in
+      none) exit 1 ;;
+      none-with-advisory)
+        if [ "$warn" = true ]; then
+          printf "lsof: WARNING: can't stat() smbfs file system /Volumes/share\\n" >&2
+          printf '      Output information may be incomplete.\\n' >&2
+        fi
+        exit 1
+        ;;
+      loopback) listener="127.0.0.1" ;;
+      wildcard) listener="*" ;;
+      *) exit 2 ;;
+    esac
+
+    printf 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\\n'
+    printf 'epmd 123 root 0u IPv4 0 0t0 TCP %s:%s (LISTEN)\\n' "$listener" "$port"
+    """)
+
+    File.chmod!(Path.join(ctx.fake_bin, "lsof"), 0o755)
   end
 
   defp run_controller_wrapper(script, ctx, extra_env) do
@@ -1756,6 +1986,7 @@ defmodule OrchardCLI.PackagingScriptTest do
         printf 'fake release cookie=unset\\n'
       fi
       printf 'fake epmd port=%s\\n' "${ERL_EPMD_PORT:-}"
+      printf 'fake epmd address=%s\\n' "${ERL_EPMD_ADDRESS:-}"
       printf 'fake erl aflags=%s\\n' "${ERL_AFLAGS:-}"
       exit 0
       """)

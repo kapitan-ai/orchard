@@ -35,6 +35,12 @@ defmodule OrchardCLI.Commands.StopTest do
     )
   end
 
+  # Runtime without a :services key, so LifecycleSupport resolves its own
+  # production service list the way the packaged CLI does.
+  defp default_services_runtime(overrides) do
+    Map.delete(base_runtime(overrides), :services)
+  end
+
   # Services are loaded (launchctl list returns 0)
   defp loaded_cmd(parent) do
     fn prog, args, _opts ->
@@ -233,15 +239,15 @@ defmodule OrchardCLI.Commands.StopTest do
       end
     end
 
-    runtime = %{
-      uid: fn -> 0 end,
-      file_regular?: fn path ->
-        String.ends_with?(path, "com.orchard.postgres.plist") or
-          String.ends_with?(path, "com.orchard.node-agent.plist") or
-          String.ends_with?(path, "com.orchard.controller.plist")
-      end,
-      cmd: cmd_fn
-    }
+    runtime =
+      default_services_runtime(%{
+        file_regular?: fn path ->
+          String.ends_with?(path, "com.orchard.postgres.plist") or
+            String.ends_with?(path, "com.orchard.node-agent.plist") or
+            String.ends_with?(path, "com.orchard.controller.plist")
+        end,
+        cmd: cmd_fn
+      })
 
     assert {:ok, msg} = Stop.run([], runtime)
     assert msg =~ "Stopped Orchard services."

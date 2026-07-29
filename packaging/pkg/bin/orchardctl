@@ -1,18 +1,26 @@
 #!/bin/sh
 set -eu
 # Orchard CLI wrapper.
-# Dispatches shell arguments through release `eval` into OrchardCLI.main/1.
-# This is necessary because the release binary only understands OTP commands
-# (start, stop, eval, etc.), not application-level CLI commands (tls, models, etc.).
+# Controller-authority node commands execute through the running Controller VM.
+# Other commands use the standalone CLI release.
 
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 ENV_FILE="$ORCHARD_ROOT/config/controller.env"
 ORCHARD_CLI="$ORCHARD_ROOT/releases/orchard_cli/bin/orchard_cli"
+ORCHARD_CONTROLLER="$ORCHARD_ROOT/releases/orchard_controller/bin/orchard_controller"
+RPC_PROTOCOL="ORCHARDCTL_RPC_V1"
+RPC_TMP_PARENT="/private/tmp"
+RPC_TIMEOUT_SECONDS=30
+RPC_TERM_GRACE_SECONDS=2
+RPC_OUTPUT_LIMIT_BLOCKS=2048
+SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+PATH=$SAFE_PATH
+export PATH
 
-# Source controller env for DB-backed CLI commands such as upgrade preflight.
+# Source controller env for DB-backed CLI commands and Controller RPC discovery.
 # Env files must be root-owned with no group/world permissions (e.g. 0600).
 if [ -f "$ENV_FILE" ]; then
-    _env_meta=$(stat -f '%u:%Lp' "$ENV_FILE" 2>/dev/null) || _env_meta=""
+    _env_meta=$(/usr/bin/stat -f '%u:%Lp' "$ENV_FILE" 2>/dev/null) || _env_meta=""
     _env_uid=${_env_meta%%:*}
     _env_mode=${_env_meta#*:}
     if [ -z "$_env_meta" ]; then
@@ -30,7 +38,438 @@ if [ -f "$ENV_FILE" ]; then
     fi
 fi
 
-# Build an Elixir string-list literal from shell argv.
+# A trusted env file may set PATH for the release, but this privileged wrapper
+# only resolves system utilities from the macOS system path.
+PATH=$SAFE_PATH
+export PATH
+
+controller_runtime_command() {
+    [ "${1:-}" = "nodes" ] || return 1
+
+    case "${2:-}" in
+        ''|help|--help)
+            return 1
+            ;;
+        enrollment)
+            case "${3:-}" in
+                ''|help|--help|create) return 1 ;;
+                *) return 2 ;;
+            esac
+            ;;
+        trust)
+            case "${3:-}" in
+                ''|help|--help) return 1 ;;
+                init)
+                    [ "$#" -le 4 ] || return 2
+                    case "${4:-}" in
+                        ''|help|--help) return 1 ;;
+                        *) return 2 ;;
+                    esac
+                    ;;
+                *) return 2 ;;
+            esac
+            ;;
+        list|inspect|pending|admit|reject|cordon|uncordon|drain|cancel-drain|maintenance|resume|decommission)
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+
+    [ "${3:-}" = "help" ] && return 1
+
+    for _arg in "$@"; do
+        [ "$_arg" = "--help" ] && return 1
+    done
+
+    return 0
+}
+
+unknown_nodes_command_error() {
+    _json=false
+
+    for _arg in "$@"; do
+        [ "$_arg" = "--json" ] && _json=true
+    done
+
+    if [ "$_json" = true ]; then
+        printf '%s\n' '{"object":"error","code":"unknown_packaged_nodes_command","message":"Unknown packaged nodes command. This command is denied until its Controller-runtime authority classification is explicit."}' >&2
+    else
+        printf '%s\n' 'Error: unknown packaged nodes command. Authority classification is required before execution.' >&2
+    fi
+}
+
+controller_runtime_error() {
+    _json=false
+
+    for _arg in "$@"; do
+        [ "$_arg" = "--json" ] && _json=true
+    done
+
+    if [ "$_json" = true ]; then
+        printf '%s\n' '{"object":"error","code":"controller_runtime_unavailable","message":"The running Controller could not execute this command. Verify Controller status and inspect node state before retrying."}' >&2
+    else
+        printf '%s\n' 'Error: controller runtime unavailable. Verify Controller status and inspect node state before retrying.' >&2
+    fi
+}
+
+validate_port() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+validate_loopback_listener() {
+    _listener_port=$1
+    _listeners=$(/usr/sbin/lsof -nP -iTCP:"$_listener_port" -sTCP:LISTEN 2>/dev/null) || return 1
+    printf '%s\n' "$_listeners" | grep -F -- "127.0.0.1:$_listener_port (LISTEN)" >/dev/null || return 1
+    if printf '%s\n' "$_listeners" | sed '1d' |
+       grep -Ev -- "(127\\.0\\.0\\.1|\\[::1\\]):$_listener_port \\(LISTEN\\)" | grep -q .; then
+        return 1
+    fi
+}
+
+validate_ipv4() {
+    _host=$1
+    _old_ifs=$IFS
+    IFS=.
+    set -- $_host
+    IFS=$_old_ifs
+
+    [ "$#" -eq 4 ] || return 1
+    _nonzero=false
+
+    for _octet in "$@"; do
+        case "$_octet" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        [ "$_octet" -le 255 ] || return 1
+        [ "$_octet" -eq 0 ] || _nonzero=true
+    done
+
+    [ "$_nonzero" = true ]
+}
+
+configure_controller_rpc() {
+    _transport=${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-beam}
+    case "$_transport" in
+        ''|beam)
+            _node_name=${ORCHARD_BEAM_NODE_NAME:-orchard_controller@127.0.0.1}
+            _cookie_file=${ORCHARD_BEAM_COOKIE_FILE:-"$ORCHARD_ROOT/config/beam.cookie"}
+            _epmd_port=${ORCHARD_BEAM_EPMD_PORT:-4369}
+            _management_only=false
+            ;;
+        grpc)
+            _node_name=${ORCHARD_CONTROLLER_MANAGEMENT_NODE_NAME:-orchard_controller_management@127.0.0.1}
+            _cookie_file=${ORCHARD_CONTROLLER_MANAGEMENT_COOKIE_FILE:-"$ORCHARD_ROOT/config/beam.cookie"}
+            _epmd_port=${ORCHARD_CONTROLLER_MANAGEMENT_EPMD_PORT:-4369}
+            _dist_port=${ORCHARD_CONTROLLER_MANAGEMENT_DIST_PORT:-52171}
+            _management_only=true
+            ;;
+        *) return 1 ;;
+    esac
+    case "$_node_name" in
+        *@*)
+            _service=${_node_name%@*}
+            _host=${_node_name#*@}
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    case "$_service" in
+        orchard_controller*) ;;
+        *) return 1 ;;
+    esac
+    case "$_service" in
+        *[!A-Za-z0-9_.-]*|'') return 1 ;;
+    esac
+    validate_ipv4 "$_host" || return 1
+    if [ "$_management_only" = true ]; then
+        case "$_host" in
+            127.*) ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    [ -f "$_cookie_file" ] || return 1
+    [ -s "$_cookie_file" ] || return 1
+    [ -r "$_cookie_file" ] || return 1
+
+    _cookie_meta=$(/usr/bin/stat -f '%u:%Lp' "$_cookie_file" 2>/dev/null) || return 1
+    _cookie_uid=${_cookie_meta%%:*}
+    _cookie_mode=${_cookie_meta#*:}
+    [ "$_cookie_uid" = "0" ] || return 1
+    [ "${_cookie_mode#?}" = "00" ] || return 1
+
+    validate_port "$_epmd_port" || return 1
+    if [ "$_management_only" = true ]; then
+        validate_port "$_dist_port" || return 1
+        validate_loopback_listener "$_epmd_port" || return 1
+        validate_loopback_listener "$_dist_port" || return 1
+    fi
+
+    _a=${_host%%.*}
+    _rest=${_host#*.}
+    _b=${_rest%%.*}
+    _rest=${_rest#*.}
+    _c=${_rest%%.*}
+    _d=${_rest#*.}
+
+    RELEASE_DISTRIBUTION=name
+    RELEASE_NODE=$_node_name
+    RELEASE_COOKIE=$(cat "$_cookie_file")
+    ERL_EPMD_PORT=$_epmd_port
+    ERL_AFLAGS="-kernel inet_dist_use_interface {$_a,$_b,$_c,$_d}"
+    export RELEASE_DISTRIBUTION RELEASE_NODE RELEASE_COOKIE ERL_EPMD_PORT ERL_AFLAGS
+    if [ "$_management_only" = true ]; then
+        ERL_EPMD_ADDRESS=127.0.0.1
+        export ERL_EPMD_ADDRESS
+    else
+        unset ERL_EPMD_ADDRESS
+    fi
+}
+
+rpc_terminate_and_reap() {
+    if [ -z "${_rpc_pid:-}" ]; then
+        return 0
+    fi
+
+    if kill -0 "$_rpc_pid" 2>/dev/null; then
+        kill -TERM "$_rpc_pid" 2>/dev/null || true
+        _rpc_grace_elapsed=0
+        while kill -0 "$_rpc_pid" 2>/dev/null &&
+              [ "$_rpc_grace_elapsed" -lt "$RPC_TERM_GRACE_SECONDS" ]; do
+            _rpc_state=$(/bin/ps -o stat= -p "$_rpc_pid" 2>/dev/null) || _rpc_state=""
+            case "$_rpc_state" in
+                *Z*) break ;;
+            esac
+            /bin/sleep 1
+            _rpc_grace_elapsed=$((_rpc_grace_elapsed + 1))
+        done
+        _rpc_state=$(/bin/ps -o stat= -p "$_rpc_pid" 2>/dev/null) || _rpc_state=""
+        case "$_rpc_state" in
+            *Z*|'') ;;
+            *) kill -KILL "$_rpc_pid" 2>/dev/null || true ;;
+        esac
+    fi
+
+    wait "$_rpc_pid" 2>/dev/null || true
+    _rpc_pid=""
+}
+
+rpc_cleanup() {
+    rpc_terminate_and_reap
+    if [ -n "${_rpc_tmp:-}" ]; then
+        rm -rf "$_rpc_tmp"
+        _rpc_tmp=""
+    fi
+}
+
+rpc_abort() {
+    rpc_cleanup
+    printf '%s\n' 'Error: controller runtime unavailable. The RPC client was interrupted; inspect node state before retrying.' >&2
+    exit 1
+}
+
+run_in_controller() {
+    umask 077
+
+    configure_controller_rpc || {
+        controller_runtime_error "$@"
+        return 1
+    }
+
+    _encoded_args=""
+    for _arg in "$@"; do
+        _encoded=$(printf '%s' "$_arg" | /usr/bin/base64 | tr -d '\r\n')
+        if [ -n "$_encoded_args" ]; then
+            _encoded_args="$_encoded_args, \"$_encoded\""
+        else
+            _encoded_args="\"$_encoded\""
+        fi
+    done
+
+    _expression="OrchardCLI.ControllerRPC.main_base64([$_encoded_args])"
+    _rpc_tmp=$(mktemp -d "$RPC_TMP_PARENT/orchardctl-rpc.XXXXXX") || {
+        controller_runtime_error "$@"
+        return 1
+    }
+    chmod 0700 "$_rpc_tmp"
+    _rpc_stdout="$_rpc_tmp/stdout"
+    _rpc_stderr="$_rpc_tmp/stderr"
+    _decoded="$_rpc_tmp/decoded"
+    : >"$_rpc_stdout"
+    : >"$_rpc_stderr"
+    : >"$_decoded"
+    chmod 0600 "$_rpc_stdout" "$_rpc_stderr" "$_decoded"
+    _rpc_pid=""
+    trap rpc_cleanup EXIT
+    trap rpc_abort HUP INT TERM
+
+    (
+        ulimit -f "$RPC_OUTPUT_LIMIT_BLOCKS"
+        exec "$ORCHARD_CONTROLLER" rpc "$_expression"
+    ) >"$_rpc_stdout" 2>"$_rpc_stderr" &
+    _rpc_pid=$!
+    _rpc_started_at=$(/bin/date +%s)
+    _rpc_output_limit_bytes=$((RPC_OUTPUT_LIMIT_BLOCKS * 512))
+    _rpc_bounded_failure=false
+    _rpc_status=""
+
+    while :; do
+        _rpc_stdout_size=$(/usr/bin/stat -f '%z' "$_rpc_stdout" 2>/dev/null) || _rpc_stdout_size=$_rpc_output_limit_bytes
+        _rpc_stderr_size=$(/usr/bin/stat -f '%z' "$_rpc_stderr" 2>/dev/null) || _rpc_stderr_size=$_rpc_output_limit_bytes
+        _rpc_now=$(/bin/date +%s)
+        _rpc_elapsed=$((_rpc_now - _rpc_started_at))
+
+        if [ "$_rpc_stdout_size" -ge "$_rpc_output_limit_bytes" ] ||
+           [ "$_rpc_stderr_size" -ge "$_rpc_output_limit_bytes" ] ||
+           [ "$_rpc_elapsed" -ge "$RPC_TIMEOUT_SECONDS" ]; then
+            _rpc_bounded_failure=true
+            break
+        fi
+
+        _rpc_state=$(/bin/ps -o stat= -p "$_rpc_pid" 2>/dev/null) || _rpc_state=""
+        if ! kill -0 "$_rpc_pid" 2>/dev/null ||
+           { case "$_rpc_state" in *Z*) true ;; *) false ;; esac; }; then
+            set +e
+            wait "$_rpc_pid"
+            _rpc_status=$?
+            set -e
+            _rpc_pid=""
+            break
+        fi
+
+        /bin/sleep 0.1
+    done
+
+    if [ "$_rpc_bounded_failure" = true ]; then
+        rpc_terminate_and_reap
+        controller_runtime_error "$@"
+        return 1
+    fi
+
+    [ -n "$_rpc_status" ] || {
+        controller_runtime_error "$@"
+        return 1
+    }
+
+    _rpc_stdout_size=$(/usr/bin/stat -f '%z' "$_rpc_stdout" 2>/dev/null) || _rpc_stdout_size=$_rpc_output_limit_bytes
+    _rpc_stderr_size=$(/usr/bin/stat -f '%z' "$_rpc_stderr" 2>/dev/null) || _rpc_stderr_size=$_rpc_output_limit_bytes
+    if [ "$_rpc_stdout_size" -ge "$_rpc_output_limit_bytes" ] ||
+       [ "$_rpc_stderr_size" -ge "$_rpc_output_limit_bytes" ] ||
+       [ "$_rpc_status" -ne 0 ]; then
+        controller_runtime_error "$@"
+        return 1
+    fi
+
+    _rpc_output=""
+    exec 3<"$_rpc_stdout"
+    if ! IFS= read -r _rpc_output <&3; then
+        exec 3<&-
+        controller_runtime_error "$@"
+        return 1
+    fi
+    _rpc_extra=""
+    if IFS= read -r _rpc_extra <&3 || [ -n "$_rpc_extra" ]; then
+        exec 3<&-
+        controller_runtime_error "$@"
+        return 1
+    fi
+    exec 3<&-
+
+    case "$_rpc_output" in
+        "$RPC_PROTOCOL":*)
+            ;;
+        *)
+            controller_runtime_error "$@"
+            return 1
+            ;;
+    esac
+
+    _remainder=${_rpc_output#"$RPC_PROTOCOL":}
+    _status=${_remainder%%:*}
+    [ "$_status" != "$_remainder" ] || {
+        controller_runtime_error "$@"
+        return 1
+    }
+    _remainder=${_remainder#*:}
+    _stream=${_remainder%%:*}
+    [ "$_stream" != "$_remainder" ] || {
+        controller_runtime_error "$@"
+        return 1
+    }
+    _payload=${_remainder#*:}
+
+    case "$_status" in
+        ''|*[!0-9]*)
+            controller_runtime_error "$@"
+            return 1
+            ;;
+    esac
+    [ "$_status" -le 255 ] || {
+        controller_runtime_error "$@"
+        return 1
+    }
+    case "$_payload" in
+        *[!A-Za-z0-9+/=]*)
+            controller_runtime_error "$@"
+            return 1
+            ;;
+    esac
+
+    if ! printf '%s' "$_payload" | /usr/bin/base64 -D >"$_decoded" 2>/dev/null; then
+        controller_runtime_error "$@"
+        return 1
+    fi
+
+    case "$_stream:$_status" in
+        none:0)
+            [ ! -s "$_decoded" ] || {
+                controller_runtime_error "$@"
+                return 1
+            }
+            ;;
+        stdout:0)
+            cat "$_decoded"
+            printf '\n'
+            ;;
+        stderr:0)
+            controller_runtime_error "$@"
+            return 1
+            ;;
+        stderr:*)
+            [ "$_status" -gt 0 ] || {
+                controller_runtime_error "$@"
+                return 1
+            }
+            cat "$_decoded" >&2
+            printf '\n' >&2
+            return "$_status"
+            ;;
+        *)
+            controller_runtime_error "$@"
+            return 1
+            ;;
+    esac
+}
+
+if controller_runtime_command "$@"; then
+    run_in_controller "$@"
+    exit $?
+else
+    _node_route_status=$?
+    if [ "$_node_route_status" -eq 2 ]; then
+        unknown_nodes_command_error "$@"
+        exit 1
+    fi
+fi
+
+# Build an Elixir string-list literal from shell argv for the standalone CLI.
 # Escapes backslashes, double quotes, hash (prevents #{} interpolation), and tabs.
 args=""
 for arg in "$@"; do

@@ -44,7 +44,8 @@ defmodule Orchard.MixProject do
       orchard_controller: [
         applications: [
           orchard_shared: :permanent,
-          orchard_controller: :permanent
+          orchard_controller: :permanent,
+          orchard_cli: :load
         ]
       ],
       orchard_node_agent: [

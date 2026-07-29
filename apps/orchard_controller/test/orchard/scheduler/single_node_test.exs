@@ -441,8 +441,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   end
 
   defp stopped_authority do
-    pid = spawn(fn -> :ok end)
-    monitor = Process.monitor(pid)
+    {pid, monitor} = spawn_monitor(fn -> :ok end)
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}
     pid
   end
