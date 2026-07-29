@@ -121,22 +121,25 @@ beam_validate_management_epmd_listener() {
         beam_fail "could not inspect the Controller management EPMD listener: $_listener_lsof is not executable"
     fi
 
-    _listener_err=$(mktemp "${TMPDIR:-/tmp}/orchard-epmd-listener.XXXXXX") || \
-        beam_fail "could not inspect the Controller management EPMD listener"
-
     _listener_status=0
-    _listeners=$("$_listener_lsof" -nP -iTCP:"$_listener_port" -sTCP:LISTEN 2>"$_listener_err") ||
+    _listeners=$("$_listener_lsof" -w -nP -iTCP:"$_listener_port" -sTCP:LISTEN 2>/dev/null) ||
         _listener_status=$?
-    _listener_diagnostics=$(cat "$_listener_err" 2>/dev/null) || _listener_diagnostics=""
-    rm -f "$_listener_err"
 
-    if [ "$_listener_status" -ne 0 ]; then
-        if [ "$_listener_status" -eq 1 ] && [ -z "$_listeners" ] &&
-           [ -z "$_listener_diagnostics" ]; then
-            return 0
-        fi
+    if [ "$_listener_status" -gt 1 ]; then
         beam_fail "could not inspect the Controller management EPMD listener"
     fi
+
+    if [ "$_listener_status" -eq 1 ]; then
+        if [ -n "$_listeners" ]; then
+            beam_fail "could not inspect the Controller management EPMD listener"
+        fi
+        return 0
+    fi
+
+    case "$_listeners" in
+        COMMAND*) ;;
+        *) beam_fail "could not inspect the Controller management EPMD listener" ;;
+    esac
 
     if ! printf '%s\n' "$_listeners" |
          grep -F -- "127.0.0.1:$_listener_port (LISTEN)" >/dev/null; then

@@ -923,6 +923,74 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "controller wrapper accepts a pre-existing loopback management EPMD listener" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONTROLLER_EPMD_LISTENER_MODE", "loopback"}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+      assert output =~ "fake release node=orchard_controller_management@127.0.0.1"
+    end)
+  end
+
+  test "controller wrapper starts when EPMD inspection emits only benign advisories" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONTROLLER_EPMD_LISTENER_MODE", "none-with-advisory"}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+      refute output =~ "could not inspect the Controller management EPMD listener"
+      refute output =~ "Output information may be incomplete"
+    end)
+  end
+
+  test "controller wrapper ignores a hostile TMPDIR while inspecting the EPMD listener" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        TMPDIR="#{Path.join(ctx.root, "no-such-tmpdir")}"
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"TMPDIR", "/nonexistent/orchard-hostile-tmpdir"}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+      refute output =~ "could not inspect the Controller management EPMD listener"
+    end)
+  end
+
   test "controller wrapper fails closed when management EPMD inspection errors" do
     with_temp_controller_wrapper(fn %{script: script} = ctx ->
       File.write!(
@@ -1840,13 +1908,28 @@ defmodule OrchardCLI.PackagingScriptTest do
   defp write_fake_controller_lsof!(ctx) do
     File.write!(Path.join(ctx.fake_bin, "lsof"), """
     #!/bin/sh
+    warn=true
+    for arg in "$@"; do
+      case "$arg" in
+        -w) warn=false ;;
+        -iTCP:*) port=${arg#-iTCP:} ;;
+      esac
+    done
+
     case "${CONTROLLER_EPMD_LISTENER_MODE:-none}" in
       none) exit 1 ;;
+      none-with-advisory)
+        if [ "$warn" = true ]; then
+          printf "lsof: WARNING: can't stat() smbfs file system /Volumes/share\\n" >&2
+          printf '      Output information may be incomplete.\\n' >&2
+        fi
+        exit 1
+        ;;
       loopback) listener="127.0.0.1" ;;
       wildcard) listener="*" ;;
       *) exit 2 ;;
     esac
-    port=${3#-iTCP:}
+
     printf 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\\n'
     printf 'epmd 123 root 0u IPv4 0 0t0 TCP %s:%s (LISTEN)\\n' "$listener" "$port"
     """)
