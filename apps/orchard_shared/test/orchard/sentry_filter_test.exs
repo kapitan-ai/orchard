@@ -460,6 +460,100 @@ defmodule Orchard.SentryFilterTest do
     refute inspect(filtered) =~ "../"
   end
 
+  test "canonicalizes app-relative first-party frames from a real crash stacktrace" do
+    {exception, stacktrace} =
+      try do
+        Orchard.Licensing.normalize_enforcement_mode!("ISSUE114_INVALID_MODE")
+      rescue
+        raised -> {raised, __STACKTRACE__}
+      end
+
+    assert {Orchard.Licensing, _function, _arity, location} = hd(stacktrace)
+    assert to_string(location[:file]) == "lib/orchard/licensing.ex"
+
+    payload =
+      [exception: exception, stacktrace: stacktrace]
+      |> Sentry.Event.create_event()
+      |> serialized_filtered_envelope()
+      |> envelope_event_payload()
+
+    frames = get_in(payload, ["exception", Access.at(0), "stacktrace", "frames"])
+
+    assert %{"filename" => "apps/orchard_shared/lib/orchard/licensing.ex", "lineno" => lineno} =
+             List.last(frames)
+
+    assert is_integer(lineno)
+    refute payload |> inspect() |> String.contains?("ISSUE114_INVALID_MODE")
+  end
+
+  test "filters app-relative frames whose module is not a loaded first-party module" do
+    frames = [
+      %{module: Sentry.Event, filename: "lib/sentry/event.ex"},
+      %{module: :"Elixir.Orchard.ISSUE114.NeverLoaded", filename: "lib/orchard/loaded.ex"},
+      %{module: "Elixir.Orchard.SentryFilter", filename: "lib/orchard/sentry_filter.ex"},
+      %{module: nil, filename: "lib/orchard/sentry_filter.ex"},
+      %{filename: "lib/orchard/sentry_filter.ex"}
+    ]
+
+    filtered = SentryFilter.filter(%{stacktrace: %{frames: frames}})
+
+    assert Enum.all?(filtered.stacktrace.frames, &(&1.filename == "[Filtered]"))
+  end
+
+  test "filters deterministic-build basenames and traversal in app-relative frames" do
+    filenames = [
+      "sentry_filter.ex",
+      "lib/../../../etc/passwd.ex",
+      "lib/orchard/../../../secrets.ex",
+      "lib/orchard/sentry_filter.beam",
+      "lib/",
+      "liberty/orchard/sentry_filter.ex"
+    ]
+
+    frames = Enum.map(filenames, &%{module: Orchard.SentryFilter, filename: &1})
+    filtered = SentryFilter.filter(%{stacktrace: %{frames: frames}})
+
+    assert Enum.all?(filtered.stacktrace.frames, &(&1.filename == "[Filtered]"))
+    refute inspect(filtered) =~ "../"
+  end
+
+  test "drops malformed exception, frame, and request interfaces before envelope serialization" do
+    event = sentry_event(%{})
+    [exception] = event.exception
+    [frame] = exception.stacktrace.frames
+
+    event = %{
+      event
+      | request: %{method: "POST", data: %{input: "ISSUE114_MALFORMED_REQUEST"}},
+        exception: [
+          %{type: "ISSUE114_MALFORMED_EXCEPTION"},
+          %{__struct__: :"Elixir.Orchard.ISSUE114.MissingException", type: "boom"},
+          %{
+            exception
+            | stacktrace: %Sentry.Interfaces.Stacktrace{
+                frames: [
+                  %{filename: "ISSUE114_MALFORMED_FRAME.ex"},
+                  %{__struct__: :"Elixir.Orchard.ISSUE114.MissingFrame", filename: "boom.ex"},
+                  frame
+                ]
+              }
+          }
+        ]
+    }
+
+    payload = event |> serialized_filtered_envelope() |> envelope_event_payload()
+
+    assert [rendered_exception] = payload["exception"]
+
+    assert [rendered_frame] = get_in(rendered_exception, ["stacktrace", "frames"])
+
+    assert rendered_frame["filename"] ==
+             "apps/orchard_controller/lib/orchard/api/responses_controller.ex"
+
+    assert payload["request"] in [nil, %{}]
+    refute inspect(payload) =~ "ISSUE114_MALFORMED"
+  end
+
   test "rebuilds Sentry stacktraces and bounds every retained frame field" do
     event = sentry_event(%{})
     [exception] = event.exception

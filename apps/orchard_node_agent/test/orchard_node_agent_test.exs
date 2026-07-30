@@ -1209,8 +1209,22 @@ defmodule OrchardNodeAgentTest do
                Sentry.Context.get_all().breadcrumbs
 
       assert data.model_id == @test_model_id
-      assert data.version == @test_version
+      assert data.model_version == @test_version
+      refute Map.has_key?(data, :version)
       assert data.backend == "stub"
+    end
+
+    test "canonicalized model version survives Sentry egress filtering" do
+      data = filtered_load_breadcrumb_data(@test_version)
+
+      assert data.model_version == @test_version
+      refute Map.has_key?(data, :version)
+    end
+
+    test "filters malformed and path-shaped telemetry model versions at egress" do
+      for hostile <- ["/Users/private-builder/models/main", "../../etc/passwd", "v1 secret"] do
+        assert %{model_version: "[Filtered]"} = filtered_load_breadcrumb_data(hostile)
+      end
     end
 
     test "handler skips breadcrumbs when enrichment flags or request context are absent" do
@@ -5484,6 +5498,30 @@ defmodule OrchardNodeAgentTest do
     if Code.ensure_loaded?(Sentry.Context) do
       Sentry.Context.clear_all()
     end
+  end
+
+  defp filtered_load_breadcrumb_data(version) do
+    {:ok, breadcrumb} =
+      SentryTelemetryBridge.breadcrumb_for_event(
+        [:orchard, :node, :worker_runtime, :load, :stop],
+        %{duration_ms: 12},
+        %{model_id: @test_model_id, version: version, backend: "stub"}
+      )
+
+    event = %Sentry.Event{
+      event_id: String.duplicate("a", 32),
+      timestamp: "2026-07-30T00:00:00",
+      breadcrumbs: [
+        %Sentry.Interfaces.Breadcrumb{
+          category: "orchard.node.worker_runtime.load",
+          message: "worker_runtime.load.stop",
+          data: breadcrumb[:data]
+        }
+      ]
+    }
+
+    [filtered_breadcrumb] = Orchard.SentryFilter.filter(event).breadcrumbs
+    filtered_breadcrumb.data
   end
 
   defp test_listen_address do

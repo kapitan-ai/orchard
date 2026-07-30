@@ -10,12 +10,14 @@ defmodule Orchard.SentryFilter do
 
   @allowed_http_methods MapSet.new(~w(CONNECT DELETE GET HEAD OPTIONS PATCH POST PUT TRACE))
   @safe_frame_keys MapSet.new(~w(module function filename lineno colno in_app))
-  @first_party_source_roots [
-    "apps/orchard_controller/lib/",
-    "apps/orchard_node_agent/lib/",
-    "apps/orchard_shared/lib/",
-    "apps/orchard_cli/lib/"
+  @first_party_app_source_roots [
+    orchard_controller: "apps/orchard_controller/lib/",
+    orchard_node_agent: "apps/orchard_node_agent/lib/",
+    orchard_shared: "apps/orchard_shared/lib/",
+    orchard_cli: "apps/orchard_cli/lib/"
   ]
+  @first_party_source_roots Keyword.values(@first_party_app_source_roots)
+  @app_relative_source_root "lib/"
 
   @safe_event_tag_keys ~w(
     orchard_app orchard_version orchard_build_channel build_sha build_date
@@ -231,7 +233,7 @@ defmodule Orchard.SentryFilter do
       fingerprint: [],
       message: scrub_event_message(Map.get(event_map, :message)),
       modules: %{},
-      request: scrub_request(Map.get(event_map, :request)),
+      request: scrub_event_request(Map.get(event_map, :request)),
       server_name: @redacted,
       tags: scrub_allowlisted_map(Map.get(event_map, :tags), @safe_event_tag_keys),
       threads: nil,
@@ -257,7 +259,12 @@ defmodule Orchard.SentryFilter do
   defp scrub_event_message(_message), do: nil
 
   defp scrub_event_exceptions(exceptions) when is_list(exceptions) do
-    Enum.map(exceptions, &scrub_event_exception/1)
+    Enum.flat_map(exceptions, fn exception ->
+      case scrub_event_exception(exception) do
+        nil -> []
+        safe_exception -> [safe_exception]
+      end
+    end)
   end
 
   defp scrub_event_exceptions(_exceptions), do: []
@@ -279,18 +286,18 @@ defmodule Orchard.SentryFilter do
     |> maybe_put_if_present(base, :mechanism, nil)
     |> then(&struct(module, &1))
   rescue
-    _exception -> %{}
+    _exception -> nil
   catch
-    _kind, _reason -> %{}
+    _kind, _reason -> nil
   end
 
-  defp scrub_event_exception(_exception), do: %{}
+  defp scrub_event_exception(_exception), do: nil
 
   defp scrub_stacktrace(%{__struct__: module} = stacktrace) when is_atom(module) do
     base = struct(module)
 
     if Map.has_key?(base, :frames) do
-      struct(module, frames: scrub_frames(Map.get(stacktrace, :frames)))
+      struct(module, frames: scrub_interface_frames(Map.get(stacktrace, :frames)))
     end
   rescue
     _exception -> nil
@@ -730,19 +737,23 @@ defmodule Orchard.SentryFilter do
 
   defp scrub_value(_normalized_key, value), do: scrub_nested(value)
 
-  defp scrub_request(%{__struct__: module} = request) when is_atom(module) do
+  defp scrub_event_request(%{__struct__: module} = request) when is_atom(module) do
     base = struct(module)
     method = request |> Map.from_struct() |> request_method()
 
     if Map.has_key?(base, :method) do
       struct(module, method: method)
-    else
-      %{}
     end
   rescue
-    _exception -> %{}
+    _exception -> nil
   catch
-    _kind, _reason -> %{}
+    _kind, _reason -> nil
+  end
+
+  defp scrub_event_request(_request), do: nil
+
+  defp scrub_request(%{__struct__: module} = request) when is_atom(module) do
+    scrub_event_request(request) || %{}
   end
 
   defp scrub_request(request) when is_map(request) do
@@ -777,10 +788,28 @@ defmodule Orchard.SentryFilter do
 
   defp normalize_http_method(_method), do: nil
 
+  defp scrub_interface_frames(frames) when is_list(frames) do
+    Enum.flat_map(frames, fn frame ->
+      case rebuild_frame(frame) do
+        {:ok, %{__struct__: _module} = safe_frame} -> [safe_frame]
+        _dropped -> []
+      end
+    end)
+  end
+
+  defp scrub_interface_frames(_frames), do: []
+
   defp scrub_frames(frames) when is_list(frames), do: Enum.map(frames, &scrub_frame/1)
   defp scrub_frames(_frames), do: []
 
-  defp scrub_frame(%{__struct__: module} = frame) when is_atom(module) do
+  defp scrub_frame(frame) do
+    case rebuild_frame(frame) do
+      {:ok, safe_frame} -> safe_frame
+      :error -> %{}
+    end
+  end
+
+  defp rebuild_frame(%{__struct__: module} = frame) when is_atom(module) do
     base = struct(module)
 
     safe_values =
@@ -788,38 +817,62 @@ defmodule Orchard.SentryFilter do
       |> Map.from_struct()
       |> scrub_frame_map()
 
-    base
-    |> Map.from_struct()
-    |> Map.merge(safe_values)
-    |> then(&struct(module, &1))
+    rebuilt =
+      base
+      |> Map.from_struct()
+      |> Map.merge(safe_values)
+      |> then(&struct(module, &1))
+
+    {:ok, rebuilt}
   rescue
-    _exception -> %{}
+    _exception -> :error
   catch
-    _kind, _reason -> %{}
+    _kind, _reason -> :error
   end
 
-  defp scrub_frame(frame) when is_map(frame), do: scrub_frame_map(frame)
-  defp scrub_frame(_frame), do: %{}
+  defp rebuild_frame(frame) when is_map(frame), do: {:ok, scrub_frame_map(frame)}
+  defp rebuild_frame(_frame), do: :error
 
   defp scrub_frame_map(frame) do
+    source_root = frame_source_root(frame)
+
     Enum.reduce(frame, %{}, fn {key, value}, acc ->
       normalized_key = normalize_key(key)
 
       if MapSet.member?(@safe_frame_keys, normalized_key) do
-        Map.put(acc, key, scrub_frame_value(normalized_key, value))
+        Map.put(acc, key, scrub_frame_value(normalized_key, value, source_root))
       else
         acc
       end
     end)
   end
 
-  defp scrub_frame_value("module", value), do: safe_frame_module(value)
-  defp scrub_frame_value("function", value), do: safe_frame_function(value)
-  defp scrub_frame_value("filename", value), do: scrub_filename(value)
-  defp scrub_frame_value("lineno", value), do: safe_frame_location(value, 10_000_000)
-  defp scrub_frame_value("colno", value), do: safe_frame_location(value, 1_000_000)
-  defp scrub_frame_value("in_app", value) when is_boolean(value), do: value
-  defp scrub_frame_value("in_app", _value), do: nil
+  defp frame_source_root(frame) do
+    case Map.fetch(frame, :module) do
+      {:ok, module} when not is_nil(module) -> first_party_source_root(module)
+      _missing_or_nil -> frame |> Map.get("module") |> first_party_source_root()
+    end
+  end
+
+  defp first_party_source_root(module) when is_atom(module) and not is_nil(module) do
+    case :application.get_application(module) do
+      {:ok, app} -> Keyword.get(@first_party_app_source_roots, app)
+      _unowned -> nil
+    end
+  end
+
+  defp first_party_source_root(_module), do: nil
+
+  defp scrub_frame_value("module", value, _source_root), do: safe_frame_module(value)
+  defp scrub_frame_value("function", value, _source_root), do: safe_frame_function(value)
+  defp scrub_frame_value("filename", value, source_root), do: scrub_filename(value, source_root)
+
+  defp scrub_frame_value("lineno", value, _source_root),
+    do: safe_frame_location(value, 10_000_000)
+
+  defp scrub_frame_value("colno", value, _source_root), do: safe_frame_location(value, 1_000_000)
+  defp scrub_frame_value("in_app", value, _source_root) when is_boolean(value), do: value
+  defp scrub_frame_value("in_app", _value, _source_root), do: nil
 
   defp safe_frame_module(value) when is_atom(value) do
     case safe_frame_module(Atom.to_string(value)) do
@@ -858,12 +911,12 @@ defmodule Orchard.SentryFilter do
 
   defp safe_frame_location(_value, _maximum), do: nil
 
-  defp scrub_filename(filename) when is_binary(filename) do
+  defp scrub_filename(filename, source_root) when is_binary(filename) do
     with true <- String.valid?(filename),
          true <- byte_size(filename) <= 512,
          false <- Regex.match?(~r/[\x00-\x1F\x7F]/, filename),
          false <- String.contains?(filename, ["\\", "://"]),
-         {:ok, relative} <- first_party_relative_path(filename),
+         {:ok, relative} <- first_party_relative_path(filename, source_root),
          true <- safe_relative_source_path?(relative) do
       relative
     else
@@ -871,9 +924,16 @@ defmodule Orchard.SentryFilter do
     end
   end
 
-  defp scrub_filename(_filename), do: @filtered
+  defp scrub_filename(_filename, _source_root), do: @filtered
 
-  defp first_party_relative_path(filename) do
+  defp first_party_relative_path(filename, source_root) do
+    case repo_relative_source_path(filename) do
+      {:ok, relative} -> {:ok, relative}
+      :error -> app_relative_source_path(filename, source_root)
+    end
+  end
+
+  defp repo_relative_source_path(filename) do
     Enum.find_value(@first_party_source_roots, :error, fn root ->
       cond do
         String.starts_with?(filename, root) ->
@@ -887,6 +947,16 @@ defmodule Orchard.SentryFilter do
           false
       end
     end)
+  end
+
+  defp app_relative_source_path(_filename, nil), do: :error
+
+  defp app_relative_source_path(filename, source_root) do
+    if String.starts_with?(filename, @app_relative_source_root) do
+      {:ok, String.replace_prefix(filename, @app_relative_source_root, source_root)}
+    else
+      :error
+    end
   end
 
   defp safe_relative_source_path?(path) do
