@@ -19,6 +19,8 @@
 - [x] 3.2 Implement first-party filename normalization for the four Orchard app `lib/` roots while filtering every other path-bearing field.
 - [x] 3.3 Configure first-party OTP applications as in-app and explicitly disable source-code context.
 - [x] 3.4 Run the focused stack and envelope suites and confirm no source snippets or absolute paths serialize.
+- [x] 3.5 Add a real-crash regression proving a genuine BEAM app-relative `lib/` frame canonicalizes to its owning app root, plus hostile coverage for dependency-owned, unloaded, string, absent, deterministic-basename, and traversal frames.
+- [x] 3.6 Canonicalize app-relative `lib/` filenames using runtime OTP application ownership of the frame's existing module, without creating atoms, and revalidate every canonicalized path against the approved-root path grammar.
 
 ## 4. Release Identity And Narrow SDK Defaults
 

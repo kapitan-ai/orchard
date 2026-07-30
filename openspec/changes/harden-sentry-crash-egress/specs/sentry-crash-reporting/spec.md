@@ -35,16 +35,26 @@ Orchard SHALL rebuild actual Sentry event payloads from an allowlist after colle
 
 ### Requirement: Sentry Stack Diagnostics Exclude Machine And Source Content
 
-Orchard SHALL remove absolute paths, machine-specific paths, source URLs, dependency paths, build paths, traversal paths, and source-code context from Sentry events. Orchard MAY retain an Elixir source filename only after normalizing it to a validated repo-relative path under `apps/orchard_controller/lib/`, `apps/orchard_node_agent/lib/`, `apps/orchard_shared/lib/`, or `apps/orchard_cli/lib/`. Retained frame module/function names and exception names SHALL pass bounded Elixir diagnostic grammars so path-shaped values cannot use those fields as alternate egress channels. Orchard SHALL mark first-party OTP applications as in-app without attaching source lines or neighboring source text.
+Orchard SHALL remove absolute paths, machine-specific paths, source URLs, dependency paths, build paths, traversal paths, and source-code context from Sentry events. Orchard MAY retain an Elixir source filename only after normalizing it to a validated repo-relative path under `apps/orchard_controller/lib/`, `apps/orchard_node_agent/lib/`, `apps/orchard_shared/lib/`, or `apps/orchard_cli/lib/`. Normalization MAY take a path that already begins with an approved root, an approved-root suffix extracted from an absolute compiler path, or a BEAM app-relative `lib/` path canonicalized to the approved root of the application that owns the frame. Ownership SHALL be resolved at runtime from the frame's existing module value through OTP application ownership and SHALL be accepted only for `orchard_controller`, `orchard_node_agent`, `orchard_shared`, and `orchard_cli`; Orchard SHALL NOT create atoms to resolve ownership. Every normalized path SHALL still satisfy the approved-root prefix, Elixir source extension, and no-traversal path grammar, so retained output remains bounded to the approved roots. Retained frame module/function names and exception names SHALL pass bounded Elixir diagnostic grammars so path-shaped values cannot use those fields as alternate egress channels. Orchard SHALL mark first-party OTP applications as in-app without attaching source lines or neighboring source text.
 
 #### Scenario: Packaged stack frame contains an absolute compiler path
 
 - **WHEN** a stack frame filename contains a machine-specific absolute prefix followed by a valid first-party Orchard app `lib/` path
 - **THEN** the serialized event contains only the validated repo-relative suffix and no absolute prefix, username, home directory, or file URL
 
+#### Scenario: Real crash frame carries a BEAM app-relative source path
+
+- **WHEN** a real Orchard crash produces a frame whose filename is an app-relative `lib/` Elixir source path and whose module resolves at runtime to an approved first-party Orchard OTP application
+- **THEN** the serialized event contains that path canonicalized to the owning application's approved `apps/<app>/lib/` root and no other path content
+
+#### Scenario: App-relative frame is not owned by an approved application
+
+- **WHEN** a frame carries an app-relative `lib/` path but its module is absent, is not an atom, is unloaded, or resolves to a dependency or any other non-approved application
+- **THEN** Orchard filters the filename and transmits no path content from that field
+
 #### Scenario: Stack frame path is unsafe or unrelated
 
-- **WHEN** a frame path contains traversal, `_build`, a dependency root, an unknown app, a non-Elixir source target, or no valid first-party suffix
+- **WHEN** a frame path contains traversal, `_build`, a dependency root, an unknown app, a non-Elixir source target, a deterministic-build bare basename, or neither a valid first-party suffix nor approved module ownership
 - **THEN** Orchard filters the filename and transmits no path content from that field
 
 ### Requirement: Every Sentry Crash Has Static Orchard Build Identity

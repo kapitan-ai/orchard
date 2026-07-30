@@ -53,7 +53,15 @@ If event rebuilding fails, the filter returns a valid minimal event containing o
 - `apps/orchard_shared/lib/`
 - `apps/orchard_cli/lib/`
 
-The filter may extract such a suffix from an absolute compiler path, but the absolute prefix never survives. The resulting path must use forward slashes, contain no empty, `.` or `..` segments, contain no NUL byte, and identify an Elixir source file. Unknown relative paths, dependency paths, `_build` paths, source URLs, and all absolute-path fields are filtered. Frame module/function values and exception type/module values use separate bounded Elixir diagnostic grammars so a crafted path cannot survive through a nominally non-path stack field.
+Three normalization inputs may produce such a path, and no other input may:
+
+1. A path that already begins with one of those approved roots.
+2. An absolute compiler path from which the filter extracts an approved-root suffix. The absolute prefix never survives.
+3. A BEAM app-relative `lib/...` path, which is the shape real Orchard stacktraces carry because the compiled `-file` attribute in this umbrella is relative to each app directory. The filter canonicalizes it to `<approved-root>...` only when the frame's own `module` value resolves through runtime OTP application ownership to `:orchard_controller`, `:orchard_node_agent`, `:orchard_shared`, or `:orchard_cli`.
+
+Input 3 exists because inputs 1 and 2 never match a real first-party production frame, which would leave the entire retention branch dead. Ownership is read from the module value already present on the frame; the filter never converts a string to an atom to obtain it, so a caller cannot fabricate ownership through a crafted module name. Frames whose module is absent, `nil`, a string, unloaded, unowned, or owned by a dependency or non-approved application resolve to no root and keep their filename filtered. Deterministic-build basenames such as `licensing.ex` carry no `lib/` prefix and stay filtered for the same reason.
+
+Canonicalization is a prefix rewrite only; the rewritten path is then subject to the same validation as every other input. The resulting path must use forward slashes, contain no empty, `.` or `..` segments, contain no NUL byte, identify an Elixir source file, and begin with one of the four approved roots. Output therefore stays bounded to the approved roots and the safe path grammar regardless of which input produced it. Unknown relative paths, dependency paths, `_build` paths, source URLs, and all absolute-path fields that yield no approved suffix are filtered. Frame module/function values and exception type/module values use separate bounded Elixir diagnostic grammars so a crafted path cannot survive through a nominally non-path stack field.
 
 Source-code context remains disabled, so source lines and neighboring source text are not attached. `in_app_otp_apps` names the four first-party OTP apps so Sentry can emphasize Orchard frames without exposing source content.
 
