@@ -50,7 +50,7 @@ defmodule Orchard.API.Endpoint do
     json_decoder: Jason
   )
 
-  plug(Sentry.PlugContext)
+  plug(Orchard.API.SentryRequestContext)
 
   plug(Plug.Session, @session_options)
 

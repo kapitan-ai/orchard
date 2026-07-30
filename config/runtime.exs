@@ -579,13 +579,13 @@ config :orchard_shared,
 if sentry_dsn = env_optional_string.("ORCHARD_SENTRY_DSN") do
   release_name = System.get_env("RELEASE_NAME") || System.get_env("MIX_RELEASE_NAME") || "mix"
 
-  config :sentry,
-    dsn: sentry_dsn,
-    environment_name: env_optional_string.("ORCHARD_SENTRY_ENV") || to_string(config_env()),
-    release: "#{release_name}@#{Orchard.BuildInfo.git_sha()}",
-    before_send: {Orchard.SentryFilter, :filter},
-    server_name: "[redacted]",
-    tags: %{build_sha: Orchard.BuildInfo.git_sha(), build_date: Orchard.BuildInfo.build_date()}
+  sentry_options =
+    [
+      dsn: sentry_dsn,
+      environment_name: env_optional_string.("ORCHARD_SENTRY_ENV") || to_string(config_env())
+    ] ++ Orchard.SentryRelease.runtime_options(release_name)
+
+  config :sentry, sentry_options
 end
 
 bundle_build_preflight_timeout_ms =

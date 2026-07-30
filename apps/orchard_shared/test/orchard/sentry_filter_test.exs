@@ -3,74 +3,51 @@ defmodule Orchard.SentryFilterTest do
 
   alias Orchard.SentryFilter
 
-  test "scrubs required request headers" do
+  test "reconstructs string-keyed request context from the method allowlist" do
     event = %{
       "request" => %{
+        "method" => "POST",
         "headers" => [
           {"authorization", "Bearer secret"},
           {"cookie", "session=value"},
           {"x-api-key", "apikey"},
           {"accept", "application/json"}
-        ]
+        ],
+        "query_string" => "api_key=secret"
       }
     }
 
-    assert %{"request" => %{"headers" => []}} = SentryFilter.filter(event)
+    assert %{"request" => %{"method" => "POST"}} = SentryFilter.filter(event)
   end
 
-  test "scrubs required request headers from list-of-map format" do
+  test "removes the entire request body including unknown inference fields" do
     event = %{
-      "request" => %{
-        "headers" => [
-          %{"name" => "authorization", "value" => "Bearer secret"},
-          %{"name" => "cookie", "value" => "session=value"},
-          %{"name" => "x-api-key", "value" => "apikey"},
-          %{"name" => "accept", "value" => "application/json"}
-        ]
-      }
-    }
-
-    assert %{"request" => %{"headers" => []}} = SentryFilter.filter(event)
-  end
-
-  test "scrubs required body and token fields" do
-    event = %{
-      "request" => %{
-        "data" => %{
-          "messages" => [%{"role" => "user", "content" => "hello"}],
-          "content" => "body content",
-          "prompt" => "prompt text",
-          "input" => "input text",
-          "rendered_prompt" => "rendered prompt",
-          "metadata" => %{"tenant" => "demo"},
-          "token" => "token-value",
-          "api_key" => "api-key-value",
-          "x-api-key" => "header-style-api-key",
-          "secret" => "secret-value",
-          "secret_hash" => "hash-value",
-          "password" => "password-value",
-          "model" => "mlx-community/qwen2.5"
+      request: %{
+        method: "POST",
+        data: %{
+          messages: [%{role: "user", content: "hello"}],
+          instructions: "system instructions",
+          tools: [%{name: "proprietary_tool"}],
+          tool_choice: "required",
+          metadata: %{tenant: "demo"},
+          model: "mlx-community/qwen2.5"
         }
       }
     }
 
-    filtered = SentryFilter.filter(event)
+    assert %{request: %{method: "POST"}} = SentryFilter.filter(event)
+  end
 
-    data = get_in(filtered, ["request", "data"])
+  test "drops invalid request methods with every other request field" do
+    event = %{
+      request: %{
+        method: "POST\r\nx-injected: value",
+        data: %{input: "secret"},
+        headers: %{"authorization" => "Bearer secret"}
+      }
+    }
 
-    assert data["messages"] == "[Filtered]"
-    assert data["content"] == "[Filtered]"
-    assert data["prompt"] == "[Filtered]"
-    assert data["input"] == "[Filtered]"
-    assert data["rendered_prompt"] == "[Filtered]"
-    assert data["metadata"] == "[Filtered]"
-    assert data["token"] == "[Filtered]"
-    assert data["api_key"] == "[Filtered]"
-    assert data["x-api-key"] == "[Filtered]"
-    assert data["secret"] == "[Filtered]"
-    assert data["secret_hash"] == "[Filtered]"
-    assert data["password"] == "[Filtered]"
-    assert data["model"] == "mlx-community/qwen2.5"
+    assert %{request: %{}} = SentryFilter.filter(event)
   end
 
   test "scrubs breadcrumb data recursively" do
@@ -384,7 +361,7 @@ defmodule Orchard.SentryFilterTest do
     assert filtered.contexts.runtime.ip_address == "[Filtered]"
   end
 
-  test "preserves Sentry event and breadcrumb structs while scrubbing unsafe fields" do
+  test "preserves allowlisted Sentry enrichment structs while dropping unknown fields" do
     event_module = Module.concat([Sentry, Event])
     breadcrumb_module = Module.concat([Sentry, Interfaces, Breadcrumb])
 
@@ -397,10 +374,18 @@ defmodule Orchard.SentryFilterTest do
         timestamp: "2026-04-26T00:00:00",
         server_name: "macbook.local",
         user: %{email: "person@example.com", ip_address: "127.0.0.1"},
+        extra: %{orchard_request_id: "req_safe", unknown_payload: "secret prompt"},
+        tags: %{orchard_app: "controller", unknown_tag: "secret tag"},
         breadcrumbs: [
           struct(breadcrumb_module,
             category: "orchard.auth",
-            data: %{api_key: "secret", safe: %{model_id: "qwen"}}
+            message: "auth.success",
+            level: :info,
+            data: %{
+              auth_mechanism: "bearer",
+              api_key: "secret",
+              unknown_payload: "secret prompt"
+            }
           )
         ]
       )
@@ -410,25 +395,35 @@ defmodule Orchard.SentryFilterTest do
 
     assert filtered.__struct__ == event_module
     assert filtered.server_name == "[redacted]"
-    assert filtered.user.email == "[Filtered]"
-    assert filtered.user.ip_address == "[Filtered]"
+    assert filtered.user == %{}
+    assert filtered.extra == %{orchard_request_id: "req_safe"}
+    assert filtered.tags == %{orchard_app: "controller"}
     assert breadcrumb.__struct__ == breadcrumb_module
-    assert breadcrumb.data.api_key == "[Filtered]"
-    assert breadcrumb.data.safe.model_id == "qwen"
+    assert breadcrumb.category == "orchard.auth"
+    assert breadcrumb.message == "auth.success"
+    assert breadcrumb.data == %{auth_mechanism: "bearer"}
+    refute inspect(filtered) =~ "secret"
   end
 
-  test "scrubs stacktrace path-bearing fields" do
+  test "normalizes an absolute first-party stack frame to a repo-relative filename" do
     event = %{
       "exception" => [
         %{
           "stacktrace" => %{
             "frames" => [
               %{
+                "module" => "Elixir.Orchard.SentryFilter",
+                "function" => "filter/1",
+                "lineno" => 17,
                 "abs_path" =>
                   "/Users/demo/orchard/apps/orchard_shared/lib/orchard/sentry_filter.ex",
-                "filename" => "lib/orchard/sentry_filter.ex",
+                "filename" =>
+                  "/Users/demo/orchard/apps/orchard_shared/lib/orchard/sentry_filter.ex",
                 "source_url" =>
-                  "file:///Users/demo/orchard/apps/orchard_shared/lib/orchard/sentry_filter.ex"
+                  "file:///Users/demo/orchard/apps/orchard_shared/lib/orchard/sentry_filter.ex",
+                "context_line" => "instructions = secret",
+                "pre_context" => ["secret source"],
+                "vars" => %{"token" => "secret"}
               }
             ]
           }
@@ -439,12 +434,131 @@ defmodule Orchard.SentryFilterTest do
     filtered = SentryFilter.filter(event)
     [frame] = get_in(filtered, ["exception", Access.at(0), "stacktrace", "frames"])
 
-    assert frame["abs_path"] == "[Filtered]"
-    assert frame["filename"] == "[Filtered]"
-    assert frame["source_url"] == "[Filtered]"
+    assert frame == %{
+             "module" => "Elixir.Orchard.SentryFilter",
+             "function" => "filter/1",
+             "lineno" => 17,
+             "filename" => "apps/orchard_shared/lib/orchard/sentry_filter.ex"
+           }
   end
 
-  test "scrubs request URL and query fields" do
+  test "filters unsafe stack-frame filenames" do
+    filenames = [
+      "lib/orchard/sentry_filter.ex",
+      "apps/orchard_shared/lib/../secrets.ex",
+      "apps/unknown/lib/private.ex",
+      "_build/prod/lib/orchard_shared/ebin/Elixir.Orchard.beam",
+      "file:///Users/demo/orchard/apps/orchard_shared/lib/orchard/sentry_filter.ex",
+      "/Users/demo/deps/sentry/lib/sentry/event.ex"
+    ]
+
+    event = %{stacktrace: %{frames: Enum.map(filenames, &%{filename: &1})}}
+    filtered = SentryFilter.filter(event)
+
+    assert Enum.all?(filtered.stacktrace.frames, &(&1.filename == "[Filtered]"))
+    refute inspect(filtered) =~ "/Users/demo"
+    refute inspect(filtered) =~ "../"
+  end
+
+  test "rebuilds Sentry stacktraces and bounds every retained frame field" do
+    event = sentry_event(%{})
+    [exception] = event.exception
+    [frame] = exception.stacktrace.frames
+
+    hostile_frame = %{
+      frame
+      | module: "Orchard.API.ResponsesController ISSUE114_FRAME_MODULE",
+        function: "create/2\nISSUE114_FRAME_FUNCTION",
+        lineno: 10_000_001,
+        colno: -1,
+        in_app: "yes"
+    }
+
+    event = %{
+      event
+      | exception: [
+          %{exception | stacktrace: %{exception.stacktrace | frames: [hostile_frame]}}
+        ]
+    }
+
+    payload = event |> serialized_filtered_envelope() |> envelope_event_payload()
+
+    frame =
+      get_in(payload, [
+        "exception",
+        Access.at(0),
+        "stacktrace",
+        "frames",
+        Access.at(0)
+      ])
+
+    assert frame["module"] == "[Filtered]"
+    assert frame["function"] == "[Filtered]"
+
+    assert frame["filename"] ==
+             "apps/orchard_controller/lib/orchard/api/responses_controller.ex"
+
+    assert frame["lineno"] == nil
+    assert frame["colno"] == nil
+    assert frame["in_app"] == nil
+    refute inspect(payload) =~ "ISSUE114_FRAME"
+  end
+
+  test "filters path-shaped frame functions and exception names before serialization" do
+    event = sentry_event(%{})
+    [exception] = event.exception
+    [frame] = exception.stacktrace.frames
+
+    hostile_exception = %{
+      exception
+      | type: :"/Users/ISSUE114_EXCEPTION_TYPE",
+        module: :"/Users/ISSUE114_EXCEPTION_MODULE",
+        stacktrace: %{
+          exception.stacktrace
+          | frames: [%{frame | function: "/Users/ISSUE114_FRAME_FUNCTION/1"}]
+        }
+    }
+
+    payload =
+      %{event | exception: [hostile_exception]}
+      |> serialized_filtered_envelope()
+      |> envelope_event_payload()
+
+    [filtered_exception] = payload["exception"]
+    [filtered_frame] = filtered_exception["stacktrace"]["frames"]
+
+    assert filtered_exception["type"] == "[Filtered]"
+    assert filtered_exception["module"] == "[Filtered]"
+    assert filtered_frame["function"] == "[Filtered]"
+    refute inspect(payload) =~ "/Users/ISSUE114"
+  end
+
+  test "removes unknown stacktrace keys before serialization" do
+    event = sentry_event(%{})
+    [exception] = event.exception
+
+    event = %{
+      event
+      | exception: [
+          %{
+            exception
+            | stacktrace: %{
+                frames: exception.stacktrace.frames,
+                notes: "ISSUE114_STACKTRACE_NOTES"
+              }
+          }
+        ]
+    }
+
+    filtered = SentryFilter.filter(event)
+    [filtered_exception] = filtered.exception
+
+    assert Map.keys(filtered_exception.stacktrace) == [:frames]
+    refute inspect(filtered) =~ "ISSUE114_STACKTRACE_NOTES"
+    refute serialized_filtered_envelope(event) =~ "ISSUE114_STACKTRACE_NOTES"
+  end
+
+  test "removes request URL and query fields instead of retaining filtered structure" do
     event = %{
       request: %{
         url: "https://orchard.local/v1/responses?api_key=secret",
@@ -455,16 +569,10 @@ defmodule Orchard.SentryFilterTest do
       }
     }
 
-    filtered = SentryFilter.filter(event)
-
-    assert filtered.request.url == "[Filtered]"
-    assert filtered.request.raw_url == "[Filtered]"
-    assert filtered.request.request_url == "[Filtered]"
-    assert filtered.request.query_string == "[Filtered]"
-    assert filtered.request.method == "POST"
+    assert SentryFilter.filter(event).request == %{method: "POST"}
   end
 
-  test "supports atom keys and preserves unrelated values" do
+  test "removes atom-keyed request values when no method is present" do
     event = %{
       request: %{
         headers: %{
@@ -479,16 +587,217 @@ defmodule Orchard.SentryFilterTest do
       }
     }
 
-    filtered = SentryFilter.filter(event)
+    assert SentryFilter.filter(event).request == %{}
+  end
 
-    assert filtered.request.headers == %{
-             "Authorization" => "[Filtered]",
-             "x-api-key" => "[Filtered]",
-             accept: "[Filtered]"
+  test "serialized Responses API envelope excludes proprietary request and source values" do
+    event =
+      sentry_event(%{
+        instructions: "ISSUE114_RESPONSES_INSTRUCTIONS",
+        input: "ISSUE114_RESPONSES_INPUT",
+        tools: [%{name: "ISSUE114_RESPONSES_TOOL"}],
+        tool_choice: "required",
+        metadata: %{customer: "ISSUE114_RESPONSES_CUSTOMER"}
+      })
+
+    envelope = serialized_filtered_envelope(event)
+    payload = envelope_event_payload(envelope)
+
+    assert payload["request"] == %{"method" => "POST"}
+
+    assert payload["message"] == %{
+             "formatted" => "[Filtered]",
+             "message" => nil,
+             "params" => nil
            }
 
-    assert get_in(filtered, [:request, :payload, :token]) == "[Filtered]"
-    assert get_in(filtered, [:request, :payload, :safe_value, :nested]) == "ok"
+    assert get_in(payload, ["exception", Access.at(0), "value"]) == "[Filtered]"
+    assert payload["extra"] == %{"orchard_request_id" => "req_safe"}
+    assert payload["tags"] == %{"orchard_app" => "controller"}
+    assert payload["contexts"] in [nil, %{}]
+
+    assert [breadcrumb] = payload["breadcrumbs"]
+    assert breadcrumb["category"] == "orchard.request"
+    assert breadcrumb["message"] == "request.validated"
+    assert breadcrumb["data"] == %{"model_id" => "qwen"}
+
+    assert get_in(payload, [
+             "exception",
+             Access.at(0),
+             "stacktrace",
+             "frames",
+             Access.at(0),
+             "filename"
+           ]) ==
+             "apps/orchard_controller/lib/orchard/api/responses_controller.ex"
+
+    refute envelope =~ "ISSUE114_RESPONSES"
+    refute envelope =~ "/Users/private-builder"
+    refute envelope =~ "secret source line"
+  end
+
+  test "serialized Chat Completions envelope excludes unknown request fields" do
+    event =
+      sentry_event(%{
+        messages: [%{role: "user", content: "ISSUE114_CHAT_MESSAGE"}],
+        functions: [%{name: "ISSUE114_CHAT_FUNCTION"}],
+        parallel_tool_calls: true,
+        future_unknown_field: "ISSUE114_CHAT_FUTURE_FIELD"
+      })
+
+    envelope = serialized_filtered_envelope(event)
+
+    assert envelope_event_payload(envelope)["request"] == %{"method" => "POST"}
+    refute envelope =~ "ISSUE114_CHAT"
+    refute envelope =~ "future_unknown_field"
+  end
+
+  test "Sentry event allowlist makes hostile allowed values wire-serializable" do
+    event =
+      sentry_event(%{})
+      |> Map.put(:timestamp, "/Users/ISSUE114_ALLOWED_TIMESTAMP")
+      |> Map.put(:release, "/Users/ISSUE114_ALLOWED_RELEASE")
+      |> Map.put(:environment, "https://ISSUE114_ALLOWED_ENVIRONMENT")
+      |> Map.put(:extra, %{
+        orchard_anomaly: self(),
+        orchard_event_count: 9_007_199_254_740_992,
+        orchard_model_backend: :"ISSUE114_ATOM\nSECRET",
+        orchard_model_id: "/Users/ISSUE114_ALLOWED_MODEL",
+        orchard_request_id: "https://ISSUE114_ALLOWED_REQUEST",
+        orchard_target_host_sanitized: "ISSUE114_ALLOWED_HOST.local",
+        unknown_payload: fn -> :secret end
+      })
+      |> Map.put(:tags, %{
+        orchard_app: {:bad, :component},
+        orchard_surface: "/Users/ISSUE114_ALLOWED_SURFACE",
+        unknown_tag: self()
+      })
+      |> Map.put(:breadcrumbs, [
+        %Sentry.Interfaces.Breadcrumb{
+          category: "orchard.request",
+          message: "request.validated",
+          level: :info,
+          data: %{
+            model_id: "/Users/ISSUE114_ALLOWED_BREADCRUMB_MODEL",
+            target_host_sanitized: "ISSUE114_ALLOWED_BREADCRUMB_HOST.local"
+          }
+        }
+      ])
+
+    envelope = serialized_filtered_envelope(event)
+    payload = envelope_event_payload(envelope)
+
+    assert payload["release"] == "[Filtered]"
+    assert payload["environment"] == "[Filtered]"
+
+    assert payload["extra"] == %{
+             "orchard_anomaly" => "[Filtered]",
+             "orchard_event_count" => "[Filtered]",
+             "orchard_model_backend" => "[Filtered]",
+             "orchard_model_id" => "[Filtered]",
+             "orchard_request_id" => "[Filtered]",
+             "orchard_target_host_sanitized" => "[Filtered]"
+           }
+
+    assert payload["tags"] == %{
+             "orchard_app" => "[Filtered]",
+             "orchard_surface" => "[Filtered]"
+           }
+
+    assert [breadcrumb] = payload["breadcrumbs"]
+
+    assert breadcrumb["data"] == %{
+             "model_id" => "[Filtered]",
+             "target_host_sanitized" => "[Filtered]"
+           }
+
+    refute envelope =~ "ISSUE114_ALLOWED"
+    refute envelope =~ "unknown_payload"
+    refute envelope =~ "unknown_tag"
+  end
+
+  defp sentry_event(request_data) do
+    frame = %Sentry.Interfaces.Stacktrace.Frame{
+      module: Orchard.API.ResponsesController,
+      function: "create/2",
+      filename:
+        "/Users/private-builder/orchard/apps/orchard_controller/lib/orchard/api/responses_controller.ex",
+      lineno: 24,
+      context_line: "secret source line",
+      pre_context: ["secret neighboring source"],
+      vars: %{authorization: "Bearer secret"}
+    }
+
+    exception = %Sentry.Interfaces.Exception{
+      type: "RuntimeError",
+      value: "failed with ISSUE114_EXCEPTION_CONTEXT at /Users/private-builder/secret",
+      stacktrace: %Sentry.Interfaces.Stacktrace{frames: [frame]}
+    }
+
+    %Sentry.Event{
+      event_id: String.duplicate("a", 32),
+      timestamp: "2026-07-30T00:00:00",
+      environment: "test",
+      message: %Sentry.Interfaces.Message{formatted: "ISSUE114_EVENT_MESSAGE"},
+      exception: [exception],
+      extra: %{
+        orchard_request_id: "req_safe",
+        unknown_payload: %{instructions: "ISSUE114_EXTRA_INSTRUCTIONS"}
+      },
+      tags: %{orchard_app: "controller", unknown_tag: "ISSUE114_UNKNOWN_TAG"},
+      breadcrumbs: [
+        %Sentry.Interfaces.Breadcrumb{
+          category: "library.http",
+          message: "ISSUE114_LIBRARY_BREADCRUMB",
+          data: %{body: "ISSUE114_BREADCRUMB_BODY"}
+        },
+        %Sentry.Interfaces.Breadcrumb{
+          category: "orchard.request",
+          message: "request.validated",
+          level: :info,
+          data: %{model_id: "qwen", unknown_payload: "ISSUE114_BREADCRUMB_UNKNOWN"}
+        }
+      ],
+      contexts: %{runtime: %{path: "/Users/private-builder/private"}},
+      modules: %{"issue114_private_dependency" => "ISSUE114_MODULE_VERSION"},
+      fingerprint: ["ISSUE114_FINGERPRINT"],
+      threads: [
+        %Sentry.Interfaces.Thread{
+          id: "ISSUE114_THREAD_ID",
+          name: "ISSUE114_THREAD_NAME",
+          state: %{body: "ISSUE114_THREAD_STATE"}
+        }
+      ],
+      attachments: [
+        %Sentry.Attachment{
+          filename: "ISSUE114_ATTACHMENT.txt",
+          data: "ISSUE114_ATTACHMENT_DATA"
+        }
+      ],
+      original_exception: RuntimeError.exception("ISSUE114_ORIGINAL_EXCEPTION"),
+      request: %Sentry.Interfaces.Request{
+        method: "POST",
+        url: "https://orchard.local/v1/responses?token=ISSUE114_QUERY_SECRET",
+        query_string: "token=ISSUE114_QUERY_SECRET",
+        data: request_data,
+        cookies: %{"session" => "ISSUE114_COOKIE_SECRET"},
+        headers: %{"authorization" => "Bearer ISSUE114_HEADER_SECRET"},
+        env: %{"REMOTE_ADDR" => "192.0.2.42", "SERVER_NAME" => "private-builder.local"}
+      },
+      server_name: "private-builder.local",
+      user: %{username: "private-builder", ip_address: "192.0.2.42"}
+    }
+  end
+
+  defp serialized_filtered_envelope(event) do
+    filtered = SentryFilter.filter(event)
+    {:ok, envelope} = filtered |> Sentry.Envelope.from_event() |> Sentry.Envelope.to_binary()
+    envelope
+  end
+
+  defp envelope_event_payload(envelope) do
+    [_envelope_header, _item_header, event_json | _rest] = String.split(envelope, "\n")
+    Jason.decode!(event_json)
   end
 
   defmodule DummyEvent do
@@ -509,7 +818,7 @@ defmodule Orchard.SentryFilterTest do
     filtered = SentryFilter.filter(event)
 
     assert %DummyEvent{} = filtered
-    assert filtered.request["headers"] == []
+    assert filtered.request == %{}
     assert filtered.data["prompt"] == "[Filtered]"
     assert filtered.data["model"] == "mlx-community/qwen2.5"
     assert filtered.metadata == "[Filtered]"

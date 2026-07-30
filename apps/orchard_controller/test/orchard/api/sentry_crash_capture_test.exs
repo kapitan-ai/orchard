@@ -11,10 +11,37 @@ defmodule Orchard.API.SentryCrashCaptureTest do
   alias Orchard.Repo
   alias Orchard.SentryContext
   alias Orchard.SentryLogger
-  alias __MODULE__.{ControlledCrash, CrashingRequestProcess}
+  alias Orchard.SentryRelease
+
+  alias __MODULE__.{
+    BackgroundCrash,
+    BackgroundCrashProcess,
+    ControlledCrash,
+    CrashingRequestProcess
+  }
 
   defmodule ControlledCrash do
     defexception message: "controlled request-process crash"
+  end
+
+  defmodule BackgroundCrash do
+    defexception message: "controlled background-process crash"
+  end
+
+  defmodule BackgroundCrashProcess do
+    use GenServer
+
+    def start, do: GenServer.start(__MODULE__, nil)
+    def crash(pid), do: GenServer.cast(pid, :crash)
+
+    @impl true
+    def init(state), do: {:ok, state}
+
+    @impl true
+    def handle_cast(:crash, state) do
+      SentryContext.clear_all()
+      raise BackgroundCrash, message: "controlled background-process crash: #{inspect(state)}"
+    end
   end
 
   defmodule CrashingRequestProcess do
@@ -55,8 +82,17 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     SentryContext.clear_all()
     SentryContext.clear_cached_license_status()
 
+    sentry_identity =
+      SentryRelease.identity("orchard_controller", "0.5.0-dev",
+        build_sha: "abcdef1234567890",
+        build_date: "2026-07-30",
+        build_channel: "internal"
+      )
+
     Application.put_env(:sentry, :dsn, "https://public@example.invalid/1")
     Application.put_env(:sentry, :before_send, {Orchard.SentryFilter, :filter})
+    Application.put_env(:sentry, :release, sentry_identity.release)
+    Application.put_env(:sentry, :tags, sentry_identity.tags)
     Application.put_env(:sentry, :send_result, :none)
     Application.put_env(:sentry, :test_mode, true)
     persist_sentry_config()
@@ -95,7 +131,7 @@ defmodule Orchard.API.SentryCrashCaptureTest do
       SentryContext.clear_cached_license_status()
     end)
 
-    %{license_status: license_status}
+    %{license_status: license_status, sentry_identity: sentry_identity}
   end
 
   test "logger-captured request-process crash preserves safe controller Sentry context" do
@@ -117,7 +153,7 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
     assert_receive {:DOWN, ^ref, :process, ^pid, {%ControlledCrash{}, _stack}}, 5_000
 
-    event = pop_controlled_crash_report()
+    event = pop_crash_report(ControlledCrash)
 
     assert event.source == :logger
     assert event.original_exception.__struct__ == ControlledCrash
@@ -142,6 +178,50 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     refute event.extra.orchard_api_key_hash == "[Filtered]"
     refute inspect(event) =~ token
     refute inspect(event) =~ api_key.token_prefix
+
+    {payload, envelope} = serialized_filtered_event(event)
+
+    assert payload["extra"]["orchard_license_id"] == "lic_controller_sentry_crash_test"
+    assert payload["extra"]["orchard_api_key_hash"] == SentryContext.hash_id(api_key.id)
+    assert payload["extra"]["orchard_principal_hash"] == SentryContext.hash_id(tenant.id)
+    assert payload["tags"]["orchard_tracking_reference"] == "phase-6"
+    assert [breadcrumb] = payload["breadcrumbs"]
+    assert breadcrumb["data"] == %{"auth_mechanism" => "bearer"}
+    refute envelope =~ token
+    refute envelope =~ api_key.token_prefix
+    refute envelope =~ "/Users/"
+  end
+
+  test "logger-captured background crash retains static controller identity", %{
+    sentry_identity: identity
+  } do
+    {:ok, pid} = BackgroundCrashProcess.start()
+    :ok = Sentry.Test.allow_sentry_reports(self(), pid)
+
+    ref = Process.monitor(pid)
+    BackgroundCrashProcess.crash(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, {%BackgroundCrash{}, _stack}}, 5_000
+
+    event = pop_crash_report(BackgroundCrash)
+
+    assert event.source == :logger
+    assert event.release == identity.release
+    assert event.tags.orchard_app == "controller"
+    assert event.tags.orchard_version == "0.5.0-dev"
+    assert event.tags.orchard_build_channel == "internal"
+    assert event.tags.build_sha == "abcdef1234567890"
+    assert event.tags.build_date == "2026-07-30"
+    assert event.request.method == nil
+    assert event.user == %{}
+
+    {payload, envelope} = serialized_filtered_event(event)
+
+    assert payload["release"] == identity.release
+    assert payload["tags"]["orchard_app"] == "controller"
+    assert get_in(payload, ["exception", Access.at(0), "value"]) == "[Filtered]"
+    refute envelope =~ "controlled background-process crash"
+    refute envelope =~ "/Users/"
   end
 
   defp create_api_key_with_token!(slug) do
@@ -153,9 +233,9 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     %{tenant: tenant, api_key: api_key, token: token}
   end
 
-  defp pop_controlled_crash_report(deadline \\ System.monotonic_time(:millisecond) + 5_000) do
+  defp pop_crash_report(exception_module, deadline \\ System.monotonic_time(:millisecond) + 5_000) do
     events = Sentry.Test.pop_sentry_reports()
-    event = Enum.find(events, &controlled_crash_event?/1)
+    event = Enum.find(events, &crash_event?(&1, exception_module))
 
     cond do
       event ->
@@ -163,18 +243,25 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
       System.monotonic_time(:millisecond) < deadline ->
         Process.sleep(25)
-        pop_controlled_crash_report(deadline)
+        pop_crash_report(exception_module, deadline)
 
       events == [] ->
-        flunk("request-process crash reached :DOWN but no Sentry event was collected")
+        flunk("crashing process reached :DOWN but no Sentry event was collected")
 
       true ->
-        flunk("Sentry reports were collected, but none matched the controlled crash")
+        flunk("Sentry reports were collected, but none matched #{inspect(exception_module)}")
     end
   end
 
-  defp controlled_crash_event?(event) do
-    match?(%ControlledCrash{}, event.original_exception)
+  defp crash_event?(event, exception_module) do
+    match?(%{__struct__: ^exception_module}, event.original_exception)
+  end
+
+  defp serialized_filtered_event(event) do
+    filtered = Orchard.SentryFilter.filter(event)
+    {:ok, envelope} = filtered |> Sentry.Envelope.from_event() |> Sentry.Envelope.to_binary()
+    [_envelope_header, _item_header, event_json | _rest] = String.split(envelope, "\n")
+    {Jason.decode!(event_json), envelope}
   end
 
   defp snapshot_sentry_env do

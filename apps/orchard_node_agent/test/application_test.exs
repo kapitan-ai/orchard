@@ -151,6 +151,26 @@ defmodule OrchardNodeAgentApplicationTest do
 
   @sentry_dsn "https://public@example.invalid/1"
 
+  defmodule BackgroundCrash do
+    defexception message: "controlled Node Agent background crash"
+  end
+
+  defmodule BackgroundCrashProcess do
+    use GenServer
+
+    def start, do: GenServer.start(__MODULE__, nil)
+    def crash(pid), do: GenServer.cast(pid, :crash)
+
+    @impl true
+    def init(state), do: {:ok, state}
+
+    @impl true
+    def handle_cast(:crash, _state) do
+      Orchard.SentryContext.clear_all()
+      raise OrchardNodeAgentApplicationTest.BackgroundCrash
+    end
+  end
+
   setup do
     previous_env = %{
       sentry_dsn: Application.get_env(:sentry, :dsn),
@@ -348,9 +368,66 @@ defmodule OrchardNodeAgentApplicationTest do
 
     assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
     assert config.capture_log_messages == false
-    assert config.metadata == [:request_id, :worker_model, :orchard_node_id, :model_backend]
+    assert config.metadata == [:request_id, :worker_model, :model_backend]
     assert config.rate_limiting == [max_events: 50, interval: 60_000]
     assert :ok = SentryTelemetryBridge.attach()
+  end
+
+  test "logger-captured background crash retains static Node Agent identity" do
+    previous_sentry = snapshot_sentry_env()
+
+    identity =
+      Orchard.SentryRelease.identity("orchard_node_agent", "0.5.0-dev",
+        build_sha: "abcdef1234567890",
+        build_date: "2026-07-30",
+        build_channel: "internal"
+      )
+
+    on_exit(fn -> restore_sentry_env(previous_sentry) end)
+
+    Application.put_env(:sentry, :dsn, @sentry_dsn)
+    Application.put_env(:sentry, :before_send, {Orchard.SentryFilter, :filter})
+    Application.put_env(:sentry, :environment_name, "issue-114-node-agent")
+    Application.put_env(:sentry, :release, identity.release)
+    Application.put_env(:sentry, :tags, identity.tags)
+    Application.put_env(:sentry, :send_result, :none)
+    Application.put_env(:sentry, :test_mode, true)
+    persist_sentry_config()
+
+    :ok = Sentry.Test.start_collecting_sentry_reports()
+    :ok = Orchard.SentryLogger.install_handler()
+    _flushed_reports = Sentry.Test.pop_sentry_reports()
+
+    {:ok, pid} = BackgroundCrashProcess.start()
+    :ok = Sentry.Test.allow_sentry_reports(self(), pid)
+
+    ref = Process.monitor(pid)
+    BackgroundCrashProcess.crash(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, {%BackgroundCrash{}, _stack}}, 5_000
+
+    event = pop_node_background_crash_report()
+
+    assert event.source == :logger
+    assert event.release == identity.release
+    assert event.environment == "issue-114-node-agent"
+    assert event.tags.orchard_app == "node_agent"
+    assert event.tags.orchard_version == "0.5.0-dev"
+    assert event.tags.orchard_build_channel == "internal"
+    assert event.tags.build_sha == "abcdef1234567890"
+    assert event.tags.build_date == "2026-07-30"
+    assert event.request.method == nil
+    assert event.user == %{}
+
+    envelope = serialized_filtered_envelope(event)
+    payload = envelope |> String.split("\n") |> Enum.at(2) |> Jason.decode!()
+
+    assert payload["release"] == identity.release
+    assert payload["tags"]["orchard_app"] == "node_agent"
+    assert get_in(payload, ["exception", Access.at(0), "value"]) == "[Filtered]"
+    assert get_in(payload, ["exception", Access.at(0), "module"]) == nil
+    refute envelope =~ "controlled Node Agent background crash"
+    refute envelope =~ "/Users/"
   end
 
   test "controller and node-agent in one VM keep exactly one Sentry handler" do
@@ -360,7 +437,7 @@ defmodule OrchardNodeAgentApplicationTest do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
 
     assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
-    assert config.metadata == [:request_id, :worker_model, :orchard_node_id, :model_backend]
+    assert config.metadata == [:request_id, :worker_model, :model_backend]
 
     handler_count =
       :logger.get_handler_ids()
@@ -503,6 +580,56 @@ defmodule OrchardNodeAgentApplicationTest do
       {:error, :not_found} -> :ok
       {:error, {:not_found, Sentry.LoggerHandler}} -> :ok
     end
+  end
+
+  defp pop_node_background_crash_report(deadline \\ System.monotonic_time(:millisecond) + 5_000) do
+    events = Sentry.Test.pop_sentry_reports()
+    event = Enum.find(events, &match?(%BackgroundCrash{}, &1.original_exception))
+
+    cond do
+      event ->
+        event
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(25)
+        pop_node_background_crash_report(deadline)
+
+      events == [] ->
+        flunk("Node Agent process reached :DOWN but no Sentry event was collected")
+
+      true ->
+        flunk("Sentry reports were collected, but none matched the Node Agent crash")
+    end
+  end
+
+  defp serialized_filtered_envelope(event) do
+    filtered_event = Orchard.SentryFilter.filter(event)
+    envelope = Sentry.Envelope.from_event(filtered_event)
+    {:ok, binary} = Sentry.Envelope.to_binary(envelope)
+    binary
+  end
+
+  defp snapshot_sentry_env do
+    :sentry
+    |> Application.get_all_env()
+    |> Map.new()
+  end
+
+  defp restore_sentry_env(previous) do
+    :sentry
+    |> Application.get_all_env()
+    |> Keyword.keys()
+    |> Enum.each(&Application.delete_env(:sentry, &1))
+
+    Enum.each(previous, fn {key, value} -> Application.put_env(:sentry, key, value) end)
+    persist_sentry_config()
+  end
+
+  defp persist_sentry_config do
+    :sentry
+    |> Application.get_all_env()
+    |> Sentry.Config.validate!()
+    |> Sentry.Config.persist()
   end
 
   defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
