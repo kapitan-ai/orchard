@@ -180,6 +180,8 @@ defmodule Orchard.Node.SentryTelemetryBridge do
     |> Map.new(fn {key, value} -> {breadcrumb_key(key), normalize_value(key, value)} end)
   end
 
+  # Orchard.SentryFilter allowlists breadcrumb data by key and does not name `:version`,
+  # so the model version has to ship under the allowlisted `:model_version` key.
   defp breadcrumb_key(:version), do: :model_version
   defp breadcrumb_key(key), do: key
 

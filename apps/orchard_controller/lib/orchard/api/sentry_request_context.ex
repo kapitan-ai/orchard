@@ -1,6 +1,10 @@
 defmodule Orchard.API.SentryRequestContext do
   @moduledoc """
   Adds method-only request context to optional Sentry crash events.
+
+  Deliberately replaces `Sentry.PlugContext`, which collects request URLs, query data, headers,
+  parsed params, and peer addresses into process-local context before Orchard's outbound filter
+  can reject them.
   """
 
   @behaviour Plug

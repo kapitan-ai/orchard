@@ -1,6 +1,10 @@
 defmodule Orchard.SentryRelease do
   @moduledoc """
   Builds static Orchard identity for optional Sentry crash events.
+
+  `runtime_options/1` is also the single place that pins this integration's non-expansion SDK
+  settings: source context, both tracing paths, Sentry Logs, dependency inventory, and client
+  reports are set explicitly so a future SDK default change cannot silently broaden the payload.
   """
 
   @release_components %{
