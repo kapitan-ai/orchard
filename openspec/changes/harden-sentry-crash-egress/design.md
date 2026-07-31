@@ -30,7 +30,7 @@ At investigation start, the authenticated Sentry project was a blank rollout tar
 
 The controller endpoint will install an Orchard-owned Plug that sets Sentry request context to `%{method: conn.method}` and nothing else. It will not call `Sentry.PlugContext`, fetch cookies, fetch query parameters, read headers, inspect parsed params, build a request URL, or inspect peer data.
 
-`Orchard.SentryFilter` will independently reconstruct every top-level `request` interface, whether represented as a map or Sentry struct, with only a normalized safe HTTP method. Allowed methods are standard uppercase HTTP method tokens; invalid or non-binary values are omitted. All other request keys are removed rather than replaced with marker strings so the serialized envelope contains no structural copy of the body.
+`Orchard.SentryFilter` will independently reduce every `request` interface to a normalized safe HTTP method, whichever representation it arrives in. On an actual `Sentry.Event` the request container is rebuilt only when it is the pinned SDK request struct, under the same module-identity gate the other interfaces use; a bare-map or foreign-struct request is dropped outright rather than emitted as a method-only map. The generic-map path still reduces a `request` map to its method, because Orchard reuses that scrubber for local CLI status snapshots. Allowed methods are standard uppercase HTTP method tokens; invalid or non-binary values are omitted. All other request keys are removed rather than replaced with marker strings so the serialized envelope contains no structural copy of the body.
 
 The collection allowlist minimizes process-local exposure. The egress allowlist protects events created outside Plug, future integrations, test fixtures, and accidental context changes. Retaining only one layer is rejected because collection-only protection does not cover synthetic or background events and filter-only protection retains sensitive values longer than necessary.
 
@@ -92,7 +92,7 @@ Unknown source-development release names remain explicit rather than being misla
 
 ### Decision: SDK Diagnostics Stay Narrow And Explicit
 
-Sentry configuration will explicitly keep `enable_logs: false`, `enable_source_code_context: false`, `traces_sample_rate: nil`, `traces_sampler: nil`, and `report_deps: false`. Event deduplication remains enabled. The Logger metadata allowlist will remove raw `orchard_node_id`; hashed node correlation remains available through Orchard-owned enrichment where configured.
+Sentry configuration will explicitly keep `enable_logs: false`, `enable_source_code_context: false`, `traces_sample_rate: nil`, `traces_sampler: nil`, `report_deps: false`, and `send_client_reports: false`. Event deduplication remains enabled through an explicit `dedup_events: true`. The Logger metadata allowlist will remove raw `orchard_node_id`; hashed node correlation remains available through Orchard-owned enrichment where configured.
 
 No source snippets, dependency inventory, tracing spans, transaction events, or Sentry Logs are added. These settings are explicit so a future SDK default change cannot silently broaden the rollout.
 

@@ -6,8 +6,15 @@ defmodule Orchard.SentryFilter do
 
   Two scrubbing paths exist. Structurally detected `Sentry.Event` structs are rebuilt from an
   empty struct, so only allowlisted fields and the internally derived `orchard_thread_stack_hash`
-  reach the envelope. Allowlisted diagnostics pass validators chosen by key; the derived hash uses
-  only retained stack-frame fields and is never accepted from event input. Nested message,
+  extra reach the envelope. Allowlisted diagnostics pass validators chosen by key.
+
+  `orchard_thread_stack_hash` exists because the pinned SDK deduplication hash ignores the thread
+  interface, so thread-only crashes at different sites would otherwise deduplicate into one event.
+  It is the first 16 lowercase hexadecimal characters of a SHA-256 over the module, function,
+  canonical filename, and line number of the frames this filter already transmits, so it discloses
+  nothing beyond them. It is always derived here and never accepted from event input, and it is
+  omitted for exception-backed events and for events with no retained thread frames. It is not a
+  fingerprint and does not override Sentry grouping. Nested message,
   exception, breadcrumb, request, thread, stacktrace, and stack-frame containers are rebuilt only
   when they are the pinned SDK interface struct the renderer requires; any other struct is dropped
   rather than rebuilt as its own module, so foreign defaults cannot reach the envelope and cannot
