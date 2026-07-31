@@ -52,8 +52,8 @@ tool resolution matters.
 ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.hex --if-missing --force
 ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.rebar --if-missing --force
 ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix deps.get
-mise exec -- uv sync --directory native/orchard_tokenizer
-mise exec -- uv sync --directory native/orchard_worker_mlx
+mise exec -- uv sync --locked --directory native/orchard_tokenizer
+mise exec -- uv sync --locked --directory native/orchard_worker_mlx
 mise exec -- npm ci --ignore-scripts
 mise exec -- bin/dev
 ```
