@@ -41,6 +41,7 @@ These markers contain none of the rejected value and keep missing-terminal detec
 The scheduler allowlist retains the opaque cache-affinity HMAC and only its closed typed feedback fields because later placement queries require that non-recoverable key.
 Tool-call identifiers needed for step correlation are replaced by deterministic hashes, while tool names and raw target references are removed.
 `Orchard.Requests` applies it after locking or resolving the authoritative Request snapshot and before every database write.
+A write that reaches the boundary without a resolvable mode is sanitized under the strictest mode rather than stored verbatim.
 Serializers remain responsible for API response construction and do not decide retention.
 
 Database constraints reject canonical requests, request payloads, response payloads, raw error messages, or unknown error codes on a non-`full` row.

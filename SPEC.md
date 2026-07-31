@@ -337,6 +337,7 @@ All public inference requests SHALL normalize into one internal struct:
   input_items: [map()],
   rendered_prompt: binary() | nil,
   input_token_count: non_neg_integer(),
+  store?: boolean(),
   stream?: boolean(),
   sampling: %{
     temperature: float(),
@@ -533,6 +534,8 @@ Each request-step payload SHALL carry:
 * `result`
 
 When applicable, payloads MAY also carry `call_id`, `tool_name`, `arguments_json`, `model_id`, and `model_version`.
+
+Durable retention of these payload fields is bounded by the Request capture mode in §10.10. Outside `full`, `call_id` persists only as a deterministic hash, the step identifiers derived from it embed that hash, and `tool_name`, `arguments_json`, `model_id`, and `model_version` are not retained.
 
 `tool_execution` steps and `request_step.indeterminate` remain future-facing shapes for later hosted-execution slices, but their durable outcome contract is now defined in §3.7.2. This persistence section MUST NOT be interpreted as enabling controller-owned hosted `/v1/responses` tool-execution loops in the current slice.
 
@@ -3908,7 +3911,7 @@ create index idx_audit_logs_cluster_occurred_at
 * `requests`: 90 days metadata minimum
 * `audit_logs`: 365 days minimum
 
-Payload retention follows tenant capture mode.
+Payload retention follows the effective capture mode snapshotted on each Request; see §10.10.
 
 ---
 
