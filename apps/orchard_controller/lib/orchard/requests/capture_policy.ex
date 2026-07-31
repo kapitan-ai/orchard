@@ -8,6 +8,55 @@ defmodule Orchard.Requests.CapturePolicy do
   @event_integer_keys ~w(attempt attempt_index sequence turn_index)
   @result_integer_keys ~w(http_status input_tokens output_tokens)
   @finish_reasons ~w(cancelled content_filter error length stop tool_calls)
+  @stable_error_codes ~w(
+    acquisition_failed
+    artifact_not_found
+    cancelled
+    checksum_mismatch
+    cluster_busy
+    deadline_exceeded
+    insufficient_memory
+    internal_error
+    load_timeout
+    manifest_not_found
+    mlx_backend_unavailable
+    model_busy
+    model_invalid
+    node_timeout
+    node_unavailable
+    orchestration_error
+    queue_full
+    queue_timeout
+    request_cancelled
+    request_caller_disconnect
+    request_client_disconnect
+    request_controller_restarted
+    request_interrupted
+    request_timeout
+    resource_exhausted
+    rpc_error
+    rpc_resource_exhausted
+    rpc_unavailable
+    runtime_incompatible
+    runtime_unavailable
+    timed_out
+    timeout
+    tool_execution_cancelled
+    tool_execution_failed
+    tool_execution_indeterminate_cancel_ack_missing
+    tool_execution_indeterminate_controller_restarted
+    tool_execution_indeterminate_executor_unreachable
+    tool_execution_indeterminate_result_not_observed
+    tool_execution_indeterminate_timeout_after_start
+    tool_execution_timed_out
+    tool_failed
+    tool_timeout
+    tooling_not_supported
+    unexpected_placement_state
+    worker_down
+    worker_unavailable
+    worker_unloaded
+  )
   @schedule_boolean_keys ~w(
     cache_affinity_enabled
     cache_affinity_hint_available
@@ -107,6 +156,7 @@ defmodule Orchard.Requests.CapturePolicy do
   @spec terminal_attrs(mode(), map()) :: map()
   def terminal_attrs(:full, attrs) do
     attrs
+    |> Map.delete(:response_preview_source)
     |> put_response_hash()
     |> Map.update(:response_preview, nil, &bounded_preview/1)
   end
@@ -115,13 +165,15 @@ defmodule Orchard.Requests.CapturePolicy do
     preview =
       case mode do
         :none -> nil
-        :metadata -> metadata_preview(Map.get(attrs, :response_preview))
+        :metadata -> metadata_preview(attrs)
       end
 
     attrs
+    |> Map.delete(:response_preview_source)
     |> put_response_hash()
     |> Map.put(:response_payload, nil)
     |> Map.put(:response_preview, preview)
+    |> Map.update(:error_code, nil, &stable_error_code/1)
     |> Map.put(:error_message, nil)
   end
 
@@ -180,6 +232,10 @@ defmodule Orchard.Requests.CapturePolicy do
       ]
     }
   end
+
+  @doc false
+  @spec stable_error_codes() :: [String.t()]
+  def stable_error_codes, do: @stable_error_codes
 
   @spec safe_columns() :: %{request_events: [atom()], requests: [atom()]}
   def safe_columns do
@@ -290,13 +346,26 @@ defmodule Orchard.Requests.CapturePolicy do
     end
   end
 
-  defp metadata_preview(nil), do: nil
+  defp metadata_preview(%{response_preview_source: :assistant_text} = attrs),
+    do: metadata_preview_value(Map.get(attrs, :response_preview))
 
-  defp metadata_preview(preview) when is_binary(preview) do
+  defp metadata_preview(_attrs), do: nil
+
+  defp metadata_preview_value(nil), do: nil
+
+  defp metadata_preview_value(preview) when is_binary(preview) do
     if codepoint_length(preview) > @preview_limit do
       truncate_preview(preview)
     end
   end
+
+  defp metadata_preview_value(_preview), do: nil
+
+  defp stable_error_code(nil), do: nil
+
+  defp stable_error_code(code) when code in @stable_error_codes, do: code
+
+  defp stable_error_code(_code), do: "internal_error"
 
   defp bounded_preview(nil), do: nil
 

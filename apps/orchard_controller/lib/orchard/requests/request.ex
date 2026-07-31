@@ -191,6 +191,7 @@ defmodule Orchard.Requests.Request do
     |> check_constraint(:response_payload, name: :requests_non_full_content_absent)
     |> check_constraint(:response_preview, name: :requests_none_shape_and_preview_absent)
     |> check_constraint(:response_preview, name: :requests_response_preview_bounded)
+    |> check_constraint(:error_code, name: :requests_non_full_error_code_stable)
   end
 
   @spec schedule_changeset(struct(), map()) :: Ecto.Changeset.t()

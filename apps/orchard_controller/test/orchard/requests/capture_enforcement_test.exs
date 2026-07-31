@@ -244,6 +244,7 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
 
     constraints = MapSet.new(rows, fn [name] -> name end)
     assert "requests_non_full_content_absent" in constraints
+    assert "requests_non_full_error_code_stable" in constraints
     assert "requests_none_shape_and_preview_absent" in constraints
     assert "requests_response_preview_bounded" in constraints
   end

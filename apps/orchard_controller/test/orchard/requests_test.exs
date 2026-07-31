@@ -315,7 +315,12 @@ defmodule Orchard.RequestsTest do
     end
 
     test "atomically commits failure-shaped terminal step rows with the terminal request update" do
-      request = create_request!(%{public_id: "req_terminal_steps_failure", state: :running})
+      request =
+        create_request!(%{
+          public_id: "req_terminal_steps_failure",
+          state: :running,
+          payload_capture_mode: :full
+        })
 
       assert {:ok, updated_request} =
                Requests.mark_terminal_with_step_events(

@@ -1,6 +1,56 @@
 defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
   use Ecto.Migration
 
+  @stable_error_codes ~w(
+    acquisition_failed
+    artifact_not_found
+    cancelled
+    checksum_mismatch
+    cluster_busy
+    deadline_exceeded
+    insufficient_memory
+    internal_error
+    load_timeout
+    manifest_not_found
+    mlx_backend_unavailable
+    model_busy
+    model_invalid
+    node_timeout
+    node_unavailable
+    orchestration_error
+    queue_full
+    queue_timeout
+    request_cancelled
+    request_caller_disconnect
+    request_client_disconnect
+    request_controller_restarted
+    request_interrupted
+    request_timeout
+    resource_exhausted
+    rpc_error
+    rpc_resource_exhausted
+    rpc_unavailable
+    runtime_incompatible
+    runtime_unavailable
+    timed_out
+    timeout
+    tool_execution_cancelled
+    tool_execution_failed
+    tool_execution_indeterminate_cancel_ack_missing
+    tool_execution_indeterminate_controller_restarted
+    tool_execution_indeterminate_executor_unreachable
+    tool_execution_indeterminate_result_not_observed
+    tool_execution_indeterminate_timeout_after_start
+    tool_execution_timed_out
+    tool_failed
+    tool_timeout
+    tooling_not_supported
+    unexpected_placement_state
+    worker_down
+    worker_unavailable
+    worker_unloaded
+  )
+
   def up do
     alter table(:tenants) do
       add(:request_body_capture_mode, :payload_capture_mode,
@@ -41,6 +91,7 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
         request_payload = NULL,
         response_payload = NULL,
         response_preview = NULL,
+        error_code = #{legacy_stable_error_code_sql()},
         error_message = NULL,
         sampling_params = jsonb_strip_nulls(
           jsonb_build_object(
@@ -98,9 +149,17 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
         check: "response_preview IS NULL OR char_length(response_preview) <= 512"
       )
     )
+
+    create(
+      constraint(:requests, :requests_non_full_error_code_stable,
+        check:
+          "payload_capture_mode = 'full' OR error_code IS NULL OR error_code = ANY (#{stable_error_code_array_sql()})"
+      )
+    )
   end
 
   def down do
+    drop_if_exists(constraint(:requests, :requests_non_full_error_code_stable))
     drop_if_exists(constraint(:requests, :requests_response_preview_bounded))
     drop_if_exists(constraint(:requests, :requests_none_shape_and_preview_absent))
     drop_if_exists(constraint(:requests, :requests_non_full_content_absent))
@@ -115,7 +174,9 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
     end
   end
 
-  @doc false
+  @doc """
+  Returns the SQL expression that retains typed cache-affinity metadata while purging legacy scheduler content.
+  """
   @spec legacy_cache_affinity_metadata_sql() :: String.t()
   def legacy_cache_affinity_metadata_sql do
     """
@@ -156,5 +217,30 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
       )
     )
     """
+  end
+
+  @doc """
+  Returns the SQL expression that maps unknown legacy error codes to `internal_error`.
+  """
+  @spec legacy_stable_error_code_sql() :: String.t()
+  def legacy_stable_error_code_sql do
+    """
+    CASE
+      WHEN error_code IS NULL OR error_code = ANY (#{stable_error_code_array_sql()})
+      THEN error_code
+      ELSE 'internal_error'
+    END
+    """
+  end
+
+  @doc """
+  Returns the closed error-code vocabulary accepted on restricted Request rows.
+  """
+  @spec stable_error_codes() :: [String.t()]
+  def stable_error_codes, do: @stable_error_codes
+
+  defp stable_error_code_array_sql do
+    values = Enum.map_join(@stable_error_codes, ", ", &"'#{&1}'")
+    "ARRAY[#{values}]::text[]"
   end
 end

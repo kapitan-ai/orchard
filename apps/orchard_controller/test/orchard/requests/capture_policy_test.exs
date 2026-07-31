@@ -134,7 +134,8 @@ defmodule Orchard.Requests.CapturePolicyTest do
           :metadata,
           terminal_attrs(%{
             response_payload: %{"output_text" => long_response},
-            response_preview: long_response
+            response_preview: long_response,
+            response_preview_source: :assistant_text
           })
         )
 
@@ -170,7 +171,8 @@ defmodule Orchard.Requests.CapturePolicyTest do
             mode,
             terminal_attrs(%{
               response_payload: %{"output_text" => content},
-              response_preview: content
+              response_preview: content,
+              response_preview_source: :assistant_text
             })
           )
 
@@ -180,6 +182,21 @@ defmodule Orchard.Requests.CapturePolicyTest do
         prefix = String.trim_trailing(attrs.response_preview, "…")
         prefix_graphemes = String.graphemes(prefix)
         assert Enum.take(String.graphemes(content), length(prefix_graphemes)) == prefix_graphemes
+      end
+    end
+
+    test "restricted modes retain only closed stable error codes" do
+      for mode <- [:none, :metadata] do
+        assert CapturePolicy.terminal_attrs(mode, %{error_code: "queue_timeout"}).error_code ==
+                 "queue_timeout"
+
+        attrs =
+          CapturePolicy.terminal_attrs(mode, %{
+            error_code: "runtime echoed #{@prompt}"
+          })
+
+        assert attrs.error_code == "internal_error"
+        refute inspect(attrs) =~ @prompt
       end
     end
   end

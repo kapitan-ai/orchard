@@ -4,6 +4,7 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureModeTest do
   alias Ecto.Adapters.SQL
   alias Orchard.Repo
   alias Orchard.Repo.Migrations.RequestBodyCaptureMode
+  alias Orchard.Requests.CapturePolicy
 
   import Orchard.TestSupport.ModelRequestFixtures
 
@@ -61,6 +62,30 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureModeTest do
     run_legacy_scheduler_purge!(request.id)
 
     assert Repo.reload!(request).scheduler_decision == %{}
+  end
+
+  test "legacy purge normalizes runtime-controlled error codes with application parity" do
+    assert MapSet.new(RequestBodyCaptureMode.stable_error_codes()) ==
+             MapSet.new(CapturePolicy.stable_error_codes())
+
+    request =
+      create_request!(%{
+        payload_capture_mode: :full,
+        error_code: "runtime echoed private content"
+      })
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE requests
+      SET payload_capture_mode = 'metadata',
+          error_code = #{RequestBodyCaptureMode.legacy_stable_error_code_sql()}
+      WHERE id::text = $1
+      """,
+      [request.id]
+    )
+
+    assert Repo.reload!(request).error_code == "internal_error"
   end
 
   defp run_legacy_scheduler_purge!(request_id) do

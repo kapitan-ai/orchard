@@ -22,6 +22,8 @@ It stores no request shape, preview, canonical payload, response payload, raw to
 
 `metadata` additionally keeps a fixed allowlisted request shape and an optional non-equivalent preview.
 The shape contains counts, types, lengths, approved identifiers, and hashes, but no caller metadata values, stop text, tool definitions, tool arguments, rendered prompt, or input content.
+A closed non-persisted provenance marker distinguishes assistant-text previews from tool-derived previews.
+Only explicitly marked assistant text is eligible for a metadata preview; tool-derived, missing, or unknown provenance is dropped.
 A metadata preview is stored only when source text exceeds 512 Unicode code points.
 It contains complete source grapheme clusters totaling at most 511 Unicode code points plus one ellipsis, so the retained preview can never equal the complete source.
 
@@ -33,12 +35,13 @@ Streaming `full` requests assemble and persist the final response only at termin
 
 One pure `Orchard.Requests.CapturePolicy` transforms create attributes, terminal attributes, and request event payloads.
 For non-`full` event and scheduler payloads, the policy validates both field names and values through field-specific numeric, boolean, UUID, timestamp, exact-match, and closed-enum rules.
+Restricted terminal writes validate error codes against a closed vocabulary and replace unknown runtime values with `internal_error`.
 The scheduler allowlist retains the opaque cache-affinity HMAC and only its closed typed feedback fields because later placement queries require that non-recoverable key.
 Tool-call identifiers needed for step correlation are replaced by deterministic hashes, while tool names and raw target references are removed.
 `Orchard.Requests` applies it after locking or resolving the authoritative Request snapshot and before every database write.
 Serializers remain responsible for API response construction and do not decide retention.
 
-Database constraints reject canonical requests, request payloads, or response payloads on a non-`full` row.
+Database constraints reject canonical requests, request payloads, response payloads, raw error messages, or unknown error codes on a non-`full` row.
 They also reject previews over 512 characters and any preview on a `none` row.
 Request events require application enforcement because a row-level CHECK cannot reference the parent Request.
 
@@ -59,7 +62,7 @@ No retry path may consult current Tenant policy to widen a source Request snapsh
 ## Existing-row treatment and purge
 
 Existing `metadata` and `none` rows are treated as mislabeled.
-The migration derives approved hashes and bounded metadata artifacts where possible, removes full request and response payloads, removes raw previews and error text that do not meet the target mode, retains only a syntactically valid cache-affinity HMAC with its closed typed feedback fields, and clears all other legacy scheduler decisions and Request-event payloads that cannot be proven safe through SQL-level typed validation.
+The migration derives approved hashes and bounded metadata artifacts where possible, removes full request and response payloads, removes raw previews and error text that do not meet the target mode, normalizes unknown error codes to `internal_error`, retains only a syntactically valid cache-affinity HMAC with its closed typed feedback fields, and clears all other legacy scheduler decisions and Request-event payloads that cannot be proven safe through SQL-level typed validation.
 After cleanup, named constraints are validated.
 
 The regression verifier explicitly classifies `requests.canonical_request`, `requests.request_payload`, `requests.response_payload`, `requests.response_preview`, `requests.request_shape`, `requests.sampling_params`, `requests.response_format`, `requests.scheduler_decision`, `requests.error_message`, and `request_events.payload`.

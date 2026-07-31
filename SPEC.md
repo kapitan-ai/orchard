@@ -3553,9 +3553,66 @@ create table requests (
       canonical_request is null
       and request_payload is null
       and response_payload is null
+      and error_message is null
     )
   ),
-  check (payload_capture_mode <> 'none' or response_preview is null),
+  check (
+    payload_capture_mode <> 'none'
+    or (request_shape is null and response_preview is null)
+  ),
+  check (
+    payload_capture_mode = 'full'
+    or error_code is null
+    or error_code in (
+      'acquisition_failed',
+      'artifact_not_found',
+      'cancelled',
+      'checksum_mismatch',
+      'cluster_busy',
+      'deadline_exceeded',
+      'insufficient_memory',
+      'internal_error',
+      'load_timeout',
+      'manifest_not_found',
+      'mlx_backend_unavailable',
+      'model_busy',
+      'model_invalid',
+      'node_timeout',
+      'node_unavailable',
+      'orchestration_error',
+      'queue_full',
+      'queue_timeout',
+      'request_cancelled',
+      'request_caller_disconnect',
+      'request_client_disconnect',
+      'request_controller_restarted',
+      'request_interrupted',
+      'request_timeout',
+      'resource_exhausted',
+      'rpc_error',
+      'rpc_resource_exhausted',
+      'rpc_unavailable',
+      'runtime_incompatible',
+      'runtime_unavailable',
+      'timed_out',
+      'timeout',
+      'tool_execution_cancelled',
+      'tool_execution_failed',
+      'tool_execution_indeterminate_cancel_ack_missing',
+      'tool_execution_indeterminate_controller_restarted',
+      'tool_execution_indeterminate_executor_unreachable',
+      'tool_execution_indeterminate_result_not_observed',
+      'tool_execution_indeterminate_timeout_after_start',
+      'tool_execution_timed_out',
+      'tool_failed',
+      'tool_timeout',
+      'tooling_not_supported',
+      'unexpected_placement_state',
+      'worker_down',
+      'worker_unavailable',
+      'worker_unloaded'
+    )
+  ),
   check (response_preview is null or char_length(response_preview) <= 512)
 );
 

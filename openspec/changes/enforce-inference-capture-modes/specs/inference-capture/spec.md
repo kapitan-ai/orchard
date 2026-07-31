@@ -26,7 +26,9 @@ This requirement refines `SPEC.md` sections 7.4.2 and 10.10.
 Orchard SHALL enforce capture policy at the Requests persistence boundary for Request rows and request event payloads.
 `none` SHALL retain hashes, usage, stable error codes, state, timestamps, and required operational metadata but no prompt, response, preview, raw tool argument, or raw runtime error text.
 `metadata` SHALL additionally retain only an allowlisted bounded shape and an optional non-equivalent preview.
+A metadata preview SHALL derive only from assistant text and SHALL NOT derive from a model-generated tool call, tool name, target reference, or tool argument.
 A metadata preview SHALL exist only when its source exceeds 512 Unicode code points and SHALL contain complete source grapheme clusters totaling at most 511 Unicode code points plus one ellipsis.
+Restricted-mode error codes SHALL come from a closed stable vocabulary, and unknown runtime-supplied values SHALL normalize to `internal_error`.
 `full` MAY retain approved canonical request and response payloads, and its convenience preview SHALL remain at most 512 Unicode code points without splitting a grapheme cluster.
 This requirement refines `SPEC.md` section 10.10.
 
@@ -60,7 +62,7 @@ This requirement refines `SPEC.md` section 7.3.4 and section 10.10.
 
 Orchard SHALL purge existing `none` and `metadata` rows that contain content forbidden by their label.
 The purge SHALL cover every classified content-bearing Request column and `request_events.payload`.
-Named database constraints SHALL reject full request or response payloads on non-`full` rows, previews on `none` rows, and previews over 512 characters.
+Named database constraints SHALL reject full request or response payloads on non-`full` rows, previews on `none` rows, previews over 512 characters, and unknown error codes on restricted rows.
 A schema-drift regression SHALL fail when a newly added text, JSON, or binary Request column is not classified for capture and purge.
 This requirement refines `SPEC.md` section 10.10.
 
