@@ -91,6 +91,7 @@ defmodule Orchard.API.Ops.SchedulerExplanationsControllerTest do
       request =
         create_request!(%{
           public_id: "resp_scheduler_explanation_invalid",
+          payload_capture_mode: :full,
           scheduler_decision: %{
             "request_id" => "resp_scheduler_explanation_invalid",
             "selected_node_id" => "node-selected",

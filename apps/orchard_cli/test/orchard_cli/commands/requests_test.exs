@@ -135,6 +135,7 @@ defmodule OrchardCLI.Commands.RequestsTest do
       request =
         create_request!(%{
           public_id: "resp_cli_invalid_scheduler_explanation",
+          payload_capture_mode: :full,
           scheduler_decision: %{
             "request_id" => "resp_cli_invalid_scheduler_explanation",
             "rejected_candidates" => [

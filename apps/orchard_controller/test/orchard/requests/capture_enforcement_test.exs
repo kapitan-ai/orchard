@@ -122,6 +122,31 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
     assert full.response_preview == @private_response
   end
 
+  test "none and metadata sanitize a prefilled scheduler decision during creation" do
+    affinity_key = "hmac-sha256:#{String.duplicate("a", 64)}"
+
+    for mode <- [:none, :metadata] do
+      attrs =
+        mode
+        |> request_attrs()
+        |> Map.put(:scheduler_decision, %{
+          cache_affinity_key: affinity_key,
+          cache_affinity_enabled: true,
+          prompt: @private_prompt,
+          diagnostics: %{"content" => @private_prompt}
+        })
+
+      assert {:ok, request} = Requests.create_request(attrs)
+
+      assert request.scheduler_decision == %{
+               "cache_affinity_enabled" => true,
+               "cache_affinity_key" => affinity_key
+             }
+
+      refute inspect(request.scheduler_decision) =~ @private_prompt
+    end
+  end
+
   test "none and metadata schedule persistence accepts valid timestamps and drops malformed values" do
     timestamp = "2026-07-31T04:00:00Z"
 

@@ -313,12 +313,14 @@ defmodule OrchardConsole.RequestLiveTest do
     end
 
     test "renders multi-node scheduling metadata from scheduler_decision", %{conn: conn} do
+      node_id = Ecto.UUID.generate()
+
       request =
         create_request!(%{
           state: :completed,
           scheduler_decision: %{
             "strategy" => "multi_node",
-            "node_id" => "aaaa-0001",
+            "node_id" => node_id,
             "candidate_count" => 2,
             "selected_tier" => "loaded"
           }
@@ -330,7 +332,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert strategy_html =~ "multi_node"
 
       node_html = element(view, "#request-schedule-node") |> render()
-      assert node_html =~ "aaaa-0001"
+      assert node_html =~ node_id
 
       candidates_html = element(view, "#request-schedule-candidates") |> render()
       assert candidates_html =~ "2"
@@ -452,6 +454,7 @@ defmodule OrchardConsole.RequestLiveTest do
         create_request!(%{
           state: :completed,
           public_id: "resp_console_scheduler_explanation_invalid",
+          payload_capture_mode: :full,
           scheduler_decision: %{
             "request_id" => "resp_console_scheduler_explanation_invalid",
             "selected_node_id" => "node-selected",

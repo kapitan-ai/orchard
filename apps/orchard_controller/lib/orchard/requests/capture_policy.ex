@@ -90,6 +90,7 @@ defmodule Orchard.Requests.CapturePolicy do
     |> update_existing(:sampling_params, &sanitize_sampling/1)
     |> update_existing(:response_format, &sanitize_response_format/1)
     |> then(&terminal_attrs(:none, &1))
+    |> sanitize_initial_schedule(:none)
   end
 
   def create_attrs(:metadata, attrs) do
@@ -100,6 +101,7 @@ defmodule Orchard.Requests.CapturePolicy do
     |> update_existing(:sampling_params, &sanitize_sampling/1)
     |> update_existing(:response_format, &sanitize_response_format/1)
     |> then(&terminal_attrs(:metadata, &1))
+    |> sanitize_initial_schedule(:metadata)
   end
 
   @spec terminal_attrs(mode(), map()) :: map()
@@ -536,6 +538,20 @@ defmodule Orchard.Requests.CapturePolicy do
 
       _value ->
         sanitized
+    end
+  end
+
+  defp sanitize_initial_schedule(attrs, mode) do
+    case Map.fetch(attrs, :scheduler_decision) do
+      {:ok, decision} when is_map(decision) ->
+        approved = %{requested_model: Map.get(attrs, :requested_model)}
+        Map.put(attrs, :scheduler_decision, schedule_attrs(mode, decision, approved))
+
+      {:ok, _decision} ->
+        Map.put(attrs, :scheduler_decision, nil)
+
+      :error ->
+        attrs
     end
   end
 
