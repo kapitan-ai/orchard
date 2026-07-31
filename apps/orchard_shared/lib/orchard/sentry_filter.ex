@@ -5,9 +5,10 @@ defmodule Orchard.SentryFilter do
   Operates on generic maps and structs so orchard_shared does not need a Sentry compile dependency.
 
   Two scrubbing paths exist. Structurally detected `Sentry.Event` structs are rebuilt from an
-  empty struct, so only allowlisted fields reach the envelope and every retained diagnostic must
-  pass a validator chosen by its key; a newly allowlisted key without a validator stays filtered.
-  Every other map or struct keeps the recursive denylist scrub, which Orchard also uses for local
+  empty struct, so only allowlisted fields and the internally derived `orchard_thread_stack_hash`
+  reach the envelope. Allowlisted diagnostics pass validators chosen by key; the derived hash uses
+  only retained stack-frame fields and is never accepted from event input. Every other map or
+  struct keeps the recursive denylist scrub, which Orchard also uses for local
   CLI status snapshots. Both paths fail closed: a raised or thrown scrubbing failure reduces the
   payload to validated identity plus fixed markers rather than passing the original through.
   """
