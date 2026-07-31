@@ -69,8 +69,13 @@ jobs:
       - name: Bootstrap native environments from lockfiles
         run: |
           mise exec -- uv sync --locked --directory native/orchard_tokenizer
-          mise exec -- uv sync --locked --directory native/orchard_worker_mlx
+          mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
           mise exec -- native/orchard_worker_mlx/bin/orchard-worker-mlx --help >/dev/null
+
+      - name: Validate MLX-LM security baseline
+        run: |
+          mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
+            pytest
 
       - name: Install OpenSpec dependencies
         run: make setup-openspec
