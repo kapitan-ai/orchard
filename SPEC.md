@@ -623,7 +623,7 @@ The controller SHALL support `Idempotency-Key` on both public inference endpoint
 Rules:
 
 * uniqueness scope: `(tenant_id, idempotency_key)`
-* if same key + same body hash already completed and `stream=false`, return stored result
+* if same key + same body hash already completed and `stream=false`, return the stored result when the Request retained its `response_payload`, otherwise return `409 idempotency_not_replayable` (see §10.10 for when payloads are retained)
 * if same key + same body hash is still active, return `409 request_in_progress`
 * if same key reused with different body hash, return `409 idempotency_mismatch`
 * streaming responses SHALL NOT be replayed from persisted token chunks in v1
@@ -2088,7 +2088,7 @@ The Responses API in OpenAI’s current documentation uses typed semantic stream
 
 * accepted for compatibility
 * does **not** disable internal accounting/audit metadata
-* when `store=false`, full prompt/response payload retention SHALL follow tenant retention policy and default to redacted metadata only
+* when `store=false`, payload retention narrows the effective capture mode under the rules in §10.10 Data governance
 
 Example sync response with a function call item:
 
@@ -2272,11 +2272,11 @@ Response example:
 ```json
 {
   "request_id": "resp_01J...",
-  "selected_node_id": "node-2",
+  "selected_node_id": "11111111-1111-4111-8111-111111111111",
   "selection_tier": "loaded",
   "scored_candidates": [
     {
-      "node_id": "node-2",
+      "node_id": "11111111-1111-4111-8111-111111111111",
       "eligible": true,
       "tier": "loaded",
       "score": 842,
@@ -2294,13 +2294,13 @@ Response example:
   ],
   "rejected_candidates": [
     {
-      "node_id": "node-1",
+      "node_id": "22222222-2222-4222-8222-222222222222",
       "reason_codes": ["node_not_active", "insufficient_memory"]
     }
   ],
   "skipped_candidates": [
     {
-      "node_id": "node-3",
+      "node_id": "33333333-3333-4333-8333-333333333333",
       "reason_codes": ["lower_tier_not_considered"]
     }
   ]
