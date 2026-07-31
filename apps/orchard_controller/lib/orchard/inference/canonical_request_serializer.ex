@@ -20,6 +20,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
       "input_items" => normalize_plain_data(canonical.input_items),
       "rendered_prompt" => canonical.rendered_prompt,
       "input_token_count" => canonical.input_token_count,
+      "store" => canonical.store?,
       "stream" => canonical.stream?,
       "stream_include_usage" => canonical.stream_include_usage,
       "sampling" => sampling_params(canonical.sampling),

@@ -2647,6 +2647,7 @@ defmodule Orchard.Inference.QueueManagerTest do
 
   test "startup reconciliation reclaims pre-dispatch rows after boot-token child restart" do
     boot_token = {__MODULE__, System.unique_integer([:positive])}
+    running_grant_id = Ecto.UUID.generate()
 
     stale =
       create_request!("req_queue_boot_token_stale",
@@ -2660,7 +2661,7 @@ defmodule Orchard.Inference.QueueManagerTest do
         queueing_enabled: true,
         queue_key: "queue-model@v1",
         queue_result: "immediate",
-        queue_grant_id: "grant-boot-token-running",
+        queue_grant_id: running_grant_id,
         queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
       }
     )
@@ -2698,7 +2699,7 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert live.error_code == "request_controller_restarted"
     assert_queue_metadata(live, "interrupted_controller_restarted", queued?: true)
 
-    assert :ok = QueueManager.release("grant-boot-token-running", server: manager)
+    assert :ok = QueueManager.release(running_grant_id, server: manager)
 
     assert {:ok, grant} =
              QueueManager.acquire(admission_request("req-after-child-restart"),
@@ -2716,13 +2717,15 @@ defmodule Orchard.Inference.QueueManagerTest do
   end
 
   test "startup reconciliation reconstructs active grant ownership" do
+    recovered_grant_id = Ecto.UUID.generate()
+
     create_request!("req_queue_recovered_active",
       state: :scheduled,
       scheduler_decision: %{
         queueing_enabled: true,
         queue_key: "queue-model@v1",
         queue_result: "immediate",
-        queue_grant_id: "grant-recovered",
+        queue_grant_id: recovered_grant_id,
         queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
       }
     )
@@ -2736,7 +2739,7 @@ defmodule Orchard.Inference.QueueManagerTest do
                config: queue_config(max_wait_ms: 200)
              )
 
-    assert :ok = QueueManager.release("grant-recovered", server: manager)
+    assert :ok = QueueManager.release(recovered_grant_id, server: manager)
     assert {:ok, grant} = QueueManager.await(ticket)
     assert grant.queue_result == :queued
 
@@ -2746,6 +2749,7 @@ defmodule Orchard.Inference.QueueManagerTest do
   test "SPEC.md §5.5 recovered grant with persisted node does not reserve other nodes" do
     recovered_node_id = Ecto.UUID.generate()
     observed_node_id = Ecto.UUID.generate()
+    recovered_grant_id = Ecto.UUID.generate()
 
     create_request!("req_queue_recovered_known_node",
       state: :running,
@@ -2754,7 +2758,7 @@ defmodule Orchard.Inference.QueueManagerTest do
         queueing_enabled: true,
         queue_key: "queue-model@v1",
         queue_result: "immediate",
-        queue_grant_id: "grant-recovered-known-node",
+        queue_grant_id: recovered_grant_id,
         queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
       }
     )
@@ -2797,11 +2801,12 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert grant.queue_key == "known-node-recovery-other@v1"
 
     assert :ok = QueueManager.release(grant, server: manager)
-    assert :ok = QueueManager.release("grant-recovered-known-node", server: manager)
+    assert :ok = QueueManager.release(recovered_grant_id, server: manager)
   end
 
   test "SPEC.md §5.3 recovered active grants count against tenant concurrency" do
     tenant_id = Ecto.UUID.generate()
+    recovered_grant_id = Ecto.UUID.generate()
 
     recovered_request =
       create_request!("req_queue_recovered_tenant_active",
@@ -2812,7 +2817,7 @@ defmodule Orchard.Inference.QueueManagerTest do
           queueing_enabled: true,
           queue_key: "queue-model-a@v1",
           queue_result: "immediate",
-          queue_grant_id: "grant-recovered-tenant-active",
+          queue_grant_id: recovered_grant_id,
           queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
         }
       )
@@ -3240,7 +3245,7 @@ defmodule Orchard.Inference.QueueManagerTest do
       queueing_enabled: true,
       queue_key: "queue-model@v1",
       queue_result: "immediate",
-      queue_grant_id: "grant-child-restart-admitted",
+      queue_grant_id: Ecto.UUID.generate(),
       queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
     }
   end

@@ -218,7 +218,12 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
   end
 
   defp create_api_key_with_token!(slug) do
-    {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
+    {:ok, tenant} =
+      Governance.create_tenant(%{
+        slug: slug,
+        name: String.capitalize(slug),
+        request_body_capture_mode: :full
+      })
 
     {:ok, %{api_key: api_key, token: token}} =
       Governance.create_api_key(tenant.id, %{name: "Primary"})
@@ -535,6 +540,7 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
       "input_items",
       "rendered_prompt",
       "input_token_count",
+      "store",
       "stream",
       "stream_include_usage",
       "sampling",

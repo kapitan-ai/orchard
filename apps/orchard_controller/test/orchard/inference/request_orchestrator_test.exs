@@ -776,6 +776,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.CanonicalRequest
   alias Orchard.DispatchCapacity
   alias Orchard.DispatchCapacity.Policy
+  alias Orchard.Governance
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
   alias Orchard.Inference.RequestOrchestrator
@@ -812,6 +813,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
 
     Process.register(self(), :request_orchestrator_test_pid)
+
+    tenant_suffix = System.unique_integer([:positive])
+
+    {:ok, full_capture_tenant} =
+      Governance.create_tenant(%{
+        slug: "request-orchestrator-full-#{tenant_suffix}",
+        name: "Request Orchestrator Full #{tenant_suffix}",
+        request_body_capture_mode: :full
+      })
+
+    Process.put(:request_orchestrator_full_capture_tenant_id, full_capture_tenant.id)
 
     on_exit(fn ->
       if Process.whereis(:request_orchestrator_test_pid) == self() do
@@ -922,6 +934,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
         body_hash: idempotency.body_hash,
         stream: false,
         state: :completed,
+        payload_capture_mode: :full,
         requested_model: "request-orchestrator-idem-replay@v1",
         response_payload: %{"id" => "req_existing_replay_sentry"}
       })
@@ -1968,7 +1981,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.response_preview != nil
   end
 
-  test "execute/3 skips success payload persistence for streaming requests", %{bundle: bundle} do
+  test "execute/3 persists the assembled terminal payload for full-capture streaming requests", %{
+    bundle: bundle
+  } do
     model = create_active_model!(bundle, "request-orchestrator-stream")
     canonical = canonical_request("request-orchestrator-stream", stream?: true)
 
@@ -1986,8 +2001,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.stream == true
-    assert request.response_payload == nil
-    assert request.response_preview == nil
+    assert request.response_payload == %{"id" => canonical.public_id}
+    assert request.response_preview == "should-not-persist"
   end
 
   test "execute/3 returns an error before insert when canonical serialization fails", %{
@@ -2024,6 +2039,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
         body_hash: idempotency.body_hash,
         stream: false,
         state: :completed,
+        payload_capture_mode: :full,
         requested_model: "request-orchestrator-idem-replay@v1",
         response_payload: %{"id" => "req_existing_replay"}
       })
@@ -3626,7 +3642,15 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     endpoint = Keyword.get(overrides, :endpoint, :chat_completions)
     stream? = Keyword.get(overrides, :stream?, false)
     metadata = Keyword.get(overrides, :metadata, %{})
-    tenant_id = Keyword.get(overrides, :tenant_id, Ecto.UUID.generate())
+
+    tenant_id =
+      Keyword.get(
+        overrides,
+        :tenant_id,
+        Process.get(:request_orchestrator_full_capture_tenant_id) ||
+          raise("full-capture test tenant is not configured")
+      )
+
     public_id = Keyword.get(overrides, :public_id, "req_#{System.unique_integer([:positive])}")
     stop = Keyword.get(overrides, :stop, [])
     max_output_tokens = Keyword.get(overrides, :max_output_tokens)

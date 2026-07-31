@@ -42,9 +42,13 @@ defmodule Orchard.Inference.ResponsesSerializer do
       when is_list(events) do
     output_text = collect_output_text(events)
 
+    {response_preview, response_preview_source} =
+      persistence_preview(output_text, tool_call_preview(events))
+
     %{
       response_payload: response_payload(canonical, events, created_at_override),
-      response_preview: preview_content(output_text, tool_call_preview(events))
+      response_preview: response_preview,
+      response_preview_source: response_preview_source
     }
   end
 
@@ -249,8 +253,10 @@ defmodule Orchard.Inference.ResponsesSerializer do
     |> ToolCallAccumulator.preview()
   end
 
-  defp preview_content("", tool_preview) when tool_preview != "", do: tool_preview
-  defp preview_content(content, _tool_preview), do: content
+  defp persistence_preview("", tool_preview) when tool_preview != "",
+    do: {tool_preview, :tool_call}
+
+  defp persistence_preview(content, _tool_preview), do: {content, :assistant_text}
 
   defp tool_call_accumulator!(events) do
     case ToolCallAccumulator.from_events(events) do

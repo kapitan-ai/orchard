@@ -278,7 +278,7 @@ A durable governance or security event record for significant administrative and
 _Avoid_: Support Bundle, debug log, structured log, trace span
 
 **Payload Capture Mode**:
-A tenant setting that controls how much prompt and response payload data Orchard may retain.
+A tenant setting that controls how much prompt and response payload data Orchard may retain, resolved into an effective mode that each Request snapshots for its whole lifetime.
 _Avoid_: Audit Log, Support Bundle, logging level
 
 ### Requests and Inference

@@ -4,6 +4,7 @@ defmodule Orchard.Inference.ChatResponseSerializerTest do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.ChatResponseSerializer
   alias Orchard.InferenceEvent
+  alias Orchard.Requests.CapturePolicy
 
   test "completion_payload/2 matches chat completion shape and uses accepted timestamp" do
     canonical = build_canonical("chatcmpl_test")
@@ -122,6 +123,34 @@ defmodule Orchard.Inference.ChatResponseSerializerTest do
 
     assert attrs.response_preview ==
              "Tool call: lookup_weather({\"city\":\"Singapore\"})"
+
+    assert attrs.response_preview_source == :tool_call
+  end
+
+  test "restricted capture drops tool-call previews while full keeps a bounded preview" do
+    canonical = build_canonical("chatcmpl_tool_capture")
+    arguments = Jason.encode!(%{"private" => String.duplicate("x", 700)})
+
+    events = [
+      InferenceEvent.accepted(42_000),
+      tool_call_event("call_0", %{index: 0, type: "function", function: %{name: "private_tool"}}),
+      tool_call_event("call_0", %{index: 0, function: %{arguments_delta: arguments}}),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
+    ]
+
+    attrs = ChatResponseSerializer.success_persistence_attrs(canonical, events)
+
+    for mode <- [:none, :metadata] do
+      restricted = CapturePolicy.terminal_attrs(mode, attrs)
+      assert restricted.response_preview == nil
+      refute Map.has_key?(restricted, :response_preview_source)
+      refute inspect(restricted) =~ "private_tool"
+    end
+
+    full = CapturePolicy.terminal_attrs(:full, attrs)
+    assert String.starts_with?(full.response_preview, "Tool call: private_tool(")
+    assert String.length(full.response_preview) == 512
+    refute Map.has_key?(full, :response_preview_source)
   end
 
   test "usage_map/1 zero-fills nil usage" do
