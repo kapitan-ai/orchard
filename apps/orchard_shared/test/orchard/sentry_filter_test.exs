@@ -3,6 +3,44 @@ defmodule Orchard.SentryFilterTest do
 
   alias Orchard.SentryFilter
 
+  defmodule ForeignMessage do
+    defstruct formatted: "ISSUE114_FOREIGN_MESSAGE", message: "ISSUE114_FOREIGN_MESSAGE"
+  end
+
+  defmodule ForeignException do
+    defstruct type: "RuntimeError",
+              value: "ISSUE114_FOREIGN_EXCEPTION",
+              module: nil,
+              stacktrace: nil,
+              mechanism: nil,
+              note: "ISSUE114_FOREIGN_EXCEPTION"
+  end
+
+  defmodule ForeignBreadcrumb do
+    defstruct category: "orchard.request",
+              message: "request.validated",
+              data: %{model_id: "qwen"},
+              level: :info,
+              timestamp: nil,
+              note: "ISSUE114_FOREIGN_BREADCRUMB"
+  end
+
+  defmodule ForeignRequest do
+    defstruct method: "POST", url: "https://orchard.local/ISSUE114_FOREIGN_REQUEST"
+  end
+
+  defmodule ForeignStacktrace do
+    defstruct frames: [], note: "ISSUE114_FOREIGN_STACKTRACE"
+  end
+
+  defmodule ForeignFrame do
+    defstruct module: nil,
+              function: nil,
+              filename: nil,
+              lineno: nil,
+              vars: %{authorization: "ISSUE114_FOREIGN_FRAME"}
+  end
+
   test "reconstructs string-keyed request context from the method allowlist" do
     event = %{
       "request" => %{
@@ -1030,6 +1068,105 @@ defmodule Orchard.SentryFilterTest do
     assert Regex.match?(~r/\A[0-9a-f]{16}\z/, extra["orchard_thread_stack_hash"])
     assert map_size(extra) == 1
     refute envelope =~ "ISSUE114_HOSTILE"
+  end
+
+  test "frameless non-exception events share one deduplicated hosted issue" do
+    shutdown = frameless_event("** (stop) {:shutdown, :ISSUE114_DB_UNAVAILABLE}")
+    max_restarts = frameless_event("** (stop) :ISSUE114_MAX_RESTARTS_REACHED")
+
+    first = SentryFilter.filter(shutdown)
+    second = SentryFilter.filter(max_restarts)
+
+    assert first.message.formatted == "[Filtered]"
+    assert second.message.formatted == "[Filtered]"
+    assert first.threads == nil
+    assert second.threads == nil
+    refute Map.has_key?(first.extra, :orchard_thread_stack_hash)
+    refute Map.has_key?(second.extra, :orchard_thread_stack_hash)
+
+    assert Sentry.Event.hash(first) == Sentry.Event.hash(second)
+
+    for event <- [shutdown, max_restarts] do
+      envelope = serialized_filtered_envelope(event)
+
+      refute envelope =~ "ISSUE114"
+      refute envelope =~ "orchard_thread_stack_hash"
+    end
+  end
+
+  test "drops foreign interface structs instead of rebuilding their modules" do
+    event = %{
+      sentry_event(%{})
+      | message: %ForeignMessage{},
+        exception: [%ForeignException{}],
+        breadcrumbs: [%ForeignBreadcrumb{}],
+        request: %ForeignRequest{},
+        threads: [
+          %Sentry.Interfaces.Thread{
+            id: String.duplicate("c", 32),
+            stacktrace: %ForeignStacktrace{frames: [first_party_frame()]}
+          }
+        ]
+    }
+
+    envelope = serialized_filtered_envelope(event)
+    payload = envelope_event_payload(envelope)
+
+    assert payload["message"] in [nil, %{}]
+    assert payload["exception"] in [nil, []]
+    assert payload["breadcrumbs"] in [nil, []]
+    assert payload["request"] in [nil, %{}]
+    assert payload["threads"] in [nil, []]
+    refute envelope =~ "ISSUE114_FOREIGN"
+  end
+
+  test "drops foreign stacktrace and frame structs inside rebuilt exceptions" do
+    event = sentry_event(%{})
+    [exception] = event.exception
+
+    foreign_stacktrace =
+      %{event | exception: [%{exception | stacktrace: %ForeignStacktrace{frames: []}}]}
+
+    [rendered] =
+      foreign_stacktrace
+      |> serialized_filtered_envelope()
+      |> envelope_event_payload()
+      |> Map.fetch!("exception")
+
+    refute Map.has_key?(rendered, "stacktrace")
+
+    foreign_frame = %{
+      event
+      | exception: [
+          %{
+            exception
+            | stacktrace: %Sentry.Interfaces.Stacktrace{
+                frames: [%ForeignFrame{}, first_party_frame()]
+              }
+          }
+        ]
+    }
+
+    envelope = serialized_filtered_envelope(foreign_frame)
+    payload = envelope_event_payload(envelope)
+
+    assert [%{"filename" => "apps/orchard_controller/lib/orchard/api/responses_controller.ex"}] =
+             get_in(payload, ["exception", Access.at(0), "stacktrace", "frames"])
+
+    refute envelope =~ "ISSUE114_FOREIGN"
+  end
+
+  defp frameless_event(formatted) do
+    %{
+      sentry_event(%{})
+      | exception: [],
+        threads: nil,
+        breadcrumbs: [],
+        request: nil,
+        tags: %{},
+        extra: %{crash_reason: formatted, logger_level: :error},
+        message: %Sentry.Interfaces.Message{formatted: formatted}
+    }
   end
 
   defp thread_event(frames, extra \\ %{}) do

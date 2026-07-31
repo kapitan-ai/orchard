@@ -7,10 +7,14 @@ defmodule Orchard.SentryFilter do
   Two scrubbing paths exist. Structurally detected `Sentry.Event` structs are rebuilt from an
   empty struct, so only allowlisted fields and the internally derived `orchard_thread_stack_hash`
   reach the envelope. Allowlisted diagnostics pass validators chosen by key; the derived hash uses
-  only retained stack-frame fields and is never accepted from event input. Every other map or
-  struct keeps the recursive denylist scrub, which Orchard also uses for local
-  CLI status snapshots. Both paths fail closed: a raised or thrown scrubbing failure reduces the
-  payload to validated identity plus fixed markers rather than passing the original through.
+  only retained stack-frame fields and is never accepted from event input. Nested message,
+  exception, breadcrumb, request, thread, stacktrace, and stack-frame containers are rebuilt only
+  when they are the pinned SDK interface struct the renderer requires; any other struct is dropped
+  rather than rebuilt as its own module, so foreign defaults cannot reach the envelope and cannot
+  raise during serialization. Every other map or struct keeps the recursive denylist scrub, which
+  Orchard also uses for local CLI status snapshots. Both paths fail closed: a raised or thrown
+  scrubbing failure reduces the payload to validated identity plus fixed markers rather than
+  passing the original through.
   """
 
   @filtered "[Filtered]"
@@ -21,8 +25,13 @@ defmodule Orchard.SentryFilter do
   @stack_hash_frame_keys [:module, :function, :filename, :lineno]
 
   @sentry_event_module ["Sentry", "Event"]
+  @sentry_message_module ["Sentry", "Interfaces", "Message"]
+  @sentry_exception_module ["Sentry", "Interfaces", "Exception"]
+  @sentry_breadcrumb_module ["Sentry", "Interfaces", "Breadcrumb"]
+  @sentry_request_module ["Sentry", "Interfaces", "Request"]
   @sentry_thread_module ["Sentry", "Interfaces", "Thread"]
   @sentry_stacktrace_module ["Sentry", "Interfaces", "Stacktrace"]
+  @sentry_frame_module ["Sentry", "Interfaces", "Stacktrace", "Frame"]
 
   @allowed_http_methods MapSet.new(~w(CONNECT DELETE GET HEAD OPTIONS PATCH POST PUT TRACE))
   @safe_frame_keys MapSet.new(~w(module function filename lineno colno in_app))
@@ -265,12 +274,8 @@ defmodule Orchard.SentryFilter do
     |> then(&struct(module, &1))
   end
 
-  defp scrub_event_message(nil), do: nil
-
-  defp scrub_event_message(%{__struct__: module}) when is_atom(module) do
-    base = struct(module)
-
-    if Map.has_key?(base, :formatted) do
+  defp scrub_event_message(%{__struct__: module} = message) when is_atom(module) do
+    if sentry_struct?(message, @sentry_message_module) do
       struct(module, formatted: @filtered)
     end
   rescue
@@ -394,6 +399,14 @@ defmodule Orchard.SentryFilter do
   defp safe_thread_id(_value), do: @fallback_thread_id
 
   defp scrub_event_exception(%{__struct__: module} = exception) when is_atom(module) do
+    if sentry_struct?(exception, @sentry_exception_module) do
+      rebuild_exception(exception, module)
+    end
+  end
+
+  defp scrub_event_exception(_exception), do: nil
+
+  defp rebuild_exception(exception, module) do
     exception_map = Map.from_struct(exception)
     base = struct(module)
 
@@ -415,12 +428,8 @@ defmodule Orchard.SentryFilter do
     _kind, _reason -> nil
   end
 
-  defp scrub_event_exception(_exception), do: nil
-
   defp scrub_stacktrace(%{__struct__: module} = stacktrace) when is_atom(module) do
-    base = struct(module)
-
-    if Map.has_key?(base, :frames) do
+    if sentry_struct?(stacktrace, @sentry_stacktrace_module) do
       struct(module, frames: scrub_interface_frames(Map.get(stacktrace, :frames)))
     end
   rescue
@@ -450,6 +459,14 @@ defmodule Orchard.SentryFilter do
   defp scrub_event_breadcrumbs(_breadcrumbs), do: []
 
   defp scrub_event_breadcrumb(%{__struct__: module} = breadcrumb) when is_atom(module) do
+    if sentry_struct?(breadcrumb, @sentry_breadcrumb_module) do
+      rebuild_breadcrumb(breadcrumb, module)
+    end
+  end
+
+  defp scrub_event_breadcrumb(_breadcrumb), do: nil
+
+  defp rebuild_breadcrumb(breadcrumb, module) do
     breadcrumb_map = Map.from_struct(breadcrumb)
     category = safe_breadcrumb_category(Map.get(breadcrumb_map, :category))
     message = safe_breadcrumb_message(Map.get(breadcrumb_map, :message))
@@ -483,8 +500,6 @@ defmodule Orchard.SentryFilter do
   catch
     _kind, _reason -> nil
   end
-
-  defp scrub_event_breadcrumb(_breadcrumb), do: nil
 
   defp scrub_event_extra(extra) when is_map(extra) do
     extra
@@ -900,7 +915,11 @@ defmodule Orchard.SentryFilter do
 
   defp scrub_value(_normalized_key, value), do: scrub_nested(value)
 
-  defp scrub_event_request(%{__struct__: module} = request) when is_atom(module) do
+  defp scrub_event_request(request) do
+    if sentry_struct?(request, @sentry_request_module), do: rebuild_request(request)
+  end
+
+  defp rebuild_request(%{__struct__: module} = request) when is_atom(module) do
     base = struct(module)
     method = request |> Map.from_struct() |> request_method()
 
@@ -913,10 +932,10 @@ defmodule Orchard.SentryFilter do
     _kind, _reason -> nil
   end
 
-  defp scrub_event_request(_request), do: nil
+  defp rebuild_request(_request), do: nil
 
   defp scrub_request(%{__struct__: module} = request) when is_atom(module) do
-    scrub_event_request(request) || %{}
+    rebuild_request(request) || %{}
   end
 
   defp scrub_request(request) when is_map(request) do
@@ -952,10 +971,12 @@ defmodule Orchard.SentryFilter do
   defp normalize_http_method(_method), do: nil
 
   defp scrub_interface_frames(frames) when is_list(frames) do
-    Enum.flat_map(frames, fn frame ->
+    frames
+    |> Enum.filter(&sentry_struct?(&1, @sentry_frame_module))
+    |> Enum.flat_map(fn frame ->
       case rebuild_frame(frame) do
-        {:ok, %{__struct__: _module} = safe_frame} -> [safe_frame]
-        _dropped -> []
+        {:ok, safe_frame} -> [safe_frame]
+        :error -> []
       end
     end)
   end
