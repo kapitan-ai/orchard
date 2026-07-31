@@ -686,7 +686,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | Requests to an admitted Node return busy instead of dispatching | The Controller could not assemble that Node's capacity facts from current authenticated evidence — probe failure, stale observation, or missing policy — so capacity authorization fails closed rather than trusting telemetry | Check the Node's trust, lifecycle, health, and observation freshness, and read the persisted scheduler explanation for `dispatch_capacity_facts_unavailable` with `orchardctl requests inspect <request-id>`. |
 | A Node stops taking any dispatch after a cancelled or timed-out request | The Controller could not resolve whether that request's runtime execution ended, so the allocation authority quarantined the Node and now evaluates it as unreachable | Expected fail-closed behavior in source dev: confirm the Node has no orphaned execution, then restart the Controller, since quarantine has no expiry and no operator-release seam yet. |
 | Every Node stops taking dispatch at once with no capacity change | The Controller-local quarantine store stopped; it is a temporary child that is not restarted, and the authority blocks all dispatch rather than resuming from a clean quarantine set | Restart the Controller and check its logs for `dispatch-capacity quarantine store stopped`, or for `dispatch-capacity authority started without a reachable quarantine store` when the store was already gone at boot. |
-| Remote node fails on MLX | mise toolchain not installed or no `uv sync` | Use `ORCHARD_WORKER_BACKEND=stub` or run `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx`. |
+| Remote node fails on MLX | mise toolchain not installed or no `uv sync` | Use `ORCHARD_WORKER_BACKEND=stub` or run `mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx`. |
 | Port conflict on remote gRPC node-agent | Another BEAM or node-agent owns the gRPC port | Change `ORCHARD_NODE_AGENT_LISTEN_PORT`. |
 
 > **Security note:** Binding gRPC to `0.0.0.0` exposes the gRPC server on all interfaces.
@@ -1086,12 +1086,12 @@ diagnostics.
 |---------|-------------|---------------|
 | `Bundle is missing manifest.json` | Bundle not prepared correctly | Re-run bundle prep steps above |
 | `bundle_path_escape` | Symlinks in bundle dir | Use `cp -L` instead of `ln -s` |
-| `model_load_failed` | MLX/mlx-lm version mismatch | Check `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx` ran, inspect worker logs |
+| `model_load_failed` | MLX/mlx-lm version mismatch | Check `mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx` ran, inspect worker logs |
 | `unsupported_runtime_adapter` | Wrong `adapter` in manifest | Must be `"mlx_lm"` |
 | `tokenizer_missing` | Wrong `tokenizer.path` | Check `tokenizer.json` exists in bundle |
 | Python smoke timeout | Model too large for hardware | Use smaller model (1B recommended) |
 | Elixir smoke failure | Node-agent/worker lifecycle issue | Check worker stdout/stderr |
-| `mlx_backend_unavailable` | MLX extras not installed | Run `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx` |
+| `mlx_backend_unavailable` | MLX extras not installed | Run `mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx` |
 
 ## Releases (Production)
 

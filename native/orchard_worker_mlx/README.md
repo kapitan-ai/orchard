@@ -27,7 +27,7 @@ runtime defaults `ORCHARD_WORKER_BACKEND` to `mlx`. Install MLX extras before
 using the real backend:
 
 ```bash
-mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx
+mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
 ```
 
 The CLI also supports `--generation-mode stream|batch`. The stub backend uses
@@ -40,6 +40,18 @@ That limit is configured with `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL`
 The worker `GetStatus` path reports overlapping `Generate` calls and effective worker capacity through `WorkerStatusResponse.active_request_count` and `WorkerStatusResponse.max_concurrency`.
 The node-agent publishes aggregate capacity through cluster `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`, plus loaded-placement capacity through `StatusResponse.runtime_model_placements`.
 Aggregate capacity is the conservative limit the node agent enforces across loaded workers, while each loaded placement keeps its own reported capacity.
+
+## MLX-LM security baseline
+
+The `mlx` extra pins MLX-LM commit `ab1806e8f5d6aa035973af194a1b9198ab4754dc`.
+The reviewed source range contains 15 commits and 35 changed files after the `v0.31.3` tag.
+The dependency still reports version `0.31.3`, so the full Git revision and committed uv lock are the runtime provenance authority.
+Transformers remains constrained to `>=5.7,<5.13` until its broader compatibility matrix is accepted separately.
+
+Orchard rejects model configurations containing `model_file` before upstream loading.
+The production loader also passes `trust_remote_code=False` for model loading and `tokenizer_config_extra={"trust_remote_code": False}` for tokenizer loading.
+Resolved-environment tests verify the same explicit settings on MLX-LM's sharded loading surface.
+These controls reduce dynamic-code exposure but do not make model execution a security sandbox.
 
 ## Proto contract
 
