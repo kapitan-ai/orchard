@@ -36,6 +36,9 @@
 - [x] 5.2 Add a synchronous local-DSN delivery test that parses the received envelope and asserts safe diagnostics plus complete absence of request and machine sentinels.
 - [x] 5.3 Add local transport-error coverage proving capture failure does not terminate or change the caller's result, and retain no-DSN handler coverage.
 - [x] 5.4 Run the complete affected Sentry suite and verify the original deterministic red command now exits successfully.
+- [x] 5.5 Rebuild the thread interface for non-exception crashes with hostile, malformed, non-redundancy, and envelope-serialization coverage, plus a real Logger-handler OTP crash delivered over the loopback receiver.
+- [x] 5.6 Rebuild the nested `logger_metadata` extra from the curated allowlist and prove over a real Logger envelope that the curated keys survive while raw node identity, Logger level, and domain do not.
+- [x] 5.7 Accept the exact `unknown` provenance sentinel in the build SHA and build date validators while keeping near-miss values filtered.
 
 ## 6. Validation And Handoff
 

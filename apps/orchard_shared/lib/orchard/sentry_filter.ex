@@ -14,6 +14,12 @@ defmodule Orchard.SentryFilter do
 
   @filtered "[Filtered]"
   @redacted "[redacted]"
+  @unknown_provenance "unknown"
+  @fallback_thread_id "0"
+
+  @sentry_event_module ["Sentry", "Event"]
+  @sentry_thread_module ["Sentry", "Interfaces", "Thread"]
+  @sentry_stacktrace_module ["Sentry", "Interfaces", "Stacktrace"]
 
   @allowed_http_methods MapSet.new(~w(CONNECT DELETE GET HEAD OPTIONS PATCH POST PUT TRACE))
   @safe_frame_keys MapSet.new(~w(module function filename lineno colno in_app))
@@ -47,6 +53,8 @@ defmodule Orchard.SentryFilter do
     orchard_tracking_reference orchard_build_channel orchard_build_ref
     sentry_filter_failed
   )
+
+  @safe_logger_metadata_keys ~w(request_id worker_model model_backend)
 
   @safe_breadcrumb_data_keys ~w(
     auth_mechanism reason endpoint stream tooling model_id model_version
@@ -209,16 +217,19 @@ defmodule Orchard.SentryFilter do
     end
   end
 
-  defp sentry_event?(%{__struct__: module}) when is_atom(module) do
-    Module.split(module) == ["Sentry", "Event"]
+  defp sentry_struct?(%{__struct__: module}, path) when is_atom(module) do
+    Module.split(module) == path
   rescue
     _exception -> false
   end
 
-  defp sentry_event?(_event), do: false
+  defp sentry_struct?(_value, _path), do: false
+
+  defp sentry_event?(event), do: sentry_struct?(event, @sentry_event_module)
 
   defp scrub_sentry_event(%{__struct__: module} = event) do
     event_map = Map.from_struct(event)
+    exceptions = scrub_event_exceptions(Map.get(event_map, :exception))
 
     module
     |> struct()
@@ -235,15 +246,15 @@ defmodule Orchard.SentryFilter do
       original_exception: Map.get(event_map, :original_exception),
       breadcrumbs: scrub_event_breadcrumbs(Map.get(event_map, :breadcrumbs)),
       contexts: %{},
-      exception: scrub_event_exceptions(Map.get(event_map, :exception)),
-      extra: scrub_allowlisted_map(Map.get(event_map, :extra), @safe_event_extra_keys),
+      exception: exceptions,
+      extra: scrub_event_extra(Map.get(event_map, :extra)),
       fingerprint: [],
       message: scrub_event_message(Map.get(event_map, :message)),
       modules: %{},
       request: scrub_event_request(Map.get(event_map, :request)),
       server_name: @redacted,
       tags: scrub_allowlisted_map(Map.get(event_map, :tags), @safe_event_tag_keys),
-      threads: nil,
+      threads: scrub_event_threads(Map.get(event_map, :threads), exceptions),
       user: %{}
     })
     |> then(&struct(module, &1))
@@ -265,16 +276,73 @@ defmodule Orchard.SentryFilter do
 
   defp scrub_event_message(_message), do: nil
 
-  defp scrub_event_exceptions(exceptions) when is_list(exceptions) do
-    Enum.flat_map(exceptions, fn exception ->
-      case scrub_event_exception(exception) do
+  defp scrub_interface_list(interfaces, scrubber) do
+    Enum.flat_map(interfaces, fn interface ->
+      case scrubber.(interface) do
         nil -> []
-        safe_exception -> [safe_exception]
+        safe_interface -> [safe_interface]
       end
     end)
   end
 
+  defp scrub_event_exceptions(exceptions) when is_list(exceptions),
+    do: scrub_interface_list(exceptions, &scrub_event_exception/1)
+
   defp scrub_event_exceptions(_exceptions), do: []
+
+  defp scrub_event_threads(_threads, [_exception | _rest]), do: nil
+
+  defp scrub_event_threads(threads, _exceptions) when is_list(threads) do
+    case scrub_interface_list(threads, &scrub_event_thread/1) do
+      [] -> nil
+      safe_threads -> safe_threads
+    end
+  end
+
+  defp scrub_event_threads(_threads, _exceptions), do: nil
+
+  defp scrub_event_thread(%{__struct__: module} = thread) when is_atom(module) do
+    if sentry_struct?(thread, @sentry_thread_module) do
+      rebuild_thread(thread, module)
+    end
+  end
+
+  defp scrub_event_thread(_thread), do: nil
+
+  defp rebuild_thread(thread, module) do
+    base = struct(module)
+
+    case scrub_thread_stacktrace(Map.get(thread, :stacktrace)) do
+      nil ->
+        nil
+
+      stacktrace ->
+        base
+        |> Map.from_struct()
+        |> maybe_put_if_present(base, :id, safe_thread_id(Map.get(thread, :id)))
+        |> maybe_put_if_present(base, :stacktrace, stacktrace)
+        |> then(&struct(module, &1))
+    end
+  rescue
+    _exception -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp scrub_thread_stacktrace(stacktrace) do
+    if sentry_struct?(stacktrace, @sentry_stacktrace_module) do
+      case scrub_stacktrace(stacktrace) do
+        %{frames: [_frame | _rest]} = safe_stacktrace -> safe_stacktrace
+        _without_safe_frames -> nil
+      end
+    end
+  end
+
+  defp safe_thread_id(value) when is_binary(value) do
+    if Regex.match?(~r/\A[0-9a-f]{32}\z/, value), do: value, else: @fallback_thread_id
+  end
+
+  defp safe_thread_id(_value), do: @fallback_thread_id
 
   defp scrub_event_exception(%{__struct__: module} = exception) when is_atom(module) do
     exception_map = Map.from_struct(exception)
@@ -327,14 +395,8 @@ defmodule Orchard.SentryFilter do
 
   defp scrub_stacktrace(_stacktrace), do: nil
 
-  defp scrub_event_breadcrumbs(breadcrumbs) when is_list(breadcrumbs) do
-    Enum.flat_map(breadcrumbs, fn breadcrumb ->
-      case scrub_event_breadcrumb(breadcrumb) do
-        nil -> []
-        safe_breadcrumb -> [safe_breadcrumb]
-      end
-    end)
-  end
+  defp scrub_event_breadcrumbs(breadcrumbs) when is_list(breadcrumbs),
+    do: scrub_interface_list(breadcrumbs, &scrub_event_breadcrumb/1)
 
   defp scrub_event_breadcrumbs(_breadcrumbs), do: []
 
@@ -374,6 +436,47 @@ defmodule Orchard.SentryFilter do
   end
 
   defp scrub_event_breadcrumb(_breadcrumb), do: nil
+
+  defp scrub_event_extra(extra) when is_map(extra) do
+    extra
+    |> scrub_allowlisted_map(@safe_event_extra_keys)
+    |> put_safe_logger_metadata(extra)
+  end
+
+  defp scrub_event_extra(_extra), do: %{}
+
+  defp put_safe_logger_metadata(scrubbed_extra, extra) do
+    with {key, metadata} <- logger_metadata_entry(extra),
+         %{} = safe_metadata <- scrub_allowlisted_map(metadata, @safe_logger_metadata_keys),
+         false <- safe_metadata == %{} do
+      Map.put(scrubbed_extra, key, safe_metadata)
+    else
+      _absent_or_empty -> scrubbed_extra
+    end
+  end
+
+  defp logger_metadata_entry(extra) do
+    case Map.fetch(extra, :logger_metadata) do
+      {:ok, metadata} when is_map(metadata) and not is_struct(metadata) ->
+        {:logger_metadata, metadata}
+
+      {:ok, _unsupported_shape} ->
+        :error
+
+      :error ->
+        string_logger_metadata_entry(extra)
+    end
+  end
+
+  defp string_logger_metadata_entry(extra) do
+    case Map.fetch(extra, "logger_metadata") do
+      {:ok, metadata} when is_map(metadata) and not is_struct(metadata) ->
+        {"logger_metadata", metadata}
+
+      _unsupported_or_absent ->
+        :error
+    end
+  end
 
   defp scrub_allowlisted_map(value, allowed_keys) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested_value}, acc ->
@@ -443,6 +546,8 @@ defmodule Orchard.SentryFilter do
 
   defp safe_non_negative_number(_value), do: @filtered
 
+  defp safe_date(@unknown_provenance), do: @unknown_provenance
+
   defp safe_date(value) when is_binary(value) do
     case Date.from_iso8601(value) do
       {:ok, _date} -> value
@@ -451,6 +556,8 @@ defmodule Orchard.SentryFilter do
   end
 
   defp safe_date(_value), do: @filtered
+
+  defp safe_sha(@unknown_provenance), do: @unknown_provenance
 
   defp safe_sha(value) when is_binary(value) do
     if Regex.match?(~r/\A[0-9a-f]{7,40}\z/, value), do: value, else: @filtered

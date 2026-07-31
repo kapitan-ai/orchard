@@ -1,8 +1,10 @@
 defmodule Orchard.API.SentryWireDeliveryTest do
   use ExUnit.Case, async: false
 
+  alias __MODULE__.NonExceptionCrashProcess
   alias __MODULE__.Receiver
   alias Orchard.SentryFilter
+  alias Orchard.SentryLogger
   alias Orchard.SentryRelease
 
   defmodule Receiver do
@@ -47,12 +49,38 @@ defmodule Orchard.API.SentryWireDeliveryTest do
     end
   end
 
+  defmodule NonExceptionCrashProcess do
+    use GenServer
+
+    @crash_metadata [
+      request_id: "req_wire_logger",
+      worker_model: "mlx-community/qwen2.5",
+      model_backend: "mlx",
+      orchard_node_id: "ISSUE114_WIRE_NODE_ID"
+    ]
+
+    def start(state), do: GenServer.start(__MODULE__, state)
+
+    @impl GenServer
+    def init(state) do
+      Logger.metadata(@crash_metadata)
+      {:ok, state}
+    end
+
+    @impl GenServer
+    def handle_cast(:crash, _state), do: exit(:ISSUE114_WIRE_EXIT_REASON)
+  end
+
   setup do
     previous_sentry = snapshot_sentry_env()
+    previous_handler = :logger.get_handler_config(Sentry.LoggerHandler)
+    remove_sentry_handler()
     Sentry.Context.clear_all()
 
     on_exit(fn ->
+      remove_sentry_handler()
       restore_sentry_env(previous_sentry)
+      restore_sentry_handler(previous_handler)
       Sentry.Context.clear_all()
     end)
 
@@ -141,6 +169,73 @@ defmodule Orchard.API.SentryWireDeliveryTest do
     assert Process.alive?(self())
     assert_receive {:sentry_envelope, _envelope}, 2_000
   end
+
+  test "real Logger crash without an exception keeps thread frames and curated metadata" do
+    port = start_receiver(200)
+    _identity = configure_sentry(port)
+    :ok = SentryLogger.install_handler()
+
+    {:ok, pid} = NonExceptionCrashProcess.start("ISSUE114_WIRE_GENSERVER_STATE")
+    ref = Process.monitor(pid)
+    GenServer.cast(pid, :crash)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
+
+    envelope = await_envelope("req_wire_logger")
+    payload = envelope_event_payload(envelope)
+
+    assert payload["exception"] in [nil, []]
+    assert payload["message"]["formatted"] == "[Filtered]"
+    assert payload["fingerprint"] in [nil, []]
+
+    assert [thread] = payload["threads"]
+    assert thread["name"] == nil
+    assert thread["state"] == nil
+    assert thread["held_locks"] == nil
+
+    frames = get_in(thread, ["stacktrace", "frames"])
+
+    assert Enum.any?(frames, &String.ends_with?(&1["function"] || "", "handle_cast/2"))
+    assert Enum.all?(frames, &(&1["context_line"] == nil))
+
+    assert payload["extra"] == %{
+             "logger_metadata" => %{
+               "request_id" => "req_wire_logger",
+               "worker_model" => "mlx-community/qwen2.5",
+               "model_backend" => "mlx"
+             }
+           }
+
+    refute envelope =~ "ISSUE114_WIRE_"
+    refute envelope =~ "orchard_node_id"
+    refute envelope =~ "logger_level"
+    refute envelope =~ "genserver_state"
+    refute envelope =~ "/Users/"
+  end
+
+  defp await_envelope(expected_marker, attempts \\ 5) do
+    assert_receive {:sentry_envelope, envelope}, 5_000
+
+    cond do
+      envelope =~ expected_marker -> envelope
+      attempts > 1 -> await_envelope(expected_marker, attempts - 1)
+      true -> flunk("no delivered envelope contained #{expected_marker}")
+    end
+  end
+
+  defp remove_sentry_handler do
+    case :logger.remove_handler(Sentry.LoggerHandler) do
+      :ok -> remove_sentry_handler()
+      {:error, :not_found} -> :ok
+      {:error, {:not_found, Sentry.LoggerHandler}} -> :ok
+    end
+  end
+
+  defp restore_sentry_handler({:ok, %{module: module} = config}) do
+    :logger.add_handler(Sentry.LoggerHandler, module, config)
+  end
+
+  defp restore_sentry_handler(_absent), do: :ok
 
   defp start_receiver(status) do
     pid =

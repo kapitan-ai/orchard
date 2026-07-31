@@ -810,6 +810,200 @@ defmodule Orchard.SentryFilterTest do
     refute envelope =~ "unknown_tag"
   end
 
+  test "retains rebuilt thread frames for non-exception crash events" do
+    event = %{
+      sentry_event(%{})
+      | exception: [],
+        message: %Sentry.Interfaces.Message{
+          formatted: "** (stop) ISSUE114_THREAD_EXIT_REASON"
+        },
+        threads: [
+          %Sentry.Interfaces.Thread{
+            id: String.duplicate("c", 32),
+            name: "ISSUE114_THREAD_NAME",
+            state: %{body: "ISSUE114_THREAD_STATE"},
+            crashed: true,
+            current: true,
+            main: true,
+            held_locks: ["ISSUE114_THREAD_LOCK"],
+            stacktrace: %Sentry.Interfaces.Stacktrace{
+              frames: [
+                unsafe_frame("/Users/private-builder/orchard/deps/plug/lib/plug/conn.ex"),
+                first_party_frame()
+              ]
+            }
+          }
+        ]
+    }
+
+    envelope = serialized_filtered_envelope(event)
+    payload = envelope_event_payload(envelope)
+
+    assert [thread] = payload["threads"]
+    assert thread["id"] == String.duplicate("c", 32)
+    assert thread["name"] == nil
+    assert thread["state"] == nil
+    assert thread["crashed"] == nil
+    assert thread["current"] == nil
+    assert thread["main"] == nil
+    assert thread["held_locks"] == nil
+
+    assert [dependency_frame, first_party_frame] = get_in(thread, ["stacktrace", "frames"])
+
+    assert dependency_frame["filename"] == "[Filtered]"
+
+    assert first_party_frame["filename"] ==
+             "apps/orchard_controller/lib/orchard/api/responses_controller.ex"
+
+    assert first_party_frame["context_line"] == nil
+    assert first_party_frame["vars"] == nil
+    assert payload["exception"] in [nil, []]
+    refute envelope =~ "ISSUE114_THREAD"
+    refute envelope =~ "/Users/"
+    refute envelope =~ "deps/plug"
+  end
+
+  test "drops malformed threads and threads without safe frames" do
+    safe_stacktrace = %Sentry.Interfaces.Stacktrace{frames: [first_party_frame()]}
+
+    event = %{
+      sentry_event(%{})
+      | exception: [],
+        threads: [
+          %{id: String.duplicate("c", 32), stacktrace: safe_stacktrace},
+          %{
+            __struct__: :"Elixir.Orchard.ISSUE114.MissingThread",
+            id: String.duplicate("c", 32),
+            stacktrace: safe_stacktrace
+          },
+          %Sentry.Interfaces.Thread{id: String.duplicate("c", 32), stacktrace: nil},
+          %Sentry.Interfaces.Thread{
+            id: String.duplicate("c", 32),
+            stacktrace: %Sentry.Interfaces.Stacktrace{frames: []}
+          },
+          %Sentry.Interfaces.Thread{
+            id: String.duplicate("c", 32),
+            stacktrace: %Sentry.Interfaces.Stacktrace{
+              frames: [
+                %{
+                  __struct__: :"Elixir.Orchard.ISSUE114.MissingFrame",
+                  filename: "ISSUE114_THREAD_FRAME.ex"
+                }
+              ]
+            }
+          },
+          %Sentry.Interfaces.Thread{
+            id: "ISSUE114_THREAD_ID",
+            stacktrace: %{frames: [first_party_frame()]}
+          },
+          %Sentry.Interfaces.Thread{id: "ISSUE114_THREAD_ID", stacktrace: safe_stacktrace}
+        ]
+    }
+
+    envelope = serialized_filtered_envelope(event)
+    payload = envelope_event_payload(envelope)
+
+    assert [thread] = payload["threads"]
+    assert thread["id"] == "0"
+
+    assert [%{"filename" => "apps/orchard_controller/lib/orchard/api/responses_controller.ex"}] =
+             get_in(thread, ["stacktrace", "frames"])
+
+    refute envelope =~ "ISSUE114_THREAD"
+  end
+
+  test "drops redundant threads from exception-backed events" do
+    payload = %{} |> sentry_event() |> serialized_filtered_envelope() |> envelope_event_payload()
+
+    assert [_exception] = payload["exception"]
+    assert payload["threads"] in [nil, []]
+  end
+
+  test "rebuilds allowlisted Logger metadata nested in event extra" do
+    event = %{
+      sentry_event(%{})
+      | extra: %{
+          logger_metadata: %{
+            request_id: "req_logger_safe",
+            worker_model: "mlx-community/qwen2.5",
+            model_backend: "mlx",
+            orchard_node_id: "ISSUE114_LOGGER_NODE_ID",
+            file: "/Users/private-builder/orchard/lib/secret.ex",
+            unknown_payload: "ISSUE114_LOGGER_UNKNOWN"
+          },
+          logger_level: :error,
+          domain: [:elixir, :ISSUE114_LOGGER_DOMAIN]
+        }
+    }
+
+    envelope = serialized_filtered_envelope(event)
+
+    assert envelope_event_payload(envelope)["extra"] == %{
+             "logger_metadata" => %{
+               "request_id" => "req_logger_safe",
+               "worker_model" => "mlx-community/qwen2.5",
+               "model_backend" => "mlx"
+             }
+           }
+
+    refute envelope =~ "ISSUE114_LOGGER"
+    refute envelope =~ "logger_level"
+    refute envelope =~ "domain"
+  end
+
+  test "omits empty and non-map Logger metadata containers" do
+    for metadata <- [%{}, %{unknown_payload: "ISSUE114_LOGGER_UNKNOWN"}, "not-a-map", nil] do
+      event = %{sentry_event(%{}) | extra: %{logger_metadata: metadata}}
+      envelope = serialized_filtered_envelope(event)
+
+      assert envelope_event_payload(envelope)["extra"] == %{}
+      refute envelope =~ "logger_metadata"
+      refute envelope =~ "ISSUE114_LOGGER"
+    end
+  end
+
+  test "retains the unknown provenance sentinel while filtering near misses" do
+    event = %{
+      sentry_event(%{})
+      | tags: %{build_sha: "unknown", build_date: "unknown"},
+        release: "orchard_controller@0.5.0-dev+unknown"
+    }
+
+    payload = event |> serialized_filtered_envelope() |> envelope_event_payload()
+
+    assert payload["release"] == "orchard_controller@0.5.0-dev+unknown"
+    assert payload["tags"] == %{"build_sha" => "unknown", "build_date" => "unknown"}
+
+    near_miss = %{
+      sentry_event(%{})
+      | tags: %{build_sha: "Unknown", build_date: "unknown-date"}
+    }
+
+    near_miss_payload =
+      near_miss |> serialized_filtered_envelope() |> envelope_event_payload()
+
+    assert near_miss_payload["tags"] == %{
+             "build_sha" => "[Filtered]",
+             "build_date" => "[Filtered]"
+           }
+  end
+
+  defp first_party_frame do
+    %Sentry.Interfaces.Stacktrace.Frame{
+      module: Orchard.API.ResponsesController,
+      function: "create/2",
+      filename:
+        "/Users/private-builder/orchard/apps/orchard_controller/lib/orchard/api/responses_controller.ex",
+      lineno: 24,
+      context_line: "secret source line",
+      vars: %{authorization: "Bearer secret"}
+    }
+  end
+
+  defp unsafe_frame(filename) do
+    %Sentry.Interfaces.Stacktrace.Frame{filename: filename, lineno: 1}
+  end
+
   defp sentry_event(request_data) do
     frame = %Sentry.Interfaces.Stacktrace.Frame{
       module: Orchard.API.ResponsesController,

@@ -21,7 +21,26 @@ When optional Sentry crash reporting is configured, Orchard SHALL collect and tr
 
 ### Requirement: Outbound Sentry Events Use A Final Schema Allowlist
 
-Orchard SHALL rebuild actual Sentry event payloads from an allowlist after collection and before envelope serialization. Orchard SHALL replace free-form event messages and exception values with fixed filtered markers and SHALL remove unknown extras, unknown tags, non-Orchard breadcrumbs, user data, contexts, dependency modules, threads, fingerprints, attachments, and source text. Orchard MAY retain validated event identity, environment, release/build identity, known Orchard tags and enrichment, method-only request context, exception type, and positively rebuilt stack frames. Any known enrichment value that survives SHALL be a bounded JSON scalar that passes a semantic validator for its key. Identifier fields SHALL reject absolute or machine-path forms, URLs, IP addresses, whitespace-bearing free text, and malformed namespaces; booleans, counts, durations, dates, timestamps, hashes, and fixed redaction markers SHALL pass their corresponding shape validation.
+Orchard SHALL rebuild actual Sentry event payloads from an allowlist after collection and before envelope serialization. Orchard SHALL replace free-form event messages and exception values with fixed filtered markers and SHALL remove unknown extras, unknown tags, non-Orchard breadcrumbs, user data, contexts, dependency modules, fingerprints, attachments, and source text. Orchard MAY retain validated event identity, environment, release/build identity, known Orchard tags and enrichment, method-only request context, exception type, and positively rebuilt stack frames. Any known enrichment value that survives SHALL be a bounded JSON scalar that passes a semantic validator for its key. Identifier fields SHALL reject absolute or machine-path forms, URLs, IP addresses, whitespace-bearing free text, and malformed namespaces; booleans, counts, durations, dates, timestamps, hashes, and fixed redaction markers SHALL pass their corresponding shape validation.
+
+Because the SDK reports non-exception BEAM crashes as message events whose only stack provenance lives in the thread interface, Orchard SHALL rebuild threads rather than removing them outright. Orchard SHALL retain a thread only when the event has no rebuilt exception, the value is an actual SDK thread struct, and its stacktrace is an actual SDK stacktrace struct that yields at least one rebuilt frame; every other thread SHALL be dropped, and Orchard SHALL NOT place bare maps in interface slots. A retained thread SHALL carry only a validated SDK thread identifier, replaced by a fixed non-sensitive identifier when the supplied value is not a valid one, and its rebuilt stacktrace. Thread names, states, crashed/current/main flags, held locks, local variables, source context, and unknown fields SHALL be removed.
+
+Curated Logger metadata reaches events nested inside a `logger_metadata` extra rather than at the top level. Orchard SHALL rebuild that container only when it is a plain map, SHALL retain only `request_id`, `worker_model`, and `model_backend` values that pass their existing typed validators, and SHALL omit the container entirely when it is absent, not a map, or empty after rebuilding. Orchard SHALL NOT retain the SDK's Logger level or domain extras or any other nested Logger metadata key.
+
+#### Scenario: Non-exception OTP crash reaches Sentry as a message event
+
+- **WHEN** a supervised process terminates for a non-exception reason and the SDK Logger handler reports it as a message event whose stack frames live in the thread interface
+- **THEN** the serialized envelope retains the rebuilt thread stack frames as crash provenance while containing no thread name, state, held locks, GenServer state, last message, crash reason, or other unknown extra
+
+#### Scenario: Event carries hostile, malformed, or redundant threads
+
+- **WHEN** an event carries bare-map threads, foreign-struct threads, threads whose stacktrace is missing, foreign, or yields no rebuilt frames, or threads alongside a rebuilt exception
+- **THEN** Orchard drops those threads, keeps a fixed non-sensitive identifier for any retained thread with an invalid identifier, and the envelope still serializes
+
+#### Scenario: Crash carries curated Logger metadata
+
+- **WHEN** a crash is captured with `request_id`, `worker_model`, `model_backend`, and raw node identity in Logger metadata
+- **THEN** the serialized envelope contains only the three validated curated values inside the rebuilt `logger_metadata` extra and contains no raw node identity, Logger level, domain, or other metadata key
 
 #### Scenario: Exception context contains inspected request data
 
@@ -65,6 +84,11 @@ For packaged controller and Node Agent releases, Orchard SHALL set static Sentry
 
 - **WHEN** a controller or Node Agent background process crashes before or outside HTTP request enrichment
 - **THEN** its Sentry event still contains component, Product Version, Build Channel, Git SHA, build date, environment, and release identity
+
+#### Scenario: Build has no Git provenance
+
+- **WHEN** a build produces no Git SHA or build date and Orchard falls back to its readable `unknown` provenance sentinel
+- **THEN** the outbound filter retains that exact sentinel in the build tags so missing provenance stays distinguishable from rejected provenance, while every other malformed SHA or date value is still filtered
 
 #### Scenario: Source-development release name is unknown
 
