@@ -25,8 +25,8 @@ setup-elixir:
 	ERL_AFLAGS="$(MIX_BOOTSTRAP_ERL_AFLAGS)" mise exec -- mix deps.get
 
 setup-native:
-	mise exec -- uv sync --directory native/orchard_tokenizer
-	mise exec -- uv sync --directory native/orchard_worker_mlx
+	mise exec -- uv sync --locked --directory native/orchard_tokenizer
+	mise exec -- uv sync --locked --directory native/orchard_worker_mlx
 
 setup-openspec:
 	mise exec -- npm ci --ignore-scripts

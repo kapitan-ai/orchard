@@ -78,6 +78,12 @@ def test_mlx_lm_install_and_loader_signatures_match_the_approved_commit() -> Non
     sharded_signature = inspect.signature(mlx_lm_utils.sharded_load)
     assert sharded_signature.parameters["tokenizer_config"].default is None
 
+    mlx_lm_tokenizer_utils = importlib.import_module("mlx_lm.tokenizer_utils")
+    tokenizer_signature = inspect.signature(mlx_lm_tokenizer_utils.load)
+    tokenizer_extra = tokenizer_signature.parameters["tokenizer_config_extra"]
+    assert tokenizer_extra.default is None
+    assert tokenizer_extra.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+
 
 def test_orchard_rejects_model_file_without_executing_it(tmp_path: Path) -> None:
     """Issue #98: production dependency wiring rejects custom model code."""

@@ -141,6 +141,7 @@ mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
 ```
 
 The resolved-environment guard verifies the exact MLX-LM source revision, loader signatures, tokenizer registration, and explicit model and tokenizer distrust on the sharded loading surface without downloading a model.
+It asserts explicit distrust, not an upstream default: MLX-LM's `sharded_load` still falls back to a trusting tokenizer config when `tokenizer_config` is omitted or empty, so any future sharded caller must pass `{"trust_remote_code": False}` itself.
 
 Package builds should run through the same toolchain:
 

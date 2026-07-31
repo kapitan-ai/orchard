@@ -53,6 +53,9 @@ The production loader also passes `trust_remote_code=False` for model loading an
 Resolved-environment tests verify the same explicit settings on MLX-LM's sharded loading surface.
 These controls reduce dynamic-code exposure but do not make model execution a security sandbox.
 
+Residual: MLX-LM's `sharded_load` falls back to `{"trust_remote_code": True}` for the tokenizer whenever `tokenizer_config` is omitted or empty, so its model-side `trust_remote_code=False` does not cover the tokenizer by itself.
+Orchard does not reach that path today; issue #116 sharded loading must pass an explicit `{"trust_remote_code": False}` tokenizer config rather than relying on the upstream default.
+
 ## Proto contract
 
 The worker runtime proto lives at:
