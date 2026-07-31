@@ -122,6 +122,34 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
     assert full.response_preview == @private_response
   end
 
+  test "none and metadata schedule persistence accepts valid timestamps and drops malformed values" do
+    timestamp = "2026-07-31T04:00:00Z"
+
+    for mode <- [:none, :metadata] do
+      {:ok, request} = Requests.create_request(request_attrs(mode))
+
+      assert {:ok, scheduled} =
+               Requests.record_schedule(request, %{
+                 queue_granted_at: timestamp,
+                 queued_at: %{"content" => @private_prompt}
+               })
+
+      assert scheduled.scheduler_decision["queue_granted_at"] == timestamp
+      refute Map.has_key?(scheduled.scheduler_decision, "queued_at")
+      refute inspect(scheduled.scheduler_decision) =~ @private_prompt
+
+      assert {:ok, scheduled} =
+               Requests.record_schedule(scheduled, %{
+                 queue_granted_at: [@private_prompt],
+                 queued_at: timestamp
+               })
+
+      assert scheduled.scheduler_decision["queued_at"] == timestamp
+      refute Map.has_key?(scheduled.scheduler_decision, "queue_granted_at")
+      refute inspect(scheduled.scheduler_decision) =~ @private_prompt
+    end
+  end
+
   test "database constraints reject policy bypasses and remain discoverable for drift checks" do
     {:ok, request} = Requests.create_request(request_attrs(:metadata))
 

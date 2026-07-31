@@ -490,7 +490,20 @@ defmodule Orchard.Requests.CapturePolicy do
   end
 
   defp put_datetime_value(sanitized, source, key) do
-    case DateTime.from_iso8601(fetch_value(source, key) || "") do
+    case fetch_value(source, key) do
+      %DateTime{} = datetime ->
+        Map.put(sanitized, key, DateTime.to_iso8601(datetime))
+
+      value when is_binary(value) ->
+        put_iso8601_value(sanitized, key, value)
+
+      _value ->
+        sanitized
+    end
+  end
+
+  defp put_iso8601_value(sanitized, key, value) do
+    case DateTime.from_iso8601(value) do
       {:ok, datetime, 0} -> Map.put(sanitized, key, DateTime.to_iso8601(datetime))
       _result -> sanitized
     end

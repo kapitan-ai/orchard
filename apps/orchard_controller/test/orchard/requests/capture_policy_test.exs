@@ -271,6 +271,8 @@ defmodule Orchard.Requests.CapturePolicyTest do
         |> Map.merge(%{
           "node_id" => secret,
           "selected_node_id" => secret,
+          "queue_granted_at" => %{"secret" => secret},
+          "queued_at" => [secret],
           "scored_candidates" => [
             %{
               "node_id" => secret,
@@ -287,6 +289,28 @@ defmodule Orchard.Requests.CapturePolicyTest do
       for mode <- [:none, :metadata] do
         sanitized = CapturePolicy.schedule_attrs(mode, schedule)
         refute inspect(sanitized) =~ secret
+      end
+    end
+
+    test "none and metadata normalize valid timestamps and reject malformed types" do
+      timestamp = ~U[2026-07-31 04:00:00Z]
+
+      for mode <- [:none, :metadata] do
+        sanitized =
+          CapturePolicy.schedule_attrs(mode, %{
+            queue_granted_at: timestamp,
+            queued_at: DateTime.to_iso8601(timestamp)
+          })
+
+        assert sanitized == %{
+                 "queue_granted_at" => "2026-07-31T04:00:00Z",
+                 "queued_at" => "2026-07-31T04:00:00Z"
+               }
+
+        assert CapturePolicy.schedule_attrs(mode, %{
+                 queue_granted_at: %{"content" => @prompt},
+                 queued_at: [@prompt]
+               }) == %{}
       end
     end
   end
