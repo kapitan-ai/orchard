@@ -9,6 +9,14 @@ defmodule Orchard.Requests do
   alias Orchard.Repo
   alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
 
+  @audit_option_keys [:since, :until, :limit, :turn_index, :attempt]
+  @audit_default_limit 1000
+
+  @typedoc "Outcome of the bounded CP1 missing-`finish_reason` candidate detector."
+  @type classification ::
+          {:ok, :missing_finish_reason_candidate | :not_candidate}
+          | {:error, {:inconclusive, atom()}}
+
   @spec create_request(map()) :: {:ok, struct()} | {:error, Ecto.Changeset.t()}
   def create_request(attrs) do
     %Request{}
@@ -66,25 +74,111 @@ defmodule Orchard.Requests do
   This candidate signal is bounded to the current dispatcher and orchestrator
   persistence invariants and to the retention lifetime of `request_events`.
   It is not general conformance evidence for `SPEC.md` section 7.5.5.
-  Missing, malformed, ambiguous, or state-inconsistent evidence is inconclusive.
+  Missing, malformed, duplicated, or state-inconsistent evidence is inconclusive.
   """
   @spec classify_missing_terminal_candidate(Request.t() | Ecto.UUID.t(), keyword()) ::
-          {:ok, :missing_finish_reason_candidate | :not_candidate}
-          | {:error, {:inconclusive, atom()}}
+          classification()
   def classify_missing_terminal_candidate(request_or_id, opts \\ [])
 
   def classify_missing_terminal_candidate(request_or_id, opts) when is_list(opts) do
     with {:ok, selector} <- missing_terminal_selector(opts),
          {:ok, request} <- fetch_detector_request(request_or_id),
          :ok <- require_terminal_request(request),
-         {:ok, terminal_step} <- fetch_terminal_inference_turn(request.id, selector),
-         :ok <- validate_terminal_step_state(request.state, terminal_step.event_type) do
-      classify_terminal_step(terminal_step)
+         {:ok, selected} <- fetch_terminal_inference_turn(request.id, selector),
+         :ok <- validate_terminal_step_state(request.state, selected) do
+      classify_terminal_step(selected.step)
     end
   end
 
   def classify_missing_terminal_candidate(_request_or_id, _opts),
     do: inconclusive(:invalid_selector)
+
+  @doc """
+  Sweeps terminal requests created inside an audit window and returns every
+  request whose inference turn is not a clean `not_candidate` control.
+
+  Candidate matches and inconclusive evidence are both returned, because both
+  require manual adjudication before a window's stability denominator is final.
+  """
+  @spec audit_missing_terminal_candidates(keyword()) ::
+          {:ok, [%{request_id: Ecto.UUID.t(), public_id: String.t(), result: classification()}]}
+          | {:error, {:inconclusive, atom()}}
+  def audit_missing_terminal_candidates(opts \\ [])
+
+  def audit_missing_terminal_candidates(opts) when is_list(opts) do
+    with {:ok, audit} <- build_audit_options(opts) do
+      matches =
+        audit
+        |> terminal_requests_for_audit()
+        |> Enum.map(&audit_request_match(&1, audit.selector_opts))
+        |> Enum.reject(&(&1.result == {:ok, :not_candidate}))
+
+      {:ok, matches}
+    end
+  end
+
+  def audit_missing_terminal_candidates(_opts), do: inconclusive(:invalid_audit_options)
+
+  defp audit_request_match(%Request{} = request, selector_opts) do
+    %{
+      request_id: request.id,
+      public_id: request.public_id,
+      result: classify_missing_terminal_candidate(request, selector_opts)
+    }
+  end
+
+  defp build_audit_options(opts) do
+    if Keyword.keyword?(opts) and Keyword.keys(opts) -- @audit_option_keys == [] do
+      validate_audit_options(opts)
+    else
+      inconclusive(:invalid_audit_options)
+    end
+  end
+
+  defp validate_audit_options(opts) do
+    limit = Keyword.get(opts, :limit, @audit_default_limit)
+    selector_opts = Keyword.take(opts, [:turn_index, :attempt])
+
+    with :ok <- validate_audit_bound(Keyword.get(opts, :since)),
+         :ok <- validate_audit_bound(Keyword.get(opts, :until)),
+         :ok <- validate_audit_limit(limit),
+         {:ok, _selector} <- missing_terminal_selector(selector_opts) do
+      {:ok,
+       %{
+         since: Keyword.get(opts, :since),
+         until: Keyword.get(opts, :until),
+         limit: limit,
+         selector_opts: selector_opts
+       }}
+    end
+  end
+
+  defp validate_audit_bound(nil), do: :ok
+  defp validate_audit_bound(%DateTime{}), do: :ok
+  defp validate_audit_bound(_bound), do: inconclusive(:invalid_audit_options)
+
+  defp validate_audit_limit(limit) when is_integer(limit) and limit > 0, do: :ok
+  defp validate_audit_limit(_limit), do: inconclusive(:invalid_audit_options)
+
+  defp terminal_requests_for_audit(audit) do
+    Request
+    |> where([request], request.state in ^Request.terminal_states())
+    |> audit_lower_bound(audit.since)
+    |> audit_upper_bound(audit.until)
+    |> order_by([request], asc: request.inserted_at, asc: request.id)
+    |> limit(^audit.limit)
+    |> Repo.all()
+  end
+
+  defp audit_lower_bound(query, nil), do: query
+
+  defp audit_lower_bound(query, %DateTime{} = since),
+    do: where(query, [request], request.inserted_at >= ^since)
+
+  defp audit_upper_bound(query, nil), do: query
+
+  defp audit_upper_bound(query, %DateTime{} = until),
+    do: where(query, [request], request.inserted_at <= ^until)
 
   defp missing_terminal_selector(opts) do
     if Keyword.keyword?(opts) do
@@ -132,46 +226,60 @@ defmodule Orchard.Requests do
 
   defp fetch_terminal_inference_turn(request_id, %{step_id: step_id}) do
     request_id
-    |> list_request_events()
-    |> Enum.filter(&target_terminal_inference_turn?(&1, step_id))
-    |> classify_terminal_rows()
+    |> terminal_inference_turn_events()
+    |> select_terminal_inference_turn(step_id)
   end
 
-  defp target_terminal_inference_turn?(%RequestEvent{} = event, step_id) do
-    event.event_type in terminal_inference_turn_event_types() and
-      is_map(event.payload) and
-      Map.get(event.payload, "step_type") == "inference_turn" and
-      Map.get(event.payload, "step_id") == step_id
+  defp terminal_inference_turn_events(request_id) do
+    event_types = RequestStepEvent.terminal_step_event_types()
+
+    RequestEvent
+    |> where(
+      [event],
+      event.request_id == ^request_id and event.event_type in ^event_types and
+        fragment("?->>? = ?", event.payload, "step_type", "inference_turn")
+    )
+    |> order_by([event], asc: event.seq)
+    |> Repo.all()
   end
 
-  defp classify_terminal_rows([]), do: inconclusive(:terminal_step_not_found)
+  defp select_terminal_inference_turn(events, step_id) do
+    case Enum.filter(events, &(step_event_payload(&1)["step_id"] == step_id)) do
+      [] -> inconclusive(:terminal_step_not_found)
+      [event] -> build_selected_terminal_step(event, List.last(events))
+      _duplicates -> inconclusive(:duplicate_terminal_steps)
+    end
+  end
 
-  defp classify_terminal_rows([event]) do
+  defp step_event_payload(%RequestEvent{payload: payload}) when is_map(payload), do: payload
+  defp step_event_payload(%RequestEvent{}), do: %{}
+
+  defp build_selected_terminal_step(%RequestEvent{} = event, %RequestEvent{} = last_event) do
     case RequestStepEvent.from_request_event(event) do
-      {:ok, step_event} -> {:ok, step_event}
-      {:error, _reason} -> inconclusive(:invalid_terminal_step)
+      {:ok, step_event} ->
+        {:ok, %{step: step_event, final?: event.seq == last_event.seq}}
+
+      {:error, _reason} ->
+        inconclusive(:invalid_terminal_step)
     end
   end
 
-  defp classify_terminal_rows(_events), do: inconclusive(:ambiguous_terminal_steps)
+  defp validate_terminal_step_state(_request_state, %{final?: false}), do: :ok
 
-  defp validate_terminal_step_state(request_state, event_type) do
-    expected_event_type =
-      case request_state do
-        :completed -> "request_step.completed"
-        :failed -> "request_step.failed"
-        :cancelled -> "request_step.cancelled"
-        :timed_out -> "request_step.timed_out"
-        :interrupted -> "request_step.interrupted"
-        _unsupported_terminal_state -> nil
-      end
+  defp validate_terminal_step_state(request_state, %{step: step}) do
+    case RequestStepEvent.fetch_terminal_step_event_type(request_state) do
+      {:ok, expected_event_type} ->
+        compare_terminal_step_event_type(step.event_type, expected_event_type)
 
-    if event_type == expected_event_type do
-      :ok
-    else
-      inconclusive(:terminal_state_mismatch)
+      :error ->
+        inconclusive(:unmapped_terminal_state)
     end
   end
+
+  defp compare_terminal_step_event_type(event_type, event_type), do: :ok
+
+  defp compare_terminal_step_event_type(_event_type, _expected),
+    do: inconclusive(:terminal_state_mismatch)
 
   defp classify_terminal_step(%RequestStepEvent{event_type: "request_step.completed"} = step) do
     case Map.fetch(step.result, "finish_reason") do
@@ -187,16 +295,6 @@ defmodule Orchard.Requests do
   end
 
   defp classify_terminal_step(%RequestStepEvent{}), do: {:ok, :not_candidate}
-
-  defp terminal_inference_turn_event_types do
-    [
-      "request_step.completed",
-      "request_step.failed",
-      "request_step.cancelled",
-      "request_step.timed_out",
-      "request_step.interrupted"
-    ]
-  end
 
   defp inconclusive(reason), do: {:error, {:inconclusive, reason}}
 

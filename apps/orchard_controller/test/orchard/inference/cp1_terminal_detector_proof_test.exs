@@ -17,23 +17,36 @@ defmodule Orchard.Inference.CP1TerminalDetectorProofTest do
     {:timeout, :timed_out, "request_step.timed_out", nil},
     {:interruption, :interrupted, "request_step.interrupted", nil}
   ]
+  @samples_per_category 15
+  @control_count length(@control_categories) * @samples_per_category
 
   test "issue #120 candidate detector has zero false positives across 105 durable controls" do
     controls =
       for category <- @control_categories,
-          sample <- 1..15 do
+          sample <- 1..@samples_per_category do
         persist_terminal_control(category, sample)
       end
 
-    classifications = Enum.map(controls, & &1.classification)
-    cardinalities = Enum.map(controls, & &1.cardinality)
     category_counts = Enum.frequencies_by(controls, & &1.category)
 
-    assert length(controls) == 105
-    assert Map.values(category_counts) |> Enum.uniq() == [15]
-    assert Map.keys(category_counts) |> Enum.sort() == expected_categories()
-    assert Enum.frequencies(classifications) == %{{:ok, :not_candidate} => 105}
-    assert Enum.frequencies(cardinalities) == %{exactly_one: 105}
+    assert @control_count == 105
+    assert length(controls) == @control_count
+    assert category_counts |> Map.values() |> Enum.uniq() == [@samples_per_category]
+    assert category_counts |> Map.keys() |> Enum.sort() == expected_categories()
+
+    assert controls |> Enum.map(& &1.durable_result) |> Enum.uniq() |> length() ==
+             @control_count
+
+    assert Enum.frequencies(Enum.map(controls, & &1.classification)) ==
+             %{{:ok, :not_candidate} => @control_count}
+
+    assert Enum.frequencies(Enum.map(controls, & &1.durable_terminal_steps)) ==
+             %{1 => @control_count}
+
+    assert Enum.frequencies(Enum.map(controls, & &1.source_cardinality)) ==
+             %{exactly_one: @control_count}
+
+    assert {:ok, []} = Requests.audit_missing_terminal_candidates()
 
     assert TerminalCardinality.classify([InferenceEvent.accepted(0)]) == :zero
 
@@ -60,12 +73,7 @@ defmodule Orchard.Inference.CP1TerminalDetectorProofTest do
       terminal_event(category)
     ]
 
-    step_result =
-      if finish_reason do
-        %{"finish_reason" => finish_reason}
-      else
-        %{"error_code" => terminal_error_code(category)}
-      end
+    step_result = terminal_step_result(category, finish_reason, sample)
 
     terminal_step = %{
       event_type: event_type,
@@ -86,10 +94,43 @@ defmodule Orchard.Inference.CP1TerminalDetectorProofTest do
              )
 
     %{
-      cardinality: TerminalCardinality.classify(source_events),
       category: category,
-      classification: Requests.classify_missing_terminal_candidate(request)
+      classification: Requests.classify_missing_terminal_candidate(request),
+      durable_result: durable_terminal_result(request),
+      durable_terminal_steps: durable_terminal_step_count(request),
+      source_cardinality: TerminalCardinality.classify(source_events)
     }
+  end
+
+  defp terminal_step_result(category, nil, sample) do
+    %{
+      "error_code" => terminal_error_code(category),
+      "error_message" => "#{category} control #{sample}",
+      "http_status" => 400 + sample
+    }
+  end
+
+  defp terminal_step_result(_category, finish_reason, sample) do
+    %{
+      "finish_reason" => finish_reason,
+      "http_status" => 200,
+      "input_tokens" => sample,
+      "output_tokens" => sample * 2
+    }
+  end
+
+  defp durable_terminal_steps(request) do
+    terminal_event_types = RequestStepEvent.terminal_step_event_types()
+
+    request
+    |> Requests.list_request_step_events()
+    |> Enum.filter(&(&1.step_type == "inference_turn" and &1.event_type in terminal_event_types))
+  end
+
+  defp durable_terminal_step_count(request), do: request |> durable_terminal_steps() |> length()
+
+  defp durable_terminal_result(request) do
+    request |> durable_terminal_steps() |> Enum.map(& &1.result)
   end
 
   defp terminal_event(:stop),

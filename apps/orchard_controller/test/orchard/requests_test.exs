@@ -331,18 +331,18 @@ defmodule Orchard.RequestsTest do
       assert {:error, {:inconclusive, :invalid_finish_reason}} =
                Requests.classify_missing_terminal_candidate(invalid_reason)
 
-      ambiguous = create_request!(%{public_id: "req_detector_ambiguous", state: :running})
+      duplicate = create_request!(%{public_id: "req_detector_duplicate", state: :running})
 
       assert {:ok, _steps} =
-               Requests.append_request_step_events(ambiguous, [
+               Requests.append_request_step_events(duplicate, [
                  inference_turn_completed_step_attrs(),
                  inference_turn_completed_step_attrs()
                ])
 
-      assert {:ok, _request} = Requests.mark_terminal(ambiguous, %{state: :completed})
+      assert {:ok, _request} = Requests.mark_terminal(duplicate, %{state: :completed})
 
-      assert {:error, {:inconclusive, :ambiguous_terminal_steps}} =
-               Requests.classify_missing_terminal_candidate(ambiguous)
+      assert {:error, {:inconclusive, :duplicate_terminal_steps}} =
+               Requests.classify_missing_terminal_candidate(duplicate)
 
       inconsistent =
         create_request!(%{public_id: "req_detector_inconsistent", state: :running})
@@ -407,6 +407,100 @@ defmodule Orchard.RequestsTest do
 
       assert {:error, {:inconclusive, :invalid_selector}} =
                Requests.classify_missing_terminal_candidate(request, turn_index: 0)
+    end
+
+    test "classifies a superseded earlier attempt without requiring whole-request state agreement" do
+      request = create_request!(%{public_id: "req_detector_earlier_attempt", state: :running})
+
+      assert {:ok, _steps} =
+               Requests.append_request_step_events(request, [
+                 inference_turn_completed_step_attrs(%{
+                   step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+                   result: %{"http_status" => 200}
+                 })
+               ])
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :failed},
+                 [
+                   inference_turn_failed_step_attrs(%{
+                     step_id: RequestStepEvent.inference_turn_step_id(1, 2),
+                     attempt: 2
+                   })
+                 ]
+               )
+
+      assert {:ok, :missing_finish_reason_candidate} =
+               Requests.classify_missing_terminal_candidate(request, attempt: 1)
+
+      assert {:ok, :not_candidate} =
+               Requests.classify_missing_terminal_candidate(request, attempt: 2)
+    end
+  end
+
+  describe "audit_missing_terminal_candidates/1" do
+    test "returns only candidate and inconclusive matches inside the audit window" do
+      control = create_request!(%{public_id: "req_audit_control", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 control,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs()]
+               )
+
+      candidate = create_request!(%{public_id: "req_audit_candidate", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 candidate,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs(%{result: %{"http_status" => 200}})]
+               )
+
+      inconclusive = create_request!(%{public_id: "req_audit_inconclusive", state: :running})
+      assert {:ok, _request} = Requests.mark_terminal(inconclusive, %{state: :completed})
+
+      active = create_request!(%{public_id: "req_audit_active", state: :running})
+
+      assert {:ok, matches} = Requests.audit_missing_terminal_candidates()
+
+      assert matches |> Enum.map(&{&1.public_id, &1.result}) |> Enum.sort() == [
+               {"req_audit_candidate", {:ok, :missing_finish_reason_candidate}},
+               {"req_audit_inconclusive", {:error, {:inconclusive, :terminal_step_not_found}}}
+             ]
+
+      refute Enum.any?(matches, &(&1.public_id in ["req_audit_control", active.public_id]))
+      assert Enum.all?(matches, &(&1.request_id in [candidate.id, inconclusive.id]))
+
+      assert {:ok, []} =
+               Requests.audit_missing_terminal_candidates(
+                 since: DateTime.add(DateTime.utc_now(), 60, :second)
+               )
+
+      assert {:ok, []} =
+               Requests.audit_missing_terminal_candidates(
+                 until: DateTime.add(DateTime.utc_now(), -60, :second)
+               )
+    end
+
+    test "rejects malformed audit options" do
+      assert {:error, {:inconclusive, :invalid_audit_options}} =
+               Requests.audit_missing_terminal_candidates(limit: 0)
+
+      assert {:error, {:inconclusive, :invalid_audit_options}} =
+               Requests.audit_missing_terminal_candidates(since: "2026-07-31")
+
+      assert {:error, {:inconclusive, :invalid_audit_options}} =
+               Requests.audit_missing_terminal_candidates(unknown: true)
+
+      assert {:error, {:inconclusive, :invalid_audit_options}} =
+               Requests.audit_missing_terminal_candidates(%{limit: 5})
+
+      assert {:error, {:inconclusive, :invalid_selector}} =
+               Requests.audit_missing_terminal_candidates(attempt: 0)
     end
   end
 

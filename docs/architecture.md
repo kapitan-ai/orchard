@@ -190,7 +190,8 @@ controller-bearing installs require operator-provided external Postgres and the
 managed Postgres helper remains a guard only.
 
 Terminal inference-turn steps persist `finish_reason` for every observed `Completed` event.
-`Orchard.Requests.classify_missing_terminal_candidate/2` provides a read-only, per-attempt classifier for the current missing-`finish_reason` candidate fingerprint and reports missing, malformed, ambiguous, or state-inconsistent evidence as inconclusive.
+`Orchard.Requests.classify_missing_terminal_candidate/2` provides a read-only, per-attempt classifier for the current missing-`finish_reason` candidate fingerprint and reports missing, malformed, duplicated, or state-inconsistent evidence as inconclusive.
+`Orchard.Requests.audit_missing_terminal_candidates/1` sweeps a window of terminal requests with that classifier and returns candidate matches alongside inconclusive evidence, both of which require adjudication.
 This bounded CP1 audit does not enforce `SPEC.md` §7.5.5, does not replace client-plane terminal-cardinality validation, and remains available only while its `request_events` evidence is retained.
 
 ## Where to make changes
