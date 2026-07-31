@@ -63,6 +63,9 @@ defmodule Orchard.Requests do
   @doc """
   Classifies the persisted missing-finish-reason fingerprint for one inference turn.
 
+  This candidate signal is bounded to the current dispatcher and orchestrator
+  persistence invariants and to the retention lifetime of `request_events`.
+  It is not general conformance evidence for `SPEC.md` section 7.5.5.
   Missing, malformed, ambiguous, or state-inconsistent evidence is inconclusive.
   """
   @spec classify_missing_terminal_candidate(Request.t() | Ecto.UUID.t(), keyword()) ::

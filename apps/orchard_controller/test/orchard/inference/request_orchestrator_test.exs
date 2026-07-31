@@ -2155,7 +2155,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical = canonical_request("request-orchestrator-length-control", stream?: false)
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
-    assert Enum.count(events, &InferenceEvent.terminal?/1) == 1
+    assert TerminalCardinality.classify(events) == :exactly_one
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     terminal_step = Requests.list_request_step_events(request) |> List.last()
@@ -2248,6 +2248,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
                  step_event_appender: step_event_appender
                )
 
+      assert TerminalCardinality.classify(events) == :exactly_one
       assert match?(%{event: %InferenceEvent.Failed{code: ^code}}, List.last(events))
       refute_receive {:unexpected_terminal_step_appender_call, _step_events}
 
@@ -2304,7 +2305,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical = canonical_request("request-orchestrator-tool-proposals", stream?: false)
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
-    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+    assert TerminalCardinality.classify(events) == :exactly_one
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     step_events = Requests.list_request_step_events(request)
