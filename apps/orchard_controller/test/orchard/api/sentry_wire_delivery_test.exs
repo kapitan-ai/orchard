@@ -198,13 +198,17 @@ defmodule Orchard.API.SentryWireDeliveryTest do
     assert Enum.any?(frames, &String.ends_with?(&1["function"] || "", "handle_cast/2"))
     assert Enum.all?(frames, &(&1["context_line"] == nil))
 
-    assert payload["extra"] == %{
+    assert %{
              "logger_metadata" => %{
                "request_id" => "req_wire_logger",
                "worker_model" => "mlx-community/qwen2.5",
                "model_backend" => "mlx"
-             }
-           }
+             },
+             "orchard_thread_stack_hash" => stack_hash
+           } = payload["extra"]
+
+    assert map_size(payload["extra"]) == 2
+    assert Regex.match?(~r/\A[0-9a-f]{16}\z/, stack_hash)
 
     refute envelope =~ "ISSUE114_WIRE_"
     refute envelope =~ "orchard_node_id"

@@ -16,6 +16,8 @@ defmodule Orchard.SentryFilter do
   @redacted "[redacted]"
   @unknown_provenance "unknown"
   @fallback_thread_id "0"
+  @thread_stack_hash_key :orchard_thread_stack_hash
+  @stack_hash_frame_keys [:module, :function, :filename, :lineno]
 
   @sentry_event_module ["Sentry", "Event"]
   @sentry_thread_module ["Sentry", "Interfaces", "Thread"]
@@ -230,6 +232,7 @@ defmodule Orchard.SentryFilter do
   defp scrub_sentry_event(%{__struct__: module} = event) do
     event_map = Map.from_struct(event)
     exceptions = scrub_event_exceptions(Map.get(event_map, :exception))
+    threads = scrub_event_threads(Map.get(event_map, :threads), exceptions)
 
     module
     |> struct()
@@ -247,14 +250,15 @@ defmodule Orchard.SentryFilter do
       breadcrumbs: scrub_event_breadcrumbs(Map.get(event_map, :breadcrumbs)),
       contexts: %{},
       exception: exceptions,
-      extra: scrub_event_extra(Map.get(event_map, :extra)),
+      extra:
+        event_map |> Map.get(:extra) |> scrub_event_extra() |> put_thread_stack_hash(threads),
       fingerprint: [],
       message: scrub_event_message(Map.get(event_map, :message)),
       modules: %{},
       request: scrub_event_request(Map.get(event_map, :request)),
       server_name: @redacted,
       tags: scrub_allowlisted_map(Map.get(event_map, :tags), @safe_event_tag_keys),
-      threads: scrub_event_threads(Map.get(event_map, :threads), exceptions),
+      threads: threads,
       user: %{}
     })
     |> then(&struct(module, &1))
@@ -336,6 +340,50 @@ defmodule Orchard.SentryFilter do
         _without_safe_frames -> nil
       end
     end
+  end
+
+  defp put_thread_stack_hash(extra, threads) when is_list(threads) do
+    case thread_stack_signature(threads) do
+      [] -> extra
+      signature -> Map.put(extra, @thread_stack_hash_key, stack_hash(signature))
+    end
+  rescue
+    _exception -> extra
+  catch
+    _kind, _reason -> extra
+  end
+
+  defp put_thread_stack_hash(extra, _threads), do: extra
+
+  defp thread_stack_signature(threads) do
+    Enum.flat_map(threads, fn thread ->
+      thread
+      |> Map.get(:stacktrace)
+      |> thread_frames()
+      |> Enum.map(&frame_signature/1)
+    end)
+  end
+
+  defp thread_frames(%{frames: frames}) when is_list(frames), do: frames
+  defp thread_frames(_stacktrace), do: []
+
+  defp frame_signature(frame) do
+    @stack_hash_frame_keys
+    |> Enum.map(&(frame |> Map.get(&1) |> signature_part()))
+    |> Enum.intersperse("|")
+  end
+
+  defp signature_part(nil), do: ""
+  defp signature_part(value) when is_binary(value), do: value
+  defp signature_part(value) when is_atom(value), do: Atom.to_string(value)
+  defp signature_part(value) when is_integer(value), do: Integer.to_string(value)
+  defp signature_part(_value), do: ""
+
+  defp stack_hash(signature) do
+    :sha256
+    |> :crypto.hash(Enum.intersperse(signature, "\n"))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
   end
 
   defp safe_thread_id(value) when is_binary(value) do

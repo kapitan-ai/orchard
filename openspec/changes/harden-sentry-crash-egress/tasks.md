@@ -39,6 +39,7 @@
 - [x] 5.5 Rebuild the thread interface for non-exception crashes with hostile, malformed, non-redundancy, and envelope-serialization coverage, plus a real Logger-handler OTP crash delivered over the loopback receiver.
 - [x] 5.6 Rebuild the nested `logger_metadata` extra from the curated allowlist and prove over a real Logger envelope that the curated keys survive while raw node identity, Logger level, and domain do not.
 - [x] 5.7 Accept the exact `unknown` provenance sentinel in the build SHA and build date validators while keeping near-miss values filtered.
+- [x] 5.8 Derive `orchard_thread_stack_hash` from retained thread frames so the pinned deduplication hash separates distinct thread-only crash sites, reject caller-supplied values, and cover equal/different stacks, shape, omission, and envelope minimization.
 
 ## 6. Validation And Handoff
 

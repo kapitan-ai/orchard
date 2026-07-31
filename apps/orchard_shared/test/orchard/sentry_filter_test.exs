@@ -988,6 +988,64 @@ defmodule Orchard.SentryFilterTest do
            }
   end
 
+  test "derives a thread stack hash so different crash sites survive SDK deduplication" do
+    first = SentryFilter.filter(thread_event([first_party_frame()]))
+    repeat = SentryFilter.filter(thread_event([first_party_frame()]))
+    other_site = SentryFilter.filter(thread_event([%{first_party_frame() | lineno: 99}]))
+
+    stack_hash = first.extra[:orchard_thread_stack_hash]
+
+    assert Regex.match?(~r/\A[0-9a-f]{16}\z/, stack_hash)
+    assert repeat.extra[:orchard_thread_stack_hash] == stack_hash
+    refute other_site.extra[:orchard_thread_stack_hash] == stack_hash
+
+    assert Sentry.Event.hash(first) == Sentry.Event.hash(repeat)
+    refute Sentry.Event.hash(first) == Sentry.Event.hash(other_site)
+  end
+
+  test "omits the thread stack hash for exception-backed and frameless events" do
+    exception_backed = SentryFilter.filter(sentry_event(%{}))
+    frameless = SentryFilter.filter(thread_event([]))
+
+    refute Map.has_key?(exception_backed.extra, :orchard_thread_stack_hash)
+    assert frameless.threads == nil
+    refute Map.has_key?(frameless.extra, :orchard_thread_stack_hash)
+  end
+
+  test "never trusts a caller-supplied thread stack hash" do
+    hostile = %{
+      "orchard_thread_stack_hash" => "ISSUE114_HOSTILE_STACK_HASH",
+      orchard_thread_stack_hash: "ISSUE114_HOSTILE_STACK_HASH"
+    }
+
+    exception_backed = SentryFilter.filter(%{sentry_event(%{}) | extra: hostile})
+
+    assert exception_backed.extra == %{}
+
+    envelope =
+      [first_party_frame()] |> thread_event(hostile) |> serialized_filtered_envelope()
+
+    extra = envelope |> envelope_event_payload() |> Map.fetch!("extra")
+
+    assert Regex.match?(~r/\A[0-9a-f]{16}\z/, extra["orchard_thread_stack_hash"])
+    assert map_size(extra) == 1
+    refute envelope =~ "ISSUE114_HOSTILE"
+  end
+
+  defp thread_event(frames, extra \\ %{}) do
+    %{
+      sentry_event(%{})
+      | exception: [],
+        extra: extra,
+        threads: [
+          %Sentry.Interfaces.Thread{
+            id: String.duplicate("c", 32),
+            stacktrace: %Sentry.Interfaces.Stacktrace{frames: frames}
+          }
+        ]
+    }
+  end
+
   defp first_party_frame do
     %Sentry.Interfaces.Stacktrace.Frame{
       module: Orchard.API.ResponsesController,
