@@ -4,7 +4,7 @@
 # Usage: ./scripts/build-pkg.sh [--allow-dirty] [--clean] [--stage-only] [output_dir]
 #
 # Options:
-#   --allow-dirty    Allow building with uncommitted changes (marks PKG as -dirty)
+#   --allow-dirty    Allow building with uncommitted changes (marks PKG filename as -dirty)
 #   --clean          Deep clean: removes _build/ and deps/ before building
 #   --stage-only     Stop after staging, venv closure verification, and optional payload signing
 #   output_dir       Destination directory (default: ./artifacts/pkg-builds/YYYY-MM-DD)
@@ -1433,6 +1433,20 @@ case "$ORCHARD_BUILD_CHANNEL" in
         ;;
 esac
 
+if ! FULL_GIT_SHA="$(git rev-parse HEAD)"; then
+    log_error "Failed to resolve the Git HEAD for packaged build provenance"
+    exit 1
+fi
+
+if [[ ! "$FULL_GIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    log_error "Packaged build provenance must be a 40-character lowercase Git SHA"
+    exit 1
+fi
+
+export ORCHARD_BUILD_SHA="$FULL_GIT_SHA"
+SHORT_GIT_SHA="${FULL_GIT_SHA:0:7}"
+PKG_FILENAME_REF="$SHORT_GIT_SHA"
+
 # Preflight: Check for port conflicts (warn only)
 if lsof -ti :4000 >/dev/null 2>&1 || lsof -ti :50071 >/dev/null 2>&1; then
     log_warn "Dev server ports (4000 or 50071) appear to be in use"
@@ -1450,13 +1464,13 @@ if [[ -z "$APP_VERSION" ]] || [[ "$APP_VERSION" == *" "* ]]; then
     exit 1
 fi
 
-GIT_SHA=$(git rev-parse --short HEAD)
 BUILD_DATE=$(date +%Y%m%d)
-PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${GIT_SHA}.pkg"
+PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${PKG_FILENAME_REF}.pkg"
 
 log_info "Building Orchard PKG"
 log_info "  App version: $APP_VERSION"
-log_info "  Git SHA: $GIT_SHA"
+log_info "  Build SHA: $ORCHARD_BUILD_SHA"
+log_info "  PKG filename ref: $PKG_FILENAME_REF"
 log_info "  Build date: $BUILD_DATE"
 log_info "  Build channel: $ORCHARD_BUILD_CHANNEL"
 log_info "  Output: $OUTPUT_DIR/$PKG_NAME"
@@ -1480,9 +1494,9 @@ fi
 if ! git diff-index --quiet HEAD --; then
     if [[ "$ALLOW_DIRTY" == "true" ]]; then
         log_warn "Uncommitted changes detected — continuing with --allow-dirty"
-        GIT_SHA="${GIT_SHA}-dirty"
-        PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${GIT_SHA}.pkg"
-        log_warn "Marked as dirty: $PKG_NAME"
+        PKG_FILENAME_REF="${SHORT_GIT_SHA}-dirty"
+        PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${PKG_FILENAME_REF}.pkg"
+        log_warn "Marked PKG filename as dirty: $PKG_NAME"
     else
         log_error "Uncommitted changes detected in repository"
         log_error "Commit changes first, or use --allow-dirty to override"

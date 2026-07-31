@@ -4,7 +4,7 @@ defmodule Orchard.SentryReleaseTest do
   alias Orchard.SentryRelease
 
   @build_opts [
-    build_sha: "abcdef1234567890",
+    build_sha: "abcdef0123456789abcdef0123456789abcdef01",
     build_date: "2026-07-30",
     build_channel: "internal"
   ]
@@ -12,13 +12,13 @@ defmodule Orchard.SentryReleaseTest do
   test "builds controller release identity from Product Version and provenance" do
     identity = SentryRelease.identity("orchard_controller", "0.5.0-dev", @build_opts)
 
-    assert identity.release == "orchard_controller@0.5.0-dev+abcdef1"
+    assert identity.release == "orchard_controller@0.5.0-dev+abcdef0"
 
     assert identity.tags == %{
              orchard_app: "controller",
              orchard_version: "0.5.0-dev",
              orchard_build_channel: "internal",
-             build_sha: "abcdef1234567890",
+             build_sha: "abcdef0123456789abcdef0123456789abcdef01",
              build_date: "2026-07-30"
            }
   end

@@ -683,6 +683,7 @@ operator/support diagnostics and do not affect license enforcement.
 | Variable | Default | Intended use |
 |----------|---------|--------------|
 | `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in `/health/ready`. Distributed package builds must use a non-`dev` channel. |
+| `ORCHARD_BUILD_SHA` | Unset for source builds | Compile-time Git provenance. As a scoped source/dev compatibility choice, compilation retains the existing seven-character `HEAD` fallback. `build-pkg.sh` exports and bakes the full committed `HEAD`; inherited values are ignored. |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
@@ -1334,10 +1335,14 @@ This produces a PKG file following the [naming convention below](#filename-forma
 
 The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because distributed packages must not ship with source-dev enforcement defaults.
 
+Before its first Mix invocation, the script resolves and validates the full 40-character lowercase `git rev-parse HEAD`, then exports it as `ORCHARD_BUILD_SHA`. This authoritative value replaces any inherited `ORCHARD_BUILD_SHA` and is baked into all packaged releases. Direct source/dev compilation deliberately retains the existing seven-character Git fallback (or `unknown` without Git) as a scoped compatibility choice so existing source/dev `/health/ready` values remain stable. This exception does not apply to packaged artifacts. Manual CI compilation can provide a full commit through `ORCHARD_BUILD_SHA`; changing or removing that value, or changing `HEAD` while it is unset, causes Mix to recompile the metadata module.
+
+Packaged Sentry release names continue to use a seven-character suffix, while the `build_sha` tag and `/health/ready` `build_ref` retain the complete baked value.
+
 | Flag | Purpose |
 |------|---------|
 | `--clean` | Deep clean: removes `_build/` and `deps/` before building (slow, but maximally reproducible) |
-| `--allow-dirty` | Supported dev-build escape hatch when your tree is not clean (adds `-dirty` to the git SHA segment) |
+| `--allow-dirty` | Supported dev-build escape hatch when your tree is not clean (adds `-dirty` to the filename reference only) |
 | `--stage-only` | Stage the payload, verify Python venv closure, optionally payload-sign Mach-O files, print `STAGING_BASE=<path>`, and skip `pkgbuild` |
 | `output_dir` | Custom output directory (default: `./artifacts/pkg-builds/YYYY-MM-DD/`) |
 
@@ -1598,8 +1603,10 @@ Orchard-<app_version>-<YYYYMMDD>-<git_sha7>.pkg
 ```
 
 There is no separate "dev" filename marker. Development builds use the same
-format; when `--allow-dirty` is used, `-dirty` is appended to the git-SHA
-segment only.
+format; when `--allow-dirty` is used, `-dirty` is appended to the filename
+reference only. It is not part of the exported or baked SHA. Dirty-build
+provenance identifies committed `HEAD` only and cannot identify uncommitted
+payload differences.
 
 | Component | Example | Purpose |
 |-----------|---------|---------|

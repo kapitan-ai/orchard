@@ -31,6 +31,24 @@ defmodule Orchard.BuildInfo do
                       "dev"
                   end)
 
+  @doc false
+  @spec __mix_recompile__?() :: boolean()
+  def __mix_recompile__? do
+    current_git_sha =
+      case System.get_env("ORCHARD_BUILD_SHA") do
+        sha when is_binary(sha) and sha != "" ->
+          String.trim(sha)
+
+        _ ->
+          case System.cmd("git", ["rev-parse", "--short=7", "HEAD"], stderr_to_stdout: true) do
+            {sha, 0} -> String.trim(sha)
+            _ -> "unknown"
+          end
+      end
+
+    current_git_sha != @git_sha
+  end
+
   @spec git_sha() :: String.t()
   def git_sha, do: @git_sha
 

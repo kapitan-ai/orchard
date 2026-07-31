@@ -75,6 +75,48 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     assert allowlist_index < mix_release_index
   end
 
+  test "full build SHA is exported before every mix command" do
+    script = File.read!(@script_path)
+
+    resolve_index = index_of(script, "git rev-parse HEAD")
+    validation_index = index_of(script, "^[0-9a-f]{40}$")
+    export_index = index_of(script, "export ORCHARD_BUILD_SHA=\"$FULL_GIT_SHA\"")
+
+    assert is_integer(resolve_index)
+    assert is_integer(validation_index)
+    assert is_integer(export_index)
+    assert resolve_index < validation_index
+    assert validation_index < export_index
+
+    for mix_command <- [
+          "mix run --no-start",
+          "mix deps.get",
+          "MIX_ENV=prod mix assets.setup",
+          "MIX_ENV=prod mix assets.deploy",
+          "mix release orchard_controller",
+          "mix release orchard_node_agent",
+          "mix release orchard_cli"
+        ] do
+      mix_index = index_of(script, mix_command)
+      assert is_integer(mix_index)
+      assert export_index < mix_index
+    end
+
+    refute script =~ "git rev-parse --short"
+  end
+
+  test "dirty marker is separate from the exported build SHA" do
+    script = File.read!(@script_path)
+
+    assert script =~ "SHORT_GIT_SHA=\"${FULL_GIT_SHA:0:7}\""
+    assert script =~ "PKG_FILENAME_REF=\"${SHORT_GIT_SHA}-dirty\""
+    assert script =~ "Build SHA: $ORCHARD_BUILD_SHA"
+    assert script =~ "PKG filename ref: $PKG_FILENAME_REF"
+
+    refute script =~ "ORCHARD_BUILD_SHA=\"${ORCHARD_BUILD_SHA}-dirty\""
+    refute script =~ "FULL_GIT_SHA=\"${FULL_GIT_SHA}-dirty\""
+  end
+
   test "build channel defaults only when environment variable is unset" do
     script = File.read!(@script_path)
 

@@ -461,7 +461,7 @@ if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'git\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
 fi
 case "$1" in
-  rev-parse) echo abcdef0 ;;
+  rev-parse) echo abcdef0123456789abcdef0123456789abcdef01 ;;
   diff-index) exit 0 ;;
   *) echo "unexpected git invocation: $*" >&2; exit 1 ;;
 esac
