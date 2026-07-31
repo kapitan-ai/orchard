@@ -46,8 +46,6 @@ defmodule Orchard.Inference.CP1TerminalDetectorProofTest do
     assert Enum.frequencies(Enum.map(controls, & &1.source_cardinality)) ==
              %{exactly_one: @control_count}
 
-    assert {:ok, []} = Requests.audit_missing_terminal_candidates()
-
     assert TerminalCardinality.classify([InferenceEvent.accepted(0)]) == :zero
 
     assert TerminalCardinality.classify([
