@@ -2,7 +2,7 @@
 
 ### Requirement: Optional Sentry Request Data Is Allowlisted
 
-When optional Sentry crash reporting is configured, Orchard SHALL collect and transmit only the normalized HTTP method from request context. Orchard SHALL NOT collect into Sentry context or transmit request bodies, headers, cookies, URLs, route values, query strings, client addresses, server addresses, ports, user data, or other request fields. The outbound filter SHALL reconstruct request interfaces from the allowlist regardless of event source or map-versus-struct representation. This requirement hardens optional diagnostics beneath `SPEC.md` §9 without making Sentry normative.
+When optional Sentry crash reporting is configured, Orchard SHALL collect and transmit only the normalized HTTP method from request context. Orchard SHALL NOT collect into Sentry context or transmit request bodies, headers, cookies, URLs, route values, query strings, client addresses, server addresses, ports, user data, or other request fields. No disallowed request value SHALL egress on either outbound scrubbing path, whatever representation it arrives in. For an actual Sentry event payload, Orchard SHALL retain request context only when the container is the exact pinned SDK-native request interface struct, SHALL rebuild it from the allowlist with the normalized HTTP method alone, and SHALL omit an absent, bare-map, foreign-struct, malformed, or otherwise unsupported request container entirely rather than emitting a substitute container. For the generic map and non-Sentry struct scrubbing Orchard reuses for CLI and local compatibility snapshots, Orchard SHALL reduce a map-shaped request value to at most its normalized HTTP method and SHALL remove every other request field. This requirement hardens optional diagnostics beneath `SPEC.md` §9 without making Sentry normative.
 
 #### Scenario: Responses request contains proprietary inference data
 
@@ -18,6 +18,16 @@ When optional Sentry crash reporting is configured, Orchard SHALL collect and tr
 
 - **WHEN** the SDK supplies request context as a struct instead of a plain map
 - **THEN** Orchard preserves the valid struct shape while retaining only the allowed method and serializes no disallowed request value
+
+#### Scenario: Actual event carries an unsupported request container
+
+- **WHEN** an actual Sentry event's request value is absent, a bare map, a foreign struct, or otherwise not the pinned SDK-native request interface struct, and it carries request body, header, or address data
+- **THEN** the serialized envelope omits the request interface entirely instead of emitting a substitute method-only container, and none of that request data appears anywhere in the envelope
+
+#### Scenario: Compatibility scrubbing reduces a request map
+
+- **WHEN** generic map or non-Sentry struct scrubbing, such as a local CLI status snapshot, encounters a `request` value carrying a method alongside other request fields
+- **THEN** Orchard retains at most the normalized HTTP method in that value and removes every other request field
 
 ### Requirement: Outbound Sentry Events Use A Final Schema Allowlist
 
