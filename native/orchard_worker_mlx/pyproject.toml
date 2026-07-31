@@ -15,13 +15,16 @@ dependencies = [
 [project.optional-dependencies]
 mlx = [
   "mlx>=0.31.2",
-  "mlx-lm>=0.31.3",
-  # Issue #57: transformers 5.13 tightens _LazyAutoMapping.register, so mlx-lm
-  # 0.31.3's string NewlineTokenizer config key fails at import. Lift once mlx-lm fixes it.
-  "transformers>=5.0.0,<5.13",
+  "mlx-lm==0.31.3",
+  # Issue #98 pins the audited 15-commit / 35-file delta from v0.31.3.
+  # Keep the Transformers 5.13 compatibility matrix as a separate lock change.
+  "transformers>=5.7,<5.13",
   "protobuf>=6.33.5",
   "numpy>=1.26.0",
 ]
+
+[tool.uv.sources]
+mlx-lm = { git = "https://github.com/ml-explore/mlx-lm.git", rev = "ab1806e8f5d6aa035973af194a1b9198ab4754dc" }
 
 [project.scripts]
 orchard-worker-mlx = "orchard_worker_mlx.cli:main"

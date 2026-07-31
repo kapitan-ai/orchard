@@ -4,6 +4,7 @@ defmodule Orchard.Requests.RequestStepEvent do
   """
 
   alias Orchard.Inference.ToolExecutionOutcome
+  alias Orchard.Requests.Request
   alias Orchard.Requests.RequestEvent
 
   @step_event_types [
@@ -18,6 +19,22 @@ defmodule Orchard.Requests.RequestStepEvent do
   ]
   @step_types ["inference_turn", "tool_call", "tool_execution"]
   @boundaries ["pre_side_effect", "post_observation"]
+  @terminal_step_event_types [
+    completed: "request_step.completed",
+    failed: "request_step.failed",
+    cancelled: "request_step.cancelled",
+    timed_out: "request_step.timed_out",
+    interrupted: "request_step.interrupted"
+  ]
+
+  unmapped_terminal_states =
+    Request.terminal_states() -- Keyword.keys(@terminal_step_event_types)
+
+  if unmapped_terminal_states != [] do
+    raise "terminal request states without a request_step.* event type: " <>
+            inspect(unmapped_terminal_states)
+  end
+
   @top_level_fields [
     :request_id,
     :seq,
@@ -89,6 +106,36 @@ defmodule Orchard.Requests.RequestStepEvent do
 
   @spec boundaries() :: [boundary()]
   def boundaries, do: @boundaries
+
+  @doc """
+  Returns the `request_step.*` event types that close an inference turn.
+  """
+  @spec terminal_step_event_types() :: [event_type()]
+  def terminal_step_event_types, do: Keyword.values(@terminal_step_event_types)
+
+  @doc """
+  Returns the `request_step.*` event type a terminal `Request` state must persist.
+  """
+  @spec fetch_terminal_step_event_type(atom()) :: {:ok, event_type()} | :error
+  def fetch_terminal_step_event_type(request_state) when is_atom(request_state),
+    do: Keyword.fetch(@terminal_step_event_types, request_state)
+
+  def fetch_terminal_step_event_type(_request_state), do: :error
+
+  @doc """
+  Same as `fetch_terminal_step_event_type/1` but raises on an unmapped state.
+  """
+  @spec terminal_step_event_type!(atom()) :: event_type()
+  def terminal_step_event_type!(request_state) do
+    case fetch_terminal_step_event_type(request_state) do
+      {:ok, event_type} ->
+        event_type
+
+      :error ->
+        raise ArgumentError,
+              "no request_step.* event type for terminal state #{inspect(request_state)}"
+    end
+  end
 
   @spec request_step_event_type?(String.t()) :: boolean()
   def request_step_event_type?(event_type) when is_binary(event_type),

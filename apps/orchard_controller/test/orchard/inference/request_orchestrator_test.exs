@@ -479,16 +479,20 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
     owner = Keyword.fetch!(opts, :owner)
     stream_ref = make_ref()
 
+    events =
+      Process.get(
+        {__MODULE__, :execute_events},
+        [InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{})]
+      )
+
     send(
       owner,
       {:runtime_endpoint_event, stream_ref, request.request_id, InferenceEvent.accepted(0)}
     )
 
-    send(
-      owner,
-      {:runtime_endpoint_event, stream_ref, request.request_id,
-       InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{})}
-    )
+    Enum.each(events, fn event ->
+      send(owner, {:runtime_endpoint_event, stream_ref, request.request_id, event})
+    end)
 
     send(owner, {:runtime_endpoint_done, stream_ref, :ok})
 
@@ -783,6 +787,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.RequestServer
+  alias Orchard.TestSupport.TerminalCardinality
 
   setup :setup_sentry_context
 
@@ -2110,7 +2115,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
                step_event_appender: step_event_appender
              )
 
-    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+    assert TerminalCardinality.classify(events) == :exactly_one
     refute_receive {:unexpected_terminal_step_appender_call, _step_events}
 
     request = Requests.get_request_by_public_id(canonical.public_id)
@@ -2132,6 +2137,66 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
                "output_tokens" => 0
              }
            ]
+
+    assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
+  end
+
+  test "execute/3 persists a length terminal as a non-candidate control", %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.completed(
+        :finish_reason_length,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2}
+      )
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-length-control")
+    canonical = canonical_request("request-orchestrator-length-control", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert TerminalCardinality.classify(events) == :exactly_one
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    terminal_step = Requests.list_request_step_events(request) |> List.last()
+
+    assert terminal_step.result["finish_reason"] == "length"
+    assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
+  end
+
+  test "execute/3 leaves a durable missing-terminal detector candidate after the request process exits",
+       %{bundle: bundle} do
+    target = [host: "10.0.0.1", port: 50_061]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+    stub_runtime_events([])
+
+    model = create_active_model!(bundle, "request-orchestrator-missing-terminal-detector")
+
+    canonical =
+      canonical_request("request-orchestrator-missing-terminal-detector", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.map(events, &InferenceEvent.kind/1) == [:accepted]
+    assert TerminalCardinality.classify(events) == :zero
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :completed
+    assert request.http_status == 200
+
+    assert [started_step, terminal_step] = Requests.list_request_step_events(request)
+    assert started_step.event_type == "request_step.started"
+    assert terminal_step.event_type == "request_step.completed"
+    refute Map.has_key?(terminal_step.result, "finish_reason")
+
+    assert wait_until(fn ->
+             RequestServer.get_state(request.id) == {:error, :not_found}
+           end)
+
+    assert {:ok, :missing_finish_reason_candidate} =
+             Requests.classify_missing_terminal_candidate(request)
   end
 
   test "execute/3 aborts before dispatch side effects when request_step.started persistence fails",
@@ -2183,11 +2248,13 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
                  step_event_appender: step_event_appender
                )
 
+      assert TerminalCardinality.classify(events) == :exactly_one
       assert match?(%{event: %InferenceEvent.Failed{code: ^code}}, List.last(events))
       refute_receive {:unexpected_terminal_step_appender_call, _step_events}
 
       request = Requests.get_request_by_public_id(canonical.public_id)
       assert request.state == expected_state
+      assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
 
       step_events = Requests.list_request_step_events(request)
 
@@ -2238,10 +2305,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical = canonical_request("request-orchestrator-tool-proposals", stream?: false)
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
-    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+    assert TerminalCardinality.classify(events) == :exactly_one
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     step_events = Requests.list_request_step_events(request)
+    assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
 
     assert Enum.map(step_events, &{&1.event_type, &1.step_type, &1.step_id}) == [
              {"request_step.started", "inference_turn", "inference_turn:t1:a1"},
@@ -3213,6 +3281,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   defp stub_runtime_status(target, response) do
     key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
     Process.put({StubRuntimeEndpointClient, key}, response)
+  end
+
+  defp stub_runtime_events(events) do
+    Process.put({StubRuntimeEndpointClient, :execute_events}, events)
   end
 
   defp runtime_status(node_id, target) do

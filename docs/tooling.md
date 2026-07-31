@@ -52,8 +52,8 @@ tool resolution matters.
 ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.hex --if-missing --force
 ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.rebar --if-missing --force
 ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix deps.get
-mise exec -- uv sync --directory native/orchard_tokenizer
-mise exec -- uv sync --directory native/orchard_worker_mlx
+mise exec -- uv sync --locked --directory native/orchard_tokenizer
+mise exec -- uv sync --locked --directory native/orchard_worker_mlx
 mise exec -- npm ci --ignore-scripts
 mise exec -- bin/dev
 ```
@@ -129,18 +129,19 @@ required gate; add `ty` to the relevant `pyproject.toml` first, then run it as
 MLX extras remain opt-in because they pull the real inference stack:
 
 ```bash
-mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx
+mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
 ```
 
-The default `pytest` run above skips `tests/test_mlx_import_smoke.py` because the
-`mlx` extra is absent. When refreshing the `transformers`/`mlx-lm` pins (for
-example lifting the issue #57 `transformers<5.13` cap), exercise the import
-regression guard with the extra installed:
+The default `pytest` run above skips `tests/test_mlx_import_smoke.py` because the `mlx` extra is absent.
+When refreshing the `transformers`/`mlx-lm` pins, exercise the import and remote-code security guards with the exact locked extra installed:
 
 ```bash
-mise exec -- uv run --directory native/orchard_worker_mlx --extra mlx \
+mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
   pytest tests/test_mlx_import_smoke.py
 ```
+
+The resolved-environment guard verifies the exact MLX-LM source revision, loader signatures, tokenizer registration, and explicit model and tokenizer distrust on the sharded loading surface without downloading a model.
+See the "MLX-LM security baseline" section of `native/orchard_worker_mlx/README.md` for the pinned revision, the remote-code controls, and the residual the guard asserts against.
 
 Package builds should run through the same toolchain:
 
