@@ -150,6 +150,44 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
     end
   end
 
+  test "none and metadata preserve typed cache-affinity feedback for production lookup" do
+    affinity_key = "hmac-sha256:#{String.duplicate("a", 64)}"
+    model_id = "capture-model"
+
+    for mode <- [:none, :metadata] do
+      tenant_id = Ecto.UUID.generate()
+      node_id = Ecto.UUID.generate()
+      {:ok, request} = Requests.create_request(request_attrs(mode, tenant_id))
+
+      assert {:ok, scheduled} =
+               Requests.record_schedule(request, %{
+                 node_id: node_id,
+                 cache_affinity_enabled: true,
+                 cache_affinity_key: affinity_key,
+                 cache_affinity_hint_available: true,
+                 cache_affinity_selected_match: true,
+                 cache_affinity_source: "recent_completed_request",
+                 cache_affinity_candidate_count: 1
+               })
+
+      assert scheduled.scheduler_decision["cache_affinity_key"] == affinity_key
+
+      assert {:ok, completed} =
+               Requests.mark_terminal(scheduled, %{
+                 state: :completed,
+                 response_payload: %{"output_text" => @private_response}
+               })
+
+      assert Requests.recent_cache_affinity_nodes(
+               tenant_id,
+               model_id,
+               "v1",
+               affinity_key,
+               now: DateTime.add(completed.completed_at, 1, :second)
+             ) == [node_id]
+    end
+  end
+
   test "database constraints reject policy bypasses and remain discoverable for drift checks" do
     {:ok, request} = Requests.create_request(request_attrs(:metadata))
 

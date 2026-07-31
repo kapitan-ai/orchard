@@ -10,6 +10,9 @@ defmodule Orchard.Requests.CapturePolicyTest do
   @event_integer_keys ~w(attempt attempt_index sequence turn_index)
   @result_integer_keys ~w(http_status input_tokens output_tokens)
   @schedule_boolean_keys ~w(
+    cache_affinity_enabled
+    cache_affinity_hint_available
+    cache_affinity_selected_match
     fallback_used?
     memory_admission_enabled
     memory_headroom_ok?
@@ -36,6 +39,7 @@ defmodule Orchard.Requests.CapturePolicyTest do
     selected_prefix_cache_total_bytes
   )
   @schedule_enums ~w(
+    cache_affinity_source
     memory_admission_tier
     queue_result
     queue_wait_reason
@@ -310,6 +314,40 @@ defmodule Orchard.Requests.CapturePolicyTest do
         assert CapturePolicy.schedule_attrs(mode, %{
                  queue_granted_at: %{"content" => @prompt},
                  queued_at: [@prompt]
+               }) == %{}
+      end
+    end
+
+    test "none and metadata retain only typed cache-affinity feedback" do
+      affinity_key = "hmac-sha256:#{String.duplicate("a", 64)}"
+
+      for mode <- [:none, :metadata] do
+        sanitized =
+          CapturePolicy.schedule_attrs(mode, %{
+            cache_affinity_enabled: true,
+            cache_affinity_key: affinity_key,
+            cache_affinity_hint_available: true,
+            cache_affinity_selected_match: false,
+            cache_affinity_source: "recent_completed_request",
+            cache_affinity_candidate_count: 2
+          })
+
+        assert sanitized == %{
+                 "cache_affinity_enabled" => true,
+                 "cache_affinity_key" => affinity_key,
+                 "cache_affinity_hint_available" => true,
+                 "cache_affinity_selected_match" => false,
+                 "cache_affinity_source" => "recent_completed_request",
+                 "cache_affinity_candidate_count" => 2
+               }
+
+        assert CapturePolicy.schedule_attrs(mode, %{
+                 cache_affinity_enabled: @prompt,
+                 cache_affinity_key: "hmac-sha256:#{String.duplicate("g", 64)}",
+                 cache_affinity_hint_available: %{"content" => @prompt},
+                 cache_affinity_selected_match: [@prompt],
+                 cache_affinity_source: @prompt,
+                 cache_affinity_candidate_count: -1
                }) == %{}
       end
     end

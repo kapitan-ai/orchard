@@ -9,6 +9,9 @@ defmodule Orchard.Requests.CapturePolicy do
   @result_integer_keys ~w(http_status input_tokens output_tokens)
   @finish_reasons ~w(cancelled content_filter error length stop tool_calls)
   @schedule_boolean_keys ~w(
+    cache_affinity_enabled
+    cache_affinity_hint_available
+    cache_affinity_selected_match
     fallback_used?
     memory_admission_enabled
     memory_headroom_ok?
@@ -35,6 +38,7 @@ defmodule Orchard.Requests.CapturePolicy do
     selected_prefix_cache_total_bytes
   )
   @schedule_enums %{
+    "cache_affinity_source" => ~w(recent_completed_request),
     "memory_admission_tier" =>
       ~w(headroom_available headroom_ok headroom_tight headroom_unavailable headroom_unknown),
     "queue_result" =>
@@ -141,6 +145,7 @@ defmodule Orchard.Requests.CapturePolicy do
 
   def schedule_attrs(mode, attrs, approved) when mode in [:none, :metadata] do
     %{}
+    |> put_typed_values(attrs, ~w(cache_affinity_candidate_count), &non_negative_integer?/1)
     |> put_typed_values(attrs, @schedule_numeric_keys, &number?/1)
     |> put_typed_values(attrs, @schedule_boolean_keys, &is_boolean/1)
     |> put_enum_values(attrs, @schedule_enums)
@@ -149,6 +154,7 @@ defmodule Orchard.Requests.CapturePolicy do
     |> put_uuid_value(attrs, "queue_grant_id")
     |> put_datetime_value(attrs, "queue_granted_at")
     |> put_datetime_value(attrs, "queued_at")
+    |> put_cache_affinity_key(attrs)
     |> put_exact_value(attrs, "queue_key", Map.get(approved, :requested_model))
     |> put_safe_candidates(attrs, "scored_candidates", :scheduler_rejection)
     |> put_safe_candidates(attrs, "rejected_candidates", :scheduler_rejection)
@@ -516,6 +522,20 @@ defmodule Orchard.Requests.CapturePolicy do
       Map.put(sanitized, key, expected)
     else
       sanitized
+    end
+  end
+
+  defp put_cache_affinity_key(sanitized, source) do
+    case fetch_value(source, :cache_affinity_key) do
+      "hmac-sha256:" <> digest = value when byte_size(digest) == 64 ->
+        if String.match?(digest, ~r/\A[0-9a-f]{64}\z/) do
+          Map.put(sanitized, "cache_affinity_key", value)
+        else
+          sanitized
+        end
+
+      _value ->
+        sanitized
     end
   end
 

@@ -60,7 +60,7 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
         response_format = jsonb_strip_nulls(
           jsonb_build_object('type', response_format -> 'type')
         ),
-    scheduler_decision = NULL
+        scheduler_decision = #{legacy_cache_affinity_metadata_sql()}
     WHERE payload_capture_mode IN ('none', 'metadata')
     """)
 
@@ -113,5 +113,48 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
     alter table(:tenants) do
       remove(:request_body_capture_mode)
     end
+  end
+
+  @doc false
+  @spec legacy_cache_affinity_metadata_sql() :: String.t()
+  def legacy_cache_affinity_metadata_sql do
+    """
+    jsonb_strip_nulls(
+      jsonb_build_object(
+        'cache_affinity_key',
+          CASE
+            WHEN scheduler_decision ->> 'cache_affinity_key'
+                   ~ '^hmac-sha256:[0-9a-f]{64}$'
+            THEN scheduler_decision -> 'cache_affinity_key'
+          END,
+        'cache_affinity_enabled',
+          CASE
+            WHEN jsonb_typeof(scheduler_decision -> 'cache_affinity_enabled') = 'boolean'
+            THEN scheduler_decision -> 'cache_affinity_enabled'
+          END,
+        'cache_affinity_hint_available',
+          CASE
+            WHEN jsonb_typeof(scheduler_decision -> 'cache_affinity_hint_available') = 'boolean'
+            THEN scheduler_decision -> 'cache_affinity_hint_available'
+          END,
+        'cache_affinity_selected_match',
+          CASE
+            WHEN jsonb_typeof(scheduler_decision -> 'cache_affinity_selected_match') = 'boolean'
+            THEN scheduler_decision -> 'cache_affinity_selected_match'
+          END,
+        'cache_affinity_source',
+          CASE
+            WHEN scheduler_decision ->> 'cache_affinity_source' = 'recent_completed_request'
+            THEN scheduler_decision -> 'cache_affinity_source'
+          END,
+        'cache_affinity_candidate_count',
+          CASE
+            WHEN jsonb_typeof(scheduler_decision -> 'cache_affinity_candidate_count') = 'number'
+              AND scheduler_decision ->> 'cache_affinity_candidate_count' ~ '^[0-9]+$'
+            THEN scheduler_decision -> 'cache_affinity_candidate_count'
+          END
+      )
+    )
+    """
   end
 end

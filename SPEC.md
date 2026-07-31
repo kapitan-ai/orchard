@@ -4222,11 +4222,12 @@ For the Responses API, `store=false` SHALL cap `full` at `metadata`, SHALL NOT w
 
 Capture enforcement SHALL cover every content-bearing field on `requests` and `request_events`, including canonical input, request payloads, response payloads, previews, sampling stop text, response-format content, scheduler decisions, error text, model-generated tool arguments, and request-step results.
 Non-`full` Request-event and scheduler metadata SHALL use field-specific type checks and closed operational vocabularies rather than key-only allowlists.
+Non-`full` scheduler metadata MAY retain the opaque `hmac-sha256:<64 lowercase hex>` cache-affinity key and its closed typed operational fields because the scheduler requires that non-recoverable feedback for later placement.
 Untrusted tool-call identifiers retained for request-step correlation SHALL be replaced with deterministic hashes, and model-generated tool names and raw target references SHALL NOT persist outside `full`.
 `body_hash` and `response_hash` are integrity anchors and do not authorize content recovery or replay.
 Idempotent replay requires a retained `response_payload`; otherwise Orchard SHALL return `idempotency_not_replayable`.
 Existing `none` and `metadata` rows that contain forbidden content SHALL be purged in place rather than relabeled as `full`.
-When legacy nested event or scheduler values cannot be proven safe by the migration, Orchard SHALL discard the entire nested payload rather than copy key-allowlisted values forward.
+When legacy nested event or scheduler values cannot be proven safe by the migration, Orchard SHALL discard the entire nested payload rather than copy key-allowlisted values forward; the migration MAY retain only a syntactically valid cache-affinity HMAC and its closed typed operational fields.
 The purge verification SHALL explicitly enumerate every content-bearing Request column and `request_events.payload`, and schema-drift coverage SHALL fail when a new text, JSON, or binary Request column is not classified.
 
 ---
