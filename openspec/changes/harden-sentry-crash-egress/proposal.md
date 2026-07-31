@@ -2,7 +2,7 @@
 
 Orchard's optional Sentry crash reporting currently applies a recursive denylist after `Sentry.PlugContext` has collected request data. Real `/v1/responses` and `/v1/chat/completions` bodies contain prompts, instructions, tool definitions, tool choices, metadata, and other proprietary or customer-controlled values that are not exhaustively named by that denylist. A deterministic reproduction confirms that `request.data.instructions` and `request.data.tools` survive the current outbound filter.
 
-The same integration removes all source paths, does not provide stable Product Version and component tags for background crashes, and relies on SDK defaults that expose more diagnostic inventory than the internal rollout needs. The internal rollout needs fail-closed payload minimization and useful first-party crash provenance before any packaged smoke event is sent.
+The same integration removes all source paths, does not provide stable Product Version and component tags for background crashes, and relies on SDK defaults that expose more diagnostic inventory than the internal rollout needs. The internal rollout needs fail-closed payload minimization and useful first-party crash provenance before any real event is sent. A controlled source-development preflight also confirmed that hosted Sentry derives `user.geo` from the ingest connection even when IP-address storage prevention is enabled, so every real smoke gate requires explicit server-side removal of that post-ingest augmentation.
 
 ## What Changes
 
@@ -14,6 +14,7 @@ The same integration removes all source paths, does not provide stable Product V
 - Mark first-party OTP applications as in-app while explicitly keeping source-code context, both Sentry tracing configuration paths, Sentry Logs, client discard reports, and dependency inventory reporting disabled.
 - Remove raw Orchard node IDs from Logger metadata and retain existing event deduplication and rate limiting.
 - Add full-event, serialized-envelope, real local HTTP delivery, background-crash, and failure-isolation regression tests.
+- Require controlled hosted-Sentry gates to retain default scrubbers, prevent IP-address storage, and remove anything from `$user.geo.**` before source-development or packaged events are sent.
 - Keep Sentry optional and subordinate to `SPEC.md` §9 Prometheus, OpenTelemetry, and structured JSON log requirements.
 
 ## Capabilities
@@ -33,4 +34,4 @@ The same integration removes all source paths, does not provide stable Product V
 - Controller impact: the endpoint will replace broad SDK request collection with an Orchard-owned method-only Plug.
 - Shared impact: `Orchard.SentryFilter`, `Orchard.SentryLogger`, and a focused Sentry release-metadata helper will enforce the outbound contract for controller and Node Agent events.
 - Test impact: focused tests will inspect final serialized envelopes and one real HTTP request delivered to a loopback-only local test endpoint.
-- Operational impact: no DSN, credential, Sentry setting, event, issue, environment, release, or project mutation is part of this change.
+- Operational impact: Orchard performs no automatic Sentry mutation. Explicitly authorized source-development and packaged smoke gates configure defense-in-depth project controls, send only synthetic events, inspect stored payloads, and delete any failed controlled issue before retrying.

@@ -4,7 +4,7 @@
 - [x] 1.2 Approve validated first-party repo-relative filenames without source-code context.
 - [x] 1.3 Approve static Product Version and build-provenance tags for controller and Node Agent events.
 - [x] 1.4 Approve explicit non-expansion settings for tracing, Sentry Logs, source context, and dependency reporting.
-- [x] 1.5 Approve read-only Sentry access until packaged smoke artifacts exist.
+- [x] 1.5 Approve explicit source-development and packaged smoke gates while keeping production traffic disabled; require IP-address storage prevention and `$user.geo.**` removal before either gate.
 
 ## 2. Red Tests And Request Boundary
 
@@ -46,3 +46,4 @@
 - [x] 6.5 Run `mise exec -- mix test` and `mise exec -- mix test --cover`.
 - [x] 6.6 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate harden-sentry-crash-egress --type change --strict --no-interactive` and `git diff --check`.
 - [x] 6.7 Review the final diff against issue #114, this OpenSpec contract, and `SPEC.md` §9; report any packaged-smoke and Sentry-setting work that remains deferred.
+- [x] 6.8 Verify project IP prevention and `$user.geo.**` removal, then complete the clean source-development controller and Node Agent stored-event review before merge; delete failed controlled issues and retain only synthetic smoke data.

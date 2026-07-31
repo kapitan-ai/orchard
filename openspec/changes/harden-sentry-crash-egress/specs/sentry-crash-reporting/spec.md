@@ -85,6 +85,20 @@ Orchard SHALL keep Sentry Logs, tracing, performance transactions, source-code c
 - **WHEN** no Sentry DSN is configured
 - **THEN** Orchard installs no Sentry Logger handler and performs no Sentry transport work
 
+### Requirement: Controlled Hosted-Sentry Rollout Removes Server-Derived User Data
+
+Before any controlled source-development or packaged event is sent to hosted Sentry, the rollout operator SHALL verify that default server scrubbers remain enabled, project-level IP-address storage prevention is enabled, and an Advanced Data Scrubbing rule removes anything from `$user.geo.**`. Orchard SHALL continue to enforce its in-process collection and egress allowlists independently because hosted controls are defense in depth and Sentry derives geographic user fields after ingest even when IP storage is disabled. Source-development validation SHALL precede merge, and packaged validation SHALL still repeat the stored-event review from the landed artifact.
+
+#### Scenario: Hosted Sentry derives geography from the ingest connection
+
+- **WHEN** a controlled event reaches Sentry with IP-address storage prevention enabled
+- **THEN** the stored event contains neither an IP address nor derived `user.geo` data because the project also removes anything from `$user.geo.**`
+
+#### Scenario: Stored smoke event contains disallowed server-derived data
+
+- **WHEN** stored-event inspection finds geography or any other disallowed field that was added or retained after Orchard transmitted the envelope
+- **THEN** the operator removes the DSN, deletes the affected controlled issue, corrects the project policy or Orchard boundary, and sends no replacement event until the correction is verified
+
 ### Requirement: Sentry Failure Cannot Block Orchard Work
 
 Sentry filtering, handler installation, serialization, queueing, and transport failure SHALL fail closed for payload disclosure and SHALL NOT prevent controller or Node Agent startup, terminate the reporting caller, or change an API request's Orchard result. Regression coverage SHALL inspect final serialized envelope bytes and at least one real HTTP body delivered to a loopback-only local endpoint.

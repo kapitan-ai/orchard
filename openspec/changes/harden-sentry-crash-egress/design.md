@@ -4,7 +4,7 @@ Orchard installs the Sentry Logger handler only when `ORCHARD_SENTRY_DSN` is con
 
 Pinned Sentry Elixir 12.0.3 invokes `before_send` before `Sentry.Envelope.from_event/1`, making the callback the final in-process policy boundary. `Sentry.Envelope.to_binary/1` is the final serialization seam. The SDK also supports `in_app_otp_apps` without enabling source-code context and defaults Sentry Logs and tracing to disabled.
 
-The authenticated Sentry project is currently a blank rollout target: it has no issues, environments, releases, additional sensitive fields, or advanced scrubbing rules. Project default data scrubbing is enabled, but project and organization IP-address prevention are disabled. Orchard therefore cannot treat server-side Sentry settings as its privacy boundary.
+At investigation start, the authenticated Sentry project was a blank rollout target with default data scrubbing enabled but project and organization IP-address prevention disabled. A controlled source-development preflight then confirmed Sentry derives `user.geo` from the ingest connection even when project-level IP-address storage prevention is enabled. Sentry documents that behavior and requires an Advanced Data Scrubbing rule that removes anything from `$user.geo.**` to suppress the derived geography. Orchard therefore requires both controls before any real smoke event, but still cannot treat server-side Sentry settings as its in-process privacy boundary.
 
 ## Goals / Non-Goals
 
@@ -20,7 +20,7 @@ The authenticated Sentry project is currently a blank rollout target: it has no 
 
 - Enable Sentry tracing, profiling, replays, structured Logs, source-code attachments, source-code context, user feedback, or request performance monitoring.
 - Replace Prometheus, OpenTelemetry, or structured JSON logs.
-- Send a production or smoke event, mutate Sentry settings, resolve issues, or publish a Sentry release.
+- Send production traffic, mutate Sentry automatically from Orchard, retain failed controlled-smoke issues, or publish a Sentry release through the implementation. Explicitly authorized source-development and packaged smoke gates remain operator-run rollout work.
 - Add raw request routes, request values, customer identity, machine identity, source snippets, dependency inventories, or hostnames for convenience.
 - Change Product Version policy owned by the active `product-versioning-release-governance` change.
 
@@ -86,6 +86,12 @@ Sentry configuration will explicitly keep `enable_logs: false`, `enable_source_c
 
 No source snippets, dependency inventory, tracing spans, transaction events, or Sentry Logs are added. These settings are explicit so a future SDK default change cannot silently broaden the rollout.
 
+### Decision: Hosted Sentry Must Remove Server-Derived Geography
+
+Sentry derives geographic fields from the ingest connection even when project-level IP-address storage prevention is enabled. This augmentation occurs after Orchard's envelope has left the process, so `Orchard.SentryFilter` cannot remove it. Before any controlled source-development or packaged smoke event, the target project must therefore retain default server scrubbers, enable IP-address storage prevention, and apply an Advanced Data Scrubbing rule that removes anything from `$user.geo.**`.
+
+These hosted controls are defense in depth and a post-ingest augmentation guard, not substitutes for Orchard's collection and egress allowlists. A smoke review must inspect the stored event rather than only the outbound envelope. If a controlled event contains server-derived geography or any other disallowed field, the sender removes the DSN, deletes the affected controlled issue because new scrubbing rules are not retroactive, corrects the project policy or Orchard boundary, and sends no replacement until the correction is verified.
+
 ### Decision: Wire Tests Inspect The Actual HTTP Body
 
 Unit tests will first construct realistic full `Sentry.Event` values for Responses and Chat Completions payloads, pass them through `before_send`, serialize them with `Sentry.Envelope.to_binary/1`, and assert sentinel request values and machine paths are absent while safe identity remains. Controller and Node Agent Logger tests also serialize their captured background-crash events through the final filter, while the controller request-crash test proves approved hashes, license identity, and breadcrumb diagnostics survive that same boundary.
@@ -94,6 +100,8 @@ An integration test will start Bandit on loopback with port `0`, configure a loc
 
 A local endpoint returning an error will verify that Sentry failure does not alter the calling process or request result. Existing no-DSN startup and Logger-handler tests remain part of the affected suite.
 
+Hosted Sentry currently omits a method-only request interface from its stored event even though the serialized Orchard envelope is valid and contains `request.method`. The envelope remains the evidence for Orchard's collection and egress contract. Orchard does not add a fabricated URL to influence hosted normalization; making the method separately queryable would require a future, explicitly approved diagnostic-schema change.
+
 ## Risks / Trade-offs
 
 - Method-only request context loses URL and route grouping, but routes and URLs can contain sensitive or customer-controlled values; safe Orchard surface and lifecycle tags remain the preferred diagnostic dimensions.
@@ -101,14 +109,17 @@ A local endpoint returning an error will verify that Sentry failure does not alt
 - Disabling dependency inventory removes convenient library-version context, but Product Version, Git SHA, release identity, module, stack frames, and lockfile history provide a safer reconstruction path.
 - Explicit defaults add configuration lines, but make the non-expansion policy reviewable during SDK upgrades.
 - A real HTTP wire test is slower than a pure serializer test, so both are retained: serializer tests provide fast red/green feedback and one focused integration test proves transport bytes.
+- Hosted Sentry privacy settings are mutable external state and cannot be covered by the local envelope tests, so every real smoke gate must re-verify IP prevention and `$user.geo.**` removal before sending.
 
 ## Rollout Plan
 
-1. Land the code and regression tests without configuring a real DSN.
-2. Build the intended packaged controller and Node Agent artifacts.
-3. Before controlled smoke events, enable project-level Sentry IP-address prevention while retaining default server scrubbers as defense in depth; do not rely on those settings for correctness.
-4. Send one controlled controller crash and one controlled Node Agent crash from non-sensitive test flows.
-5. Inspect Sentry event JSON and UI for release identity, static tags, first-party relative frames, and absence of disallowed request and machine data.
-6. Resolve only the controlled smoke issues after the payload review succeeds.
+1. Complete the local serializer, loopback HTTP, Logger-capture, and failure-isolation regression suite without configuring a real DSN.
+2. Before any real event, retain default server scrubbers, enable project-level IP-address storage prevention, and apply the Advanced Data Scrubbing rule `[Remove] [Anything] from [$user.geo.**]`.
+3. From the exact pull-request head in a non-sensitive source-development environment, send one controlled controller crash and one controlled Node Agent crash using only synthetic canaries.
+4. Inspect the stored Sentry event JSON and UI for release identity, static tags, first-party relative frames, empty source context, and complete absence of disallowed request, user, machine, IP, and geographic data. Delete any failed controlled issue before correcting and repeating the gate; resolve only clean controlled issues.
+5. Land the reviewed code and regression tests only after the source-development gate succeeds.
+6. Build the intended packaged controller and Node Agent artifacts from the landed commit.
+7. Re-verify the hosted controls, send one controlled packaged crash per role, and repeat the stored-event review without treating the source-development result as packaged evidence.
+8. Resolve only the clean packaged smoke issues after the payload review succeeds, then decide whether to remove the DSN or continue on selected internal hosts.
 
 Rollback removes the DSN or disables Sentry enrichment. Orchard continues through normative metrics, traces, and structured logs.
