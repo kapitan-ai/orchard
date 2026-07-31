@@ -88,13 +88,26 @@ After the blocking authorities are accepted:
 - Runtime, licensing, build, transport, and Console observations remain non-gating unless `SPEC.md` explicitly changes.
 - No public or Operator health response adds tenant or user identifiers.
 
+Alternative considered: content negotiation or a query parameter on `/health/ready`.
+This was rejected because it combines public and protected representations at one security boundary.
+
+Alternative considered: preserve rich public fields for compatibility.
+This was rejected because it preserves the disclosure that the owner decision explicitly removes.
+
 ### Intentionally drop public API transport posture as a readiness gate
 
 The current evaluator gates readiness on `public_api_https_enabled`, which is not a `SPEC.md` section 3.1 readiness condition.
 `SPEC.md` section 10.7 lists `plain_http_localhost` as a permitted public transport mode, so a Controller correctly configured for local development or break-glass recovery is currently reported as not ready.
-Adopting the complete section 3.1 aggregate therefore removes that gate on purpose: a `plain_http_localhost` or `reverse_proxy` Controller that satisfies every section 3.1 condition will return HTTP `200` where it returns HTTP `503` today.
+Adopting the complete section 3.1 aggregate therefore removes that gate on purpose: a `plain_http_localhost` Controller that satisfies every section 3.1 condition will return HTTP `200` where it returns HTTP `503` today.
+`reverse_proxy` already passes the current HTTPS gate and does not undergo that status transition.
 
 Transport posture is retained as an Operator observation, not deleted.
+Section 10.7 still classifies `plain_http_localhost` as degraded and unsuitable for production public transport.
+A readiness `200` means the Controller satisfies section 3.1 service readiness; it does not endorse the configured transport for production.
+The later behavior-changing PR must reconcile this distinction explicitly in `SPEC.md` sections 3.1 and 10.7.
+
+Removing transport from readiness also depends on section 10.7 configuration, wrapper, and boot validation continuing to fail closed for invalid or `unknown` transport modes.
+Health must not become the fallback validator for a Controller configuration that should not have started.
 This is a deliberate posture change rather than an oversight, and it takes effect only in the later atomic migration.
 Current readiness behavior, including the existing transport gate, stays unchanged while this prerequisite is in force.
 
@@ -113,12 +126,6 @@ No unauthenticated version route is added, and no credential is placed in the pu
 
 Alternative considered: add an unauthenticated version or build route.
 This was rejected because it reintroduces the unauthenticated deployment disclosure the owner decision removes.
-
-Alternative considered: content negotiation or a query parameter on `/health/ready`.
-This was rejected because it combines public and protected representations at one security boundary.
-
-Alternative considered: preserve rich public fields for compatibility.
-This was rejected because it preserves the disclosure that the owner decision explicitly removes.
 
 ### Preserve read availability on standby Controllers
 
