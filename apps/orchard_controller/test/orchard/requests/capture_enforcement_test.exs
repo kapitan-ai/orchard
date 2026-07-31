@@ -43,13 +43,38 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
     assert scheduled.scheduler_decision["strategy"] == "multi_node"
     refute inspect(scheduled.scheduler_decision) =~ @private_prompt
 
+    assert {:ok, smuggling_attempt} =
+             Requests.record_schedule(request, %{
+               candidate_count: @private_prompt,
+               fallback_used?: %{"secret" => @private_prompt},
+               strategy: @private_prompt,
+               selected_node_id: @private_prompt,
+               scored_candidates: [
+                 %{
+                   node_id: @private_prompt,
+                   eligible: @private_prompt,
+                   score: @private_prompt,
+                   reason_codes: [],
+                   components: %{pool_bonus: @private_prompt}
+                 }
+               ]
+             })
+
+    refute inspect(smuggling_attempt.scheduler_decision) =~ @private_prompt
+
     assert {:ok, event} =
              Requests.append_request_event(request, %{
                event_type: "runtime.failed",
                payload: %{
+                 "attempt" => @private_prompt,
+                 "boundary" => @private_prompt,
+                 "call_id" => @private_prompt,
+                 "step_type" => @private_prompt,
                  "state" => "failed",
                  "result" => %{
-                   "error_code" => "runtime_failure",
+                   "error_code" => @private_prompt,
+                   "finish_reason" => @private_prompt,
+                   "input_tokens" => @private_prompt,
                    "error_message" => @private_prompt,
                    "arguments_json" => ~s({"secret":"#{@private_prompt}"})
                  }
@@ -57,10 +82,8 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
                state: :failed
              })
 
-    assert event.payload == %{
-             "state" => "failed",
-             "result" => %{"error_code" => "runtime_failure"}
-           }
+    assert event.payload == %{"result" => %{}}
+    refute inspect(event.payload) =~ @private_prompt
 
     assert {:ok, terminal} =
              Requests.mark_terminal(request, %{

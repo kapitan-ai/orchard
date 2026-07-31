@@ -60,102 +60,13 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
         response_format = jsonb_strip_nulls(
           jsonb_build_object('type', response_format -> 'type')
         ),
-        scheduler_decision =
-          CASE
-            WHEN scheduler_decision IS NULL THEN NULL
-            WHEN jsonb_typeof(scheduler_decision) = 'object' THEN (
-              SELECT COALESCE(jsonb_object_agg(entry.key, entry.value), '{}'::jsonb)
-              FROM jsonb_each(scheduler_decision) AS entry
-              WHERE entry.key = ANY (
-                ARRAY[
-                  'candidate_count',
-                  'capacity_source',
-                  'contract_version',
-                  'fallback_used?',
-                  'memory_admission_enabled',
-                  'memory_admission_tier',
-                  'memory_headroom_ok?',
-                  'model_load_timeout_ms',
-                  'node_id',
-                  'object',
-                  'queue_grant_id',
-                  'queue_granted_at',
-                  'queue_key',
-                  'queue_result',
-                  'queue_wait_ms',
-                  'queue_wait_reason',
-                  'queued_at',
-                  'queueing_enabled',
-                  'request_id',
-                  'request_timeout_ms',
-                  'selected_node_id',
-                  'selected_cache_tier',
-                  'selected_tier',
-                  'selection_tier',
-                  'selected_prefix_cache_enabled',
-                  'selected_prefix_cache_entry_count',
-                  'selected_prefix_cache_evictions',
-                  'selected_prefix_cache_fingerprint_count',
-                  'selected_prefix_cache_fingerprint_match',
-                  'selected_prefix_cache_hits',
-                  'selected_prefix_cache_implementation',
-                  'selected_prefix_cache_misses',
-                  'selected_prefix_cache_score_source',
-                  'selected_prefix_cache_score_status_code',
-                  'selected_prefix_cache_score_tier',
-                  'selected_prefix_cache_session_started_unix_ms',
-                  'selected_prefix_cache_status_code',
-                  'selected_prefix_cache_stores',
-                  'selected_prefix_cache_total_bytes',
-                  'selected_prefix_cache_warmth_indicator',
-                  'strategy'
-                ]
-              )
-            )
-            ELSE NULL
-          END
+    scheduler_decision = NULL
     WHERE payload_capture_mode IN ('none', 'metadata')
     """)
 
     execute("""
     UPDATE request_events AS event
-    SET payload = jsonb_strip_nulls(
-      jsonb_build_object(
-        'attempt', event.payload -> 'attempt',
-        'attempt_index', event.payload -> 'attempt_index',
-        'boundary', event.payload -> 'boundary',
-        'call_id', event.payload -> 'call_id',
-        'kind', event.payload -> 'kind',
-        'model_id', event.payload -> 'model_id',
-        'model_version', event.payload -> 'model_version',
-        'parent_step_id', event.payload -> 'parent_step_id',
-        'request_step_id', event.payload -> 'request_step_id',
-        'sequence', event.payload -> 'sequence',
-        'state', event.payload -> 'state',
-        'step_id', event.payload -> 'step_id',
-        'step_type', event.payload -> 'step_type',
-        'turn_index', event.payload -> 'turn_index',
-        'tool_name', event.payload -> 'tool_name',
-        'type', event.payload -> 'type',
-        'result',
-          CASE
-            WHEN jsonb_typeof(event.payload -> 'result') = 'object'
-            THEN jsonb_strip_nulls(
-              jsonb_build_object(
-                'error_code', event.payload #> '{result,error_code}',
-                'finish_reason', event.payload #> '{result,finish_reason}',
-                'http_status', event.payload #> '{result,http_status}',
-                'indeterminate_reason', event.payload #> '{result,indeterminate_reason}',
-                'input_tokens', event.payload #> '{result,input_tokens}',
-                'output_tokens', event.payload #> '{result,output_tokens}',
-                'remote_request_id', event.payload #> '{result,remote_request_id}',
-                'remote_response_id', event.payload #> '{result,remote_response_id}'
-              )
-            )
-            ELSE NULL
-          END
-      )
-    )
+    SET payload = '{}'::jsonb
     FROM requests AS request
     WHERE event.request_id = request.id
       AND request.payload_capture_mode IN ('none', 'metadata')

@@ -32,6 +32,8 @@ Streaming `full` requests assemble and persist the final response only at termin
 ## Persistence boundary
 
 One pure `Orchard.Requests.CapturePolicy` transforms create attributes, terminal attributes, and request event payloads.
+For non-`full` event and scheduler payloads, the policy validates both field names and values through field-specific numeric, boolean, UUID, timestamp, exact-match, and closed-enum rules.
+Tool-call identifiers needed for step correlation are replaced by deterministic hashes, while tool names and raw target references are removed.
 `Orchard.Requests` applies it after locking or resolving the authoritative Request snapshot and before every database write.
 Serializers remain responsible for API response construction and do not decide retention.
 
@@ -56,7 +58,7 @@ No retry path may consult current Tenant policy to widen a source Request snapsh
 ## Existing-row treatment and purge
 
 Existing `metadata` and `none` rows are treated as mislabeled.
-The migration derives approved hashes and bounded metadata artifacts where possible, removes full request and response payloads, removes raw previews and error text that do not meet the target mode, and strips content-bearing request event results.
+The migration derives approved hashes and bounded metadata artifacts where possible, removes full request and response payloads, removes raw previews and error text that do not meet the target mode, and clears legacy scheduler decisions and Request-event payloads that cannot be proven safe through SQL-level typed validation.
 After cleanup, named constraints are validated.
 
 The regression verifier explicitly classifies `requests.canonical_request`, `requests.request_payload`, `requests.response_payload`, `requests.response_preview`, `requests.request_shape`, `requests.sampling_params`, `requests.response_format`, `requests.scheduler_decision`, `requests.error_message`, and `request_events.payload`.

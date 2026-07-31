@@ -190,7 +190,7 @@ defmodule Orchard.API.Ops.SchedulerExplanationsControllerTest do
   end
 
   defp persist_valid_explanation!(public_id, components \\ %{pool_bonus: 200}) do
-    request = create_request!(%{public_id: public_id})
+    request = create_request!(%{public_id: public_id, payload_capture_mode: :full})
 
     assert {:ok, request} =
              Requests.record_schedule(request, %{

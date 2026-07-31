@@ -937,7 +937,7 @@ defmodule OrchardConsole.RequestLiveTest do
     end
 
     test "renders request_step timeline entries without specialized UI handling", %{conn: conn} do
-      request = create_request!(%{state: :running})
+      request = create_request!(%{state: :running, payload_capture_mode: :full})
       inference_turn_step_id = RequestStepEvent.inference_turn_step_id(1, 1)
 
       assert {:ok, _step_events} =

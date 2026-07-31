@@ -132,7 +132,14 @@ defmodule Orchard.Requests do
 
       case %RequestEvent{} |> RequestEvent.changeset(event_attrs) |> Repo.insert() do
         {:ok, request_event} ->
-          {:cont, [RequestStepEvent.from_request_event!(request_event) | acc]}
+          persisted_step_event = %{
+            step_event
+            | request_id: request_event.request_id,
+              seq: request_event.seq,
+              occurred_at: request_event.occurred_at
+          }
+
+          {:cont, [persisted_step_event | acc]}
 
         {:error, changeset} ->
           Repo.rollback({:request_event_changeset, changeset})
@@ -341,7 +348,9 @@ defmodule Orchard.Requests do
   defp persist_schedule(request, schedule, normalized_schedule) do
     attrs = %{
       scheduler_decision:
-        CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule),
+        CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
+          requested_model: request.requested_model
+        }),
       node_id: Map.get(schedule, :node_id)
     }
 

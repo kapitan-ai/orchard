@@ -5,61 +5,54 @@ defmodule Orchard.Requests.CapturePolicy do
 
   @preview_limit 512
   @capture_modes [:none, :metadata, :full]
-  @safe_result_keys ~w(
-    error_code
-    finish_reason
-    http_status
-    indeterminate_reason
-    input_tokens
-    output_tokens
-    remote_request_id
-    remote_response_id
-  )
-  @safe_schedule_keys ~w(
-    candidate_count
-    capacity_source
-    contract_version
+  @event_integer_keys ~w(attempt attempt_index sequence turn_index)
+  @result_integer_keys ~w(http_status input_tokens output_tokens)
+  @finish_reasons ~w(cancelled content_filter error length stop tool_calls)
+  @schedule_boolean_keys ~w(
     fallback_used?
     memory_admission_enabled
-    memory_admission_tier
     memory_headroom_ok?
-    model_load_timeout_ms
-    node_id
-    object
-    queue_grant_id
-    queue_granted_at
-    queue_key
-    queue_result
-    queue_wait_ms
-    queue_wait_reason
-    queued_at
     queueing_enabled
-    request_id
-    request_timeout_ms
-    selected_node_id
-    selected_cache_tier
-    selected_tier
-    selection_tier
-    strategy
-  )
-  @safe_prefix_cache_schedule_keys ~w(
     selected_prefix_cache_enabled
+    selected_prefix_cache_fingerprint_match
+    selected_prefix_cache_score_resident_fingerprint_match
+    selected_prefix_cache_warmth_indicator
+  )
+  @schedule_numeric_keys ~w(
+    candidate_count
+    contract_version
+    model_load_timeout_ms
+    queue_wait_ms
+    request_timeout_ms
     selected_prefix_cache_entry_count
     selected_prefix_cache_evictions
     selected_prefix_cache_fingerprint_count
-    selected_prefix_cache_fingerprint_match
     selected_prefix_cache_hits
-    selected_prefix_cache_implementation
     selected_prefix_cache_misses
-    selected_prefix_cache_score_source
-    selected_prefix_cache_score_status_code
-    selected_prefix_cache_score_tier
+    selected_prefix_cache_score_session_started_unix_ms
     selected_prefix_cache_session_started_unix_ms
-    selected_prefix_cache_status_code
     selected_prefix_cache_stores
     selected_prefix_cache_total_bytes
-    selected_prefix_cache_warmth_indicator
   )
+  @schedule_enums %{
+    "memory_admission_tier" =>
+      ~w(headroom_available headroom_ok headroom_tight headroom_unavailable headroom_unknown),
+    "queue_result" =>
+      ~w(immediate interrupted_before_dispatch interrupted_controller_restarted queue_full queue_timeout queued),
+    "queue_wait_reason" =>
+      ~w(live_node_capacity placement_capacity requested_model_path_capacity),
+    "selected_cache_tier" => ~w(hint_not_selected no_hint warm_prefix),
+    "selected_prefix_cache_implementation" => ~w(disabled kv unknown),
+    "selected_prefix_cache_score_source" => ~w(score_prefix_cache_rpc),
+    "selected_prefix_cache_score_status_code" =>
+      ~w(disabled error invalid_request model_not_loaded ok timeout unavailable unsupported_version),
+    "selected_prefix_cache_score_tier" =>
+      ~w(no_match recent_fingerprint_only resident_fingerprint unknown),
+    "selected_prefix_cache_status_code" => ~w(disabled error invalid_status ok unavailable),
+    "selected_tier" => ~w(cold loaded),
+    "selection_tier" => ~w(cold loaded),
+    "strategy" => ~w(multi_node single_node)
+  }
   @safe_score_component_keys ~w(
     cache_affinity_bonus
     capable_worker_bonus
@@ -73,6 +66,9 @@ defmodule Orchard.Requests.CapturePolicy do
   )
 
   @type mode :: :none | :metadata | :full
+
+  alias Orchard.ClusterManagement.ReasonCodes
+  alias Orchard.Requests.RequestStepEvent
 
   @spec resolve(mode(), boolean()) :: mode()
   def resolve(mode, true) when mode in @capture_modes, do: mode
@@ -137,13 +133,26 @@ defmodule Orchard.Requests.CapturePolicy do
   @spec schedule_attrs(mode(), map()) :: map()
   def schedule_attrs(:full, attrs), do: attrs
 
-  def schedule_attrs(mode, attrs) when mode in [:none, :metadata] do
-    attrs
-    |> take_keys(@safe_schedule_keys ++ @safe_prefix_cache_schedule_keys)
-    |> sanitize_scalar_map()
-    |> put_safe_candidates(attrs, "scored_candidates")
-    |> put_safe_candidates(attrs, "rejected_candidates")
-    |> put_safe_candidates(attrs, "skipped_candidates")
+  def schedule_attrs(mode, attrs) when mode in [:none, :metadata],
+    do: schedule_attrs(mode, attrs, %{})
+
+  @spec schedule_attrs(mode(), map(), map()) :: map()
+  def schedule_attrs(:full, attrs, _approved), do: attrs
+
+  def schedule_attrs(mode, attrs, approved) when mode in [:none, :metadata] do
+    %{}
+    |> put_typed_values(attrs, @schedule_numeric_keys, &number?/1)
+    |> put_typed_values(attrs, @schedule_boolean_keys, &is_boolean/1)
+    |> put_enum_values(attrs, @schedule_enums)
+    |> put_uuid_value(attrs, "node_id")
+    |> put_uuid_value(attrs, "selected_node_id")
+    |> put_uuid_value(attrs, "queue_grant_id")
+    |> put_datetime_value(attrs, "queue_granted_at")
+    |> put_datetime_value(attrs, "queued_at")
+    |> put_exact_value(attrs, "queue_key", Map.get(approved, :requested_model))
+    |> put_safe_candidates(attrs, "scored_candidates", :scheduler_rejection)
+    |> put_safe_candidates(attrs, "rejected_candidates", :scheduler_rejection)
+    |> put_safe_candidates(attrs, "skipped_candidates", :scheduler_skip)
   end
 
   @spec content_columns() :: %{request_events: [atom()], requests: [atom()]}
@@ -314,40 +323,105 @@ defmodule Orchard.Requests.CapturePolicy do
   defp codepoint_length(value), do: value |> String.codepoints() |> length()
 
   defp sanitize_event_payload(payload) when is_map(payload) do
-    payload
-    |> take_keys(
-      ~w(attempt attempt_index boundary kind phase request_step_id sequence state step_id step_type turn_index type) ++
-        ~w(call_id model_id model_version parent_step_id tool_name)
-    )
+    %{}
+    |> put_typed_values(payload, @event_integer_keys, &non_negative_integer?/1)
+    |> put_enum_value(payload, "boundary", ~w(post_observation pre_side_effect))
+    |> put_enum_value(payload, "step_type", ~w(inference_turn tool_call tool_execution))
+    |> put_step_identity(payload)
     |> maybe_put_sanitized_result(payload)
   end
 
   defp sanitize_event_payload(_payload), do: %{}
 
-  defp put_safe_candidates(sanitized, attrs, key) do
+  defp put_safe_candidates(sanitized, attrs, key, vocabulary) do
     case fetch_value(attrs, key) do
       candidates when is_list(candidates) ->
-        Map.put(sanitized, key, Enum.map(candidates, &sanitize_candidate/1))
+        Map.put(sanitized, key, Enum.map(candidates, &sanitize_candidate(&1, vocabulary)))
 
       _candidates ->
         sanitized
     end
   end
 
-  defp sanitize_candidate(candidate) when is_map(candidate) do
-    candidate
-    |> take_keys(~w(eligible node_id reason_codes score target_ref tier))
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      if scalar?(value) or (key == "reason_codes" and safe_scalar_list?(value)) do
-        Map.put(acc, key, bound_scalar(value))
-      else
-        acc
-      end
-    end)
+  defp sanitize_candidate(candidate, vocabulary) when is_map(candidate) do
+    %{}
+    |> put_typed_values(candidate, ~w(score), &number?/1)
+    |> put_typed_values(candidate, ~w(eligible), &is_boolean/1)
+    |> put_enum_value(candidate, "tier", ~w(cold loaded))
+    |> put_uuid_value(candidate, "node_id")
+    |> put_reason_codes(candidate, vocabulary)
     |> maybe_put_score_components(candidate)
   end
 
-  defp sanitize_candidate(_candidate), do: %{}
+  defp sanitize_candidate(_candidate, _vocabulary), do: %{}
+
+  defp put_step_identity(sanitized, payload) do
+    case fetch_value(payload, :step_type) do
+      "inference_turn" -> put_inference_turn_identity(sanitized, payload)
+      "tool_call" -> put_tool_call_identity(sanitized, payload)
+      "tool_execution" -> put_tool_execution_identity(sanitized, payload)
+      _step_type -> sanitized
+    end
+  end
+
+  defp put_inference_turn_identity(sanitized, payload) do
+    turn_index = fetch_value(payload, :turn_index)
+    attempt = fetch_value(payload, :attempt)
+
+    if positive_integer?(turn_index) and positive_integer?(attempt) do
+      Map.put(sanitized, "step_id", RequestStepEvent.inference_turn_step_id(turn_index, attempt))
+    else
+      sanitized
+    end
+  end
+
+  defp put_tool_call_identity(sanitized, payload) do
+    turn_index = fetch_value(payload, :turn_index)
+    call_id = fetch_value(payload, :call_id)
+
+    if positive_integer?(turn_index) and is_binary(call_id) do
+      put_tool_identity(sanitized, "tool_call", turn_index, call_id, nil)
+    else
+      sanitized
+    end
+  end
+
+  defp put_tool_execution_identity(sanitized, payload) do
+    turn_index = fetch_value(payload, :turn_index)
+    attempt = fetch_value(payload, :attempt)
+    call_id = fetch_value(payload, :call_id)
+
+    if positive_integer?(turn_index) and positive_integer?(attempt) and is_binary(call_id) do
+      put_tool_identity(sanitized, "tool_execution", turn_index, call_id, attempt)
+    else
+      sanitized
+    end
+  end
+
+  defp put_tool_identity(sanitized, step_type, turn_index, call_id, attempt) do
+    safe_call_id = "sha256:" <> sha256_hex(call_id)
+    parent_step_id = RequestStepEvent.tool_call_step_id(turn_index, safe_call_id)
+
+    step_id =
+      case step_type do
+        "tool_call" ->
+          parent_step_id
+
+        "tool_execution" ->
+          RequestStepEvent.tool_execution_step_id(turn_index, safe_call_id, attempt)
+      end
+
+    sanitized
+    |> Map.put("call_id", safe_call_id)
+    |> Map.put("step_id", step_id)
+    |> Map.put(
+      "parent_step_id",
+      if(step_type == "tool_call",
+        do: RequestStepEvent.inference_turn_step_id(turn_index, 1),
+        else: parent_step_id
+      )
+    )
+  end
 
   defp maybe_put_score_components(sanitized, candidate) do
     case fetch_value(candidate, :components) do
@@ -365,33 +439,87 @@ defmodule Orchard.Requests.CapturePolicy do
     |> Map.filter(fn {_key, value} -> is_number(value) end)
   end
 
-  defp sanitize_scalar_map(map) do
-    Enum.reduce(map, %{}, fn {key, value}, acc ->
-      if scalar?(value), do: Map.put(acc, key, bound_scalar(value)), else: acc
-    end)
-  end
-
-  defp bound_scalar(value) when is_binary(value), do: String.slice(value, 0, 256)
-  defp bound_scalar(value) when is_boolean(value) or is_nil(value), do: value
-  defp bound_scalar(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
-  defp bound_scalar(value) when is_list(value), do: Enum.map(value, &bound_scalar/1)
-  defp bound_scalar(value), do: value
-
-  defp scalar?(value),
-    do: is_binary(value) or is_number(value) or is_atom(value)
-
-  defp safe_scalar_list?(values) when is_list(values), do: Enum.all?(values, &scalar?/1)
-  defp safe_scalar_list?(_values), do: false
-
   defp maybe_put_sanitized_result(sanitized, payload) do
     case fetch_value(payload, :result) do
       result when is_map(result) ->
-        Map.put(sanitized, "result", take_keys(result, @safe_result_keys))
+        safe_result =
+          %{}
+          |> put_typed_values(result, @result_integer_keys, &non_negative_integer?/1)
+          |> put_enum_value(result, "finish_reason", @finish_reasons)
+
+        Map.put(sanitized, "result", safe_result)
 
       _result ->
         sanitized
     end
   end
+
+  defp put_typed_values(sanitized, source, keys, predicate) do
+    Enum.reduce(keys, sanitized, fn key, acc ->
+      put_typed_value(acc, key, fetch_value(source, key), predicate)
+    end)
+  end
+
+  defp put_typed_value(sanitized, _key, nil, _predicate), do: sanitized
+
+  defp put_typed_value(sanitized, key, value, predicate) do
+    if predicate.(value), do: Map.put(sanitized, key, value), else: sanitized
+  end
+
+  defp put_enum_values(sanitized, source, enums) do
+    Enum.reduce(enums, sanitized, fn {key, allowed}, acc ->
+      put_enum_value(acc, source, key, allowed)
+    end)
+  end
+
+  defp put_enum_value(sanitized, source, key, allowed) do
+    case normalize_enum(fetch_value(source, key)) do
+      value when is_binary(value) ->
+        if value in allowed, do: Map.put(sanitized, key, value), else: sanitized
+
+      nil ->
+        sanitized
+    end
+  end
+
+  defp put_uuid_value(sanitized, source, key) do
+    case Ecto.UUID.cast(fetch_value(source, key)) do
+      {:ok, uuid} -> Map.put(sanitized, key, uuid)
+      :error -> sanitized
+    end
+  end
+
+  defp put_datetime_value(sanitized, source, key) do
+    case DateTime.from_iso8601(fetch_value(source, key) || "") do
+      {:ok, datetime, 0} -> Map.put(sanitized, key, DateTime.to_iso8601(datetime))
+      _result -> sanitized
+    end
+  end
+
+  defp put_exact_value(sanitized, _source, _key, nil), do: sanitized
+
+  defp put_exact_value(sanitized, source, key, expected) do
+    if fetch_value(source, key) == expected do
+      Map.put(sanitized, key, expected)
+    else
+      sanitized
+    end
+  end
+
+  defp put_reason_codes(sanitized, source, vocabulary) do
+    case ReasonCodes.validate_codes(vocabulary, fetch_value(source, :reason_codes)) do
+      {:ok, codes} -> Map.put(sanitized, "reason_codes", codes)
+      {:error, _reason} -> sanitized
+    end
+  end
+
+  defp normalize_enum(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
+  defp normalize_enum(value) when is_binary(value), do: value
+  defp normalize_enum(_value), do: nil
+
+  defp number?(value), do: is_integer(value) or is_float(value)
+  defp positive_integer?(value), do: is_integer(value) and value > 0
+  defp non_negative_integer?(value), do: is_integer(value) and value >= 0
 
   defp stop_count(params) do
     case fetch_value(params, :stop) do

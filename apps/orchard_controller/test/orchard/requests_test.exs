@@ -8,6 +8,10 @@ defmodule Orchard.RequestsTest do
   alias Orchard.Requests
   alias Orchard.Requests.{Request, RequestStepEvent}
 
+  @safe_call_id "sha256:" <>
+                  (:crypto.hash(:sha256, "call_1") |> Base.encode16(case: :lower))
+  @safe_tool_call_step_id "tool_call:t1:c#{@safe_call_id}"
+
   test "create_request/1 supports early lifecycle rows before model resolution and canonicalization" do
     attrs = request_attrs()
     assert {:ok, request} = Requests.create_request(attrs)
@@ -120,7 +124,7 @@ defmodule Orchard.RequestsTest do
     assert event.seq == 1
     assert event.event_type == "request.received"
     assert event.occurred_at == occurred_at
-    assert event.payload == %{"phase" => "ingress"}
+    assert event.payload == %{}
   end
 
   test "append_request_event/2 preserves atom-keyed occurred_at when provided" do
@@ -171,7 +175,7 @@ defmodule Orchard.RequestsTest do
 
     assert Enum.map(Requests.list_request_step_events(request), &{&1.seq, &1.step_id}) == [
              {2, "inference_turn:t1:a1"},
-             {3, "tool_call:t1:ccall_1"}
+             {3, @safe_tool_call_step_id}
            ]
 
     assert Enum.map(Requests.list_request_events(request), &{&1.seq, &1.event_type, &1.state}) ==
@@ -275,7 +279,7 @@ defmodule Orchard.RequestsTest do
 
       assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
                [
-                 {"request_step.proposed", "tool_call:t1:ccall_1"},
+                 {"request_step.proposed", @safe_tool_call_step_id},
                  {"request_step.completed", "inference_turn:t1:a1"}
                ]
 
@@ -389,7 +393,7 @@ defmodule Orchard.RequestsTest do
 
       assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
                [
-                 {"request_step.proposed", "tool_call:t1:ccall_1"},
+                 {"request_step.proposed", @safe_tool_call_step_id},
                  {"request_step.completed", "inference_turn:t1:a1"}
                ]
     end

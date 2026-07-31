@@ -7,6 +7,48 @@ defmodule Orchard.Requests.CapturePolicyTest do
   @prompt "private prompt that must not survive metadata capture"
   @response "private response that must not survive metadata capture"
   @arguments ~s({"account":"private-account","amount":42})
+  @event_integer_keys ~w(attempt attempt_index sequence turn_index)
+  @result_integer_keys ~w(http_status input_tokens output_tokens)
+  @schedule_boolean_keys ~w(
+    fallback_used?
+    memory_admission_enabled
+    memory_headroom_ok?
+    queueing_enabled
+    selected_prefix_cache_enabled
+    selected_prefix_cache_fingerprint_match
+    selected_prefix_cache_score_resident_fingerprint_match
+    selected_prefix_cache_warmth_indicator
+  )
+  @schedule_numeric_keys ~w(
+    candidate_count
+    contract_version
+    model_load_timeout_ms
+    queue_wait_ms
+    request_timeout_ms
+    selected_prefix_cache_entry_count
+    selected_prefix_cache_evictions
+    selected_prefix_cache_fingerprint_count
+    selected_prefix_cache_hits
+    selected_prefix_cache_misses
+    selected_prefix_cache_score_session_started_unix_ms
+    selected_prefix_cache_session_started_unix_ms
+    selected_prefix_cache_stores
+    selected_prefix_cache_total_bytes
+  )
+  @schedule_enums ~w(
+    memory_admission_tier
+    queue_result
+    queue_wait_reason
+    selected_cache_tier
+    selected_prefix_cache_implementation
+    selected_prefix_cache_score_source
+    selected_prefix_cache_score_status_code
+    selected_prefix_cache_score_tier
+    selected_prefix_cache_status_code
+    selected_tier
+    selection_tier
+    strategy
+  )
 
   describe "resolve/2" do
     test "SPEC.md §10.10 store=false narrows full and never widens a Tenant mode" do
@@ -147,8 +189,25 @@ defmodule Orchard.Requests.CapturePolicyTest do
         refute encoded =~ @arguments
         refute encoded =~ @prompt
         refute encoded =~ "error_message"
-        assert attrs.payload["step_id"] == "turn-1"
         assert attrs.payload["result"]["finish_reason"] == "tool_calls"
+      end
+    end
+
+    test "none and metadata reject content smuggled under every approved event key" do
+      secret = "prompt-secret"
+
+      payload =
+        Map.new(@event_integer_keys ++ @result_integer_keys, &{&1, secret})
+        |> Map.merge(%{
+          "boundary" => secret,
+          "step_type" => secret,
+          "result" =>
+            Map.new(@result_integer_keys ++ ["finish_reason"], &{&1, %{"secret" => secret}})
+        })
+
+      for mode <- [:none, :metadata] do
+        sanitized = CapturePolicy.event_attrs(mode, %{payload: payload})
+        refute inspect(sanitized) =~ secret
       end
     end
 
@@ -189,7 +248,6 @@ defmodule Orchard.Requests.CapturePolicyTest do
         assert sanitized["scored_candidates"] == [
                  %{
                    "eligible" => true,
-                   "node_id" => "node-a",
                    "reason_codes" => [],
                    "score" => 1.0,
                    "components" => %{"pool_bonus" => 200}
@@ -199,6 +257,36 @@ defmodule Orchard.Requests.CapturePolicyTest do
         refute encoded =~ @prompt
         refute Map.has_key?(sanitized, "prompt")
         refute Map.has_key?(sanitized, "diagnostics")
+      end
+    end
+
+    test "none and metadata reject content smuggled under approved scheduler keys" do
+      secret = "scheduler-secret"
+
+      schedule =
+        Map.new(
+          @schedule_numeric_keys ++ @schedule_boolean_keys ++ @schedule_enums,
+          &{&1, %{"secret" => secret}}
+        )
+        |> Map.merge(%{
+          "node_id" => secret,
+          "selected_node_id" => secret,
+          "scored_candidates" => [
+            %{
+              "node_id" => secret,
+              "target_ref" => secret,
+              "tier" => secret,
+              "score" => secret,
+              "eligible" => secret,
+              "reason_codes" => [secret],
+              "components" => %{"pool_bonus" => secret, "prompt_fragment" => secret}
+            }
+          ]
+        })
+
+      for mode <- [:none, :metadata] do
+        sanitized = CapturePolicy.schedule_attrs(mode, schedule)
+        refute inspect(sanitized) =~ secret
       end
     end
   end
