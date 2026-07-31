@@ -129,6 +129,51 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureModeTest do
     refute inspect(step_event) =~ @secret
   end
 
+  test "legacy inference result purge matches restricted runtime sanitization" do
+    cases = [
+      %{"error_code" => "request_cancelled", "error_message" => @secret},
+      %{"error_code" => @secret, "error_message" => @secret},
+      %{"finish_reason" => "stop"},
+      %{"finish_reason" => nil},
+      %{},
+      @secret
+    ]
+
+    for {result, index} <- Enum.with_index(cases, 1) do
+      request =
+        create_request!(%{
+          public_id: "legacy-inference-result-#{index}",
+          payload_capture_mode: :full
+        })
+
+      event_attrs = legacy_inference_event_attrs(result)
+      assert {:ok, _event} = Requests.append_request_event(request, event_attrs)
+
+      expected_payload = CapturePolicy.event_attrs(:metadata, event_attrs).payload
+
+      run_legacy_step_event_purge!(request.id)
+
+      assert [event] = Requests.list_request_events(request)
+      assert event.payload == expected_payload
+      refute inspect(event.payload) =~ @secret
+    end
+  end
+
+  defp legacy_inference_event_attrs(result) do
+    %{
+      event_type: "request_step.completed",
+      payload: %{
+        "step_id" => RequestStepEvent.inference_turn_step_id(1, 1),
+        "step_type" => "inference_turn",
+        "turn_index" => 1,
+        "attempt" => 1,
+        "parent_step_id" => nil,
+        "boundary" => "post_observation",
+        "result" => result
+      }
+    }
+  end
+
   defp restore_legacy_step_payload!(request_id) do
     SQL.query!(
       Repo,

@@ -36,6 +36,8 @@ Streaming `full` requests assemble and persist the final response only at termin
 One pure `Orchard.Requests.CapturePolicy` transforms create attributes, terminal attributes, and request event payloads.
 For non-`full` event and scheduler payloads, the policy validates both field names and values through field-specific numeric, boolean, UUID, timestamp, exact-match, and closed-enum rules.
 Restricted terminal writes validate error codes against a closed vocabulary and replace unknown runtime values with `internal_error`.
+Restricted inference results retain normalized stable error codes and derive boolean `finish_reason_invalid` or `result_invalid` markers when rejected evidence was present.
+These markers contain none of the rejected value and keep missing-terminal detection inconclusive rather than converting malformed evidence into a candidate.
 The scheduler allowlist retains the opaque cache-affinity HMAC and only its closed typed feedback fields because later placement queries require that non-recoverable key.
 Tool-call identifiers needed for step correlation are replaced by deterministic hashes, while tool names and raw target references are removed.
 `Orchard.Requests` applies it after locking or resolving the authoritative Request snapshot and before every database write.

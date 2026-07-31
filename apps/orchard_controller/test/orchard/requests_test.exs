@@ -382,6 +382,9 @@ defmodule Orchard.RequestsTest do
                  [inference_turn_completed_step_attrs(%{result: %{"finish_reason" => nil}})]
                )
 
+      assert [%RequestStepEvent{result: %{"finish_reason_invalid" => true}}] =
+               Requests.list_request_step_events(invalid_reason)
+
       assert {:error, {:inconclusive, :invalid_finish_reason}} =
                Requests.classify_missing_terminal_candidate(invalid_reason)
 

@@ -501,10 +501,29 @@ defmodule Orchard.Requests.CapturePolicy do
   defp inference_step_result(result) when is_map(result) do
     %{}
     |> put_typed_values(result, @result_integer_keys, &non_negative_integer?/1)
-    |> put_enum_value(result, "finish_reason", @finish_reasons)
+    |> put_finish_reason_evidence(result)
+    |> put_typed_value(
+      "error_code",
+      stable_error_code(fetch_value(result, :error_code)),
+      &is_binary/1
+    )
   end
 
-  defp inference_step_result(_result), do: %{}
+  defp inference_step_result(_result), do: %{"result_invalid" => true}
+
+  defp put_finish_reason_evidence(sanitized, result) do
+    if has_key?(result, :finish_reason) do
+      case normalize_enum(fetch_value(result, :finish_reason)) do
+        finish_reason when finish_reason in @finish_reasons ->
+          Map.put(sanitized, "finish_reason", finish_reason)
+
+        _invalid ->
+          Map.put(sanitized, "finish_reason_invalid", true)
+      end
+    else
+      sanitized
+    end
+  end
 
   defp tool_execution_result(result, event_type) when is_map(result) do
     case Map.fetch(@tool_execution_statuses, event_type) do
@@ -645,12 +664,7 @@ defmodule Orchard.Requests.CapturePolicy do
   defp maybe_put_sanitized_result(sanitized, payload) do
     case fetch_value(payload, :result) do
       result when is_map(result) ->
-        safe_result =
-          %{}
-          |> put_typed_values(result, @result_integer_keys, &non_negative_integer?/1)
-          |> put_enum_value(result, "finish_reason", @finish_reasons)
-
-        Map.put(sanitized, "result", safe_result)
+        Map.put(sanitized, "result", inference_step_result(result))
 
       _result ->
         sanitized

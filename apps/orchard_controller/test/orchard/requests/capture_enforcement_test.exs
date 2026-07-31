@@ -82,7 +82,13 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
                state: :failed
              })
 
-    assert event.payload == %{"result" => %{}}
+    assert event.payload == %{
+             "result" => %{
+               "error_code" => "internal_error",
+               "finish_reason_invalid" => true
+             }
+           }
+
     refute inspect(event.payload) =~ @private_prompt
 
     assert {:ok, terminal} =

@@ -405,17 +405,44 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
         """
       end)
 
-    """
-    jsonb_strip_nulls(
-      jsonb_build_object(
-        #{integers},
-        'finish_reason',
-          CASE
-            WHEN event.payload -> 'result' ->> 'finish_reason' = ANY (#{text_array_sql(@finish_reasons)})
-            THEN event.payload -> 'result' -> 'finish_reason'
-          END
+    safe_result =
+      """
+      jsonb_strip_nulls(
+        jsonb_build_object(
+          #{integers},
+          'finish_reason',
+            CASE
+              WHEN event.payload -> 'result' ->> 'finish_reason' = ANY (#{text_array_sql(@finish_reasons)})
+              THEN event.payload -> 'result' -> 'finish_reason'
+            END,
+          'finish_reason_invalid',
+            CASE
+              WHEN event.payload -> 'result' ? 'finish_reason'
+                AND NOT (
+                  jsonb_typeof(event.payload -> 'result' -> 'finish_reason') = 'string'
+                  AND event.payload -> 'result' ->> 'finish_reason' = ANY (#{text_array_sql(@finish_reasons)})
+                )
+              THEN to_jsonb(TRUE)
+            END,
+          'error_code',
+            CASE
+              WHEN NOT (event.payload -> 'result' ? 'error_code')
+                OR jsonb_typeof(event.payload -> 'result' -> 'error_code') = 'null'
+              THEN NULL
+              WHEN jsonb_typeof(event.payload -> 'result' -> 'error_code') = 'string'
+                AND event.payload -> 'result' ->> 'error_code' = ANY (#{stable_error_code_array_sql()})
+              THEN event.payload -> 'result' -> 'error_code'
+              ELSE to_jsonb('internal_error'::text)
+            END
+        )
       )
-    )
+      """
+
+    """
+    (CASE
+       WHEN jsonb_typeof(event.payload -> 'result') = 'object' THEN #{safe_result}
+       ELSE '{"result_invalid":true}'::jsonb
+     END)
     """
   end
 

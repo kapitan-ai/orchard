@@ -196,7 +196,30 @@ defmodule Orchard.Requests do
     do: inconclusive(:terminal_state_mismatch)
 
   defp classify_terminal_step(%RequestStepEvent{event_type: "request_step.completed"} = step) do
-    case Map.fetch(step.result, "finish_reason") do
+    case Map.fetch(step.result, "result_invalid") do
+      {:ok, true} -> inconclusive(:invalid_terminal_step)
+      {:ok, _invalid_marker} -> inconclusive(:invalid_terminal_step)
+      :error -> classify_finish_reason_evidence(step.result)
+    end
+  end
+
+  defp classify_terminal_step(%RequestStepEvent{}), do: {:ok, :not_candidate}
+
+  defp classify_finish_reason_evidence(result) do
+    case Map.fetch(result, "finish_reason_invalid") do
+      {:ok, true} ->
+        inconclusive(:invalid_finish_reason)
+
+      {:ok, _invalid_marker} ->
+        inconclusive(:invalid_finish_reason_marker)
+
+      :error ->
+        classify_completed_finish_reason(result)
+    end
+  end
+
+  defp classify_completed_finish_reason(result) do
+    case Map.fetch(result, "finish_reason") do
       :error ->
         {:ok, :missing_finish_reason_candidate}
 
@@ -207,8 +230,6 @@ defmodule Orchard.Requests do
         inconclusive(:invalid_finish_reason)
     end
   end
-
-  defp classify_terminal_step(%RequestStepEvent{}), do: {:ok, :not_candidate}
 
   defp inconclusive(reason), do: {:error, {:inconclusive, reason}}
 

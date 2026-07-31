@@ -212,6 +212,88 @@ defmodule Orchard.Requests.CapturePolicyTest do
   end
 
   describe "event_attrs/2" do
+    test "none and metadata retain normalized inference error codes without raw error text" do
+      for mode <- [:none, :metadata] do
+        stable =
+          CapturePolicy.event_attrs(
+            mode,
+            inference_step_result(%{
+              "error_code" => "request_cancelled",
+              "error_message" => @prompt
+            })
+          )
+
+        unknown =
+          CapturePolicy.event_attrs(
+            mode,
+            inference_step_result(%{
+              "error_code" => "runtime echoed #{@prompt}",
+              "error_message" => @prompt
+            })
+          )
+
+        assert stable.payload["result"] == %{"error_code" => "request_cancelled"}
+        assert unknown.payload["result"] == %{"error_code" => "internal_error"}
+        refute inspect(stable) =~ @prompt
+        refute inspect(unknown) =~ @prompt
+      end
+    end
+
+    test "none and metadata distinguish invalid finish reasons from absent evidence" do
+      for mode <- [:none, :metadata] do
+        valid =
+          CapturePolicy.event_attrs(
+            mode,
+            inference_step_result(%{"finish_reason" => "stop"}, "request_step.completed")
+          )
+
+        absent =
+          CapturePolicy.event_attrs(
+            mode,
+            inference_step_result(%{"finish_reason_invalid" => true}, "request_step.completed")
+          )
+
+        invalid_nil =
+          CapturePolicy.event_attrs(
+            mode,
+            inference_step_result(%{"finish_reason" => nil}, "request_step.completed")
+          )
+
+        invalid_content =
+          CapturePolicy.event_attrs(
+            mode,
+            inference_step_result(%{"finish_reason" => @prompt}, "request_step.completed")
+          )
+
+        assert valid.payload["result"] == %{"finish_reason" => "stop"}
+        assert absent.payload["result"] == %{}
+        assert invalid_nil.payload["result"] == %{"finish_reason_invalid" => true}
+        assert invalid_content.payload["result"] == %{"finish_reason_invalid" => true}
+        refute inspect(invalid_content) =~ @prompt
+      end
+    end
+
+    test "generic restricted event results use the same inference sanitizer" do
+      attrs =
+        CapturePolicy.event_attrs(:metadata, %{
+          event_type: "request.completed",
+          payload: %{
+            "result" => %{
+              "finish_reason" => nil,
+              "error_code" => "request_cancelled",
+              "error_message" => @prompt
+            }
+          }
+        })
+
+      assert attrs.payload["result"] == %{
+               "error_code" => "request_cancelled",
+               "finish_reason_invalid" => true
+             }
+
+      refute inspect(attrs) =~ @prompt
+    end
+
     test "none and metadata remove model-generated tool arguments and raw error messages" do
       for mode <- [:none, :metadata] do
         attrs = CapturePolicy.event_attrs(mode, event_attrs())
@@ -307,6 +389,20 @@ defmodule Orchard.Requests.CapturePolicyTest do
       assert indeterminate.payload["result"]["indeterminate_reason"] == "result_not_observed"
       refute inspect(indeterminate) =~ @prompt
     end
+  end
+
+  defp inference_step_result(result, event_type \\ "request_step.failed") do
+    %{
+      event_type: event_type,
+      payload: %{
+        "step_id" => "inference_turn:t1:a1",
+        "step_type" => "inference_turn",
+        "turn_index" => 1,
+        "attempt" => 1,
+        "boundary" => "post_observation",
+        "result" => result
+      }
+    }
   end
 
   describe "schedule_attrs/2" do
