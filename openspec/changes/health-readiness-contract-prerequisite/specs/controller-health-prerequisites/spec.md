@@ -82,7 +82,7 @@ After the blocking authorities are accepted, the health implementation SHALL pro
 
 After the blocking authorities are accepted, the public readiness endpoint and authenticated Operator health endpoint SHALL consume one complete aggregate evaluation of every readiness condition required by `SPEC.md` section 3.1.
 A reduced milestone-specific readiness subset MUST NOT be used.
-A condition that `SPEC.md` section 3.1 does not require MUST NOT gate the aggregate, so public API transport posture ceases to be a readiness gate when the aggregate is adopted.
+A condition that `SPEC.md` section 3.1 does not require MUST NOT gate the aggregate, so public API transport posture and the constant Controller boot flag both cease to be readiness gates when the aggregate is adopted.
 
 #### Scenario: Future required condition fails
 
@@ -96,11 +96,40 @@ A condition that `SPEC.md` section 3.1 does not require MUST NOT gate the aggreg
 - **AND** transport posture appears only as an Operator observation
 - **AND** transport posture does not fail the aggregate
 
+#### Scenario: Future constant boot flag is not a gate
+
+- **WHEN** a hard-coded or otherwise constant Controller boot flag is proposed as a member of the readiness aggregate
+- **THEN** it does not gate the aggregate
+- **AND** it survives only as an Operator observation or is removed from the check set by the same atomic migration
+
 #### Scenario: Future readiness source is invalid or unavailable
 
 - **WHEN** a readiness source raises, exits, times out, or returns an invalid value
 - **THEN** the aggregate fails closed
 - **AND** the public endpoint returns its stable HTTP `503` representation rather than an internal error response
+
+### Requirement: Removing the transport readiness gate depends on fail-closed transport validation
+
+The public API transport readiness gate MUST NOT be removed until `SPEC.md` section 10.7 configuration, wrapper, and boot validation are confirmed to fail closed for every invalid or unresolvable public transport mode, through any configuration source rather than the `ORCHARD_TRANSPORT_MODE` environment variable alone.
+Health MUST NOT become the fallback validator for a Controller configuration that should not have started.
+
+#### Scenario: Invalid transport mode fails closed before boot completes
+
+- **WHEN** an invalid, unrecognized, or unresolvable public transport mode is configured through any source
+- **THEN** the Controller fails closed at wrapper preflight or boot per `SPEC.md` section 10.7
+- **AND** no running Controller resolves an unresolved public transport mode
+
+#### Scenario: Transport validation gap is demonstrated
+
+- **WHEN** an invalid or unresolvable public transport mode can reach a running Controller instead of failing closed
+- **THEN** the existing transport readiness gate is retained until that validation gap is resolved
+- **AND** the exact gap is assigned to a separate transport change rather than to the health implementation
+
+#### Scenario: Transport observation reports posture honestly
+
+- **WHEN** authorized Operator health detail renders public transport posture
+- **THEN** it reports the resolved `SPEC.md` section 10.7 mode and its degraded classification
+- **AND** an unresolved mode is not presented as a compliant transport posture
 
 ### Requirement: Future leadership status preserves read availability
 

@@ -106,13 +106,22 @@ Section 10.7 still classifies `plain_http_localhost` as degraded and unsuitable 
 A readiness `200` means the Controller satisfies section 3.1 service readiness; it does not endorse the configured transport for production.
 The later behavior-changing PR must reconcile this distinction explicitly in `SPEC.md` sections 3.1 and 10.7.
 
-Removing transport from readiness also depends on section 10.7 configuration, wrapper, and boot validation continuing to fail closed for invalid or `unknown` transport modes.
+Removing transport from readiness also depends on section 10.7 configuration, wrapper, and boot validation continuing to fail closed for invalid or unresolvable transport modes.
 Health must not become the fallback validator for a Controller configuration that should not have started.
+That dependency is a contract condition rather than design prose: the fail-closed transport requirement in this change's spec delta blocks the gate removal, and task 2.6 supplies the evidence.
+The assessment must cover configuration sources other than `ORCHARD_TRANSPORT_MODE`, because runtime validation raises on a bad environment value while `Orchard.API.Transport.mode/0` normalizes an unrecognized `:transport_mode` application-environment value to `unknown`, and readiness is currently the only surface that reports that state.
 This is a deliberate posture change rather than an oversight, and it takes effect only in the later atomic migration.
 Current readiness behavior, including the existing transport gate, stays unchanged while this prerequisite is in force.
 
 Alternative considered: keep the transport gate alongside the section 3.1 aggregate.
 This was rejected because it is exactly the milestone-specific readiness subset this contract forbids, and it would keep reporting a permitted transport mode as unready.
+
+### Resolve the constant boot flag in the same migration
+
+`controller_boot_completed` is the other current aggregate member that section 3.1 does not require, and the evaluator hard-codes it to `true`.
+It changes no readiness result today, but it is the exact shape the no-shim rule rejects, and it is a rendered Console check with CLI remediation text.
+Adopting the complete aggregate therefore requires the later migration to decide explicitly whether the key survives as an Operator observation or leaves the check set, rather than carrying a constant into the new contract.
+It is listed in the deferred migration inventory for that reason.
 
 ### Accept a bounded credential-free `orchardctl status` feature loss
 
