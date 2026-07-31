@@ -6,8 +6,24 @@ defmodule Orchard.Requests.CapturePolicy do
   @preview_limit 512
   @capture_modes [:none, :metadata, :full]
   @event_integer_keys ~w(attempt attempt_index sequence turn_index)
+  @step_integer_keys ~w(attempt turn_index)
+  @step_types ~w(inference_turn tool_call tool_execution)
+  @boundaries ~w(post_observation pre_side_effect)
   @result_integer_keys ~w(http_status input_tokens output_tokens)
   @finish_reasons ~w(cancelled content_filter error length stop tool_calls)
+  @tool_execution_statuses %{
+    "request_step.failed" => :failed,
+    "request_step.cancelled" => :cancelled,
+    "request_step.timed_out" => :timed_out,
+    "request_step.indeterminate" => :indeterminate
+  }
+  @indeterminate_reasons ~w(
+    cancel_ack_missing
+    controller_restarted
+    executor_unreachable
+    result_not_observed
+    timeout_after_start
+  )
   @stable_error_codes ~w(
     acquisition_failed
     artifact_not_found
@@ -121,6 +137,7 @@ defmodule Orchard.Requests.CapturePolicy do
   @type mode :: :none | :metadata | :full
 
   alias Orchard.ClusterManagement.ReasonCodes
+  alias Orchard.Inference.ToolExecutionOutcome
   alias Orchard.Requests.RequestStepEvent
 
   @spec resolve(mode(), boolean()) :: mode()
@@ -128,14 +145,26 @@ defmodule Orchard.Requests.CapturePolicy do
   def resolve(:full, false), do: :metadata
   def resolve(mode, false) when mode in [:none, :metadata], do: mode
 
+  @spec normalize_mode(term()) :: {:ok, mode()} | :error
+  def normalize_mode(mode) when mode in @capture_modes, do: {:ok, mode}
+
+  def normalize_mode(mode) when is_binary(mode) do
+    case Enum.find(@capture_modes, &(Atom.to_string(&1) == mode)) do
+      nil -> :error
+      normalized -> {:ok, normalized}
+    end
+  end
+
+  def normalize_mode(_mode), do: :error
+
   @spec create_attrs(mode(), map()) :: map()
-  def create_attrs(:full, attrs), do: Map.put(attrs, :request_shape, request_shape(:full, attrs))
+  def create_attrs(:full, attrs), do: put_key(attrs, :request_shape, request_shape(:full, attrs))
 
   def create_attrs(:none, attrs) do
     attrs
-    |> Map.put(:canonical_request, nil)
-    |> Map.put(:request_payload, nil)
-    |> Map.put(:request_shape, nil)
+    |> put_key(:canonical_request, nil)
+    |> put_key(:request_payload, nil)
+    |> put_key(:request_shape, nil)
     |> update_existing(:sampling_params, &sanitize_sampling/1)
     |> update_existing(:response_format, &sanitize_response_format/1)
     |> then(&terminal_attrs(:none, &1))
@@ -144,9 +173,9 @@ defmodule Orchard.Requests.CapturePolicy do
 
   def create_attrs(:metadata, attrs) do
     attrs
-    |> Map.put(:canonical_request, nil)
-    |> Map.put(:request_payload, nil)
-    |> Map.put(:request_shape, request_shape(:metadata, attrs))
+    |> put_key(:canonical_request, nil)
+    |> put_key(:request_payload, nil)
+    |> put_key(:request_shape, request_shape(:metadata, attrs))
     |> update_existing(:sampling_params, &sanitize_sampling/1)
     |> update_existing(:response_format, &sanitize_response_format/1)
     |> then(&terminal_attrs(:metadata, &1))
@@ -156,35 +185,36 @@ defmodule Orchard.Requests.CapturePolicy do
   @spec terminal_attrs(mode(), map()) :: map()
   def terminal_attrs(:full, attrs) do
     attrs
-    |> Map.delete(:response_preview_source)
+    |> delete_key(:response_preview_source)
     |> put_response_hash()
-    |> Map.update(:response_preview, nil, &bounded_preview/1)
+    |> update_existing(:response_preview, &bounded_preview/1)
   end
 
   def terminal_attrs(mode, attrs) when mode in [:none, :metadata] do
-    preview =
-      case mode do
-        :none -> nil
-        :metadata -> metadata_preview(attrs)
-      end
-
     attrs
-    |> Map.delete(:response_preview_source)
     |> put_response_hash()
-    |> Map.put(:response_payload, nil)
-    |> Map.put(:response_preview, preview)
-    |> Map.update(:error_code, nil, &stable_error_code/1)
-    |> Map.put(:error_message, nil)
+    |> put_restricted_preview(mode)
+    |> delete_key(:response_preview_source)
+    |> put_key(:response_payload, nil)
+    |> update_existing(:error_code, &stable_error_code/1)
+    |> put_key(:error_message, nil)
   end
 
   @spec event_attrs(mode(), map()) :: map()
   def event_attrs(:full, attrs), do: attrs
 
   def event_attrs(mode, attrs) when mode in [:none, :metadata] do
+    event_type = fetch_value(attrs, :event_type)
+
     cond do
-      Map.has_key?(attrs, :payload) -> Map.update!(attrs, :payload, &sanitize_event_payload/1)
-      Map.has_key?(attrs, "payload") -> Map.update!(attrs, "payload", &sanitize_event_payload/1)
-      true -> attrs
+      Map.has_key?(attrs, :payload) ->
+        Map.update!(attrs, :payload, &sanitize_event_payload(&1, event_type))
+
+      Map.has_key?(attrs, "payload") ->
+        Map.update!(attrs, "payload", &sanitize_event_payload(&1, event_type))
+
+      true ->
+        attrs
     end
   end
 
@@ -275,11 +305,11 @@ defmodule Orchard.Requests.CapturePolicy do
   end
 
   defp request_shape(mode, attrs) do
-    canonical = Map.get(attrs, :canonical_request) || %{}
+    canonical = fetch_value(attrs, :canonical_request) || %{}
 
     rendered_prompt =
       fetch_value(canonical, :rendered_prompt) ||
-        fetch_value(Map.get(attrs, :request_payload) || %{}, :prompt)
+        fetch_value(fetch_value(attrs, :request_payload) || %{}, :prompt)
 
     %{
       "capture_mode" => capture_mode_string(mode),
@@ -339,17 +369,51 @@ defmodule Orchard.Requests.CapturePolicy do
     end
   end
 
-  defp put_response_hash(attrs) do
-    case Map.get(attrs, :response_payload) do
-      nil -> attrs
-      payload -> Map.put(attrs, :response_hash, payload |> encode_content() |> sha256())
+  defp has_key?(attrs, key),
+    do: Map.has_key?(attrs, key) or Map.has_key?(attrs, Atom.to_string(key))
+
+  defp put_key(attrs, key, value) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(attrs, key) -> Map.put(attrs, key, value)
+      Map.has_key?(attrs, string_key) -> Map.put(attrs, string_key, value)
+      string_keyed?(attrs) -> Map.put(attrs, string_key, value)
+      true -> Map.put(attrs, key, value)
     end
   end
 
-  defp metadata_preview(%{response_preview_source: :assistant_text} = attrs),
-    do: metadata_preview_value(Map.get(attrs, :response_preview))
+  defp delete_key(attrs, key), do: attrs |> Map.delete(key) |> Map.delete(Atom.to_string(key))
 
-  defp metadata_preview(_attrs), do: nil
+  defp string_keyed?(attrs), do: attrs != %{} and Enum.all?(Map.keys(attrs), &is_binary/1)
+
+  defp put_response_hash(attrs) do
+    case fetch_value(attrs, :response_payload) do
+      nil -> attrs
+      payload -> put_key(attrs, :response_hash, payload |> encode_content() |> sha256())
+    end
+  end
+
+  defp put_restricted_preview(attrs, mode) do
+    if has_key?(attrs, :response_preview) do
+      preview =
+        case mode do
+          :none -> nil
+          :metadata -> metadata_preview(attrs)
+        end
+
+      put_key(attrs, :response_preview, preview)
+    else
+      attrs
+    end
+  end
+
+  defp metadata_preview(attrs) do
+    case normalize_enum(fetch_value(attrs, :response_preview_source)) do
+      "assistant_text" -> metadata_preview_value(fetch_value(attrs, :response_preview))
+      _source -> nil
+    end
+  end
 
   defp metadata_preview_value(nil), do: nil
 
@@ -399,16 +463,78 @@ defmodule Orchard.Requests.CapturePolicy do
 
   defp codepoint_length(value), do: value |> String.codepoints() |> length()
 
-  defp sanitize_event_payload(payload) when is_map(payload) do
-    %{}
-    |> put_typed_values(payload, @event_integer_keys, &non_negative_integer?/1)
-    |> put_enum_value(payload, "boundary", ~w(post_observation pre_side_effect))
-    |> put_enum_value(payload, "step_type", ~w(inference_turn tool_call tool_execution))
-    |> put_step_identity(payload)
-    |> maybe_put_sanitized_result(payload)
+  defp sanitize_event_payload(payload, event_type) when is_map(payload) do
+    if RequestStepEvent.request_step_event_type?(event_type) do
+      sanitize_step_event_payload(payload, event_type)
+    else
+      %{}
+      |> put_typed_values(payload, @event_integer_keys, &non_negative_integer?/1)
+      |> put_enum_value(payload, "boundary", @boundaries)
+      |> put_enum_value(payload, "step_type", @step_types)
+      |> put_step_identity(payload)
+      |> maybe_put_sanitized_result(payload)
+    end
   end
 
-  defp sanitize_event_payload(_payload), do: %{}
+  defp sanitize_event_payload(_payload, _event_type), do: %{}
+
+  defp sanitize_step_event_payload(payload, event_type) do
+    sanitized =
+      %{}
+      |> put_typed_values(payload, @step_integer_keys, &positive_integer?/1)
+      |> put_enum_value(payload, "boundary", @boundaries)
+      |> put_enum_value(payload, "step_type", @step_types)
+      |> put_step_identity(payload)
+
+    Map.put(sanitized, "result", step_result(sanitized, payload, event_type))
+  end
+
+  defp step_result(sanitized, payload, event_type) do
+    result = fetch_value(payload, :result)
+
+    case Map.get(sanitized, "step_type") do
+      "tool_execution" -> tool_execution_result(result, event_type)
+      _step_type -> inference_step_result(result)
+    end
+  end
+
+  defp inference_step_result(result) when is_map(result) do
+    %{}
+    |> put_typed_values(result, @result_integer_keys, &non_negative_integer?/1)
+    |> put_enum_value(result, "finish_reason", @finish_reasons)
+  end
+
+  defp inference_step_result(_result), do: %{}
+
+  defp tool_execution_result(result, event_type) when is_map(result) do
+    case Map.fetch(@tool_execution_statuses, event_type) do
+      {:ok, status} -> terminal_tool_execution_result(result, status)
+      :error -> %{}
+    end
+  end
+
+  defp tool_execution_result(_result, _event_type), do: %{}
+
+  defp terminal_tool_execution_result(result, status) do
+    %{"status" => status}
+    |> put_typed_value("error_code", stable_step_error_code(result), &is_binary/1)
+    |> put_enum_value(result, "indeterminate_reason", indeterminate_reasons(status))
+    |> ToolExecutionOutcome.request_step_result()
+    |> case do
+      {:ok, safe_result} -> safe_result
+      {:error, _reason} -> %{}
+    end
+  end
+
+  defp indeterminate_reasons(:indeterminate), do: @indeterminate_reasons
+  defp indeterminate_reasons(_status), do: []
+
+  defp stable_step_error_code(result) do
+    case fetch_value(result, :error_code) do
+      code when code in @stable_error_codes -> code
+      _code -> nil
+    end
+  end
 
   defp put_safe_candidates(sanitized, attrs, key, vocabulary) do
     case fetch_value(attrs, key) do
@@ -433,7 +559,7 @@ defmodule Orchard.Requests.CapturePolicy do
   defp sanitize_candidate(_candidate, _vocabulary), do: %{}
 
   defp put_step_identity(sanitized, payload) do
-    case fetch_value(payload, :step_type) do
+    case Map.get(sanitized, "step_type") do
       "inference_turn" -> put_inference_turn_identity(sanitized, payload)
       "tool_call" -> put_tool_call_identity(sanitized, payload)
       "tool_execution" -> put_tool_execution_identity(sanitized, payload)
@@ -611,16 +737,17 @@ defmodule Orchard.Requests.CapturePolicy do
   end
 
   defp sanitize_initial_schedule(attrs, mode) do
-    case Map.fetch(attrs, :scheduler_decision) do
-      {:ok, decision} when is_map(decision) ->
-        approved = %{requested_model: Map.get(attrs, :requested_model)}
-        Map.put(attrs, :scheduler_decision, schedule_attrs(mode, decision, approved))
+    if has_key?(attrs, :scheduler_decision) do
+      case fetch_value(attrs, :scheduler_decision) do
+        decision when is_map(decision) ->
+          approved = %{requested_model: fetch_value(attrs, :requested_model)}
+          put_key(attrs, :scheduler_decision, schedule_attrs(mode, decision, approved))
 
-      {:ok, _decision} ->
-        Map.put(attrs, :scheduler_decision, nil)
-
-      :error ->
-        attrs
+        _decision ->
+          put_key(attrs, :scheduler_decision, nil)
+      end
+    else
+      attrs
     end
   end
 

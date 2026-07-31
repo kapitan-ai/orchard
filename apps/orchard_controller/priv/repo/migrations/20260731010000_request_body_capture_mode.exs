@@ -50,6 +50,42 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
     worker_unavailable
     worker_unloaded
   )
+  @step_event_types ~w(
+    request_step.started
+    request_step.proposed
+    request_step.completed
+    request_step.failed
+    request_step.cancelled
+    request_step.timed_out
+    request_step.interrupted
+    request_step.indeterminate
+  )
+  @step_types ~w(inference_turn tool_call tool_execution)
+  @boundaries ~w(pre_side_effect post_observation)
+  @finish_reasons ~w(cancelled content_filter error length stop tool_calls)
+  @result_integer_keys ~w(http_status input_tokens output_tokens)
+  @tool_execution_defaults %{
+    "request_step.failed" => {"tool_execution_failed", "Tool execution failed"},
+    "request_step.cancelled" => {"tool_execution_cancelled", "Tool execution was cancelled"},
+    "request_step.timed_out" => {"tool_execution_timed_out", "Tool execution timed out"}
+  }
+  @indeterminate_defaults %{
+    "cancel_ack_missing" =>
+      {"tool_execution_indeterminate_cancel_ack_missing",
+       "Tool execution cancellation acknowledgement was not observed"},
+    "controller_restarted" =>
+      {"tool_execution_indeterminate_controller_restarted",
+       "Tool execution became indeterminate after the controller restarted"},
+    "executor_unreachable" =>
+      {"tool_execution_indeterminate_executor_unreachable",
+       "Tool execution became indeterminate after the executor became unreachable"},
+    "result_not_observed" =>
+      {"tool_execution_indeterminate_result_not_observed",
+       "Tool execution result was not observed"},
+    "timeout_after_start" =>
+      {"tool_execution_indeterminate_timeout_after_start",
+       "Tool execution timed out after starting and the final outcome was not observed"}
+  }
 
   def up do
     alter table(:tenants) do
@@ -121,6 +157,16 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
     FROM requests AS request
     WHERE event.request_id = request.id
       AND request.payload_capture_mode IN ('none', 'metadata')
+      AND NOT (event.event_type = ANY (#{step_event_type_array_sql()}))
+    """)
+
+    execute("""
+    UPDATE request_events AS event
+    SET payload = #{legacy_step_event_payload_sql()}
+    FROM requests AS request
+    WHERE event.request_id = request.id
+      AND request.payload_capture_mode IN ('none', 'metadata')
+      AND event.event_type = ANY (#{step_event_type_array_sql()})
     """)
 
     execute("""
@@ -234,13 +280,191 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureMode do
   end
 
   @doc """
+  Returns the SQL expression that rebuilds a restricted `request_step.*` payload.
+
+  Retains the typed structural fields `RequestStepEvent` readback requires while
+  dropping model-generated content, raw tool arguments, and raw error text. Rows
+  that cannot be reconstructed into a contract-valid skeleton collapse to `{}`.
+  """
+  @spec legacy_step_event_payload_sql() :: String.t()
+  def legacy_step_event_payload_sql do
+    """
+    CASE
+      WHEN #{step_id_sql()} IS NULL OR #{boundary_sql()} IS NULL THEN '{}'::jsonb
+      ELSE jsonb_strip_nulls(
+             jsonb_build_object(
+               'step_id', to_jsonb(#{step_id_sql()}),
+               'step_type', to_jsonb(#{step_type_sql()}),
+               'turn_index', to_jsonb(#{turn_index_sql()}),
+               'attempt', to_jsonb(#{attempt_sql()}),
+               'parent_step_id', to_jsonb(#{parent_step_id_sql()}),
+               'boundary', to_jsonb(#{boundary_sql()}),
+               'call_id', to_jsonb(#{call_id_sql()})
+             )
+           ) || jsonb_build_object('result', #{step_result_sql()})
+    END
+    """
+  end
+
+  @doc """
   Returns the closed error-code vocabulary accepted on restricted Request rows.
   """
   @spec stable_error_codes() :: [String.t()]
   def stable_error_codes, do: @stable_error_codes
 
-  defp stable_error_code_array_sql do
-    values = Enum.map_join(@stable_error_codes, ", ", &"'#{&1}'")
-    "ARRAY[#{values}]::text[]"
+  @doc """
+  Returns the `request_step.*` event-type vocabulary rebuilt by the legacy purge.
+  """
+  @spec step_event_types() :: [String.t()]
+  def step_event_types, do: @step_event_types
+
+  defp stable_error_code_array_sql, do: text_array_sql(@stable_error_codes)
+
+  defp step_event_type_array_sql, do: text_array_sql(@step_event_types)
+
+  defp text_array_sql(values) do
+    "ARRAY[#{Enum.map_join(values, ", ", &"'#{&1}'")}]::text[]"
+  end
+
+  defp step_type_sql do
+    "(CASE WHEN event.payload ->> 'step_type' = ANY (#{text_array_sql(@step_types)}) THEN event.payload ->> 'step_type' END)"
+  end
+
+  defp boundary_sql do
+    "(CASE WHEN event.payload ->> 'boundary' = ANY (#{text_array_sql(@boundaries)}) THEN event.payload ->> 'boundary' END)"
+  end
+
+  defp turn_index_sql, do: positive_integer_sql("turn_index")
+
+  defp attempt_sql, do: positive_integer_sql("attempt")
+
+  defp positive_integer_sql(key) do
+    """
+    (CASE
+       WHEN jsonb_typeof(event.payload -> '#{key}') = 'number'
+         AND (event.payload ->> '#{key}') ~ '^[1-9][0-9]{0,17}$'
+       THEN (event.payload ->> '#{key}')::bigint
+     END)
+    """
+  end
+
+  defp call_id_sql do
+    """
+    (CASE
+       WHEN jsonb_typeof(event.payload -> 'call_id') = 'string'
+       THEN 'sha256:' || encode(digest(convert_to(event.payload ->> 'call_id', 'UTF8'), 'sha256'), 'hex')
+     END)
+    """
+  end
+
+  defp step_id_sql do
+    """
+    (CASE
+       WHEN #{turn_index_sql()} IS NULL OR #{attempt_sql()} IS NULL THEN NULL
+       WHEN #{step_type_sql()} = 'inference_turn'
+         THEN 'inference_turn:t' || #{turn_index_sql()} || ':a' || #{attempt_sql()}
+       WHEN #{step_type_sql()} = 'tool_call' AND #{call_id_sql()} IS NOT NULL
+         THEN 'tool_call:t' || #{turn_index_sql()} || ':c' || #{call_id_sql()}
+       WHEN #{step_type_sql()} = 'tool_execution' AND #{call_id_sql()} IS NOT NULL
+         THEN 'tool_execution:t' || #{turn_index_sql()} || ':c' || #{call_id_sql()} || ':a' || #{attempt_sql()}
+     END)
+    """
+  end
+
+  defp parent_step_id_sql do
+    """
+    (CASE
+       WHEN #{turn_index_sql()} IS NULL OR #{call_id_sql()} IS NULL THEN NULL
+       WHEN #{step_type_sql()} = 'tool_call'
+         THEN 'inference_turn:t' || #{turn_index_sql()} || ':a1'
+       WHEN #{step_type_sql()} = 'tool_execution'
+         THEN 'tool_call:t' || #{turn_index_sql()} || ':c' || #{call_id_sql()}
+     END)
+    """
+  end
+
+  defp step_result_sql do
+    """
+    (CASE
+       WHEN #{step_type_sql()} = 'tool_execution' THEN #{tool_execution_result_sql()}
+       ELSE #{inference_step_result_sql()}
+     END)
+    """
+  end
+
+  defp inference_step_result_sql do
+    integers =
+      Enum.map_join(@result_integer_keys, ",\n        ", fn key ->
+        """
+        '#{key}',
+          CASE
+            WHEN jsonb_typeof(event.payload -> 'result' -> '#{key}') = 'number'
+              AND (event.payload -> 'result' ->> '#{key}') ~ '^[0-9]{1,18}$'
+            THEN event.payload -> 'result' -> '#{key}'
+          END\
+        """
+      end)
+
+    """
+    jsonb_strip_nulls(
+      jsonb_build_object(
+        #{integers},
+        'finish_reason',
+          CASE
+            WHEN event.payload -> 'result' ->> 'finish_reason' = ANY (#{text_array_sql(@finish_reasons)})
+            THEN event.payload -> 'result' -> 'finish_reason'
+          END
+      )
+    )
+    """
+  end
+
+  defp tool_execution_result_sql do
+    terminal =
+      Enum.map_join(@tool_execution_defaults, "\n", fn {event_type, {code, message}} ->
+        "WHEN event.event_type = '#{event_type}' THEN #{tool_execution_error_sql(code, message)}"
+      end)
+
+    """
+    (CASE
+       #{terminal}
+       WHEN event.event_type = 'request_step.indeterminate'
+         THEN #{indeterminate_result_sql()}
+       ELSE '{}'::jsonb
+     END)
+    """
+  end
+
+  defp indeterminate_result_sql do
+    branches =
+      Enum.map_join(@indeterminate_defaults, "\n", fn {reason, {code, message}} ->
+        """
+        WHEN event.payload -> 'result' ->> 'indeterminate_reason' = '#{reason}'
+          THEN #{tool_execution_error_sql(code, message)} || jsonb_build_object('indeterminate_reason', '#{reason}'::text)\
+        """
+      end)
+
+    """
+    (CASE
+       #{branches}
+       ELSE '{}'::jsonb
+     END)
+    """
+  end
+
+  defp tool_execution_error_sql(default_code, default_message) do
+    """
+    jsonb_build_object(
+      'error_code',
+        COALESCE(
+          CASE
+            WHEN event.payload -> 'result' ->> 'error_code' = ANY (#{stable_error_code_array_sql()})
+            THEN event.payload -> 'result' ->> 'error_code'
+          END,
+          '#{default_code}'
+        ),
+      'error_message', '#{default_message}'::text
+    )\
+    """
   end
 end

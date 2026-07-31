@@ -11,11 +11,18 @@ defmodule Orchard.Requests do
 
   @spec create_request(map()) :: {:ok, struct()} | {:error, Ecto.Changeset.t()}
   def create_request(attrs) do
+    %Request{}
+    |> Request.create_changeset(capture_create_attrs(attrs))
+    |> Repo.insert()
+  end
+
+  defp capture_create_attrs(attrs) do
     mode = Map.get(attrs, :payload_capture_mode) || Map.get(attrs, "payload_capture_mode")
 
-    %Request{}
-    |> Request.create_changeset(CapturePolicy.create_attrs(mode, attrs))
-    |> Repo.insert()
+    case CapturePolicy.normalize_mode(mode) do
+      {:ok, normalized_mode} -> CapturePolicy.create_attrs(normalized_mode, attrs)
+      :error -> attrs
+    end
   end
 
   @spec get_request!(Ecto.UUID.t()) :: struct()
@@ -59,7 +66,14 @@ defmodule Orchard.Requests do
     )
     |> order_by([event], asc: event.seq)
     |> Repo.all()
-    |> Enum.map(&RequestStepEvent.from_request_event!/1)
+    |> Enum.flat_map(&readable_step_event/1)
+  end
+
+  defp readable_step_event(request_event) do
+    case RequestStepEvent.from_request_event(request_event) do
+      {:ok, step_event} -> [step_event]
+      {:error, _reason} -> []
+    end
   end
 
   @spec append_request_event(struct() | Ecto.UUID.t(), map()) ::

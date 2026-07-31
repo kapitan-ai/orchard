@@ -6,7 +6,7 @@ defmodule Orchard.RequestsTest do
   alias Orchard.Governance
   alias Orchard.Models
   alias Orchard.Requests
-  alias Orchard.Requests.{Request, RequestStepEvent}
+  alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
 
   @safe_call_id "sha256:" <>
                   (:crypto.hash(:sha256, "call_1") |> Base.encode16(case: :lower))
@@ -20,6 +20,56 @@ defmodule Orchard.RequestsTest do
     assert request.model_id == nil
     assert request.canonical_request == nil
     assert request.requested_model == attrs.requested_model
+  end
+
+  test "create_request/1 returns a changeset error when the capture mode is missing or unknown" do
+    for mode <- [nil, "", "everything", :everything] do
+      attrs = request_attrs() |> Map.put(:payload_capture_mode, mode)
+
+      assert {:error, %Ecto.Changeset{}} = Requests.create_request(attrs)
+    end
+  end
+
+  test "create_request/1 enforces the capture policy on string-keyed attrs" do
+    attrs =
+      request_attrs()
+      |> Map.put(:canonical_request, %{"rendered_prompt" => "private prompt"})
+      |> Map.put(:request_payload, %{"prompt" => "private prompt"})
+      |> Map.put(:scheduler_decision, %{"prompt" => "private prompt"})
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      |> Map.put("payload_capture_mode", "metadata")
+
+    assert {:ok, request} = Requests.create_request(attrs)
+
+    assert request.payload_capture_mode == :metadata
+    assert request.canonical_request == nil
+    assert request.request_payload == nil
+    assert request.request_shape["capture_mode"] == "metadata"
+    assert request.scheduler_decision == %{}
+    refute inspect(request) =~ "private prompt"
+  end
+
+  test "list_request_step_events/1 skips step rows that legacy purges left unreadable" do
+    request = create_request!(%{payload_capture_mode: :metadata})
+
+    assert {:ok, _step_events} =
+             Requests.append_request_step_events(request, [inference_turn_completed_step_attrs()])
+
+    Repo.update_all(
+      from(event in RequestEvent, where: event.request_id == ^request.id),
+      set: [payload: %{}]
+    )
+
+    assert {:ok, _step_events} =
+             Requests.append_request_step_events(request, [
+               inference_turn_completed_step_attrs(%{
+                 event_type: "request_step.failed",
+                 result: %{"finish_reason" => "error"}
+               })
+             ])
+
+    assert [%RequestStepEvent{event_type: "request_step.failed"}] =
+             Requests.list_request_step_events(request)
   end
 
   test "create_request/1 rejects service-account provenance without service_account_id" do

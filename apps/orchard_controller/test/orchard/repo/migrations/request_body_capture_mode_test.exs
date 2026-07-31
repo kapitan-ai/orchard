@@ -4,9 +4,12 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureModeTest do
   alias Ecto.Adapters.SQL
   alias Orchard.Repo
   alias Orchard.Repo.Migrations.RequestBodyCaptureMode
-  alias Orchard.Requests.CapturePolicy
+  alias Orchard.Requests
+  alias Orchard.Requests.{CapturePolicy, RequestStepEvent}
 
   import Orchard.TestSupport.ModelRequestFixtures
+
+  @secret "private tool argument that must not survive the purge"
 
   @migration_path Path.expand(
                     "../../../../priv/repo/migrations/20260731010000_request_body_capture_mode.exs",
@@ -86,6 +89,77 @@ defmodule Orchard.Repo.Migrations.RequestBodyCaptureModeTest do
     )
 
     assert Repo.reload!(request).error_code == "internal_error"
+  end
+
+  test "legacy purge keeps request_step events readable without model-generated content" do
+    assert MapSet.new(RequestBodyCaptureMode.step_event_types()) ==
+             MapSet.new(RequestStepEvent.step_event_types())
+
+    request = create_request!(%{payload_capture_mode: :metadata})
+
+    {:ok, _step_events} =
+      Requests.append_request_step_events(request, [
+        %{
+          event_type: "request_step.proposed",
+          step_id: RequestStepEvent.tool_call_step_id(1, "call_1"),
+          step_type: "tool_call",
+          turn_index: 1,
+          attempt: 1,
+          parent_step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+          boundary: "post_observation",
+          call_id: "call_1",
+          tool_name: "lookup",
+          arguments_json: ~s({"city":"#{@secret}"}),
+          result: %{"finish_reason" => "tool_calls"}
+        }
+      ])
+
+    restore_legacy_step_payload!(request.id)
+    run_legacy_step_event_purge!(request.id)
+
+    assert [step_event] = Requests.list_request_step_events(request)
+    assert step_event.step_type == "tool_call"
+    assert step_event.turn_index == 1
+    assert step_event.attempt == 1
+    assert step_event.boundary == "post_observation"
+    assert step_event.parent_step_id == RequestStepEvent.inference_turn_step_id(1, 1)
+    assert step_event.result == %{"finish_reason" => "tool_calls"}
+    assert step_event.arguments_json == nil
+    refute step_event.call_id == "call_1"
+    refute inspect(step_event) =~ @secret
+  end
+
+  defp restore_legacy_step_payload!(request_id) do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE request_events
+      SET payload = payload || jsonb_build_object(
+            'call_id', 'call_1'::text,
+            'tool_name', 'lookup'::text,
+            'arguments_json', $2::text,
+            'step_id', 'tool_call:t1:ccall_1'::text,
+            'result', jsonb_build_object(
+              'finish_reason', 'tool_calls'::text,
+              'error_message', $2::text
+            )
+          )
+      WHERE request_id::text = $1
+      """,
+      [request_id, ~s({"city":"#{@secret}"})]
+    )
+  end
+
+  defp run_legacy_step_event_purge!(request_id) do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE request_events AS event
+      SET payload = #{RequestBodyCaptureMode.legacy_step_event_payload_sql()}
+      WHERE event.request_id::text = $1
+      """,
+      [request_id]
+    )
   end
 
   defp run_legacy_scheduler_purge!(request_id) do

@@ -2,7 +2,7 @@ defmodule Orchard.Requests.CapturePolicyTest do
   use ExUnit.Case, async: true
 
   alias Orchard.Requests.CapturePolicy
-  alias Orchard.Requests.{Request, RequestEvent}
+  alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
 
   @prompt "private prompt that must not survive metadata capture"
   @response "private response that must not survive metadata capture"
@@ -185,6 +185,16 @@ defmodule Orchard.Requests.CapturePolicyTest do
       end
     end
 
+    test "omitted terminal fields stay omitted so repeated updates cannot clear them" do
+      for mode <- [:none, :metadata, :full] do
+        attrs = CapturePolicy.terminal_attrs(mode, %{state: :completed, output_tokens: 7})
+
+        refute Map.has_key?(attrs, :response_preview)
+        refute Map.has_key?(attrs, :error_code)
+        assert attrs.output_tokens == 7
+      end
+    end
+
     test "restricted modes retain only closed stable error codes" do
       for mode <- [:none, :metadata] do
         assert CapturePolicy.terminal_attrs(mode, %{error_code: "queue_timeout"}).error_code ==
@@ -235,6 +245,67 @@ defmodule Orchard.Requests.CapturePolicyTest do
     test "full preserves approved request-step content" do
       attrs = CapturePolicy.event_attrs(:full, event_attrs())
       assert attrs.payload["result"]["arguments_json"] == @arguments
+    end
+
+    test "none and metadata keep restricted request_step events readable" do
+      for mode <- [:none, :metadata], step <- readable_step_events() do
+        sanitized = CapturePolicy.event_attrs(mode, step)
+
+        assert {:ok, step_event} =
+                 RequestStepEvent.from_request_event(%RequestEvent{
+                   event_type: step.event_type,
+                   payload: sanitized.payload,
+                   request_id: Ecto.UUID.generate(),
+                   seq: 1,
+                   occurred_at: ~U[2026-07-31 04:00:00.000000Z]
+                 })
+
+        assert step_event.step_type == step.payload["step_type"]
+        assert step_event.turn_index == step.payload["turn_index"]
+        assert step_event.attempt == step.payload["attempt"]
+        refute inspect(step_event) =~ @prompt
+        refute inspect(step_event) =~ @arguments
+      end
+    end
+
+    test "none and metadata retain stable tool_execution error codes without raw error text" do
+      failed =
+        CapturePolicy.event_attrs(
+          :metadata,
+          tool_execution_step("request_step.failed", %{
+            "error_code" => "tool_execution_timed_out",
+            "error_message" => "runtime echoed #{@prompt}"
+          })
+        )
+
+      assert failed.payload["result"]["error_code"] == "tool_execution_timed_out"
+      assert failed.payload["result"]["error_message"] == "Tool execution failed"
+      refute inspect(failed) =~ @prompt
+
+      unknown =
+        CapturePolicy.event_attrs(
+          :metadata,
+          tool_execution_step("request_step.cancelled", %{
+            "error_code" => "runtime echoed #{@prompt}",
+            "error_message" => @prompt
+          })
+        )
+
+      assert unknown.payload["result"]["error_code"] == "tool_execution_cancelled"
+      refute inspect(unknown) =~ @prompt
+
+      indeterminate =
+        CapturePolicy.event_attrs(
+          :metadata,
+          tool_execution_step("request_step.indeterminate", %{
+            "error_code" => "tool_execution_indeterminate_result_not_observed",
+            "error_message" => @prompt,
+            "indeterminate_reason" => "result_not_observed"
+          })
+        )
+
+      assert indeterminate.payload["result"]["indeterminate_reason"] == "result_not_observed"
+      refute inspect(indeterminate) =~ @prompt
     end
   end
 
@@ -461,6 +532,71 @@ defmodule Orchard.Requests.CapturePolicyTest do
       },
       overrides
     )
+  end
+
+  defp readable_step_events do
+    [
+      %{
+        event_type: "request_step.started",
+        payload: %{
+          "step_id" => "inference_turn:t1:a1",
+          "step_type" => "inference_turn",
+          "turn_index" => 1,
+          "attempt" => 1,
+          "boundary" => "pre_side_effect",
+          "result" => %{},
+          "model_id" => "model",
+          "model_version" => "v1"
+        }
+      },
+      %{
+        event_type: "request_step.completed",
+        payload: %{
+          "step_id" => "inference_turn:t1:a1",
+          "step_type" => "inference_turn",
+          "turn_index" => 1,
+          "attempt" => 1,
+          "boundary" => "post_observation",
+          "result" => %{"finish_reason" => "stop", "output_tokens" => 12, "prompt" => @prompt}
+        }
+      },
+      %{
+        event_type: "request_step.proposed",
+        payload: %{
+          "step_id" => "tool_call:t1:ccall-1",
+          "step_type" => "tool_call",
+          "turn_index" => 1,
+          "attempt" => 1,
+          "parent_step_id" => "inference_turn:t1:a1",
+          "boundary" => "post_observation",
+          "call_id" => "call-1",
+          "tool_name" => "transfer",
+          "arguments_json" => @arguments,
+          "result" => %{"finish_reason" => "tool_calls"}
+        }
+      },
+      tool_execution_step("request_step.completed", %{}),
+      tool_execution_step("request_step.timed_out", %{
+        "error_code" => "tool_execution_timed_out",
+        "error_message" => "runtime echoed #{@prompt}"
+      })
+    ]
+  end
+
+  defp tool_execution_step(event_type, result) do
+    %{
+      event_type: event_type,
+      payload: %{
+        "step_id" => "tool_execution:t1:ccall-1:a1",
+        "step_type" => "tool_execution",
+        "turn_index" => 1,
+        "attempt" => 1,
+        "parent_step_id" => "tool_call:t1:ccall-1",
+        "boundary" => "post_observation",
+        "call_id" => "call-1",
+        "result" => result
+      }
+    }
   end
 
   defp event_attrs do
