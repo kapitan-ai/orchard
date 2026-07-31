@@ -7,7 +7,9 @@ defmodule Orchard.SentryLogger do
   @handler_config %{
     config: %{
       capture_log_messages: false,
-      metadata: [:request_id, :worker_model, :orchard_node_id, :model_backend],
+      # Raw node identity stays out of Sentry metadata; node correlation ships only as the
+      # hashed `orchard_node_hash` enrichment key.
+      metadata: [:request_id, :worker_model, :model_backend],
       rate_limiting: [max_events: 50, interval: 60_000]
     }
   }
