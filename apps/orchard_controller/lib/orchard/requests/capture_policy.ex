@@ -145,6 +145,15 @@ defmodule Orchard.Requests.CapturePolicy do
   def resolve(:full, false), do: :metadata
   def resolve(mode, false) when mode in [:none, :metadata], do: mode
 
+  @doc """
+  Returns the most restrictive capture mode.
+
+  Persistence boundaries use it when a request carries no resolvable capture
+  mode so unresolved rows are sanitized fail-closed rather than stored verbatim.
+  """
+  @spec strictest_mode() :: mode()
+  def strictest_mode, do: :none
+
   @spec normalize_mode(term()) :: {:ok, mode()} | :error
   def normalize_mode(mode) when mode in @capture_modes, do: {:ok, mode}
 

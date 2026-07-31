@@ -30,6 +30,26 @@ defmodule Orchard.RequestsTest do
     end
   end
 
+  test "create_request/1 sanitizes fail-closed when the capture mode is unresolvable" do
+    attrs =
+      request_attrs(%{
+        canonical_request: %{"rendered_prompt" => "private prompt"},
+        request_payload: %{"prompt" => "private prompt"},
+        sampling_params: %{"temperature" => 0.7, "stop" => ["private stop"]},
+        scheduler_decision: %{"prompt" => "private prompt"}
+      })
+      |> Map.put(:payload_capture_mode, "everything")
+
+    assert {:error, %Ecto.Changeset{} = changeset} = Requests.create_request(attrs)
+
+    refute Map.has_key?(changeset.changes, :canonical_request)
+    refute Map.has_key?(changeset.changes, :request_payload)
+    refute Map.has_key?(changeset.changes, :request_shape)
+    assert get_change(changeset, :sampling_params) == %{"temperature" => 0.7, "stop_count" => 1}
+    assert get_change(changeset, :scheduler_decision) == %{}
+    refute inspect(changeset) =~ "private"
+  end
+
   test "create_request/1 enforces the capture policy on string-keyed attrs" do
     attrs =
       request_attrs()

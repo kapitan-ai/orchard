@@ -21,7 +21,7 @@ defmodule Orchard.Requests do
 
     case CapturePolicy.normalize_mode(mode) do
       {:ok, normalized_mode} -> CapturePolicy.create_attrs(normalized_mode, attrs)
-      :error -> attrs
+      :error -> CapturePolicy.create_attrs(CapturePolicy.strictest_mode(), attrs)
     end
   end
 
@@ -197,7 +197,6 @@ defmodule Orchard.Requests do
 
   defp classify_terminal_step(%RequestStepEvent{event_type: "request_step.completed"} = step) do
     case Map.fetch(step.result, "result_invalid") do
-      {:ok, true} -> inconclusive(:invalid_terminal_step)
       {:ok, _invalid_marker} -> inconclusive(:invalid_terminal_step)
       :error -> classify_finish_reason_evidence(step.result)
     end
