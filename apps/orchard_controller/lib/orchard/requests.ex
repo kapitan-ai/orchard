@@ -163,6 +163,7 @@ defmodule Orchard.Requests do
         :cancelled -> "request_step.cancelled"
         :timed_out -> "request_step.timed_out"
         :interrupted -> "request_step.interrupted"
+        _unsupported_terminal_state -> nil
       end
 
     if event_type == expected_event_type do
