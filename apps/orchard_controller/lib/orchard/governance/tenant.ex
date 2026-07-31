@@ -12,11 +12,18 @@ defmodule Orchard.Governance.Tenant do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @request_body_capture_modes [none: "none", metadata: "metadata", full: "full"]
+
   @type t :: %__MODULE__{}
 
   schema "tenants" do
     field(:slug, :string)
     field(:name, :string)
+
+    field(:request_body_capture_mode, Ecto.Enum,
+      values: @request_body_capture_modes,
+      default: :metadata
+    )
 
     has_many(:api_keys, ApiKey)
     has_many(:audit_logs, AuditLog)
@@ -29,8 +36,8 @@ defmodule Orchard.Governance.Tenant do
   @spec changeset(struct(), map()) :: Ecto.Changeset.t()
   def changeset(tenant, attrs) do
     tenant
-    |> cast(attrs, [:slug, :name])
-    |> validate_required([:slug, :name])
+    |> cast(attrs, [:slug, :name, :request_body_capture_mode])
+    |> validate_required([:slug, :name, :request_body_capture_mode])
     |> unique_constraint(:slug)
   end
 end

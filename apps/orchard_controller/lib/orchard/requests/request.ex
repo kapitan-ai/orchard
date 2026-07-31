@@ -54,8 +54,10 @@ defmodule Orchard.Requests.Request do
     field(:stream, :boolean, default: false)
     field(:payload_capture_mode, Ecto.Enum, values: @payload_capture_modes)
     field(:canonical_request, :map)
+    field(:request_shape, :map)
     field(:request_payload, :map)
     field(:response_payload, :map)
+    field(:response_hash, :binary)
     field(:response_preview, :string)
     field(:sampling_params, :map, default: %{})
     field(:response_format, :map, default: %{})
@@ -111,8 +113,10 @@ defmodule Orchard.Requests.Request do
       :stream,
       :payload_capture_mode,
       :canonical_request,
+      :request_shape,
       :request_payload,
       :response_payload,
+      :response_hash,
       :response_preview,
       :sampling_params,
       :response_format,
@@ -146,6 +150,9 @@ defmodule Orchard.Requests.Request do
     |> check_constraint(:service_account_id,
       name: :requests_service_account_principal_requires_id
     )
+    |> check_constraint(:canonical_request, name: :requests_non_full_content_absent)
+    |> check_constraint(:request_shape, name: :requests_none_shape_and_preview_absent)
+    |> check_constraint(:response_preview, name: :requests_response_preview_bounded)
     |> foreign_key_constraint(:model_id)
     |> foreign_key_constraint(:retry_of_request_id)
     |> foreign_key_constraint(:service_account_id)
@@ -164,6 +171,7 @@ defmodule Orchard.Requests.Request do
     |> cast(attrs, [
       :state,
       :response_payload,
+      :response_hash,
       :response_preview,
       :input_tokens,
       :output_tokens,
@@ -180,6 +188,9 @@ defmodule Orchard.Requests.Request do
     |> validate_number(:reserved_output_tokens, greater_than_or_equal_to: 0)
     |> validate_terminal_state()
     |> put_completed_at()
+    |> check_constraint(:response_payload, name: :requests_non_full_content_absent)
+    |> check_constraint(:response_preview, name: :requests_none_shape_and_preview_absent)
+    |> check_constraint(:response_preview, name: :requests_response_preview_bounded)
   end
 
   @spec schedule_changeset(struct(), map()) :: Ecto.Changeset.t()

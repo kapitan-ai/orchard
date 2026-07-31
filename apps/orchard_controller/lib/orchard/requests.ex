@@ -7,12 +7,14 @@ defmodule Orchard.Requests do
 
   alias Orchard.ClusterManagement.SchedulerExplanation
   alias Orchard.Repo
-  alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
+  alias Orchard.Requests.{CapturePolicy, Request, RequestEvent, RequestStepEvent}
 
   @spec create_request(map()) :: {:ok, struct()} | {:error, Ecto.Changeset.t()}
   def create_request(attrs) do
+    mode = Map.get(attrs, :payload_capture_mode) || Map.get(attrs, "payload_capture_mode")
+
     %Request{}
-    |> Request.create_changeset(attrs)
+    |> Request.create_changeset(CapturePolicy.create_attrs(mode, attrs))
     |> Repo.insert()
   end
 
@@ -101,6 +103,7 @@ defmodule Orchard.Requests do
     event_attrs =
       attrs
       |> normalize_request_event_attrs()
+      |> then(&CapturePolicy.event_attrs(request.payload_capture_mode, &1))
       |> Map.put("request_id", request_id)
       |> Map.put("seq", next_request_event_seq(request_id))
       |> default_occurred_at()
@@ -115,14 +118,15 @@ defmodule Orchard.Requests do
     |> Repo.insert()
   end
 
-  defp insert_request_step_events(request_id, step_events) do
+  defp insert_request_step_events(request, step_events) do
     step_events
-    |> Enum.with_index(next_request_event_seq(request_id))
+    |> Enum.with_index(next_request_event_seq(request.id))
     |> Enum.reduce_while([], fn {step_event, seq}, acc ->
       event_attrs =
         step_event
         |> RequestStepEvent.to_request_event_attrs!()
-        |> Map.put("request_id", request_id)
+        |> then(&CapturePolicy.event_attrs(request.payload_capture_mode, &1))
+        |> Map.put("request_id", request.id)
         |> Map.put("seq", seq)
         |> default_occurred_at()
 
@@ -141,8 +145,8 @@ defmodule Orchard.Requests do
   defp append_normalized_request_step_events(request_id, normalized_step_events) do
     Repo.transaction(fn ->
       case lock_request(request_id) do
-        {:ok, _request} ->
-          insert_request_step_events(request_id, normalized_step_events)
+        {:ok, request} ->
+          insert_request_step_events(request, normalized_step_events)
 
         {:error, :request_not_found} ->
           Repo.rollback(:request_not_found)
@@ -223,7 +227,7 @@ defmodule Orchard.Requests do
   end
 
   defp append_steps_and_apply_terminal_update(current_request, attrs, normalized_step_events) do
-    {:ok, _step_events} = insert_request_step_events(current_request.id, normalized_step_events)
+    {:ok, _step_events} = insert_request_step_events(current_request, normalized_step_events)
 
     case apply_terminal_update(current_request, attrs) do
       {:ok, updated_request} -> {:ok, updated_request}
@@ -232,6 +236,8 @@ defmodule Orchard.Requests do
   end
 
   defp apply_terminal_update(%Request{} = request, attrs) do
+    attrs = CapturePolicy.terminal_attrs(request.payload_capture_mode, attrs)
+
     # Allow idempotent terminal updates: if the row is already in a terminal
     # state (set by append_request_event's atomic state sync), still apply
     # the terminal metadata (usage, timestamps, error fields). Only reject
@@ -334,7 +340,8 @@ defmodule Orchard.Requests do
 
   defp persist_schedule(request, schedule, normalized_schedule) do
     attrs = %{
-      scheduler_decision: normalized_schedule,
+      scheduler_decision:
+        CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule),
       node_id: Map.get(schedule, :node_id)
     }
 

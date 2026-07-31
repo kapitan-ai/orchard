@@ -42,6 +42,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
+  alias Orchard.Governance.Tenant
   alias Orchard.Inference.ChatRequestNormalizer
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
@@ -226,10 +227,10 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :db
-    test "successful non-stream request persists replay payload equal to returned JSON", %{
+    test "successful metadata-capture request returns JSON without retaining the response", %{
       bundle: bundle
     } do
-      %{token: token} = create_api_key_with_token!("non-stream-persist")
+      %{token: token, tenant: tenant} = create_api_key_with_token!("non-stream-persist")
 
       {:ok, _model} =
         Orchard.Models.create_model(%{
@@ -267,9 +268,53 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         |> Enum.filter(&(&1.public_id == body["id"]))
 
       assert request.state == :completed
-      assert request.response_payload == body
-      assert request.response_preview != nil
-      assert request.response_preview != ""
+      assert request.payload_capture_mode == :metadata
+      assert request.response_payload == nil
+      assert request.response_preview == nil
+      assert request.response_hash != nil
+
+      tenant
+      |> Tenant.changeset(%{request_body_capture_mode: :full})
+      |> Orchard.Repo.update!()
+
+      full_conn =
+        post_chat(
+          %{
+            "model" => "persist-non-stream-model@v1",
+            "messages" => [%{"role" => "user", "content" => "retain in full mode"}]
+          },
+          token
+        )
+
+      assert full_conn.status == 200
+      full_body = Jason.decode!(full_conn.resp_body)
+      full_request = Requests.get_request_by_public_id(full_body["id"])
+      assert full_request.payload_capture_mode == :full
+      assert full_request.canonical_request["rendered_prompt"] =~ "retain in full mode"
+      assert full_request.response_payload == full_body
+
+      %{token: none_token, tenant: none_tenant} =
+        create_api_key_with_token!("non-stream-none")
+
+      none_tenant
+      |> Tenant.changeset(%{request_body_capture_mode: :none})
+      |> Orchard.Repo.update!()
+
+      none_conn =
+        post_chat(
+          %{
+            "model" => "persist-non-stream-model@v1",
+            "messages" => [%{"role" => "user", "content" => "retain nothing"}]
+          },
+          none_token
+        )
+
+      assert none_conn.status == 200
+      none_request = Requests.get_request_by_public_id(Jason.decode!(none_conn.resp_body)["id"])
+      assert none_request.payload_capture_mode == :none
+      assert none_request.canonical_request == nil
+      assert none_request.request_shape == nil
+      assert none_request.response_payload == nil
     end
 
     @tag :db
@@ -338,10 +383,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert decision["selected_prefix_cache_score_status_code"] == "unsupported_version"
       assert decision["selected_prefix_cache_score_tier"] == "unknown"
 
-      assert decision["selected_prefix_cache_score_status_message"] ==
-               "prefix cache scoring unsupported version"
-
       assert decision["selected_prefix_cache_score_source"] == "score_prefix_cache_rpc"
+      refute Map.has_key?(decision, "selected_prefix_cache_score_status_message")
       refute Map.has_key?(decision, "prefix_cache_score")
       refute Map.has_key?(decision, "selected_prefix_cache_score_resident_fingerprint_match")
       refute Map.has_key?(decision, "selected_prefix_cache_score_session_started_unix_ms")
@@ -356,7 +399,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :db
-    test "SPEC.md §3.9 replays a tenant-scoped non-stream response for the same Idempotency-Key",
+    test "SPEC.md §10.10 metadata capture fails closed when replay content is unavailable",
          %{
            bundle: bundle
          } do
@@ -389,8 +432,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       conn_b = post_chat(params, token, [{"idempotency-key", "tenant-replay"}])
 
       assert conn_a.status == 200
-      assert conn_b.status == 200
-      assert Jason.decode!(conn_a.resp_body) == Jason.decode!(conn_b.resp_body)
+      assert conn_b.status == 409
+      assert Jason.decode!(conn_b.resp_body)["error"]["code"] == "idempotency_not_replayable"
 
       [request] = Orchard.Repo.all(Orchard.Requests.Request)
       assert request.tenant_id == tenant.id
@@ -1226,6 +1269,10 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       %{tenant: tenant, api_key: api_key, token: token} =
         create_api_key_with_token!("persist-request")
 
+      tenant
+      |> Tenant.changeset(%{request_body_capture_mode: :full})
+      |> Orchard.Repo.update!()
+
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "persist-model",
@@ -1265,21 +1312,11 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert request.requested_model == "persist-model@v1"
       assert request.stream == true
       assert request.endpoint == :chat_completions
-      assert is_map(request.canonical_request)
-      assert request.canonical_request["public_id"] == request.public_id
-
-      assert request.canonical_request["model_ref"] == %{
-               "model_id" => "persist-model",
-               "version" => "v1"
-             }
-
-      assert request.canonical_request["sampling"]["temperature"] == 1.0
-      assert request.canonical_request["response_format"] == %{"type" => "text"}
+      assert request.payload_capture_mode == :full
       assert request.canonical_request["stream"] == true
-      assert request.canonical_request["stream_include_usage"] == false
-      assert request.response_payload == nil
-      assert request.response_preview == nil
-      refute_struct_artifacts!(request.canonical_request)
+      assert request.request_payload["prompt"] =~ "hello"
+      assert request.response_payload["object"] == "chat.completion"
+      assert is_binary(request.response_preview)
       # Terminal state after successful completion
       assert request.state in [:completed, :streaming]
 
@@ -1294,6 +1331,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert length(events) >= 2
       assert Enum.all?(events, &match?(%DateTime{}, &1.occurred_at))
       assert :validated in event_states
+      refute Enum.any?(events, &(&1.event_type == "output_text.delta"))
     end
 
     @tag :db
@@ -1392,13 +1430,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       [request] = failed_requests
       assert request.http_status == 503
       assert request.error_code != nil
-      assert request.error_message != nil
-      assert is_map(request.canonical_request)
-
-      assert request.canonical_request["model_ref"] == %{
-               "model_id" => "fail-model",
-               "version" => "v1"
-             }
+      assert request.error_message == nil
+      assert request.canonical_request == nil
+      assert request.request_shape["capture_mode"] == "metadata"
 
       refute_struct_artifacts!(request.canonical_request)
     end

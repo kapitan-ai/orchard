@@ -130,4 +130,23 @@ defmodule Orchard.Inference.ResponsesRequestNormalizerTest do
 
     assert request.stream_include_usage == false
   end
+
+  test "store defaults to true and only explicit false narrows persistence" do
+    base = %{"model" => "test-model@v1", "input" => "Hello"}
+
+    assert {:ok, %{store?: true}} = ResponsesRequestNormalizer.normalize(base)
+
+    assert {:ok, %{store?: true}} =
+             ResponsesRequestNormalizer.normalize(Map.put(base, "store", true))
+
+    assert {:ok, %{store?: true}} =
+             ResponsesRequestNormalizer.normalize(Map.put(base, "store", nil))
+
+    assert {:ok, %{store?: false}} =
+             ResponsesRequestNormalizer.normalize(Map.put(base, "store", false))
+
+    assert_raise ArgumentError, "invalid store: \"false\"", fn ->
+      ResponsesRequestNormalizer.normalize(Map.put(base, "store", "false"))
+    end
+  end
 end

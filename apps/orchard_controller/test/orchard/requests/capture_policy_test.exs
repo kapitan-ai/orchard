@@ -1,0 +1,316 @@
+defmodule Orchard.Requests.CapturePolicyTest do
+  use ExUnit.Case, async: true
+
+  alias Orchard.Requests.CapturePolicy
+  alias Orchard.Requests.{Request, RequestEvent}
+
+  @prompt "private prompt that must not survive metadata capture"
+  @response "private response that must not survive metadata capture"
+  @arguments ~s({"account":"private-account","amount":42})
+
+  describe "resolve/2" do
+    test "SPEC.md §10.10 store=false narrows full and never widens a Tenant mode" do
+      assert CapturePolicy.resolve(:full, false) == :metadata
+      assert CapturePolicy.resolve(:metadata, false) == :metadata
+      assert CapturePolicy.resolve(:none, false) == :none
+      assert CapturePolicy.resolve(:full, true) == :full
+    end
+  end
+
+  describe "create_attrs/2" do
+    test "SPEC.md §10.10 none keeps hashes and operational metadata without content" do
+      attrs = CapturePolicy.create_attrs(:none, create_attrs())
+
+      assert attrs.body_hash
+      assert attrs.canonical_request == nil
+      assert attrs.request_shape == nil
+      assert attrs.request_payload == nil
+
+      assert attrs.sampling_params == %{
+               "max_output_tokens" => 64,
+               "seed" => 7,
+               "stop_count" => 1,
+               "temperature" => 0.5,
+               "top_p" => 0.9
+             }
+
+      refute Jason.encode!(attrs) =~ @prompt
+      refute Jason.encode!(attrs) =~ "private stop"
+    end
+
+    test "SPEC.md §10.10 metadata stores bounded shape without the complete request" do
+      attrs = CapturePolicy.create_attrs(:metadata, create_attrs())
+      encoded = Jason.encode!(attrs)
+
+      assert attrs.canonical_request == nil
+      assert attrs.request_payload == nil
+      assert attrs.request_shape["capture_mode"] == "metadata"
+      assert attrs.request_shape["input_item_count"] == 1
+      assert attrs.request_shape["rendered_prompt"]["graphemes"] == String.length(@prompt)
+      assert attrs.request_shape["rendered_prompt"]["sha256"] =~ ~r/^[0-9a-f]{64}$/
+      assert attrs.request_shape["preview"] == nil
+      refute encoded =~ @prompt
+      refute encoded =~ "private stop"
+      refute encoded =~ "private metadata"
+      refute encoded =~ "private tool description"
+    end
+
+    test "SPEC.md §10.10 full preserves the approved request fields" do
+      attrs = CapturePolicy.create_attrs(:full, create_attrs())
+
+      assert attrs.canonical_request["rendered_prompt"] == @prompt
+      assert attrs.canonical_request["sampling"]["stop"] == ["private stop"]
+    end
+  end
+
+  describe "terminal_attrs/2" do
+    test "none and metadata cannot retain a complete response or raw error text" do
+      for mode <- [:none, :metadata] do
+        attrs = CapturePolicy.terminal_attrs(mode, terminal_attrs())
+        encoded = inspect(attrs)
+
+        assert attrs.response_payload == nil
+        assert byte_size(attrs.response_hash) == 32
+        assert attrs.error_message == nil
+        refute encoded =~ @response
+        refute encoded =~ @prompt
+      end
+    end
+
+    test "metadata preview is optional for short content and non-equivalent for long content" do
+      short = CapturePolicy.terminal_attrs(:metadata, terminal_attrs())
+      assert short.response_preview == nil
+
+      long_response = String.duplicate("x", 513)
+
+      long =
+        CapturePolicy.terminal_attrs(
+          :metadata,
+          terminal_attrs(%{
+            response_payload: %{"output_text" => long_response},
+            response_preview: long_response
+          })
+        )
+
+      assert String.length(long.response_preview) == 512
+      assert String.ends_with?(long.response_preview, "…")
+      refute long.response_preview == long_response
+    end
+
+    test "full preserves the response and bounds its convenience preview" do
+      long_response = String.duplicate("x", 700)
+
+      attrs =
+        CapturePolicy.terminal_attrs(
+          :full,
+          terminal_attrs(%{
+            response_payload: %{"output_text" => long_response},
+            response_preview: long_response
+          })
+        )
+
+      assert attrs.response_payload == %{"output_text" => long_response}
+      assert String.length(attrs.response_preview) == 512
+      assert byte_size(attrs.response_hash) == 32
+    end
+
+    test "preview bounds match PostgreSQL code-point length without splitting graphemes" do
+      decomposed = String.duplicate("e\u0301", 300)
+      emoji = String.duplicate("👨‍👩‍👧‍👦", 90)
+
+      for content <- [decomposed, emoji], mode <- [:metadata, :full] do
+        attrs =
+          CapturePolicy.terminal_attrs(
+            mode,
+            terminal_attrs(%{
+              response_payload: %{"output_text" => content},
+              response_preview: content
+            })
+          )
+
+        assert length(String.codepoints(attrs.response_preview)) <= 512
+        assert String.ends_with?(attrs.response_preview, "…")
+
+        prefix = String.trim_trailing(attrs.response_preview, "…")
+        prefix_graphemes = String.graphemes(prefix)
+        assert Enum.take(String.graphemes(content), length(prefix_graphemes)) == prefix_graphemes
+      end
+    end
+  end
+
+  describe "event_attrs/2" do
+    test "none and metadata remove model-generated tool arguments and raw error messages" do
+      for mode <- [:none, :metadata] do
+        attrs = CapturePolicy.event_attrs(mode, event_attrs())
+        encoded = Jason.encode!(attrs)
+
+        refute encoded =~ @arguments
+        refute encoded =~ @prompt
+        refute encoded =~ "error_message"
+        assert attrs.payload["step_id"] == "turn-1"
+        assert attrs.payload["result"]["finish_reason"] == "tool_calls"
+      end
+    end
+
+    test "full preserves approved request-step content" do
+      attrs = CapturePolicy.event_attrs(:full, event_attrs())
+      assert attrs.payload["result"]["arguments_json"] == @arguments
+    end
+  end
+
+  describe "schedule_attrs/2" do
+    test "none and metadata keep only bounded scheduler fields" do
+      schedule = %{
+        strategy: :multi_node,
+        node_id: Ecto.UUID.generate(),
+        selected_prefix_cache_score_status_code: "ok",
+        selected_prefix_cache_prompt: @prompt,
+        prompt: @prompt,
+        diagnostics: %{"error_message" => @prompt},
+        scored_candidates: [
+          %{
+            node_id: "node-a",
+            eligible: true,
+            score: 1.0,
+            reason_codes: [],
+            components: %{pool_bonus: 200, prompt_fragment: @prompt},
+            diagnostics: %{"prompt" => @prompt}
+          }
+        ]
+      }
+
+      for mode <- [:none, :metadata] do
+        sanitized = CapturePolicy.schedule_attrs(mode, schedule)
+        encoded = Jason.encode!(sanitized)
+
+        assert sanitized["strategy"] == "multi_node"
+        assert sanitized["selected_prefix_cache_score_status_code"] == "ok"
+
+        assert sanitized["scored_candidates"] == [
+                 %{
+                   "eligible" => true,
+                   "node_id" => "node-a",
+                   "reason_codes" => [],
+                   "score" => 1.0,
+                   "components" => %{"pool_bonus" => 200}
+                 }
+               ]
+
+        refute encoded =~ @prompt
+        refute Map.has_key?(sanitized, "prompt")
+        refute Map.has_key?(sanitized, "diagnostics")
+      end
+    end
+  end
+
+  test "content_columns/0 explicitly classifies the purge surface" do
+    assert CapturePolicy.content_columns() == %{
+             request_events: [:payload],
+             requests: [
+               :canonical_request,
+               :request_shape,
+               :request_payload,
+               :response_payload,
+               :response_preview,
+               :sampling_params,
+               :response_format,
+               :scheduler_decision,
+               :error_message
+             ]
+           }
+  end
+
+  test "content and safe classifications fail when request schemas drift" do
+    content = CapturePolicy.content_columns()
+    safe = CapturePolicy.safe_columns()
+
+    assert Enum.sort(content.requests ++ safe.requests) ==
+             Enum.sort(Request.__schema__(:fields))
+
+    assert Enum.sort(content.request_events ++ safe.request_events) ==
+             Enum.sort(RequestEvent.__schema__(:fields))
+  end
+
+  defp create_attrs do
+    %{
+      body_hash: <<1, 2, 3>>,
+      canonical_request: %{
+        "endpoint" => "responses",
+        "model_ref" => %{"model_id" => "model", "version" => "v1"},
+        "input_items" => [%{"role" => "user", "content" => @prompt}],
+        "rendered_prompt" => @prompt,
+        "input_token_count" => 12,
+        "stream" => false,
+        "stream_include_usage" => false,
+        "sampling" => %{
+          "temperature" => 0.5,
+          "top_p" => 0.9,
+          "max_output_tokens" => 64,
+          "stop" => ["private stop"],
+          "seed" => 7
+        },
+        "response_format" => %{"type" => "text"},
+        "tooling" => %{
+          "tools" => [
+            %{
+              "function" => %{
+                "name" => "private_tool",
+                "description" => "private tool description"
+              }
+            }
+          ],
+          "requested_tools" => [],
+          "tool_choice" => nil,
+          "registry_snapshot" => %{"entries" => []},
+          "execution_snapshot" => %{"entries" => []}
+        },
+        "metadata" => %{"note" => "private metadata"},
+        "admission" => %{"timeout_ms" => 30_000},
+        "resolved_policy" => %{"residency_preference" => "allow_cold_load"}
+      },
+      request_payload: %{"prompt" => @prompt},
+      sampling_params: %{
+        "temperature" => 0.5,
+        "top_p" => 0.9,
+        "max_output_tokens" => 64,
+        "stop" => ["private stop"],
+        "seed" => 7
+      },
+      response_format: %{"type" => "text"}
+    }
+  end
+
+  defp terminal_attrs(overrides \\ %{}) do
+    Map.merge(
+      %{
+        state: :completed,
+        response_payload: %{
+          "output_text" => @response,
+          "echoed_prompt" => @prompt
+        },
+        response_preview: @response,
+        error_code: "runtime_failure",
+        error_message: "runtime echoed #{@prompt}"
+      },
+      overrides
+    )
+  end
+
+  defp event_attrs do
+    %{
+      event_type: "request_step.proposed",
+      payload: %{
+        "step_id" => "turn-1",
+        "step_type" => "inference_turn",
+        "turn_index" => 0,
+        "attempt" => 1,
+        "boundary" => "post_observation",
+        "result" => %{
+          "finish_reason" => "tool_calls",
+          "arguments_json" => @arguments,
+          "error_message" => "runtime echoed #{@prompt}"
+        }
+      }
+    }
+  end
+end

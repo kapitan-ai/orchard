@@ -816,7 +816,8 @@ defmodule Orchard.RequestsTest do
 
   describe "record_schedule/2" do
     test "persists scheduler_decision as normalized JSON-safe map" do
-      request = create_request!(%{public_id: "req_schedule_1"})
+      request =
+        create_request!(%{public_id: "req_schedule_1", payload_capture_mode: :full})
 
       schedule = %{
         strategy: :single_node,
@@ -854,7 +855,9 @@ defmodule Orchard.RequestsTest do
     end
 
     test "recursively normalizes multi-node metadata into JSON-safe values" do
-      request = create_request!(%{public_id: "req_schedule_nested"})
+      request =
+        create_request!(%{public_id: "req_schedule_nested", payload_capture_mode: :full})
+
       node_id = Ecto.UUID.generate()
 
       schedule = %{

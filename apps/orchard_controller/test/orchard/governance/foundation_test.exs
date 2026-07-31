@@ -19,6 +19,37 @@ defmodule Orchard.Governance.FoundationTest do
       assert %{slug: ["can't be blank"], name: ["can't be blank"]} = errors_on(changeset)
     end
 
+    test "SPEC.md §10.10 defaults and validates the durable request body capture mode" do
+      assert {:ok, metadata_tenant} =
+               %Tenant{}
+               |> Tenant.changeset(%{slug: "metadata-tenant", name: "Metadata Tenant"})
+               |> Repo.insert()
+
+      assert metadata_tenant.request_body_capture_mode == :metadata
+
+      for mode <- [:none, :metadata, :full] do
+        assert {:ok, tenant} =
+                 %Tenant{}
+                 |> Tenant.changeset(%{
+                   slug: "explicit-#{mode}-tenant",
+                   name: "#{mode} Tenant",
+                   request_body_capture_mode: mode
+                 })
+                 |> Repo.insert()
+
+        assert tenant.request_body_capture_mode == mode
+      end
+
+      changeset =
+        Tenant.changeset(%Tenant{}, %{
+          slug: "invalid-capture-mode",
+          name: "Invalid Capture Mode",
+          request_body_capture_mode: :everything
+        })
+
+      assert %{request_body_capture_mode: ["is invalid"]} = errors_on(changeset)
+    end
+
     test "insert enforces unique slug" do
       assert {:ok, _tenant} =
                %Tenant{}

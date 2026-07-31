@@ -219,6 +219,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :failed,
+          payload_capture_mode: :full,
           http_status: 500,
           error_code: "server_error",
           error_message: "Internal processing failure"
@@ -498,6 +499,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :completed,
+          payload_capture_mode: :full,
           canonical_request: %{"model" => "test-model", "messages" => [%{"role" => "user"}]}
         })
 
@@ -561,6 +563,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :completed,
+          payload_capture_mode: :full,
           canonical_request: canonical_payload
         })
 
@@ -583,6 +586,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :completed,
+          payload_capture_mode: :full,
           response_preview: "Hello! How can I help you today?",
           response_payload: %{"id" => "resp_123", "choices" => [%{"index" => 0}]},
           scheduler_decision: %{"node_id" => "node-1", "reason" => "local_capacity"}
@@ -857,7 +861,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
   describe "event timeline" do
     test "renders events ordered by seq", %{conn: conn} do
-      request = create_request!(%{state: :running})
+      request = create_request!(%{state: :running, payload_capture_mode: :full})
 
       append_event!(request, %{
         event_type: "state_transition",
@@ -920,7 +924,7 @@ defmodule OrchardConsole.RequestLiveTest do
     end
 
     test "renders event payload when present", %{conn: conn} do
-      request = create_request!(%{state: :running})
+      request = create_request!(%{state: :running, payload_capture_mode: :full})
 
       append_event!(request, %{
         event_type: "metadata",
@@ -1296,7 +1300,7 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   defp persist_valid_scheduler_explanation!(public_id) do
-    request = create_request!(%{public_id: public_id})
+    request = create_request!(%{public_id: public_id, payload_capture_mode: :full})
 
     assert {:ok, request} =
              Requests.record_schedule(request, %{

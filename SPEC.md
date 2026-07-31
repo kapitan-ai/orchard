@@ -2258,10 +2258,12 @@ Behavior:
 Rules:
 
 * only terminal failed/cancelled/timed_out/interrupted requests
-* uses stored canonical request
+* uses the stored canonical request only when the source Request retained it under `full`
+* if the source canonical request is unavailable, fail with `retry_source_unavailable`
 * creates new request row
 * `retry_of_request_id` points to original
 * max operator retries per original request default = 3
+* the retry capture mode MUST NOT be wider than either the source Request snapshot or the current Tenant policy
 
 #### 7.3.5 Scheduler explanation
 
@@ -3524,9 +3526,11 @@ create table requests (
   state request_state not null default 'received',
   stream boolean not null default false,
   payload_capture_mode payload_capture_mode not null default 'metadata',
-  canonical_request jsonb not null,
+  canonical_request jsonb,
+  request_shape jsonb,
   request_payload jsonb,
   response_payload jsonb,
+  response_hash bytea,
   response_preview text,
   sampling_params jsonb not null default '{}'::jsonb,
   response_format jsonb not null default '{}'::jsonb,
@@ -3542,7 +3546,17 @@ create table requests (
   error_message text,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check (principal_type <> 'service_account' or service_account_id is not null)
+  check (principal_type <> 'service_account' or service_account_id is not null),
+  check (
+    payload_capture_mode = 'full'
+    or (
+      canonical_request is null
+      and request_payload is null
+      and response_payload is null
+    )
+  ),
+  check (payload_capture_mode <> 'none' or response_preview is null),
+  check (response_preview is null or char_length(response_preview) <= 512)
 );
 
 create table request_events (
@@ -4183,17 +4197,34 @@ Tenant setting `request_body_capture_mode`:
 
 Default = `metadata`
 
+The capture lattice is `none < metadata < full`.
+The effective mode SHALL resolve before the first Request write and SHALL be snapshotted in `requests.payload_capture_mode`.
+Later Tenant changes, terminal paths, attempts, automatic retries, and operator retries MUST NOT widen that snapshot.
+For the Responses API, `store=false` SHALL cap `full` at `metadata`, SHALL NOT widen a narrower Tenant mode, and SHALL NOT disable required accounting or audit metadata.
+
 `none`:
 
-* store hashes, usage, errors, no prompt/response text
+* store request and response hashes, usage, state, timestamps, and stable error codes
+* store no prompt, response, preview, request shape, raw tool argument, raw runtime error text, or other caller or model content
 
 `metadata`:
 
-* store shape + preview + hashes
+* additionally store a fixed allowlisted request shape containing counts, types, lengths, approved identifiers, and hashes
+* caller metadata values, stop text, tool definitions, tool arguments, rendered prompts, and input content are not shape
+* a content preview is optional and SHALL be stored only when its source exceeds 512 Unicode code points
+* a metadata preview SHALL contain complete source grapheme clusters totaling at most 511 Unicode code points plus one ellipsis and therefore SHALL NOT equal the complete source
 
 `full`:
 
 * store full payloads and final outputs
+* convenience previews remain bounded to 512 Unicode code points without splitting a grapheme cluster
+* a streaming Request stores its assembled final output only at terminal completion and does not durably duplicate individual chunks
+
+Capture enforcement SHALL cover every content-bearing field on `requests` and `request_events`, including canonical input, request payloads, response payloads, previews, sampling stop text, response-format content, scheduler decisions, error text, model-generated tool arguments, and request-step results.
+`body_hash` and `response_hash` are integrity anchors and do not authorize content recovery or replay.
+Idempotent replay requires a retained `response_payload`; otherwise Orchard SHALL return `idempotency_not_replayable`.
+Existing `none` and `metadata` rows that contain forbidden content SHALL be purged in place rather than relabeled as `full`.
+The purge verification SHALL explicitly enumerate every content-bearing Request column and `request_events.payload`, and schema-drift coverage SHALL fail when a new text, JSON, or binary Request column is not classified.
 
 ---
 
