@@ -313,6 +313,157 @@ defmodule Orchard.RequestsTest do
            ]
   end
 
+  describe "classify_missing_terminal_candidate/2" do
+    test "identifies a terminal completed inference turn whose persisted result omits finish_reason" do
+      request = create_request!(%{public_id: "req_missing_terminal_candidate", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs(%{result: %{"http_status" => 200}})]
+               )
+
+      assert {:ok, :missing_finish_reason_candidate} =
+               Requests.classify_missing_terminal_candidate(request)
+    end
+
+    test "rejects terminal-bearing completed and failure-shaped persisted controls" do
+      completed =
+        create_request!(%{public_id: "req_terminal_completed_control", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 completed,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs()]
+               )
+
+      failed = create_request!(%{public_id: "req_terminal_failed_control", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 failed,
+                 %{state: :failed},
+                 [inference_turn_failed_step_attrs()]
+               )
+
+      assert {:ok, :not_candidate} =
+               Requests.classify_missing_terminal_candidate(completed)
+
+      assert {:ok, :not_candidate} =
+               Requests.classify_missing_terminal_candidate(failed)
+    end
+
+    test "treats absent, ambiguous, inconsistent, and malformed durable evidence as inconclusive" do
+      missing_request_id = Ecto.UUID.generate()
+
+      assert {:error, {:inconclusive, :request_not_found}} =
+               Requests.classify_missing_terminal_candidate(missing_request_id)
+
+      non_terminal = create_request!(%{public_id: "req_detector_non_terminal", state: :running})
+
+      assert {:error, {:inconclusive, :request_not_terminal}} =
+               Requests.classify_missing_terminal_candidate(non_terminal)
+
+      missing_step = create_request!(%{public_id: "req_detector_missing_step", state: :running})
+      assert {:ok, _request} = Requests.mark_terminal(missing_step, %{state: :completed})
+
+      assert {:error, {:inconclusive, :terminal_step_not_found}} =
+               Requests.classify_missing_terminal_candidate(missing_step)
+
+      invalid_reason =
+        create_request!(%{public_id: "req_detector_invalid_reason", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 invalid_reason,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs(%{result: %{"finish_reason" => nil}})]
+               )
+
+      assert {:error, {:inconclusive, :invalid_finish_reason}} =
+               Requests.classify_missing_terminal_candidate(invalid_reason)
+
+      ambiguous = create_request!(%{public_id: "req_detector_ambiguous", state: :running})
+
+      assert {:ok, _steps} =
+               Requests.append_request_step_events(ambiguous, [
+                 inference_turn_completed_step_attrs(),
+                 inference_turn_completed_step_attrs()
+               ])
+
+      assert {:ok, _request} = Requests.mark_terminal(ambiguous, %{state: :completed})
+
+      assert {:error, {:inconclusive, :ambiguous_terminal_steps}} =
+               Requests.classify_missing_terminal_candidate(ambiguous)
+
+      inconsistent =
+        create_request!(%{public_id: "req_detector_inconsistent", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 inconsistent,
+                 %{state: :failed},
+                 [inference_turn_completed_step_attrs()]
+               )
+
+      assert {:error, {:inconclusive, :terminal_state_mismatch}} =
+               Requests.classify_missing_terminal_candidate(inconsistent)
+
+      malformed = create_request!(%{public_id: "req_detector_malformed", state: :running})
+
+      assert {:ok, _event} =
+               Requests.append_request_event(malformed, %{
+                 event_type: "request_step.completed",
+                 payload: %{
+                   "step_id" => RequestStepEvent.inference_turn_step_id(1, 1),
+                   "step_type" => "inference_turn",
+                   "turn_index" => 1,
+                   "attempt" => 1,
+                   "parent_step_id" => nil,
+                   "boundary" => "post_observation",
+                   "result" => "invalid"
+                 }
+               })
+
+      assert {:ok, _request} = Requests.mark_terminal(malformed, %{state: :completed})
+
+      assert {:error, {:inconclusive, :invalid_terminal_step}} =
+               Requests.classify_missing_terminal_candidate(malformed)
+    end
+
+    test "selects an exact inference turn and validates selectors" do
+      request = create_request!(%{public_id: "req_detector_selector", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed},
+                 [
+                   inference_turn_completed_step_attrs(%{
+                     step_id: RequestStepEvent.inference_turn_step_id(2, 3),
+                     turn_index: 2,
+                     attempt: 3,
+                     result: %{}
+                   })
+                 ]
+               )
+
+      assert {:ok, :missing_finish_reason_candidate} =
+               Requests.classify_missing_terminal_candidate(request,
+                 turn_index: 2,
+                 attempt: 3
+               )
+
+      assert {:error, {:inconclusive, :terminal_step_not_found}} =
+               Requests.classify_missing_terminal_candidate(request)
+
+      assert {:error, {:inconclusive, :invalid_selector}} =
+               Requests.classify_missing_terminal_candidate(request, turn_index: 0)
+    end
+  end
+
   describe "mark_terminal_with_step_events/3" do
     test "atomically commits success-shaped terminal step rows with the terminal request update" do
       request = create_request!(%{public_id: "req_terminal_steps_success", state: :running})

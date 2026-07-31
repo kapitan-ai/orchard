@@ -1371,7 +1371,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp terminal_inference_turn_step(events, terminal_attrs, step_context) do
     %{
-      event_type: terminal_step_event_type(terminal_attrs.state),
+      event_type: RequestStepEvent.terminal_step_event_type!(terminal_attrs.state),
       step_id: step_context.step_id,
       step_type: "inference_turn",
       turn_index: step_context.turn_index,
@@ -1429,12 +1429,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
       model_version: canonical.model_ref.version
     }
   end
-
-  defp terminal_step_event_type(:completed), do: "request_step.completed"
-  defp terminal_step_event_type(:failed), do: "request_step.failed"
-  defp terminal_step_event_type(:cancelled), do: "request_step.cancelled"
-  defp terminal_step_event_type(:timed_out), do: "request_step.timed_out"
-  defp terminal_step_event_type(:interrupted), do: "request_step.interrupted"
 
   defp terminal_step_result(events, terminal_attrs) do
     %{}
