@@ -60,6 +60,142 @@ defmodule Orchard.Requests do
     |> Enum.map(&RequestStepEvent.from_request_event!/1)
   end
 
+  @doc """
+  Classifies the persisted missing-finish-reason fingerprint for one inference turn.
+
+  Missing, malformed, ambiguous, or state-inconsistent evidence is inconclusive.
+  """
+  @spec classify_missing_terminal_candidate(Request.t() | Ecto.UUID.t(), keyword()) ::
+          {:ok, :missing_finish_reason_candidate | :not_candidate}
+          | {:error, {:inconclusive, atom()}}
+  def classify_missing_terminal_candidate(request_or_id, opts \\ [])
+
+  def classify_missing_terminal_candidate(request_or_id, opts) when is_list(opts) do
+    with {:ok, selector} <- missing_terminal_selector(opts),
+         {:ok, request} <- fetch_detector_request(request_or_id),
+         :ok <- require_terminal_request(request),
+         {:ok, terminal_step} <- fetch_terminal_inference_turn(request.id, selector),
+         :ok <- validate_terminal_step_state(request.state, terminal_step.event_type) do
+      classify_terminal_step(terminal_step)
+    end
+  end
+
+  def classify_missing_terminal_candidate(_request_or_id, _opts),
+    do: inconclusive(:invalid_selector)
+
+  defp missing_terminal_selector(opts) do
+    if Keyword.keyword?(opts) do
+      build_missing_terminal_selector(opts)
+    else
+      inconclusive(:invalid_selector)
+    end
+  end
+
+  defp build_missing_terminal_selector(opts) do
+    turn_index = Keyword.get(opts, :turn_index, 1)
+    attempt = Keyword.get(opts, :attempt, 1)
+
+    if Keyword.keys(opts) -- [:turn_index, :attempt] == [] and
+         is_integer(turn_index) and turn_index > 0 and
+         is_integer(attempt) and attempt > 0 do
+      {:ok, %{step_id: RequestStepEvent.inference_turn_step_id(turn_index, attempt)}}
+    else
+      inconclusive(:invalid_selector)
+    end
+  end
+
+  defp fetch_detector_request(%Request{id: request_id}), do: fetch_detector_request(request_id)
+
+  defp fetch_detector_request(request_id) do
+    case Ecto.UUID.cast(request_id) do
+      {:ok, request_uuid} ->
+        case Repo.get(Request, request_uuid) do
+          %Request{} = request -> {:ok, request}
+          nil -> inconclusive(:request_not_found)
+        end
+
+      :error ->
+        inconclusive(:request_not_found)
+    end
+  end
+
+  defp require_terminal_request(%Request{state: state}) do
+    if state in Request.terminal_states() do
+      :ok
+    else
+      inconclusive(:request_not_terminal)
+    end
+  end
+
+  defp fetch_terminal_inference_turn(request_id, %{step_id: step_id}) do
+    request_id
+    |> list_request_events()
+    |> Enum.filter(&target_terminal_inference_turn?(&1, step_id))
+    |> classify_terminal_rows()
+  end
+
+  defp target_terminal_inference_turn?(%RequestEvent{} = event, step_id) do
+    event.event_type in terminal_inference_turn_event_types() and
+      is_map(event.payload) and
+      Map.get(event.payload, "step_type") == "inference_turn" and
+      Map.get(event.payload, "step_id") == step_id
+  end
+
+  defp classify_terminal_rows([]), do: inconclusive(:terminal_step_not_found)
+
+  defp classify_terminal_rows([event]) do
+    case RequestStepEvent.from_request_event(event) do
+      {:ok, step_event} -> {:ok, step_event}
+      {:error, _reason} -> inconclusive(:invalid_terminal_step)
+    end
+  end
+
+  defp classify_terminal_rows(_events), do: inconclusive(:ambiguous_terminal_steps)
+
+  defp validate_terminal_step_state(request_state, event_type) do
+    expected_event_type =
+      case request_state do
+        :completed -> "request_step.completed"
+        :failed -> "request_step.failed"
+        :cancelled -> "request_step.cancelled"
+        :timed_out -> "request_step.timed_out"
+        :interrupted -> "request_step.interrupted"
+      end
+
+    if event_type == expected_event_type do
+      :ok
+    else
+      inconclusive(:terminal_state_mismatch)
+    end
+  end
+
+  defp classify_terminal_step(%RequestStepEvent{event_type: "request_step.completed"} = step) do
+    case Map.fetch(step.result, "finish_reason") do
+      :error ->
+        {:ok, :missing_finish_reason_candidate}
+
+      {:ok, finish_reason} when finish_reason in ["stop", "length", "tool_calls"] ->
+        {:ok, :not_candidate}
+
+      {:ok, _invalid} ->
+        inconclusive(:invalid_finish_reason)
+    end
+  end
+
+  defp classify_terminal_step(%RequestStepEvent{}), do: {:ok, :not_candidate}
+
+  defp terminal_inference_turn_event_types do
+    [
+      "request_step.completed",
+      "request_step.failed",
+      "request_step.cancelled",
+      "request_step.timed_out",
+      "request_step.interrupted"
+    ]
+  end
+
+  defp inconclusive(reason), do: {:error, {:inconclusive, reason}}
+
   @spec append_request_event(struct() | Ecto.UUID.t(), map()) ::
           {:ok, struct()} | {:error, Ecto.Changeset.t() | :request_not_found}
   def append_request_event(%Request{id: request_id}, attrs),

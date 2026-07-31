@@ -189,6 +189,10 @@ managed Postgres is one supported topology; in the current packaged flow,
 controller-bearing installs require operator-provided external Postgres and the
 managed Postgres helper remains a guard only.
 
+Terminal inference-turn steps persist `finish_reason` for every observed `Completed` event.
+`Orchard.Requests.classify_missing_terminal_candidate/2` provides a read-only, per-attempt classifier for the current missing-`finish_reason` candidate fingerprint and reports missing, malformed, ambiguous, or state-inconsistent evidence as inconclusive.
+This bounded CP1 audit does not enforce `SPEC.md` §7.5.5, does not replace client-plane terminal-cardinality validation, and remains available only while its `request_events` evidence is retained.
+
 ## Where to make changes
 
 - Public API or Console behavior: start in `apps/orchard_controller/` and check
