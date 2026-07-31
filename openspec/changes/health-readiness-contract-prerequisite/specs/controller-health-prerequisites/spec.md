@@ -2,29 +2,30 @@
 
 ### Requirement: Health implementation remains blocked on authoritative readiness sources
 
-Issue #115 health wiring MUST NOT begin until separate accepted control-plane changes expose authoritative model, tenant, and API-key cache hydration status and the existing production write-path leadership surface is accepted as a bounded readiness source or its demonstrated gaps are resolved.
+Controller health wiring MUST NOT begin until separate accepted control-plane changes expose authoritative model, tenant, and API-key cache hydration status and the existing production write-path leadership surface is accepted as a bounded readiness source or its demonstrated gaps are resolved.
 
 #### Scenario: A cache authority is absent
 
 - **WHEN** any required serving-path cache and its loaded-state interface do not exist
-- **THEN** issue #115 health implementation remains blocked
+- **THEN** Controller health implementation remains blocked
 - **AND** the missing authority is assigned to a separate control-plane change
 
 #### Scenario: Existing leadership surface has not been assessed
 
 - **WHEN** the production backing, bounded-read behavior, or readiness semantics of `Orchard.ControlPlane` have not been explicitly assessed
-- **THEN** issue #115 health implementation remains blocked
+- **THEN** Controller health implementation remains blocked
 - **AND** no new authority is commissioned until that assessment identifies a concrete gap
 
 #### Scenario: Existing leadership surface has a demonstrated gap
 
 - **WHEN** the assessment identifies a missing production provider, missing timeout bound, or semantic mismatch with write authorization
 - **THEN** the exact gap is assigned to a separate control-plane change
-- **AND** issue #115 remains a consumer rather than the owner of that authority
+- **AND** the health implementation remains a consumer rather than the owner of that authority
 
 ### Requirement: Readiness shims are prohibited
 
-Issue #115 MUST consume authoritative readiness sources and MUST NOT invent substitutes for unimplemented `SPEC.md` section 3.1 conditions.
+The Controller health implementation MUST consume authoritative readiness sources and MUST NOT invent substitutes for unimplemented `SPEC.md` section 3.1 conditions.
+A validated deployment mode MAY determine whether the conditional leadership condition applies, but a configured role MUST NOT be accepted as proof that this Controller currently holds write-path leadership.
 
 #### Scenario: Constant or configuration flag is proposed
 
@@ -45,6 +46,13 @@ Issue #115 MUST consume authoritative readiness sources and MUST NOT invent subs
 
 - **WHEN** a configured role, membership record, or process-presence check is proposed as proof of current write-path leadership
 - **THEN** the proposal is rejected
+
+#### Scenario: Deployment mode determines whether the leadership condition applies
+
+- **WHEN** a deployment-mode source is proposed only to decide whether the conditional `SPEC.md` section 3.1 leadership condition applies
+- **THEN** the proposal is permitted
+- **AND** it does not authorize that source to report `pass` for write-path leadership in Active/Standby mode
+- **AND** the accepted assessment records how a mode value is validated rather than assumed correct
 
 ### Requirement: Future public health responses are exact and minimal
 
@@ -74,11 +82,19 @@ After the blocking authorities are accepted, the health implementation SHALL pro
 
 After the blocking authorities are accepted, the public readiness endpoint and authenticated Operator health endpoint SHALL consume one complete aggregate evaluation of every readiness condition required by `SPEC.md` section 3.1.
 A reduced milestone-specific readiness subset MUST NOT be used.
+A condition that `SPEC.md` section 3.1 does not require MUST NOT gate the aggregate, so public API transport posture ceases to be a readiness gate when the aggregate is adopted.
 
 #### Scenario: Future required condition fails
 
 - **WHEN** any required or applicable readiness source reports failure
 - **THEN** public readiness and Operator health report the same aggregate failure
+
+#### Scenario: Future transport posture is observational only
+
+- **WHEN** the Controller serves the public API in a `SPEC.md` section 10.7 `plain_http_localhost` or `reverse_proxy` transport mode and every `SPEC.md` section 3.1 condition passes
+- **THEN** public readiness returns HTTP `200`
+- **AND** transport posture appears only as an Operator observation
+- **AND** transport posture does not fail the aggregate
 
 #### Scenario: Future readiness source is invalid or unavailable
 
@@ -159,12 +175,25 @@ Authorized responses SHALL set `Cache-Control: no-store`.
 
 When the health behavior is implemented, in-repository public health consumers SHALL treat `/health/ready` as a status-only endpoint and SHALL NOT require Operator credentials.
 Console diagnostics SHALL use the shared readiness evaluator or authenticated Operator contract without reimplementing readiness policy.
+Remote Controller version and build identity cease to be available without credentials, and that loss SHALL NOT be replaced by a new unauthenticated route or by placing a credential in a public probe.
 
 #### Scenario: orchardctl status probes public readiness
 
 - **WHEN** `orchardctl status` probes a Controller without an Operator credential
 - **THEN** it derives Controller reachability and readiness from the exact public health response
 - **AND** it does not expect build, runtime, licensing, reason, remediation, or check detail from `/health/ready`
+
+#### Scenario: Credential-free status reports no remote Controller identity
+
+- **WHEN** `orchardctl status` renders a version banner without an Operator credential
+- **THEN** it may present only the local CLI or installed package version
+- **AND** it does not present that local value as the remote Controller version or build reference
+- **AND** the migration adds no unauthenticated version route and no credential to the public probe path
+
+#### Scenario: Remote Controller identity is requested
+
+- **WHEN** an Operator needs remote Controller version or build identity
+- **THEN** it is obtained from the authenticated Operator health detail
 
 #### Scenario: Console renders readiness
 

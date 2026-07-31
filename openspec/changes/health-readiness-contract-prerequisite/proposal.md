@@ -8,6 +8,8 @@ Issue #115 cannot safely implement its approved public-health split until separa
 - Record the approved future contract for exact minimal unauthenticated `GET /health/live` and `GET /health/ready` responses.
 - Record the approved future `GET /ops/v1/health` detail route under the existing cluster-scoped Operator-or-admin authorization boundary.
 - Require one complete aggregate readiness evaluation for both public readiness and Operator health detail.
+- Record the intentional future removal of public API transport posture as a readiness gate, because `SPEC.md` section 10.7 permits `plain_http_localhost` and `SPEC.md` section 3.1 does not list transport as a readiness condition, while transport remains an Operator observation.
+- Record the accepted bounded feature loss where credential-free `orchardctl status` no longer reports remote Controller version or build identity, without adding an unauthenticated route or a probe credential.
 - Identify authoritative model, tenant, and API-key cache hydration as blocking dependencies owned by separate control-plane changes.
 - Require an explicit adequacy assessment of the existing `Orchard.ControlPlane` write gate and status surface, with separate ownership only for demonstrated gaps.
 - Forbid constants, configuration flags, readiness-only caches, unrelated caches, or successful database queries from standing in for the missing authorities.
