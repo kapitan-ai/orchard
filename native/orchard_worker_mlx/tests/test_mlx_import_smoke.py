@@ -1,13 +1,14 @@
-"""Import smoke tests for optional MLX runtime dependencies.
+"""Import and remote-code guards for the optional MLX runtime dependencies.
 
-The issue #57 regression guard is only exercised when the optional ``mlx`` extra
-is installed. Run it with::
+These guards are only exercised when the optional ``mlx`` extra is installed.
+Run them with::
 
-    mise exec -- uv run --directory native/orchard_worker_mlx --extra mlx \\
+    mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \\
         pytest tests/test_mlx_import_smoke.py
 
 Dependency-refresh validation MUST run this way; the default dev-only environment
-lacks the extra and the test skips.
+lacks the extra and the tests skip. See ``../README.md`` for the MLX-LM security
+baseline these guards protect.
 """
 
 from __future__ import annotations

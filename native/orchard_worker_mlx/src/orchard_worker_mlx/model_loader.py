@@ -599,6 +599,7 @@ def _default_mlx_deps() -> MLXDeps:
     def _load_model(model_path: str | Path, **kwargs: Any) -> tuple[Any, Any]:
         """Wrap mlx_lm.utils.load_model; returns (model, config)."""
         _reject_model_file_config(model_path)
+        # Forced, not defaulted: no caller may re-enable model-side remote code.
         kwargs["trust_remote_code"] = False
         return mlx_lm_load(Path(model_path), **kwargs)
 

@@ -851,7 +851,7 @@ export ORCHARD_MLX_SMOKE_MODEL_PATH=/path/to/your/orchard-bundle
 
 # Python only
 cd native/orchard_worker_mlx
-mise exec -- uv sync --extra mlx
+mise exec -- uv sync --locked --extra mlx
 mise exec -- uv run pytest tests/test_cli.py -k mlx_backend_real -v
 
 # Elixir only, from the repo root
