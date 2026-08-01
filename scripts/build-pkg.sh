@@ -644,7 +644,7 @@ validate_expanded_pkg_provenance() {
         return 1
     fi
 
-    if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --no-smoke "$expanded_dir"; then
+    if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --forbid-path "$REPO_ROOT" "$expanded_dir"; then
         rm -rf "$expanded_parent"
         log_error "Mach-O dependency closure failed for $label expanded package"
         return 1
@@ -1656,7 +1656,7 @@ if ! COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$REPO_ROOT/scripts/m
     log_error "Failed to materialize staged Python venv interpreters"
     exit 1
 fi
-if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$STAGING_BASE"; then
+if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --forbid-path "$REPO_ROOT" "$STAGING_BASE"; then
     log_error "Staged native payload closure verification failed"
     exit 1
 fi
@@ -1731,7 +1731,7 @@ log_info "Scrubbing macOS metadata after payload signing window..."
 scrub_macos_metadata "$STAGING_BASE"
 
 log_info "Verifying whole-payload Mach-O dependency closure..."
-if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --no-smoke "$STAGING_BASE"; then
+if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --no-smoke --forbid-path "$REPO_ROOT" "$STAGING_BASE"; then
     log_error "Whole-payload Mach-O dependency closure verification failed"
     exit 1
 fi

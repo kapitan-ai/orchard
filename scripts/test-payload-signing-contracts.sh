@@ -518,6 +518,9 @@ exit 0
 PY
 cat > "$venv/bin/$bin_name" <<'BIN'
 #!/bin/sh
+if [ "${1:-}" = "--request-json" ]; then
+  printf '%s\n' '{"ok":true,"result":{"compatible":true}}'
+fi
 exit 0
 BIN
 chmod +x "$venv/bin/python" "$venv/bin/$bin_name"
@@ -635,6 +638,9 @@ exit 0
 PY
       cat > "$target/.venv-pkg/bin/$bin_name" <<'BIN'
 #!/bin/sh
+if [ "${1:-}" = "--request-json" ]; then
+  printf '%s\n' '{"ok":true,"result":{"compatible":true}}'
+fi
 exit 0
 BIN
       chmod +x "$target/.venv-pkg/bin/python" "$target/.venv-pkg/bin/$bin_name"
@@ -1331,6 +1337,9 @@ exit 0
 PY
     cat > ".venv-pkg/bin/$bin_name" <<'BIN'
 #!/bin/sh
+if [ "${1:-}" = "--request-json" ]; then
+  printf '%s\n' '{"ok":true,"result":{"compatible":true}}'
+fi
 exit 0
 BIN
     chmod +x ".venv-pkg/bin/python" ".venv-pkg/bin/$bin_name"

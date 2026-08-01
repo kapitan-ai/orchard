@@ -176,6 +176,24 @@ PY
 #!/bin/sh
 case "${1:-}" in
   --help) exit 0 ;;
+  --request-json)
+    printf '%s\n' '{"ok":true,"result":{"compatible":true}}'
+    exit 0
+    ;;
+esac
+exit 0
+SH
+        chmod +x "$venv/bin/$entry_name"
+        ;;
+      safe_fail)
+        cat > "$venv/bin/$entry_name" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+  --help) exit 0 ;;
+  --request-json)
+    printf '%s\n' '{"ok":false,"error":{"category":"invalid_response"}}'
+    exit 0
+    ;;
 esac
 exit 0
 SH
@@ -234,6 +252,54 @@ if command -v xattr >/dev/null 2>&1; then
 fi
 head -3 "$venv/bin/tool" | grep -F '#!/bin/sh' >/dev/null
 assert_no_grep '/Users/buildhost' "$venv/bin/tool"
+
+# materializer: uv's two-line shell trampolines remain runnable after the source venv is removed.
+case_dir="$TMP_ROOT/materialize-relocated-console-entrypoints"
+source_native="$case_dir/source/native"
+relocated_native="$case_dir/relocated/native"
+for helper_spec in \
+    "orchard_tokenizer:orchard-tokenizer:--version" \
+    "orchard_worker_mlx:orchard-worker-mlx:--help"; do
+    IFS=: read -r helper entry_name smoke_arg <<<"$helper_spec"
+    source_venv="$source_native/$helper/.venv"
+    python3 -m venv --copies "$source_venv"
+    site_packages="$(site_packages_dir "$source_venv")"
+    mkdir -p "$site_packages/$helper"
+    printf '' > "$site_packages/$helper/__init__.py"
+    cat > "$site_packages/$helper/cli.py" <<'PY'
+import sys
+
+
+def main():
+    if "--version" in sys.argv:
+        print("0.1.0")
+    return 0
+PY
+    cat > "$source_venv/bin/$entry_name" <<SH
+#!/bin/sh
+'''exec' $case_dir/build/.venv-pkg/bin/python "\$0" "\$@"
+' '''
+from $helper.cli import main
+raise SystemExit(main())
+SH
+    mkdir -p "$case_dir/build/.venv-pkg/bin"
+    ln -sf "$source_venv/bin/python" "$case_dir/build/.venv-pkg/bin/python"
+    chmod +x "$source_venv/bin/$entry_name"
+done
+"$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$source_native" >/dev/null
+mkdir -p "$(dirname "$relocated_native")"
+cp -R "$source_native" "$relocated_native"
+rm -rf "$case_dir/source" "$case_dir/build/.venv-pkg"
+for helper_spec in \
+    "orchard_tokenizer:orchard-tokenizer:--version" \
+    "orchard_worker_mlx:orchard-worker-mlx:--help"; do
+    IFS=: read -r helper entry_name smoke_arg <<<"$helper_spec"
+    relocated_entry="$relocated_native/$helper/.venv/bin/$entry_name"
+    env -i PATH=/usr/bin:/bin HOME="$case_dir/home" "$relocated_entry" "$smoke_arg" >"$case_dir/$entry_name.out"
+    assert_no_grep "$case_dir" "$relocated_entry"
+    assert_no_grep '.venv-pkg' "$relocated_entry"
+done
+assert_grep '0.1.0' "$case_dir/orchard-tokenizer.out"
 
 # materializer: unresolved in-venv @rpath support dylibs get a relative rpath.
 case_dir="$TMP_ROOT/materialize-rpath-support-dylib"
@@ -406,7 +472,41 @@ chmod +x "$venv/bin/tool"
 make_fake_tools "$tools" '#!/bin/sh
 cat <<'"'"'OUT'"'"'
 OUT'
-assert_verifier_fails_with 'script shebang has build-host path fragment' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'script launcher has build-host path fragment' "$tools" "$root" "$case_dir/out"
+
+# verifier: caller-supplied build roots are rejected even outside standard macOS home paths.
+case_dir="$TMP_ROOT/explicit-build-root"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+cat > "$venv/bin/tool" <<'SH'
+#!/bin/sh
+'''exec' /Volumes/orchard-build/native/foo/.venv/bin/python "$0" "$@"
+' '''
+print('bad')
+SH
+chmod +x "$venv/bin/tool"
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'script launcher has build-host path fragment' "$tools" "$root" "$case_dir/out" --forbid-path /Volumes/orchard-build
+
+# verifier: inspect the complete launcher, including uv's second-line Python trampoline.
+case_dir="$TMP_ROOT/two-line-shell-trampoline"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+cat > "$venv/bin/tool" <<'SH'
+#!/bin/sh
+'''exec' /Users/buildhost/orchard/native/foo/.venv-pkg/bin/python "$0" "$@"
+' '''
+print('bad')
+SH
+chmod +x "$venv/bin/tool"
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'script launcher has build-host path fragment' "$tools" "$root" "$case_dir/out"
 
 # verifier: temp build-root absolute dependency is rejected.
 case_dir="$TMP_ROOT/temp-root"
@@ -486,6 +586,16 @@ make_fake_tools "$tools" '#!/bin/sh
 cat <<'"'"'OUT'"'"'
 OUT'
 assert_verifier_succeeds "$tools" "$root" "$case_dir/out"
+
+# verifier: installed tokenizer entrypoint must complete a safe-tokenization preflight.
+case_dir="$TMP_ROOT/known-helper-safe-tokenization-preflight"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" present safe_fail >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'installed tokenizer safe-tokenization preflight smoke failed' "$tools" "$root" "$case_dir/out"
 
 # verifier: known helper console entrypoints must smoke under sanitized env.
 case_dir="$TMP_ROOT/known-helper-entrypoint-smoke"
