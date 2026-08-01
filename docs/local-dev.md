@@ -23,7 +23,7 @@ Homebrew-managed Mac, install and start it with:
 ```bash
 brew install postgresql@16
 brew services start postgresql@16
-pg_isready -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}"
+pg_isready -h "${PGHOST-localhost}" -p "${PGPORT-5432}"
 ```
 
 The dev config defaults to `PGUSER=postgres`, `PGPASSWORD=postgres`,
