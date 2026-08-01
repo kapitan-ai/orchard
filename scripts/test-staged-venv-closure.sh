@@ -140,6 +140,54 @@ site_packages_dir() {
     find "$venv/lib" -type d -path '*/site-packages' -print -quit
 }
 
+make_stub_tokenizers_package() {
+    local site_packages="$1"
+    mkdir -p "$site_packages/tokenizers"
+    cat > "$site_packages/tokenizers/__init__.py" <<'PY'
+import json
+
+
+class Tokenizer:
+    def __init__(self, model):
+        self.model = model
+        self.pre_tokenizer = None
+        self.decoder = None
+
+    def train(self, files, trainer):
+        self.files = list(files)
+        self.trainer = trainer
+
+    def save(self, path):
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"version": "1.0", "model": {"type": "BPE"}}, handle)
+PY
+    cat > "$site_packages/tokenizers/models.py" <<'PY'
+class BPE:
+    def __init__(self, unk_token=None):
+        self.unk_token = unk_token
+PY
+    cat > "$site_packages/tokenizers/decoders.py" <<'PY'
+class ByteLevel:
+    pass
+PY
+    cat > "$site_packages/tokenizers/pre_tokenizers.py" <<'PY'
+class ByteLevel:
+    def __init__(self, add_prefix_space=False):
+        self.add_prefix_space = add_prefix_space
+
+    @staticmethod
+    def alphabet():
+        return []
+PY
+    cat > "$site_packages/tokenizers/trainers.py" <<'PY'
+class BpeTrainer:
+    def __init__(self, vocab_size=0, initial_alphabet=None, special_tokens=None):
+        self.vocab_size = vocab_size
+        self.initial_alphabet = list(initial_alphabet or [])
+        self.special_tokens = list(special_tokens or [])
+PY
+}
+
 make_known_helper_venv_fixture() {
     local root="$1"
     local package_state="${2:-present}"
@@ -161,6 +209,9 @@ make_known_helper_venv_fixture() {
     local site_packages
     site_packages="$(site_packages_dir "$venv")"
     find "$site_packages" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    if [[ "$helper" == "orchard_tokenizer" ]]; then
+        make_stub_tokenizers_package "$site_packages"
+    fi
     if [[ "$package_state" == "present" ]]; then
         mkdir -p "$site_packages/$helper"
         printf '' > "$site_packages/$helper/__init__.py"
@@ -209,6 +260,12 @@ SH
       sleep)
         cat > "$venv/bin/$entry_name" <<'SH'
 #!/bin/sh
+case "${1:-}" in
+  --request-json)
+    printf '%s\n' '{"ok":true,"result":{"compatible":true}}'
+    exit 0
+    ;;
+esac
 sleep 30
 SH
         chmod +x "$venv/bin/$entry_name"
