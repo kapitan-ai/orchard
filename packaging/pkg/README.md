@@ -153,7 +153,20 @@ Verification:
 - On each host, `orchardctl status` should show the role-selected service state.
 - On the controller, readiness should report PostgreSQL reachable and migrations current.
 - On the controller, Runtime Endpoint target configuration should match each remote node-agent BEAM node name in `ORCHARD_RUNTIME_ENDPOINT_TARGETS`.
-- After admin credentials, tenant/API access, model import, and model activation are configured, use `/v1/models` and a single chat completion request as the external-site API smoke test.
+- Stage the model on every worker before attempting inference; controller import and activation do not distribute the artifact.
+- After admin credentials, tenant/API access, model import, model activation, and worker model staging are configured, use `/v1/models` and a single chat completion request as the external-site API smoke test.
+
+Worker model staging:
+
+- Controller import is not controller-hosted model distribution. The importer stores the bundle under the controller's artifacts root and records that controller-local path as the model's artifact source, so a remote node-agent resolves the same absolute path on its own filesystem and fails when it does not exist.
+- On the controller, the imported bundle is at `/Library/Application Support/Orchard/bundles/<model_id>/<version>`. `<model_id>` may contain a slash, so the layout is nested.
+- Copy that bundle directory to the identical absolute path on every worker Mac before the first request for the model, preserving directory structure and file contents.
+- On the first request, the node-agent copies the staged bundle into its own cache under `/Library/Application Support/Orchard/models`, verifies it against the recorded artifact digest, and fails closed on mismatch.
+- This repeats per model and per worker. A catalog-active but unstaged model still appears in `/v1/models` and is not blocked before dispatch, so a missed staging step surfaces only on the first request that the scheduler places on the unstaged worker.
+- How that failure is reported depends on whether the request streams, because the streaming response commits its HTTP status before the model load is attempted:
+  - Non-streaming: HTTP `503` with error type `server_error` and code `source_not_found`.
+  - Streaming: the response has already returned HTTP `200` and opened the event stream, so the failure arrives as an SSE `data: {"error":{...}}` event carrying the same `server_error` type and `source_not_found` code, and the stream then closes without a `[DONE]` line. Check the event payload, not just the HTTP status; a streaming smoke test that only asserts on `200` reads this failure as a success.
+- `acquisition_failed` is the internal failure category recorded against the load failure, not a public error type. The operator-visible identifier in both paths is the `source_not_found` code.
 
 gRPC compatibility fallback:
 
