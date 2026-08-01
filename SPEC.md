@@ -337,6 +337,7 @@ All public inference requests SHALL normalize into one internal struct:
   input_items: [map()],
   rendered_prompt: binary() | nil,
   input_token_count: non_neg_integer(),
+  store?: boolean(),
   stream?: boolean(),
   sampling: %{
     temperature: float(),
@@ -534,6 +535,8 @@ Each request-step payload SHALL carry:
 
 When applicable, payloads MAY also carry `call_id`, `tool_name`, `arguments_json`, `model_id`, and `model_version`.
 
+Durable retention of these payload fields is bounded by the Request capture mode in §10.10. Outside `full`, `call_id` persists only as a deterministic hash, the step identifiers derived from it embed that hash, and `tool_name`, `arguments_json`, `model_id`, and `model_version` are not retained.
+
 `tool_execution` steps and `request_step.indeterminate` remain future-facing shapes for later hosted-execution slices, but their durable outcome contract is now defined in §3.7.2. This persistence section MUST NOT be interpreted as enabling controller-owned hosted `/v1/responses` tool-execution loops in the current slice.
 
 ### 3.7.2 Future tool-execution outcome taxonomy
@@ -623,7 +626,7 @@ The controller SHALL support `Idempotency-Key` on both public inference endpoint
 Rules:
 
 * uniqueness scope: `(tenant_id, idempotency_key)`
-* if same key + same body hash already completed and `stream=false`, return stored result
+* if same key + same body hash already completed and `stream=false`, return the stored result when the Request retained its `response_payload`, otherwise return `409 idempotency_not_replayable` (see §10.10 for when payloads are retained)
 * if same key + same body hash is still active, return `409 request_in_progress`
 * if same key reused with different body hash, return `409 idempotency_mismatch`
 * streaming responses SHALL NOT be replayed from persisted token chunks in v1
@@ -2088,7 +2091,7 @@ The Responses API in OpenAI’s current documentation uses typed semantic stream
 
 * accepted for compatibility
 * does **not** disable internal accounting/audit metadata
-* when `store=false`, full prompt/response payload retention SHALL follow tenant retention policy and default to redacted metadata only
+* when `store=false`, payload retention narrows the effective capture mode under the rules in §10.10 Data governance
 
 Example sync response with a function call item:
 
@@ -2258,10 +2261,12 @@ Behavior:
 Rules:
 
 * only terminal failed/cancelled/timed_out/interrupted requests
-* uses stored canonical request
+* uses the stored canonical request only when the source Request retained it under `full`
+* if the source canonical request is unavailable, fail with `retry_source_unavailable`
 * creates new request row
 * `retry_of_request_id` points to original
 * max operator retries per original request default = 3
+* the retry capture mode MUST NOT be wider than either the source Request snapshot or the current Tenant policy
 
 #### 7.3.5 Scheduler explanation
 
@@ -2270,11 +2275,11 @@ Response example:
 ```json
 {
   "request_id": "resp_01J...",
-  "selected_node_id": "node-2",
+  "selected_node_id": "11111111-1111-4111-8111-111111111111",
   "selection_tier": "loaded",
   "scored_candidates": [
     {
-      "node_id": "node-2",
+      "node_id": "11111111-1111-4111-8111-111111111111",
       "eligible": true,
       "tier": "loaded",
       "score": 842,
@@ -2292,13 +2297,13 @@ Response example:
   ],
   "rejected_candidates": [
     {
-      "node_id": "node-1",
+      "node_id": "22222222-2222-4222-8222-222222222222",
       "reason_codes": ["node_not_active", "insufficient_memory"]
     }
   ],
   "skipped_candidates": [
     {
-      "node_id": "node-3",
+      "node_id": "33333333-3333-4333-8333-333333333333",
       "reason_codes": ["lower_tier_not_considered"]
     }
   ]
@@ -3524,9 +3529,11 @@ create table requests (
   state request_state not null default 'received',
   stream boolean not null default false,
   payload_capture_mode payload_capture_mode not null default 'metadata',
-  canonical_request jsonb not null,
+  canonical_request jsonb,
+  request_shape jsonb,
   request_payload jsonb,
   response_payload jsonb,
+  response_hash bytea,
   response_preview text,
   sampling_params jsonb not null default '{}'::jsonb,
   response_format jsonb not null default '{}'::jsonb,
@@ -3542,7 +3549,74 @@ create table requests (
   error_message text,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check (principal_type <> 'service_account' or service_account_id is not null)
+  check (principal_type <> 'service_account' or service_account_id is not null),
+  check (
+    payload_capture_mode = 'full'
+    or (
+      canonical_request is null
+      and request_payload is null
+      and response_payload is null
+      and error_message is null
+    )
+  ),
+  check (
+    payload_capture_mode <> 'none'
+    or (request_shape is null and response_preview is null)
+  ),
+  check (
+    payload_capture_mode = 'full'
+    or error_code is null
+    or error_code in (
+      'acquisition_failed',
+      'artifact_not_found',
+      'cancelled',
+      'checksum_mismatch',
+      'cluster_busy',
+      'deadline_exceeded',
+      'insufficient_memory',
+      'internal_error',
+      'load_timeout',
+      'manifest_not_found',
+      'mlx_backend_unavailable',
+      'model_busy',
+      'model_invalid',
+      'node_timeout',
+      'node_unavailable',
+      'orchestration_error',
+      'queue_full',
+      'queue_timeout',
+      'request_cancelled',
+      'request_caller_disconnect',
+      'request_client_disconnect',
+      'request_controller_restarted',
+      'request_interrupted',
+      'request_timeout',
+      'resource_exhausted',
+      'rpc_error',
+      'rpc_resource_exhausted',
+      'rpc_unavailable',
+      'runtime_incompatible',
+      'runtime_unavailable',
+      'timed_out',
+      'timeout',
+      'tool_execution_cancelled',
+      'tool_execution_failed',
+      'tool_execution_indeterminate_cancel_ack_missing',
+      'tool_execution_indeterminate_controller_restarted',
+      'tool_execution_indeterminate_executor_unreachable',
+      'tool_execution_indeterminate_result_not_observed',
+      'tool_execution_indeterminate_timeout_after_start',
+      'tool_execution_timed_out',
+      'tool_failed',
+      'tool_timeout',
+      'tooling_not_supported',
+      'unexpected_placement_state',
+      'worker_down',
+      'worker_unavailable',
+      'worker_unloaded'
+    )
+  ),
+  check (response_preview is null or char_length(response_preview) <= 512)
 );
 
 create table request_events (
@@ -3837,7 +3911,7 @@ create index idx_audit_logs_cluster_occurred_at
 * `requests`: 90 days metadata minimum
 * `audit_logs`: 365 days minimum
 
-Payload retention follows tenant capture mode.
+Payload retention follows the effective capture mode snapshotted on each Request; see §10.10.
 
 ---
 
@@ -4183,17 +4257,38 @@ Tenant setting `request_body_capture_mode`:
 
 Default = `metadata`
 
+The capture lattice is `none < metadata < full`.
+The effective mode SHALL resolve before the first Request write and SHALL be snapshotted in `requests.payload_capture_mode`.
+Later Tenant changes, terminal paths, attempts, automatic retries, and operator retries MUST NOT widen that snapshot.
+For the Responses API, `store=false` SHALL cap `full` at `metadata`, SHALL NOT widen a narrower Tenant mode, and SHALL NOT disable required accounting or audit metadata.
+
 `none`:
 
-* store hashes, usage, errors, no prompt/response text
+* store request and response hashes, usage, state, timestamps, and stable error codes
+* store no prompt, response, preview, request shape, raw tool argument, raw runtime error text, or other caller or model content
 
 `metadata`:
 
-* store shape + preview + hashes
+* additionally store a fixed allowlisted request shape containing counts, types, lengths, approved identifiers, and hashes
+* caller metadata values, stop text, tool definitions, tool arguments, rendered prompts, and input content are not shape
+* a content preview is optional and SHALL be stored only when its source exceeds 512 Unicode code points
+* a metadata preview SHALL contain complete source grapheme clusters totaling at most 511 Unicode code points plus one ellipsis and therefore SHALL NOT equal the complete source
 
 `full`:
 
 * store full payloads and final outputs
+* convenience previews remain bounded to 512 Unicode code points without splitting a grapheme cluster
+* a streaming Request stores its assembled final output only at terminal completion and does not durably duplicate individual chunks
+
+Capture enforcement SHALL cover every content-bearing field on `requests` and `request_events`, including canonical input, request payloads, response payloads, previews, sampling stop text, response-format content, scheduler decisions, error text, model-generated tool arguments, and request-step results.
+Non-`full` Request-event and scheduler metadata SHALL use field-specific type checks and closed operational vocabularies rather than key-only allowlists.
+Non-`full` scheduler metadata MAY retain the opaque `hmac-sha256:<64 lowercase hex>` cache-affinity key and its closed typed operational fields because the scheduler requires that non-recoverable feedback for later placement.
+Untrusted tool-call identifiers retained for request-step correlation SHALL be replaced with deterministic hashes, and model-generated tool names and raw target references SHALL NOT persist outside `full`.
+`body_hash` and `response_hash` are integrity anchors and do not authorize content recovery or replay.
+Idempotent replay requires a retained `response_payload`; otherwise Orchard SHALL return `idempotency_not_replayable`.
+Existing `none` and `metadata` rows that contain forbidden content SHALL be purged in place rather than relabeled as `full`.
+When legacy nested event or scheduler values cannot be proven safe by the migration, Orchard SHALL discard the entire nested payload rather than copy key-allowlisted values forward; the migration MAY retain only a syntactically valid cache-affinity HMAC and its closed typed operational fields.
+The purge verification SHALL explicitly enumerate every content-bearing Request column and `request_events.payload`, and schema-drift coverage SHALL fail when a new text, JSON, or binary Request column is not classified.
 
 ---
 

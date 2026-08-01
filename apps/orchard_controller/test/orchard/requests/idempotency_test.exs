@@ -50,6 +50,7 @@ defmodule Orchard.Requests.IdempotencyTest do
         body_hash: context.body_hash,
         stream: false,
         state: :completed,
+        payload_capture_mode: :full,
         response_payload: %{"id" => "req_replay", "object" => "chat.completion"}
       })
 
@@ -71,6 +72,7 @@ defmodule Orchard.Requests.IdempotencyTest do
         body_hash: context.body_hash,
         stream: false,
         state: :completed,
+        payload_capture_mode: :full,
         response_payload: %{"id" => "req_replay_steps", "object" => "chat.completion"}
       })
 
@@ -206,6 +208,7 @@ defmodule Orchard.Requests.IdempotencyTest do
       body_hash: context_a.body_hash,
       stream: false,
       state: :completed,
+      payload_capture_mode: :full,
       response_payload: %{"id" => "req_tenant_a"}
     })
 

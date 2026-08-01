@@ -647,7 +647,11 @@ defmodule Orchard.Governance do
 
   defp insert_tenant(attrs) do
     %Tenant{}
-    |> Tenant.changeset(%{slug: Map.get(attrs, "slug"), name: Map.get(attrs, "name")})
+    |> Tenant.changeset(%{
+      slug: Map.get(attrs, "slug"),
+      name: Map.get(attrs, "name"),
+      request_body_capture_mode: Map.get(attrs, "request_body_capture_mode", :metadata)
+    })
     |> Repo.insert()
   end
 

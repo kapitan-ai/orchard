@@ -1,6 +1,7 @@
 import Config
 
 Code.require_file("m1_runtime_defaults.exs", __DIR__)
+Code.require_file("source_postgres.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 test_root = Path.join([repo_root, "tmp", "test"])
@@ -27,6 +28,7 @@ config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
   password: System.get_env("PGPASSWORD") || "postgres",
   hostname: System.get_env("PGHOST") || "localhost",
+  port: Orchard.Config.SourcePostgres.port!(System.get_env("PGPORT")),
   database: System.get_env("PGDATABASE_TEST") || "orchard_test",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10

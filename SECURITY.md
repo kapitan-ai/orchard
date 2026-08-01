@@ -161,6 +161,10 @@ No current acquisition path authenticates publisher provenance.
 The `SPEC.md` target requires hash validation, while detached model signatures remain optional.
 A computed digest alone must not be represented as proof of a trusted publisher.
 
+The MLX worker resolves MLX-LM from an audited full Git revision through the committed uv lock.
+It rejects `model_file` configurations before upstream loading and explicitly disables remote code at the model and tokenizer boundaries.
+The pinned source and these controls do not authenticate model publishers or make MLX execution a sandbox.
+
 Secret-bearing environment files, private keys, Node identity custody, and Peer Grant material are intended to remain owner-only.
 Certificates, metadata, logs, and other non-secret operational files may have broader read permissions.
 Prompt and response bodies may be retained only according to the configured Tenant Payload Capture Mode, and secrets must never be logged.

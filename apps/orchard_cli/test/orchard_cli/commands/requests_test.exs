@@ -11,6 +11,10 @@ defmodule OrchardCLI.Commands.RequestsTest do
 
   import Orchard.TestSupport.ModelRequestFixtures
 
+  @selected_node_id "11111111-1111-4111-8111-111111111111"
+  @rejected_node_id "22222222-2222-4222-8222-222222222222"
+  @skipped_node_id "33333333-3333-4333-8333-333333333333"
+
   setup do
     :ok = Sandbox.checkout(Repo)
     Sandbox.mode(Repo, {:shared, self()})
@@ -47,7 +51,7 @@ defmodule OrchardCLI.Commands.RequestsTest do
         end)
 
       assert stdout =~ "Request: #{request.public_id}"
-      assert stdout =~ "Selected node: node-selected"
+      assert stdout =~ "Selected node: #{@selected_node_id}"
       assert stdout =~ "Rejected candidates:"
       assert stdout =~ "node_not_active,insufficient_memory"
       refute_received {:halt_called, _code}
@@ -82,17 +86,19 @@ defmodule OrchardCLI.Commands.RequestsTest do
       assert {:ok, output} = RequestsCmd.run(["inspect", request.public_id])
 
       assert output =~ "Request: #{request.public_id}"
-      assert output =~ "Selected node: node-selected"
+      assert output =~ "Selected node: #{@selected_node_id}"
       assert output =~ "Selection tier: loaded"
       assert output =~ "Scored candidates:"
-      assert output =~ "node-selected tier=loaded score=842 reason_codes=none"
+      assert output =~ "#{@selected_node_id} tier=loaded score=842 reason_codes=none"
       assert output =~ "Rejected candidates:"
 
       assert output =~
-               "node-rejected tier=- score=- reason_codes=node_not_active,insufficient_memory"
+               "#{@rejected_node_id} tier=- score=- reason_codes=node_not_active,insufficient_memory"
 
       assert output =~ "Skipped candidates:"
-      assert output =~ "node-skipped tier=- score=- reason_codes=lower_tier_not_considered"
+
+      assert output =~
+               "#{@skipped_node_id} tier=- score=- reason_codes=lower_tier_not_considered"
     end
 
     test "SPEC.md §7.3.5 json output reports unknown request id as scheduler explanation not found" do
@@ -129,6 +135,7 @@ defmodule OrchardCLI.Commands.RequestsTest do
       request =
         create_request!(%{
           public_id: "resp_cli_invalid_scheduler_explanation",
+          payload_capture_mode: :full,
           scheduler_decision: %{
             "request_id" => "resp_cli_invalid_scheduler_explanation",
             "rejected_candidates" => [
@@ -183,11 +190,11 @@ defmodule OrchardCLI.Commands.RequestsTest do
     assert {:ok, request} =
              Requests.record_schedule(request, %{
                request_id: request.public_id,
-               selected_node_id: "node-selected",
+               selected_node_id: @selected_node_id,
                selection_tier: :loaded,
                scored_candidates: [
                  %{
-                   node_id: "node-selected",
+                   node_id: @selected_node_id,
                    eligible: true,
                    tier: :loaded,
                    score: 842,
@@ -197,13 +204,13 @@ defmodule OrchardCLI.Commands.RequestsTest do
                ],
                rejected_candidates: [
                  %{
-                   node_id: "node-rejected",
+                   node_id: @rejected_node_id,
                    reason_codes: [:node_not_active, "insufficient_memory"]
                  }
                ],
                skipped_candidates: [
                  %{
-                   node_id: "node-skipped",
+                   node_id: @skipped_node_id,
                    reason_codes: [:lower_tier_not_considered]
                  }
                ]

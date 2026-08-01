@@ -42,9 +42,13 @@ defmodule Orchard.Inference.ChatResponseSerializer do
       when is_list(events) do
     content = collect_content(events)
 
+    {response_preview, response_preview_source} =
+      persistence_preview(content, tool_call_preview(events))
+
     %{
       response_payload: completion_payload(canonical, events, created_at_override),
-      response_preview: preview_content(content, tool_call_preview(events))
+      response_preview: response_preview,
+      response_preview_source: response_preview_source
     }
   end
 
@@ -114,8 +118,10 @@ defmodule Orchard.Inference.ChatResponseSerializer do
   defp maybe_put_tool_calls(message, []), do: message
   defp maybe_put_tool_calls(message, tool_calls), do: Map.put(message, :tool_calls, tool_calls)
 
-  defp preview_content("", tool_preview) when tool_preview != "", do: tool_preview
-  defp preview_content(content, _tool_preview), do: content
+  defp persistence_preview("", tool_preview) when tool_preview != "",
+    do: {tool_preview, :tool_call}
+
+  defp persistence_preview(content, _tool_preview), do: {content, :assistant_text}
 
   defp collected_tool_calls(events) do
     events

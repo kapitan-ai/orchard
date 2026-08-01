@@ -219,6 +219,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :failed,
+          payload_capture_mode: :full,
           http_status: 500,
           error_code: "server_error",
           error_message: "Internal processing failure"
@@ -312,12 +313,14 @@ defmodule OrchardConsole.RequestLiveTest do
     end
 
     test "renders multi-node scheduling metadata from scheduler_decision", %{conn: conn} do
+      node_id = Ecto.UUID.generate()
+
       request =
         create_request!(%{
           state: :completed,
           scheduler_decision: %{
             "strategy" => "multi_node",
-            "node_id" => "aaaa-0001",
+            "node_id" => node_id,
             "candidate_count" => 2,
             "selected_tier" => "loaded"
           }
@@ -329,7 +332,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert strategy_html =~ "multi_node"
 
       node_html = element(view, "#request-schedule-node") |> render()
-      assert node_html =~ "aaaa-0001"
+      assert node_html =~ node_id
 
       candidates_html = element(view, "#request-schedule-candidates") |> render()
       assert candidates_html =~ "2"
@@ -451,6 +454,7 @@ defmodule OrchardConsole.RequestLiveTest do
         create_request!(%{
           state: :completed,
           public_id: "resp_console_scheduler_explanation_invalid",
+          payload_capture_mode: :full,
           scheduler_decision: %{
             "request_id" => "resp_console_scheduler_explanation_invalid",
             "selected_node_id" => "node-selected",
@@ -498,6 +502,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :completed,
+          payload_capture_mode: :full,
           canonical_request: %{"model" => "test-model", "messages" => [%{"role" => "user"}]}
         })
 
@@ -561,6 +566,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :completed,
+          payload_capture_mode: :full,
           canonical_request: canonical_payload
         })
 
@@ -583,6 +589,7 @@ defmodule OrchardConsole.RequestLiveTest do
       request =
         create_request!(%{
           state: :completed,
+          payload_capture_mode: :full,
           response_preview: "Hello! How can I help you today?",
           response_payload: %{"id" => "resp_123", "choices" => [%{"index" => 0}]},
           scheduler_decision: %{"node_id" => "node-1", "reason" => "local_capacity"}
@@ -857,7 +864,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
   describe "event timeline" do
     test "renders events ordered by seq", %{conn: conn} do
-      request = create_request!(%{state: :running})
+      request = create_request!(%{state: :running, payload_capture_mode: :full})
 
       append_event!(request, %{
         event_type: "state_transition",
@@ -920,7 +927,7 @@ defmodule OrchardConsole.RequestLiveTest do
     end
 
     test "renders event payload when present", %{conn: conn} do
-      request = create_request!(%{state: :running})
+      request = create_request!(%{state: :running, payload_capture_mode: :full})
 
       append_event!(request, %{
         event_type: "metadata",
@@ -933,7 +940,7 @@ defmodule OrchardConsole.RequestLiveTest do
     end
 
     test "renders request_step timeline entries without specialized UI handling", %{conn: conn} do
-      request = create_request!(%{state: :running})
+      request = create_request!(%{state: :running, payload_capture_mode: :full})
       inference_turn_step_id = RequestStepEvent.inference_turn_step_id(1, 1)
 
       assert {:ok, _step_events} =
@@ -1296,7 +1303,7 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   defp persist_valid_scheduler_explanation!(public_id) do
-    request = create_request!(%{public_id: public_id})
+    request = create_request!(%{public_id: public_id, payload_capture_mode: :full})
 
     assert {:ok, request} =
              Requests.record_schedule(request, %{

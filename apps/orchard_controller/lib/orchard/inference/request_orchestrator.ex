@@ -22,8 +22,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
     ToolingValidation
   }
 
+  alias Orchard.Governance
   alias Orchard.InferenceEvent
   alias Orchard.Requests
+  alias Orchard.Requests.CapturePolicy
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
   alias Orchard.Requests.RequestServer
@@ -594,15 +596,27 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp persist_request(canonical, model, idempotency) do
     with {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
+      capture_mode = effective_capture_mode(canonical)
+
       canonical
-      |> request_attrs(model, serialized_canonical)
+      |> request_attrs(model, serialized_canonical, capture_mode)
       |> put_idempotency_attrs(idempotency)
       |> Requests.create_request()
       |> handle_create_request_result(idempotency)
     end
   end
 
-  defp request_attrs(canonical, model, serialized_canonical) do
+  defp effective_capture_mode(canonical) do
+    case Governance.get_tenant(canonical.tenant_id) do
+      {:ok, tenant} ->
+        CapturePolicy.resolve(tenant.request_body_capture_mode, canonical.store?)
+
+      {:error, :tenant_not_found} ->
+        :none
+    end
+  end
+
+  defp request_attrs(canonical, model, serialized_canonical, capture_mode) do
     %{
       id: canonical.internal_id,
       public_id: canonical.public_id,
@@ -615,12 +629,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
       model_id: model.id,
       state: :received,
       stream: canonical.stream?,
-      payload_capture_mode: :metadata,
+      body_hash: serialized_canonical |> Jason.encode!() |> sha256(),
+      payload_capture_mode: capture_mode,
       canonical_request: serialized_canonical,
+      request_payload: %{"prompt" => canonical.rendered_prompt},
       sampling_params: CanonicalRequestSerializer.sampling_params(canonical.sampling),
+      response_format: %{"type" => Atom.to_string(canonical.response_format.type)},
       input_tokens: canonical.input_token_count
     }
   end
+
+  defp sha256(content), do: :crypto.hash(:sha256, content)
 
   defp put_idempotency_attrs(attrs, %Idempotency.Context{} = idempotency) do
     Map.merge(attrs, %{
@@ -1160,8 +1179,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     terminal_attrs = terminal_attrs_from_events(events)
 
     result =
-      if terminal_attrs.state == :completed and not canonical.stream? and
-           is_function(success_persistence, 2) do
+      if terminal_attrs.state == :completed and is_function(success_persistence, 2) do
         success_persistence
         |> apply_success_persistence(canonical, events)
         |> merge_success_attrs(terminal_attrs)
@@ -1353,7 +1371,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp terminal_inference_turn_step(events, terminal_attrs, step_context) do
     %{
-      event_type: terminal_step_event_type(terminal_attrs.state),
+      event_type: RequestStepEvent.terminal_step_event_type!(terminal_attrs.state),
       step_id: step_context.step_id,
       step_type: "inference_turn",
       turn_index: step_context.turn_index,
@@ -1411,12 +1429,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
       model_version: canonical.model_ref.version
     }
   end
-
-  defp terminal_step_event_type(:completed), do: "request_step.completed"
-  defp terminal_step_event_type(:failed), do: "request_step.failed"
-  defp terminal_step_event_type(:cancelled), do: "request_step.cancelled"
-  defp terminal_step_event_type(:timed_out), do: "request_step.timed_out"
-  defp terminal_step_event_type(:interrupted), do: "request_step.interrupted"
 
   defp terminal_step_result(events, terminal_attrs) do
     %{}

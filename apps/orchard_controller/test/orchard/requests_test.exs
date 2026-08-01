@@ -6,7 +6,11 @@ defmodule Orchard.RequestsTest do
   alias Orchard.Governance
   alias Orchard.Models
   alias Orchard.Requests
-  alias Orchard.Requests.{Request, RequestStepEvent}
+  alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
+
+  @safe_call_id "sha256:" <>
+                  (:crypto.hash(:sha256, "call_1") |> Base.encode16(case: :lower))
+  @safe_tool_call_step_id "tool_call:t1:c#{@safe_call_id}"
 
   test "create_request/1 supports early lifecycle rows before model resolution and canonicalization" do
     attrs = request_attrs()
@@ -16,6 +20,76 @@ defmodule Orchard.RequestsTest do
     assert request.model_id == nil
     assert request.canonical_request == nil
     assert request.requested_model == attrs.requested_model
+  end
+
+  test "create_request/1 returns a changeset error when the capture mode is missing or unknown" do
+    for mode <- [nil, "", "everything", :everything] do
+      attrs = request_attrs() |> Map.put(:payload_capture_mode, mode)
+
+      assert {:error, %Ecto.Changeset{}} = Requests.create_request(attrs)
+    end
+  end
+
+  test "create_request/1 sanitizes fail-closed when the capture mode is unresolvable" do
+    attrs =
+      request_attrs(%{
+        canonical_request: %{"rendered_prompt" => "private prompt"},
+        request_payload: %{"prompt" => "private prompt"},
+        sampling_params: %{"temperature" => 0.7, "stop" => ["private stop"]},
+        scheduler_decision: %{"prompt" => "private prompt"}
+      })
+      |> Map.put(:payload_capture_mode, "everything")
+
+    assert {:error, %Ecto.Changeset{} = changeset} = Requests.create_request(attrs)
+
+    refute Map.has_key?(changeset.changes, :canonical_request)
+    refute Map.has_key?(changeset.changes, :request_payload)
+    refute Map.has_key?(changeset.changes, :request_shape)
+    assert get_change(changeset, :sampling_params) == %{"temperature" => 0.7, "stop_count" => 1}
+    assert get_change(changeset, :scheduler_decision) == %{}
+    refute inspect(changeset) =~ "private"
+  end
+
+  test "create_request/1 enforces the capture policy on string-keyed attrs" do
+    attrs =
+      request_attrs()
+      |> Map.put(:canonical_request, %{"rendered_prompt" => "private prompt"})
+      |> Map.put(:request_payload, %{"prompt" => "private prompt"})
+      |> Map.put(:scheduler_decision, %{"prompt" => "private prompt"})
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      |> Map.put("payload_capture_mode", "metadata")
+
+    assert {:ok, request} = Requests.create_request(attrs)
+
+    assert request.payload_capture_mode == :metadata
+    assert request.canonical_request == nil
+    assert request.request_payload == nil
+    assert request.request_shape["capture_mode"] == "metadata"
+    assert request.scheduler_decision == %{}
+    refute inspect(request) =~ "private prompt"
+  end
+
+  test "list_request_step_events/1 skips step rows that legacy purges left unreadable" do
+    request = create_request!(%{payload_capture_mode: :metadata})
+
+    assert {:ok, _step_events} =
+             Requests.append_request_step_events(request, [inference_turn_completed_step_attrs()])
+
+    Repo.update_all(
+      from(event in RequestEvent, where: event.request_id == ^request.id),
+      set: [payload: %{}]
+    )
+
+    assert {:ok, _step_events} =
+             Requests.append_request_step_events(request, [
+               inference_turn_completed_step_attrs(%{
+                 event_type: "request_step.failed",
+                 result: %{"finish_reason" => "error"}
+               })
+             ])
+
+    assert [%RequestStepEvent{event_type: "request_step.failed"}] =
+             Requests.list_request_step_events(request)
   end
 
   test "create_request/1 rejects service-account provenance without service_account_id" do
@@ -120,7 +194,7 @@ defmodule Orchard.RequestsTest do
     assert event.seq == 1
     assert event.event_type == "request.received"
     assert event.occurred_at == occurred_at
-    assert event.payload == %{"phase" => "ingress"}
+    assert event.payload == %{}
   end
 
   test "append_request_event/2 preserves atom-keyed occurred_at when provided" do
@@ -171,7 +245,7 @@ defmodule Orchard.RequestsTest do
 
     assert Enum.map(Requests.list_request_step_events(request), &{&1.seq, &1.step_id}) == [
              {2, "inference_turn:t1:a1"},
-             {3, "tool_call:t1:ccall_1"}
+             {3, @safe_tool_call_step_id}
            ]
 
     assert Enum.map(Requests.list_request_events(request), &{&1.seq, &1.event_type, &1.state}) ==
@@ -259,6 +333,160 @@ defmodule Orchard.RequestsTest do
            ]
   end
 
+  describe "classify_missing_terminal_candidate/2" do
+    test "identifies a terminal completed inference turn whose persisted result omits finish_reason" do
+      request = create_request!(%{public_id: "req_missing_terminal_candidate", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs(%{result: %{"http_status" => 200}})]
+               )
+
+      assert {:ok, :missing_finish_reason_candidate} =
+               Requests.classify_missing_terminal_candidate(request)
+    end
+
+    test "rejects terminal-bearing completed and failure-shaped persisted controls" do
+      completed =
+        create_request!(%{public_id: "req_terminal_completed_control", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 completed,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs()]
+               )
+
+      failed = create_request!(%{public_id: "req_terminal_failed_control", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 failed,
+                 %{state: :failed},
+                 [inference_turn_failed_step_attrs()]
+               )
+
+      assert {:ok, :not_candidate} =
+               Requests.classify_missing_terminal_candidate(completed)
+
+      assert {:ok, :not_candidate} =
+               Requests.classify_missing_terminal_candidate(failed)
+    end
+
+    test "treats absent, ambiguous, inconsistent, and malformed durable evidence as inconclusive" do
+      missing_request_id = Ecto.UUID.generate()
+
+      assert {:error, {:inconclusive, :request_not_found}} =
+               Requests.classify_missing_terminal_candidate(missing_request_id)
+
+      non_terminal = create_request!(%{public_id: "req_detector_non_terminal", state: :running})
+
+      assert {:error, {:inconclusive, :request_not_terminal}} =
+               Requests.classify_missing_terminal_candidate(non_terminal)
+
+      missing_step = create_request!(%{public_id: "req_detector_missing_step", state: :running})
+      assert {:ok, _request} = Requests.mark_terminal(missing_step, %{state: :completed})
+
+      assert {:error, {:inconclusive, :terminal_step_not_found}} =
+               Requests.classify_missing_terminal_candidate(missing_step)
+
+      invalid_reason =
+        create_request!(%{public_id: "req_detector_invalid_reason", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 invalid_reason,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs(%{result: %{"finish_reason" => nil}})]
+               )
+
+      assert [%RequestStepEvent{result: %{"finish_reason_invalid" => true}}] =
+               Requests.list_request_step_events(invalid_reason)
+
+      assert {:error, {:inconclusive, :invalid_finish_reason}} =
+               Requests.classify_missing_terminal_candidate(invalid_reason)
+
+      ambiguous = create_request!(%{public_id: "req_detector_ambiguous", state: :running})
+
+      assert {:ok, _steps} =
+               Requests.append_request_step_events(ambiguous, [
+                 inference_turn_completed_step_attrs(),
+                 inference_turn_completed_step_attrs()
+               ])
+
+      assert {:ok, _request} = Requests.mark_terminal(ambiguous, %{state: :completed})
+
+      assert {:error, {:inconclusive, :ambiguous_terminal_steps}} =
+               Requests.classify_missing_terminal_candidate(ambiguous)
+
+      inconsistent =
+        create_request!(%{public_id: "req_detector_inconsistent", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 inconsistent,
+                 %{state: :failed},
+                 [inference_turn_completed_step_attrs()]
+               )
+
+      assert {:error, {:inconclusive, :terminal_state_mismatch}} =
+               Requests.classify_missing_terminal_candidate(inconsistent)
+
+      malformed = create_request!(%{public_id: "req_detector_malformed", state: :running})
+
+      assert {:ok, _event} =
+               Requests.append_request_event(malformed, %{
+                 event_type: "request_step.completed",
+                 payload: %{
+                   "step_id" => RequestStepEvent.inference_turn_step_id(1, 1),
+                   "step_type" => "inference_turn",
+                   "turn_index" => 1,
+                   "attempt" => 1,
+                   "parent_step_id" => nil,
+                   "boundary" => "post_observation",
+                   "result" => "invalid"
+                 }
+               })
+
+      assert {:ok, _request} = Requests.mark_terminal(malformed, %{state: :completed})
+
+      assert {:error, {:inconclusive, :invalid_terminal_step}} =
+               Requests.classify_missing_terminal_candidate(malformed)
+    end
+
+    test "selects an exact inference turn and validates selectors" do
+      request = create_request!(%{public_id: "req_detector_selector", state: :running})
+
+      assert {:ok, _request} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed},
+                 [
+                   inference_turn_completed_step_attrs(%{
+                     step_id: RequestStepEvent.inference_turn_step_id(2, 3),
+                     turn_index: 2,
+                     attempt: 3,
+                     result: %{}
+                   })
+                 ]
+               )
+
+      assert {:ok, :missing_finish_reason_candidate} =
+               Requests.classify_missing_terminal_candidate(request,
+                 turn_index: 2,
+                 attempt: 3
+               )
+
+      assert {:error, {:inconclusive, :terminal_step_not_found}} =
+               Requests.classify_missing_terminal_candidate(request)
+
+      assert {:error, {:inconclusive, :invalid_selector}} =
+               Requests.classify_missing_terminal_candidate(request, turn_index: 0)
+    end
+  end
+
   describe "mark_terminal_with_step_events/3" do
     test "atomically commits success-shaped terminal step rows with the terminal request update" do
       request = create_request!(%{public_id: "req_terminal_steps_success", state: :running})
@@ -275,7 +503,7 @@ defmodule Orchard.RequestsTest do
 
       assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
                [
-                 {"request_step.proposed", "tool_call:t1:ccall_1"},
+                 {"request_step.proposed", @safe_tool_call_step_id},
                  {"request_step.completed", "inference_turn:t1:a1"}
                ]
 
@@ -311,7 +539,12 @@ defmodule Orchard.RequestsTest do
     end
 
     test "atomically commits failure-shaped terminal step rows with the terminal request update" do
-      request = create_request!(%{public_id: "req_terminal_steps_failure", state: :running})
+      request =
+        create_request!(%{
+          public_id: "req_terminal_steps_failure",
+          state: :running,
+          payload_capture_mode: :full
+        })
 
       assert {:ok, updated_request} =
                Requests.mark_terminal_with_step_events(
@@ -389,7 +622,7 @@ defmodule Orchard.RequestsTest do
 
       assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
                [
-                 {"request_step.proposed", "tool_call:t1:ccall_1"},
+                 {"request_step.proposed", @safe_tool_call_step_id},
                  {"request_step.completed", "inference_turn:t1:a1"}
                ]
     end
@@ -816,7 +1049,8 @@ defmodule Orchard.RequestsTest do
 
   describe "record_schedule/2" do
     test "persists scheduler_decision as normalized JSON-safe map" do
-      request = create_request!(%{public_id: "req_schedule_1"})
+      request =
+        create_request!(%{public_id: "req_schedule_1", payload_capture_mode: :full})
 
       schedule = %{
         strategy: :single_node,
@@ -854,7 +1088,9 @@ defmodule Orchard.RequestsTest do
     end
 
     test "recursively normalizes multi-node metadata into JSON-safe values" do
-      request = create_request!(%{public_id: "req_schedule_nested"})
+      request =
+        create_request!(%{public_id: "req_schedule_nested", payload_capture_mode: :full})
+
       node_id = Ecto.UUID.generate()
 
       schedule = %{

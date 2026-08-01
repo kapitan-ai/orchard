@@ -2156,6 +2156,46 @@ class TestDefaultMlxDepsSamplerWiring:
             tokenizer_config_extra={"trust_remote_code": False},
         )
 
+    def test_default_mlx_deps_model_disables_remote_code(self, monkeypatch, tmp_path: Path):
+        """Default model loading explicitly disables custom model code."""
+        import orchard_worker_mlx.model_loader as ml
+
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+        fake_stream_generate = MagicMock(name="stream_generate")
+        fake_load_model = MagicMock(name="load_model")
+        fake_load_tokenizer = MagicMock(name="load_tokenizer", return_value=MagicMock())
+
+        def _fake_import_required():
+            return (fake_mx, fake_stream_generate, fake_load_model, fake_load_tokenizer)
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+        sys.modules["mlx_lm"] = types.SimpleNamespace()
+        sys.modules.pop("mlx_lm.sample_utils", None)
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(json.dumps({"model_type": "llama"}))
+
+        try:
+            deps = _default_mlx_deps()
+            deps.load_model(
+                model_dir,
+                lazy=True,
+                strict=False,
+                trust_remote_code=True,
+            )
+        finally:
+            sys.modules.pop("mlx_lm", None)
+
+        fake_load_model.assert_called_once_with(
+            model_dir,
+            lazy=True,
+            strict=False,
+            trust_remote_code=False,
+        )
+
     def test_default_mlx_deps_rejects_model_file_config_before_upstream_load_model(
         self,
         monkeypatch,

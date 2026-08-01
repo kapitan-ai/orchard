@@ -9,6 +9,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     "PGDATABASE",
     "PGHOST",
     "PGPASSWORD",
+    "PGPORT",
     "PGUSER",
     "PHX_HOST",
     "POOL_SIZE",
@@ -266,6 +267,28 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
 
     assert runtime[:worker_backend] == "stub"
     assert runtime[:worker_generation_mode] == "stream"
+  end
+
+  test "dev.exs node-agent-only evaluation ignores invalid PGPORT" do
+    config =
+      read_dev_config!(%{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc",
+        "ORCHARD_SOURCE_DEV_ROLE" => "node_agent",
+        "PGPORT" => "+5432"
+      })
+
+    runtime =
+      config
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    repo =
+      config
+      |> Keyword.fetch!(:orchard_controller)
+      |> Keyword.fetch!(Orchard.Repo)
+
+    assert runtime[:listen_address][:port] == 50_071
+    assert repo[:port] == 5432
   end
 
   test "runtime.exs accepts valid worker generation and memory settings in prod" do
