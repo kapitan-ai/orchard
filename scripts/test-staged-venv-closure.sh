@@ -140,6 +140,82 @@ site_packages_dir() {
     find "$venv/lib" -type d -path '*/site-packages' -print -quit
 }
 
+PYTHON_TAG="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+PYTHON_BASE_PREFIX="$(python3 -c 'import sys; print(sys.base_prefix)')"
+
+make_python_runtime_prefix() {
+    local prefix="$1"
+    mkdir -p "$prefix/bin" "$prefix/lib"
+    cp -L "$PYTHON_BASE_PREFIX/bin/python$PYTHON_TAG" "$prefix/bin/python$PYTHON_TAG"
+    chmod +x "$prefix/bin/python$PYTHON_TAG"
+    local lib
+    for lib in "$PYTHON_BASE_PREFIX"/lib/libpython*.dylib; do
+        [[ -e "$lib" ]] || continue
+        cp -L "$lib" "$prefix/lib/"
+    done
+    python3 - "$PYTHON_BASE_PREFIX/lib/python$PYTHON_TAG" "$prefix/lib/python$PYTHON_TAG" <<'PY'
+import shutil
+import sys
+
+shutil.copytree(
+    sys.argv[1],
+    sys.argv[2],
+    symlinks=True,
+    ignore=shutil.ignore_patterns(
+        "test",
+        "idlelib",
+        "tkinter",
+        "_tkinter*",
+        "turtledemo",
+        "lib2to3",
+        "ensurepip",
+        "pydoc_data",
+        "site-packages",
+        "__pycache__",
+        "config-*",
+    ),
+)
+PY
+}
+
+make_uv_style_venv() {
+    local venv="$1"
+    local prefix="$2"
+    mkdir -p "$venv/bin" "$venv/lib/python$PYTHON_TAG/site-packages"
+    ln -s "$prefix/bin/python$PYTHON_TAG" "$venv/bin/python$PYTHON_TAG"
+    ln -s "python$PYTHON_TAG" "$venv/bin/python3"
+    ln -s "python3" "$venv/bin/python"
+    printf 'home = %s
+include-system-site-packages = false
+version = %s
+' "$prefix/bin" "$PYTHON_TAG" > "$venv/pyvenv.cfg"
+}
+
+STAGED_VENV_TEMPLATE=""
+
+ensure_staged_venv_template() {
+    if [[ -n "$STAGED_VENV_TEMPLATE" ]]; then
+        return
+    fi
+    local template_root="$TMP_ROOT/staged-venv-template"
+    local template_venv="$template_root/native/template/.venv"
+    make_python_runtime_prefix "$template_root/runtime"
+    make_uv_style_venv "$template_venv" "$template_root/runtime"
+    "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$template_root/native" >/dev/null
+    STAGED_VENV_TEMPLATE="$template_venv"
+}
+
+clone_staged_venv() {
+    local dest="$1"
+    ensure_staged_venv_template
+    mkdir -p "$(dirname "$dest")"
+    rm -rf "$dest"
+    if ! cp -Rc "$STAGED_VENV_TEMPLATE" "$dest" 2>/dev/null; then
+        rm -rf "$dest"
+        cp -R "$STAGED_VENV_TEMPLATE" "$dest"
+    fi
+}
+
 make_stub_tokenizers_package() {
     local site_packages="$1"
     mkdir -p "$site_packages/tokenizers"
@@ -198,7 +274,7 @@ make_known_helper_venv_fixture() {
         entry_name="orchard-worker-mlx"
     fi
     local venv="$root/Library/Application Support/Orchard/native/$helper/.venv"
-    python3 -m venv --copies "$venv"
+    clone_staged_venv "$venv"
     if [[ -L "$venv/bin/python" ]]; then
         echo "fixture setup failed: expected non-symlink venv/bin/python" >&2
         exit 1
@@ -314,12 +390,15 @@ assert_no_grep '/Users/buildhost' "$venv/bin/tool"
 case_dir="$TMP_ROOT/materialize-relocated-console-entrypoints"
 source_native="$case_dir/source/native"
 relocated_native="$case_dir/relocated/native"
+make_python_runtime_prefix "$case_dir/runtime"
 for helper_spec in \
     "orchard_tokenizer:orchard-tokenizer:--version" \
     "orchard_worker_mlx:orchard-worker-mlx:--help"; do
     IFS=: read -r helper entry_name smoke_arg <<<"$helper_spec"
     source_venv="$source_native/$helper/.venv"
-    python3 -m venv --copies "$source_venv"
+    make_uv_style_venv "$source_venv" "$case_dir/runtime"
+    test -L "$source_venv/bin/python"
+    test ! -e "$source_venv/lib/python$PYTHON_TAG/os.py"
     site_packages="$(site_packages_dir "$source_venv")"
     mkdir -p "$site_packages/$helper"
     printf '' > "$site_packages/$helper/__init__.py"
@@ -346,12 +425,17 @@ done
 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$source_native" >/dev/null
 mkdir -p "$(dirname "$relocated_native")"
 cp -R "$source_native" "$relocated_native"
-rm -rf "$case_dir/source" "$case_dir/build/.venv-pkg"
+rm -rf "$case_dir/source" "$case_dir/build/.venv-pkg" "$case_dir/runtime"
 for helper_spec in \
     "orchard_tokenizer:orchard-tokenizer:--version" \
     "orchard_worker_mlx:orchard-worker-mlx:--help"; do
     IFS=: read -r helper entry_name smoke_arg <<<"$helper_spec"
-    relocated_entry="$relocated_native/$helper/.venv/bin/$entry_name"
+    relocated_venv="$relocated_native/$helper/.venv"
+    relocated_entry="$relocated_venv/bin/$entry_name"
+    test ! -L "$relocated_venv/bin/python"
+    test ! -L "$relocated_venv/bin/python3"
+    test -f "$relocated_venv/lib/python$PYTHON_TAG/os.py"
+    assert_no_grep 'home = ' "$relocated_venv/pyvenv.cfg"
     env -i PATH=/usr/bin:/bin HOME="$case_dir/home" "$relocated_entry" "$smoke_arg" >"$case_dir/$entry_name.out"
     assert_no_grep "$case_dir" "$relocated_entry"
     assert_no_grep '.venv-pkg' "$relocated_entry"
