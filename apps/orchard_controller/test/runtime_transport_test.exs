@@ -799,6 +799,23 @@ defmodule Orchard.RuntimeTransportTest do
     assert config[:controller_membership][:scope] == :remote_beam
   end
 
+  test "packaged Controller database configuration ignores PGPORT", %{
+    support_root: support_root
+  } do
+    database_url = "ecto://postgres:postgres@localhost/orchard_config_eval"
+
+    repo =
+      support_root
+      |> read_controller_config!(%{
+        "DATABASE_URL" => database_url,
+        "PGPORT" => "+5432"
+      })
+      |> Keyword.fetch!(Orchard.Repo)
+
+    assert repo[:url] == database_url
+    refute Keyword.has_key?(repo, :port)
+  end
+
   defp read_dev_config!(support_root, overrides) do
     base = %{
       "MIX_RELEASE_NAME" => nil,
@@ -943,7 +960,14 @@ defmodule Orchard.RuntimeTransportTest do
   end
 
   defp config_env_key?(key) do
-    key in ["DATABASE_URL", "MIX_RELEASE_NAME", "PORT", "RELEASE_NAME", "SECRET_KEY_BASE"] or
+    key in [
+      "DATABASE_URL",
+      "MIX_RELEASE_NAME",
+      "PGPORT",
+      "PORT",
+      "RELEASE_NAME",
+      "SECRET_KEY_BASE"
+    ] or
       String.starts_with?(key, "ORCHARD_")
   end
 end

@@ -23,13 +23,12 @@ Homebrew-managed Mac, install and start it with:
 ```bash
 brew install postgresql@16
 brew services start postgresql@16
-pg_isready -h localhost
+pg_isready -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}"
 ```
 
 The dev config defaults to `PGUSER=postgres`, `PGPASSWORD=postgres`,
-`PGHOST=localhost`, and `PGDATABASE=orchard_dev`. Either create that local role
-with database-create privileges, or export `PGUSER`/`PGPASSWORD` for an
-existing local superuser before running `make dev`.
+`PGHOST=localhost`, `PGPORT=5432`, and `PGDATABASE=orchard_dev`.
+Either create that local role with database-create privileges, or export `PGUSER`/`PGPASSWORD` for an existing local superuser before running `make dev`.
 
 ## Quick Start
 
@@ -140,7 +139,12 @@ posture.
 | `PGUSER` | `postgres` | PostgreSQL user |
 | `PGPASSWORD` | `postgres` | PostgreSQL password |
 | `PGHOST` | `localhost` | PostgreSQL host |
+| `PGPORT` | `5432` | Source controller, test, and benchmark PostgreSQL port. Must be an unsigned decimal integer in `1..65535`; explicit empty or malformed values fail during configuration evaluation. |
 | `PGDATABASE` | `orchard_dev` | Database name |
+
+Controller-bearing source roles validate and use `PGPORT`.
+`bin/dev-node-agent` ignores it because the node-agent-only role does not use PostgreSQL.
+Packaged controller and CLI releases continue to take the database port from `DATABASE_URL`.
 
 #### Controller Inference
 
