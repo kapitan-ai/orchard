@@ -1,19 +1,38 @@
 #!/bin/bash
 #
 # Verify Orchard staged or expanded PKG payload Mach-O dependency closure.
-# Usage: scripts/verify-staged-venv-closure.sh [--no-smoke] <staging-or-expanded-root>
+# Usage: scripts/verify-staged-venv-closure.sh [--no-smoke] [--forbid-path <path>]... <staging-or-expanded-root>
+#
+# --forbid-path names an extra build-host root (for example the repo checkout) that
+# staged pyvenv.cfg and bin/ launcher contents must not reference; repeat per root.
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--no-smoke] <staging-or-expanded-root>" >&2
+    echo "Usage: $0 [--no-smoke] [--forbid-path <path>]... <staging-or-expanded-root>" >&2
 }
 
 RUN_SMOKE=true
-if [[ $# -gt 0 && "$1" == "--no-smoke" ]]; then
-    RUN_SMOKE=false
-    shift
-fi
+FORBIDDEN_ROOTS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-smoke)
+            RUN_SMOKE=false
+            shift
+            ;;
+        --forbid-path)
+            if [[ $# -lt 2 ]]; then
+                usage
+                exit 64
+            fi
+            FORBIDDEN_ROOTS+=("$2")
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 if [[ $# -ne 1 ]]; then
     usage
@@ -33,15 +52,33 @@ for required in python3 file otool; do
     fi
 done
 
-python3 - "$ROOT" "$RUN_SMOKE" <<'PY'
+python3 - "$ROOT" "$RUN_SMOKE" "${FORBIDDEN_ROOTS[@]:-}" <<'PY'
+import hashlib
+import json
 import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 from typing import Optional
 
 root = pathlib.Path(sys.argv[1]).resolve()
 run_smoke = sys.argv[2] == "true"
+
+
+def forbidden_root_variants(values: list[str]) -> tuple[str, ...]:
+    variants: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        candidate = pathlib.Path(value)
+        for form in (str(candidate), str(candidate.resolve(strict=False))):
+            if form not in variants:
+                variants.append(form)
+    return tuple(variants)
+
+
+forbidden_roots = forbidden_root_variants(sys.argv[3:])
 payload_rel = pathlib.Path("Library/Application Support/Orchard")
 install_prefix = pathlib.Path("/Library/Application Support/Orchard")
 allowed_system_prefixes = ("/usr/lib/", "/System/Library/")
@@ -53,7 +90,8 @@ forbidden_path_fragments = (
     "/private/var/",
     "/var/folders/",
 )
-forbidden_cfg_fragments = forbidden_path_fragments + (".local/share/uv",)
+forbidden_cfg_fragments = forbidden_path_fragments + (".local/share/uv",) + forbidden_roots
+forbidden_launcher_fragments = forbidden_cfg_fragments + (".venv-pkg", str(root))
 errors: list[str] = []
 
 
@@ -348,7 +386,16 @@ def orchard_editable_pth(pth: pathlib.Path, pkg: str) -> bool:
     return False
 
 
-def run_smoke_command(args: list[str], env: dict[str, str], timeout_label: str) -> Optional[subprocess.CompletedProcess[str]]:
+default_smoke_timeout = 10
+tokenizer_preflight_timeout = 180
+
+
+def run_smoke_command(
+    args: list[str],
+    env: dict[str, str],
+    timeout_label: str,
+    timeout_seconds: int = default_smoke_timeout,
+) -> Optional[subprocess.CompletedProcess[str]]:
     try:
         return subprocess.run(
             args,
@@ -356,11 +403,97 @@ def run_smoke_command(args: list[str], env: dict[str, str], timeout_label: str) 
             capture_output=True,
             check=False,
             env=env,
-            timeout=10,
+            timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        errors.append(f"{timeout_label} timed out after 10s")
+        errors.append(f"{timeout_label} timed out after {timeout_seconds}s")
         return None
+
+
+def verify_tokenizer_safe_preflight(python: pathlib.Path, entry: pathlib.Path, env: dict[str, str]) -> None:
+    with tempfile.TemporaryDirectory(prefix="orchard-tokenizer-installed-smoke-") as temp_dir:
+        bundle = pathlib.Path(temp_dir)
+        generator = """
+import pathlib
+import sys
+from tokenizers import Tokenizer
+from tokenizers.decoders import ByteLevel as ByteLevelDecoder
+from tokenizers.models import BPE
+from tokenizers.pre_tokenizers import ByteLevel
+from tokenizers.trainers import BpeTrainer
+
+root = pathlib.Path(sys.argv[1])
+corpus = root / "corpus.txt"
+corpus.write_text("hello orchard user assistant system lookup weather", encoding="utf-8")
+tokenizer = Tokenizer(BPE(unk_token="<unk>"))
+tokenizer.pre_tokenizer = ByteLevel(add_prefix_space=False)
+tokenizer.decoder = ByteLevelDecoder()
+trainer = BpeTrainer(
+    vocab_size=300,
+    initial_alphabet=ByteLevel.alphabet(),
+    special_tokens=["<unk>", "<|im_end|>", "<|im_start|>"],
+)
+tokenizer.train([str(corpus)], trainer)
+tokenizer.save(str(root / "tokenizer.json"))
+(root / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+(root / "chat_template.jinja").write_text(
+    "<|im_start|>{{ messages[0]['role'] }}\\n{{ messages[0]['content'] }}\\n<|im_end|>",
+    encoding="utf-8",
+)
+"""
+        generated = run_smoke_command(
+            [str(python), "-c", generator, str(bundle)],
+            env,
+            f"installed tokenizer smoke fixture generation failed: {rel(python)}",
+            tokenizer_preflight_timeout,
+        )
+        if generated is None:
+            return
+        if generated.returncode != 0:
+            errors.append(
+                f"installed tokenizer smoke fixture generation failed: {rel(python)}: {detail_from(generated)}"
+            )
+            return
+
+        control_tokens = ["<|im_end|>", "<|im_start|>"]
+        payload = {
+            "contract_version": 3,
+            "command": "preflight_safe_tokenization",
+            "assets": {
+                "tokenizer_kind": "huggingface_tokenizer_json",
+                "tokenizer_path": str(bundle / "tokenizer.json"),
+                "tokenizer_config_path": str(bundle / "tokenizer_config.json"),
+                "chat_template_path": str(bundle / "chat_template.jinja"),
+            },
+            "safe_tokenization": {
+                "control_tokens": control_tokens,
+                "catalog_sha256": hashlib.sha256("\0".join(control_tokens).encode("utf-8")).hexdigest(),
+            },
+        }
+        preflight = run_smoke_command(
+            [str(entry), "--request-json", json.dumps(payload)],
+            env,
+            f"installed tokenizer safe-tokenization preflight smoke failed: {rel(entry)}",
+            tokenizer_preflight_timeout,
+        )
+        if preflight is None:
+            return
+        try:
+            response = json.loads(preflight.stdout)
+        except json.JSONDecodeError:
+            response = None
+        result = response.get("result") if isinstance(response, dict) else None
+        if (
+            preflight.returncode != 0
+            or not isinstance(response, dict)
+            or response.get("ok") is not True
+            or not isinstance(result, dict)
+            or result.get("compatible") is not True
+        ):
+            errors.append(
+                "installed tokenizer safe-tokenization preflight smoke failed: "
+                f"{rel(entry)}: {detail_from(preflight) or preflight.stdout.strip() or 'invalid response'}"
+            )
 
 
 def verify_known_helper_static(venv: pathlib.Path, helper: dict[str, str]) -> pathlib.Path:
@@ -404,6 +537,8 @@ def verify_known_helper_smoke(venv: pathlib.Path, python: pathlib.Path, entry: p
         )
         if entry_smoke is not None and entry_smoke.returncode != 0:
             errors.append(f"{helper['entry']} entrypoint smoke failed: {rel(entry)}: {detail_from(entry_smoke)}")
+        if pkg == "orchard_tokenizer":
+            verify_tokenizer_safe_preflight(python, entry, env)
 
 
 def verify_venv(venv: pathlib.Path) -> None:
@@ -448,15 +583,12 @@ def verify_venv(venv: pathlib.Path) -> None:
         for script in bin_dir.glob("*"):
             if script.is_symlink() or not script.is_file() or is_macho(script):
                 continue
-            try:
-                first_line = script.read_text(errors="replace").splitlines()[0]
-            except IndexError:
+            text = script.read_text(errors="replace")
+            if not text.startswith("#!"):
                 continue
-            if not first_line.startswith("#!"):
-                continue
-            for fragment in forbidden_cfg_fragments:
-                if fragment in first_line:
-                    errors.append(f"script shebang has build-host path fragment {fragment!r}: {rel(script)}")
+            for fragment in forbidden_launcher_fragments:
+                if fragment in text:
+                    errors.append(f"script launcher has build-host path fragment {fragment!r}: {rel(script)}")
                     break
 
     if run_smoke and python.exists() and not python.is_symlink():
