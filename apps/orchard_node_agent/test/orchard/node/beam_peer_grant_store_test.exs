@@ -333,7 +333,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
         )
       end)
 
-    assert_receive {:publisher_cleanup, first_pid, temporary}
+    # `install/5` spawns the `lockf` OS process before it reaches `remove_file`,
+    # so the default 100ms `assert_receive` window is too tight under load.
+    assert_receive {:publisher_cleanup, first_pid, temporary}, 5_000
     assert File.exists?(temporary)
 
     second =
@@ -383,7 +385,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
         )
       end)
 
-    assert_receive {:child_test_publisher_cleanup, first_pid, temporary}
+    # `install/5` spawns the `lockf` OS process before it reaches `remove_file`,
+    # so the default 100ms `assert_receive` window is too tight under load.
+    assert_receive {:child_test_publisher_cleanup, first_pid, temporary}, 5_000
     assert File.exists?(temporary)
 
     ready_path = Path.join(root, "child-ready")
