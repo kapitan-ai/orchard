@@ -161,6 +161,24 @@ def loader_path_rpath(macho: pathlib.Path, candidate_dir: pathlib.Path) -> str:
     return "@loader_path/" + relative.replace(os.sep, "/")
 
 
+def python_launcher_body(text: str) -> Optional[str]:
+    lines = text.splitlines(keepends=True)
+    if not lines or not lines[0].startswith("#!"):
+        return None
+    if "python" in lines[0]:
+        return "".join(lines[1:])
+    if (
+        len(lines) >= 3
+        and lines[0].rstrip("\r\n") in {"#!/bin/sh", "#!/usr/bin/env sh"}
+        and lines[1].lstrip().startswith("'''exec' ")
+        and "python" in lines[1]
+        and '"$0" "$@"' in lines[1]
+        and lines[2].strip() == "' '''"
+    ):
+        return "".join(lines[3:])
+    return None
+
+
 def remediate_venv_rpath_deps(venv: pathlib.Path) -> None:
     executable_dir = venv / "bin"
     added_rpaths: set[tuple[pathlib.Path, str]] = set()
@@ -245,13 +263,11 @@ for venv in venvs:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        if not text.startswith("#!"):
+        body = python_launcher_body(text)
+        if body is None:
             continue
-        first, sep, rest = text.partition("\n")
-        if "python" not in first:
-            continue
-        launcher = "#!/bin/sh\n'''exec' \"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)/python\" \"$0\" \"$@\"\n' '''"
-        script.write_text(launcher + (sep + rest if sep else "\n"))
+        launcher = "#!/bin/sh\n'''exec' \"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)/python\" \"$0\" \"$@\"\n' '''\n"
+        script.write_text(launcher + body)
         os.chmod(script, mode)
 
     cfg = venv / "pyvenv.cfg"
