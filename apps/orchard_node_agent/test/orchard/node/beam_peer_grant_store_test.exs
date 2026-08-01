@@ -7,6 +7,10 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
   alias Orchard.Node.{BeamPeerGrantClient, BeamPeerGrantStore}
   alias Orchard.Node.BeamPeerGrantClient.GRPCTransport
 
+  @fixture_activation_backdate_seconds 60
+  @fixture_validity_seconds 30 * 24 * 60 * 60
+  @fixture_anchor_tolerance_seconds 3600
+
   defmodule FakeControlTransport do
     def retrieve(target, credential, request) do
       send(self(), {:grant_control_retrieve, target, credential, request})
@@ -579,7 +583,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
              BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
   end
 
-  test "SPEC.md §7.5.0 ordinary store fixture remains valid after its former calendar expiry" do
+  test "SPEC.md §7.5.0 the ordinary store fixture anchors its window to the current clock" do
     root =
       Path.join(
         System.tmp_dir!(),
@@ -591,17 +595,22 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     identity = identity()
-    after_former_expiry = ~U[2026-08-12 08:00:01.000000Z]
-    delivery = delivery(identity, after_former_expiry)
+    before_build = DateTime.utc_now()
+    delivery = delivery(identity)
+
+    assert DateTime.compare(delivery.not_before_at, before_build) == :lt
+
+    assert DateTime.diff(before_build, delivery.not_before_at, :second) <
+             @fixture_anchor_tolerance_seconds
+
+    assert DateTime.diff(delivery.expires_at, delivery.not_before_at, :second) ==
+             @fixture_validity_seconds
 
     assert {:ok, _stored} =
-             BeamPeerGrantStore.install(
-               root,
-               identity,
-               delivery,
-               delivery.node_beam_name,
-               now: fn -> after_former_expiry end
-             )
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    assert {:ok, loaded} = BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+    assert loaded.grant_id == delivery.grant_id
   end
 
   test "SPEC.md §7.5.0 a freshly delivered expired grant is never persisted" do
@@ -975,7 +984,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
 
   defp delivery(identity, reference_time) do
     encoded_secret = Base.url_encode64(:binary.copy(<<5>>, 32), padding: false)
-    not_before_at = DateTime.add(reference_time, -1, :second)
+    not_before_at = DateTime.add(reference_time, -@fixture_activation_backdate_seconds, :second)
 
     %{
       grant_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -995,7 +1004,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       issued_at: not_before_at,
       not_before_at: not_before_at,
       cutover_at: nil,
-      expires_at: DateTime.add(not_before_at, 30 * 24 * 60 * 60, :second),
+      expires_at: DateTime.add(not_before_at, @fixture_validity_seconds, :second),
       encoded_secret: encoded_secret,
       secret_hash: :crypto.hash(:sha256, encoded_secret)
     }
