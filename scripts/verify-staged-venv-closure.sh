@@ -2,6 +2,9 @@
 #
 # Verify Orchard staged or expanded PKG payload Mach-O dependency closure.
 # Usage: scripts/verify-staged-venv-closure.sh [--no-smoke] [--forbid-path <path>]... <staging-or-expanded-root>
+#
+# --forbid-path names an extra build-host root (for example the repo checkout) that
+# staged pyvenv.cfg and bin/ launcher contents must not reference; repeat per root.
 
 set -euo pipefail
 
