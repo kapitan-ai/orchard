@@ -419,6 +419,7 @@ on transport modes, truthy/falsy values, and validation behavior.
 | `config/prod.exs` | Prod placeholder |
 | `config/runtime.exs` | Release-time config from env vars |
 | `config/m1_runtime_defaults.exs` | Shared defaults for source-dev runtime settings |
+| `config/source_postgres.exs` | Shared `PGPORT` parsing/validation for source dev, test, and benchmark database config |
 
 ### Dev Directory Structure
 
