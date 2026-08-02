@@ -185,11 +185,16 @@ defmodule Orchard.Nodes do
     _ -> []
   end
 
-  @doc "Returns certificate-backed targets for status-only activation probes."
+  @doc """
+  Returns certificate-backed targets for status-only liveness and activation probes.
+
+  Includes both `:admitted` (activation) and `:active` (idle liveness) Nodes so the
+  single supervised probe can refresh heartbeats without a second poller.
+  """
   @spec activation_probe_runtime_endpoint_targets() ::
           {:ok, [Target.t()]} | {:error, :node_inventory_unavailable}
   def activation_probe_runtime_endpoint_targets do
-    trusted_runtime_endpoint_targets_for_states([:admitted])
+    trusted_runtime_endpoint_targets_for_states([:admitted, :active])
   end
 
   @doc "Returns certificate-backed targets authorized for inference and dispatch."
@@ -454,7 +459,7 @@ defmodule Orchard.Nodes do
     with true <- repo_available?(),
          :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
          {:ok, peer_identity} <- normalize_authenticated_peer_identity(peer_identity),
-         true <- authenticated_healthy_status?(status_response),
+         true <- authenticated_status_health_present?(status_response),
          {:ok, observation} <- normalize_observation(target, status_response, observed_at),
          true <- observation.id == peer_identity.node_id do
       handle_observation_result(
@@ -759,6 +764,11 @@ defmodule Orchard.Nodes do
   - `{:connect_failed, _}` - gRPC channel could not be established
   - `:node_unavailable` / `:beam_node_unavailable` - node not reachable
   - `:node_timeout` / `:beam_node_timeout` - probe or RPC timed out
+  - `:authenticated_transport_failed` - authenticated gRPC transport failed
+  - `:beam_peer_grant_authorization_unavailable` - BEAM peer grant/connect failed
+
+  Non-transport seam rejections (`:authenticated_observation_rejected`,
+  `:beam_peer_observation_rejected`) are ignored and do not demote.
 
   Returns:
   - `{:ok, %Node{}}` when health was updated
@@ -781,6 +791,56 @@ defmodule Orchard.Nodes do
     end
   rescue
     _ -> :noop
+  end
+
+  @doc """
+  Demotes Nodes whose last heartbeat is older than the unreachable threshold.
+
+  Leader-gated. Uses the same graded health path as transport failure recording so
+  idle Node loss is detected even when no probe failure is observed in the current
+  cycle. Bounds detection at approximately `unreachable_threshold + sweep_interval`.
+  """
+  @spec sweep_stale_node_heartbeats(DateTime.t()) :: {:ok, non_neg_integer()} | :noop
+  def sweep_stale_node_heartbeats(observed_at \\ DateTime.utc_now()) do
+    with true <- repo_available?(),
+         :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
+         true <- is_struct(observed_at, DateTime) do
+      cutoff = DateTime.add(observed_at, -unreachable_threshold_ms(), :millisecond)
+
+      updated =
+        cutoff
+        |> stale_heartbeat_node_ids()
+        |> Enum.reduce(0, fn node_id, count ->
+          demote_stale_heartbeat_node(node_id, observed_at, count)
+        end)
+
+      {:ok, updated}
+    else
+      _ -> :noop
+    end
+  rescue
+    _ -> :noop
+  end
+
+  defp stale_heartbeat_node_ids(cutoff) do
+    Node
+    |> where([n], n.state in [:admitted, :active])
+    |> where([n], not is_nil(n.last_heartbeat_at))
+    |> where([n], n.last_heartbeat_at < ^cutoff)
+    |> where([n], n.health not in [:unreachable, :unhealthy])
+    |> select([n], n.id)
+    |> Repo.all()
+  end
+
+  defp demote_stale_heartbeat_node(node_id, observed_at, count) do
+    case mark_target_unreachable_without_queue_cleanup({:node_id, node_id}, observed_at) do
+      {:ok, %Node{} = node} ->
+        clear_node_queue_capacity_sources(node)
+        count + 1
+
+      :noop ->
+        count
+    end
   end
 
   @doc """
@@ -825,6 +885,17 @@ defmodule Orchard.Nodes do
     end
   rescue
     _ -> :noop
+  end
+
+  defp mark_target_unreachable_without_queue_cleanup(
+         {:node_id, _node_id} = target_lookup,
+         observed_at
+       ) do
+    if repo_available?() do
+      execute_mark_unreachable(target_lookup, observed_at)
+    else
+      :noop
+    end
   end
 
   defp mark_target_unreachable_without_queue_cleanup(target, observed_at) do
@@ -1364,7 +1435,7 @@ defmodule Orchard.Nodes do
            :ok <- ensure_authenticated_enrollment(enrollment, peer_identity),
            :ok <- ensure_authenticated_node(node, observation, peer_identity),
            :ok <- ensure_authenticated_beam_target(target, node, enrollment, grant, controller),
-           true <- authenticated_healthy_observation?(observation),
+           true <- accept_authenticated_observation_health?(node, observation),
            true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
            :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation),
            :ok <- BeamPeerGrants.ensure_active_grant_current(grant.id, opts) do
@@ -1387,7 +1458,7 @@ defmodule Orchard.Nodes do
            :ok <- ensure_authenticated_enrollment(enrollment, peer_identity),
            :ok <- ensure_authenticated_node(node, observation, peer_identity),
            :ok <- ensure_authenticated_target(target, node, enrollment),
-           true <- authenticated_healthy_observation?(observation),
+           true <- accept_authenticated_observation_health?(node, observation),
            true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
            :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation) do
         update_authenticated_observation(node, observation)
@@ -2619,20 +2690,25 @@ defmodule Orchard.Nodes do
     }
   end
 
-  defp authenticated_healthy_status?(status_response) do
+  # Require a boolean ready flag so empty/garbage health maps cannot derive to
+  # a false healthy observation through the authenticated seam.
+  defp authenticated_status_health_present?(status_response) do
     case extract_runtime_health(status_response) do
-      %{} = health ->
-        map_get(health, :ready) == true and
-          not non_empty?(map_get(health, :health_code)) and
-          not non_empty?(map_get(health, :health_message))
-
-      _other ->
-        false
+      %{} = health -> is_boolean(map_get(health, :ready))
+      _other -> false
     end
   end
 
-  defp authenticated_healthy_observation?(%{health: :healthy}), do: true
-  defp authenticated_healthy_observation?(_observation), do: false
+  # Already-:active Nodes may record degraded/unhealthy observations.
+  # :admitted → :active promotion remains healthy-gated.
+  defp accept_authenticated_observation_health?(%Node{state: :active}, %{health: health})
+       when health in [:healthy, :degraded, :unhealthy],
+       do: true
+
+  defp accept_authenticated_observation_health?(%Node{state: :admitted}, %{health: :healthy}),
+    do: true
+
+  defp accept_authenticated_observation_health?(_node, _observation), do: false
 
   defp fresh_authenticated_observation?(%DateTime{} = observed_at) do
     now = DateTime.utc_now()
@@ -2849,5 +2925,7 @@ defmodule Orchard.Nodes do
   defp transport_failure_reason?(:node_timeout), do: true
   defp transport_failure_reason?(:beam_node_unavailable), do: true
   defp transport_failure_reason?(:beam_node_timeout), do: true
+  defp transport_failure_reason?(:authenticated_transport_failed), do: true
+  defp transport_failure_reason?(:beam_peer_grant_authorization_unavailable), do: true
   defp transport_failure_reason?(_reason), do: false
 end

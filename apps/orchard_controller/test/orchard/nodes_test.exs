@@ -4270,6 +4270,81 @@ defmodule Orchard.NodesTest do
       assert marked.health == :degraded
     end
 
+    test "SPEC.md §4.5 :authenticated_transport_failed is classified as transport failure" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.75",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.75", 9444),
+                 :authenticated_transport_failed,
+                 observed_at
+               )
+
+      assert marked.health == :degraded
+    end
+
+    test "SPEC.md §4.5 :beam_peer_grant_authorization_unavailable is classified as transport failure" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.76",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.76", 9444),
+                 :beam_peer_grant_authorization_unavailable,
+                 observed_at
+               )
+
+      assert marked.health == :degraded
+    end
+
+    test "SPEC.md §4.5 seam observation rejections are not transport demotions" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.77",
+          rpc_port: 9444,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+      target = make_target("10.0.0.77", 9444)
+
+      assert :noop =
+               Nodes.record_transport_failure(
+                 target,
+                 :authenticated_observation_rejected,
+                 observed_at
+               )
+
+      assert :noop =
+               Nodes.record_transport_failure(
+                 target,
+                 :beam_peer_observation_rejected,
+                 observed_at
+               )
+
+      assert Repo.get!(Node, node.id).health == :healthy
+    end
+
     test "SPEC.md §5.5 transport failure clears stale queue capacity sources" do
       QueueManager.reset()
 
@@ -4516,6 +4591,62 @@ defmodule Orchard.NodesTest do
   end
 
   # -- Schedulable nodes --
+
+  describe "sweep_stale_node_heartbeats/1" do
+    test "SPEC.md §4.5 demotes active nodes past unreachable threshold" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.80",
+          rpc_port: 9444,
+          state: :active,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, 1} = Nodes.sweep_stale_node_heartbeats(observed_at)
+      assert Repo.get!(Node, node.id).health == :unreachable
+    end
+
+    test "SPEC.md §4.5 does not demote when heartbeat is still within threshold" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.81",
+          rpc_port: 9444,
+          state: :active,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, 0} = Nodes.sweep_stale_node_heartbeats(observed_at)
+      assert Repo.get!(Node, node.id).health == :healthy
+    end
+
+    test "SPEC.md §4.5 leaves sticky unhealthy nodes unchanged" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.82",
+          rpc_port: 9444,
+          state: :active,
+          health: :unhealthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, 0} = Nodes.sweep_stale_node_heartbeats(observed_at)
+      assert Repo.get!(Node, node.id).health == :unhealthy
+    end
+  end
 
   describe "schedulable_nodes/0" do
     test "returns active, healthy nodes within freshness threshold" do
