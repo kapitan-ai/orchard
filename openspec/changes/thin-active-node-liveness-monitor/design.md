@@ -26,6 +26,8 @@ Reuse `Orchard.RuntimeEndpoint.ActivationProbe` (already supervised and
 6. **Interval contract** — interval must be `<` unreachable and freshness thresholds;
    `assert_interval_contract!/1` is the strict assertion, while GenServer `init` logs and
    clamps so a threshold misconfiguration degrades detection instead of blocking boot.
+   The clamp holds a 1s floor; thresholds too small to admit a safe interval fall back to
+   the default interval so the probe timer cannot busy-loop.
 
 ## SPEC §4.6 push-vs-pull
 

@@ -90,6 +90,29 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
     assert :ok = ActivationProbe.assert_interval_contract!(interval)
   end
 
+  test "SPEC.md §4.5 clamped interval never drops below the busy-loop floor" do
+    previous = Application.get_env(:orchard_controller, :inference, [])
+
+    on_exit(fn ->
+      if previous in [nil, []] do
+        Application.delete_env(:orchard_controller, :inference)
+      else
+        Application.put_env(:orchard_controller, :inference, previous)
+      end
+    end)
+
+    put_unreachable_threshold!(previous, 3_000)
+
+    assert {:ok, tight} = start_supervised({ActivationProbe, interval: 60_000})
+    assert %{interval: 1_500} = :sys.get_state(tight)
+    assert :ok = stop_supervised(ActivationProbe)
+
+    put_unreachable_threshold!(previous, 15)
+
+    assert {:ok, pathological} = start_supervised({ActivationProbe, interval: 60_000})
+    assert %{interval: 5_000} = :sys.get_state(pathological)
+  end
+
   test "SPEC.md §4.5 transport failure during probe demotes active node" do
     hb_time = DateTime.utc_now()
 
@@ -178,6 +201,14 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
              ActivationProbe.run_once(client: IdleClient, timeout: 50)
 
     assert Nodes.sweep_stale_node_heartbeats() == :noop
+  end
+
+  defp put_unreachable_threshold!(previous, threshold_ms) do
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(previous || [], node_unreachable_threshold_ms: threshold_ms)
+    )
   end
 
   defp insert_active_node!(overrides) do

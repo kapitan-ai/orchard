@@ -18,6 +18,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   @default_interval_ms 5_000
   @default_timeout_ms 5_000
+  @min_interval_ms 1_000
   @transport_clients [BeamClient, GrpcCompatibilityClient]
 
   @type result :: %{required(:target_id) => String.t(), required(:status) => :observed}
@@ -36,7 +37,9 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   Raises `ArgumentError` when the given interval would void the detection bound.
   `init/1` clamps instead of raising so a threshold misconfiguration degrades
-  liveness detection rather than blocking Controller boot.
+  liveness detection rather than blocking Controller boot. Clamping holds a 1s
+  floor; thresholds too small to admit a safe interval fall back to the default
+  interval and log an error rather than busy-looping the probe timer.
   """
   @spec assert_interval_contract!(pos_integer()) :: :ok
   def assert_interval_contract!(interval \\ interval_ms())
@@ -187,16 +190,26 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
     ceiling =
       min(Inference.node_unreachable_threshold_ms(), Inference.node_freshness_threshold_ms())
 
-    if interval < ceiling do
-      interval
-    else
-      clamped = clamped_interval(ceiling)
+    cond do
+      interval < ceiling ->
+        interval
 
-      Logger.warning(
-        "activation_probe interval_ms=#{interval} must be < #{ceiling}; clamping to #{clamped}"
-      )
+      is_integer(ceiling) and ceiling > @min_interval_ms ->
+        clamped = clamped_interval(ceiling)
 
-      clamped
+        Logger.warning(
+          "activation_probe interval_ms=#{interval} must be < #{ceiling}; clamping to #{clamped}"
+        )
+
+        clamped
+
+      true ->
+        Logger.error(
+          "activation_probe cannot satisfy interval_ms < #{inspect(ceiling)} above the " <>
+            "#{@min_interval_ms}ms floor; using #{@default_interval_ms} and degrading liveness detection"
+        )
+
+        @default_interval_ms
     end
   end
 
@@ -209,10 +222,12 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
     contract_safe_interval(@default_interval_ms)
   end
 
-  defp clamped_interval(ceiling) when is_integer(ceiling) and ceiling > 1,
-    do: min(@default_interval_ms, div(ceiling, 2))
-
-  defp clamped_interval(_ceiling), do: 1
+  defp clamped_interval(ceiling) do
+    ceiling
+    |> div(2)
+    |> min(@default_interval_ms)
+    |> max(@min_interval_ms)
+  end
 
   defp schedule_probe(interval) when is_integer(interval) and interval > 0 do
     Process.send_after(self(), :probe, interval)
