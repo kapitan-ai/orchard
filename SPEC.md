@@ -798,8 +798,11 @@ Active-Node liveness SHALL be maintained by a leader-owned background status obs
 Endpoint Nodes on a bounded interval strictly below both heartbeat thresholds, independent
 of request traffic. Successful authenticated observations advance `last_heartbeat_at`,
 re-derive health, and refresh aggregate capacity evidence in one write. Transport failures
-and a periodic heartbeat-age sweep demote health through the graded path (`degraded`, then
-`unreachable` past the unreachable threshold). Non-healthy observations from already-active
+and a periodic heartbeat-age sweep over `:active` Nodes demote health through the graded path
+(`degraded`, then `unreachable` past the unreachable threshold); a Node already recorded
+`unhealthy` SHALL keep that health until a successful observation clears it, and `:admitted`
+Nodes SHALL NOT be swept because a stalled admitted heartbeat usually means the observation
+seam is rejecting a reachable Node. Non-healthy observations from already-active
 Nodes SHALL be recorded; `:admitted` to `:active` promotion remains healthy-gated.
 A standby Controller SHALL write nothing on this path.
 

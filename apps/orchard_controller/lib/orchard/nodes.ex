@@ -794,11 +794,15 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
-  Demotes Nodes whose last heartbeat is older than the unreachable threshold.
+  Demotes `:active` Nodes whose last heartbeat is older than the unreachable threshold.
 
   Leader-gated. Uses the same graded health path as transport failure recording so
   idle Node loss is detected even when no probe failure is observed in the current
   cycle. Bounds detection at approximately `unreachable_threshold + sweep_interval`.
+
+  `:admitted` Nodes are excluded: a stalled admitted heartbeat usually means the
+  controller-side observation seam is rejecting a reachable Node, not Node loss.
+  Nodes already recorded `:unhealthy` keep that health until an observation clears it.
   """
   @spec sweep_stale_node_heartbeats(DateTime.t()) :: {:ok, non_neg_integer()} | :noop
   def sweep_stale_node_heartbeats(observed_at \\ DateTime.utc_now()) do
@@ -810,9 +814,7 @@ defmodule Orchard.Nodes do
       updated =
         cutoff
         |> stale_heartbeat_node_ids()
-        |> Enum.reduce(0, fn node_id, count ->
-          demote_stale_heartbeat_node(node_id, observed_at, count)
-        end)
+        |> Enum.count(&demote_stale_heartbeat_node(&1, observed_at))
 
       {:ok, updated}
     else
@@ -824,7 +826,7 @@ defmodule Orchard.Nodes do
 
   defp stale_heartbeat_node_ids(cutoff) do
     Node
-    |> where([n], n.state in [:admitted, :active])
+    |> where([n], n.state == :active)
     |> where([n], not is_nil(n.last_heartbeat_at))
     |> where([n], n.last_heartbeat_at < ^cutoff)
     |> where([n], n.health not in [:unreachable, :unhealthy])
@@ -832,14 +834,14 @@ defmodule Orchard.Nodes do
     |> Repo.all()
   end
 
-  defp demote_stale_heartbeat_node(node_id, observed_at, count) do
-    case mark_target_unreachable_without_queue_cleanup({:node_id, node_id}, observed_at) do
+  defp demote_stale_heartbeat_node(node_id, observed_at) do
+    case execute_mark_unreachable({:node_id, node_id}, observed_at) do
       {:ok, %Node{} = node} ->
         clear_node_queue_capacity_sources(node)
-        count + 1
+        true
 
       :noop ->
-        count
+        false
     end
   end
 
@@ -885,17 +887,6 @@ defmodule Orchard.Nodes do
     end
   rescue
     _ -> :noop
-  end
-
-  defp mark_target_unreachable_without_queue_cleanup(
-         {:node_id, _node_id} = target_lookup,
-         observed_at
-       ) do
-    if repo_available?() do
-      execute_mark_unreachable(target_lookup, observed_at)
-    else
-      :noop
-    end
   end
 
   defp mark_target_unreachable_without_queue_cleanup(target, observed_at) do

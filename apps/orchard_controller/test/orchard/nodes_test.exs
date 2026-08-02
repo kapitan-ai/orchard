@@ -4646,6 +4646,24 @@ defmodule Orchard.NodesTest do
       assert {:ok, 0} = Nodes.sweep_stale_node_heartbeats(observed_at)
       assert Repo.get!(Node, node.id).health == :unhealthy
     end
+
+    test "SPEC.md §4.5 leaves admitted nodes to the observation seam" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.83",
+          rpc_port: 9444,
+          state: :admitted,
+          health: :degraded,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, 0} = Nodes.sweep_stale_node_heartbeats(observed_at)
+      assert Repo.get!(Node, node.id).health == :degraded
+    end
   end
 
   describe "schedulable_nodes/0" do

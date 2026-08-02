@@ -18,6 +18,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   @default_interval_ms 5_000
   @default_timeout_ms 5_000
+  @transport_clients [BeamClient, GrpcCompatibilityClient]
 
   @type result :: %{required(:target_id) => String.t(), required(:status) => :observed}
 
@@ -33,7 +34,9 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   @doc """
   Asserts the probe interval is strictly below freshness and unreachable thresholds.
 
-  Raises `ArgumentError` when the configured interval would void the detection bound.
+  Raises `ArgumentError` when the given interval would void the detection bound.
+  `init/1` clamps instead of raising so a threshold misconfiguration degrades
+  liveness detection rather than blocking Controller boot.
   """
   @spec assert_interval_contract!(pos_integer()) :: :ok
   def assert_interval_contract!(interval \\ interval_ms())
@@ -83,8 +86,11 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   @impl true
   def init(opts) do
-    interval = Keyword.get(opts, :interval, configured_interval())
-    assert_interval_contract!(interval)
+    interval =
+      opts
+      |> Keyword.get(:interval, configured_interval())
+      |> contract_safe_interval()
+
     schedule_probe(interval)
     {:ok, %{interval: interval}}
   end
@@ -158,15 +164,17 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   defp probe_failure_code({reason, _detail}) when is_atom(reason), do: reason
   defp probe_failure_code(_reason), do: :activation_probe_failed
 
-  defp allowed_client?(client) do
-    defaults = [BeamClient, GrpcCompatibilityClient]
+  if Mix.env() == :test do
+    defp allowed_client?(client) do
+      extras =
+        :orchard_controller
+        |> Application.get_env(:activation_probe, [])
+        |> Keyword.get(:allowed_clients, [])
 
-    extras =
-      :orchard_controller
-      |> Application.get_env(:activation_probe, [])
-      |> Keyword.get(:allowed_clients, [])
-
-    client in (defaults ++ extras)
+      client in (@transport_clients ++ extras)
+    end
+  else
+    defp allowed_client?(client), do: client in @transport_clients
   end
 
   defp configured_interval do
@@ -174,6 +182,37 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
     |> Application.get_env(:activation_probe, [])
     |> Keyword.get(:interval_ms, @default_interval_ms)
   end
+
+  defp contract_safe_interval(interval) when is_integer(interval) and interval > 0 do
+    ceiling =
+      min(Inference.node_unreachable_threshold_ms(), Inference.node_freshness_threshold_ms())
+
+    if interval < ceiling do
+      interval
+    else
+      clamped = clamped_interval(ceiling)
+
+      Logger.warning(
+        "activation_probe interval_ms=#{interval} must be < #{ceiling}; clamping to #{clamped}"
+      )
+
+      clamped
+    end
+  end
+
+  defp contract_safe_interval(interval) do
+    Logger.warning(
+      "activation_probe interval_ms=#{inspect(interval)} is not a positive integer; " <>
+        "using #{@default_interval_ms}"
+    )
+
+    contract_safe_interval(@default_interval_ms)
+  end
+
+  defp clamped_interval(ceiling) when is_integer(ceiling) and ceiling > 1,
+    do: min(@default_interval_ms, div(ceiling, 2))
+
+  defp clamped_interval(_ceiling), do: 1
 
   defp schedule_probe(interval) when is_integer(interval) and interval > 0 do
     Process.send_after(self(), :probe, interval)

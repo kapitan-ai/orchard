@@ -20,10 +20,12 @@ Reuse `Orchard.RuntimeEndpoint.ActivationProbe` (already supervised and
 4. **Failure path** — probe passes **raw** failure reasons to
    `Nodes.record_transport_failure/3`. Seam rejections fall through the classifier.
 5. **Sweep** — once per `run_once/1` cycle after probes:
-   `Nodes.sweep_stale_node_heartbeats/1` demotes aged heartbeats via the same graded
-   path as transport failure.
+   `Nodes.sweep_stale_node_heartbeats/1` demotes aged `:active` heartbeats via the same
+   graded path as transport failure. `:admitted` Nodes and sticky `:unhealthy` health are
+   left to the observation seam.
 6. **Interval contract** — interval must be `<` unreachable and freshness thresholds;
-   enforced at GenServer `init` and via `assert_interval_contract!/1`.
+   `assert_interval_contract!/1` is the strict assertion, while GenServer `init` logs and
+   clamps so a threshold misconfiguration degrades detection instead of blocking boot.
 
 ## SPEC §4.6 push-vs-pull
 

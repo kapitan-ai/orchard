@@ -1,6 +1,7 @@
 defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
   use Orchard.DataCase, async: false
 
+  alias Orchard.Inference
   alias Orchard.Nodes
   alias Orchard.Nodes.Node
   alias Orchard.RuntimeEndpoint.ActivationProbe
@@ -80,6 +81,15 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
     end
   end
 
+  test "SPEC.md §4.5 misconfigured interval clamps at init instead of blocking Controller boot" do
+    assert {:ok, pid} = start_supervised({ActivationProbe, interval: 60_000})
+
+    assert %{interval: interval} = :sys.get_state(pid)
+    assert interval < Inference.node_unreachable_threshold_ms()
+    assert interval < Inference.node_freshness_threshold_ms()
+    assert :ok = ActivationProbe.assert_interval_contract!(interval)
+  end
+
   test "SPEC.md §4.5 transport failure during probe demotes active node" do
     hb_time = DateTime.utc_now()
 
@@ -135,19 +145,12 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
         metadata: %{authorization: :inference_dispatch, source: :trusted_node_inventory}
       )
 
-    # Direct classifier pin used by ActivationProbe.record_probe_failure
-    assert :noop =
-             Nodes.record_transport_failure(
-               target,
-               :authenticated_observation_rejected,
-               DateTime.add(hb_time, 5, :second)
-             )
-
-    assert :noop =
-             Nodes.record_transport_failure(
-               target,
-               :beam_peer_observation_rejected,
-               DateTime.add(hb_time, 5, :second)
+    assert {:ok, []} =
+             ActivationProbe.run_once(
+               client: RejectingClient,
+               timeout: 50,
+               observed_at: DateTime.add(hb_time, 5, :second),
+               targets: [target]
              )
 
     reloaded = Repo.get!(Node, node.id)

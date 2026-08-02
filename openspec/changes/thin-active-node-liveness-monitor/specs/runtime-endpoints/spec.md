@@ -54,9 +54,13 @@ the graded demotion path used by `record_transport_failure/3`, including
 `:authenticated_transport_failed` and `:beam_peer_grant_authorization_unavailable`.
 Seam rejections `:authenticated_observation_rejected` and `:beam_peer_observation_rejected`
 MUST NOT demote health as transport failures.
-A leader-gated heartbeat-age sweep SHALL demote Nodes whose last heartbeat is older than
-`node_unreachable_threshold_ms`, bounding detection at approximately the unreachable
+A leader-gated heartbeat-age sweep SHALL demote `:active` Nodes whose last heartbeat is older
+than `node_unreachable_threshold_ms`, bounding detection at approximately the unreachable
 threshold plus one observer interval.
+`:admitted` Nodes MUST NOT be swept, because a stalled admitted heartbeat usually means the
+controller-side observation seam is rejecting a reachable Node rather than Node loss.
+Nodes already recorded `:unhealthy` MUST keep that health until a successful observation
+clears it.
 This requirement traces to `SPEC.md` §4.5 and ADR 0015.
 
 #### Scenario: Fresh transport failure degrades then ages to unreachable
@@ -71,6 +75,12 @@ This requirement traces to `SPEC.md` §4.5 and ADR 0015.
   `:beam_peer_observation_rejected`
 - **THEN** `record_transport_failure/3` is a no-op for demotion
 - **AND** Node health is unchanged by that classification
+
+#### Scenario: Sweep spares admitted and sticky-unhealthy Nodes
+- **WHEN** the heartbeat-age sweep runs against an `:admitted` Node, or an `:active` Node
+  already recorded `:unhealthy`, whose last heartbeat exceeds the unreachable threshold
+- **THEN** the Node health is left unchanged
+- **AND** only a successful authenticated observation can clear it
 
 ### Requirement: SPEC §4.6 push-versus-pull observation deferral
 The OpenSpec change and `SPEC.md` SHALL explicitly name the divergence between the

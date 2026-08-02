@@ -14,6 +14,7 @@
 - [x] 2.4 Add `Nodes.sweep_stale_node_heartbeats/1`
 - [x] 2.5 Wire `ActivationProbe` to record raw transport failures and run the sweep each cycle
 - [x] 2.6 Enforce probe interval strictly below freshness and unreachable thresholds
+      (strict assertion plus boot-safe clamp)
 - [x] 2.7 Acceptance and regression tests (see tasks 3.x)
 
 ## 3. Slice A tests

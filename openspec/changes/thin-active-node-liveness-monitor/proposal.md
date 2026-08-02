@@ -28,9 +28,11 @@ scheduler from the inline probe and is out of scope for A’s implementation.
   `:beam_peer_observation_rejected`) as transport demotions.
 - Relax authenticated health gates so already-`:active` Nodes record
   `:degraded`/`:unhealthy`; keep `:admitted` → `:active` promotion healthy-gated.
-- Add a periodic heartbeat-age sweep so detection is bounded at approximately
-  `unreachable_threshold + probe_interval`.
-- Enforce probe interval strictly below freshness (30s) and unreachable (15s) thresholds.
+- Add a periodic heartbeat-age sweep over `:active` Nodes so detection is bounded at
+  approximately `unreachable_threshold + probe_interval`, leaving `:admitted` Nodes and
+  sticky `:unhealthy` health to the observation seam.
+- Enforce probe interval strictly below freshness (30s) and unreachable (15s) thresholds,
+  clamping with a warning at boot rather than failing Controller startup.
 - Name the SPEC §4.6 push-versus-pull divergence and explicitly defer reconciliation,
   coupled to deferred §8 `node_heartbeats` work.
 - Update SPEC §4.5/§4.6.1 language so active-Node liveness is maintained by a

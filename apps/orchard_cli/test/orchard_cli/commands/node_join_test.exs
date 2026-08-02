@@ -534,7 +534,7 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
 
     assert active.id == node_id
     assert active.state == :active
-    assert Inference.activation_probe_runtime_endpoint_targets() == []
+    assert [%Target{node_id: ^node_id}] = Inference.activation_probe_runtime_endpoint_targets()
     assert [%Target{node_id: ^node_id} = active_target] = Inference.runtime_endpoint_targets()
     assert active_target.metadata.authorization == :inference_dispatch
     assert Enum.map(NodeInventory.schedulable_nodes(), & &1.id) == [node_id]
@@ -549,7 +549,7 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
 
     assert Repo.get!(InventoryNode, context.bundle["node_id"]).state == :admitted
 
-    assert {:ok, [%{target_id: target_id, status: :activated}]} =
+    assert {:ok, [%{target_id: target_id, status: :observed}]} =
              ActivationProbe.run_once()
 
     assert target_id == target.id
