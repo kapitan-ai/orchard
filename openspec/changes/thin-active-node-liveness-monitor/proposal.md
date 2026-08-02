@@ -32,7 +32,9 @@ scheduler from the inline probe and is out of scope for A’s implementation.
   approximately `unreachable_threshold + probe_interval`, leaving `:admitted` Nodes and
   sticky `:unhealthy` health to the observation seam.
 - Enforce probe interval strictly below freshness (30s) and unreachable (15s) thresholds,
-  clamping with a warning at boot rather than failing Controller startup.
+  clamping with a warning at boot rather than failing Controller startup, and falling back
+  to the default interval with an error log when thresholds sit below the minimum safe
+  interval floor.
 - Name the SPEC §4.6 push-versus-pull divergence and explicitly defer reconciliation,
   coupled to deferred §8 `node_heartbeats` work.
 - Update SPEC §4.5/§4.6.1 language so active-Node liveness is maintained by a

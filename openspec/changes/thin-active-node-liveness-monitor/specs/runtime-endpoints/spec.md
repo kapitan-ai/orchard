@@ -5,7 +5,12 @@ The Active Controller SHALL maintain active-Node liveness on a bounded interval 
 single supervised, leader-gated status observer that probes both `:admitted` and `:active`
 trusted Runtime Endpoint Nodes.
 The observer interval MUST be strictly below `node_unreachable_threshold_ms` and
-`node_freshness_threshold_ms`.
+`node_freshness_threshold_ms` whenever both thresholds are above the minimum safe interval
+floor. When thresholds are configured so low that no interval can stay both below them and
+above that floor, the observer MUST log the unsatisfiable bound and fall back to its default
+interval rather than failing Controller boot or scheduling a busy-looping probe timer;
+liveness detection degrades in that misconfiguration instead of the Controller refusing to
+start.
 Successful authenticated observations MUST advance `last_heartbeat_at`, re-derive health,
 and refresh aggregate capacity evidence in one authenticated write path.
 A standby Controller MUST write nothing on this path.
@@ -20,8 +25,15 @@ and candidate-source decoupling remain slice B (issue #149) and MUST NOT be requ
 
 #### Scenario: Probe interval stays below thresholds
 - **WHEN** the background observer starts or its interval is validated
+- **AND** both thresholds are above the minimum safe interval floor
 - **THEN** the configured interval is strictly less than the unreachable threshold
 - **AND** the configured interval is strictly less than the freshness threshold
+
+#### Scenario: Sub-floor thresholds degrade instead of busy-looping
+- **WHEN** the background observer starts while a threshold is at or below the minimum safe
+  interval floor, so no interval satisfies the bound
+- **THEN** the observer logs the unsatisfiable interval bound
+- **AND** it schedules probes at the default interval rather than failing boot or busy-looping
 
 #### Scenario: Standby Controller observes nothing
 - **WHEN** a standby Controller would run the background status observer cycle
