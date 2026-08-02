@@ -74,6 +74,28 @@ gRPC server on `127.0.0.1:50071`.
 Copy the API Token printed by `api-keys create` into
 `ORCHARD_API_KEY` for the `curl` examples below.
 
+## Phase 0 observability acceptance probe
+
+Copy `scripts/support/observability_probe.example.json` to a non-secret local
+configuration, set the two environment variables named by that file, and run:
+
+```bash
+export ORCHARD_OBSERVABILITY_PROBE_MODEL="<active-model-id>"
+export ORCHARD_OBSERVABILITY_PROBE_API_KEY="<api-token>"
+scripts/smoke-observability-probe.sh /path/to/observability-probe.json
+```
+
+The default `http_only` mode works from a remote Linux or macOS probe host and
+validates the typed streaming `/v1/responses` terminal event. On a Controller
+host with direct access to its configured Postgres database, set
+`terminal_validation` to `controller_local` to additionally require exactly one
+durable terminal `state_transition` matching the request row state. The probe
+prints only the versioned safe result fields; do not redirect stderr into pilot
+result storage.
+
+Pilot #118 pin ownership and digest instructions are in
+[`pilots/README.md`](pilots/README.md).
+
 ## Transport Modes
 
 Orchard has two transport profiles:

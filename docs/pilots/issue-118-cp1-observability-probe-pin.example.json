@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "producer_issue": 115,
+  "consumer_issue": 118,
+  "artifact_path": "scripts/support/observability_probe.exs",
+  "artifact_git_sha": "0123456789abcdef0123456789abcdef01234567",
+  "config_path": "pilot-owned/issue-118-cp1-observability-probe.json",
+  "config_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "result_schema_version": 1,
+  "terminal_validation": "http_only",
+  "pinned_at": "2026-08-03T00:00:00Z"
+}
