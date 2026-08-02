@@ -1494,6 +1494,143 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert evidence.observed_at == DateTime.truncate(observed_at, :microsecond)
   end
 
+  test "SPEC.md §4.5 degraded authenticated observation is recorded for active nodes", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    # Promote admitted -> active first with healthy observation
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+
+    healthy_status = %{
+      node_metadata: %{
+        node_id: node.id,
+        display_name: node.display_name,
+        hostname: node.hostname,
+        listen_host: node.connect_host,
+        listen_port: node.connect_port,
+        agent_version: "0.5.0-dev"
+      },
+      runtime_health: %{ready: true, health_code: "", health_message: ""},
+      active_request_count: 1,
+      max_concurrency: 4
+    }
+
+    first_at = DateTime.utc_now()
+
+    assert {:ok, active} =
+             Nodes.observe_authenticated_status(target, healthy_status, first_at, peer)
+
+    assert active.state == :active
+    assert active.health == :healthy
+
+    degraded_status = %{
+      node_metadata: healthy_status.node_metadata,
+      runtime_health: %{ready: true, health_code: "SLOW", health_message: "warm path degraded"},
+      active_request_count: 2,
+      max_concurrency: 4
+    }
+
+    second_at = DateTime.add(first_at, 1, :second)
+
+    assert {:ok, degraded} =
+             Nodes.observe_authenticated_status(target, degraded_status, second_at, peer)
+
+    assert degraded.state == :active
+    assert degraded.health == :degraded
+    assert degraded.last_heartbeat_at == DateTime.truncate(second_at, :microsecond)
+
+    evidence = DispatchCapacity.get_capacity_evidence(node.id)
+    assert evidence.active_request_count == 2
+    assert evidence.observed_at == DateTime.truncate(second_at, :microsecond)
+  end
+
+  test "SPEC.md §4.5 unhealthy authenticated observation is recorded for active nodes", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+
+    metadata = %{
+      node_id: node.id,
+      display_name: node.display_name,
+      hostname: node.hostname,
+      listen_host: node.connect_host,
+      listen_port: node.connect_port,
+      agent_version: "0.5.0-dev"
+    }
+
+    healthy_status = %{
+      node_metadata: metadata,
+      runtime_health: %{ready: true, health_code: "", health_message: ""},
+      active_request_count: 0,
+      max_concurrency: 4
+    }
+
+    first_at = DateTime.utc_now()
+
+    assert {:ok, active} =
+             Nodes.observe_authenticated_status(target, healthy_status, first_at, peer)
+
+    assert active.state == :active
+    assert Enum.map(Nodes.schedulable_nodes(), & &1.id) == [node.id]
+
+    unhealthy_status = %{
+      node_metadata: metadata,
+      runtime_health: %{
+        ready: false,
+        health_code: "WORKER_DOWN",
+        health_message: "worker exited"
+      },
+      active_request_count: 0,
+      max_concurrency: 4
+    }
+
+    second_at = DateTime.add(first_at, 1, :second)
+
+    assert {:ok, unhealthy} =
+             Nodes.observe_authenticated_status(target, unhealthy_status, second_at, peer)
+
+    assert unhealthy.state == :active
+    assert unhealthy.health == :unhealthy
+    assert unhealthy.last_heartbeat_at == DateTime.truncate(second_at, :microsecond)
+    assert Nodes.schedulable_nodes() == []
+
+    # Sticky: the sweep leaves :unhealthy for a successful observation to clear.
+    aged_at = DateTime.add(second_at, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+    assert {:ok, 0} = Nodes.sweep_stale_node_heartbeats(aged_at)
+    assert Repo.get!(Node, node.id).health == :unhealthy
+  end
+
+  test "SPEC.md §4.5 non-healthy admitted observation does not activate", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+
+    status = %{
+      node_metadata: %{
+        node_id: node.id,
+        display_name: node.display_name,
+        hostname: node.hostname,
+        listen_host: node.connect_host,
+        listen_port: node.connect_port,
+        agent_version: "0.5.0-dev"
+      },
+      runtime_health: %{ready: true, health_code: "SLOW", health_message: "not ready to promote"},
+      active_request_count: 0,
+      max_concurrency: 1
+    }
+
+    assert :noop = Nodes.observe_authenticated_status(target, status, DateTime.utc_now(), peer)
+    assert Repo.get!(Node, node.id).state == :admitted
+  end
+
   test "SPEC.md §7.5.0 authenticated activation uses the grant transaction lock order", %{
     trust_root: trust_root,
     authorization_root: authorization_root

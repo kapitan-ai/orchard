@@ -793,6 +793,19 @@ Health derivation:
 * `unhealthy`: fresh heartbeat, but serious local error
 * `unreachable`: heartbeat older than 15s
 
+Active-Node liveness SHALL be maintained by a leader-owned background status observer
+(`Orchard.RuntimeEndpoint.ActivationProbe`) that probes admitted and active Runtime
+Endpoint Nodes on a bounded interval strictly below both heartbeat thresholds, independent
+of request traffic. Successful authenticated observations advance `last_heartbeat_at`,
+re-derive health, and refresh aggregate capacity evidence in one write. Transport failures
+and a periodic heartbeat-age sweep over `:active` Nodes demote health through the graded path
+(`degraded`, then `unreachable` past the unreachable threshold); a Node already recorded
+`unhealthy` SHALL keep that health until a successful observation clears it, and `:admitted`
+Nodes SHALL NOT be swept because a stalled admitted heartbeat usually means the observation
+seam is rejecting a reachable Node. Non-healthy observations from already-active
+Nodes SHALL be recorded; `:admitted` to `:active` promotion remains healthy-gated.
+A standby Controller SHALL write nothing on this path.
+
 Warning conditions:
 
 * swap used > 2 GiB
@@ -809,6 +822,15 @@ Serious conditions:
 * free disk < 5 GiB
 
 ### 4.6 Heartbeat payload
+
+> **Implementation note (ADR 0015 / issue #148):** `SPEC.md` §4.6 historically describes a
+> Node-push heartbeat every 2 seconds, while §4.6.1 and the shipped Controller implement
+> pull-based Runtime Endpoint status-probe ingestion (inline scheduler probes and the
+> leader-owned background `ActivationProbe`). Slice A of the thin active-node liveness
+> monitor extends that existing pull-based path and does not introduce a push loop.
+> Full reconciliation of §4.6 to pull-based observation (or an explicit dual-path contract)
+> is deferred and coupled to the deferred §8 `node_heartbeats` work (slice B / metrics floor).
+> Silent divergence is not acceptable; this note is the explicit deferral.
 
 Node agent SHALL send heartbeats every 2 seconds with:
 
@@ -860,6 +882,7 @@ Rules:
 
 * the durable implementation seam for runtime status SHALL be a Runtime Endpoint Observation produced through the Runtime Endpoint Interface
 * the current gRPC Compatibility Adapter SHALL derive Runtime Endpoint Observations from `NodeRuntimeService.GetStatus` returning `StatusResponse`
+* controller-owned active-Node liveness and inventory freshness SHALL also be refreshed by a leader-owned background status probe on a bounded interval independent of request traffic, consuming authenticated observations through the same seam
 * heartbeat payloads MAY carry equivalent hosted-tool data in a later slice, but controller-owned hosted-tool observation SHALL currently be derived from Runtime Endpoint status-probe ingestion
 * this contract defines future hosted routing inputs only; it SHALL NOT by itself enable controller-owned hosted `/v1/responses` execution or any other hosted execution behavior
 * Runtime Endpoint Observations are observational until reconciled to a trusted Node

@@ -1,6 +1,10 @@
 defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   @moduledoc """
-  Performs leader-side status-only probes for admitted Runtime Endpoint Nodes.
+  Leader-side status-only probes for admitted and active Runtime Endpoint Nodes.
+
+  Refreshes authenticated heartbeats and capacity evidence on a bounded interval
+  independent of request traffic, and demotes idle Node loss through transport
+  failure recording plus a heartbeat-age sweep (ADR 0015 / issue #148).
   """
 
   use GenServer
@@ -9,28 +13,72 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   alias Orchard.ControlPlane
   alias Orchard.Inference
+  alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.{BeamClient, GrpcCompatibilityClient}
 
   @default_interval_ms 5_000
   @default_timeout_ms 5_000
+  @min_interval_ms 1_000
+  @transport_clients [BeamClient, GrpcCompatibilityClient]
 
-  @type result :: %{required(:target_id) => String.t(), required(:status) => :activated}
+  @type result :: %{required(:target_id) => String.t(), required(:status) => :observed}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @doc "Configured probe interval in milliseconds."
+  @spec interval_ms() :: pos_integer()
+  def interval_ms, do: configured_interval()
+
+  @doc """
+  Asserts the probe interval is strictly below freshness and unreachable thresholds.
+
+  Raises `ArgumentError` when the given interval would void the detection bound.
+  `init/1` clamps instead of raising so a threshold misconfiguration degrades
+  liveness detection rather than blocking Controller boot. Clamping holds a 1s
+  floor; thresholds too small to admit a safe interval fall back to the default
+  interval and log an error rather than busy-looping the probe timer.
+  """
+  @spec assert_interval_contract!(pos_integer()) :: :ok
+  def assert_interval_contract!(interval \\ interval_ms())
+      when is_integer(interval) and interval > 0 do
+    unreachable = Inference.node_unreachable_threshold_ms()
+    freshness = Inference.node_freshness_threshold_ms()
+
+    cond do
+      interval >= unreachable ->
+        raise ArgumentError,
+              "activation_probe interval_ms=#{interval} must be < node_unreachable_threshold_ms=#{unreachable}"
+
+      interval >= freshness ->
+        raise ArgumentError,
+              "activation_probe interval_ms=#{interval} must be < node_freshness_threshold_ms=#{freshness}"
+
+      true ->
+        :ok
+    end
+  end
+
   @spec run_once(keyword()) :: {:ok, [result()]} | {:error, atom()}
   def run_once(opts \\ []) do
     client = Keyword.get(opts, :client, Inference.runtime_endpoint_client())
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
 
     with :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
-         true <- client in [BeamClient, GrpcCompatibilityClient] do
+         true <- allowed_client?(client) do
+      targets =
+        Keyword.get_lazy(opts, :targets, fn ->
+          Inference.activation_probe_runtime_endpoint_targets()
+        end)
+
       results =
-        Inference.activation_probe_runtime_endpoint_targets()
-        |> Enum.flat_map(&probe_target(&1, client, timeout))
+        targets
+        |> Enum.flat_map(&probe_target(&1, client, timeout, observed_at))
+
+      _ = Nodes.sweep_stale_node_heartbeats(observed_at)
 
       {:ok, results}
     else
@@ -41,7 +89,11 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   @impl true
   def init(opts) do
-    interval = Keyword.get(opts, :interval, configured_interval())
+    interval =
+      opts
+      |> Keyword.get(:interval, configured_interval())
+      |> contract_safe_interval()
+
     schedule_probe(interval)
     {:ok, %{interval: interval}}
   end
@@ -68,21 +120,31 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
       :ok
   end
 
-  defp probe_target(target, client, timeout) do
+  defp probe_target(target, client, timeout, observed_at) do
     case client.connect(target) do
       {:ok, connection} ->
         try do
           case client.status(connection, timeout: timeout) do
-            {:ok, _observation} -> [%{target_id: target.id, status: :activated}]
-            {:error, reason} -> log_probe_failure(target.id, reason)
+            {:ok, _observation} ->
+              [%{target_id: target.id, status: :observed}]
+
+            {:error, reason} ->
+              record_probe_failure(target, reason, observed_at)
           end
         after
           disconnect(client, connection)
         end
 
       {:error, reason} ->
-        log_probe_failure(target.id, reason)
+        record_probe_failure(target, reason, observed_at)
     end
+  end
+
+  defp record_probe_failure(target, reason, observed_at) do
+    # Pass the raw reason so transport_failure_reason?/1 classifies correctly.
+    # Seam rejections are ignored by Nodes.record_transport_failure/3.
+    _ = Nodes.record_transport_failure(target, reason, observed_at)
+    log_probe_failure(target.id, reason)
   end
 
   defp disconnect(client, connection) do
@@ -105,10 +167,66 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   defp probe_failure_code({reason, _detail}) when is_atom(reason), do: reason
   defp probe_failure_code(_reason), do: :activation_probe_failed
 
+  if Mix.env() == :test do
+    defp allowed_client?(client) do
+      extras =
+        :orchard_controller
+        |> Application.get_env(:activation_probe, [])
+        |> Keyword.get(:allowed_clients, [])
+
+      client in (@transport_clients ++ extras)
+    end
+  else
+    defp allowed_client?(client), do: client in @transport_clients
+  end
+
   defp configured_interval do
     :orchard_controller
     |> Application.get_env(:activation_probe, [])
     |> Keyword.get(:interval_ms, @default_interval_ms)
+  end
+
+  defp contract_safe_interval(interval) when is_integer(interval) and interval > 0 do
+    ceiling =
+      min(Inference.node_unreachable_threshold_ms(), Inference.node_freshness_threshold_ms())
+
+    cond do
+      interval < ceiling ->
+        interval
+
+      ceiling > @min_interval_ms ->
+        clamped = clamped_interval(ceiling)
+
+        Logger.warning(
+          "activation_probe interval_ms=#{interval} must be < #{ceiling}; clamping to #{clamped}"
+        )
+
+        clamped
+
+      true ->
+        Logger.error(
+          "activation_probe cannot satisfy interval_ms < #{inspect(ceiling)} above the " <>
+            "#{@min_interval_ms}ms floor; using #{@default_interval_ms} and degrading liveness detection"
+        )
+
+        @default_interval_ms
+    end
+  end
+
+  defp contract_safe_interval(interval) do
+    Logger.warning(
+      "activation_probe interval_ms=#{inspect(interval)} is not a positive integer; " <>
+        "using #{@default_interval_ms}"
+    )
+
+    contract_safe_interval(@default_interval_ms)
+  end
+
+  defp clamped_interval(ceiling) do
+    ceiling
+    |> div(2)
+    |> min(@default_interval_ms)
+    |> max(@min_interval_ms)
   end
 
   defp schedule_probe(interval) when is_integer(interval) and interval > 0 do
