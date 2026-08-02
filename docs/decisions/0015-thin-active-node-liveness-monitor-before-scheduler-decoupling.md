@@ -44,7 +44,8 @@ contract now and deferring it until its only consumer exists.
 
 ## Decision
 
-Decompose #122 into two ordered slices, A then B, in one OpenSpec package.
+Decompose #122 into two ordered slices, A then B, in one OpenSpec package. Slice A
+is tracked by issue #148 and slice B by issue #149.
 
 Slice A is the only pilot-blocking build item and is deliberately thin. It
 generalizes the existing supervised, leader-authorized `ActivationProbe` to observe
@@ -81,8 +82,18 @@ because the Node was non-healthy (`:authenticated_observation_rejected`,
 `:beam_peer_observation_rejected`) is not a transport failure, the Node responded,
 and it must be handled by the gate relaxation above rather than swept into demotion.
 A periodic heartbeat-age sweep bounds detection at approximately the unreachable
-threshold plus the sweep interval. The scheduler and its inline probe are untouched
-in slice A.
+threshold plus one sweep interval, roughly 20 seconds at the 15-second threshold
+and the existing 5-second probe interval.
+
+Slice A leaves the scheduler's control flow, candidate selection, ranking, and the
+inline probe path in place. It does not, however, leave the inline probe's observed
+behavior identical: the health gate slice A relaxes lives in the shared
+`observe_authenticated_status/5` seam, which the inline probe also drives through
+its transport client's status call, so the relaxation applies to the background
+monitor and the inline probe alike. That is intended and safe. Its only effect is
+that a non-healthy observation from an already-`:active` Node is recorded rather
+than dropped, and it does not change the `:admitted` to `:active` promotion, which
+stays healthy-gated.
 
 Slice A adds no migration. The persistence seam and the schema columns it needs
 already exist. It does not create `node_heartbeats`, does not implement the §8.5
@@ -117,9 +128,10 @@ the inline probe rather than scheduling-path purity. The pilot's official claim 
 correctness. Scheduler latency is exploratory only and is not an official baseline,
 because the inline probe remains on the request path through the frozen window;
 multi-node placement-optimization behavior is deferred to slice B. The pilot
-findings must disclose the inline-probe latency overhead and the up-to-15-second
-window in which a `:degraded` Node remains schedulable as known, bounded
-limitations of the frozen artifact.
+findings must disclose the inline-probe latency overhead and the window in which a
+`:degraded` Node remains schedulable, the unreachable threshold plus one sweep
+interval and so roughly 20 seconds at the default 5-second interval, as known,
+bounded limitations of the frozen artifact.
 
 Issue #128 (scheduler failure reclassification) is decoupled from slice A and from
 the pilot build. Acquirability is a time-sensitive property derived Controller-side
@@ -207,8 +219,9 @@ lands.
 ## SPEC.md impact
 
 Confirm or update the Node liveness and heartbeat observation language in `SPEC.md`
-§7 (Node lifecycle, health, and freshness) to state that active-node liveness is
-maintained by a leader-owned background observer independent of request traffic.
+§4.2 (Node lifecycle states), §4.5 (Node health model), and §4.6 (Heartbeat
+payload) to state that active-node liveness is maintained by a leader-owned
+background observer independent of request traffic.
 Name and resolve the §4.6 push-versus-pull heartbeat divergence, either by
 reconciling SPEC to pull-based observation or by recording an explicit deferral.
 The §8 `node_heartbeats` schema, §8.5 retention, and §9.1 heartbeat-lag metric are
