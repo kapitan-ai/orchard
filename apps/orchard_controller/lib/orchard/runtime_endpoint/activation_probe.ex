@@ -194,7 +194,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
       interval < ceiling ->
         interval
 
-      is_integer(ceiling) and ceiling > @min_interval_ms ->
+      ceiling > @min_interval_ms ->
         clamped = clamped_interval(ceiling)
 
         Logger.warning(
