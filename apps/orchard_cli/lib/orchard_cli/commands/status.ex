@@ -102,12 +102,10 @@ defmodule OrchardCLI.Commands.Status do
     case probe_candidates(candidates, request_fn) do
       {:ok, display_url, body} ->
         state = if body["status"] == "ok", do: :ready, else: :degraded
-        remote_version = non_empty_string(body["version"]) || version
-        build_ref = non_empty_string(body["build_ref"])
-        display_version = format_display_version(remote_version, build_ref)
+        display_version = format_display_version(version, nil)
 
         %{
-          version: remote_version,
+          version: version,
           display_version: display_version,
           state: state,
           role: role,

@@ -76,14 +76,18 @@ Establish the Orchard repository skeleton, release boundaries, health endpoints,
 ### Health surface
 
 - `/health/live` implemented as a basic controller liveness endpoint
-- `/health/ready` initially implemented for the M0 subset:
-  - controller boot completed
+- `/health/ready` evaluates the staged M0 predicate identified as
+  `orchard.readiness.legacy_m0.v1`:
   - Postgres reachable
   - migrations current, once the repo/migration pipeline is wired
-- Current readiness also reports public API transport posture; loopback
-  `plain_http_localhost` is degraded per `SPEC.md` §10.7, so source-dev smoke
-  checks should use `/health/live` for liveness.
-- tenant/model/key cache loading and HA-lite leadership gating remain deferred to later milestone work per `SPEC.md` §3.1
+  - public API HTTPS enabled
+  - controller boot completed
+- Public `/health/live` and `/health/ready` expose exact status-only bodies.
+  Detailed M0 checks and observations are available only through authenticated
+  Operator `/ops/v1/health`.
+- tenant/model/key cache loading and Active/Standby write-path leadership remain
+  deferred to the later complete `SPEC.md` §3.1 aggregate. The staged predicate
+  does not claim full §3.1 readiness.
 
 ### Packaging scaffold
 
@@ -160,8 +164,8 @@ These checks support implementation confidence during M0 but are not independent
 - `mix compile` succeeds
 - CLI binary/module entrypoint resolves
 - `/health/live` responds
-- `/health/ready` responds and reports the current readiness summary described
-  above
+- `/health/ready` responds with exact status-only JSON and authenticated
+  `/ops/v1/health` reports the identified staged predicate described above
 - packaging skeleton matches expected Orchard naming and layout
 
 ## Validation

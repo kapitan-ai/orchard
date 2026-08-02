@@ -365,15 +365,37 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "0 nodes"
   end
 
-  test "ready banner uses correct version" do
+  test "ready banner uses the local version with the status-only public response" do
     runtime =
       test_runtime(%{
         version: fn -> "1.2.3" end,
-        request: fn _url, _opts -> {:ok, ready_response()} end
+        request: fn _url, _opts -> {:ok, %{status: 200, body: %{"status" => "ok"}}} end
       })
 
     assert {:ok, banner} = Status.run([], runtime)
     assert banner =~ "Orchard v1.2.3"
+    assert banner =~ "Status:  ready"
+    refute banner =~ "License:"
+    refute banner =~ "Transport:"
+  end
+
+  test "status-only probing never presents disclosed version or build as remote identity" do
+    runtime =
+      test_runtime(%{
+        version: fn -> "1.2.3" end,
+        request: fn _url, _opts ->
+          {:ok,
+           %{
+             status: 200,
+             body: %{"status" => "ok", "version" => "9.9.9", "build_ref" => "remote-sha"}
+           }}
+        end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Orchard v1.2.3"
+    refute banner =~ "9.9.9"
+    refute banner =~ "remote-sha"
   end
 
   # ── Degraded Banner ──────────────────────────────────────────────────

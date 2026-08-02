@@ -1,19 +1,19 @@
 ## ADDED Requirements
 
-### Requirement: Health implementation remains blocked on authoritative readiness sources
+### Requirement: Complete aggregate migration remains blocked on authoritative readiness sources
 
-Controller health wiring MUST NOT begin until separate accepted control-plane changes expose authoritative model, tenant, and API-key cache hydration status and the existing production write-path leadership surface is accepted as a bounded readiness source or its demonstrated gaps are resolved.
+The stage-one exposure split MAY proceed with the unchanged predicate identified as `orchard.readiness.legacy_m0.v1`. Replacing that predicate with the complete `SPEC.md` §3.1 aggregate MUST NOT begin until separate accepted control-plane changes expose authoritative model, tenant, and API-key cache hydration status and the existing production write-path leadership surface is accepted as a bounded readiness source or its demonstrated gaps are resolved.
 
 #### Scenario: A cache authority is absent
 
 - **WHEN** any required serving-path cache and its loaded-state interface do not exist
-- **THEN** Controller health implementation remains blocked
+- **THEN** the complete aggregate migration remains blocked
 - **AND** the missing authority is assigned to a separate control-plane change
 
 #### Scenario: Existing leadership surface has not been assessed
 
 - **WHEN** the production backing, bounded-read behavior, or readiness semantics of `Orchard.ControlPlane` have not been explicitly assessed
-- **THEN** Controller health implementation remains blocked
+- **THEN** the complete aggregate migration remains blocked
 - **AND** no new authority is commissioned until that assessment identifies a concrete gap
 
 #### Scenario: Existing leadership surface has a demonstrated gap
@@ -54,26 +54,26 @@ A validated deployment mode MAY determine whether the conditional leadership con
 - **AND** it does not authorize that source to report `pass` for write-path leadership in Active/Standby mode
 - **AND** the accepted assessment records how a mode value is validated rather than assumed correct
 
-### Requirement: Future public health responses are exact and minimal
+### Requirement: Public health responses are exact and minimal
 
-After the blocking authorities are accepted, the health implementation SHALL provide unauthenticated public health responses that disclose only stable status.
+The stage-one health exposure split SHALL provide unauthenticated public health responses that disclose only stable status.
 
-#### Scenario: Future liveness response
+#### Scenario: Liveness response
 
 - **WHEN** the Controller HTTP process serves `GET /health/live`
 - **THEN** it returns HTTP `200`
 - **AND** the JSON body is exactly `{"status":"ok"}`
 - **AND** it does not evaluate dependency or observational health
 
-#### Scenario: Future public readiness passes
+#### Scenario: Public readiness passes
 
-- **WHEN** the complete `SPEC.md` section 3.1 readiness evaluation passes
+- **WHEN** the active identified readiness evaluation passes
 - **THEN** `GET /health/ready` returns HTTP `200`
 - **AND** the JSON body is exactly `{"status":"ok"}`
 
-#### Scenario: Future public readiness fails
+#### Scenario: Public readiness fails
 
-- **WHEN** any applicable `SPEC.md` section 3.1 readiness condition fails or cannot be evaluated safely
+- **WHEN** any check in the active identified readiness evaluation fails
 - **THEN** `GET /health/ready` returns HTTP `503`
 - **AND** the JSON body is exactly `{"status":"error"}`
 - **AND** the response exposes no diagnostic detail
@@ -155,9 +155,9 @@ After the existing leadership surface is accepted as sufficient or a demonstrate
 - **THEN** `write_path_leadership` reports `fail`
 - **AND** the failure reason is `controller_leadership_unproven`
 
-### Requirement: Future Operator health detail uses the existing protected boundary
+### Requirement: Operator health detail uses the existing protected boundary
 
-After the blocking authorities are accepted, `GET /ops/v1/health` SHALL use the existing Operator API authentication contract from `SPEC.md` section 7.3 and ADR 0007.
+Stage one `GET /ops/v1/health` SHALL use the existing Operator API authentication contract from `SPEC.md` section 7.3 and ADR 0007.
 Authentication and authorization SHALL complete before readiness or observational probes run.
 Authorized responses SHALL set `Cache-Control: no-store`.
 
@@ -179,9 +179,8 @@ Authorized responses SHALL set `Cache-Control: no-store`.
 
 - **WHEN** a cluster-scoped Operator or admin requests health detail and the shared aggregate passes
 - **THEN** the endpoint returns HTTP `200`
-- **AND** the response object is `operator_health`
-- **AND** the contract version is `orchard.operator_health.v1`
-- **AND** every `SPEC.md` section 3.1 check appears exactly once in stable causal order
+- **AND** `readiness_contract.version` is `orchard.readiness.legacy_m0.v1`
+- **AND** every staged check appears exactly once in stable causal order
 
 #### Scenario: Authorized detail fails
 
@@ -200,7 +199,7 @@ Authorized responses SHALL set `Cache-Control: no-store`.
 - **WHEN** authorized health detail is serialized
 - **THEN** it contains no bearer credential, plaintext secret, DSN, raw exception, tenant identifier, user identifier, prompt, response content, or machine-local path
 
-### Requirement: Future in-repository consumers preserve the health boundary
+### Requirement: In-repository consumers preserve the health boundary
 
 When the health behavior is implemented, in-repository public health consumers SHALL treat `/health/ready` as a status-only endpoint and SHALL NOT require Operator credentials.
 Console diagnostics SHALL use the shared readiness evaluator or authenticated Operator contract without reimplementing readiness policy.

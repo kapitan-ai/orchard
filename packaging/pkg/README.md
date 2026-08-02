@@ -151,7 +151,7 @@ Node-agent host sequence:
 Verification:
 
 - On each host, `orchardctl status` should show the role-selected service state.
-- On the controller, readiness should report PostgreSQL reachable and migrations current.
+- On the controller, authenticated `/ops/v1/health` should report PostgreSQL reachable and migrations current; public `/health/ready` reports status only.
 - On the controller, Runtime Endpoint target configuration should match each remote node-agent BEAM node name in `ORCHARD_RUNTIME_ENDPOINT_TARGETS`.
 - Stage the model on every worker before attempting inference; controller import and activation do not distribute the artifact.
 - After admin credentials, tenant/API access, model import, model activation, and worker model staging are configured, use `/v1/models` and a single chat completion request as the external-site API smoke test.
@@ -462,8 +462,8 @@ not overwritten during package upgrades.
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Controller crash-loops with `DATABASE_URL is missing` | `controller.env` absent or ignored | Create the file with correct ownership/permissions |
-| Readiness reports `postgres_reachable: false` | Wrong DB URL, DB not running, or DB does not exist | Verify with `psql "$DATABASE_URL" -c 'select 1'` |
-| Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo orchardctl migrate` |
+| Operator health reports `postgres_reachable: false` | Wrong DB URL, DB not running, or DB does not exist | Request authenticated `/ops/v1/health`; verify with `psql "$DATABASE_URL" -c 'select 1'` |
+| Operator health reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo orchardctl migrate` |
 | DB-backed CLI command fails with `database_unavailable` | Command run without `sudo`, `DATABASE_URL` unset, DB unreachable, or migrations pending | Re-run with `sudo`; verify `DATABASE_URL` in `controller.env` and `psql "$DATABASE_URL" -c 'select 1'`; run `sudo orchardctl migrate` if pending |
 | `WARNING: ignoring env file` in controller.log | File not root-owned or has group/world permission bits | `sudo chown root:wheel <file> && sudo chmod 600 <file>` |
 | `sudo orchardctl nodes ...` fails with `controller_runtime_unavailable` | Controller service not running, management identity/cookie mismatch, or the Controller RPC hit its 30-second watchdog or output limit | Check `orchardctl status` and `controller.log`, confirm the root-owned cookie and any `ORCHARD_CONTROLLER_MANAGEMENT_*` overrides, then inspect Controller and node state before retrying |
@@ -617,7 +617,7 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
    sudo orchardctl start
    ```
 
-7. **Verify readiness and version:**
+7. **Verify public readiness and local installed version:**
    ```bash
    sudo orchardctl status
    curl --cacert '/Library/Application Support/Orchard/config/tls/ca.crt' \
@@ -675,27 +675,27 @@ verification will fail.
 ### Status and observation workflow
 
 - `orchardctl license status` inspects only local Orchard licensing state.
-- `orchardctl status` renders the controller's additive health payload when the
-  `"license"` block is present.
-- Controller `/health/ready` exposes license state for observation, but remains
-  **non-gating** — it does not change readiness semantics or HTTP status.
+- Credential-free `orchardctl status` reports public ready/degraded state and the
+  local installed version; it does not report remote health detail.
+- Authenticated Controller `/ops/v1/health` exposes license state for observation,
+  but it remains **non-gating** — it does not change readiness semantics or HTTP
+  status.
 
-**Exposure posture:** `/health/ready` is intentionally unauthenticated for
-operational readiness checks, so health endpoints should be network-restricted
-to trusted operator/support paths (for example, VPN/private-network access,
-firewall rules, or reverse-proxy allowlists). Do not expose these endpoints
-directly to the public internet.
+**Exposure posture:** `/health/live` and `/health/ready` are intentionally
+unauthenticated but expose status only. Detailed checks, build, transport, Console,
+runtime, and licensing observations require a cluster-scoped Operator or admin API
+Client token at `/ops/v1/health`. Do not add an unauthenticated diagnostic fallback.
 
-If a license includes optional tracking metadata, `orchardctl license status`,
-`orchardctl status`, and `/health/ready` may display the tracking program and
-reference. This metadata and other license identifiers are intended for
-operator/support diagnostics and do not affect license enforcement.
+If a license includes optional tracking metadata, `orchardctl license status` and
+authenticated `/ops/v1/health` may display the tracking program and reference. This
+metadata and other license identifiers are intended for operator/support diagnostics
+and do not affect license enforcement.
 
 ### Licensing environment variables
 
 | Variable | Default | Intended use |
 |----------|---------|--------------|
-| `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in `/health/ready`. Distributed package builds must use a non-`dev` channel. |
+| `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in authenticated `/ops/v1/health`. Distributed packages require `trial` or `release`; source/test builds may use `dev`. |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
@@ -1302,8 +1302,8 @@ status, node snapshots, and request summaries. It records
 written to `/Library/Application Support/Orchard/support/` by default; use
 `--output`, `--support-root`, `--max-log-bytes`, and `--json` when support
 needs a different destination, alternate state tree, tighter log bound, or
-machine-readable output. Use `orchardctl status`, readiness output, service
-logs, support bundles, and the troubleshooting tables in this runbook for
+machine-readable output. Use `orchardctl status`, authenticated Operator health,
+service logs, support bundles, and the troubleshooting tables in this runbook for
 current packaged diagnostics.
 
 ### Advanced migration fallback
@@ -1636,10 +1636,12 @@ Orchard-0.5.0-dev-20260417-e152300.pkg
 ### Version Mismatch Clarification
 
 The **PKG filename version** (e.g., `0.5.0-dev`) refers to the Orchard application
-version inside the package. This is the version reported by:
+version inside the package. This is the local installed version reported by:
 - `orchardctl status`
-- `/health/ready` API endpoint
-- `Orchard.version/0` function
+- `Orchard.version/0`
+
+Authenticated `/ops/v1/health` reports Controller build identity; public
+`/health/ready` does not.
 
 This is distinct from packaging iteration numbers (previously used `v0.2.1`
 etc.) which caused confusion when the PKG claimed one version but the app

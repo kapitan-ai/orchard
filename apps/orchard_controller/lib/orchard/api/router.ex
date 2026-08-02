@@ -65,6 +65,7 @@ defmodule Orchard.API.Router do
   scope "/ops/v1", Orchard.API.Ops do
     pipe_through(:operator_api)
 
+    get("/health", HealthController, :show)
     get("/scheduler/explanations/:request_id", SchedulerExplanationsController, :show)
   end
 
