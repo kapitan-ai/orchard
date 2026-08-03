@@ -143,6 +143,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
 
     File.mkdir!(root)
     File.chmod!(root, 0o700)
+    identity_root_uid = File.stat!(root).uid
     on_exit(fn -> File.rm_rf!(root) end)
 
     marker_path = Path.join(root, "second-lock-attempted")
@@ -199,8 +200,8 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       end)
 
     try do
-      wait_until(fn -> File.exists?(marker_path) end)
-      refute_receive {:second_installer_finished, _result}, 250
+      wait_until(fn -> File.exists?(marker_path) end, 250)
+      assert private_mode(store_root) == 0o755
 
       send(first_pid, :resume_first_installer)
       assert {:ok, ^delivery} = Task.await(first, 5_000)
@@ -210,6 +211,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       lock_path = Path.join(root, ".beam-peer-grants.install.lock")
 
       assert private_mode(store_root) == 0o700
+      assert File.stat!(store_root).uid == identity_root_uid
       assert private_mode(grant_path) == 0o600
       assert private_mode(lock_path) == 0o600
       assert {:ok, ^delivery} = BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
