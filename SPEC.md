@@ -2206,6 +2206,7 @@ Base path: `/ops/v1`
 #### 7.3.1 Endpoints
 
 ```text
+GET    /ops/v1/health
 GET    /ops/v1/cluster
 GET    /ops/v1/nodes
 GET    /ops/v1/nodes/:node_id

@@ -695,7 +695,7 @@ and do not affect license enforcement.
 
 | Variable | Default | Intended use |
 |----------|---------|--------------|
-| `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in authenticated `/ops/v1/health`. Distributed packages require `trial` or `release`; source/test builds may use `dev`. |
+| `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in authenticated `/ops/v1/health`. Distributed package builds must use a non-`dev` channel (`internal`, `trial`, `pilot`, or `release`). |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |

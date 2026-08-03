@@ -89,6 +89,9 @@ In stage one:
   not claim that its check table mirrors the status-only public body.
 
 In stage two, public readiness and authenticated Operator health consume one complete `SPEC.md` section 3.1 aggregate.
+
+In both stages:
+
 - `GET /ops/v1/health` uses the existing Operator-or-admin authorization boundary.
 - Operator detail carries stable checks, reasons, bounded remediation, and sanitized observations.
 - Runtime, licensing, build, transport, and Console observations remain non-gating unless `SPEC.md` explicitly changes.
