@@ -15,8 +15,10 @@ empty authority, a malformed IPv6 authority, or an explicit port that is empty,
 nonnumeric, control-bearing, whitespace-bearing, or outside `1..65535`. These
 authority checks MUST apply to the raw URL before URI normalization. HTTPS
 requests MUST disable redirects and verify both the peer and hostname with the
-host system CA store. Resolved model and credential values MUST satisfy bounded
-control-character-safe formats before request construction.
+host system CA store. When that CA store cannot be loaded, the probe MUST refuse
+before sending a request instead of raising. Resolved model and credential
+values MUST satisfy bounded control-character-safe formats before request
+construction.
 
 #### Scenario: Valid remote configuration is loaded
 
@@ -34,16 +36,26 @@ includes malformed raw authority text or URL userinfo, or resolves a
 control-bearing or oversized value
 - **THEN** the probe refuses before sending a request
 
+#### Scenario: Host transport prerequisites are unavailable
+
+- **WHEN** an HTTPS endpoint is configured and the host system CA store cannot
+  be loaded
+- **THEN** the probe refuses before sending a request and still emits one
+  sanitized result
+
 ### Requirement: Probe results are allowlisted and content-free
 
 The probe SHALL serialize only `schema_version`, `probe_id`, `started_at`,
 `finished_at`, `outcome`, `classification`, `public_request_id`,
 `terminal_count`, `terminal_state`, `http_status`, and `latency_ms`.
 `probe_id` MUST match `probe_<lowercase UUID>` except that it MAY be null for
-`invalid_config`; `public_request_id` MUST be null or match
-`resp_<lowercase UUID>`. All other string values MUST be closed enums or UTC
-timestamps. The result MUST NOT contain prompts, response content, credentials,
-tenant identifiers, DSNs, stack traces, exceptions, or unknown fields.
+`invalid_config`; it SHALL be null only when no configuration validated, and a
+refusal after configuration validated SHALL retain the pinned identifier.
+`public_request_id` MUST be null or match `resp_<lowercase UUID>`. All other
+string values MUST be closed enums or UTC timestamps. Timestamp fields MUST be
+validated without raising on non-string values. The result MUST NOT contain
+prompts, response content, credentials, tenant identifiers, DSNs, stack traces,
+exceptions, or unknown fields.
 
 #### Scenario: Safe result is serialized
 
@@ -57,11 +69,18 @@ grammar
 - **THEN** the probe emits a failed `http_error` result with `http_status` null
 - **AND** serialization does not raise
 
-#### Scenario: Content-bearing identifier is presented
+#### Scenario: Content-bearing or wrongly typed field is presented
 
 - **WHEN** an allowlisted identifier contains arbitrary content instead of its
-  canonical grammar
+  canonical grammar, or a timestamp field holds a non-string value
 - **THEN** serialization is refused
+
+#### Scenario: Refusal occurs after configuration validated
+
+- **WHEN** a required environment variable, resolved value, transport
+  prerequisite, or database prerequisite refuses after schema validation
+  succeeded
+- **THEN** the `invalid_config` result retains the configured `probe_id`
 
 ### Requirement: Buffered typed terminal determines HTTP-only outcome
 
@@ -105,13 +124,18 @@ SHALL NOT retain response content.
 
 ### Requirement: Controller-local mode reconciles HTTP and durable terminals
 
-Controller-local mode SHALL require a canonical public ID, look up its request,
-and list ordered events. It SHALL require exactly one durable terminal
-`state_transition` matching `request.state`, then require agreement with the
-HTTP terminal: completed maps only to durable completed; failed maps to durable
-failed, cancelled, timed out, or interrupted; incomplete maps only to durable
-cancelled, timed out, or interrupted. HTTP-only mode SHALL NOT require database
-access.
+Controller-local reconciliation SHALL apply only to an observed SSE terminal,
+that is classification `completed` or `response_failed`. A `transport_error`,
+`http_error`, or `invalid_stream` observation SHALL retain its classification so
+the reported failure names the plane that actually failed.
+
+For an observed terminal, Controller-local mode SHALL require a canonical public
+ID, look up its request, and list ordered events. It SHALL require exactly one
+durable terminal `state_transition` matching `request.state`, then require
+agreement with the HTTP terminal: completed maps only to durable completed;
+failed maps to durable failed, cancelled, timed out, or interrupted; incomplete
+maps only to durable cancelled, timed out, or interrupted. HTTP-only mode SHALL
+NOT require database access.
 
 #### Scenario: Durable and HTTP terminals agree
 
@@ -122,12 +146,20 @@ access.
 
 #### Scenario: Durable evidence is missing or contradictory
 
-- **WHEN** the public ID is missing, lookup or event listing fails, the durable
-  invariant fails, or HTTP and durable outcomes disagree
+- **WHEN** a terminal was observed and the public ID is missing, lookup or event
+  listing fails, the durable invariant fails, or HTTP and durable outcomes
+  disagree
 - **THEN** outcome is `fail` and classification is
   `terminal_validation_failed`
 - **AND** an active durable row state is reported as null
 - **AND** ordinary database exception or exit detail is not serialized
+
+#### Scenario: No terminal was observed to reconcile
+
+- **WHEN** Controller-local mode classifies a transport, HTTP, or stream failure
+  instead of a terminal event
+- **THEN** that classification is reported unchanged with outcome `fail`
+- **AND** no durable lookup is attempted
 
 ### Requirement: Launcher preserves caller path and owned exit semantics
 

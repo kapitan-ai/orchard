@@ -93,8 +93,9 @@ scripts/smoke-observability-probe.sh relative/or/absolute/observability-probe.js
 Do not put the credential in a command argument, configuration file, shell
 history, chat, or retained evidence. Non-loopback endpoints must use HTTPS; the
 probe explicitly verifies the peer and hostname with the host system CA store.
-Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `::1` source-dev
-Controllers.
+A host that cannot supply that CA store refuses with exit `2` before sending the
+credential. Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `::1`
+source-dev Controllers.
 
 The launcher resolves a relative configuration path against the caller's
 working directory before entering the repository root. Its owned exit codes are
@@ -111,7 +112,13 @@ prove incremental stream delivery, progress timing, or persistence. On a
 Controller host with direct access to the same configured Postgres database, set
 `terminal_validation` to `controller_local` to additionally require exactly one
 durable terminal `state_transition` matching both the request row and the HTTP
-terminal outcome.
+terminal outcome. That reconciliation runs only for an observed terminal, so a
+`transport_error`, `http_error`, or `invalid_stream` run still reports the plane
+that actually failed rather than `terminal_validation_failed`.
+
+A refusal that happens after the configuration validated keeps the configured
+`probe_id` in its `invalid_config` result; a null `probe_id` means no
+configuration validated.
 
 Pilot #118 pin ownership and digest instructions are in
 [`pilots/README.md`](pilots/README.md).

@@ -98,6 +98,18 @@ defmodule Orchard.ObservabilityProbeTest do
                |> Map.put("node_id", "private")
                |> ObservabilityProbe.validate_result()
     end
+
+    @tag spec: "probe-results-are-allowlisted-and-content-free"
+    test "refuses non-string timestamps instead of raising" do
+      for value <- [42, false, %{"at" => "2026-08-03T01:02:03Z"}, ["2026-08-03T01:02:03Z"]] do
+        for key <- ~w(started_at finished_at) do
+          result = Map.put(@valid_result, key, value)
+
+          assert {:error, {:invalid, _reason}} = ObservabilityProbe.validate_result(result)
+          assert_raise ArgumentError, fn -> ObservabilityProbe.encode_result!(result) end
+        end
+      end
+    end
   end
 
   describe "stream classification" do
@@ -187,7 +199,7 @@ defmodule Orchard.ObservabilityProbeTest do
     "event: #{type}\ndata: #{payload}\n\n"
   end
 
-  describe "adversarial fix-pass contracts" do
+  describe "identifier, endpoint, and terminal refusal boundaries" do
     test "rejects secret-like values in allowlisted probe_id" do
       assert {:error, {:invalid, _}} =
                @valid_result
@@ -259,8 +271,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
     end
   end
 
-  describe "B1 canonical content-free identifiers" do
-    @tag blocker: "b1"
+  describe "canonical content-free identifiers" do
+    @tag spec: "probe-results-are-allowlisted-and-content-free"
     test "accepts a nil probe ID only for invalid configuration results" do
       invalid_config =
         @valid_result
@@ -281,7 +293,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
                |> ObservabilityProbe.validate_result()
     end
 
-    @tag blocker: "b1"
+    @tag spec: "probe-results-are-allowlisted-and-content-free"
     test "rejects malformed or content-bearing identifiers" do
       invalid_probe_ids = [
         "probe_550E8400-e29b-41d4-a716-446655440000",
@@ -314,8 +326,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
     end
   end
 
-  describe "B2 fail-closed terminal parsing" do
-    @tag blocker: "b2"
+  describe "fail-closed terminal parsing" do
+    @tag spec: "buffered-typed-terminal-determines-http-only-outcome"
     test "accepts only the producer terminal status set" do
       for status <- ["failed", "incomplete"] do
         assert %{"classification" => "response_failed", "terminal_state" => ^status} =
@@ -333,7 +345,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       end
     end
 
-    @tag blocker: "b2"
+    @tag spec: "buffered-typed-terminal-determines-http-only-outcome"
     test "rejects every malformed or contradictory terminal candidate" do
       id = "resp_550e8400-e29b-41d4-a716-446655440011"
 
@@ -371,7 +383,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       end
     end
 
-    @tag review: "p0"
+    @tag spec: "buffered-typed-terminal-determines-http-only-outcome"
     test "colonless or repeated terminal event and data fields poison the block" do
       valid =
         sse("response.completed", "resp_550e8400-e29b-41d4-a716-446655440015", "completed")
@@ -391,7 +403,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       end
     end
 
-    @tag blocker: "b2"
+    @tag spec: "buffered-typed-terminal-determines-http-only-outcome"
     test "ignores unrelated producer events but never discards an invalid terminal candidate" do
       id = "resp_550e8400-e29b-41d4-a716-446655440012"
       unrelated = terminal_block("response.created", "response.created", %{"id" => id})
@@ -416,8 +428,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
     end
   end
 
-  describe "B3 Controller-local cross-plane agreement" do
-    @tag blocker: "b3"
+  describe "controller-local cross-plane agreement" do
+    @tag spec: "controller-local-mode-reconciles-http-and-durable-terminals"
     test "accepts only documented HTTP-to-durable terminal mappings" do
       completed = http_classification("completed", "completed")
       failed = http_classification("response_failed", "failed")
@@ -439,7 +451,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       end
     end
 
-    @tag blocker: "b3"
+    @tag spec: "controller-local-mode-reconciles-http-and-durable-terminals"
     test "fails closed for missing IDs, cross-plane contradictions, and active rows" do
       completed = http_classification("completed", "completed")
       failed = http_classification("response_failed", "failed")
@@ -463,7 +475,27 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
   end
 
   describe "Controller-local query failure safety" do
-    @tag review: "p1_repo"
+    @tag spec: "controller-local-mode-reconciles-http-and-durable-terminals"
+    test "preserves transport, HTTP, and stream failures without a durable lookup" do
+      for classification <- ~w(transport_error http_error invalid_stream) do
+        classified = %{
+          "outcome" => "fail",
+          "classification" => classification,
+          "public_request_id" => nil,
+          "terminal_count" => nil,
+          "terminal_state" => nil
+        }
+
+        assert ^classified =
+                 ObservabilityProbe.validate_controller_local_result(
+                   classified,
+                   fn -> flunk("durable lookup ran without an observed terminal") end,
+                   fn _request -> flunk("event listing ran without an observed terminal") end
+                 )
+      end
+    end
+
+    @tag spec: "controller-local-mode-reconciles-http-and-durable-terminals"
     test "sanitizes ordinary lookup and event-query failures" do
       secret = "postgres://operator:secret@db/private"
       classified = http_classification("completed", "completed")
@@ -501,8 +533,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
     end
   end
 
-  describe "B4 trusted credential destination" do
-    @tag blocker: "b4"
+  describe "trusted credential destination" do
+    @tag spec: "phase-0-probe-configuration-is-exact-and-versioned"
     test "rejects unsafe or ambiguous endpoint authorities" do
       invalid_urls = [
         "http://example.com/v1/responses",
@@ -534,7 +566,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       end
     end
 
-    @tag blocker: "b4"
+    @tag spec: "phase-0-probe-configuration-is-exact-and-versioned"
     test "builds no-redirect HTTP options with explicit HTTPS peer and hostname verification" do
       assert {:ok, http_options} = ObservabilityProbe.build_http_options(@valid_config)
       assert http_options[:autoredirect] == false
@@ -552,7 +584,33 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       assert is_function(https_options[:ssl][:customize_hostname_check][:match_fun], 2)
     end
 
-    @tag blocker: "b4"
+    @tag spec: "phase-0-probe-configuration-is-exact-and-versioned"
+    test "refuses HTTPS transport when the host CA store is unavailable" do
+      https_config =
+        Map.put(@valid_config, "endpoint_url", "https://controller.example/v1/responses")
+
+      unavailable_stores = [
+        fn -> :erlang.error(:enoent) end,
+        fn -> raise ArgumentError, "/etc/ssl/cert.pem" end,
+        fn -> [] end,
+        fn -> :undefined end
+      ]
+
+      for load_cacerts <- unavailable_stores do
+        assert {:error, {:invalid, reason}} =
+                 ObservabilityProbe.build_http_options(https_config, load_cacerts)
+
+        assert reason =~ "CA store"
+        refute reason =~ "cert.pem"
+      end
+
+      assert {:ok, _options} =
+               ObservabilityProbe.build_http_options(@valid_config, fn ->
+                 :erlang.error(:enoent)
+               end)
+    end
+
+    @tag spec: "phase-0-probe-configuration-is-exact-and-versioned"
     test "rejects unsafe resolved model and credential values without echoing them" do
       unsafe_values = [
         {"model\nleak", "safe-token"},
@@ -576,7 +634,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
   end
 
   describe "final HTTP acceptance boundaries" do
-    @tag final_review: "content_type"
+    @tag spec: "buffered-typed-terminal-determines-http-only-outcome"
     test "requires exactly one event-stream response media type" do
       body =
         sse("response.completed", "resp_550e8400-e29b-41d4-a716-446655440016", "completed")
@@ -604,7 +662,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       end
     end
 
-    @tag final_review: "authority"
+    @tag spec: "phase-0-probe-configuration-is-exact-and-versioned"
     test "rejects raw malformed authorities before URI normalization" do
       invalid_urls = [
         "https://controller.example:/v1/responses",
@@ -636,7 +694,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       end
     end
 
-    @tag final_review: "status"
+    @tag spec: "probe-results-are-allowlisted-and-content-free"
     @tag timeout: 120_000
     test "normalizes an out-of-contract HTTP status to a safe exit-1 result" do
       {port, server} =
@@ -677,7 +735,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
   end
 
   describe "launcher contract" do
-    @tag blocker: "launcher"
+    @tag spec: "launcher-preserves-caller-path-and-owned-exit-semantics"
     @tag timeout: 120_000
     test "resolves relative config paths from the caller and documents owned exit codes" do
       tmp_dir =
@@ -713,7 +771,38 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       assert usage =~ "64=usage"
     end
 
-    @tag review: "p1_path"
+    @tag spec: "probe-results-are-allowlisted-and-content-free"
+    @tag timeout: 120_000
+    test "retains the pinned probe ID when a refusal follows a valid configuration" do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "orchard-probe-refusal-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+      config_path = Path.join(tmp_dir, "config.json")
+      File.write!(config_path, Jason.encode!(@valid_config))
+      wrapper = Path.expand("../../../../scripts/smoke-observability-probe.sh", __DIR__)
+
+      {output, 2} =
+        System.cmd(wrapper, [config_path],
+          env: [
+            {"ORCHARD_OBSERVABILITY_PROBE_MODEL", nil},
+            {"ORCHARD_OBSERVABILITY_PROBE_API_KEY", nil}
+          ]
+        )
+
+      result = output |> String.trim() |> Jason.decode!()
+
+      assert result["classification"] == "invalid_config"
+      assert result["probe_id"] == @valid_config["probe_id"]
+      assert result["public_request_id"] == nil
+    end
+
+    @tag spec: "launcher-preserves-caller-path-and-owned-exit-semantics"
     @tag timeout: 120_000
     test "passes a nonexistent nested caller-relative path to invalid-config handling" do
       tmp_dir =

@@ -42,6 +42,7 @@ defmodule Orchard.ObservabilityProbe do
     terminal_validation_failed
     invalid_config
   )
+  @terminal_classifications ~w(completed response_failed)
   @terminal_states ~w(completed failed incomplete cancelled timed_out interrupted)
   @forbidden_result_key_fragments ~w(
     prompt
@@ -243,7 +244,10 @@ defmodule Orchard.ObservabilityProbe do
   end
 
   @spec build_http_options(map()) :: {:ok, keyword()} | {:error, validation_error()}
-  def build_http_options(config) do
+  def build_http_options(config), do: build_http_options(config, &:public_key.cacerts_get/0)
+
+  @spec build_http_options(map(), (-> list())) :: {:ok, keyword()} | {:error, validation_error()}
+  def build_http_options(config, load_cacerts) do
     uri = URI.parse(config["endpoint_url"])
 
     options = [
@@ -253,31 +257,52 @@ defmodule Orchard.ObservabilityProbe do
     ]
 
     if uri.scheme == "https" do
-      ssl_options = [
-        verify: :verify_peer,
-        cacerts: :public_key.cacerts_get(),
-        server_name_indication: String.to_charlist(uri.host),
-        customize_hostname_check: [
-          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+      with {:ok, cacerts} <- host_cacerts(load_cacerts) do
+        ssl_options = [
+          verify: :verify_peer,
+          cacerts: cacerts,
+          server_name_indication: String.to_charlist(uri.host),
+          customize_hostname_check: [
+            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+          ]
         ]
-      ]
 
-      {:ok, Keyword.put(options, :ssl, ssl_options)}
+        {:ok, Keyword.put(options, :ssl, ssl_options)}
+      end
     else
       {:ok, options}
     end
   end
 
+  defp host_cacerts(load_cacerts) do
+    case load_cacerts.() do
+      [_certificate | _rest] = cacerts -> {:ok, cacerts}
+      _empty_or_invalid -> invalid("host system CA store is unavailable")
+    end
+  catch
+    :error, _reason -> invalid("host system CA store is unavailable")
+  end
+
   defp run(config_path) do
-    with {:ok, config} <- load_config(config_path),
-         {:ok, model} <- required_env(config["model_env_var"]),
+    case load_config(config_path) do
+      {:ok, config} -> run_validated_config(config)
+      {:error, {:invalid, reason}} -> {:error, nil, reason}
+    end
+  end
+
+  defp run_validated_config(config) do
+    probe_id = config["probe_id"]
+
+    with {:ok, model} <- required_env(config["model_env_var"]),
          {:ok, credential} <- required_env(config["credential_env_var"]),
          :ok <- validate_resolved_values(model, credential),
+         :ok <- ensure_http_apps(),
+         {:ok, http_options} <- build_http_options(config),
          :ok <- maybe_start_repo(config["terminal_validation"]) do
-      {:ok, execute(config, model, credential)}
+      {:ok, execute(config, model, credential, http_options)}
     else
-      {:error, {:invalid, reason}} -> {:error, "invalid", reason}
-      {:error, _reason} -> {:error, "invalid", "runtime prerequisite unavailable"}
+      {:error, {:invalid, reason}} -> {:error, probe_id, reason}
+      {:error, _reason} -> {:error, probe_id, "runtime prerequisite unavailable"}
     end
   end
 
@@ -293,11 +318,11 @@ defmodule Orchard.ObservabilityProbe do
     end
   end
 
-  defp execute(config, model, credential) do
+  defp execute(config, model, credential, http_options) do
     started_at = timestamp()
     started_native = System.monotonic_time(:millisecond)
 
-    http_result = request(config, model, credential)
+    http_result = request(config, model, credential, http_options)
     latency_ms = System.monotonic_time(:millisecond) - started_native
 
     {http_status, classified} =
@@ -321,9 +346,7 @@ defmodule Orchard.ObservabilityProbe do
     })
   end
 
-  defp request(config, model, credential) do
-    :ok = ensure_http_apps()
-
+  defp request(config, model, credential, http_options) do
     headers = [
       {~c"authorization", String.to_charlist("Bearer #{credential}")},
       {~c"accept", ~c"text/event-stream"}
@@ -332,14 +355,12 @@ defmodule Orchard.ObservabilityProbe do
     body = Jason.encode!(%{"model" => model, "input" => @probe_input, "stream" => true})
     request = {String.to_charlist(config["endpoint_url"]), headers, ~c"application/json", body}
 
-    with {:ok, http_options} <- build_http_options(config) do
-      case :httpc.request(:post, request, http_options, body_format: :binary) do
-        {:ok, {{_version, status, _reason}, response_headers, response_body}} ->
-          {:ok, status, response_headers, response_body}
+    case :httpc.request(:post, request, http_options, body_format: :binary) do
+      {:ok, {{_version, status, _reason}, response_headers, response_body}} ->
+        {:ok, status, response_headers, response_body}
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -368,16 +389,6 @@ defmodule Orchard.ObservabilityProbe do
   defp maybe_validate_terminal(%{"terminal_validation" => "controller_local"}, classified) do
     public_id = classified["public_request_id"]
 
-    if not (is_binary(public_id) and match_public_id?(public_id)) do
-      terminal_validation_failure(classified, 0, nil)
-    else
-      validate_controller_local(classified, public_id)
-    end
-  end
-
-  defp maybe_validate_terminal(_config, classified), do: classified
-
-  defp validate_controller_local(classified, public_id) do
     validate_controller_local_result(
       classified,
       fn -> Orchard.Requests.get_request_by_public_id(public_id) end,
@@ -385,28 +396,43 @@ defmodule Orchard.ObservabilityProbe do
     )
   end
 
+  defp maybe_validate_terminal(_config, classified), do: classified
+
   @spec validate_controller_local_result(
           map(),
           (-> struct() | map() | nil),
           (struct() | map() -> list())
         ) :: map()
   def validate_controller_local_result(classified, lookup, list_events) do
-    try do
-      case lookup.() do
-        nil -> terminal_validation_failure(classified, 0, nil)
-        request -> reconcile_terminal_result(classified, request, list_events.(request))
-      end
-    rescue
-      _error in [
-        DBConnection.ConnectionError,
-        DBConnection.OwnershipError,
-        Ecto.QueryError,
-        Postgrex.Error
-      ] ->
+    cond do
+      not observed_terminal?(classified["classification"]) ->
+        classified
+
+      not match_public_id?(classified["public_request_id"]) ->
         terminal_validation_failure(classified, 0, nil)
-    catch
-      :exit, _reason -> terminal_validation_failure(classified, 0, nil)
+
+      true ->
+        reconcile_durable_terminal(classified, lookup, list_events)
     end
+  end
+
+  defp observed_terminal?(classification), do: classification in @terminal_classifications
+
+  defp reconcile_durable_terminal(classified, lookup, list_events) do
+    case lookup.() do
+      nil -> terminal_validation_failure(classified, 0, nil)
+      request -> reconcile_terminal_result(classified, request, list_events.(request))
+    end
+  rescue
+    _error in [
+      DBConnection.ConnectionError,
+      DBConnection.OwnershipError,
+      Ecto.QueryError,
+      Postgrex.Error
+    ] ->
+      terminal_validation_failure(classified, 0, nil)
+  catch
+    :exit, _reason -> terminal_validation_failure(classified, 0, nil)
   end
 
   defp sse_and_durable_agree?("completed", "completed", "completed"), do: true
@@ -679,8 +705,10 @@ defmodule Orchard.ObservabilityProbe do
   defp nullable_http_status(_status), do: invalid("http_status must be null or 100..599")
 
   defp timestamp_field(map, key) do
-    case DateTime.from_iso8601(map[key] || "") do
-      {:ok, _datetime, 0} -> :ok
+    with value when is_binary(value) <- map[key],
+         {:ok, _datetime, 0} <- DateTime.from_iso8601(value) do
+      :ok
+    else
       _invalid -> invalid("#{key} must be an ISO 8601 UTC timestamp")
     end
   end

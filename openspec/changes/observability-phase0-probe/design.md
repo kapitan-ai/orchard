@@ -41,9 +41,12 @@ config paths are made absolute before the launcher enters the repository root.
 
 Configuration requires `probe_<lowercase UUID>` and distinct environment names.
 Results require the same probe grammar and `resp_<lowercase UUID>` public IDs;
-an invalid configuration may use a null probe ID because no trustworthy ID was
-loaded. Other result strings are closed enums or validated UTC timestamps.
-Unknown and content-bearing field names remain forbidden.
+a result uses a null probe ID only when no configuration validated, so the
+schema, environment, transport, and database refusals that follow a valid
+configuration stay correlatable by the pinned ID. Other result strings are
+closed enums or validated UTC timestamps, and timestamp validation refuses
+non-string values instead of raising. Unknown and content-bearing field names
+remain forbidden.
 
 ### Trusted credential destination
 
@@ -51,10 +54,13 @@ Plain HTTP is restricted to exact loopback hosts. HTTPS rejects userinfo,
 queries, fragments, and malformed raw authorities before URI normalization,
 including empty, nonnumeric, whitespace-bearing, or control-bearing explicit
 ports and malformed IPv6. It disables redirects and sets explicit peer
-verification, hostname verification, SNI, and host system CA certificates.
-Model values are bounded UTF-8 without ASCII controls; credentials are bounded
-printable non-space ASCII. Both are validated before request construction and
-are never interpolated into validation errors.
+verification, hostname verification, SNI, and host system CA certificates. A
+host that cannot supply a usable CA store is a pre-request refusal like a
+missing environment variable, not an unhandled raise, so transport options are
+built before the observation window opens. Model values are bounded UTF-8
+without ASCII controls; credentials are bounded printable non-space ASCII. Both
+are validated before request construction and are never interpolated into
+validation errors.
 
 ### Fail-closed buffered terminal classification
 
@@ -75,6 +81,12 @@ This establishes semantic terminal evidence only. It does not prove incremental
 stream delivery, chunk timing, or progress before connection close.
 
 ### Controller-local cross-plane mapping
+
+Reconciliation runs only when an SSE terminal was observed. A transport, HTTP,
+or stream failure keeps its own classification, because rewriting it to
+`terminal_validation_failed` would report a database mismatch for an outage that
+never reached the database. Those classifications already fail, so gating costs
+no strictness.
 
 The durable validator requires one terminal `state_transition` matching the
 request row. Reconciliation then applies this mapping:
