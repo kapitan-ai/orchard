@@ -14,7 +14,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   @directory_mode 0o700
   @file_mode 0o600
   @lock_command "/usr/bin/lockf"
-  @lock_directory ".install.lock"
+  @lock_file ".beam-peer-grants.install.lock"
   @lock_marker "orchard-peer-grant-lock-ready\n"
   @lock_timeout_seconds 5
   @store_directory "beam-peer-grants"
@@ -31,10 +31,8 @@ defmodule Orchard.Node.BeamPeerGrantStore do
              is_binary(expected_node_name) and is_list(opts) do
     with {:ok, grant} <- validate_grant(identity, delivery, expected_node_name),
          :ok <- ensure_current(grant, current_time(opts)),
-         {:ok, store_root, expected_uid} <- prepare_store(root, opts) do
-      with_store_lock(store_root, expected_uid, opts, fn ->
-        install_under_lock(store_root, grant, expected_uid, opts)
-      end)
+         {:ok, identity_root, expected_uid} <- prepare_identity_root(root) do
+      install_with_store_lock(identity_root, grant, expected_uid, opts)
     end
   rescue
     _error -> {:error, :beam_peer_grant_store_invalid}
@@ -215,15 +213,31 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   defp canonical_name?(_prefix, _id, _name), do: false
 
-  defp prepare_store(root, opts) do
-    root = Path.expand(root)
+  defp prepare_identity_root(root) do
+    identity_root = Path.expand(root)
 
-    with :ok <- validate_directory(root),
-         {:ok, root_stat} <- File.stat(root),
-         store_root = Path.join(root, @store_directory),
-         :ok <- create_or_validate_directory(store_root, root, root_stat.uid, opts) do
-      {:ok, store_root, root_stat.uid}
+    with :ok <- validate_directory(identity_root),
+         {:ok, root_stat} <- File.stat(identity_root) do
+      {:ok, identity_root, root_stat.uid}
     else
+      _other -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp install_with_store_lock(identity_root, grant, expected_uid, opts) do
+    with_store_lock(identity_root, expected_uid, opts, fn ->
+      case prepare_store(identity_root, expected_uid, opts) do
+        {:ok, store_root} -> install_under_lock(store_root, grant, expected_uid, opts)
+        {:error, _reason} = error -> error
+      end
+    end)
+  end
+
+  defp prepare_store(identity_root, expected_uid, opts) do
+    store_root = Path.join(identity_root, @store_directory)
+
+    case create_or_validate_directory(store_root, identity_root, expected_uid, opts) do
+      :ok -> {:ok, store_root}
       _other -> {:error, :beam_peer_grant_store_invalid}
     end
   end
@@ -234,7 +248,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
         narrow_private_directory(path, expected_uid)
 
       {:error, :enoent} ->
-        with :ok <- create_private_directory(path, expected_uid) do
+        with :ok <- create_private_directory(path, expected_uid, opts) do
           sync_directory(parent, opts)
         end
 
@@ -243,20 +257,43 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp create_private_directory(path, expected_uid) do
+  defp create_private_directory(path, expected_uid, opts) do
     case File.mkdir(path) do
-      :ok -> narrow_private_directory(path, expected_uid)
+      :ok -> finish_created_directory(path, expected_uid, opts)
       {:error, :eexist} -> narrow_private_directory(path, expected_uid)
       _other -> {:error, :beam_peer_grant_store_invalid}
     end
   end
 
-  # `File.mkdir/1` applies the process umask, so the store directory is created
-  # wider than owner-only and is narrowed a moment later. Every installer
-  # narrows it rather than rejecting that window, otherwise a concurrent
-  # installer that observes it mid-creation fails closed. `File.chmod/2` fails
-  # for a directory this process does not own, and owner plus mode are
-  # revalidated afterwards.
+  defp finish_created_directory(path, expected_uid, opts) do
+    hook_result = after_store_directory_created(path, opts)
+    narrow_result = narrow_private_directory(path, expected_uid)
+
+    if hook_result == :ok and narrow_result == :ok do
+      :ok
+    else
+      {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp after_store_directory_created(path, opts) do
+    case Keyword.get(opts, :after_store_directory_created) do
+      hook when is_function(hook, 1) -> normalize_creation_hook(hook, path)
+      _other -> :ok
+    end
+  end
+
+  defp normalize_creation_hook(hook, path) do
+    case hook.(path) do
+      :ok -> :ok
+      _other -> {:error, :beam_peer_grant_store_invalid}
+    end
+  rescue
+    _error -> {:error, :beam_peer_grant_store_invalid}
+  catch
+    _kind, _reason -> {:error, :beam_peer_grant_store_invalid}
+  end
+
   defp narrow_private_directory(path, expected_uid) do
     with {:ok, %{type: :directory}} <- File.lstat(path),
          :ok <- File.chmod(path, @directory_mode),
@@ -267,8 +304,8 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     end
   end
 
-  defp with_store_lock(store_root, expected_uid, opts, operation) do
-    lock_path = Path.join(store_root, @lock_directory)
+  defp with_store_lock(identity_root, expected_uid, opts, operation) do
+    lock_path = Path.join(identity_root, @lock_file)
     lock_command = Keyword.get(opts, :lock_command, @lock_command)
 
     with {:ok, lock_port} <- acquire_store_lock(lock_path, expected_uid, lock_command) do

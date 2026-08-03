@@ -100,6 +100,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert stored.encoded_secret == delivery.encoded_secret
     assert stored.generation == delivery.generation
     assert private_mode(Path.join(root, "beam-peer-grants")) == 0o700
+    assert private_mode(Path.join(root, ".beam-peer-grants.install.lock")) == 0o600
 
     grant_path = Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"])
     assert private_mode(grant_path) == 0o600
@@ -131,6 +132,92 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
              BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
 
     assert private_mode(store_root) == 0o700
+  end
+
+  test "SPEC.md §7.5.0 first-store initialization is serialized before permission narrowing" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-first-store-race-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    marker_path = Path.join(root, "second-lock-attempted")
+    wrapper = Path.join(root, "lockf-marker-wrapper")
+
+    File.write!(
+      wrapper,
+      """
+      #!/bin/sh
+      : > "#{marker_path}"
+      exec /usr/bin/lockf "$@"
+      """
+    )
+
+    File.chmod!(wrapper, 0o700)
+    identity = identity()
+    delivery = delivery(identity)
+    parent = self()
+
+    first =
+      Task.async(fn ->
+        BeamPeerGrantStore.install(
+          root,
+          identity,
+          delivery,
+          delivery.node_beam_name,
+          after_store_directory_created: fn store_root ->
+            File.chmod!(store_root, 0o755)
+            send(parent, {:store_directory_created, self(), store_root})
+
+            receive do
+              :resume_first_installer -> :ok
+            end
+          end
+        )
+      end)
+
+    assert_receive {:store_directory_created, first_pid, store_root}, 5_000
+    assert private_mode(store_root) == 0o755
+
+    second =
+      Task.async(fn ->
+        result =
+          BeamPeerGrantStore.install(
+            root,
+            identity,
+            delivery,
+            delivery.node_beam_name,
+            lock_command: wrapper
+          )
+
+        send(parent, {:second_installer_finished, result})
+        result
+      end)
+
+    try do
+      wait_until(fn -> File.exists?(marker_path) end)
+      refute_receive {:second_installer_finished, _result}, 250
+
+      send(first_pid, :resume_first_installer)
+      assert {:ok, ^delivery} = Task.await(first, 5_000)
+      assert {:ok, ^delivery} = Task.await(second, 5_000)
+
+      grant_path = Path.join(store_root, "#{identity.controller_id}.json")
+      lock_path = Path.join(root, ".beam-peer-grants.install.lock")
+
+      assert private_mode(store_root) == 0o700
+      assert private_mode(grant_path) == 0o600
+      assert private_mode(lock_path) == 0o600
+      assert {:ok, ^delivery} = BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+    after
+      send(first_pid, :resume_first_installer)
+      Task.shutdown(first, :brutal_kill)
+      Task.shutdown(second, :brutal_kill)
+    end
   end
 
   test "SPEC.md §7.5.0 install sweeps orphaned plaintext temporaries left by a crash" do
@@ -470,9 +557,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert {:ok, ^delivery} =
              BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
 
-    lock_path = Path.join([root, "beam-peer-grants", ".install.lock"])
+    lock_path = Path.join(root, ".beam-peer-grants.install.lock")
     File.write!(lock_path, "99999999\ndead-owner-token\n")
-    File.chmod!(lock_path, 0o600)
+    File.chmod!(lock_path, 0o644)
 
     install =
       Task.async(fn ->
@@ -482,6 +569,79 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert {:ok, ^delivery} = Task.await(install, 1_000)
     assert File.exists?(lock_path)
     assert private_mode(lock_path) == 0o600
+  end
+
+  test "SPEC.md §7.5.0 install rejects non-regular parent lock candidates before store creation" do
+    Enum.each([:directory, :symlink], fn candidate_type ->
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "orchard-node-peer-grant-lock-candidate-#{candidate_type}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      File.mkdir!(root)
+      File.chmod!(root, 0o700)
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      lock_path = Path.join(root, ".beam-peer-grants.install.lock")
+
+      target_path =
+        case candidate_type do
+          :directory ->
+            File.mkdir!(lock_path)
+            nil
+
+          :symlink ->
+            target = Path.join(root, "lock-target")
+            File.write!(target, "unchanged")
+            File.chmod!(target, 0o600)
+            File.ln_s!(target, lock_path)
+            target
+        end
+
+      identity = identity()
+      delivery = delivery(identity)
+
+      assert {:error, :beam_peer_grant_store_invalid} =
+               BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+      refute File.exists?(Path.join(root, "beam-peer-grants"))
+      assert File.lstat!(lock_path).type == candidate_type
+
+      if target_path do
+        assert File.read!(target_path) == "unchanged"
+      end
+    end)
+  end
+
+  test "SPEC.md §7.5.0 a failed creation hook still narrows the store directory" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-hook-failure-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    store_root = Path.join(root, "beam-peer-grants")
+
+    assert {:error, :beam_peer_grant_store_invalid} =
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               delivery,
+               delivery.node_beam_name,
+               after_store_directory_created: fn ^store_root ->
+                 File.chmod!(store_root, 0o755)
+                 {:error, :test_hook_failed}
+               end
+             )
+
+    assert private_mode(store_root) == 0o700
   end
 
   test "SPEC.md §7.5.0 install uses baseline macOS lockf arguments" do
@@ -533,7 +693,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
              "-s",
              "-t",
              "5",
-             Path.join([root, "beam-peer-grants", ".install.lock"]),
+             Path.join(root, ".beam-peer-grants.install.lock"),
              "/bin/cat"
            ]
   end
