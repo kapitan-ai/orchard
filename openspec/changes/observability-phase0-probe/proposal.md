@@ -9,12 +9,14 @@ than an observability backend or a change to Orchard's public health contract.
 
 - Add a versioned configuration contract for one streaming
   `POST /v1/responses` acceptance request.
-- Add a strict safe result schema and stable outcome classifications.
-- Support remote HTTP/SSE validation and optional Controller-local durable
-  terminal-event validation through `Orchard.Requests`.
+- Add grammar-backed safe result identifiers and stable outcome classifications.
+- Require a validated loopback HTTP or system-trusted HTTPS credential
+  destination.
+- Fail closed on malformed buffered terminal candidates and optionally reconcile
+  HTTP and durable terminal outcomes through `Orchard.Requests`.
 - Add a consumer-owned pin example for issue #118 that records the exact Git
   commit and non-secret configuration digest.
-- Document invocation, update, and rollback.
+- Document caller-relative invocation, owned exit codes, update, and rollback.
 - Add no Prometheus, Grafana, OpenTelemetry Collector, telemetry pipeline,
   product instrumentation, or public health response changes.
 
@@ -40,4 +42,5 @@ None.
 - Uses existing Elixir/OTP, JSON, Responses API, and request persistence
   interfaces; adds no dependency.
 - Keeps credentials in environment variables and outside configuration,
-  results, pins, logs, and repository content.
+  results, pins, logs, and repository content; validates their destination and
+  header-safe form before request construction.

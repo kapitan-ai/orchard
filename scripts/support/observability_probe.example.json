@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "probe_id": "issue-115-phase0-responses",
+  "probe_id": "probe_550e8400-e29b-41d4-a716-446655440000",
   "endpoint_kind": "responses",
-  "endpoint_url": "http://127.0.0.1:4000/v1/responses",
+  "endpoint_url": "https://controller.example/v1/responses",
   "stream": true,
   "model_env_var": "ORCHARD_OBSERVABILITY_PROBE_MODEL",
   "credential_env_var": "ORCHARD_OBSERVABILITY_PROBE_API_KEY",
   "connect_timeout_ms": 5000,
   "request_timeout_ms": 120000,
   "terminal_validation": "http_only",
-  "cadence_notes": "Run once before the pilot window, at each CP1 observation interval, and after update or rollback. Use controller_local only on a Controller host with database access."
+  "cadence_notes": "Run once before the pilot window, at each CP1 observation interval, and after update or rollback. Use controller_local only on a Controller host with database access. HTTPS required except loopback."
 }

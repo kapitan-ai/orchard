@@ -4,87 +4,146 @@
 
 The Phase 0 probe SHALL accept only configuration schema version 1. The schema
 SHALL freeze endpoint kind `responses`, path `/v1/responses`, streaming enabled,
-positive connect and request timeouts, a probe identifier, cadence notes,
-terminal validation mode, and environment variable names for model and bearer
-credential. It MUST NOT accept the model value, credential value, prompt,
-tenant identifier, or DSN as configuration fields.
+positive connect and request timeouts, `probe_<lowercase UUID>` identifier,
+cadence notes, terminal validation mode, and distinct environment variable
+names for model and bearer credential. It MUST NOT accept literal model,
+credential, prompt, tenant identifier, or DSN fields.
+
+Non-loopback endpoints MUST use HTTPS. Plain HTTP MAY target only `localhost`,
+`127.0.0.1`, or `::1`. URLs MUST NOT contain userinfo, a query, a fragment, an
+empty authority, a malformed IPv6 authority, or an explicit port that is empty,
+nonnumeric, control-bearing, whitespace-bearing, or outside `1..65535`. These
+authority checks MUST apply to the raw URL before URI normalization. HTTPS
+requests MUST disable redirects and verify both the peer and hostname with the
+host system CA store. Resolved model and credential values MUST satisfy bounded
+control-character-safe formats before request construction.
 
 #### Scenario: Valid remote configuration is loaded
 
-- **WHEN** schema version 1 names model and credential environment variables,
-  selects `responses`, uses `/v1/responses`, enables streaming, and selects
-  `http_only`
-- **THEN** the probe resolves the two values from the environment
-- **AND** it sends a streaming Responses request within the configured timeouts
+- **WHEN** schema version 1 names distinct model and credential environment
+  variables and selects an HTTPS `/v1/responses` endpoint
+- **THEN** the probe resolves and validates the two values from the environment
+- **AND** it sends the request with peer and hostname verification and redirects
+  disabled
 
-#### Scenario: Configuration adds or changes a contract field
+#### Scenario: Configuration or resolved values are unsafe
 
-- **WHEN** a configuration has an unknown field, unsupported schema version,
-  non-Responses endpoint, non-streaming mode, invalid timeout, or literal model
-  or credential value
-- **THEN** the probe refuses the configuration before sending a request
+- **WHEN** configuration adds an unknown field, uses an invalid identifier,
+names the same environment variable twice, selects a non-loopback HTTP URL,
+includes malformed raw authority text or URL userinfo, or resolves a
+control-bearing or oversized value
+- **THEN** the probe refuses before sending a request
 
 ### Requirement: Probe results are allowlisted and content-free
 
 The probe SHALL serialize only `schema_version`, `probe_id`, `started_at`,
 `finished_at`, `outcome`, `classification`, `public_request_id`,
-`terminal_count`, `terminal_state`, `http_status`, and `latency_ms`. The result
-MUST NOT contain prompts, response content, credentials, tenant identifiers,
-DSNs, stack traces, exceptions, or any unknown field.
+`terminal_count`, `terminal_state`, `http_status`, and `latency_ms`.
+`probe_id` MUST match `probe_<lowercase UUID>` except that it MAY be null for
+`invalid_config`; `public_request_id` MUST be null or match
+`resp_<lowercase UUID>`. All other string values MUST be closed enums or UTC
+timestamps. The result MUST NOT contain prompts, response content, credentials,
+tenant identifiers, DSNs, stack traces, exceptions, or unknown fields.
 
 #### Scenario: Safe result is serialized
 
-- **WHEN** every field conforms to result schema version 1
+- **WHEN** every field conforms to result schema version 1 and its identifier
+grammar
 - **THEN** exactly the allowlisted scalar fields are emitted as JSON
 
-#### Scenario: Content-bearing or secret-bearing field is presented
+#### Scenario: HTTP implementation returns an out-of-contract status
 
-- **WHEN** a result includes a prompt, response, credential, secret, token,
-  tenant identifier, DSN, stack trace, exception, or another unknown field
+- **WHEN** the HTTP implementation returns a status outside `100..599`
+- **THEN** the probe emits a failed `http_error` result with `http_status` null
+- **AND** serialization does not raise
+
+#### Scenario: Content-bearing identifier is presented
+
+- **WHEN** an allowlisted identifier contains arbitrary content instead of its
+  canonical grammar
 - **THEN** serialization is refused
 
-### Requirement: Streaming Responses terminal determines HTTP-only outcome
+### Requirement: Buffered typed terminal determines HTTP-only outcome
 
-The probe SHALL classify an HTTP 200 stream with exactly one typed
-`response.completed` terminal as `completed` and passing. A typed
-`response.failed`, non-200 response, transport failure, missing terminal,
-duplicate terminal, or malformed terminal SHALL fail with a stable
-classification and SHALL NOT retain the response body.
+The Phase 0 probe SHALL examine the complete buffered response using Orchard's
+narrow one-`event`/one-`data` SSE framing only when the response contains exactly
+one `Content-Type` field whose media type is `text/event-stream`; parameters MAY
+follow that media type. Missing, wrong, or ambiguous content type SHALL fail as
+`invalid_stream`. A block is a terminal candidate when either the SSE event or
+decoded JSON type names `response.completed` or `response.failed`. Every
+candidate MUST have exactly one event and one data field, matching event and JSON
+types, a response object, a canonical public ID, and a legal status. A colonless
+`event` or `data` line counts as an additional field with an empty value and
+therefore invalidates a terminal candidate. `response.completed` accepts only
+`completed`; `response.failed` accepts only `failed` or `incomplete`.
+
+The probe SHALL pass only for exactly one valid `response.completed` candidate
+and no invalid terminal candidate. Missing, duplicate, malformed, mismatched,
+repeated-field, or invalid-UTF-8 terminals SHALL fail as `invalid_stream` and
+SHALL NOT retain response content.
 
 #### Scenario: Stream completes once
 
-- **WHEN** the stream contains exactly one valid `response.completed` event
-- **THEN** outcome is `pass`
-- **AND** classification is `completed`
-- **AND** the public request ID and terminal state are taken from that event
+- **WHEN** a single `text/event-stream` content type is present and unrelated
+  producer events precede exactly one legal `response.completed` terminal
+- **THEN** outcome is `pass` and classification is `completed`
+- **AND** the canonical public request ID and completed status are retained
 
-#### Scenario: Stream terminal is invalid or ambiguous
+#### Scenario: Terminal intent is malformed on either plane
 
-- **WHEN** the stream has no valid terminal, more than one valid terminal, or a
-  malformed terminal payload
-- **THEN** outcome is `fail`
-- **AND** classification is `invalid_stream`
+- **WHEN** either the SSE event or decoded JSON type identifies a terminal but
+  its framing, type, response object, ID, or status is invalid
+- **THEN** outcome is `fail` and classification is `invalid_stream`
+- **AND** the candidate is not discarded even if another valid terminal exists
 
-### Requirement: Controller-local mode validates durable terminal state
+#### Scenario: Response media type is not unambiguous SSE
 
-Controller-local mode SHALL look up the request by the public ID observed in
-the typed stream and list its ordered request events. It SHALL require exactly
-one lifecycle `state_transition` with a terminal state matching
-`request.state`. HTTP-only mode SHALL NOT require database access.
+- **WHEN** a 200 response omits `Content-Type`, uses another media type, or
+  presents multiple or comma-joined media types
+- **THEN** outcome is `fail` and classification is `invalid_stream`
+- **AND** the body is not classified as terminal evidence
 
-#### Scenario: Durable terminal matches
+### Requirement: Controller-local mode reconciles HTTP and durable terminals
 
-- **WHEN** exactly one terminal `state_transition` exists and its state matches
-  the persisted request state
+Controller-local mode SHALL require a canonical public ID, look up its request,
+and list ordered events. It SHALL require exactly one durable terminal
+`state_transition` matching `request.state`, then require agreement with the
+HTTP terminal: completed maps only to durable completed; failed maps to durable
+failed, cancelled, timed out, or interrupted; incomplete maps only to durable
+cancelled, timed out, or interrupted. HTTP-only mode SHALL NOT require database
+access.
+
+#### Scenario: Durable and HTTP terminals agree
+
+- **WHEN** the durable row and sole terminal event agree and satisfy the mapping
+  for the observed HTTP terminal
 - **THEN** the HTTP classification is preserved
-- **AND** `terminal_count` is `1`
-- **AND** `terminal_state` is the persisted terminal state
+- **AND** durable count and state are reported
 
-#### Scenario: Durable terminal is missing, duplicated, or mismatched
+#### Scenario: Durable evidence is missing or contradictory
 
-- **WHEN** lookup fails or the durable terminal invariant does not hold
-- **THEN** outcome is `fail`
-- **AND** classification is `terminal_validation_failed`
+- **WHEN** the public ID is missing, lookup or event listing fails, the durable
+  invariant fails, or HTTP and durable outcomes disagree
+- **THEN** outcome is `fail` and classification is
+  `terminal_validation_failed`
+- **AND** an active durable row state is reported as null
+- **AND** ordinary database exception or exit detail is not serialized
+
+### Requirement: Launcher preserves caller path and owned exit semantics
+
+The launcher SHALL resolve relative configuration paths against the caller's
+working directory before entering the repository root. It SHALL reserve stdout
+for the result JSON after compilation and document exit `0` for pass, `1` for a
+validated failed observation, `2` for pre-request configuration or environment
+refusal, and `64` for usage. Toolchain or VM failures MAY return other runtime
+exit codes.
+
+#### Scenario: Caller supplies a relative invalid configuration
+
+- **WHEN** the launcher is invoked from another directory with a relative path
+  to invalid JSON
+- **THEN** it reads that caller-relative file, emits an `invalid_config` result,
+  and exits `2`
 
 ### Requirement: Pilot consumer pins exact producer and configuration
 
@@ -93,14 +152,8 @@ Issue #118 SHALL own its CP1 configuration, actual pin, invocation cadence,
 and retained results. The consumer pin SHALL record a 40-character producer
 Git commit SHA and SHA-256 of the exact non-secret configuration bytes.
 
-#### Scenario: Consumer updates the probe
+#### Scenario: Consumer updates or rolls back the probe
 
-- **WHEN** issue #118 adopts a different producer revision or configuration
-- **THEN** it records the new commit SHA and config digest after review
-- **AND** it collects a fresh probe result before accepting the pin
-
-#### Scenario: Consumer rolls back the probe
-
-- **WHEN** issue #118 rejects an update
-- **THEN** it restores the prior recorded commit and byte-identical config
-- **AND** it verifies the digest and collects a fresh result
+- **WHEN** issue #118 adopts or restores a producer revision and configuration
+- **THEN** it records and verifies the corresponding commit and config digest
+- **AND** it collects a fresh result
