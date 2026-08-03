@@ -70,20 +70,20 @@ ex_dna detects code clones at the AST level, finding duplicates that text-based 
 {ExDNA.Credo,
  min_mass: 80,
  excluded_macros: [:@, :schema, :pipe_through, :plug],
- paths: ["apps/", "config/"]}
+ paths: ["apps/", "config/", "scripts/"]}
 ```
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | `min_mass` | 80 | Filters out small utility patterns and test scaffolding. Default (30) produces too much noise in a codebase with repetitive test setup and CLI command patterns. |
 | `excluded_macros` | `[:@, :schema, :pipe_through, :plug]` | Module attributes, Ecto schemas, router pipelines, and plug declarations are intentionally repetitive. |
-| `paths` | `["apps/", "config/"]` | Matches the umbrella source paths from `.ex_dna.exs`; the upstream Credo default scans `lib/`, which is empty at the umbrella root. |
+| `paths` | `["apps/", "config/", "scripts/"]` | Matches the source paths from `.ex_dna.exs`; the upstream Credo default scans `lib/`, which is empty at the umbrella root. `scripts/` keeps repo-root `.exs` helpers inside the same gate as umbrella code. |
 | `min_similarity` | 1.0 (default) | Only exact and renamed-variable clones. Type III (near-miss) is not enabled yet. |
 
 ### Standalone Usage
 
 ```bash
-mise exec -- mix ex_dna --paths "apps/"     # scan all umbrella apps
+mise exec -- mix ex_dna apps/                # scan all umbrella apps (paths are positional)
 mise exec -- mix ex_dna.explain N            # detailed breakdown of clone N
 ```
 
@@ -176,7 +176,7 @@ Set `min_similarity: 0.85` in `.credo.exs` to also find structurally similar (no
 
 As of `ex_dna` `1.3.1`, `ExDNA.Credo` compiles cleanly without the old consumer-side `requires` workaround. Orchard now relies on the package's built-in Credo integration directly from `.credo.exs`.
 
-`ExDNA.Credo` must include `paths: ["apps/", "config/"]` so the Credo-integrated scan covers the same umbrella paths as standalone `.ex_dna.exs`.
+`ExDNA.Credo` must include `paths: ["apps/", "config/", "scripts/"]` so the Credo-integrated scan covers the same paths as standalone `.ex_dna.exs`.
 
 If you see a warning about **redefining `ExDNA.Credo`**, the old runtime `requires` workaround has likely been reintroduced and should be removed. If you instead see `Ignoring an undefined check: ExDNA.Credo`, confirm the project is actually on `ex_dna` `1.3.1+` and that deps were recompiled after the upgrade.
 
