@@ -237,9 +237,8 @@ defmodule Orchard.ObservabilityProbe do
 
   @spec validate_resolved_values(term(), term()) :: :ok | {:error, validation_error()}
   def validate_resolved_values(model, credential) do
-    with :ok <- valid_model_value(model),
-         :ok <- valid_credential_value(credential) do
-      :ok
+    with :ok <- valid_model_value(model) do
+      valid_credential_value(credential)
     end
   end
 
@@ -805,18 +804,23 @@ defmodule Orchard.ObservabilityProbe do
       uri.path != "/v1/responses" or not is_nil(uri.query) or not is_nil(uri.fragment) ->
         invalid("endpoint_url must be an HTTP(S) /v1/responses URL without query or fragment")
 
-      uri.scheme == "https" and is_binary(uri.host) and uri.host != "" ->
-        :ok
-
-      uri.scheme == "http" and loopback_host?(uri.host) ->
-        :ok
-
-      uri.scheme == "http" ->
-        invalid("endpoint_url must use HTTPS except for loopback")
-
       true ->
-        invalid("endpoint_url must be an HTTP(S) /v1/responses URL without query or fragment")
+        validate_responses_origin(uri.scheme, uri.host)
     end
+  end
+
+  defp validate_responses_origin("https", host) when is_binary(host) and host != "", do: :ok
+
+  defp validate_responses_origin("http", host) do
+    if loopback_host?(host) do
+      :ok
+    else
+      invalid("endpoint_url must use HTTPS except for loopback")
+    end
+  end
+
+  defp validate_responses_origin(_scheme, _host) do
+    invalid("endpoint_url must be an HTTP(S) /v1/responses URL without query or fragment")
   end
 
   defp loopback_host?(host) when host in ["127.0.0.1", "localhost", "::1"], do: true
