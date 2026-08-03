@@ -393,3 +393,18 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 | openspec/README.md | Initialized OpenSpec change workflow |
 | mix.exs | Umbrella project root |
 | docs/code-quality.md | ex_slop + ex_dna plugin reference and tuning guide |
+| docs/agents/ | Per-repo config for Matt Pocock engineering skills (issue tracker, triage labels, domain docs) |
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `kapitan-ai/orchard` (via `gh`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context map at root: `CONTEXT-MAP.md` → `docs/glossary/CONTEXT.md`; decisions in `docs/decisions/`. See `docs/agents/domain.md`.
