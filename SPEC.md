@@ -229,6 +229,29 @@ The controller SHALL be a Phoenix/Plug HTTP service plus Runtime Endpoint client
 * model/tenant/key caches loaded
 * if Active/Standby mode enabled: instance is leader for write paths
 
+**Health exposure contract**
+
+* Unauthenticated `GET /health/live` SHALL return HTTP `200` with exactly
+  `{"status":"ok"}`.
+* Unauthenticated `GET /health/ready` SHALL return HTTP `200` with exactly
+  `{"status":"ok"}` when the active readiness predicate passes, or HTTP `503`
+  with exactly `{"status":"error"}` when it fails.
+* Public health responses SHALL NOT include checks, reasons, remediation, version,
+  build, transport, Console, runtime, licensing, tenant, or user details.
+* Detailed diagnostics SHALL be available only through authenticated Operator
+  `GET /ops/v1/health` using the cluster-scoped Operator-or-admin authorization
+  boundary. The response SHALL include `Cache-Control: no-store`, identify its
+  readiness contract, and may include sanitized checks, reasons, remediation,
+  build, transport, Console, runtime, and licensing observations.
+* Until authoritative cache-loaded and conditional leadership sources exist, the
+  implementation MAY temporarily use the unchanged M0-era predicate identified as
+  `orchard.readiness.legacy_m0.v1`. This staged predicate does not satisfy or claim
+  the complete readiness conditions above. It SHALL expose its identifier and
+  ordered check keys through authenticated Operator health only.
+* The later complete aggregate SHALL replace the staged predicate without constants,
+  configuration flags, readiness-only caches, unrelated caches, or other shims for
+  missing authorities. Detailed unauthenticated health SHALL NOT be restored.
+
 ### 3.2 OTP supervision tree
 
 ```text
@@ -2183,6 +2206,7 @@ Base path: `/ops/v1`
 #### 7.3.1 Endpoints
 
 ```text
+GET    /ops/v1/health
 GET    /ops/v1/cluster
 GET    /ops/v1/nodes
 GET    /ops/v1/nodes/:node_id

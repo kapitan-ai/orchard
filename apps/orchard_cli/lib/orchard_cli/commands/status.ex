@@ -62,7 +62,7 @@ defmodule OrchardCLI.Commands.Status do
       {:error, _reason, message, _code} ->
         %{
           version: version,
-          display_version: format_display_version(version, nil),
+          display_version: format_display_version(version),
           state: :install_error,
           role: nil,
           error: message
@@ -73,7 +73,7 @@ defmodule OrchardCLI.Commands.Status do
   defp snapshot_for_role(runtime, version, :node_agent = role) do
     %{
       version: version,
-      display_version: format_display_version(version, nil),
+      display_version: format_display_version(version),
       state: :node_agent,
       role: role,
       node_agent_loaded?: node_agent_loaded?(runtime),
@@ -85,7 +85,7 @@ defmodule OrchardCLI.Commands.Status do
     if message = invalid_transport_mode_message() do
       %{
         version: version,
-        display_version: format_display_version(version, nil),
+        display_version: format_display_version(version),
         state: :install_error,
         role: role,
         error: message
@@ -102,12 +102,10 @@ defmodule OrchardCLI.Commands.Status do
     case probe_candidates(candidates, request_fn) do
       {:ok, display_url, body} ->
         state = if body["status"] == "ok", do: :ready, else: :degraded
-        remote_version = non_empty_string(body["version"]) || version
-        build_ref = non_empty_string(body["build_ref"])
-        display_version = format_display_version(remote_version, build_ref)
+        display_version = format_display_version(version)
 
         %{
-          version: remote_version,
+          version: version,
           display_version: display_version,
           state: state,
           role: role,
@@ -118,7 +116,7 @@ defmodule OrchardCLI.Commands.Status do
         }
 
       {:error, :unreachable, display_url, source} ->
-        display_version = format_display_version(version, nil)
+        display_version = format_display_version(version)
         warnings = offline_warnings(runtime, source, display_url) ++ warnings
 
         %{
@@ -129,14 +127,13 @@ defmodule OrchardCLI.Commands.Status do
           base_url: nil,
           display_url: display_url,
           body: nil,
-          console_state: :unknown,
           warnings: warnings
         }
 
       {:error, :invalid_response, display_url, message, probe_failure} ->
         %{
           version: version,
-          display_version: format_display_version(version, nil),
+          display_version: format_display_version(version),
           state: :invalid_response,
           role: role,
           base_url: nil,
@@ -161,14 +158,7 @@ defmodule OrchardCLI.Commands.Status do
 
   def render_snapshot(%{state: :offline} = snap) do
     snap.warnings
-    |> prepend_warnings(
-      render_offline_banner(
-        snap.display_version,
-        snap.display_url,
-        snap.role,
-        Map.get(snap, :console_state, :unknown)
-      )
-    )
+    |> prepend_warnings(render_offline_banner(snap.display_version, snap.display_url, snap.role))
   end
 
   def render_snapshot(snap) do
@@ -233,8 +223,8 @@ defmodule OrchardCLI.Commands.Status do
     opts = build_request_opts(candidate)
 
     case request_fn.(url, opts) do
-      {:ok, %{status: status, body: body}} when status in 200..599 ->
-        case decode_health_response(body) do
+      {:ok, %{status: status, body: body}} when is_integer(status) ->
+        case decode_health_response(status, body) do
           {:ok, parsed} -> {:ok, parsed}
           {:error, reason} -> {:invalid_response, reason}
         end
@@ -333,30 +323,33 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── JSON Parsing ────────────────────────────────────────────────────
 
-  defp decode_health_response(body) when is_binary(body) do
+  defp decode_health_response(http_status, body) when is_binary(body) do
     case Jason.decode(body) do
-      {:ok, parsed} -> validate_health_contract(parsed)
+      {:ok, parsed} -> validate_health_contract(http_status, parsed)
       {:error, _} -> {:error, "malformed JSON in health response"}
     end
   end
 
-  defp decode_health_response(body) when is_map(body) do
-    # Req may auto-decode JSON
-    validate_health_contract(body)
+  defp decode_health_response(http_status, body) when is_map(body) do
+    validate_health_contract(http_status, body)
   end
 
-  defp decode_health_response(_), do: {:error, "unexpected response format"}
+  defp decode_health_response(_http_status, _), do: {:error, "unexpected response format"}
 
-  defp validate_health_contract(%{"status" => status} = body)
-       when status in ["ok", "error"] do
+  defp validate_health_contract(200, %{"status" => "ok"} = body) when map_size(body) == 1 do
     {:ok, body}
   end
 
-  defp validate_health_contract(%{"status" => other}) do
-    {:error, "unexpected health status: #{inspect(other)}"}
+  defp validate_health_contract(503, %{"status" => "error"} = body) when map_size(body) == 1 do
+    {:ok, body}
   end
 
-  defp validate_health_contract(_) do
+  defp validate_health_contract(http_status, body) when is_map(body) do
+    {:error,
+     "invalid public health pair: HTTP #{http_status} with body keys #{inspect(Map.keys(body))}"}
+  end
+
+  defp validate_health_contract(_http_status, _) do
     {:error, "health response missing \"status\" field"}
   end
 
@@ -367,142 +360,37 @@ defmodule OrchardCLI.Commands.Status do
 
   defp render_banner(display_version, base_url, body, role) do
     status_label = if body["status"] == "ok", do: "ready", else: "degraded"
-    details = build_details(body, status_label)
-    license_lines = render_license_lines(body["license"])
 
-    ([
-       "\u{1F333} Orchard #{display_version}",
-       "   Role:    #{display_status_role(role)}",
-       console_line(base_url, console_state_from_health(body["console"])),
-       "   API:     #{base_url}/v1",
-       "   Status:  #{status_label}#{details}"
-     ] ++
-       render_transport_lines(body["transport"]) ++
-       render_remediation_lines(body) ++ license_lines)
+    [
+      "\u{1F333} Orchard #{display_version}",
+      "   Role:    #{display_status_role(role)}",
+      console_line(base_url),
+      "   API:     #{base_url}/v1",
+      "   Status:  #{status_label}",
+      diagnostics_hint(status_label)
+    ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 
-  defp render_offline_banner(display_version, display_url, role, console_state) do
+  defp diagnostics_hint("degraded") do
+    "   Details: use authenticated GET /ops/v1/health for diagnostics"
+  end
+
+  defp diagnostics_hint(_status), do: nil
+
+  defp render_offline_banner(display_version, display_url, role) do
     """
     \u{1F333} Orchard #{display_version}
        Role:    #{display_status_role(role)}
-       Console: #{display_url}/console#{console_state_suffix(console_state)}
+       Console: #{display_url}/console (unknown)
        API:     #{display_url}/v1
        Status:  offline (controller unreachable)
     """
     |> String.trim()
   end
 
-  defp console_line(base_url, state) do
-    "   Console: #{base_url}/console#{console_state_suffix(state)}"
-  end
-
-  defp console_state_from_health(%{"enabled" => true}), do: :enabled
-  defp console_state_from_health(%{"enabled" => false}), do: :disabled
-  defp console_state_from_health(_console), do: :unknown
-
-  defp console_state_suffix(:enabled), do: " (enabled)"
-  defp console_state_suffix(:disabled), do: " (disabled)"
-  defp console_state_suffix(_unknown), do: " (unknown)"
-
-  defp render_transport_lines(%{"mode" => mode} = transport) when is_binary(mode) do
-    degraded = Map.get(transport, "degraded", "unknown")
-    cert_source = non_empty_string(Map.get(transport, "cert_source")) || "unknown"
-
-    [
-      "   Transport: #{mode} (degraded: #{format_transport_value(degraded)}, cert: #{cert_source})"
-    ]
-  end
-
-  defp render_transport_lines(_transport), do: []
-
-  defp format_transport_value(value) when is_boolean(value), do: to_string(value)
-  defp format_transport_value(value) when is_binary(value), do: value
-  defp format_transport_value(_value), do: "unknown"
-
-  defp render_remediation_lines(%{"status" => "error"} = body) do
-    body
-    |> remediation_for_body()
-    |> case do
-      nil -> []
-      remediation -> format_remediation(remediation)
-    end
-  end
-
-  defp render_remediation_lines(_body), do: []
-
-  defp remediation_for_body(%{"remediation" => remediation} = body) do
-    normalize_remediation(remediation) || local_remediation_for_body(body)
-  end
-
-  defp remediation_for_body(%{"status" => "error", "reason" => reason}) when is_binary(reason) do
-    local_remediation(reason)
-  end
-
-  defp remediation_for_body(_body), do: nil
-
-  defp local_remediation_for_body(%{"status" => "error", "reason" => reason})
-       when is_binary(reason) do
-    local_remediation(reason)
-  end
-
-  defp local_remediation_for_body(_body), do: nil
-
-  defp normalize_remediation(%{"summary" => summary, "commands" => commands})
-       when is_binary(summary) and is_list(commands) do
-    summary = String.trim(summary)
-
-    commands =
-      commands
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-
-    if summary == "" do
-      nil
-    else
-      %{summary: summary, commands: commands}
-    end
-  end
-
-  defp normalize_remediation(_remediation), do: nil
-
-  defp format_remediation(%{summary: summary, commands: commands}) do
-    ["   Remediation: #{summary}" | Enum.map(commands, &"   Run: #{&1}")]
-  end
-
-  defp local_remediation("postgres_reachable") do
-    %{
-      summary:
-        "Postgres is not reachable. Check database configuration and initialize the Orchard environment if it has not been created.",
-      commands: ["sudo orchardctl env init"]
-    }
-  end
-
-  defp local_remediation("migrations_current") do
-    %{
-      summary: "Database migrations are not current.",
-      commands: ["sudo orchardctl migrate"]
-    }
-  end
-
-  defp local_remediation("public_api_https_enabled") do
-    %{
-      summary: "The public API is not configured for HTTPS.",
-      commands: ["sudo orchardctl transport enable-local-https --host <host> --port 8443"]
-    }
-  end
-
-  defp local_remediation("controller_boot_completed") do
-    %{
-      summary:
-        "Controller boot has not completed. Restart the controller and check service logs.",
-      commands: ["sudo orchardctl start"]
-    }
-  end
-
-  defp local_remediation(_reason), do: nil
+  defp console_line(base_url), do: "   Console: #{base_url}/console"
 
   defp prepend_warnings([], banner), do: banner
 
@@ -546,137 +434,6 @@ defmodule OrchardCLI.Commands.Status do
   defp readiness_label(true), do: "ready"
   defp readiness_label(false), do: "not ready"
   defp readiness_label(_unknown), do: "reported"
-
-  defp build_details(body, status_label) do
-    runtime_details =
-      body
-      |> Map.get("runtime")
-      |> runtime_detail_string()
-
-    detail_suffix(status_label, body["reason"], runtime_details)
-  end
-
-  defp runtime_detail_string(runtime) when not is_map(runtime), do: "runtime unavailable"
-
-  defp runtime_detail_string(%{"status" => "ok"} = runtime) do
-    runtime
-    |> runtime_ok_parts()
-    |> Enum.join(", ")
-  end
-
-  defp runtime_detail_string(runtime) do
-    "runtime #{runtime["status"] || "unavailable"}"
-  end
-
-  defp runtime_ok_parts(runtime) do
-    [
-      runtime_node_detail(runtime),
-      runtime_worker_detail(runtime),
-      runtime_model_detail(runtime),
-      runtime_health_detail(runtime)
-    ]
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp runtime_node_detail(runtime) do
-    if runtime["node_id"], do: "1 node", else: "0 nodes"
-  end
-
-  defp runtime_worker_detail(runtime), do: runtime["worker_state"]
-
-  defp runtime_model_detail(runtime) do
-    count = loaded_model_count(runtime)
-    if count == 1, do: "1 model loaded", else: "#{count} models loaded"
-  end
-
-  defp loaded_model_count(runtime) do
-    case runtime["counts"] do
-      %{} = counts -> counts["loaded_models"] || 0
-      _other -> 0
-    end
-  end
-
-  defp runtime_health_detail(runtime) do
-    case runtime["health"] do
-      health when health in ["degraded", "unhealthy"] -> "health: #{health}"
-      _other -> nil
-    end
-  end
-
-  defp detail_suffix("degraded", reason, runtime_details) when is_binary(reason) do
-    " (#{reason}, #{runtime_details})"
-  end
-
-  defp detail_suffix(_status, _reason, runtime_details) do
-    " (#{runtime_details})"
-  end
-
-  defp render_license_lines(%{"status" => status, "message" => message} = license)
-       when is_binary(status) and is_binary(message) do
-    reason = non_empty_string(Map.get(license, "reason"))
-    expires_at = non_empty_string(Map.get(license, "expires_at"))
-
-    suffix =
-      [reason && "reason: #{reason}", expires_at && "expires: #{expires_at}"]
-      |> Enum.reject(&is_nil/1)
-      |> case do
-        [] -> ""
-        parts -> " (" <> Enum.join(parts, ", ") <> ")"
-      end
-
-    ([
-       "   License: #{status} — #{message}#{suffix}",
-       license_identity_line("License ID", license["license_id"]),
-       license_identity_line("Machine ID", license["machine_id"]),
-       license_identity_line("Licensee", license["licensee"]),
-       license_identity_line("Max machines", license["max_machines"])
-     ] ++ tracking_lines(license["tracking"]))
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp render_license_lines(_license), do: []
-
-  defp license_identity_line(_label, nil), do: nil
-
-  defp license_identity_line(label, value) when is_binary(value) do
-    case non_empty_string(value) do
-      nil -> nil
-      trimmed -> "   #{label}: #{trimmed}"
-    end
-  end
-
-  defp license_identity_line(label, value) when is_integer(value), do: "   #{label}: #{value}"
-  defp license_identity_line(_label, _value), do: nil
-
-  defp tracking_lines(tracking) when is_map(tracking) do
-    case format_tracking(tracking) do
-      nil -> []
-      formatted -> ["   Tracking: #{formatted}"]
-    end
-  end
-
-  defp tracking_lines(_tracking), do: []
-
-  defp format_tracking(tracking) do
-    [
-      tracking_part("program", tracking["program"]),
-      tracking_part("ref", tracking["reference"])
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> case do
-      [] -> nil
-      parts -> Enum.join(parts, " ")
-    end
-  end
-
-  defp tracking_part(_key, value) when not is_binary(value), do: nil
-
-  defp tracking_part(key, value) do
-    case non_empty_string(value) do
-      nil -> nil
-      trimmed -> "#{key}=#{trimmed}"
-    end
-  end
 
   # ── Endpoint Candidate Resolution ───────────────────────────────────
 
@@ -1394,14 +1151,7 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── Version Formatting ────────────────────────────────────────────────
 
-  defp format_display_version(version, build_ref) do
-    base = "v" <> version
-
-    case non_empty_string(build_ref) do
-      nil -> base
-      ref -> base <> " (" <> ref <> ")"
-    end
-  end
+  defp format_display_version(version), do: "v" <> version
 
   defp non_empty_string(nil), do: nil
 
@@ -1409,8 +1159,6 @@ defmodule OrchardCLI.Commands.Status do
     trimmed = String.trim(val)
     if trimmed != "" and trimmed != "unknown", do: trimmed
   end
-
-  defp non_empty_string(_), do: nil
 
   # ── Default Runtime ──────────────────────────────────────────────────
 
@@ -1430,9 +1178,9 @@ defmodule OrchardCLI.Commands.Status do
     Show the current Orchard system status.
 
     Probes the running controller's health endpoint and displays:
+    - Local Orchard version and install role
     - Console and API URLs
-    - Readiness status
-    - Runtime summary (node, worker state, loaded models)
+    - Controller reachability and readiness state
 
     Examples:
       orchardctl status

@@ -41,16 +41,7 @@ defmodule OrchardCLI.Commands.StartTest do
             {:ok,
              %{
                status: 200,
-               body: %{
-                 "status" => "ok",
-                 "runtime" => %{
-                   "status" => "ok",
-                   "node_id" => "n1",
-                   "worker_state" => "idle",
-                   "counts" => %{"loaded_models" => 0},
-                   "health" => "healthy"
-                 }
-               }
+               body: %{"status" => "ok"}
              }}
           end
         }
@@ -327,20 +318,7 @@ defmodule OrchardCLI.Commands.StartTest do
           request: fn url, _opts ->
             send(self(), {ref, url})
 
-            {:ok,
-             %{
-               status: 200,
-               body: %{
-                 "status" => "ok",
-                 "runtime" => %{
-                   "status" => "ok",
-                   "node_id" => "n1",
-                   "worker_state" => "idle",
-                   "counts" => %{"loaded_models" => 0},
-                   "health" => "healthy"
-                 }
-               }
-             }}
+            {:ok, %{status: 200, body: %{"status" => "ok"}}}
           end
         }
       })
@@ -612,20 +590,7 @@ defmodule OrchardCLI.Commands.StartTest do
               if current == 0 do
                 {:error, :econnrefused}
               else
-                {:ok,
-                 %{
-                   status: 200,
-                   body: %{
-                     "status" => "ok",
-                     "runtime" => %{
-                       "status" => "ok",
-                       "node_id" => "n1",
-                       "worker_state" => "idle",
-                       "counts" => %{"loaded_models" => 0},
-                       "health" => "healthy"
-                     }
-                   }
-                 }}
+                {:ok, %{status: 200, body: %{"status" => "ok"}}}
               end
             end
           end

@@ -547,6 +547,15 @@ defmodule OrchardConsole.OverviewLiveTest do
   end
 
   describe "readiness" do
+    test "identifies the staged internal readiness contract without implying public detail", %{
+      conn: conn
+    } do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "Internal orchard.readiness.legacy_m0.v1 predicate"
+      assert html =~ "public health responses are status-only"
+    end
+
     test "renders readiness checks", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 

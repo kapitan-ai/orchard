@@ -231,7 +231,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   defp create_or_validate_directory(path, parent, expected_uid, opts) do
     case File.lstat(path) do
       {:ok, _stat} ->
-        validate_directory(path, expected_uid)
+        narrow_private_directory(path, expected_uid)
 
       {:error, :enoent} ->
         with :ok <- create_private_directory(path, expected_uid) do
@@ -244,12 +244,25 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   end
 
   defp create_private_directory(path, expected_uid) do
-    with :ok <- File.mkdir(path),
+    case File.mkdir(path) do
+      :ok -> narrow_private_directory(path, expected_uid)
+      {:error, :eexist} -> narrow_private_directory(path, expected_uid)
+      _other -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  # `File.mkdir/1` applies the process umask, so the store directory is created
+  # wider than owner-only and is narrowed a moment later. Every installer
+  # narrows it rather than rejecting that window, otherwise a concurrent
+  # installer that observes it mid-creation fails closed. `File.chmod/2` fails
+  # for a directory this process does not own, and owner plus mode are
+  # revalidated afterwards.
+  defp narrow_private_directory(path, expected_uid) do
+    with {:ok, %{type: :directory}} <- File.lstat(path),
          :ok <- File.chmod(path, @directory_mode),
          :ok <- validate_directory(path, expected_uid) do
       :ok
     else
-      {:error, :eexist} -> validate_directory(path, expected_uid)
       _other -> {:error, :beam_peer_grant_store_invalid}
     end
   end
