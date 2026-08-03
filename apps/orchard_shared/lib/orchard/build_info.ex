@@ -2,9 +2,9 @@ defmodule Orchard.BuildInfo do
   @moduledoc """
   Compile-time build metadata.
 
-  Bakes the git SHA, build date, and build channel into BEAM bytecode at compile time.
-  Available in releases without `.git` access. Override with env vars
-  for CI/release builds where `.git` is absent.
+  Bakes the full source commit, build date, and build channel into BEAM bytecode at
+  compile time, per `SPEC.md` §13.1. Available in releases without `.git` access.
+  Override with env vars for CI/release builds where `.git` is absent.
   """
 
   @git_sha (case System.get_env("ORCHARD_BUILD_SHA") do
@@ -12,7 +12,7 @@ defmodule Orchard.BuildInfo do
                 String.trim(sha)
 
               _ ->
-                case System.cmd("git", ["rev-parse", "--short=7", "HEAD"], stderr_to_stdout: true) do
+                case System.cmd("git", ["rev-parse", "HEAD"], stderr_to_stdout: true) do
                   {sha, 0} -> String.trim(sha)
                   _ -> "unknown"
                 end
@@ -40,7 +40,7 @@ defmodule Orchard.BuildInfo do
           String.trim(sha)
 
         _ ->
-          case System.cmd("git", ["rev-parse", "--short=7", "HEAD"], stderr_to_stdout: true) do
+          case System.cmd("git", ["rev-parse", "HEAD"], stderr_to_stdout: true) do
             {sha, 0} -> String.trim(sha)
             _ -> "unknown"
           end

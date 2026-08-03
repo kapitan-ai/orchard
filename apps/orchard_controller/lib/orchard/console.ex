@@ -20,6 +20,25 @@ defmodule OrchardConsole do
   Reads `Application.spec(:orchard_controller, :vsn)` and normalizes it
   to a display-ready string. Returns `"dev"` when version metadata is absent.
   """
+  @provenance_display_length 7
+
+  # Abbreviated for display only. The sidebar is a fixed 16rem with `nowrap` and
+  # `overflow: hidden`, so a full 40-character commit is clipped mid-SHA and renders
+  # as a plausible but wrong shorter SHA. Full Build Provenance stays available via
+  # `/health/ready` `build_ref` and the Sentry `build_sha` tag.
+  #
+  # Resolved at compile time because `git_sha/0` is itself a compile-time constant.
+  # A runtime comparison would be decidable in any single build, so Dialyzer reports
+  # the absent branch as unreachable even though both branches are reachable across
+  # builds — `"unknown"` is baked whenever `.git` is unavailable.
+  @build_provenance_suffix (case Orchard.BuildInfo.git_sha() do
+                              "unknown" ->
+                                ""
+
+                              sha ->
+                                " (" <> String.slice(sha, 0, @provenance_display_length) <> ")"
+                            end)
+
   @spec display_version() :: String.t()
   def display_version do
     base =
@@ -28,13 +47,7 @@ defmodule OrchardConsole do
         vsn -> "v" <> vsn
       end
 
-    sha = Orchard.BuildInfo.git_sha()
-
-    if sha == "unknown" do
-      base
-    else
-      base <> " (" <> sha <> ")"
-    end
+    base <> @build_provenance_suffix
   end
 
   @doc """

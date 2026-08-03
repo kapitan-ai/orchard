@@ -11,6 +11,13 @@ defmodule Orchard.BuildInfoTest do
     assert sha != ""
   end
 
+  # SPEC.md §13.1: Build Provenance uses the full source commit, with no
+  # abbreviated form retained for source builds.
+  test "git_sha is a full 40-character commit or 'unknown'" do
+    sha = BuildInfo.git_sha()
+    assert sha == "unknown" or sha =~ ~r/^[0-9a-f]{40}$/
+  end
+
   test "effective provenance changes recompile without rebuilding unrelated modules" do
     fixture = create_fixture!()
     counter = Path.join(fixture, "compile-counter")
@@ -31,12 +38,12 @@ defmodule Orchard.BuildInfoTest do
     assert File.read!(counter) == "compiled\n"
 
     compile!(fixture, counter, nil)
-    assert baked_sha!(fixture, counter, nil) == String.slice(first_sha, 0, 7)
+    assert baked_sha!(fixture, counter, nil) == first_sha
     assert File.read!(counter) == "compiled\n"
 
     git!(fixture, ["checkout", "--quiet", "--detach", second_sha])
     compile!(fixture, counter, nil)
-    assert baked_sha!(fixture, counter, nil) == String.slice(second_sha, 0, 7)
+    assert baked_sha!(fixture, counter, nil) == second_sha
     assert File.read!(counter) == "compiled\n"
   end
 

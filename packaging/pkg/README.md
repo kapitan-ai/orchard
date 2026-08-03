@@ -683,7 +683,7 @@ operator/support diagnostics and do not affect license enforcement.
 | Variable | Default | Intended use |
 |----------|---------|--------------|
 | `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in `/health/ready`. Distributed package builds must use a non-`dev` channel. |
-| `ORCHARD_BUILD_SHA` | Unset for source builds | Compile-time Git provenance. As a scoped source/dev compatibility choice, compilation retains the existing seven-character `HEAD` fallback. `build-pkg.sh` exports and bakes the full committed `HEAD`; inherited values are ignored. |
+| `ORCHARD_BUILD_SHA` | Unset for source builds | Compile-time Git provenance, surfaced in `/health/ready`. When unset, compilation falls back to the full `git rev-parse HEAD`, or `unknown` without Git. `build-pkg.sh` exports and bakes the validated full committed `HEAD`; inherited values are ignored. |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
@@ -1335,9 +1335,9 @@ This produces a PKG file following the [naming convention below](#filename-forma
 
 The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because distributed packages must not ship with source-dev enforcement defaults.
 
-Before its first Mix invocation, the script resolves and validates the full 40-character lowercase `git rev-parse HEAD`, then exports it as `ORCHARD_BUILD_SHA`. This authoritative value replaces any inherited `ORCHARD_BUILD_SHA` and is baked into all packaged releases. Direct source/dev compilation deliberately retains the existing seven-character Git fallback (or `unknown` without Git) as a scoped compatibility choice so existing source/dev `/health/ready` values remain stable. This exception does not apply to packaged artifacts. Manual CI compilation can provide a full commit through `ORCHARD_BUILD_SHA`; changing or removing that value, or changing `HEAD` while it is unset, causes Mix to recompile the metadata module.
+Before its first Mix invocation, the script resolves and validates the full 40-character lowercase `git rev-parse HEAD`, then exports it as `ORCHARD_BUILD_SHA`. This authoritative value replaces any inherited `ORCHARD_BUILD_SHA` and is baked into all packaged releases. Direct source/dev compilation records the same full commit through its own `git rev-parse HEAD` fallback (or `unknown` without Git), so packaged and source builds follow one Build Provenance rule under `SPEC.md` §13.1. Manual CI compilation can supply the commit through `ORCHARD_BUILD_SHA`; changing or removing that value, or changing `HEAD` while it is unset, causes Mix to recompile the metadata module.
 
-Packaged Sentry release names continue to use a seven-character suffix, while the `build_sha` tag and `/health/ready` `build_ref` retain the complete baked value.
+Two surfaces still present an abbreviated form. These are presentation only and are derived from the full recorded commit, not a shorter provenance value: Sentry release names use a seven-character suffix while the `build_sha` tag and `/health/ready` `build_ref` carry the complete value, and the [PKG filename](#filename-format) uses a seven-character segment.
 
 | Flag | Purpose |
 |------|---------|
@@ -1612,7 +1612,7 @@ payload differences.
 |-----------|---------|---------|
 | `app_version` | `0.5.0-dev` | Matches `orchardctl status` output |
 | `YYYYMMDD` | `20260417` | Build date (chronological sorting) |
-| `git_sha7` | `e152300` | Traceability for debug/support |
+| `git_sha7` | `e152300` | Traceability for debug/support. First seven characters of the full commit baked as Build Provenance, not a shorter provenance value. |
 
 ### Example
 
