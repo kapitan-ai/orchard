@@ -1,7 +1,11 @@
 defmodule Orchard.API.HealthEvaluationTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.API.HealthEvaluation
+
+  @moduletag capture_log: true
 
   defmodule RaiseReadiness do
     def status, do: raise("readiness secret")
@@ -233,6 +237,52 @@ defmodule Orchard.API.HealthEvaluationTest do
              checks: %{},
              reason: :readiness_unavailable
            }) == {:service_unavailable, %{status: "error"}}
+  end
+
+  test "evaluate logs terminated timeout evidence" do
+    log =
+      capture_log(fn ->
+        assert HealthEvaluation.evaluate_with(BlockReadiness, 25).reason ==
+                 :readiness_unavailable
+      end)
+
+    assert log =~ "readiness unavailable, serving fail-closed health"
+    assert log =~ "exceeded 25ms and was terminated"
+  end
+
+  test "evaluate logs invalid readiness shape evidence" do
+    put_impl(PartialChecksReadiness)
+
+    log =
+      capture_log(fn ->
+        assert HealthEvaluation.evaluate().reason == :readiness_unavailable
+      end)
+
+    assert log =~ "readiness check returned an invalid success"
+    assert log =~ "controller_boot_completed"
+  end
+
+  test "evaluate logs readiness exit evidence" do
+    put_impl(ExitReadiness)
+
+    log =
+      capture_log(fn ->
+        assert HealthEvaluation.evaluate().reason == :readiness_unavailable
+      end)
+
+    assert log =~ "readiness check exited"
+    assert log =~ "readiness_failed"
+  end
+
+  test "evaluate logs unexpected readiness result evidence" do
+    put_impl(MalformedReadiness)
+
+    log =
+      capture_log(fn ->
+        assert HealthEvaluation.evaluate().reason == :readiness_unavailable
+      end)
+
+    assert log =~ "readiness check returned an unexpected result"
   end
 
   test "evaluate still accepts ordinary success" do

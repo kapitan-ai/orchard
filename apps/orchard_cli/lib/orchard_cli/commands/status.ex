@@ -62,7 +62,7 @@ defmodule OrchardCLI.Commands.Status do
       {:error, _reason, message, _code} ->
         %{
           version: version,
-          display_version: format_display_version(version, nil),
+          display_version: format_display_version(version),
           state: :install_error,
           role: nil,
           error: message
@@ -73,7 +73,7 @@ defmodule OrchardCLI.Commands.Status do
   defp snapshot_for_role(runtime, version, :node_agent = role) do
     %{
       version: version,
-      display_version: format_display_version(version, nil),
+      display_version: format_display_version(version),
       state: :node_agent,
       role: role,
       node_agent_loaded?: node_agent_loaded?(runtime),
@@ -85,7 +85,7 @@ defmodule OrchardCLI.Commands.Status do
     if message = invalid_transport_mode_message() do
       %{
         version: version,
-        display_version: format_display_version(version, nil),
+        display_version: format_display_version(version),
         state: :install_error,
         role: role,
         error: message
@@ -102,7 +102,7 @@ defmodule OrchardCLI.Commands.Status do
     case probe_candidates(candidates, request_fn) do
       {:ok, display_url, body} ->
         state = if body["status"] == "ok", do: :ready, else: :degraded
-        display_version = format_display_version(version, nil)
+        display_version = format_display_version(version)
 
         %{
           version: version,
@@ -116,7 +116,7 @@ defmodule OrchardCLI.Commands.Status do
         }
 
       {:error, :unreachable, display_url, source} ->
-        display_version = format_display_version(version, nil)
+        display_version = format_display_version(version)
         warnings = offline_warnings(runtime, source, display_url) ++ warnings
 
         %{
@@ -127,14 +127,13 @@ defmodule OrchardCLI.Commands.Status do
           base_url: nil,
           display_url: display_url,
           body: nil,
-          console_state: :unknown,
           warnings: warnings
         }
 
       {:error, :invalid_response, display_url, message, probe_failure} ->
         %{
           version: version,
-          display_version: format_display_version(version, nil),
+          display_version: format_display_version(version),
           state: :invalid_response,
           role: role,
           base_url: nil,
@@ -159,14 +158,7 @@ defmodule OrchardCLI.Commands.Status do
 
   def render_snapshot(%{state: :offline} = snap) do
     snap.warnings
-    |> prepend_warnings(
-      render_offline_banner(
-        snap.display_version,
-        snap.display_url,
-        snap.role,
-        Map.get(snap, :console_state, :unknown)
-      )
-    )
+    |> prepend_warnings(render_offline_banner(snap.display_version, snap.display_url, snap.role))
   end
 
   def render_snapshot(snap) do
@@ -387,11 +379,11 @@ defmodule OrchardCLI.Commands.Status do
 
   defp diagnostics_hint(_status), do: nil
 
-  defp render_offline_banner(display_version, display_url, role, console_state) do
+  defp render_offline_banner(display_version, display_url, role) do
     """
     \u{1F333} Orchard #{display_version}
        Role:    #{display_status_role(role)}
-       Console: #{display_url}/console#{console_state_suffix(console_state)}
+       Console: #{display_url}/console (unknown)
        API:     #{display_url}/v1
        Status:  offline (controller unreachable)
     """
@@ -399,10 +391,6 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp console_line(base_url), do: "   Console: #{base_url}/console"
-
-  defp console_state_suffix(:enabled), do: " (enabled)"
-  defp console_state_suffix(:disabled), do: " (disabled)"
-  defp console_state_suffix(_unknown), do: " (unknown)"
 
   defp prepend_warnings([], banner), do: banner
 
@@ -1163,14 +1151,7 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── Version Formatting ────────────────────────────────────────────────
 
-  defp format_display_version(version, build_ref) do
-    base = "v" <> version
-
-    case non_empty_string(build_ref) do
-      nil -> base
-      ref -> base <> " (" <> ref <> ")"
-    end
-  end
+  defp format_display_version(version), do: "v" <> version
 
   defp non_empty_string(nil), do: nil
 
