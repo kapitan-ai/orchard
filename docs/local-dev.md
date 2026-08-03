@@ -23,13 +23,12 @@ Homebrew-managed Mac, install and start it with:
 ```bash
 brew install postgresql@16
 brew services start postgresql@16
-pg_isready -h localhost
+pg_isready -h "${PGHOST-localhost}" -p "${PGPORT-5432}"
 ```
 
 The dev config defaults to `PGUSER=postgres`, `PGPASSWORD=postgres`,
-`PGHOST=localhost`, and `PGDATABASE=orchard_dev`. Either create that local role
-with database-create privileges, or export `PGUSER`/`PGPASSWORD` for an
-existing local superuser before running `make dev`.
+`PGHOST=localhost`, `PGPORT=5432`, and `PGDATABASE=orchard_dev`.
+Either create that local role with database-create privileges, or export `PGUSER`/`PGPASSWORD` for an existing local superuser before running `make dev`.
 
 ## Quick Start
 
@@ -140,7 +139,12 @@ posture.
 | `PGUSER` | `postgres` | PostgreSQL user |
 | `PGPASSWORD` | `postgres` | PostgreSQL password |
 | `PGHOST` | `localhost` | PostgreSQL host |
+| `PGPORT` | `5432` | Source controller, test, and benchmark PostgreSQL port. Must be an unsigned decimal integer in `1..65535`; explicit empty or malformed values fail during configuration evaluation. |
 | `PGDATABASE` | `orchard_dev` | Database name |
+
+Controller-bearing source roles validate and use `PGPORT`.
+`bin/dev-node-agent` ignores it because the node-agent-only role does not use PostgreSQL.
+Packaged controller and CLI releases continue to take the database port from `DATABASE_URL`.
 
 #### Controller Inference
 
@@ -415,6 +419,7 @@ on transport modes, truthy/falsy values, and validation behavior.
 | `config/prod.exs` | Prod placeholder |
 | `config/runtime.exs` | Release-time config from env vars |
 | `config/m1_runtime_defaults.exs` | Shared defaults for source-dev runtime settings |
+| `config/source_postgres.exs` | Shared `PGPORT` parsing/validation for source dev, test, and benchmark database config |
 
 ### Dev Directory Structure
 
@@ -434,7 +439,8 @@ Worker Unix domain sockets default to `/tmp/od-<hash>/ws`, outside the repo tree
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health/live` | Liveness probe |
-| GET | `/health/ready` | Readiness probe (DB, transport, runtime summary) |
+| GET | `/health/ready` | Status-only readiness probe (`{"status":"ok"}` or `{"status":"error"}`) |
+| GET | `/ops/v1/health` | Detailed readiness and observations; cluster Operator/admin Bearer token required |
 | GET | `/v1/models` | List active models; Bearer token required |
 | POST | `/v1/chat/completions` | Chat completion; stream + non-stream; Bearer token required |
 | POST | `/v1/responses` | Bounded Responses API subset; stream + non-stream; Bearer token required |
@@ -955,10 +961,11 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 
 - `orchardctl license status` inspects only local licensing state; it does not
   contact the controller.
-- Controller `/health/ready` exposes license state for observation only; it
-  remains **non-gating** and does not change readiness reasons or HTTP status.
-- `orchardctl status` renders the controller's additive license payload when it
-  is present.
+- Authenticated Controller `/ops/v1/health` exposes license state for observation
+  only; it remains **non-gating** and does not change readiness reasons or HTTP
+  status.
+- Public `/health/ready` and credential-free `orchardctl status` do not expose
+  license detail.
 
 ### Optional tracking metadata
 
@@ -983,8 +990,7 @@ tracking metadata does not affect license validity or startup enforcement.
 When present, tracking metadata appears in:
 
 - `orchardctl license status`
-- Controller `/health/ready` JSON under `license.tracking`
-- `orchardctl status`, rendered from the controller health payload
+- authenticated Controller `/ops/v1/health` JSON under `license.tracking`
 
 ### Licensing environment variables
 
@@ -1078,7 +1084,7 @@ request summaries; use `--support-root` and
 bundle creation. It records `support_bundle.generated` only when the controller
 Repo is already available. `orchardctl nodes list --json` emits the same shared
 cluster-management node status contract for scripting node inventory checks.
-Console request views, health/readiness endpoints,
+Console request views, authenticated `/ops/v1/health`, public status-only health,
 and controller or node-agent logs remain useful for interactive source-dev
 diagnostics.
 
@@ -1135,9 +1141,10 @@ All-in-one local boot (dev):
 3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
 4. Create an Organization and API Token with `OrchardCLI.main(["tenants", ...])` and
    `OrchardCLI.main(["api-keys", ...])`
-5. Source-dev HTTP is live at `/health/live`; `/health/ready` can remain
-   degraded under the default `plain_http_localhost` transport until HTTPS or a
-   reverse proxy is configured.
+5. Source-dev HTTP is live at `/health/live`; status-only `/health/ready` can
+   remain degraded under the staged `orchard.readiness.legacy_m0.v1` predicate and
+   default `plain_http_localhost` transport until HTTPS or a reverse proxy is
+   configured. Use authenticated `/ops/v1/health` for the detailed reason.
 6. API routes are reachable over loopback HTTP for authenticated local testing.
 
 Alternatively, for advanced debugging or when you need a BEAM without the

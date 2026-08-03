@@ -23,12 +23,17 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
       |> Keyword.put(:internal_id, internal_id)
       |> Keyword.put(:public_id, public_id)
 
-    {:ok, %CanonicalRequest{} = canonical} =
+    {:ok, canonical} =
       params
       |> build_chat_params()
       |> ChatRequestNormalizer.normalize(normalizer_opts)
 
-    {:ok, %{canonical | endpoint: :responses}}
+    normalized =
+      canonical
+      |> Map.put(:endpoint, :responses)
+      |> Map.put(:store?, normalize_store(params))
+
+    {:ok, normalized}
   end
 
   defp build_chat_params(params) do
@@ -77,6 +82,14 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
 
   defp normalize_metadata(nil), do: %{}
   defp normalize_metadata(metadata), do: metadata
+
+  defp normalize_store(%{"store" => false}), do: false
+  defp normalize_store(%{"store" => value}) when value in [true, nil], do: true
+
+  defp normalize_store(%{"store" => value}),
+    do: raise(ArgumentError, "invalid store: #{inspect(value)}")
+
+  defp normalize_store(_params), do: true
 
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)

@@ -2,6 +2,7 @@ import Config
 
 Code.require_file("m1_runtime_defaults.exs", __DIR__)
 Code.require_file("source_dev_beam.exs", __DIR__)
+Code.require_file("source_postgres.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 dev_root = Path.join([repo_root, "tmp", "dev"])
@@ -134,6 +135,12 @@ dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
 
 source_dev_role =
   Orchard.Config.SourceDevBeam.source_dev_role(System.get_env("ORCHARD_SOURCE_DEV_ROLE"))
+
+source_postgres_port =
+  case source_dev_role do
+    :node_agent -> Orchard.Config.SourcePostgres.port!(nil)
+    _controller_role -> Orchard.Config.SourcePostgres.port!(System.get_env("PGPORT"))
+  end
 
 runtime_endpoint_transport =
   Orchard.Config.SourceDevBeam.transport!(System.get_env("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT"))
@@ -466,6 +473,7 @@ config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
   password: System.get_env("PGPASSWORD") || "postgres",
   hostname: System.get_env("PGHOST") || "localhost",
+  port: source_postgres_port,
   database: System.get_env("PGDATABASE") || "orchard_dev",
   show_sensitive_data_on_connection_error: true,
   pool_size: 10

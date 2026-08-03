@@ -156,6 +156,8 @@ The controller scheduler uses that capacity telemetry to avoid dispatching to fu
 Controller queue admission also consumes fresh Runtime Endpoint Observations as source-scoped capacity, waking queued loaded-placement or cold/no-placement work only from eligible, non-exhausted endpoints.
 Invalid, ineligible, unavailable, or transport-failed observations clear stale endpoint-owned capacity sources before queued work can be promoted.
 For BEAM Runtime Endpoint observations, queue capacity is published only when the target resolves back to the same persisted node identity.
+Active-Node liveness does not depend on request traffic: one supervised, leader-gated background status observer probes trusted admitted and active Runtime Endpoint targets on a bounded interval and advances heartbeat, health, and aggregate capacity evidence through the same authenticated observation seam, while transport failures and a heartbeat-age sweep demote a Node lost while the cluster is idle.
+That observer leaves the scheduler's inline request-path probe in place; see `SPEC.md` §4.5 and `docs/decisions/0015-thin-active-node-liveness-monitor-before-scheduler-decoupling.md` for the liveness contract and the deferred scheduler-decoupling slice.
 Console Nodes live diagnostics probe the configured Runtime Endpoint targets rather than a separate legacy gRPC-only target list.
 Scheduler and dispatch orchestration crashes after request validation terminalize the durable request as a failed `orchestration_error` with sanitized public error payloads instead of leaving it active.
 

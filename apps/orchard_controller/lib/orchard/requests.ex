@@ -7,13 +7,22 @@ defmodule Orchard.Requests do
 
   alias Orchard.ClusterManagement.SchedulerExplanation
   alias Orchard.Repo
-  alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
+  alias Orchard.Requests.{CapturePolicy, Request, RequestEvent, RequestStepEvent}
 
   @spec create_request(map()) :: {:ok, struct()} | {:error, Ecto.Changeset.t()}
   def create_request(attrs) do
     %Request{}
-    |> Request.create_changeset(attrs)
+    |> Request.create_changeset(capture_create_attrs(attrs))
     |> Repo.insert()
+  end
+
+  defp capture_create_attrs(attrs) do
+    mode = Map.get(attrs, :payload_capture_mode) || Map.get(attrs, "payload_capture_mode")
+
+    case CapturePolicy.normalize_mode(mode) do
+      {:ok, normalized_mode} -> CapturePolicy.create_attrs(normalized_mode, attrs)
+      :error -> CapturePolicy.create_attrs(CapturePolicy.strictest_mode(), attrs)
+    end
   end
 
   @spec get_request!(Ecto.UUID.t()) :: struct()
@@ -57,7 +66,14 @@ defmodule Orchard.Requests do
     )
     |> order_by([event], asc: event.seq)
     |> Repo.all()
-    |> Enum.map(&RequestStepEvent.from_request_event!/1)
+    |> Enum.flat_map(&readable_step_event/1)
+  end
+
+  defp readable_step_event(request_event) do
+    case RequestStepEvent.from_request_event(request_event) do
+      {:ok, step_event} -> [step_event]
+      {:error, _reason} -> []
+    end
   end
 
   @doc """
@@ -180,7 +196,29 @@ defmodule Orchard.Requests do
     do: inconclusive(:terminal_state_mismatch)
 
   defp classify_terminal_step(%RequestStepEvent{event_type: "request_step.completed"} = step) do
-    case Map.fetch(step.result, "finish_reason") do
+    case Map.fetch(step.result, "result_invalid") do
+      {:ok, _invalid_marker} -> inconclusive(:invalid_terminal_step)
+      :error -> classify_finish_reason_evidence(step.result)
+    end
+  end
+
+  defp classify_terminal_step(%RequestStepEvent{}), do: {:ok, :not_candidate}
+
+  defp classify_finish_reason_evidence(result) do
+    case Map.fetch(result, "finish_reason_invalid") do
+      {:ok, true} ->
+        inconclusive(:invalid_finish_reason)
+
+      {:ok, _invalid_marker} ->
+        inconclusive(:invalid_finish_reason_marker)
+
+      :error ->
+        classify_completed_finish_reason(result)
+    end
+  end
+
+  defp classify_completed_finish_reason(result) do
+    case Map.fetch(result, "finish_reason") do
       :error ->
         {:ok, :missing_finish_reason_candidate}
 
@@ -191,8 +229,6 @@ defmodule Orchard.Requests do
         inconclusive(:invalid_finish_reason)
     end
   end
-
-  defp classify_terminal_step(%RequestStepEvent{}), do: {:ok, :not_candidate}
 
   defp inconclusive(reason), do: {:error, {:inconclusive, reason}}
 
@@ -237,6 +273,7 @@ defmodule Orchard.Requests do
     event_attrs =
       attrs
       |> normalize_request_event_attrs()
+      |> then(&CapturePolicy.event_attrs(request.payload_capture_mode, &1))
       |> Map.put("request_id", request_id)
       |> Map.put("seq", next_request_event_seq(request_id))
       |> default_occurred_at()
@@ -251,20 +288,28 @@ defmodule Orchard.Requests do
     |> Repo.insert()
   end
 
-  defp insert_request_step_events(request_id, step_events) do
+  defp insert_request_step_events(request, step_events) do
     step_events
-    |> Enum.with_index(next_request_event_seq(request_id))
+    |> Enum.with_index(next_request_event_seq(request.id))
     |> Enum.reduce_while([], fn {step_event, seq}, acc ->
       event_attrs =
         step_event
         |> RequestStepEvent.to_request_event_attrs!()
-        |> Map.put("request_id", request_id)
+        |> then(&CapturePolicy.event_attrs(request.payload_capture_mode, &1))
+        |> Map.put("request_id", request.id)
         |> Map.put("seq", seq)
         |> default_occurred_at()
 
       case %RequestEvent{} |> RequestEvent.changeset(event_attrs) |> Repo.insert() do
         {:ok, request_event} ->
-          {:cont, [RequestStepEvent.from_request_event!(request_event) | acc]}
+          persisted_step_event = %{
+            step_event
+            | request_id: request_event.request_id,
+              seq: request_event.seq,
+              occurred_at: request_event.occurred_at
+          }
+
+          {:cont, [persisted_step_event | acc]}
 
         {:error, changeset} ->
           Repo.rollback({:request_event_changeset, changeset})
@@ -277,8 +322,8 @@ defmodule Orchard.Requests do
   defp append_normalized_request_step_events(request_id, normalized_step_events) do
     Repo.transaction(fn ->
       case lock_request(request_id) do
-        {:ok, _request} ->
-          insert_request_step_events(request_id, normalized_step_events)
+        {:ok, request} ->
+          insert_request_step_events(request, normalized_step_events)
 
         {:error, :request_not_found} ->
           Repo.rollback(:request_not_found)
@@ -359,7 +404,7 @@ defmodule Orchard.Requests do
   end
 
   defp append_steps_and_apply_terminal_update(current_request, attrs, normalized_step_events) do
-    {:ok, _step_events} = insert_request_step_events(current_request.id, normalized_step_events)
+    {:ok, _step_events} = insert_request_step_events(current_request, normalized_step_events)
 
     case apply_terminal_update(current_request, attrs) do
       {:ok, updated_request} -> {:ok, updated_request}
@@ -368,6 +413,8 @@ defmodule Orchard.Requests do
   end
 
   defp apply_terminal_update(%Request{} = request, attrs) do
+    attrs = CapturePolicy.terminal_attrs(request.payload_capture_mode, attrs)
+
     # Allow idempotent terminal updates: if the row is already in a terminal
     # state (set by append_request_event's atomic state sync), still apply
     # the terminal metadata (usage, timestamps, error fields). Only reject
@@ -470,7 +517,10 @@ defmodule Orchard.Requests do
 
   defp persist_schedule(request, schedule, normalized_schedule) do
     attrs = %{
-      scheduler_decision: normalized_schedule,
+      scheduler_decision:
+        CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
+          requested_model: request.requested_model
+        }),
       node_id: Map.get(schedule, :node_id)
     }
 

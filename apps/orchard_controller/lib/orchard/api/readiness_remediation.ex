@@ -52,6 +52,16 @@ defmodule Orchard.API.ReadinessRemediation do
     }
   end
 
+  def for_reason(:readiness_unavailable) do
+    %{
+      reason: "readiness_unavailable",
+      summary:
+        "Readiness evaluation is unavailable. Retry the request and check Orchard controller logs if the condition persists.",
+      commands: [],
+      docs_anchor: nil
+    }
+  end
+
   def for_reason(reason) do
     %{
       reason: Atom.to_string(reason),

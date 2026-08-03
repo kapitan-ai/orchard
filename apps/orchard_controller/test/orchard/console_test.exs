@@ -5,7 +5,8 @@ defmodule OrchardConsoleTest do
   # sidebar is a fixed 16rem with `white-space: nowrap` and `overflow: hidden`. A full
   # 40-character commit is clipped mid-SHA there and renders as a plausible but wrong
   # shorter SHA, so the sidebar shows an abbreviation derived from the full value.
-  # `/health/ready` `build_ref` and the Sentry `build_sha` tag carry the full commit.
+  # Authenticated `/ops/v1/health` `build_ref` and the Sentry `build_sha` tag carry the
+  # full commit.
   describe "display_version/0" do
     test "abbreviates build provenance to seven characters" do
       version = OrchardConsole.display_version()

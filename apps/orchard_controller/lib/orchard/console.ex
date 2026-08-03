@@ -25,7 +25,7 @@ defmodule OrchardConsole do
   # Abbreviated for display only. The sidebar is a fixed 16rem with `nowrap` and
   # `overflow: hidden`, so a full 40-character commit is clipped mid-SHA and renders
   # as a plausible but wrong shorter SHA. Full Build Provenance stays available via
-  # `/health/ready` `build_ref` and the Sentry `build_sha` tag.
+  # authenticated `/ops/v1/health` `build_ref` and the Sentry `build_sha` tag.
   #
   # Resolved at compile time because `git_sha/0` is itself a compile-time constant.
   # A runtime comparison would be decidable in any single build, so Dialyzer reports

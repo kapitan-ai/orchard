@@ -4,6 +4,7 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.ResponsesSerializer
   alias Orchard.InferenceEvent
+  alias Orchard.Requests.CapturePolicy
 
   test "response_payload/3 builds the bounded response object" do
     canonical = build_canonical(%{public_id: "resp_test", stream?: false})
@@ -80,8 +81,35 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
     attrs = ResponsesSerializer.success_persistence_attrs(canonical, events)
 
     assert attrs.response_preview == "Tool call: lookup_weather({})"
+    assert attrs.response_preview_source == :tool_call
     assert attrs.response_payload.output_text == ""
     assert attrs.response_payload.usage == %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
+  end
+
+  test "restricted capture drops function-call previews while full keeps a bounded preview" do
+    canonical = build_canonical(%{public_id: "resp_tool_capture", stream?: false})
+    arguments = Jason.encode!(%{"private" => String.duplicate("x", 700)})
+
+    events = [
+      InferenceEvent.accepted(42_000),
+      tool_call_event("call_0", %{index: 0, type: "function", function: %{name: "private_tool"}}),
+      tool_call_event("call_0", %{index: 0, function: %{arguments_delta: arguments}}),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
+    ]
+
+    attrs = ResponsesSerializer.success_persistence_attrs(canonical, events)
+
+    for mode <- [:none, :metadata] do
+      restricted = CapturePolicy.terminal_attrs(mode, attrs)
+      assert restricted.response_preview == nil
+      refute Map.has_key?(restricted, :response_preview_source)
+      refute inspect(restricted) =~ "private_tool"
+    end
+
+    full = CapturePolicy.terminal_attrs(:full, attrs)
+    assert String.starts_with?(full.response_preview, "Tool call: private_tool(")
+    assert String.length(full.response_preview) == 512
+    refute Map.has_key?(full, :response_preview_source)
   end
 
   test "created_event/2 builds response.created payload" do

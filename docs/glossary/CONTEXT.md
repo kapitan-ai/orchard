@@ -278,7 +278,7 @@ A durable governance or security event record for significant administrative and
 _Avoid_: Support Bundle, debug log, structured log, trace span
 
 **Payload Capture Mode**:
-A tenant setting that controls how much prompt and response payload data Orchard may retain.
+A tenant setting that controls how much prompt and response payload data Orchard may retain, resolved into an effective mode that each Request snapshots for its whole lifetime.
 _Avoid_: Audit Log, Support Bundle, logging level
 
 ### Requests and Inference
@@ -439,6 +439,10 @@ _Avoid_: live BEAM session, durable cluster truth by itself, provider billing ev
 **Heartbeat**:
 A periodic durable observation used by the Controller to record first-party Node Agent health, inventory, workers, placements, and Runtime Endpoint Availability.
 _Avoid_: Node Lifecycle State, readiness probe, live BEAM session
+
+**Active-Node Liveness Monitor**:
+The traffic-independent mechanism that tracks whether each active Node is still alive, so the Controller can distinguish a degraded cluster from a silently half-dead one, and an idle Node loss is detected without a request paying for discovery.
+_Avoid_: inline request-path probe, readiness probe, Controller Membership Heartbeat
 
 **Node Pool**:
 A scheduling group where each v1 Node belongs to exactly one pool.

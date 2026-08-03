@@ -287,7 +287,11 @@ defmodule Orchard.Inference do
       end)
   end
 
-  @doc "Returns admitted certificate-backed targets for authenticated status probes only."
+  @doc """
+  Returns certificate-backed targets for leader-side liveness and activation probes.
+
+  Includes both admitted (activation) and active (idle liveness) Nodes.
+  """
   @spec activation_probe_runtime_endpoint_targets() :: [Target.t()]
   def activation_probe_runtime_endpoint_targets do
     case Nodes.activation_probe_runtime_endpoint_targets() do

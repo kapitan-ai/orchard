@@ -10,6 +10,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
+  alias Orchard.Governance.Tenant
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Node
@@ -142,7 +143,11 @@ defmodule Orchard.API.ResponsesControllerTest do
 
   test "successful non-stream request returns response payload and persists responses endpoint",
        %{bundle: bundle} do
-    %{token: token} = create_api_key_with_token!("responses-success")
+    %{token: token, tenant: tenant} = create_api_key_with_token!("responses-success")
+
+    tenant
+    |> Tenant.changeset(%{request_body_capture_mode: :full})
+    |> Repo.update!()
 
     _model =
       create_model!(%{
@@ -191,13 +196,85 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     [request] = Repo.all(Request)
     assert request.endpoint == :responses
-    assert request.canonical_request["endpoint"] == "responses"
-    assert request.response_payload == body
-    assert request.response_preview == body["output_text"]
+    assert request.payload_capture_mode == :metadata
+    assert request.canonical_request == nil
+    assert request.request_payload == nil
+    assert request.response_payload == nil
+    assert request.response_preview == nil
+    assert request.request_shape["capture_mode"] == "metadata"
+    assert request.response_hash != nil
 
     # first_token_at must be persisted for successful requests with output
     request = Requests.get_request_by_public_id(body["id"])
     assert request.first_token_at != nil
+
+    full_conn =
+      post_responses(
+        %{
+          "model" => "responses-success-model@v1",
+          "input" => "retain this only in full mode",
+          "store" => true
+        },
+        token
+      )
+
+    assert full_conn.status == 200
+    full_body = Jason.decode!(full_conn.resp_body)
+    full_request = Requests.get_request_by_public_id(full_body["id"])
+    assert full_request.payload_capture_mode == :full
+    assert full_request.canonical_request["endpoint"] == "responses"
+    assert full_request.response_payload == full_body
+
+    for params <- [
+          %{"model" => "responses-success-model@v1", "input" => "store omitted"},
+          %{"model" => "responses-success-model@v1", "input" => "store null", "store" => nil}
+        ] do
+      default_store_conn = post_responses(params, token)
+      assert default_store_conn.status == 200
+
+      default_store_request =
+        default_store_conn.resp_body
+        |> Jason.decode!()
+        |> Map.fetch!("id")
+        |> Requests.get_request_by_public_id()
+
+      assert default_store_request.payload_capture_mode == :full
+      assert default_store_request.canonical_request != nil
+      assert default_store_request.response_payload != nil
+    end
+
+    invalid_store_conn =
+      post_responses(
+        %{
+          "model" => "responses-success-model@v1",
+          "input" => "invalid store",
+          "store" => "false"
+        },
+        token
+      )
+
+    assert invalid_store_conn.status == 400
+    assert Jason.decode!(invalid_store_conn.resp_body)["error"]["param"] == "store"
+
+    %{token: none_token, tenant: none_tenant} =
+      create_api_key_with_token!("responses-none")
+
+    none_tenant
+    |> Tenant.changeset(%{request_body_capture_mode: :none})
+    |> Repo.update!()
+
+    none_conn =
+      post_responses(
+        %{"model" => "responses-success-model@v1", "input" => "retain nothing"},
+        none_token
+      )
+
+    assert none_conn.status == 200
+    none_request = Requests.get_request_by_public_id(Jason.decode!(none_conn.resp_body)["id"])
+    assert none_request.payload_capture_mode == :none
+    assert none_request.canonical_request == nil
+    assert none_request.request_shape == nil
+    assert none_request.response_payload == nil
   end
 
   test "successful non-stream request can return function_call output items" do
@@ -573,7 +650,9 @@ defmodule Orchard.API.ResponsesControllerTest do
     end
   end
 
-  test "replays completed tenant-scoped responses for the same idempotency key", %{bundle: bundle} do
+  test "metadata capture fails closed when idempotency replay content is unavailable", %{
+    bundle: bundle
+  } do
     %{token: token, tenant: tenant} = create_api_key_with_token!("responses-replay")
 
     _model =
@@ -601,8 +680,8 @@ defmodule Orchard.API.ResponsesControllerTest do
     conn_b = post_responses(params, token, [{"idempotency-key", "responses-replay"}])
 
     assert conn_a.status == 200
-    assert conn_b.status == 200
-    assert Jason.decode!(conn_a.resp_body) == Jason.decode!(conn_b.resp_body)
+    assert conn_b.status == 409
+    assert Jason.decode!(conn_b.resp_body)["error"]["code"] == "idempotency_not_replayable"
 
     [request] = Repo.all(Request)
     assert request.tenant_id == tenant.id
@@ -693,7 +772,12 @@ defmodule Orchard.API.ResponsesControllerTest do
   # -- Streaming tests -------------------------------------------------------
 
   test "successful stream emits typed events in correct order", %{bundle: bundle} do
-    %{token: token} = create_api_key_with_token!("responses-stream-success")
+    %{token: token, tenant: tenant} =
+      create_api_key_with_token!("responses-stream-success")
+
+    tenant
+    |> Tenant.changeset(%{request_body_capture_mode: :full})
+    |> Repo.update!()
 
     _model =
       create_model!(%{
@@ -786,6 +870,12 @@ defmodule Orchard.API.ResponsesControllerTest do
     response_id = terminal.data["response"]["id"]
     request = Requests.get_request_by_public_id(response_id)
     assert request.first_token_at != nil
+    assert request.payload_capture_mode == :full
+    assert request.canonical_request["stream"] == true
+    assert request.response_payload == terminal.data["response"]
+
+    request_events = Requests.list_request_events(request)
+    refute Enum.any?(request_events, &(&1.event_type == "response.output_text.delta"))
 
     assert Sentry.Context.get_all().extra == %{}
     assert Sentry.Context.get_all().breadcrumbs == []

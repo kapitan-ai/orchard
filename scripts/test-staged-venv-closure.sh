@@ -140,6 +140,130 @@ site_packages_dir() {
     find "$venv/lib" -type d -path '*/site-packages' -print -quit
 }
 
+PYTHON_TAG="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+PYTHON_BASE_PREFIX="$(python3 -c 'import sys; print(sys.base_prefix)')"
+
+make_python_runtime_prefix() {
+    local prefix="$1"
+    mkdir -p "$prefix/bin" "$prefix/lib"
+    cp -L "$PYTHON_BASE_PREFIX/bin/python$PYTHON_TAG" "$prefix/bin/python$PYTHON_TAG"
+    chmod +x "$prefix/bin/python$PYTHON_TAG"
+    local lib
+    for lib in "$PYTHON_BASE_PREFIX"/lib/libpython*.dylib; do
+        [[ -e "$lib" ]] || continue
+        cp -L "$lib" "$prefix/lib/"
+    done
+    python3 - "$PYTHON_BASE_PREFIX/lib/python$PYTHON_TAG" "$prefix/lib/python$PYTHON_TAG" <<'PY'
+import shutil
+import sys
+
+shutil.copytree(
+    sys.argv[1],
+    sys.argv[2],
+    symlinks=True,
+    ignore=shutil.ignore_patterns(
+        "test",
+        "idlelib",
+        "tkinter",
+        "_tkinter*",
+        "turtledemo",
+        "lib2to3",
+        "ensurepip",
+        "pydoc_data",
+        "site-packages",
+        "__pycache__",
+        "config-*",
+    ),
+)
+PY
+}
+
+make_uv_style_venv() {
+    local venv="$1"
+    local prefix="$2"
+    mkdir -p "$venv/bin" "$venv/lib/python$PYTHON_TAG/site-packages"
+    ln -s "$prefix/bin/python$PYTHON_TAG" "$venv/bin/python$PYTHON_TAG"
+    ln -s "python$PYTHON_TAG" "$venv/bin/python3"
+    ln -s "python3" "$venv/bin/python"
+    printf 'home = %s
+include-system-site-packages = false
+version = %s
+' "$prefix/bin" "$PYTHON_TAG" > "$venv/pyvenv.cfg"
+}
+
+STAGED_VENV_TEMPLATE=""
+
+ensure_staged_venv_template() {
+    if [[ -n "$STAGED_VENV_TEMPLATE" ]]; then
+        return
+    fi
+    local template_root="$TMP_ROOT/staged-venv-template"
+    local template_venv="$template_root/native/template/.venv"
+    make_python_runtime_prefix "$template_root/runtime"
+    make_uv_style_venv "$template_venv" "$template_root/runtime"
+    "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$template_root/native" >/dev/null
+    STAGED_VENV_TEMPLATE="$template_venv"
+}
+
+clone_staged_venv() {
+    local dest="$1"
+    ensure_staged_venv_template
+    mkdir -p "$(dirname "$dest")"
+    rm -rf "$dest"
+    if ! cp -Rc "$STAGED_VENV_TEMPLATE" "$dest" 2>/dev/null; then
+        rm -rf "$dest"
+        cp -R "$STAGED_VENV_TEMPLATE" "$dest"
+    fi
+}
+
+make_stub_tokenizers_package() {
+    local site_packages="$1"
+    mkdir -p "$site_packages/tokenizers"
+    cat > "$site_packages/tokenizers/__init__.py" <<'PY'
+import json
+
+
+class Tokenizer:
+    def __init__(self, model):
+        self.model = model
+        self.pre_tokenizer = None
+        self.decoder = None
+
+    def train(self, files, trainer):
+        self.files = list(files)
+        self.trainer = trainer
+
+    def save(self, path):
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"version": "1.0", "model": {"type": "BPE"}}, handle)
+PY
+    cat > "$site_packages/tokenizers/models.py" <<'PY'
+class BPE:
+    def __init__(self, unk_token=None):
+        self.unk_token = unk_token
+PY
+    cat > "$site_packages/tokenizers/decoders.py" <<'PY'
+class ByteLevel:
+    pass
+PY
+    cat > "$site_packages/tokenizers/pre_tokenizers.py" <<'PY'
+class ByteLevel:
+    def __init__(self, add_prefix_space=False):
+        self.add_prefix_space = add_prefix_space
+
+    @staticmethod
+    def alphabet():
+        return []
+PY
+    cat > "$site_packages/tokenizers/trainers.py" <<'PY'
+class BpeTrainer:
+    def __init__(self, vocab_size=0, initial_alphabet=None, special_tokens=None):
+        self.vocab_size = vocab_size
+        self.initial_alphabet = list(initial_alphabet or [])
+        self.special_tokens = list(special_tokens or [])
+PY
+}
+
 make_known_helper_venv_fixture() {
     local root="$1"
     local package_state="${2:-present}"
@@ -150,7 +274,7 @@ make_known_helper_venv_fixture() {
         entry_name="orchard-worker-mlx"
     fi
     local venv="$root/Library/Application Support/Orchard/native/$helper/.venv"
-    python3 -m venv --copies "$venv"
+    clone_staged_venv "$venv"
     if [[ -L "$venv/bin/python" ]]; then
         echo "fixture setup failed: expected non-symlink venv/bin/python" >&2
         exit 1
@@ -161,6 +285,9 @@ make_known_helper_venv_fixture() {
     local site_packages
     site_packages="$(site_packages_dir "$venv")"
     find "$site_packages" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    if [[ "$helper" == "orchard_tokenizer" ]]; then
+        make_stub_tokenizers_package "$site_packages"
+    fi
     if [[ "$package_state" == "present" ]]; then
         mkdir -p "$site_packages/$helper"
         printf '' > "$site_packages/$helper/__init__.py"
@@ -176,6 +303,24 @@ PY
 #!/bin/sh
 case "${1:-}" in
   --help) exit 0 ;;
+  --request-json)
+    printf '%s\n' '{"ok":true,"result":{"compatible":true}}'
+    exit 0
+    ;;
+esac
+exit 0
+SH
+        chmod +x "$venv/bin/$entry_name"
+        ;;
+      safe_fail)
+        cat > "$venv/bin/$entry_name" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+  --help) exit 0 ;;
+  --request-json)
+    printf '%s\n' '{"ok":false,"error":{"category":"invalid_response"}}'
+    exit 0
+    ;;
 esac
 exit 0
 SH
@@ -191,6 +336,12 @@ SH
       sleep)
         cat > "$venv/bin/$entry_name" <<'SH'
 #!/bin/sh
+case "${1:-}" in
+  --request-json)
+    printf '%s\n' '{"ok":true,"result":{"compatible":true}}'
+    exit 0
+    ;;
+esac
 sleep 30
 SH
         chmod +x "$venv/bin/$entry_name"
@@ -234,6 +385,62 @@ if command -v xattr >/dev/null 2>&1; then
 fi
 head -3 "$venv/bin/tool" | grep -F '#!/bin/sh' >/dev/null
 assert_no_grep '/Users/buildhost' "$venv/bin/tool"
+
+# materializer: uv's two-line shell trampolines remain runnable after the source venv is removed.
+case_dir="$TMP_ROOT/materialize-relocated-console-entrypoints"
+source_native="$case_dir/source/native"
+relocated_native="$case_dir/relocated/native"
+make_python_runtime_prefix "$case_dir/runtime"
+for helper_spec in \
+    "orchard_tokenizer:orchard-tokenizer:--version" \
+    "orchard_worker_mlx:orchard-worker-mlx:--help"; do
+    IFS=: read -r helper entry_name smoke_arg <<<"$helper_spec"
+    source_venv="$source_native/$helper/.venv"
+    make_uv_style_venv "$source_venv" "$case_dir/runtime"
+    test -L "$source_venv/bin/python"
+    test ! -e "$source_venv/lib/python$PYTHON_TAG/os.py"
+    site_packages="$(site_packages_dir "$source_venv")"
+    mkdir -p "$site_packages/$helper"
+    printf '' > "$site_packages/$helper/__init__.py"
+    cat > "$site_packages/$helper/cli.py" <<'PY'
+import sys
+
+
+def main():
+    if "--version" in sys.argv:
+        print("0.1.0")
+    return 0
+PY
+    cat > "$source_venv/bin/$entry_name" <<SH
+#!/bin/sh
+'''exec' $case_dir/build/.venv-pkg/bin/python "\$0" "\$@"
+' '''
+from $helper.cli import main
+raise SystemExit(main())
+SH
+    mkdir -p "$case_dir/build/.venv-pkg/bin"
+    ln -sf "$source_venv/bin/python" "$case_dir/build/.venv-pkg/bin/python"
+    chmod +x "$source_venv/bin/$entry_name"
+done
+"$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$source_native" >/dev/null
+mkdir -p "$(dirname "$relocated_native")"
+cp -R "$source_native" "$relocated_native"
+rm -rf "$case_dir/source" "$case_dir/build/.venv-pkg" "$case_dir/runtime"
+for helper_spec in \
+    "orchard_tokenizer:orchard-tokenizer:--version" \
+    "orchard_worker_mlx:orchard-worker-mlx:--help"; do
+    IFS=: read -r helper entry_name smoke_arg <<<"$helper_spec"
+    relocated_venv="$relocated_native/$helper/.venv"
+    relocated_entry="$relocated_venv/bin/$entry_name"
+    test ! -L "$relocated_venv/bin/python"
+    test ! -L "$relocated_venv/bin/python3"
+    test -f "$relocated_venv/lib/python$PYTHON_TAG/os.py"
+    assert_no_grep 'home = ' "$relocated_venv/pyvenv.cfg"
+    env -i PATH=/usr/bin:/bin HOME="$case_dir/home" "$relocated_entry" "$smoke_arg" >"$case_dir/$entry_name.out"
+    assert_no_grep "$case_dir" "$relocated_entry"
+    assert_no_grep '.venv-pkg' "$relocated_entry"
+done
+assert_grep '0.1.0' "$case_dir/orchard-tokenizer.out"
 
 # materializer: unresolved in-venv @rpath support dylibs get a relative rpath.
 case_dir="$TMP_ROOT/materialize-rpath-support-dylib"
@@ -406,7 +613,41 @@ chmod +x "$venv/bin/tool"
 make_fake_tools "$tools" '#!/bin/sh
 cat <<'"'"'OUT'"'"'
 OUT'
-assert_verifier_fails_with 'script shebang has build-host path fragment' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'script launcher has build-host path fragment' "$tools" "$root" "$case_dir/out"
+
+# verifier: caller-supplied build roots are rejected even outside standard macOS home paths.
+case_dir="$TMP_ROOT/explicit-build-root"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+cat > "$venv/bin/tool" <<'SH'
+#!/bin/sh
+'''exec' /Volumes/orchard-build/native/foo/.venv/bin/python "$0" "$@"
+' '''
+print('bad')
+SH
+chmod +x "$venv/bin/tool"
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'script launcher has build-host path fragment' "$tools" "$root" "$case_dir/out" --forbid-path /Volumes/orchard-build
+
+# verifier: inspect the complete launcher, including uv's second-line Python trampoline.
+case_dir="$TMP_ROOT/two-line-shell-trampoline"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+cat > "$venv/bin/tool" <<'SH'
+#!/bin/sh
+'''exec' /Users/buildhost/orchard/native/foo/.venv-pkg/bin/python "$0" "$@"
+' '''
+print('bad')
+SH
+chmod +x "$venv/bin/tool"
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'script launcher has build-host path fragment' "$tools" "$root" "$case_dir/out"
 
 # verifier: temp build-root absolute dependency is rejected.
 case_dir="$TMP_ROOT/temp-root"
@@ -486,6 +727,16 @@ make_fake_tools "$tools" '#!/bin/sh
 cat <<'"'"'OUT'"'"'
 OUT'
 assert_verifier_succeeds "$tools" "$root" "$case_dir/out"
+
+# verifier: installed tokenizer entrypoint must complete a safe-tokenization preflight.
+case_dir="$TMP_ROOT/known-helper-safe-tokenization-preflight"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" present safe_fail >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'installed tokenizer safe-tokenization preflight smoke failed' "$tools" "$root" "$case_dir/out"
 
 # verifier: known helper console entrypoints must smoke under sanitized env.
 case_dir="$TMP_ROOT/known-helper-entrypoint-smoke"

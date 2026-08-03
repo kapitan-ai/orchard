@@ -7,6 +7,10 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
   alias Orchard.Node.{BeamPeerGrantClient, BeamPeerGrantStore}
   alias Orchard.Node.BeamPeerGrantClient.GRPCTransport
 
+  @fixture_activation_backdate_seconds 60
+  @fixture_validity_seconds 30 * 24 * 60 * 60
+  @fixture_anchor_tolerance_seconds 3600
+
   defmodule FakeControlTransport do
     def retrieve(target, credential, request) do
       send(self(), {:grant_control_retrieve, target, credential, request})
@@ -100,6 +104,33 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     grant_path = Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"])
     assert private_mode(grant_path) == 0o600
     assert File.stat!(grant_path).uid == File.stat!(root).uid
+  end
+
+  test "SPEC.md §7.5.0 install narrows a store directory a concurrent creator left wide" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-narrow-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    # `File.mkdir/1` applies the umask, so this is exactly what a concurrent
+    # installer sees between another installer creating the store directory and
+    # narrowing it to owner-only.
+    store_root = Path.join(root, "beam-peer-grants")
+    File.mkdir!(store_root)
+    File.chmod!(store_root, 0o755)
+
+    assert {:ok, ^delivery} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    assert private_mode(store_root) == 0o700
   end
 
   test "SPEC.md §7.5.0 install sweeps orphaned plaintext temporaries left by a crash" do
@@ -333,7 +364,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
         )
       end)
 
-    assert_receive {:publisher_cleanup, first_pid, temporary}
+    # `install/5` spawns the `lockf` OS process before it reaches `remove_file`,
+    # so the default 100ms `assert_receive` window is too tight under load.
+    assert_receive {:publisher_cleanup, first_pid, temporary}, 5_000
     assert File.exists?(temporary)
 
     second =
@@ -383,7 +416,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
         )
       end)
 
-    assert_receive {:child_test_publisher_cleanup, first_pid, temporary}
+    # `install/5` spawns the `lockf` OS process before it reaches `remove_file`,
+    # so the default 100ms `assert_receive` window is too tight under load.
+    assert_receive {:child_test_publisher_cleanup, first_pid, temporary}, 5_000
     assert File.exists?(temporary)
 
     ready_path = Path.join(root, "child-ready")
@@ -575,6 +610,36 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
              BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
   end
 
+  test "SPEC.md §7.5.0 the ordinary store fixture anchors its window to the current clock" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-calendar-independent-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    before_build = DateTime.utc_now()
+    delivery = delivery(identity)
+
+    assert DateTime.compare(delivery.not_before_at, before_build) == :lt
+
+    assert DateTime.diff(before_build, delivery.not_before_at, :second) <
+             @fixture_anchor_tolerance_seconds
+
+    assert DateTime.diff(delivery.expires_at, delivery.not_before_at, :second) ==
+             @fixture_validity_seconds
+
+    assert {:ok, _stored} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    assert {:ok, loaded} = BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+    assert loaded.grant_id == delivery.grant_id
+  end
+
   test "SPEC.md §7.5.0 a freshly delivered expired grant is never persisted" do
     root =
       Path.join(
@@ -599,7 +664,40 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       })
 
     assert {:error, :beam_peer_grant_expired} =
-             BeamPeerGrantStore.install(root, identity, expired, expired.node_beam_name)
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               expired,
+               expired.node_beam_name,
+               now: fn -> now end
+             )
+
+    refute File.exists?(Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"]))
+  end
+
+  test "SPEC.md §7.5.0 a not-yet-active grant is never persisted" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-not-active-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    before_activation = DateTime.add(delivery.not_before_at, -1, :second)
+
+    assert {:error, :beam_peer_grant_not_active} =
+             BeamPeerGrantStore.install(
+               root,
+               identity,
+               delivery,
+               delivery.node_beam_name,
+               now: fn -> before_activation end
+             )
 
     refute File.exists?(Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"]))
   end
@@ -909,8 +1007,11 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     }
   end
 
-  defp delivery(identity) do
+  defp delivery(identity), do: delivery(identity, DateTime.utc_now())
+
+  defp delivery(identity, reference_time) do
     encoded_secret = Base.url_encode64(:binary.copy(<<5>>, 32), padding: false)
+    not_before_at = DateTime.add(reference_time, -@fixture_activation_backdate_seconds, :second)
 
     %{
       grant_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -927,10 +1028,10 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
       node_certificate_fingerprint_sha256: identity.certificate_fingerprint,
       contract_version: 1,
       purpose: "runtime_endpoint",
-      issued_at: ~U[2026-07-13 08:00:00.000000Z],
-      not_before_at: ~U[2026-07-13 08:00:00.000000Z],
+      issued_at: not_before_at,
+      not_before_at: not_before_at,
       cutover_at: nil,
-      expires_at: ~U[2026-08-12 08:00:00.000000Z],
+      expires_at: DateTime.add(not_before_at, @fixture_validity_seconds, :second),
       encoded_secret: encoded_secret,
       secret_hash: :crypto.hash(:sha256, encoded_secret)
     }

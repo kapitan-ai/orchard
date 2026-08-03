@@ -70,76 +70,14 @@ defmodule OrchardCLI.Commands.StatusTest do
   defp ready_response do
     %{
       status: 200,
-      body: %{
-        "status" => "ok",
-        "checks" => %{
-          "controller_boot_completed" => true,
-          "postgres_reachable" => true,
-          "migrations_current" => true,
-          "public_api_https_enabled" => true
-        },
-        "runtime" => %{
-          "status" => "ok",
-          "node_id" => "550e8400-e29b-41d4-a716-446655440000",
-          "display_name" => "test-node",
-          "worker_state" => "idle",
-          "health" => "healthy",
-          "counts" => %{
-            "active_requests" => 0,
-            "loaded_models" => 1
-          },
-          "message" => nil
-        }
-      }
+      body: %{"status" => "ok"}
     }
   end
 
-  defp degraded_response(reason \\ "postgres_reachable") do
+  defp degraded_response(_reason \\ "postgres_reachable") do
     %{
       status: 503,
-      body: %{
-        "status" => "error",
-        "reason" => reason,
-        "checks" => %{
-          "controller_boot_completed" => true,
-          "postgres_reachable" => false,
-          "migrations_current" => false,
-          "public_api_https_enabled" => true
-        },
-        "runtime" => %{
-          "status" => "ok",
-          "node_id" => "550e8400-e29b-41d4-a716-446655440000",
-          "display_name" => "test-node",
-          "worker_state" => "idle",
-          "health" => "healthy",
-          "counts" => %{
-            "active_requests" => 0,
-            "loaded_models" => 2
-          },
-          "message" => nil
-        }
-      }
-    }
-  end
-
-  defp runtime_timeout_response do
-    %{
-      status: 503,
-      body: %{
-        "status" => "error",
-        "reason" => "postgres_reachable",
-        "runtime" => %{
-          "status" => "timeout",
-          "worker_state" => "unknown",
-          "node_id" => nil,
-          "health" => "unsupported",
-          "counts" => %{
-            "active_requests" => nil,
-            "loaded_models" => nil
-          },
-          "message" => "node status request timed out"
-        }
-      }
+      body: %{"status" => "error"}
     }
   end
 
@@ -177,6 +115,9 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert {:ok, message} = Status.run(["help"], test_runtime())
     assert message =~ "orchardctl status"
     assert message =~ "health endpoint"
+    assert message =~ "Local Orchard version and install role"
+    assert message =~ "Controller reachability and readiness state"
+    refute message =~ "Runtime summary"
   end
 
   test "--help returns usage" do
@@ -195,23 +136,6 @@ defmodule OrchardCLI.Commands.StatusTest do
   end
 
   # ── Ready Banner ─────────────────────────────────────────────────────
-
-  test "ready controller shows full status banner" do
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, ready_response()} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "\u{1F333} Orchard v0.1.0"
-    assert banner =~ "Role:    all"
-    assert banner =~ "Console: http://localhost:4000/console"
-    assert banner =~ "API:     http://localhost:4000/v1"
-    assert banner =~ "Status:  ready"
-    assert banner =~ "1 node"
-    assert banner =~ "idle"
-    assert banner =~ "1 model loaded"
-  end
 
   test "controller role shows role line and controller status" do
     runtime =
@@ -322,63 +246,23 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "Controller: remote/not checked"
   end
 
-  test "ready banner with plural models" do
-    response = ready_response()
-    body = put_in(response.body, ["runtime", "counts", "loaded_models"], 3)
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "3 models loaded"
-    refute banner =~ "3 model loaded"
-  end
-
-  test "ready banner with zero models" do
-    response = ready_response()
-    body = put_in(response.body, ["runtime", "counts", "loaded_models"], 0)
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "0 models loaded"
-  end
-
-  test "ready banner with no node_id shows 0 nodes" do
-    response = ready_response()
-    body = put_in(response.body, ["runtime", "node_id"], nil)
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "0 nodes"
-  end
-
-  test "ready banner uses correct version" do
+  test "ready banner uses the local version with the status-only public response" do
     runtime =
       test_runtime(%{
         version: fn -> "1.2.3" end,
-        request: fn _url, _opts -> {:ok, ready_response()} end
+        request: fn _url, _opts -> {:ok, %{status: 200, body: %{"status" => "ok"}}} end
       })
 
     assert {:ok, banner} = Status.run([], runtime)
     assert banner =~ "Orchard v1.2.3"
+    assert banner =~ "Console: http://localhost:4000/console\n"
+    assert banner =~ "Status:  ready"
+    refute banner =~ "Console: http://localhost:4000/console (unknown)"
+    refute banner =~ "License:"
+    refute banner =~ "Transport:"
   end
 
-  # ── Degraded Banner ──────────────────────────────────────────────────
-
-  test "degraded controller shows reason in status" do
+  test "degraded status-only response points to authenticated operator diagnostics" do
     runtime =
       test_runtime(%{
         request: fn _url, _opts -> {:ok, degraded_response()} end
@@ -386,134 +270,32 @@ defmodule OrchardCLI.Commands.StatusTest do
 
     assert {:ok, banner} = Status.run([], runtime)
     assert banner =~ "Status:  degraded"
-    assert banner =~ "postgres_reachable"
-    assert banner =~ "2 models loaded"
+    assert banner =~ "Details: use authenticated GET /ops/v1/health for diagnostics"
   end
 
-  test "degraded with custom reason" do
+  test "status-only probing never presents disclosed version or build as remote identity" do
     runtime =
       test_runtime(%{
-        request: fn _url, _opts -> {:ok, degraded_response("migrations_current")} end
+        version: fn -> "1.2.3" end,
+        request: fn _url, _opts ->
+          {:ok,
+           %{
+             status: 200,
+             body: %{"status" => "ok", "version" => "9.9.9", "build_ref" => "remote-sha"}
+           }}
+        end
       })
 
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "degraded"
-    assert banner =~ "migrations_current"
+    # Extra public fields are rejected rather than rendered as remote identity.
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response"
+    refute message =~ "9.9.9"
+    refute message =~ "remote-sha"
   end
 
-  test "ready status ignores stale remediation if present" do
-    response = ready_response()
-
-    body =
-      Map.put(response.body, "remediation", %{
-        "reason" => "migrations_current",
-        "summary" => "Database migrations are not current.",
-        "commands" => ["sudo orchardctl migrate"],
-        "docs_anchor" => "readiness-migrations"
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "Status:  ready"
-    refute banner =~ "Remediation:"
-    refute banner =~ "sudo orchardctl migrate"
-  end
-
-  test "degraded status renders health remediation when present" do
-    response = degraded_response("migrations_current")
-
-    body =
-      Map.put(response.body, "remediation", %{
-        "reason" => "migrations_current",
-        "summary" => "Database migrations are not current.",
-        "commands" => ["sudo orchardctl migrate"],
-        "docs_anchor" => "readiness-migrations"
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "Remediation: Database migrations are not current."
-    assert banner =~ "Run: sudo orchardctl migrate"
-  end
-
-  test "degraded status trims remediation and ignores blank commands" do
-    response = degraded_response("migrations_current")
-
-    body =
-      Map.put(response.body, "remediation", %{
-        "reason" => "migrations_current",
-        "summary" => "  Database migrations are not current.  ",
-        "commands" => ["  sudo orchardctl migrate  ", "   ", 123],
-        "docs_anchor" => "readiness-migrations"
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "Remediation: Database migrations are not current."
-    assert banner =~ "Run: sudo orchardctl migrate"
-    refute banner =~ "Run:    "
-  end
-
-  test "older degraded controller falls back to local remediation mapping" do
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, degraded_response("public_api_https_enabled")} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "Remediation: The public API is not configured for HTTPS."
-    assert banner =~ "Run: sudo orchardctl transport enable-local-https --host <host> --port 8443"
-  end
+  # ── Degraded Banner ──────────────────────────────────────────────────
 
   # ── Runtime Unavailable ──────────────────────────────────────────────
-
-  test "runtime timeout shows runtime status in details" do
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, runtime_timeout_response()} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "degraded"
-    assert banner =~ "runtime timeout"
-  end
-
-  test "response with no runtime block shows runtime unavailable" do
-    response = %{
-      status: 200,
-      body: %{
-        "status" => "ok",
-        "checks" => %{}
-      }
-    }
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "ready"
-    assert banner =~ "runtime unavailable"
-  end
 
   # ── Offline ──────────────────────────────────────────────────────────
 
@@ -1701,38 +1483,6 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "Console: http://localhost:4000/console (unknown)"
   end
 
-  test "reachable health payload renders transport and console state without credentials" do
-    response = ready_response()
-
-    body =
-      response.body
-      |> Map.put("transport", %{
-        "mode" => "direct_https",
-        "degraded" => false,
-        "cert_source" => "generated_local_ca"
-      })
-      |> Map.put("console", %{
-        "enabled" => false,
-        "auth_mode" => "disabled",
-        "username" => "console-admin",
-        "password" => "super-secret-password"
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        endpoint_candidates: fn -> [%{base_url: "https://localhost:8443", ca_certfile: nil}] end,
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "Console: https://localhost:8443/console (disabled)"
-    assert banner =~ "Transport: direct_https (degraded: false, cert: generated_local_ca)"
-    refute banner =~ "console-admin"
-    refute banner =~ "super-secret-password"
-  end
-
   test "request function receives ca_certfile from candidate" do
     ref = make_ref()
 
@@ -1824,7 +1574,7 @@ defmodule OrchardCLI.Commands.StatusTest do
       })
 
     assert {:error, message, 1} = Status.run([], runtime)
-    assert message =~ "unexpected health status"
+    assert message =~ "invalid health response"
   end
 
   test "missing status field with single candidate returns invalid-response error" do
@@ -1836,7 +1586,7 @@ defmodule OrchardCLI.Commands.StatusTest do
       })
 
     assert {:error, message, 1} = Status.run([], runtime)
-    assert message =~ "missing \"status\" field"
+    assert message =~ "invalid health response"
   end
 
   test "non-map body with single candidate returns invalid-response error" do
@@ -1876,68 +1626,7 @@ defmodule OrchardCLI.Commands.StatusTest do
 
   # ── Malformed Nested Payloads ────────────────────────────────────────
 
-  test "runtime as string instead of map shows runtime unavailable" do
-    response = %{
-      status: 200,
-      body: %{
-        "status" => "ok",
-        "runtime" => "oops"
-      }
-    }
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "ready"
-    assert banner =~ "runtime unavailable"
-  end
-
-  test "counts as non-map defaults model count to 0" do
-    response = ready_response()
-    body = put_in(response.body, ["runtime", "counts"], "broken")
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "0 models loaded"
-  end
-
   # ── Runtime Health Surface ───────────────────────────────────────────
-
-  test "degraded runtime health is surfaced in ready banner" do
-    response = ready_response()
-    body = put_in(response.body, ["runtime", "health"], "degraded")
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "health: degraded"
-  end
-
-  test "unhealthy runtime health is surfaced in ready banner" do
-    response = ready_response()
-    body = put_in(response.body, ["runtime", "health"], "unhealthy")
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "health: unhealthy"
-  end
 
   test "healthy runtime health is not shown in banner" do
     runtime =
@@ -1947,117 +1636,6 @@ defmodule OrchardCLI.Commands.StatusTest do
 
     assert {:ok, banner} = Status.run([], runtime)
     refute banner =~ "health:"
-  end
-
-  test "renders license line when health payload includes a valid license block" do
-    response = ready_response()
-
-    body =
-      put_in(response.body, ["license"], %{
-        "status" => "valid",
-        "reason" => nil,
-        "message" => "License bundle is valid.",
-        "expires_at" => "2027-04-15T00:00:00Z"
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "License: valid"
-    assert banner =~ "License bundle is valid."
-    assert banner =~ "expires: 2027-04-15T00:00:00Z"
-  end
-
-  test "renders license tracking line when health payload includes tracking metadata" do
-    response = ready_response()
-
-    body =
-      put_in(response.body, ["license"], %{
-        "status" => "valid",
-        "reason" => nil,
-        "message" => "License bundle is valid.",
-        "expires_at" => "2027-04-15T00:00:00Z",
-        "tracking" => %{
-          "program" => "aieh",
-          "reference" => "aieh-2026-001"
-        }
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "License: valid"
-    assert banner =~ "Tracking: program=aieh ref=aieh-2026-001"
-  end
-
-  test "renders plan mandated safe license identity fields from health payload" do
-    response = ready_response()
-
-    body =
-      put_in(response.body, ["license"], %{
-        "status" => "valid",
-        "reason" => nil,
-        "message" => "License bundle is valid.",
-        "expires_at" => "2027-04-15T00:00:00Z",
-        "license_id" => "lic_visible",
-        "machine_id" => "mach_visible",
-        "licensee" => "Acme Orchard Lab",
-        "max_machines" => 3,
-        "tracking" => %{
-          "program" => "aieh",
-          "reference" => "aieh-2026-001"
-        }
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "expires: 2027-04-15T00:00:00Z"
-    assert banner =~ "License ID: lic_visible"
-    assert banner =~ "Machine ID: mach_visible"
-    assert banner =~ "Licensee: Acme Orchard Lab"
-    assert banner =~ "Max machines: 3"
-    assert banner =~ "Tracking: program=aieh ref=aieh-2026-001"
-  end
-
-  test "omits license identifiers when health payload excludes them" do
-    response = ready_response()
-
-    body =
-      put_in(response.body, ["license"], %{
-        "status" => "missing",
-        "reason" => "missing_bundle",
-        "message" => "No local license bundle is installed."
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "License: missing"
-    refute banner =~ "License ID:"
-    refute banner =~ "Machine ID:"
-    refute banner =~ "Licensee:"
-    refute banner =~ "Max machines:"
   end
 
   test "does not render a license line when the health payload omits the license block" do
@@ -2070,63 +1648,18 @@ defmodule OrchardCLI.Commands.StatusTest do
     refute banner =~ "License:"
   end
 
-  test "ignores malformed license tracking blocks for backward compatibility" do
+  test "rejects a rich public health payload with a license block" do
     response = ready_response()
-
-    body =
-      put_in(response.body, ["license"], %{
-        "status" => "valid",
-        "reason" => nil,
-        "message" => "License bundle is valid.",
-        "tracking" => "not-a-map"
-      })
-
-    response = %{response | body: body}
+    response = put_in(response, [:body, "license"], %{"status" => "valid"})
 
     runtime =
       test_runtime(%{
         request: fn _url, _opts -> {:ok, response} end
       })
 
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "License: valid"
-    refute banner =~ "Tracking:"
-  end
-
-  test "ignores empty license tracking fields for backward compatibility" do
-    response = ready_response()
-
-    body =
-      put_in(response.body, ["license"], %{
-        "status" => "valid",
-        "reason" => nil,
-        "message" => "License bundle is valid.",
-        "tracking" => %{"program" => "", "reference" => 123}
-      })
-
-    response = %{response | body: body}
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "License: valid"
-    refute banner =~ "Tracking:"
-  end
-
-  test "ignores malformed license blocks for backward compatibility" do
-    response = ready_response()
-    response = put_in(response.body, ["license"], %{"status" => "valid"})
-
-    runtime =
-      test_runtime(%{
-        request: fn _url, _opts -> {:ok, response} end
-      })
-
-    assert {:ok, banner} = Status.run([], runtime)
-    refute banner =~ "License:"
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response"
+    refute message =~ "License:"
   end
 
   defp collect_cmds do
@@ -2139,5 +1672,88 @@ defmodule OrchardCLI.Commands.StatusTest do
     after
       10 -> Enum.reverse(acc)
     end
+  end
+
+  test "status-only public health contract rejects extra fields" do
+    response = %{status: 200, body: %{"status" => "ok", "version" => "v-secret"}}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response"
+    refute message =~ "v-secret"
+  end
+
+  test "status-only public health contract rejects HTTP/body mismatch" do
+    response = %{status: 503, body: %{"status" => "ok"}}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response"
+  end
+
+  test "status-only public health contract rejects inverse HTTP/body mismatch" do
+    response = %{status: 200, body: %{"status" => "error"}}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response"
+  end
+
+  test "status-only public health contract rejects otherwise exact bodies for other statuses" do
+    response = %{status: 404, body: %{"status" => "ok"}}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response"
+  end
+
+  test "status-only public health contract rejects extra fields on the error pair" do
+    response = %{status: 503, body: %{"status" => "error", "reason" => "hidden"}}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response"
+    refute message =~ "hidden"
+  end
+
+  test "status-only public health accepts exact ok and error pairs" do
+    ready =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, ready_response()} end
+      })
+
+    assert {:ok, banner} = Status.run([], ready)
+    assert banner =~ "Status:  ready"
+    refute banner =~ "runtime"
+    refute banner =~ "Remediation"
+
+    degraded =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, degraded_response()} end
+      })
+
+    assert {:ok, banner} = Status.run([], degraded)
+    assert banner =~ "Status:  degraded"
+    refute banner =~ "postgres_reachable"
   end
 end

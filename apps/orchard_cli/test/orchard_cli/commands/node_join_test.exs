@@ -70,6 +70,25 @@ defmodule OrchardCLI.Commands.NodeJoinTest.Task28Endpoint do
   run(Orchard.Node.RuntimeServer)
 end
 
+defmodule OrchardCLI.Commands.NodeJoinTest.StalledRuntimeServer do
+  @moduledoc false
+
+  use GRPC.Server, service: Orchard.Cluster.V1.NodeRuntimeService.Service
+
+  alias Orchard.Cluster.V1.StatusRequest
+
+  @spec get_status(StatusRequest.t(), GRPC.Server.Stream.t()) :: no_return()
+  def get_status(%StatusRequest{}, _stream) do
+    raise GRPC.RPCError, status: :unavailable, message: "runtime status unavailable"
+  end
+end
+
+defmodule OrchardCLI.Commands.NodeJoinTest.StalledRuntimeEndpoint do
+  use GRPC.Endpoint
+
+  run(OrchardCLI.Commands.NodeJoinTest.StalledRuntimeServer)
+end
+
 defmodule OrchardCLI.Commands.NodeJoinTest do
   use ExUnit.Case, async: false
 
@@ -78,7 +97,9 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
   import ExUnit.CaptureLog
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.ClusterManagement.StatusBuilder
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: TransportClient
+  alias Orchard.DispatchCapacity
   alias Orchard.Inference
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.NodeEnrollment.PKI
@@ -534,7 +555,7 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
 
     assert active.id == node_id
     assert active.state == :active
-    assert Inference.activation_probe_runtime_endpoint_targets() == []
+    assert [%Target{node_id: ^node_id}] = Inference.activation_probe_runtime_endpoint_targets()
     assert [%Target{node_id: ^node_id} = active_target] = Inference.runtime_endpoint_targets()
     assert active_target.metadata.authorization == :inference_dispatch
     assert Enum.map(NodeInventory.schedulable_nodes(), & &1.id) == [node_id]
@@ -549,7 +570,7 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
 
     assert Repo.get!(InventoryNode, context.bundle["node_id"]).state == :admitted
 
-    assert {:ok, [%{target_id: target_id, status: :activated}]} =
+    assert {:ok, [%{target_id: target_id, status: :observed}]} =
              ActivationProbe.run_once()
 
     assert target_id == target.id
@@ -557,6 +578,115 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
     node_id = context.bundle["node_id"]
     assert Repo.get!(InventoryNode, node_id).state == :active
     assert Enum.map(NodeInventory.schedulable_nodes(), & &1.id) == [node_id]
+  end
+
+  @tag :liveness_evidence
+  test "SPEC.md §4.5 leader-owned probe keeps an idle active Node live and demotes idle Node loss",
+       context do
+    port = free_tcp_port()
+    _target = join_admit_and_configure_runtime!(context, port)
+    start_enrolled_tls_server!(port)
+    node_id = context.bundle["node_id"]
+    unreachable_ms = Inference.node_unreachable_threshold_ms()
+
+    IO.puts("""
+
+    === issue #148 slice A: idle active-Node liveness over the real mTLS probe ===
+    node_id=#{node_id} runtime endpoint=127.0.0.1:#{port}
+    unreachable_threshold_ms=#{unreachable_ms} freshness_threshold_ms=#{Inference.node_freshness_threshold_ms()} probe_interval_ms=#{ActivationProbe.interval_ms()}
+    No inference request is dispatched anywhere in this scenario. Probe cycles observe
+    the Node over real mutual TLS; cycles that age past a threshold inject observed_at
+    instead of sleeping through it.
+    """)
+
+    assert Repo.get!(InventoryNode, node_id).state == :admitted
+    emit_liveness_row("admitted, before any probe cycle", node_id)
+
+    assert {:ok, [%{status: :observed}]} = ActivationProbe.run_once()
+    first = Repo.get!(InventoryNode, node_id)
+    first_evidence = DispatchCapacity.get_capacity_evidence(node_id)
+    assert first.state == :active
+    assert first.health == :healthy
+    assert Enum.map(NodeInventory.schedulable_nodes(), & &1.id) == [node_id]
+    emit_liveness_row("probe cycle 1: admitted -> active", node_id)
+
+    Process.sleep(1_100)
+
+    assert {:ok, [%{status: :observed}]} = ActivationProbe.run_once()
+    idle = Repo.get!(InventoryNode, node_id)
+    idle_evidence = DispatchCapacity.get_capacity_evidence(node_id)
+    assert idle.state == :active
+    assert idle.health == :healthy
+    assert DateTime.compare(idle.last_heartbeat_at, first.last_heartbeat_at) == :gt
+    assert DateTime.compare(idle_evidence.observed_at, first_evidence.observed_at) == :gt
+    assert Enum.map(NodeInventory.schedulable_nodes(), & &1.id) == [node_id]
+    emit_liveness_row("probe cycle 2: idle refresh, no request traffic", node_id)
+
+    aged_at = DateTime.add(idle.last_heartbeat_at, unreachable_ms + 1_000, :millisecond)
+    Application.put_env(:orchard_controller, :control_plane, role: :standby)
+
+    assert {:error, :controller_standby} =
+             ActivationProbe.run_once(observed_at: aged_at, timeout: 1_000)
+
+    assert :noop = NodeInventory.sweep_stale_node_heartbeats(aged_at)
+    assert Repo.get!(InventoryNode, node_id).health == :healthy
+    assert Repo.get!(InventoryNode, node_id).last_heartbeat_at == idle.last_heartbeat_at
+    emit_liveness_row("standby Controller cycle: writes nothing", node_id)
+
+    Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
+
+    assert {:ok, []} = ActivationProbe.run_once(targets: [], observed_at: aged_at)
+    swept = Repo.get!(InventoryNode, node_id)
+    assert swept.state == :active
+    assert swept.health == :unreachable
+    assert NodeInventory.schedulable_nodes() == []
+    emit_liveness_row("sweep cycle: heartbeat aged past threshold", node_id)
+
+    assert {:ok, [%{status: :observed}]} = ActivationProbe.run_once()
+    recovered = Repo.get!(InventoryNode, node_id)
+    assert recovered.health == :healthy
+    assert Enum.map(NodeInventory.schedulable_nodes(), & &1.id) == [node_id]
+    emit_liveness_row("probe cycle 3: observation clears demotion", node_id)
+
+    fresh_failure_at = DateTime.add(recovered.last_heartbeat_at, 5, :second)
+    stop_supervised!({:task_2_8_grpc_server, port})
+    start_stalled_tls_server!(port)
+
+    stalled_log =
+      with_debug_logging(fn ->
+        assert {:ok, []} = ActivationProbe.run_once(observed_at: fresh_failure_at, timeout: 1_000)
+      end)
+
+    assert probe_failure_reason(stalled_log) == "authenticated_transport_failed"
+
+    degraded = Repo.get!(InventoryNode, node_id)
+    assert degraded.health == :degraded
+    assert Enum.map(NodeInventory.schedulable_nodes(), & &1.id) == [node_id]
+
+    emit_liveness_row(
+      "node runtime status fails (#{probe_failure_reason(stalled_log)})",
+      node_id
+    )
+
+    stop_supervised!({:stalled_grpc_server, port})
+
+    aged_failure_at =
+      DateTime.add(recovered.last_heartbeat_at, unreachable_ms + 1_000, :millisecond)
+
+    lost_log =
+      with_debug_logging(fn ->
+        assert {:ok, []} =
+                 ActivationProbe.run_once(observed_at: aged_failure_at, timeout: 1_000)
+      end)
+
+    lost = Repo.get!(InventoryNode, node_id)
+    assert lost.health == :unreachable
+    assert NodeInventory.schedulable_nodes() == []
+
+    emit_liveness_row(
+      "node agent gone, past threshold (#{probe_failure_reason(lost_log)})",
+      node_id
+    )
   end
 
   @tag :task_2_10
@@ -1086,6 +1216,21 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
     start_grpc_server!(port, opts)
   end
 
+  # Same enrolled mTLS identity, but GetStatus fails: the Node is reachable and
+  # authenticated while its runtime status RPC is unavailable.
+  defp start_stalled_tls_server!(port) do
+    opts =
+      NodeSupervisor.grpc_server_opts()
+      |> Keyword.put(:endpoint, OrchardCLI.Commands.NodeJoinTest.StalledRuntimeEndpoint)
+
+    start_supervised!(
+      Supervisor.child_spec(
+        {GRPC.Server.Supervisor, opts},
+        id: {:stalled_grpc_server, port}
+      )
+    )
+  end
+
   defp start_test_tls_server!(port, identity, expected_controller_uri) do
     credential =
       GRPC.Credential.new(
@@ -1181,6 +1326,57 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
 
       {:error, _reason} ->
         :ok
+    end
+  end
+
+  defp emit_liveness_row(label, node_id) do
+    node = Repo.get!(InventoryNode, node_id)
+    schedulable = Enum.map(NodeInventory.schedulable_nodes(), & &1.id)
+    status = StatusBuilder.node_status_map(node)
+
+    IO.puts(
+      [
+        String.pad_trailing(label, 52),
+        String.pad_trailing("state=#{node.state}", 15),
+        String.pad_trailing("health=#{node.health}", 20),
+        String.pad_trailing("heartbeat=#{node.last_heartbeat_at}", 40),
+        String.pad_trailing(capacity_summary(node_id), 44),
+        String.pad_trailing("schedulable=#{schedulable == [node_id]}", 19),
+        "operator_status=#{operator_scheduling_summary(status)}"
+      ]
+      |> Enum.join(" ")
+    )
+  end
+
+  defp operator_scheduling_summary(%{scheduling: scheduling}) do
+    "eligible=#{scheduling[:eligible]} reasons=#{inspect(scheduling[:reason_codes])}"
+  end
+
+  defp with_debug_logging(fun) do
+    previous = Logger.level()
+    Logger.configure(level: :debug)
+
+    try do
+      capture_log([level: :debug], fun)
+    after
+      Logger.configure(level: previous)
+    end
+  end
+
+  defp probe_failure_reason(log) do
+    case Regex.run(~r/Activation status probe failed for \S+: (\w+)/, log) do
+      [_match, reason] -> reason
+      nil -> "unlogged"
+    end
+  end
+
+  defp capacity_summary(node_id) do
+    case DispatchCapacity.get_capacity_evidence(node_id) do
+      nil ->
+        "capacity=none"
+
+      evidence ->
+        "capacity=#{evidence.active_request_count}/#{evidence.runtime_concurrency_limit}@#{evidence.observed_at}"
     end
   end
 

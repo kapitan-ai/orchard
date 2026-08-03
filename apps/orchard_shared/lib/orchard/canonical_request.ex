@@ -109,6 +109,7 @@ defmodule Orchard.CanonicalRequest do
             rendered_prompt: nil,
             input_token_count: 0,
             prompt_token_ids: nil,
+            store?: true,
             stream?: false,
             stream_include_usage: false,
             sampling: nil,
@@ -135,6 +136,7 @@ defmodule Orchard.CanonicalRequest do
           rendered_prompt: binary() | nil,
           input_token_count: non_neg_integer(),
           prompt_token_ids: [non_neg_integer()] | nil,
+          store?: boolean(),
           stream?: boolean(),
           stream_include_usage: boolean(),
           sampling: Sampling.t(),
@@ -177,6 +179,7 @@ defmodule Orchard.CanonicalRequest do
     |> validate_rendered_prompt!()
     |> validate_input_token_count!()
     |> validate_tokenization_state!()
+    |> validate_store!()
     |> validate_stream!()
     |> validate_sampling!()
     |> validate_tooling!()
@@ -382,6 +385,13 @@ defmodule Orchard.CanonicalRequest do
   defp validate_stream!(%__MODULE__{stream?: stream?, stream_include_usage: include_usage}) do
     raise ArgumentError,
           "#{inspect(__MODULE__)} stream? must be a boolean and stream_include_usage must be a boolean, got: #{inspect({stream?, include_usage})}"
+  end
+
+  defp validate_store!(%__MODULE__{store?: store?} = struct) when is_boolean(store?), do: struct
+
+  defp validate_store!(%__MODULE__{store?: store?}) do
+    raise ArgumentError,
+          "#{inspect(__MODULE__)} store? must be a boolean, got: #{inspect(store?)}"
   end
 
   defp validate_sampling!(%__MODULE__{sampling: %Sampling{} = sampling} = struct) do
