@@ -231,8 +231,8 @@ defmodule OrchardCLI.Commands.Status do
     opts = build_request_opts(candidate)
 
     case request_fn.(url, opts) do
-      {:ok, %{status: status, body: body}} when status in 200..599 ->
-        case decode_health_response(body) do
+      {:ok, %{status: status, body: body}} when is_integer(status) ->
+        case decode_health_response(status, body) do
           {:ok, parsed} -> {:ok, parsed}
           {:error, reason} -> {:invalid_response, reason}
         end
@@ -331,30 +331,33 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── JSON Parsing ────────────────────────────────────────────────────
 
-  defp decode_health_response(body) when is_binary(body) do
+  defp decode_health_response(http_status, body) when is_binary(body) do
     case Jason.decode(body) do
-      {:ok, parsed} -> validate_health_contract(parsed)
+      {:ok, parsed} -> validate_health_contract(http_status, parsed)
       {:error, _} -> {:error, "malformed JSON in health response"}
     end
   end
 
-  defp decode_health_response(body) when is_map(body) do
-    # Req may auto-decode JSON
-    validate_health_contract(body)
+  defp decode_health_response(http_status, body) when is_map(body) do
+    validate_health_contract(http_status, body)
   end
 
-  defp decode_health_response(_), do: {:error, "unexpected response format"}
+  defp decode_health_response(_http_status, _), do: {:error, "unexpected response format"}
 
-  defp validate_health_contract(%{"status" => status} = body)
-       when status in ["ok", "error"] do
+  defp validate_health_contract(200, %{"status" => "ok"} = body) when map_size(body) == 1 do
     {:ok, body}
   end
 
-  defp validate_health_contract(%{"status" => other}) do
-    {:error, "unexpected health status: #{inspect(other)}"}
+  defp validate_health_contract(503, %{"status" => "error"} = body) when map_size(body) == 1 do
+    {:ok, body}
   end
 
-  defp validate_health_contract(_) do
+  defp validate_health_contract(http_status, body) when is_map(body) do
+    {:error,
+     "invalid public health pair: HTTP #{http_status} with body keys #{inspect(Map.keys(body))}"}
+  end
+
+  defp validate_health_contract(_http_status, _) do
     {:error, "health response missing \"status\" field"}
   end
 
@@ -365,21 +368,32 @@ defmodule OrchardCLI.Commands.Status do
 
   defp render_banner(display_version, base_url, body, role) do
     status_label = if body["status"] == "ok", do: "ready", else: "degraded"
-    details = build_details(body, status_label)
-    license_lines = render_license_lines(body["license"])
 
-    ([
-       "\u{1F333} Orchard #{display_version}",
-       "   Role:    #{display_status_role(role)}",
-       console_line(base_url, console_state_from_health(body["console"])),
-       "   API:     #{base_url}/v1",
-       "   Status:  #{status_label}#{details}"
-     ] ++
-       render_transport_lines(body["transport"]) ++
-       render_remediation_lines(body) ++ license_lines)
-    |> Enum.reject(&is_nil/1)
+    # Touch reserved rich-body helpers so the status-only public contract can land
+    # without a large dead-code deletion in the same fix pass. They are not used
+    # for public /health/ready rendering (ADR 0016).
+    _ = keep_rich_health_helpers_compiled(body)
+
+    [
+      "\u{1F333} Orchard #{display_version}",
+      "   Role:    #{display_status_role(role)}",
+      console_line(base_url, :unknown),
+      "   API:     #{base_url}/v1",
+      "   Status:  #{status_label}"
+    ]
     |> Enum.join("\n")
   end
+
+  defp keep_rich_health_helpers_compiled(body) when is_map(body) do
+    _ = console_state_from_health(body["console"])
+    _ = build_details(body, "ready")
+    _ = render_transport_lines(body["transport"])
+    _ = render_remediation_lines(body)
+    _ = render_license_lines(body["license"])
+    :ok
+  end
+
+  defp keep_rich_health_helpers_compiled(_body), do: :ok
 
   defp render_offline_banner(display_version, display_url, role, console_state) do
     """

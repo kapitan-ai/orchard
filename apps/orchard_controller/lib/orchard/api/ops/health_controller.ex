@@ -10,7 +10,6 @@ defmodule Orchard.API.Ops.HealthController do
     {status, body} = OperatorHealth.evaluate()
 
     conn
-    |> put_resp_header("cache-control", "no-store")
     |> put_status(status)
     |> json(body)
   end

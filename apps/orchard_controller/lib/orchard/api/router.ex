@@ -22,6 +22,7 @@ defmodule Orchard.API.Router do
 
   pipeline :operator_api do
     plug(:accepts, ["json"])
+    plug(Orchard.API.Plugs.NoStore)
     plug(Orchard.API.OperatorRequestContext)
   end
 

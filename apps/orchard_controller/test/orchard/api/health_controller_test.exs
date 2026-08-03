@@ -4,6 +4,10 @@ defmodule Orchard.API.HealthControllerTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.{Readiness, Router}
 
+  defmodule RaiseReadiness do
+    def status, do: raise("readiness secret")
+  end
+
   test "SPEC.md §3.1 health live returns the exact public body" do
     conn = request("/health/live")
 
@@ -42,6 +46,21 @@ defmodule Orchard.API.HealthControllerTest do
 
     assert conn.status == 200
     assert conn.resp_body == ~s({"status":"ok"})
+  end
+
+  test "SPEC.md §3.1 health ready returns exact error body when readiness raises" do
+    previous = Application.get_env(:orchard_controller, :health, [])
+    Application.put_env(:orchard_controller, :health, readiness_impl: RaiseReadiness)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :health, previous)
+    end)
+
+    conn = request("/health/ready")
+
+    assert conn.status == 503
+    assert conn.resp_body == ~s({"status":"error"})
+    refute conn.resp_body =~ "secret"
   end
 
   test "legacy M0 readiness contract is explicit and ordered" do

@@ -59,7 +59,7 @@ defmodule Orchard.Application do
   """
   @spec child_specs() :: [Supervisor.child_spec() | module() | {module(), term()}]
   def child_specs do
-    []
+    [{Task.Supervisor, name: Orchard.API.HealthTaskSupervisor}]
     |> maybe_add_repo()
     |> maybe_add_peer_grant_stack()
     |> maybe_add_membership_owner()
