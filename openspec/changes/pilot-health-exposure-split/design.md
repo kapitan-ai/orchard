@@ -28,10 +28,17 @@ cache or leadership authorities.
 ### Separate evaluation, detail, and transport rendering
 
 `Orchard.API.HealthEvaluation` translates `Readiness.status/0` into one internal
-result. The public controller converts only its boolean outcome to the exact public
-body. `Orchard.API.OperatorHealth` owns the diagnostic representation and all
-observational probes. The Operator controller adds authorization through the
-existing router pipeline and marks responses `no-store`.
+result. It evaluates readiness in a supervised, unlinked task with a fixed 5-second
+production timeout, terminates timed-out work, and fails closed for raises, exits,
+throws, malformed returns, and task failures. An explicit timeout argument remains
+available only through the internal test seam. The public controller converts only
+its boolean outcome to the exact public body. `Orchard.API.OperatorHealth` owns the
+diagnostic representation and all observational probes.
+
+The Operator pipeline installs `NoStore` before authentication and authorization,
+so every response from the protected route, including `401`, `403`, and `503`, is
+non-cacheable. Authentication and authorization complete before readiness or
+observational probes run.
 
 This avoids two readiness policies: public and Operator paths consume the same
 result shape while exposing different representations.
@@ -58,9 +65,12 @@ never restored.
 ### Accept bounded CLI loss
 
 Credential-free `orchardctl status` continues to probe public readiness for
-reachability and ready/degraded state. It uses only its local version and never
-presents public response version/build fields as remote Controller identity. No
-credential is added to the public probe.
+reachability and ready/degraded state. It accepts only the closed response-pair
+table of HTTP `200` with exactly `{"status":"ok"}` or HTTP `503` with exactly
+`{"status":"error"}`; mismatched statuses, extra keys, and all other responses
+are invalid. It uses only its local version, renders a state-free Console URL, and
+points degraded callers to authenticated `GET /ops/v1/health` without adding a
+credential flow. Dormant rich-public rendering helpers and fixtures are removed.
 
 ## Risks / Trade-offs
 

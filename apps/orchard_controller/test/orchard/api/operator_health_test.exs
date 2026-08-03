@@ -67,6 +67,7 @@ defmodule Orchard.API.OperatorHealthTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Ops.HealthController
+  alias Orchard.API.ReadinessRemediation
 
   setup do
     Process.delete(:licensing_status_response)
@@ -571,6 +572,16 @@ defmodule Orchard.API.OperatorHealthTest do
     for key <- ["license_id", "machine_id", "licensee", "max_machines"] do
       refute Map.has_key?(license, key)
     end
+  end
+
+  test "operator health gives sanitized remediation when readiness evaluation is unavailable" do
+    assert ReadinessRemediation.for_reason(:readiness_unavailable) == %{
+             reason: "readiness_unavailable",
+             summary:
+               "Readiness evaluation is unavailable. Retry the request and check Orchard controller logs if the condition persists.",
+             commands: [],
+             docs_anchor: nil
+           }
   end
 
   test "operator health omits license identifiers for invalid signature states", %{conn: _conn} do

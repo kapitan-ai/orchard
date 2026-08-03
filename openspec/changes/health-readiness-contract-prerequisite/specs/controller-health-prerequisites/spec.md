@@ -78,6 +78,15 @@ The stage-one health exposure split SHALL provide unauthenticated public health 
 - **AND** the JSON body is exactly `{"status":"error"}`
 - **AND** the response exposes no diagnostic detail
 
+#### Scenario: Stage-one readiness evaluation is unavailable
+
+- **WHEN** the staged readiness call raises, exits, throws, times out, or returns
+  an invalid value
+- **THEN** supervised readiness work is terminated and the evaluation fails closed
+- **AND** `GET /health/ready` returns HTTP `503`
+- **AND** the JSON body is exactly `{"status":"error"}`
+- **AND** no exception, diagnostic, or machine-local detail is exposed
+
 ### Requirement: Future public and Operator health share the complete readiness aggregate
 
 After the blocking authorities are accepted, the public readiness endpoint and authenticated Operator health endpoint SHALL consume one complete aggregate evaluation of every readiness condition required by `SPEC.md` section 3.1.
@@ -158,14 +167,16 @@ After the existing leadership surface is accepted as sufficient or a demonstrate
 ### Requirement: Operator health detail uses the existing protected boundary
 
 Stage one `GET /ops/v1/health` SHALL use the existing Operator API authentication contract from `SPEC.md` section 7.3 and ADR 0007.
-Authentication and authorization SHALL complete before readiness or observational probes run.
-Authorized responses SHALL set `Cache-Control: no-store`.
+`Cache-Control: no-store` SHALL be installed before authentication so every route
+response is non-cacheable. Authentication and authorization SHALL complete before
+readiness or observational probes run.
 
 #### Scenario: Credential is missing or invalid
 
 - **WHEN** a request does not present a valid API Client bearer credential
 - **THEN** it returns HTTP `401`
 - **AND** the stable error code is `invalid_api_key`
+- **AND** the response includes `Cache-Control: no-store`
 - **AND** no health probe runs
 
 #### Scenario: Principal is not an Operator
@@ -173,12 +184,14 @@ Authorized responses SHALL set `Cache-Control: no-store`.
 - **WHEN** an authenticated principal lacks a cluster-scoped `operator` or `admin` RoleBinding
 - **THEN** it returns HTTP `403`
 - **AND** the stable error code is `operator_required`
+- **AND** the response includes `Cache-Control: no-store`
 - **AND** no health probe runs
 
 #### Scenario: Authorized detail passes
 
 - **WHEN** a cluster-scoped Operator or admin requests health detail and the shared aggregate passes
 - **THEN** the endpoint returns HTTP `200`
+- **AND** the response includes `Cache-Control: no-store`
 - **AND** `readiness_contract.version` is `orchard.readiness.legacy_m0.v1`
 - **AND** every staged check appears exactly once in stable causal order
 
@@ -186,6 +199,7 @@ Authorized responses SHALL set `Cache-Control: no-store`.
 
 - **WHEN** a cluster-scoped Operator or admin requests health detail and the shared aggregate fails
 - **THEN** the endpoint returns HTTP `503`
+- **AND** the response includes `Cache-Control: no-store`
 - **AND** it includes the first stable failure reason and bounded remediation
 - **AND** its aggregate status matches public readiness for the same evaluation
 
@@ -208,8 +222,13 @@ Remote Controller version and build identity cease to be available without crede
 #### Scenario: orchardctl status probes public readiness
 
 - **WHEN** `orchardctl status` probes a Controller without an Operator credential
-- **THEN** it derives Controller reachability and readiness from the exact public health response
+- **THEN** it accepts only HTTP `200` with exactly `{"status":"ok"}` or HTTP
+  `503` with exactly `{"status":"error"}`
+- **AND** it rejects mismatched pairs, extra keys, and every other HTTP status
+- **AND** it derives Controller reachability and readiness from that exact pair
 - **AND** it does not expect build, runtime, licensing, reason, remediation, or check detail from `/health/ready`
+- **AND** degraded output points to authenticated `GET /ops/v1/health` without
+  adding an authenticated CLI probe
 
 #### Scenario: Credential-free status reports no remote Controller identity
 
@@ -223,11 +242,20 @@ Remote Controller version and build identity cease to be available without crede
 - **WHEN** an Operator needs remote Controller version or build identity
 - **THEN** it is obtained from the authenticated Operator health detail
 
-#### Scenario: Console renders readiness
+#### Scenario: Stage-one Console renders the staged internal view
 
-- **WHEN** the Console renders Controller readiness
+- **WHEN** the Console renders Controller readiness during stage one
+- **THEN** it describes the internal `orchard.readiness.legacy_m0.v1` view
+- **AND** it does not claim that its check table mirrors the status-only public
+  response
+
+#### Scenario: Stage-two Console renders complete readiness
+
+- **WHEN** the Console renders Controller readiness after complete aggregate
+  adoption
 - **THEN** it presents every check from the shared complete evaluation
-- **AND** it supports `pass`, `fail`, and the single-controller `not_applicable` leadership state
+- **AND** it supports `pass`, `fail`, and the single-controller `not_applicable`
+  leadership state
 
 #### Scenario: Existing public probes continue without credentials
 

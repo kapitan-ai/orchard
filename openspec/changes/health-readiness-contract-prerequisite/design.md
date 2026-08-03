@@ -78,7 +78,15 @@ In stage one:
 
 - `GET /health/live` remains unauthenticated and exact at HTTP `200` with `{"status":"ok"}`.
 - `GET /health/ready` remains unauthenticated and returns only `{"status":"ok"}` with HTTP `200` or `{"status":"error"}` with HTTP `503`.
+- Readiness runs in a supervised, unlinked task with a fixed 5-second production
+  timeout. Raises, exits, throws, malformed returns, and timeouts fail closed, and
+  timed-out work is terminated.
 - Public readiness and authenticated Operator health consume the same unchanged legacy M0 predicate and Operator detail identifies it as `orchard.readiness.legacy_m0.v1`.
+- The Operator route installs `NoStore` before authentication, so `401`, `403`,
+  `200`, and `503` responses are all non-cacheable and denied callers trigger no
+  readiness or observational probe.
+- Console Overview describes its internal `legacy_m0.v1` readiness view and does
+  not claim that its check table mirrors the status-only public body.
 
 In stage two, public readiness and authenticated Operator health consume one complete `SPEC.md` section 3.1 aggregate.
 - `GET /ops/v1/health` uses the existing Operator-or-admin authorization boundary.
@@ -128,6 +136,10 @@ The exact minimal public body removes that source, and the CLI probes without Op
 
 The accepted resolution is a bounded feature loss.
 Credential-free status may present the local CLI or installed package version, but must not present it as remote Controller identity.
+It accepts only HTTP `200` with exactly `{"status":"ok"}` or HTTP `503` with
+exactly `{"status":"error"}`, renders a state-free Console URL, and points a
+degraded caller to authenticated Operator health. Dormant rich-public rendering is
+removed rather than preserved as an unreachable compatibility path.
 Remote version and build identity move to authenticated Operator health detail.
 No unauthenticated version route is added, and no credential is placed in the public probe path.
 
@@ -154,7 +166,7 @@ Each of those cases must either fail closed or be assigned to a separately owned
 
 ### Require ordered exposure and aggregate migrations
 
-Stage one changes the public representation, adds Operator detail, and migrates Console, CLI, packaging, local-development documentation, and tests as one reviewable unit. Stage two changes the predicate after every authoritative dependency exists. Public probes never receive Operator credentials in either stage, and public diagnostic detail is never restored.
+Stage one changes the public representation, adds Operator detail, and migrates Console, CLI, packaging, local-development documentation, and tests as one reviewable unit. Stage-two Console behavior is adopted only with the complete aggregate, when it renders every complete check including the conditional leadership `not_applicable` state. Stage two changes the predicate after every authoritative dependency exists. Public probes never receive Operator credentials in either stage, and public diagnostic detail is never restored.
 
 The deferred migration inventory includes `docs/milestones/m0-foundation.md`, which records the M0 readiness subset and the transport-posture reporting that the complete aggregate replaces.
 That document is intentionally left unedited by this prerequisite because it accurately describes current behavior; it is reconciled in the same behavior-changing pull request.

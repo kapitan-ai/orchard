@@ -420,7 +420,7 @@ defmodule OrchardConsole.OverviewLive do
         <%!-- Readiness --%>
         <.card>
           <:title>Readiness</:title>
-          <:subtitle>Shows the staged internal readiness predicate; public health responses are status-only.</:subtitle>
+          <:subtitle>Internal orchard.readiness.legacy_m0.v1 predicate; public health responses are status-only.</:subtitle>
 
           <.table id="overview-readiness" rows={@readiness.rows}>
             <:col :let={row} label="Check">

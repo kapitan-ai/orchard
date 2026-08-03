@@ -9,26 +9,33 @@
 
 ## 2. Health implementation
 
-- [x] 2.1 Add `Orchard.API.HealthEvaluation` over unchanged readiness behavior.
+- [x] 2.1 Add supervised, fail-closed `Orchard.API.HealthEvaluation` over unchanged
+  readiness behavior with a fixed 5-second production timeout and explicit test
+  seam.
 - [x] 2.2 Add `Readiness.contract_version/0` and `check_order/0` without changing
   `Readiness.status/0` checks or causal order.
 - [x] 2.3 Move diagnostic metadata and observational probes into
   `Orchard.API.OperatorHealth`.
 - [x] 2.4 Make public live/ready controllers exact and status-only.
-- [x] 2.5 Add authenticated `GET /ops/v1/health` with `Cache-Control: no-store`.
+- [x] 2.5 Add authenticated `GET /ops/v1/health` with `Cache-Control: no-store`
+  installed before authentication.
 
 ## 3. Consumers and documentation
 
-- [x] 3.1 Update `orchardctl status` to use local version identity and accept the
-  status-only public body.
+- [x] 3.1 Update `orchardctl status` to enforce the exact HTTP/body pair table,
+  use local version identity, render a state-free Console URL, point degraded
+  callers to authenticated diagnostics, and remove dormant rich-public helpers.
 - [x] 3.2 Correct Console Overview readiness subtitle.
 - [x] 3.3 Update local-development, packaging, and M0 milestone documentation.
 
 ## 4. Tests and validation
 
-- [x] 4.1 Add exact public body and readiness contract tests.
-- [x] 4.2 Add Operator health 401, 403, 200, detail, and no-store tests.
-- [x] 4.3 Add CLI coverage for status-only response and remote identity loss.
+- [x] 4.1 Add full Endpoint exact-body tests for ordinary pass/fail, raise, exit,
+  throw, malformed return, timeout, and timed-out task termination.
+- [x] 4.2 Add full Endpoint Operator auth, no-store, no-probe, genuine cluster
+  operator, separate admin, ordinary failure, and unavailable failure tests.
+- [x] 4.3 Add exact ready/degraded pairs plus representative mismatch,
+  extra-field, and unsupported-status CLI coverage; remove rich-public fixtures.
 - [x] 4.4 Run `mise exec -- mix format`.
 - [x] 4.5 Run `mise exec -- mix compile --warnings-as-errors`.
 - [x] 4.6 Run `mise exec -- mix credo --strict`.

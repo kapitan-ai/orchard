@@ -4,7 +4,6 @@ defmodule Orchard.API.HealthEvaluation do
   alias Orchard.API.Readiness
 
   @default_timeout_ms 5_000
-  @min_timeout_ms 1
   @task_supervisor Orchard.API.HealthTaskSupervisor
 
   @type t :: %{
@@ -15,7 +14,7 @@ defmodule Orchard.API.HealthEvaluation do
 
   @spec evaluate() :: t()
   def evaluate do
-    evaluate_with(readiness_impl(), evaluation_timeout_ms())
+    evaluate_with(readiness_impl(), @default_timeout_ms)
   end
 
   @doc false
@@ -27,21 +26,28 @@ defmodule Orchard.API.HealthEvaluation do
         impl.status()
       end)
 
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, checks}} when is_map(checks) ->
-        %{ready?: true, checks: checks, reason: nil}
-
-      {:ok, {:error, reason, checks}} when is_atom(reason) and is_map(checks) ->
-        %{ready?: false, checks: checks, reason: reason}
-
-      _other ->
-        unavailable()
-    end
+    result = Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill)
+    normalize_result(result)
   rescue
     _ -> unavailable()
   catch
     _kind, _reason -> unavailable()
   end
+
+  defp normalize_result({:ok, {:ok, checks}}) when is_map(checks) do
+    if valid_success?(checks),
+      do: %{ready?: true, checks: checks, reason: nil},
+      else: unavailable()
+  end
+
+  defp normalize_result({:ok, {:error, reason, checks}})
+       when is_atom(reason) and is_map(checks) do
+    if valid_failure?(reason, checks),
+      do: %{ready?: false, checks: checks, reason: reason},
+      else: unavailable()
+  end
+
+  defp normalize_result(_other), do: unavailable()
 
   @spec public_response(t()) :: {Plug.Conn.status(), %{required(:status) => String.t()}}
   def public_response(%{ready?: true}), do: {:ok, %{status: "ok"}}
@@ -51,22 +57,25 @@ defmodule Orchard.API.HealthEvaluation do
     %{ready?: false, checks: %{}, reason: :readiness_unavailable}
   end
 
+  defp valid_success?(checks) do
+    valid_checks?(checks) and Enum.all?(checks, fn {_check, passed?} -> passed? end)
+  end
+
+  defp valid_failure?(reason, checks) do
+    not is_nil(reason) and valid_checks?(checks) and
+      Enum.find(Readiness.check_order(), &(Map.fetch!(checks, &1) == false)) == reason
+  end
+
+  defp valid_checks?(checks) do
+    check_order = Readiness.check_order()
+
+    map_size(checks) == length(check_order) and
+      Enum.all?(check_order, &is_boolean(Map.get(checks, &1)))
+  end
+
   defp readiness_impl do
     :orchard_controller
     |> Application.get_env(:health, [])
     |> Keyword.get(:readiness_impl, Readiness)
-  end
-
-  defp evaluation_timeout_ms do
-    configured =
-      :orchard_controller
-      |> Application.get_env(:health, [])
-      |> Keyword.get(:evaluation_timeout_ms, @default_timeout_ms)
-
-    if is_integer(configured) and configured >= @min_timeout_ms do
-      configured
-    else
-      @default_timeout_ms
-    end
   end
 end

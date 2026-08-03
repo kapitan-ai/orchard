@@ -19,10 +19,89 @@ defmodule Orchard.API.HealthEvaluationTest do
     def status, do: :not_a_tuple
   end
 
+  defmodule PartialChecksReadiness do
+    def status, do: {:ok, %{controller_boot_completed: true}}
+  end
+
+  defmodule ExtraChecksReadiness do
+    def status do
+      {:ok,
+       %{
+         postgres_reachable: true,
+         migrations_current: true,
+         public_api_https_enabled: true,
+         controller_boot_completed: true,
+         unexpected: true
+       }}
+    end
+  end
+
+  defmodule NonBooleanChecksReadiness do
+    def status do
+      {:ok,
+       %{
+         postgres_reachable: true,
+         migrations_current: true,
+         public_api_https_enabled: "true",
+         controller_boot_completed: true
+       }}
+    end
+  end
+
+  defmodule InconsistentSuccessReadiness do
+    def status do
+      {:ok,
+       %{
+         postgres_reachable: false,
+         migrations_current: true,
+         public_api_https_enabled: true,
+         controller_boot_completed: true
+       }}
+    end
+  end
+
+  defmodule InconsistentFailureReadiness do
+    def status do
+      {:error, :migrations_current,
+       %{
+         postgres_reachable: false,
+         migrations_current: false,
+         public_api_https_enabled: true,
+         controller_boot_completed: true
+       }}
+    end
+  end
+
+  defmodule NilReasonAllPassingReadiness do
+    def status do
+      {:error, nil,
+       %{
+         postgres_reachable: true,
+         migrations_current: true,
+         public_api_https_enabled: true,
+         controller_boot_completed: true
+       }}
+    end
+  end
+
   defmodule BlockReadiness do
     def status do
       Process.sleep(60_000)
       {:ok, %{}}
+    end
+  end
+
+  defmodule DelayedReadiness do
+    def status do
+      Process.sleep(50)
+
+      {:ok,
+       %{
+         postgres_reachable: true,
+         migrations_current: true,
+         public_api_https_enabled: true,
+         controller_boot_completed: true
+       }}
     end
   end
 
@@ -81,18 +160,71 @@ defmodule Orchard.API.HealthEvaluationTest do
     assert evaluation.reason == :readiness_unavailable
   end
 
-  test "evaluate times out blocked readiness and returns unavailable" do
-    put_impl(BlockReadiness)
-
-    Application.put_env(:orchard_controller, :health,
-      readiness_impl: BlockReadiness,
-      evaluation_timeout_ms: 25
-    )
-
+  test "evaluate rejects a partial readiness checks map" do
+    put_impl(PartialChecksReadiness)
     evaluation = HealthEvaluation.evaluate()
 
     assert evaluation.ready? == false
     assert evaluation.reason == :readiness_unavailable
+  end
+
+  test "evaluate rejects a readiness checks map with extra keys" do
+    put_impl(ExtraChecksReadiness)
+    evaluation = HealthEvaluation.evaluate()
+
+    assert evaluation.ready? == false
+    assert evaluation.reason == :readiness_unavailable
+  end
+
+  test "evaluate rejects a readiness checks map with non-boolean values" do
+    put_impl(NonBooleanChecksReadiness)
+    evaluation = HealthEvaluation.evaluate()
+
+    assert evaluation.ready? == false
+    assert evaluation.reason == :readiness_unavailable
+  end
+
+  test "evaluate rejects success with a failed readiness check" do
+    put_impl(InconsistentSuccessReadiness)
+    evaluation = HealthEvaluation.evaluate()
+
+    assert evaluation.ready? == false
+    assert evaluation.reason == :readiness_unavailable
+  end
+
+  test "evaluate rejects a failure with nil reason and all checks passing" do
+    put_impl(NilReasonAllPassingReadiness)
+    evaluation = HealthEvaluation.evaluate()
+
+    assert evaluation.ready? == false
+    assert evaluation.reason == :readiness_unavailable
+  end
+
+  test "evaluate rejects a failure reason that is not the first failed check" do
+    put_impl(InconsistentFailureReadiness)
+    evaluation = HealthEvaluation.evaluate()
+
+    assert evaluation.ready? == false
+    assert evaluation.reason == :readiness_unavailable
+  end
+
+  test "evaluate times out blocked readiness and returns unavailable" do
+    evaluation = HealthEvaluation.evaluate_with(BlockReadiness, 25)
+
+    assert evaluation.ready? == false
+    assert evaluation.reason == :readiness_unavailable
+  end
+
+  test "evaluate uses the fixed production timeout despite an application override" do
+    Application.put_env(:orchard_controller, :health,
+      readiness_impl: DelayedReadiness,
+      evaluation_timeout_ms: 1
+    )
+
+    evaluation = HealthEvaluation.evaluate()
+
+    assert evaluation.ready? == true
+    assert evaluation.reason == nil
   end
 
   test "public_response maps unavailable to exact error body" do
