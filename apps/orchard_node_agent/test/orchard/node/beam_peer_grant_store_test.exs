@@ -106,6 +106,33 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert File.stat!(grant_path).uid == File.stat!(root).uid
   end
 
+  test "SPEC.md §7.5.0 install narrows a store directory a concurrent creator left wide" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-narrow-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    # `File.mkdir/1` applies the umask, so this is exactly what a concurrent
+    # installer sees between another installer creating the store directory and
+    # narrowing it to owner-only.
+    store_root = Path.join(root, "beam-peer-grants")
+    File.mkdir!(store_root)
+    File.chmod!(store_root, 0o755)
+
+    assert {:ok, ^delivery} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    assert private_mode(store_root) == 0o700
+  end
+
   test "SPEC.md §7.5.0 install sweeps orphaned plaintext temporaries left by a crash" do
     root =
       Path.join(
