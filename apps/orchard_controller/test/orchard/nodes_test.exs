@@ -4507,6 +4507,12 @@ defmodule Orchard.NodesTest do
       first_awaiter = start_holding_awaiter(first_ticket, :first_beam_failure_clear_result)
       second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
 
+      # Both awaiters must be registered before capacity arrives: the queue only
+      # grants to a head entry that is already awaiting, so refreshing early can
+      # hand the single slot to whichever awaiter registered first.
+      assert wait_until(fn -> queue_entry_awaiting?(first_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
       assert :ok =
                QueueManager.refresh_capacity(model_id, "v1", 1, source: {:node, node_id, :cold})
 
