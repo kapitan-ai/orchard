@@ -298,7 +298,7 @@ defmodule Orchard.ObservabilityProbe do
          :ok <- validate_resolved_values(model, credential),
          :ok <- ensure_http_apps(),
          {:ok, http_options} <- build_http_options(config),
-         :ok <- maybe_start_repo(config["terminal_validation"]) do
+         :ok <- start_terminal_validation_repo(config["terminal_validation"]) do
       {:ok, execute(config, model, credential, http_options)}
     else
       {:error, {:invalid, reason}} -> {:error, probe_id, reason}
@@ -371,11 +371,17 @@ defmodule Orchard.ObservabilityProbe do
     end
   end
 
-  defp maybe_start_repo("http_only"), do: :ok
+  @spec start_terminal_validation_repo(String.t(), (keyword() -> term())) ::
+          :ok | {:error, term()}
+  def start_terminal_validation_repo(terminal_validation, start_repo \\ &Orchard.Repo.start_link/1)
 
-  defp maybe_start_repo("controller_local") do
+  def start_terminal_validation_repo("http_only", _start_repo), do: :ok
+
+  def start_terminal_validation_repo("controller_local", start_repo) do
     with {:ok, _apps} <- Application.ensure_all_started(:ecto_sql) do
-      case Orchard.Repo.start_link() do
+      # Stdout carries the probe result JSON, so Repo query logs would corrupt it
+      # and echo bound identifiers such as tenant IDs.
+      case start_repo.(log: false) do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
         {:error, reason} -> {:error, reason}

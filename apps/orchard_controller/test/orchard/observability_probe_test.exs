@@ -3,6 +3,7 @@ Code.require_file("../../../../scripts/support/observability_probe.exs", __DIR__
 defmodule Orchard.ObservabilityProbeTest do
   use Orchard.DataCase, async: false
 
+  import ExUnit.CaptureLog
   import Orchard.TestSupport.ModelRequestFixtures
 
   alias Orchard.ObservabilityProbe
@@ -533,6 +534,40 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
     end
   end
 
+  describe "Controller-local stdout isolation" do
+    @tag spec: "probe-results-are-allowlisted-and-content-free"
+    test "http-only terminal validation starts no Repo" do
+      assert :ok =
+               ObservabilityProbe.start_terminal_validation_repo("http_only", fn _options ->
+                 flunk("http_only terminal validation started the Repo")
+               end)
+    end
+
+    @tag spec: "probe-results-are-allowlisted-and-content-free"
+    test "controller-local terminal validation starts the Repo with query logging disabled" do
+      tenant_id = Ecto.UUID.generate()
+
+      # Query logs reach the default handler, which shares the stdout stream the
+      # probe reserves for its result JSON.
+      {:ok, _unguarded} = start_probe_repo(:probe_repo_unguarded, [])
+      leaked = capture_durable_lookup_log(:probe_repo_unguarded, tenant_id)
+
+      assert leaked =~ "QUERY OK"
+      assert leaked =~ tenant_id
+
+      assert :ok =
+               ObservabilityProbe.start_terminal_validation_repo(
+                 "controller_local",
+                 &start_probe_repo(:probe_repo_guarded, &1)
+               )
+
+      silenced = capture_durable_lookup_log(:probe_repo_guarded, tenant_id)
+
+      refute silenced =~ tenant_id
+      refute silenced =~ ~s(FROM "requests")
+    end
+  end
+
   describe "trusted credential destination" do
     @tag spec: "phase-0-probe-configuration-is-exact-and-versioned"
     test "rejects unsafe or ambiguous endpoint authorities" do
@@ -829,6 +864,36 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_550e8400-e29b
       refute stderr =~ tmp_dir
       refute stderr =~ "can't cd"
       refute stderr =~ "cd:"
+    end
+  end
+
+  defp start_probe_repo(name, options) do
+    # The probe owns its Repo instance outside the test sandbox, so this mirrors
+    # the launcher with a real connection pool.
+    config =
+      :orchard_controller
+      |> Application.fetch_env!(Orchard.Repo)
+      |> Keyword.merge(options)
+      |> Keyword.merge(name: name, pool: DBConnection.ConnectionPool, pool_size: 1)
+
+    start_supervised({Orchard.Repo, config}, id: name)
+  end
+
+  defp capture_durable_lookup_log(repo_name, tenant_id) do
+    previous_repo = Orchard.Repo.get_dynamic_repo()
+    previous_level = Logger.level()
+    # Source dev runs the probe at the default :debug level, where Ecto query
+    # logs share the stdout stream reserved for the probe result JSON.
+    Logger.configure(level: :debug)
+    Orchard.Repo.put_dynamic_repo(repo_name)
+
+    try do
+      capture_log(fn ->
+        Requests.get_request_by_tenant_and_idempotency_key(tenant_id, "probe-log-check")
+      end)
+    after
+      Orchard.Repo.put_dynamic_repo(previous_repo)
+      Logger.configure(level: previous_level)
     end
   end
 
