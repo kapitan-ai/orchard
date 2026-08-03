@@ -1,604 +1,163 @@
-defmodule Orchard.API.HealthControllerTest.RuntimeOkStub do
-  @moduledoc false
-
-  def snapshot(opts \\ []) do
-    send(self(), {:runtime_snapshot_called, opts})
-
-    {:ok,
-     %{
-       worker_state: :idle,
-       loaded_models: [%{model_id: "test-model", version: "v1"}],
-       active_request_count: 2,
-       node_metadata: %{
-         node_id: "550e8400-e29b-41d4-a716-446655440000",
-         display_name: "test-node",
-         hostname: "test.local",
-         listen_host: "127.0.0.1",
-         listen_port: 50_071,
-         agent_version: "0.1.0",
-         worker_backend: "mlx"
-       },
-       runtime_health: %{
-         ready: true,
-         health_code: nil,
-         health_message: nil,
-         affected_model: nil
-       }
-     }}
-  end
-end
-
-defmodule Orchard.API.HealthControllerTest.RuntimeTimeoutStub do
-  @moduledoc false
-
-  def snapshot(_opts \\ []) do
-    {:error,
-     %{
-       status: :timeout,
-       code: "node_timeout",
-       message: "node status request timed out",
-       worker_state: :unknown,
-       loaded_models: [],
-       active_request_count: 0,
-       node_metadata: nil,
-       runtime_health: nil
-     }}
-  end
-end
-
-defmodule Orchard.API.HealthControllerTest.LicensingValidStub do
-  @moduledoc false
-
-  def inspect_local do
-    Process.get(
-      :licensing_status_response,
-      %Orchard.Licensing{
-        state: :valid,
-        message: "License bundle is valid.",
-        bundle_path: "/tmp/current.json",
-        expires_at: ~U[2027-04-15 00:00:00Z]
-      }
-    )
-  end
-end
-
 defmodule Orchard.API.HealthControllerTest do
   use Orchard.ConnCase, async: false
 
-  alias Ecto.Adapters.SQL.Sandbox
-  alias Orchard.API.Router
+  @moduletag :live
+
+  alias Orchard.API.Readiness
+
+  defmodule OkReadiness do
+    def status do
+      {:ok,
+       %{
+         postgres_reachable: true,
+         migrations_current: true,
+         public_api_https_enabled: true,
+         controller_boot_completed: true
+       }}
+    end
+  end
+
+  defmodule FailedReadiness do
+    def status do
+      {:error, :postgres_reachable,
+       %{
+         postgres_reachable: false,
+         migrations_current: false,
+         public_api_https_enabled: false,
+         controller_boot_completed: false
+       }}
+    end
+  end
+
+  defmodule RaiseReadiness do
+    def status, do: raise("readiness secret")
+  end
+
+  defmodule ExitReadiness do
+    def status, do: exit(:readiness_failed)
+  end
+
+  defmodule ThrowReadiness do
+    def status, do: throw(:readiness_failed)
+  end
+
+  defmodule MalformedReadiness do
+    def status, do: {:ok, %{controller_boot_completed: true}}
+  end
+
+  defmodule BlockReadiness do
+    def status do
+      health = Application.fetch_env!(:orchard_controller, :health)
+      send(Keyword.fetch!(health, :test_pid), {:readiness_task_started, self()})
+
+      receive do
+        :release -> OkReadiness.status()
+      end
+    end
+  end
 
   setup do
-    Process.delete(:licensing_status_response)
-    previous = Application.get_env(:orchard_controller, :console, [])
-
-    Application.put_env(
-      :orchard_controller,
-      :console,
-      Keyword.merge(previous,
-        enabled: false,
-        username: nil,
-        password: nil,
-        runtime_impl: Orchard.API.HealthControllerTest.RuntimeOkStub,
-        licensing_impl: Orchard.API.HealthControllerTest.LicensingValidStub
-      )
-    )
-
-    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
-    previous_cert_source = Application.get_env(:orchard_controller, :transport_cert_source)
-    previous_degraded = Application.get_env(:orchard_controller, :transport_degraded)
+    previous = Application.get_env(:orchard_controller, :health, [])
 
     on_exit(fn ->
-      Application.put_env(:orchard_controller, :console, previous)
-      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
-      Application.put_env(:orchard_controller, :transport_cert_source, previous_cert_source)
-      Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
+      Application.put_env(:orchard_controller, :health, previous)
     end)
 
     :ok
   end
 
-  test "health live endpoint responds with ok", %{conn: _conn} do
-    conn =
-      build_conn(:get, "/health/live")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
+  test "SPEC.md §3.1 health live returns the exact public body through Endpoint" do
+    conn = request("/health/live")
 
     assert conn.status == 200
-    assert Jason.decode!(conn.resp_body) == %{"status" => "ok"}
+    assert conn.resp_body == ~s({"status":"ok"})
   end
 
-  test "health ready endpoint reports the M0 readiness subset", %{conn: _conn} do
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert conn.status == 503
-    assert body["status"] == "error"
-
-    assert body["console"] == %{
-             "enabled" => false,
-             "auth_mode" => "disabled"
-           }
-
-    assert body["remediation"] == %{
-             "reason" => "postgres_reachable",
-             "summary" =>
-               "Postgres is not reachable. Check database configuration and initialize the Orchard environment if it has not been created.",
-             "commands" => ["sudo orchardctl env init"],
-             "docs_anchor" => "readiness-postgres"
-           }
-
-    assert body["version"] == Orchard.version()
-    assert body["build_ref"] == Orchard.BuildInfo.git_sha()
-    assert body["build_date"] == Orchard.BuildInfo.build_date()
-    assert body["build_channel"] == Orchard.BuildInfo.build_channel()
-    assert body["reason"] == "postgres_reachable"
-    assert body["checks"]["controller_boot_completed"] == true
-    assert body["checks"]["postgres_reachable"] == false
-    assert body["checks"]["migrations_current"] == false
-    assert body["checks"]["public_api_https_enabled"] == false
-
-    assert body["transport"] == %{
-             "mode" => "plain_http_localhost",
-             "degraded" => true,
-             "cert_source" => "unknown"
-           }
-
-    # Runtime summary is additive and does not affect HTTP status
-    assert is_map(body["runtime"])
-
-    assert body["license"] == %{
-             "status" => "valid",
-             "reason" => nil,
-             "message" => "License bundle is valid.",
-             "expires_at" => "2027-04-15T00:00:00Z"
-           }
-  end
-
-  test "health ready reports console enabled metadata without credentials", %{conn: _conn} do
-    previous = Application.get_env(:orchard_controller, :console, [])
-
-    Application.put_env(
-      :orchard_controller,
-      :console,
-      Keyword.merge(previous,
-        enabled: true,
-        auth: :basic,
-        username: "console-user",
-        password: "secret-password"
-      )
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert body["console"] == %{
-             "enabled" => true,
-             "auth_mode" => "basic"
-           }
-
-    refute conn.resp_body =~ "console-user"
-    refute conn.resp_body =~ "secret-password"
-  end
-
-  test "health ready reports disabled auth mode when console auth is none", %{conn: _conn} do
-    previous = Application.get_env(:orchard_controller, :console, [])
-
-    Application.put_env(
-      :orchard_controller,
-      :console,
-      Keyword.merge(previous,
-        enabled: true,
-        auth: :none,
-        username: "console-user",
-        password: "secret-password"
-      )
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert body["console"] == %{
-             "enabled" => true,
-             "auth_mode" => "disabled"
-           }
-
-    refute conn.resp_body =~ "console-user"
-    refute conn.resp_body =~ "secret-password"
-  end
-
-  test "health ready reports mode-aware transport metadata", %{conn: _conn} do
-    Application.put_env(:orchard_controller, :transport_mode, :direct_https)
-    Application.put_env(:orchard_controller, :transport_cert_source, :operator_provided)
-    Application.put_env(:orchard_controller, :transport_degraded, true)
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert body["transport"] == %{
-             "mode" => "direct_https",
-             "degraded" => false,
-             "cert_source" => "operator_provided"
-           }
-
-    assert body["checks"]["public_api_https_enabled"] == true
-  end
-
-  test "health ready omits remediation when all readiness checks pass", %{conn: _conn} do
-    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
-    previous_degraded = Application.get_env(:orchard_controller, :transport_degraded, false)
-    previous_db_checks = Application.get_env(:orchard_controller, :enable_db_checks, true)
-    previous_start_repo = Application.get_env(:orchard_controller, :start_repo, true)
-
-    Application.put_env(:orchard_controller, :transport_mode, :direct_https)
-    Application.put_env(:orchard_controller, :transport_degraded, false)
-    Application.put_env(:orchard_controller, :enable_db_checks, true)
-    Application.put_env(:orchard_controller, :start_repo, true)
-
-    :ok = Sandbox.checkout(Orchard.Repo)
-
-    on_exit(fn ->
-      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
-      Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
-      Application.put_env(:orchard_controller, :enable_db_checks, previous_db_checks)
-      Application.put_env(:orchard_controller, :start_repo, previous_start_repo)
-    end)
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
+  test "SPEC.md §3.1 health ready returns the exact public success body through Endpoint" do
+    put_impl(OkReadiness)
+    conn = request("/health/ready")
 
     assert conn.status == 200
-    assert body["status"] == "ok"
-    refute Map.has_key?(body, "remediation")
+    assert conn.resp_body == ~s({"status":"ok"})
   end
 
-  test "health ready marks plain localhost HTTP as degraded regardless of legacy shim", %{
-    conn: _conn
-  } do
-    Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
-    Application.put_env(:orchard_controller, :transport_cert_source, :unknown)
-    Application.put_env(:orchard_controller, :transport_degraded, false)
+  test "SPEC.md §3.1 health ready returns the exact public error body through Endpoint" do
+    put_impl(FailedReadiness)
+    assert_unavailable_response()
+  end
 
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
+  test "SPEC.md §3.1 health ready fails closed through Endpoint when readiness raises" do
+    put_impl(RaiseReadiness)
+    conn = assert_unavailable_response()
 
-    body = Jason.decode!(conn.resp_body)
+    refute conn.resp_body =~ "secret"
+  end
 
-    assert body["transport"] == %{
-             "mode" => "plain_http_localhost",
-             "degraded" => true,
-             "cert_source" => "unknown"
-           }
+  test "SPEC.md §3.1 health ready fails closed through Endpoint when readiness exits" do
+    put_impl(ExitReadiness)
+    assert_unavailable_response()
+  end
+
+  test "SPEC.md §3.1 health ready fails closed through Endpoint when readiness throws" do
+    put_impl(ThrowReadiness)
+    assert_unavailable_response()
+  end
+
+  test "SPEC.md §3.1 health ready fails closed through Endpoint for malformed readiness" do
+    put_impl(MalformedReadiness)
+    assert_unavailable_response()
+  end
+
+  @tag timeout: 7_000
+  test "SPEC.md §3.1 health ready times out through Endpoint and terminates readiness work" do
+    put_impl(BlockReadiness, test_pid: self())
+    started_at = System.monotonic_time(:millisecond)
+    request_task = Task.async(fn -> request("/health/ready") end)
+
+    assert_receive {:readiness_task_started, readiness_pid}, 1_000
+    monitor_ref = Process.monitor(readiness_pid)
+
+    conn = Task.await(request_task, 6_000)
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
 
     assert conn.status == 503
-    assert body["status"] == "error"
-    # Causal priority: postgres_reachable fails before public_api_https_enabled
-    assert body["reason"] == "postgres_reachable"
-    assert body["checks"]["postgres_reachable"] == false
-    assert body["checks"]["migrations_current"] == false
-    assert body["checks"]["public_api_https_enabled"] == false
+    assert conn.resp_body == ~s({"status":"error"})
+    assert elapsed_ms < 6_000
+    assert_receive {:DOWN, ^monitor_ref, :process, ^readiness_pid, _reason}, 500
   end
 
-  test "health ready constrains cert source to direct HTTPS mode", %{conn: _conn} do
-    Application.put_env(:orchard_controller, :transport_mode, :reverse_proxy)
-    Application.put_env(:orchard_controller, :transport_cert_source, :operator_provided)
+  test "legacy M0 readiness contract is explicit and ordered" do
+    assert Readiness.contract_version() == "orchard.readiness.legacy_m0.v1"
 
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert body["transport"] == %{
-             "mode" => "reverse_proxy",
-             "degraded" => false,
-             "cert_source" => "unknown"
-           }
+    assert Readiness.check_order() == [
+             :postgres_reachable,
+             :migrations_current,
+             :public_api_https_enabled,
+             :controller_boot_completed
+           ]
   end
 
-  test "health ready treats unknown transport mode as degraded", %{conn: _conn} do
-    Application.put_env(:orchard_controller, :transport_mode, :bogus)
-    Application.put_env(:orchard_controller, :transport_cert_source, :operator_provided)
+  defp assert_unavailable_response do
+    conn = request("/health/ready")
 
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert body["transport"] == %{
-             "mode" => "unknown",
-             "degraded" => true,
-             "cert_source" => "unknown"
-           }
-
-    assert body["checks"]["public_api_https_enabled"] == false
+    assert conn.status == 503
+    assert conn.resp_body == ~s({"status":"error"})
+    conn
   end
 
-  test "health ready includes runtime summary with ok status on success", %{conn: _conn} do
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-    runtime = body["runtime"]
-
-    assert runtime["status"] == "ok"
-    assert runtime["node_id"] == "550e8400-e29b-41d4-a716-446655440000"
-    assert runtime["display_name"] == "test-node"
-    assert runtime["worker_state"] == "idle"
-    assert runtime["health"] == "healthy"
-    assert runtime["counts"]["active_requests"] == 2
-    assert runtime["counts"]["loaded_models"] == 1
-    assert runtime["message"] == nil
+  defp request(path) do
+    build_conn()
+    |> put_req_header("accept", "application/json")
+    |> get(path)
   end
 
-  test "health ready runtime probe passes 1s timeout", %{conn: _conn} do
-    _conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    assert_received {:runtime_snapshot_called, opts}
-    assert opts[:timeout] == 1_000
-  end
-
-  test "health ready runtime timeout does not change HTTP status", %{conn: _conn} do
-    previous = Application.get_env(:orchard_controller, :console, [])
+  defp put_impl(impl, opts \\ []) do
+    health = Application.get_env(:orchard_controller, :health, [])
 
     Application.put_env(
       :orchard_controller,
-      :console,
-      Keyword.put(previous, :runtime_impl, Orchard.API.HealthControllerTest.RuntimeTimeoutStub)
+      :health,
+      Keyword.merge(health, [readiness_impl: impl] ++ opts)
     )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    # HTTP status driven by readiness, not runtime
-    assert conn.status == 503
-    assert body["status"] == "error"
-    assert body["reason"] == "postgres_reachable"
-
-    # Runtime reports timeout independently
-    runtime = body["runtime"]
-    assert runtime["status"] == "timeout"
-    assert runtime["worker_state"] == "unknown"
-    # runtime_health is nil on error → "unsupported"
-    assert runtime["health"] == "unsupported"
-    assert runtime["message"] == "node status request timed out"
-  end
-
-  test "health ready runtime summary has unsupported health when metadata absent", %{conn: _conn} do
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    # Default stub has runtime_health, so health is "healthy"
-    body = Jason.decode!(conn.resp_body)
-    assert body["runtime"]["health"] == "healthy"
-  end
-
-  test "health ready license summary is observational and does not change readiness semantics", %{
-    conn: _conn
-  } do
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert conn.status == 503
-    assert body["status"] == "error"
-    assert body["reason"] == "postgres_reachable"
-    assert body["license"]["status"] == "valid"
-    assert body["license"]["message"] == "License bundle is valid."
-  end
-
-  test "health ready includes license tracking when certificate metadata exists", %{conn: _conn} do
-    Process.put(
-      :licensing_status_response,
-      %Orchard.Licensing{
-        state: :valid,
-        message: "License bundle is valid.",
-        bundle_path: "/tmp/current.json",
-        expires_at: ~U[2027-04-15 00:00:00Z],
-        metadata: %{program: "aieh", reference: "aieh-2026-001"}
-      }
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert conn.status == 503
-    assert body["reason"] == "postgres_reachable"
-
-    assert body["license"]["tracking"] == %{
-             "program" => "aieh",
-             "reference" => "aieh-2026-001"
-           }
-  end
-
-  test "health ready omits blank tracking subkeys and keeps present subkeys", %{conn: _conn} do
-    Process.put(
-      :licensing_status_response,
-      %Orchard.Licensing{
-        state: :valid,
-        message: "License bundle is valid.",
-        bundle_path: "/tmp/current.json",
-        metadata: %{program: "   ", reference: "aieh-2026-001"}
-      }
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
-
-    assert license["tracking"] == %{"reference" => "aieh-2026-001"}
-    refute Map.has_key?(license["tracking"], "program")
-  end
-
-  test "health ready omits tracking when tracking metadata sanitizes to empty", %{conn: _conn} do
-    Process.put(
-      :licensing_status_response,
-      %Orchard.Licensing{
-        state: :valid,
-        message: "License bundle is valid.",
-        bundle_path: "/tmp/current.json",
-        metadata: %{program: nil, reference: "  "}
-      }
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
-
-    refute Map.has_key?(license, "tracking")
-  end
-
-  test "health ready includes license identifiers for valid bundles", %{conn: _conn} do
-    Process.put(
-      :licensing_status_response,
-      %Orchard.Licensing{
-        state: :valid,
-        message: "License bundle is valid.",
-        bundle_path: "/tmp/current.json",
-        expires_at: ~U[2027-04-15 00:00:00Z],
-        license_id: "lic_visible",
-        machine_id: "mach_visible",
-        licensee: "Acme Orchard Lab",
-        max_machines: 3
-      }
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    body = Jason.decode!(conn.resp_body)
-
-    assert body["license"]["license_id"] == "lic_visible"
-    assert body["license"]["machine_id"] == "mach_visible"
-    assert body["license"]["licensee"] == "Acme Orchard Lab"
-    assert body["license"]["max_machines"] == 3
-  end
-
-  test "health ready includes license identifiers for signed invalid states", %{conn: _conn} do
-    for state <- [:expired, :not_yet_valid, :fingerprint_mismatch] do
-      Process.put(
-        :licensing_status_response,
-        %Orchard.Licensing{
-          state: state,
-          message: "Signed but invalid license.",
-          bundle_path: "/tmp/current.json",
-          license_id: "lic_visible",
-          machine_id: "mach_visible",
-          licensee: "Acme Orchard Lab",
-          max_machines: 3
-        }
-      )
-
-      conn =
-        build_conn(:get, "/health/ready")
-        |> put_req_header("accept", "application/json")
-        |> Router.call(Router.init([]))
-
-      body = Jason.decode!(conn.resp_body)
-
-      assert body["license"]["license_id"] == "lic_visible"
-      assert body["license"]["machine_id"] == "mach_visible"
-      assert body["license"]["licensee"] == "Acme Orchard Lab"
-      assert body["license"]["max_machines"] == 3
-    end
-  end
-
-  test "health ready omits license identifiers when bundle is missing", %{conn: _conn} do
-    Process.put(
-      :licensing_status_response,
-      %Orchard.Licensing{
-        state: :missing_bundle,
-        message: "No local license bundle is installed.",
-        bundle_path: "/tmp/current.json"
-      }
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
-
-    for key <- ["license_id", "machine_id", "licensee", "max_machines"] do
-      refute Map.has_key?(license, key)
-    end
-  end
-
-  test "health ready omits license identifiers for invalid signature states", %{conn: _conn} do
-    Process.put(
-      :licensing_status_response,
-      %Orchard.Licensing{
-        state: :invalid_license_signature,
-        message: "failed signature validation",
-        bundle_path: "/tmp/current.json",
-        license_id: "lic_hidden",
-        machine_id: "mach_hidden",
-        licensee: "Hidden",
-        max_machines: 1
-      }
-    )
-
-    conn =
-      build_conn(:get, "/health/ready")
-      |> put_req_header("accept", "application/json")
-      |> Router.call(Router.init([]))
-
-    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
-
-    for key <- ["license_id", "machine_id", "licensee", "max_machines"] do
-      refute Map.has_key?(license, key)
-    end
   end
 end

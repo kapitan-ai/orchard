@@ -12,7 +12,8 @@ defmodule Orchard.API.Readiness do
   #
   # Note: this ordering differs from OverviewLive's @readiness_check_order,
   # which controls display order. This list controls failure-reason priority.
-  @check_priority [
+  @contract_version "orchard.readiness.legacy_m0.v1"
+  @check_order [
     :postgres_reachable,
     :migrations_current,
     :public_api_https_enabled,
@@ -21,6 +22,12 @@ defmodule Orchard.API.Readiness do
 
   @type checks :: %{required(atom()) => boolean()}
   @type status_result :: {:ok, checks()} | {:error, atom(), checks()}
+
+  @spec contract_version() :: String.t()
+  def contract_version, do: @contract_version
+
+  @spec check_order() :: [atom()]
+  def check_order, do: @check_order
 
   @spec status() :: status_result()
   def status do
@@ -54,7 +61,7 @@ defmodule Orchard.API.Readiness do
   defp public_api_https_enabled?, do: Transport.public_api_https_enabled?()
 
   defp first_failure(checks) do
-    Enum.find_value(@check_priority, :unknown, fn key ->
+    Enum.find_value(@check_order, :unknown, fn key ->
       if Map.get(checks, key) == false, do: key
     end)
   end

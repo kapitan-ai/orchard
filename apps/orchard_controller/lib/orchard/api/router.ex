@@ -22,6 +22,7 @@ defmodule Orchard.API.Router do
 
   pipeline :operator_api do
     plug(:accepts, ["json"])
+    plug(Orchard.API.Plugs.NoStore)
     plug(Orchard.API.OperatorRequestContext)
   end
 
@@ -65,6 +66,7 @@ defmodule Orchard.API.Router do
   scope "/ops/v1", Orchard.API.Ops do
     pipe_through(:operator_api)
 
+    get("/health", HealthController, :show)
     get("/scheduler/explanations/:request_id", SchedulerExplanationsController, :show)
   end
 
