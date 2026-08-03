@@ -373,7 +373,10 @@ defmodule Orchard.ObservabilityProbe do
 
   @spec start_terminal_validation_repo(String.t(), (keyword() -> term())) ::
           :ok | {:error, term()}
-  def start_terminal_validation_repo(terminal_validation, start_repo \\ &Orchard.Repo.start_link/1)
+  def start_terminal_validation_repo(
+        terminal_validation,
+        start_repo \\ &Orchard.Repo.start_link/1
+      )
 
   def start_terminal_validation_repo("http_only", _start_repo), do: :ok
 

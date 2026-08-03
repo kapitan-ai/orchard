@@ -105,11 +105,13 @@ arguments. An unexpected `mise`, Mix, VM, or dependency failure may return a
 different runtime exit code. Stdout is reserved for the result JSON; retain
 stderr separately and never merge it into pilot result storage.
 
-The default `http_only` mode first requires exactly one `text/event-stream`
-response media type, with optional parameters, then validates exactly one legal
-typed terminal in the complete buffered `/v1/responses` SSE body. It does not
-prove incremental stream delivery, progress timing, or persistence. On a
-Controller host with direct access to the same configured Postgres database, set
+Configuration is exact: every field in the example must be present, no unknown
+field is accepted, and `terminal_validation` has no default. The `http_only`
+mode first requires exactly one `text/event-stream` response media type, with
+optional parameters, then validates exactly one legal typed terminal in the
+complete buffered `/v1/responses` SSE body. It does not prove incremental
+stream delivery, progress timing, or persistence. On a Controller host with
+direct access to the same configured Postgres database, set
 `terminal_validation` to `controller_local` to additionally require exactly one
 durable terminal `state_transition` matching both the request row and the HTTP
 terminal outcome. That reconciliation runs only for an observed terminal, so a
