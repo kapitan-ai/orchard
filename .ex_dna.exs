@@ -3,5 +3,5 @@
 %{
   min_mass: 80,
   excluded_macros: [:@, :schema, :pipe_through, :plug],
-  paths: ["apps/", "config/"]
+  paths: ["apps/", "config/", "scripts/"]
 }

@@ -3,7 +3,7 @@
     %{
       name: "default",
       files: %{
-        included: ["config/", "apps/", "mix.exs"],
+        included: ["config/", "apps/", "scripts/", "mix.exs"],
         excluded: ["_build/", "deps/"]
       },
       strict: true,
@@ -19,7 +19,7 @@
         {ExDNA.Credo,
          min_mass: 80,
          excluded_macros: [:@, :schema, :pipe_through, :plug],
-         paths: ["apps/", "config/"]},
+         paths: ["apps/", "config/", "scripts/"]},
 
         # ex_slop — Orchard-owned explicit AI-generated code policy.
         # Keep this list explicit so upstream bundle changes do not silently shift the quality gate.

@@ -55,6 +55,13 @@ large spec sections.
 - [`../packaging/dmg/README.md`](../packaging/dmg/README.md) — `Orchard.app` DMG
   assembly, app-owned service lifecycle, signing, and Amore handoff runbook.
 
+### I want to run a pilot
+
+- [`pilots/README.md`](pilots/README.md) — pilot artifact pin ownership,
+  producer commit and configuration digest contract, update and rollback.
+- [`local-dev.md`](local-dev.md) — Phase 0 observability probe invocation and
+  exit semantics.
+
 ### I need to make a durable decision
 
 - [`decisions/README.md`](decisions/README.md) — ADR policy.

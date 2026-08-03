@@ -74,6 +74,57 @@ gRPC server on `127.0.0.1:50071`.
 Copy the API Token printed by `api-keys create` into
 `ORCHARD_API_KEY` for the `curl` examples below.
 
+## Phase 0 observability acceptance probe
+
+Copy `scripts/support/observability_probe.example.json` to a non-secret local
+configuration, set the two environment variables named by that file, and run:
+
+```bash
+export ORCHARD_OBSERVABILITY_PROBE_MODEL="<active-model-id>"
+printf "API token: " >&2
+stty -echo
+IFS= read -r ORCHARD_OBSERVABILITY_PROBE_API_KEY
+stty echo
+printf "\n" >&2
+export ORCHARD_OBSERVABILITY_PROBE_API_KEY
+scripts/smoke-observability-probe.sh relative/or/absolute/observability-probe.json
+```
+
+Do not put the credential in a command argument, configuration file, shell
+history, chat, or retained evidence. Non-loopback endpoints must use HTTPS; the
+probe explicitly verifies the peer and hostname with the host system CA store.
+A host that cannot supply that CA store refuses with exit `2` before sending the
+credential. Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `::1`
+source-dev Controllers.
+
+The launcher resolves a relative configuration path against the caller's
+working directory before entering the repository root. Its owned exit codes are
+`0` for a validated pass, `1` for a validated failed observation, `2` for a
+configuration or environment refusal before a request, and `64` for invalid
+arguments. An unexpected `mise`, Mix, VM, or dependency failure may return a
+different runtime exit code. Stdout is reserved for the result JSON; retain
+stderr separately and never merge it into pilot result storage.
+
+Configuration is exact: every field in the example must be present, no unknown
+field is accepted, and `terminal_validation` has no default. The `http_only`
+mode first requires exactly one `text/event-stream` response media type, with
+optional parameters, then validates exactly one legal typed terminal in the
+complete buffered `/v1/responses` SSE body. It does not prove incremental
+stream delivery, progress timing, or persistence. On a Controller host with
+direct access to the same configured Postgres database, set
+`terminal_validation` to `controller_local` to additionally require exactly one
+durable terminal `state_transition` matching both the request row and the HTTP
+terminal outcome. That reconciliation runs only for an observed terminal, so a
+`transport_error`, `http_error`, or `invalid_stream` run still reports the plane
+that actually failed rather than `terminal_validation_failed`.
+
+A refusal that happens after the configuration validated keeps the configured
+`probe_id` in its `invalid_config` result; a null `probe_id` means no
+configuration validated.
+
+Pilot #118 pin ownership and digest instructions are in
+[`pilots/README.md`](pilots/README.md).
+
 ## Transport Modes
 
 Orchard has two transport profiles:
