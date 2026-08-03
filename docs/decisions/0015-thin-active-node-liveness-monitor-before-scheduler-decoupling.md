@@ -4,9 +4,10 @@
 
 Accepted.
 
-Owner decision recorded 2026-08-02. Implementation proceeds through a single
-OpenSpec change package with ordered slices; this record fixes the decomposition
-and the pilot-blocking boundary ahead of that authoring.
+Owner decision recorded 2026-08-02. Implementation proceeds through ordered
+slices; this record fixes the decomposition and the pilot-blocking boundary.
+The slice B candidate-source choice is resolved by
+[ADR 0017](0017-postgres-backed-monitor-refreshed-scheduler-candidates.md).
 
 ## Context
 
