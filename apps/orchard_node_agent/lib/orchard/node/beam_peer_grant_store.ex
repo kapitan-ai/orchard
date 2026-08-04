@@ -46,19 +46,17 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     controller_id = value(identity, :controller_id)
 
     with true <- valid_uuid?(controller_id),
-         root = Path.expand(root),
-         :ok <- validate_directory(root),
-         {:ok, root_stat} <- File.stat(root),
-         store_root = Path.join(root, @store_directory),
-         :ok <- validate_directory(store_root, root_stat.uid),
-         path = grant_path(store_root, controller_id),
-         :ok <- validate_file(path, root_stat.uid),
-         {:ok, json} <- File.read(path),
-         {:ok, persisted} <- Jason.decode(json),
-         {:ok, grant} <- decode_persisted(persisted),
-         true <- grant.controller_id == controller_id,
-         {:ok, grant} <- validate_grant(identity, grant, expected_node_name),
-         :ok <- ensure_current(grant) do
+         {:ok, identity_root, expected_uid} <- prepare_identity_root(root),
+         {:ok, grant} <-
+           with_store_lock(identity_root, expected_uid, [], fn ->
+             load_under_lock(
+               identity_root,
+               expected_uid,
+               controller_id,
+               identity,
+               expected_node_name
+             )
+           end) do
       {:ok, grant}
     else
       {:error, :enoent} -> {:error, :beam_peer_grant_missing}
@@ -221,6 +219,28 @@ defmodule Orchard.Node.BeamPeerGrantStore do
       {:ok, identity_root, root_stat.uid}
     else
       _other -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp load_under_lock(
+         identity_root,
+         expected_uid,
+         controller_id,
+         identity,
+         expected_node_name
+       ) do
+    store_root = Path.join(identity_root, @store_directory)
+    path = grant_path(store_root, controller_id)
+
+    with :ok <- validate_directory(store_root, expected_uid),
+         :ok <- validate_file(path, expected_uid),
+         {:ok, json} <- File.read(path),
+         {:ok, persisted} <- Jason.decode(json),
+         {:ok, grant} <- decode_persisted(persisted),
+         true <- grant.controller_id == controller_id,
+         {:ok, grant} <- validate_grant(identity, grant, expected_node_name),
+         :ok <- ensure_current(grant) do
+      {:ok, grant}
     end
   end
 
