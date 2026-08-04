@@ -4416,9 +4416,10 @@ App-owned install and update SHALL preflight the payload and target before stopp
 If a failure occurs after mutation begins and restoration can be established safely, Orchard SHALL restore the prior app-owned payload, command links, launchd plists, role marker, and loaded-service state before returning failure.
 If restoration cannot be established safely, the app lifecycle SHALL fail closed and SHALL return failure for the affected lifecycle role; when the affected lifecycle includes the Node Agent, the uncertain-state rule below additionally forbids automatic restart.
 Managed Orchard.app and PKG Node Agent lifecycle mutations SHALL use one shared exclusion boundary, and every Managed Node Agent Handover SHALL use zero process overlap.
-Before mutating a Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root, the managed lifecycle SHALL prevent relaunch and prove that the exact outgoing Node Agent process instance has exited.
-The exit wait SHALL be bounded, and an unproven exit or timeout SHALL fail closed without mutation or replacement start.
-The replacement Node Agent SHALL start only after the exit proof succeeds and the required mutation finishes.
+Before mutating a Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root, the managed lifecycle SHALL prevent relaunch and SHALL then establish, while holding the shared exclusion boundary, either that the exact identified outgoing Node Agent process instance has exited or that no managed Node Agent instance is running.
+Only proven exit or proven absence SHALL satisfy that handover gate; absence that cannot be proven SHALL be treated as an unproven exit.
+The wait SHALL be bounded, and an unproven exit, unproven absence, or timeout SHALL fail closed without mutation or replacement start.
+The replacement Node Agent SHALL start only after that handover gate is satisfied and the required mutation finishes.
 If mutation or restoration state is uncertain, the managed lifecycle SHALL fail closed and SHALL NOT automatically restart the Node Agent.
 Direct or manual Node Agent launches that use the same Node Identity Root are unsupported and outside the managed handover guarantee.
 Existing BEAM Peer Grant storage locks SHALL remain operation-scoped and SHALL NOT become lifecycle locks.

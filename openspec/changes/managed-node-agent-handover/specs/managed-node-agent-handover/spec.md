@@ -13,14 +13,20 @@ Failure to acquire or retain the boundary SHALL fail closed without managed muta
 
 ### Requirement: Exact Outgoing Process Exit Precedes Mutation And Replacement
 
-A Managed Node Agent Handover SHALL prevent launchd relaunch, identify the exact outgoing Node Agent process instance, request managed shutdown, and prove that identified instance exited before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
-The replacement Node Agent SHALL start only after that exit proof succeeds and the required managed mutation completes.
+A Managed Node Agent Handover SHALL prevent launchd relaunch and SHALL then establish, while holding the shared exclusion boundary, either that the exact identified outgoing Node Agent process instance exited after a requested managed shutdown or that no managed Node Agent instance is running, before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
+Only proven exit or proven absence SHALL satisfy that handover gate; absence that cannot be proven SHALL be treated as an unproven exit.
+The replacement Node Agent SHALL start only after that handover gate is satisfied and the required managed mutation completes.
 Process exit evidence SHALL distinguish the identified outgoing instance from a later or unrelated process rather than relying only on a reusable numeric process identifier or service label.
 
 #### Scenario: Managed replacement succeeds
 
 - **WHEN** the lifecycle prevents relaunch, identifies the outgoing process instance, and proves that exact instance exited within the bound
 - **THEN** the lifecycle may perform the required managed mutation and start the replacement only after mutation completes
+
+#### Scenario: No managed Node Agent instance is running
+
+- **WHEN** the lifecycle prevents relaunch and proves that no managed Node Agent instance is running, so there is no outgoing instance to identify
+- **THEN** the handover gate is satisfied and the lifecycle may perform the required managed mutation and start the replacement only after mutation completes
 
 #### Scenario: Exit proof is not exact
 
@@ -30,11 +36,16 @@ Process exit evidence SHALL distinguish the identified outgoing instance from a 
 ### Requirement: Exit Waiting Is Bounded And Fail-Closed
 
 The wait for exact outgoing-process exit proof SHALL be bounded.
-Failure to prevent relaunch, identify the outgoing instance, prove its exit within the bound, or maintain the shared exclusion boundary SHALL fail closed without managed mutation or replacement start.
+Failure to prevent relaunch, to establish either exact outgoing-instance exit proof or proven absence of a managed Node Agent instance within the bound, or to maintain the shared exclusion boundary SHALL fail closed without managed mutation or replacement start.
 
 #### Scenario: Outgoing process does not exit within the bound
 
 - **WHEN** the exact outgoing Node Agent process instance has not been proven exited before the bounded wait expires
+- **THEN** the lifecycle returns failure without mutating the payload, plist, command symlink, role marker, or Node Identity Root and without starting a replacement
+
+#### Scenario: Absence cannot be proven
+
+- **WHEN** the lifecycle can neither identify an outgoing Node Agent process instance nor prove that no managed Node Agent instance is running
 - **THEN** the lifecycle returns failure without mutating the payload, plist, command symlink, role marker, or Node Identity Root and without starting a replacement
 
 ### Requirement: Uncertain Mutation Or Restoration Does Not Restart Automatically

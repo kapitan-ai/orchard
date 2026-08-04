@@ -8,9 +8,9 @@
 
 - [ ] 2.1 Capture process-instance evidence that identifies the exact outgoing managed Node Agent and cannot be satisfied by only a reusable PID or launchd label.
 - [ ] 2.2 Prevent launchd relaunch before requesting managed shutdown.
-- [ ] 2.3 Add a bounded wait that proves the captured outgoing instance exited before any Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root mutation.
-- [ ] 2.4 Gate replacement start on successful exit proof and completion of the required managed mutation.
-- [ ] 2.5 Fail closed without mutation or replacement start when relaunch prevention, process identification, or bounded exit proof is unavailable, ambiguous, or times out.
+- [ ] 2.3 Add a bounded wait that proves either the captured outgoing instance exited or that no managed Node Agent instance is running before any Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root mutation.
+- [ ] 2.4 Gate replacement start on a satisfied handover gate and completion of the required managed mutation.
+- [ ] 2.5 Fail closed without mutation or replacement start when relaunch prevention is unavailable, or when neither exact outgoing-instance exit proof nor proven absence of a managed Node Agent instance is established within the bound, including ambiguous process identification and ambiguous absence.
 
 ## 3. Orchard.app Integration
 
@@ -27,8 +27,8 @@
 ## 5. Verification And Handoff
 
 - [ ] 5.1 Add cross-path concurrency coverage proving overlapping Orchard.app and PKG lifecycle attempts cannot enter the managed Node Agent handover together.
-- [ ] 5.2 Add failure-path coverage for relaunch-prevention failure, process-identification failure, exact-instance ambiguity, bounded exit timeout, exclusion loss, and uncertain mutation or restoration.
-- [ ] 5.3 Add ordering coverage proving every listed mutation and replacement start occurs only after exact outgoing-instance exit proof.
+- [ ] 5.2 Add failure-path coverage for relaunch-prevention failure, process-identification failure, exact-instance ambiguity, unprovable absence, bounded exit timeout, exclusion loss, and uncertain mutation or restoration.
+- [ ] 5.3 Add ordering coverage proving every listed mutation and replacement start occurs only after exact outgoing-instance exit proof or proven absence of a managed Node Agent instance.
 - [ ] 5.4 Add app restoration coverage and PKG non-transactional failure coverage without weakening their shared fail-closed handover invariant.
 - [ ] 5.5 Add acceptance coverage showing rolling Controller `N`/Node Agent `N-1` compatibility is exercised through serialized managed shutdown and replacement, never same-root live overlap.
 - [ ] 5.6 Confirm direct or manual same-root launches remain unsupported and that no lifetime Node Identity Root Lease, dual lifecycle locks, root migration, automatic repair, transactional PKG rollback, or uncertain-state automatic restart was introduced.

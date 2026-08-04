@@ -3,8 +3,8 @@
 ### Requirement: App Node Agent Lifecycle Uses Managed Handover
 
 Every managed Orchard.app lifecycle operation that hands over or mutates the Node Agent SHALL use the shared Managed Node Agent Handover required by `SPEC.md` §11.4.
-The app lifecycle SHALL hold the shared Orchard.app/PKG exclusion boundary, prevent relaunch, and prove the exact outgoing Node Agent process instance exited before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root and before starting a replacement.
-The wait SHALL be bounded, and unproven exit SHALL fail closed without mutation or replacement start.
+The app lifecycle SHALL hold the shared Orchard.app/PKG exclusion boundary, prevent relaunch, and prove either that the exact outgoing Node Agent process instance exited or that no managed Node Agent instance is running before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root and before starting a replacement.
+The wait SHALL be bounded, and an unproven exit or unproven absence SHALL fail closed without mutation or replacement start.
 
 #### Scenario: App update replaces a running Node Agent
 
