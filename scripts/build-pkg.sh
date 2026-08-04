@@ -1403,7 +1403,7 @@ validate_pkg_payload() {
 source_status() {
     git status --porcelain=v1 --untracked-files=all -- \
         . \
-        ":(exclude,glob)apps/orchard_controller/priv/static/**/*.gz"
+        ":(exclude,literal)apps/orchard_controller/priv/static/images/orchard-mark.svg.gz"
 }
 
 validate_captured_source_identity() {

@@ -99,9 +99,12 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     end
   end
 
-  test "generated static gzip is not a source input" do
+  test "only the known generated static gzip is excluded from source inputs" do
     fixture = create_packaging_fixture!()
-    generated_gzip = Path.join(fixture, "apps/orchard_controller/priv/static/images/mark.svg.gz")
+
+    generated_gzip =
+      Path.join(fixture, "apps/orchard_controller/priv/static/images/orchard-mark.svg.gz")
+
     File.mkdir_p!(Path.dirname(generated_gzip))
     File.write!(generated_gzip, "generated gzip\n")
 
@@ -111,6 +114,20 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     refute output =~ "Uncommitted or untracked build inputs detected"
     refute output =~ "Build inputs changed during package construction"
     assert File.exists?(Path.join(fixture, ".git/mix.log"))
+
+    unexpected_fixture = create_packaging_fixture!()
+
+    unexpected_gzip =
+      Path.join(unexpected_fixture, "apps/orchard_controller/priv/static/images/operator.css.gz")
+
+    File.mkdir_p!(Path.dirname(unexpected_gzip))
+    File.write!(unexpected_gzip, "unexpected gzip\n")
+
+    {unexpected_output, unexpected_status} = run_packaging_fixture(unexpected_fixture)
+
+    refute unexpected_status == 0, unexpected_output
+    assert unexpected_output =~ "Uncommitted or untracked build inputs detected"
+    refute File.exists?(Path.join(unexpected_fixture, ".git/mix.log"))
   end
 
   test "dirty marker is separate from the exported build SHA" do
