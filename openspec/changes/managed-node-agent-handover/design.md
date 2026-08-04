@@ -16,7 +16,7 @@ The paths therefore share handover exclusion and ordering without pretending the
 
 - Define one exclusion boundary used by managed Orchard.app and PKG Node Agent lifecycle operations.
 - Establish zero managed process overlap across the complete handover.
-- Require exact outgoing-process-instance exit proof before relevant mutation or replacement start.
+- Require proven exit of the exact outgoing process instance, or proven absence of any managed Node Agent instance, before relevant mutation or replacement start.
 - Bound the exit wait and fail closed when safety cannot be proven.
 - Preserve app restoration, PKG compatibility, and historical Node Agent support without broadening this change.
 
@@ -46,19 +46,19 @@ A possible Node Identity Root Lease remains reserved for future work.
 After successful preflight and while holding the shared exclusion boundary, a managed handover follows this ordering:
 
 1. Prevent launchd from relaunching the managed Node Agent.
-2. Identify the exact outgoing Node Agent process instance.
-3. Request managed shutdown and wait for proof that the identified instance exited.
-4. Fail closed if exit is not proven within the bounded wait.
-5. Only after successful exit proof, mutate the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root as required by the lifecycle operation.
-6. Start the replacement only after the exit proof succeeded and required mutation completed.
+2. Identify the exact outgoing Node Agent process instance, or affirmatively prove that no managed Node Agent instance is running.
+3. When an outgoing instance was identified, request managed shutdown and wait for proof that the identified instance exited.
+4. Fail closed if neither exact-instance exit nor absence of any managed Node Agent instance is proven within the bounded wait.
+5. Only after the handover gate is satisfied through either proof branch, mutate the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root as required by the lifecycle operation.
+6. Start the replacement only after the handover gate was satisfied and required mutation completed.
 7. Release the shared exclusion boundary only after the operation reaches a safe terminal state.
 
-The implementation must use process-instance evidence strong enough to distinguish the captured outgoing instance from a later or unrelated process.
-This design does not select the concrete macOS process-identity representation; implementation and tests must demonstrate that the proof applies to the exact outgoing instance rather than only a reusable numeric process identifier or service label.
+The implementation must use process-instance evidence strong enough to distinguish the captured outgoing instance from a later or unrelated process, and absence evidence strong enough to distinguish a proven-absent managed Node Agent from one it merely failed to observe.
+This design does not select the concrete macOS process-identity representation; implementation and tests must demonstrate that the proof applies to the exact outgoing instance rather than only a reusable numeric process identifier or service label, and that ambiguous absence is treated as an unproven exit.
 
 ## Failure Semantics
 
-Failure to prevent relaunch, identify the exact outgoing instance, or prove exit within the bound occurs before managed mutation and replacement start.
+Failure to prevent relaunch, or to prove within the bound either that the exact identified outgoing instance exited or that no managed Node Agent instance is running, occurs before managed mutation and replacement start.
 The lifecycle returns failure without starting a replacement; when relaunch prevention was established, it remains in the fail-closed state rather than being deliberately reversed by the failed operation.
 
 After mutation begins, Orchard.app retains its existing obligation to restore the prior app-owned payload, command links, launchd plists, role marker, and loaded-service state when restoration can be established safely.
@@ -77,6 +77,6 @@ On each managed node, safety comes from shutting down and proving exit of the hi
 ## Verification Strategy
 
 Future verification should exercise the public managed lifecycle paths rather than only an isolated lock helper.
-Coverage must show that concurrent Orchard.app and PKG attempts cannot cross the shared boundary; launchd relaunch is disabled before shutdown; exact-instance proof gates every listed mutation and replacement start; bounded timeout and ambiguous evidence leave state unmutated and stopped; uncertain post-mutation state does not trigger automatic restart; and the app restoration contract remains intact when restoration is proven.
+Coverage must show that concurrent Orchard.app and PKG attempts cannot cross the shared boundary; launchd relaunch is disabled before shutdown; exact-instance exit proof or proven absence of any managed Node Agent instance gates every listed mutation and replacement start; bounded timeout, ambiguous evidence, and ambiguous absence leave state unmutated and stopped; uncertain post-mutation state does not trigger automatic restart; and the app restoration contract remains intact when restoration is proven.
 
 Cross-path acceptance must also preserve the unsupported status of direct/manual same-root launches, the operation scope of BEAM Peer Grant storage locks, and rolling `N`/`N-1` safety through serialized managed replacement.

@@ -4750,7 +4750,7 @@ For each node:
 1. cordon
 2. drain
 3. run the app-owned update lifecycle or install the package
-4. the managed lifecycle starts the replacement node agent, only after the exact outgoing instance is proven exited and the required mutation succeeds
+4. the managed lifecycle starts the replacement node agent, only after the §11.4 handover gate is satisfied by proven exit of the exact outgoing instance or by proven absence of any managed Node Agent instance, and the required mutation succeeds
 5. verify heartbeat + status sync
 6. uncordon
 

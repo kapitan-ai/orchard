@@ -7,9 +7,9 @@ Without a shared handover boundary, an outgoing and replacement Node Agent could
 ## What Changes
 
 - Define one Managed Node Agent Handover contract shared by managed Orchard.app and PKG lifecycle operations.
-- Require the lifecycle to prevent relaunch, identify the exact outgoing Node Agent process instance, and prove that instance exited before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
-- Require bounded waiting and fail-closed behavior when exclusion, relaunch prevention, process identification, exit proof, mutation, or restoration cannot be established safely.
-- Permit replacement start only after exit proof succeeds and required managed mutation completes.
+- Require the lifecycle to prevent relaunch and then prove either that the exact identified outgoing Node Agent process instance exited or that no managed Node Agent instance is running, before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
+- Require bounded waiting and fail-closed behavior when exclusion, relaunch prevention, process identification, exit proof, proof of absence, mutation, or restoration cannot be established safely.
+- Permit replacement start only after that handover gate is satisfied and required managed mutation completes.
 - Preserve direct or manual same-root launches as unsupported, BEAM Peer Grant locks as operation-scoped, and Controller `N`/Node Agent `N-1` safety through managed shutdown rather than live coexistence.
 - Record future implementation and verification work without changing product code, tests, scripts, dependencies, generated files, or release notes in this change.
 
