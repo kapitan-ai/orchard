@@ -1401,7 +1401,9 @@ validate_pkg_payload() {
 
 
 source_status() {
-    git status --porcelain=v1 --untracked-files=all --
+    git status --porcelain=v1 --untracked-files=all -- \
+        . \
+        ":(exclude,glob)apps/orchard_controller/priv/static/**/*.gz"
 }
 
 validate_captured_source_identity() {
@@ -1808,6 +1810,13 @@ if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
 fi
 
 if [[ "$STAGE_ONLY" == "true" ]]; then
+    if ! validate_captured_source_identity; then
+        rm -rf "$STAGING_BASE"
+        STAGING_CREATED=false
+        log_error "Removed staged payload after source identity changed"
+        exit 1
+    fi
+
     printf 'STAGING_BASE=%s\n' "$STAGING_BASE"
     log_info "Stage-only build complete; preserved staging directory: $STAGING_BASE"
     BUILD_SUCCEEDED=true
@@ -1853,6 +1862,12 @@ if [[ -f "$OUTPUT_DIR/$PKG_NAME" ]]; then
     if ! validate_pkg_payload "$OUTPUT_DIR/$PKG_NAME"; then
         cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
         log_error "Removed malformed PKG outputs: $OUTPUT_DIR/$PKG_NAME"
+        exit 1
+    fi
+
+    if ! validate_captured_source_identity; then
+        cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
+        log_error "Removed PKG outputs after source identity changed"
         exit 1
     fi
 

@@ -38,9 +38,15 @@ defmodule Orchard.BuildInfo.Resolver do
 
       executable ->
         case run_git(executable) do
-          {:ok, sha} -> {validate_sha!(sha, "Git-derived build provenance"), :git_available}
-          {:error, :repository_unavailable} -> {"unknown", :repository_unavailable}
-          {:error, :git_unavailable} -> {"unknown", :git_unavailable}
+          {:ok, sha} ->
+            git_sha = sha |> String.trim() |> validate_sha!("Git-derived build provenance")
+            {git_sha, :git_available}
+
+          {:error, :repository_unavailable} ->
+            {"unknown", :repository_unavailable}
+
+          {:error, :git_unavailable} ->
+            {"unknown", :git_unavailable}
         end
     end
   end
@@ -56,10 +62,8 @@ defmodule Orchard.BuildInfo.Resolver do
   end
 
   defp validate_sha!(value, source) do
-    sha = String.trim(value)
-
-    if Regex.match?(@sha_pattern, sha) do
-      sha
+    if Regex.match?(@sha_pattern, value) do
+      value
     else
       raise ArgumentError, "#{source} must be a 40-character lowercase Git commit"
     end

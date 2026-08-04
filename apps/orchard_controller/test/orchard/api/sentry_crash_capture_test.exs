@@ -84,7 +84,7 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
     sentry_identity =
       SentryRelease.identity("orchard_controller", "0.5.0-dev",
-        build_sha: "abcdef0123456789abcdef0123456789abcdef01",
+        build_sha: "abcdef1234567890",
         build_date: "2026-07-30",
         build_channel: "internal"
       )
@@ -210,7 +210,7 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     assert event.tags.orchard_app == "controller"
     assert event.tags.orchard_version == "0.5.0-dev"
     assert event.tags.orchard_build_channel == "internal"
-    assert event.tags.build_sha == "abcdef0123456789abcdef0123456789abcdef01"
+    assert event.tags.build_sha == "abcdef1234567890"
     assert event.tags.build_date == "2026-07-30"
     assert event.request.method == nil
     assert event.user == %{}

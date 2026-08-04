@@ -83,7 +83,7 @@ defmodule OrchardCLI.BuildPkgScriptTest do
 
     refute status == 0, output
     assert output =~ "Source HEAD changed during package construction"
-    assert File.read!(Path.join(fixture, "mix.log")) =~ "sha=#{head} args=run --no-start"
+    assert File.read!(Path.join(fixture, ".git/mix.log")) =~ "sha=#{head} args=run --no-start"
   end
 
   test "package cleanliness rejects tracked staged and untracked inputs before Mix" do
@@ -95,8 +95,22 @@ defmodule OrchardCLI.BuildPkgScriptTest do
 
       refute status == 0, "#{dirty_input} input unexpectedly passed:\n#{output}"
       assert output =~ "Uncommitted or untracked build inputs detected"
-      refute File.exists?(Path.join(fixture, "mix.log"))
+      refute File.exists?(Path.join(fixture, ".git/mix.log"))
     end
+  end
+
+  test "generated static gzip is not a source input" do
+    fixture = create_packaging_fixture!()
+    generated_gzip = Path.join(fixture, "apps/orchard_controller/priv/static/images/mark.svg.gz")
+    File.mkdir_p!(Path.dirname(generated_gzip))
+    File.write!(generated_gzip, "generated gzip\n")
+
+    {output, status} = run_packaging_fixture(fixture)
+
+    refute status == 0, output
+    refute output =~ "Uncommitted or untracked build inputs detected"
+    refute output =~ "Build inputs changed during package construction"
+    assert File.exists?(Path.join(fixture, ".git/mix.log"))
   end
 
   test "dirty marker is separate from the exported build SHA" do
@@ -220,6 +234,7 @@ defmodule OrchardCLI.BuildPkgScriptTest do
 
     File.write!(Path.join(fake_bin, "mix"), """
     #!/bin/bash
+    mkdir -p "$(dirname "$FAKE_MIX_LOG")"
     printf 'sha=%s args=%s\\n' "$ORCHARD_BUILD_SHA" "$*" >> "$FAKE_MIX_LOG"
     if [[ "${ORCHARD_FAKE_ADVANCE_HEAD:-0}" == "1" ]]; then
       printf '# changed during build\\n' >> mix.exs
@@ -240,7 +255,7 @@ defmodule OrchardCLI.BuildPkgScriptTest do
 
   defp run_packaging_fixture(fixture, opts \\ []) do
     env = [
-      {"FAKE_MIX_LOG", Path.join(fixture, "mix.log")},
+      {"FAKE_MIX_LOG", Path.join(fixture, ".git/mix.log")},
       {"ORCHARD_FAKE_ADVANCE_HEAD", if(Keyword.get(opts, :advance_head), do: "1", else: "0")},
       {"PATH", Path.join(fixture, "fake-bin") <> ":" <> System.fetch_env!("PATH")}
     ]

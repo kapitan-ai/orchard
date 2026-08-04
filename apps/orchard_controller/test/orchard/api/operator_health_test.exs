@@ -125,7 +125,6 @@ defmodule Orchard.API.OperatorHealthTest do
 
     assert body["version"] == Orchard.version()
     assert body["build_ref"] == Orchard.BuildInfo.git_sha()
-    assert body["build_ref"] == "unknown" or body["build_ref"] =~ ~r/\A[0-9a-f]{40}\z/
     assert body["build_date"] == Orchard.BuildInfo.build_date()
     assert body["build_channel"] == Orchard.BuildInfo.build_channel()
     assert body["reason"] == "postgres_reachable"

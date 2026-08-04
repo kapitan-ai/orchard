@@ -28,6 +28,8 @@ defmodule Orchard.BuildInfoTest do
     for invalid <- [
           "",
           "   ",
+          " #{valid_sha}",
+          "#{valid_sha}\n",
           "abcdef0",
           String.upcase(valid_sha),
           String.replace(valid_sha, "a", "g")

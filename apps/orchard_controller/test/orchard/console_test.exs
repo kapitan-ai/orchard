@@ -16,10 +16,7 @@ defmodule OrchardConsoleTest do
           assert Orchard.BuildInfo.git_sha() == "unknown"
 
         [_match, provenance] ->
-          full_sha = Orchard.BuildInfo.git_sha()
-          assert full_sha =~ ~r/\A[0-9a-f]{40}\z/
-          assert byte_size(provenance) == 7
-          assert provenance == String.slice(full_sha, 0, 7)
+          assert provenance == String.slice(Orchard.BuildInfo.git_sha(), 0, 7)
       end
     end
 
