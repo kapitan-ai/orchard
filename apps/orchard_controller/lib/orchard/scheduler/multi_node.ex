@@ -1,7 +1,6 @@
 defmodule Orchard.Scheduler.MultiNode do
   @moduledoc """
-  Multi-node scheduler that probes configured runtime targets and
-  selects the best candidate for dispatch.
+  Multi-node scheduler that selects and ranks candidates across configured runtime targets.
 
   Ranking order (descending priority):
   1. Exclude candidates with exhausted node or placement capacity, or loaded-model
@@ -16,17 +15,10 @@ defmodule Orchard.Scheduler.MultiNode do
   9. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
   10. Lexicographically smaller `node_id` (deterministic tie-break)
 
-  Falls back to the single-node scheduler when:
-  - No targets are configured
-  - All probes fail
-  - No schedulable nodes remain after filtering
-
-  Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
-  nodes, but every joined candidate has exhausted capacity or is an active
-  loaded-model candidate with unknown placement capacity.
-  BEAM observations whose configured node identity conflicts with observed
-  metadata also fail closed as `:cluster_busy` instead of falling back to a
-  different identity.
+  Returns `{:error, :no_active_nodes}` when no trusted production inventory or
+  permitted compatibility target exists. A compatibility wave that produces no
+  eligible candidate fails closed as `{:error, :cluster_busy}` without retrying
+  through the single-node scheduler.
 
   Every candidate is first annotated with the shared dispatch-capacity
   evaluation and excluded unless that evaluation is eligible with positive
@@ -39,11 +31,9 @@ defmodule Orchard.Scheduler.MultiNode do
   gRPC compatibility schedules include legacy `:runtime_client_target`;
   BEAM schedules carry only `:runtime_endpoint_target`.
 
-  Transport-like probe and connect failures are recorded through node inventory
-  so failed targets stop contributing stale queue capacity before queued work is
-  promoted.
-  Probe disconnect cleanup is best-effort and does not remove an otherwise valid
-  candidate or change the scheduling outcome.
+  Compatibility probes remain ephemeral and do not publish or clear production
+  observations or queue-capacity sources. Probe disconnect cleanup is best-effort
+  and does not change the scheduling outcome.
   """
 
   use Orchard.DispatchCapacity.Consumer, wiring: :multi_node_eligibility_and_lane
@@ -52,7 +42,9 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.DispatchCapacity.Authorization
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
+  alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
+  alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
 
   alias Orchard.RuntimeEndpoint.{
     BeamIdentity,
@@ -65,22 +57,21 @@ defmodule Orchard.Scheduler.MultiNode do
   }
 
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheScore, PrefixCacheStatus}
-  alias Orchard.Scheduler.SingleNode
-
   require Logger
 
   @behaviour Orchard.Scheduler.SingleNode
 
   @default_status_timeout_ms 2_000
+  @max_compatibility_targets 4
 
   # -- Public API --
 
   @doc """
   Schedule a request across configured cluster targets.
 
-  Probes each target for live status, persists observations, filters
-  for schedulable nodes, ranks candidates, and returns a dispatch-compatible
-  schedule map.
+  Resolves trusted active inventory, reads production candidates from the durable
+  heartbeat snapshot, ranks candidates, and returns a dispatch-compatible schedule map.
+  The existing inline-probe path remains only for confirmed-empty trusted inventory.
   """
   @impl true
   def schedule(%CanonicalRequest{} = request) do
@@ -95,192 +86,383 @@ defmodule Orchard.Scheduler.MultiNode do
     (default: `Inference.runtime_endpoint_client/0`)
   - `:status_timeout_ms` - timeout for each status probe (default: #{@default_status_timeout_ms})
   - `:observed_at` - timestamp for observations (default: `DateTime.utc_now()`)
+  - `:compatibility_probe_runner` - internal compatibility-wave runner
   """
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
-    targets = Inference.runtime_endpoint_targets()
+    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
 
-    if targets == [] do
-      {:error, :no_active_nodes}
-    else
-      schedule_multi(request, targets, opts)
+    case candidate_target_resolution(opts) do
+      {:inline, []} ->
+        {:error, :no_active_nodes}
+
+      {:inline, targets} ->
+        schedule_inline_candidates(request, targets, opts, observed_at)
+
+      {:production, effective_targets, active_targets} ->
+        schedule_production_candidates(
+          request,
+          effective_targets,
+          active_targets,
+          opts,
+          observed_at
+        )
+
+      :inventory_unavailable ->
+        {:error, :no_active_nodes}
     end
   end
 
   # -- Internal --
 
-  defp schedule_multi(request, targets, opts) do
-    client = Keyword.get(opts, :status_client, Inference.runtime_endpoint_client())
-    timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
-    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
+  defp candidate_target_resolution(opts) do
+    inventory_result = active_runtime_endpoint_targets(opts)
 
-    # Probe each target sequentially and collect ephemeral ranking data.
-    # Sequential probing is intentional for M3b scope (1-4 nodes):
-    # - Avoids Task supervision and cancellation complexity
-    # - Deterministic ordering, simpler failure handling
-    # - Worst-case latency is cumulative (N × timeout_ms) but acceptable at this scale
-    # Future: parallel probing via Task.async_stream or cached observations
-    # within freshness window for larger clusters.
-    probe_outcomes =
-      targets
-      |> Enum.map(&probe_target(&1, client, timeout, observed_at, request))
-      |> Enum.reject(&is_nil/1)
+    case inventory_result do
+      {:ok, []} ->
+        {:inline, compatibility_targets(inventory_result, opts)}
 
-    probe_results =
-      Enum.flat_map(probe_outcomes, fn
-        {:candidate, candidate} -> [candidate]
-        {:rejected, _reason} -> []
-      end)
+      {:ok, [_target | _rest] = active_targets} ->
+        {:production, runtime_endpoint_targets(inventory_result, opts), active_targets}
 
-    beam_identity_rejected? =
-      Enum.any?(probe_outcomes, &match?({:rejected, :beam_node_identity_mismatch}, &1))
-
-    # Join with persistent schedulable nodes
-    schedulable_map =
-      Nodes.schedulable_nodes()
-      |> Map.new(&{&1.id, &1})
-
-    candidates =
-      probe_results
-      |> Enum.filter(&Map.has_key?(schedulable_map, &1.node_id))
-      |> Enum.map(&Map.put(&1, :node, schedulable_map[&1.node_id]))
-      |> Enum.map(&annotate_dispatch_capacity(&1, opts, observed_at))
-
-    available_candidates = Enum.filter(candidates, &dispatch_capacity_eligible?/1)
-
-    case selection_state(
-           candidates,
-           available_candidates,
-           probe_outcomes,
-           opts,
-           beam_identity_rejected?
-         ) do
-      {:fallback, fallback_opts} ->
-        fallback_schedule(request, targets, fallback_opts)
-
-      {:error, reason} ->
-        {:error, reason}
-
-      :select_candidate ->
-        cache_affinity_config = Inference.cache_affinity_config()
-
-        {affinity_candidates, affinity_context} =
-          CacheAffinity.prepare(request, available_candidates, cache_affinity_config)
-
-        live_fingerprint_match_enabled? =
-          CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
-
-        prefix_cache_scoring_enabled? = Inference.prefix_cache_scoring_enabled?()
-        memory_admission_enabled? = Inference.memory_admission_enabled?()
-
-        prefer_capable_workers? =
-          Inference.tokenizer_safe_mode_prefer_capable_workers?() and
-            Inference.tokenizer_safe_mode() != :off
-
-        annotated_candidates =
-          affinity_candidates
-          |> annotate_prefix_cache_fingerprint_matches(
-            affinity_context,
-            live_fingerprint_match_enabled?
-          )
-          |> annotate_capable_workers(prefer_capable_workers?)
-          |> annotate_memory_admission(memory_admission_enabled?)
-
-        ranking_opts = [
-          live_fingerprint_match?: live_fingerprint_match_enabled?,
-          prefer_capable_workers?: prefer_capable_workers?,
-          memory_admission?: memory_admission_enabled?
-        ]
-
-        ranked = rank_candidates(annotated_candidates, ranking_opts)
-
-        {selected, selected_score} =
-          select_candidate_with_prefix_cache_score(
-            request,
-            ranked,
-            client,
-            cache_affinity_config,
-            prefix_cache_scoring_enabled?,
-            ranking_opts
-          )
-
-        selected_tier = if(selected.loaded_model?, do: "loaded", else: "cold")
-
-        schedule =
-          %{
-            strategy: :multi_node,
-            request_id: request.public_id,
-            runtime_endpoint_target: selected.target,
-            request_timeout_ms: Inference.request_timeout_ms(),
-            model_load_timeout_ms: Inference.model_load_timeout_ms(),
-            node_id: selected.node_id,
-            candidate_count: length(ranked),
-            queue_lane_capacity: queue_lane_capacity(available_candidates),
-            selected_tier: selected_tier,
-            dispatch_capacity_input: selected.dispatch_capacity_input,
-            dispatch_capacity_acquisition_input_provider:
-              dispatch_capacity_input_provider(selected, request, :acquisition, opts),
-            dispatch_capacity_input_provider:
-              dispatch_capacity_input_provider(selected, request, :revalidation, opts),
-            dispatch_capacity_evaluation: selected.dispatch_capacity_evaluation
-          }
-          |> maybe_put_runtime_client_target(selected.target)
-          |> Consumer.put_authority(opts)
-          |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
-          |> maybe_put_prefix_cache_fingerprint_match(
-            selected,
-            live_fingerprint_match_enabled?
-          )
-          |> maybe_put_prefix_cache_score(selected_score)
-          |> maybe_put_memory_admission(selected, memory_admission_enabled?)
-          |> Map.merge(
-            scheduler_explanation(
-              request,
-              selected,
-              selected_tier,
-              ranked,
-              candidates,
-              ranking_opts
-            )
-          )
-
-        {:ok,
-         Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
+      _inventory_unavailable ->
+        :inventory_unavailable
     end
   end
 
-  defp selection_state([], _available_candidates, [], opts, _beam_identity_rejected?),
-    do: {:fallback, Keyword.put(opts, :probe_status?, false)}
+  defp compatibility_targets(inventory_result, opts) do
+    if Inference.static_runtime_target_fallback_enabled?() do
+      inventory_result
+      |> runtime_endpoint_targets(opts)
+      |> Enum.reduce([], &normalize_compatibility_target/2)
+      |> Enum.reverse()
+      |> Enum.filter(&Inference.static_runtime_target?/1)
+      |> Enum.flat_map(&prepare_unmanaged_target/1)
+      |> Enum.uniq_by(&{&1.transport, &1.address})
+      |> Enum.take(@max_compatibility_targets)
+    else
+      []
+    end
+  end
 
-  defp selection_state([], _available_candidates, _probe_outcomes, _opts, true),
-    do: {:error, :cluster_busy}
+  defp normalize_compatibility_target(%Target{} = target, targets) do
+    [Target.normalize(target) | targets]
+  rescue
+    ArgumentError -> targets
+  end
 
-  defp selection_state([], _available_candidates, _probe_outcomes, opts, false),
-    do: {:fallback, opts}
+  defp normalize_compatibility_target(target, targets) when is_list(target) or is_map(target) do
+    [Target.normalize(target) | targets]
+  rescue
+    ArgumentError -> targets
+  end
 
-  defp selection_state(_candidates, [], _probe_outcomes, _opts, _beam_identity_rejected?),
-    do: {:error, :cluster_busy}
+  defp normalize_compatibility_target(_target, targets), do: targets
 
-  defp selection_state(
-         _candidates,
-         _available_candidates,
-         _probe_outcomes,
-         _opts,
-         _beam_identity_rejected?
-       ),
-       do: :select_candidate
+  defp prepare_unmanaged_target(%Target{} = target) do
+    target = maybe_declare_unmanaged_compatibility(target)
 
-  defp scheduler_explanation(request, selected, selected_tier, ranked, candidates, ranking_opts) do
+    case Authorization.classify_unmanaged_target(target) do
+      {:ok, _classification} -> [target]
+      {:error, _reason} -> []
+    end
+  end
+
+  defp maybe_declare_unmanaged_compatibility(%Target{metadata: metadata} = target) do
+    declared_class = Map.get(metadata, :capacity_management_class)
+    declared_class = declared_class || Map.get(metadata, "capacity_management_class")
+    source_development? = Map.get(metadata, :source_dev) || Map.get(metadata, "source_dev")
+
+    if is_nil(declared_class) and source_development? != true do
+      %{
+        target
+        | metadata: Map.put(metadata, :capacity_management_class, :unmanaged_compatibility)
+      }
+    else
+      target
+    end
+  end
+
+  defp schedule_production_candidates(request, targets, active_targets, opts, observed_at) do
+    case production_candidate_snapshot(targets, active_targets, observed_at, opts) do
+      {:ok, snapshot} ->
+        candidates =
+          snapshot.candidates
+          |> Enum.map(&snapshot_candidate(&1, request))
+          |> Enum.map(fn candidate ->
+            annotate_dispatch_capacity(candidate, opts, candidate.observation.observed_at)
+          end)
+
+        source_rejections = Enum.map(snapshot.rejections, &snapshot_rejection/1)
+        available_candidates = Enum.filter(candidates, &dispatch_capacity_eligible?/1)
+
+        if available_candidates == [] do
+          all_rejected_result(request, candidates, source_rejections)
+        else
+          select_candidate(
+            request,
+            candidates,
+            available_candidates,
+            source_rejections,
+            opts,
+            :snapshot
+          )
+        end
+
+      {:error, _reason} ->
+        {:error, :cluster_busy}
+    end
+  end
+
+  defp schedule_inline_candidates(request, targets, opts, observed_at) do
+    client = Keyword.get(opts, :status_client, Inference.runtime_endpoint_client())
+    timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
+
+    runner =
+      Keyword.get_lazy(opts, :compatibility_probe_runner, fn ->
+        Application.get_env(
+          :orchard_controller,
+          :multi_node_compatibility_probe_runner,
+          CompatibilityProbeRunner
+        )
+      end)
+
+    probe_results =
+      runner.run(
+        targets,
+        &probe_target(&1, client, timeout, observed_at, request),
+        max_concurrency: @max_compatibility_targets,
+        timeout: timeout + 250
+      )
+
+    {candidates, source_rejections} =
+      targets
+      |> Enum.zip(probe_results)
+      |> Enum.reduce({[], []}, fn {target, result}, {candidates, rejections} ->
+        case result do
+          {:ok, {:candidate, candidate}} ->
+            {[annotate_dispatch_capacity(candidate, opts, observed_at) | candidates], rejections}
+
+          {:ok, {:rejected, rejection}} ->
+            {candidates, [rejection | rejections]}
+
+          {:ok, _unattributed} ->
+            rejection =
+              compatibility_rejection(target, nil, "transport_unreachable", "status_failed")
+
+            {candidates, [rejection | rejections]}
+
+          {:exit, _reason} ->
+            rejection =
+              compatibility_rejection(
+                target,
+                nil,
+                "transport_unreachable",
+                "probe_task_failed"
+              )
+
+            {candidates, [rejection | rejections]}
+        end
+      end)
+
+    candidates = Enum.reverse(candidates)
+    source_rejections = Enum.reverse(source_rejections)
+    available_candidates = Enum.filter(candidates, &dispatch_capacity_eligible?/1)
+
+    if available_candidates == [] do
+      all_rejected_result(request, candidates, source_rejections)
+    else
+      select_candidate(
+        request,
+        candidates,
+        available_candidates,
+        source_rejections,
+        opts,
+        :inline_status
+      )
+    end
+  end
+
+  defp select_candidate(
+         request,
+         candidates,
+         available_candidates,
+         source_rejections,
+         opts,
+         refresh_strategy
+       ) do
+    client = Keyword.get(opts, :status_client, Inference.runtime_endpoint_client())
+    cache_affinity_config = Inference.cache_affinity_config()
+
+    {affinity_candidates, affinity_context} =
+      CacheAffinity.prepare(request, available_candidates, cache_affinity_config)
+
+    live_fingerprint_match_enabled? =
+      CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
+
+    prefix_cache_scoring_enabled? = Inference.prefix_cache_scoring_enabled?()
+    memory_admission_enabled? = Inference.memory_admission_enabled?()
+
+    prefer_capable_workers? =
+      Inference.tokenizer_safe_mode_prefer_capable_workers?() and
+        Inference.tokenizer_safe_mode() != :off
+
+    annotated_candidates =
+      affinity_candidates
+      |> annotate_prefix_cache_fingerprint_matches(
+        affinity_context,
+        live_fingerprint_match_enabled?
+      )
+      |> annotate_capable_workers(prefer_capable_workers?)
+      |> annotate_memory_admission(memory_admission_enabled?)
+
+    ranking_opts = [
+      live_fingerprint_match?: live_fingerprint_match_enabled?,
+      prefer_capable_workers?: prefer_capable_workers?,
+      memory_admission?: memory_admission_enabled?
+    ]
+
+    ranked = rank_candidates(annotated_candidates, ranking_opts)
+
+    {selected, selected_score} =
+      select_candidate_with_prefix_cache_score(
+        request,
+        ranked,
+        client,
+        cache_affinity_config,
+        prefix_cache_scoring_enabled?,
+        ranking_opts
+      )
+
+    selected_tier = if(selected.loaded_model?, do: "loaded", else: "cold")
+
+    schedule =
+      %{
+        strategy: :multi_node,
+        request_id: request.public_id,
+        runtime_endpoint_target: selected.target,
+        request_timeout_ms: Inference.request_timeout_ms(),
+        model_load_timeout_ms: Inference.model_load_timeout_ms(),
+        node_id: selected.node_id,
+        candidate_count: length(ranked),
+        queue_lane_capacity: queue_lane_capacity(available_candidates),
+        selected_tier: selected_tier,
+        dispatch_capacity_input: selected.dispatch_capacity_input,
+        dispatch_capacity_acquisition_input_provider:
+          dispatch_capacity_input_provider(
+            selected,
+            request,
+            :acquisition,
+            refresh_strategy,
+            opts
+          ),
+        dispatch_capacity_input_provider:
+          dispatch_capacity_input_provider(
+            selected,
+            request,
+            :revalidation,
+            refresh_strategy,
+            opts
+          ),
+        dispatch_capacity_evaluation: selected.dispatch_capacity_evaluation
+      }
+      |> maybe_put_runtime_client_target(selected.target)
+      |> maybe_put_dispatch_identity_source(refresh_strategy)
+      |> Consumer.put_authority(opts)
+      |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
+      |> maybe_put_prefix_cache_fingerprint_match(selected, live_fingerprint_match_enabled?)
+      |> maybe_put_prefix_cache_score(selected_score)
+      |> maybe_put_memory_admission(selected, memory_admission_enabled?)
+      |> Map.merge(
+        scheduler_explanation(
+          request,
+          selected,
+          selected_tier,
+          ranked,
+          candidates,
+          source_rejections,
+          ranking_opts
+        )
+      )
+
+    {:ok,
+     Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
+  end
+
+  defp active_runtime_endpoint_targets(opts) do
+    provider =
+      Keyword.get(
+        opts,
+        :active_runtime_endpoint_targets_provider,
+        &Nodes.active_runtime_endpoint_targets/0
+      )
+
+    provider.()
+  end
+
+  defp runtime_endpoint_targets(inventory_result, opts) do
+    provider =
+      Keyword.get(
+        opts,
+        :runtime_endpoint_targets_provider,
+        &Inference.runtime_endpoint_targets/1
+      )
+
+    provider.(inventory_result)
+  end
+
+  defp production_candidate_snapshot(effective_targets, active_targets, observed_at, opts) do
+    provider =
+      Keyword.get(
+        opts,
+        :production_candidate_snapshot_provider,
+        &NodeHeartbeats.production_candidate_snapshot/3
+      )
+
+    provider.(effective_targets, active_targets, observed_at: observed_at)
+  end
+
+  defp scheduler_explanation(
+         request,
+         selected,
+         selected_tier,
+         ranked,
+         candidates,
+         source_rejections,
+         ranking_opts
+       ) do
     scored = scored_candidates(ranked, selected_tier)
-    skipped_node_ids = MapSet.new(Enum.map(ranked -- scored, & &1.node_id))
+    skipped_candidate_keys = MapSet.new(Enum.map(ranked -- scored, &candidate_key/1))
 
     %{
       selected_node_id: selected.node_id,
       selection_tier: selected_tier,
       scored_candidates: scored_candidate_explanations(scored, ranking_opts),
-      rejected_candidates: rejected_candidates(candidates, skipped_node_ids),
+      rejected_candidates:
+        rejected_candidates(candidates, skipped_candidate_keys) ++ source_rejections,
       skipped_candidates: skipped_candidates(ranked -- scored, selected_tier),
       request_id: request.public_id
     }
+  end
+
+  defp all_rejected_result(request, candidates, source_rejections) do
+    coherent_subject_count = length(candidates) + length(source_rejections)
+
+    if coherent_subject_count == 0 do
+      {:error, :cluster_busy}
+    else
+      decision = %{
+        strategy: :multi_node,
+        request_id: request.public_id,
+        selected_node_id: nil,
+        selection_tier: nil,
+        scored_candidates: [],
+        rejected_candidates: rejected_candidates(candidates, MapSet.new()) ++ source_rejections,
+        skipped_candidates: [],
+        candidate_count: coherent_subject_count
+      }
+
+      {:error, :cluster_busy, decision}
+    end
   end
 
   defp scored_candidates(ranked, "loaded") do
@@ -312,14 +494,13 @@ defmodule Orchard.Scheduler.MultiNode do
   defp scored_candidate(candidate, qualitative_components, rank_base) do
     components = Map.put(qualitative_components, :rank_base, rank_base)
 
-    %{
-      node_id: candidate.node_id,
+    explanation_candidate(candidate, %{
       eligible: true,
       tier: candidate_tier(candidate),
       score: scheduler_score(components),
       components: components,
       reason_codes: []
-    }
+    })
   end
 
   defp scheduler_score(components) do
@@ -373,27 +554,119 @@ defmodule Orchard.Scheduler.MultiNode do
   defp maybe_put_score_component(components, key, value, true),
     do: Map.put(components, key, value)
 
-  defp rejected_candidates(candidates, skipped_node_ids) do
+  defp snapshot_rejection(rejection) do
+    explanation_candidate(
+      %{
+        node_id: rejection.node_id,
+        target: rejection.target,
+        candidate_source: "monitor_snapshot",
+        diagnostics: rejection.diagnostics
+      },
+      %{
+        eligible: false,
+        reason_codes: rejection.reason_codes
+      }
+    )
+  end
+
+  defp compatibility_rejection(target, node_id, reason_code, fact) do
+    explanation_candidate(
+      %{
+        node_id: node_id,
+        target: target,
+        candidate_source: "bounded_compatibility_probe",
+        diagnostics: %{fact: fact}
+      },
+      %{
+        eligible: false,
+        reason_codes: [reason_code]
+      }
+    )
+  end
+
+  defp explanation_candidate(subject, attrs) do
+    Map.merge(
+      %{
+        node_id: Map.get(subject, :node_id),
+        target_ref: explanation_target_ref(subject),
+        eligible: false,
+        tier: nil,
+        score: nil,
+        components: %{},
+        diagnostics: explanation_diagnostics(subject),
+        reason_codes: []
+      },
+      attrs
+    )
+  end
+
+  defp explanation_target_ref(%{target: %Target{id: id}}), do: id
+  defp explanation_target_ref(_subject), do: nil
+
+  defp explanation_diagnostics(subject) do
+    diagnostics = Map.get(subject, :diagnostics, %{})
+
+    %{candidate_source: explanation_candidate_source(subject)}
+    |> maybe_put_diagnostic_fact(Map.get(diagnostics, :fact) || Map.get(diagnostics, "fact"))
+    |> maybe_put_diagnostic_heartbeat(
+      Map.get(diagnostics, :heartbeat_id) || Map.get(diagnostics, "heartbeat_id")
+    )
+  end
+
+  defp explanation_candidate_source(%{candidate_source: "monitor_snapshot"}),
+    do: "monitor_snapshot"
+
+  defp explanation_candidate_source(_subject), do: "bounded_compatibility_probe"
+
+  defp maybe_put_diagnostic_fact(diagnostics, fact) when is_binary(fact),
+    do: Map.put(diagnostics, :fact, String.slice(fact, 0, 120))
+
+  defp maybe_put_diagnostic_fact(diagnostics, fact) when is_map(fact) do
+    kind = Map.get(fact, :kind) || Map.get(fact, "kind")
+    detail = Map.get(fact, :detail) || Map.get(fact, "detail")
+
+    if is_binary(kind) and (is_binary(detail) or is_integer(detail)) do
+      bounded_detail = if is_binary(detail), do: String.slice(detail, 0, 120), else: detail
+      Map.put(diagnostics, :fact, %{kind: String.slice(kind, 0, 120), detail: bounded_detail})
+    else
+      diagnostics
+    end
+  end
+
+  defp maybe_put_diagnostic_fact(diagnostics, _fact), do: diagnostics
+
+  defp maybe_put_diagnostic_heartbeat(diagnostics, heartbeat_id)
+       when is_integer(heartbeat_id) and heartbeat_id > 0,
+       do: Map.put(diagnostics, :heartbeat_id, heartbeat_id)
+
+  defp maybe_put_diagnostic_heartbeat(diagnostics, _heartbeat_id), do: diagnostics
+
+  defp rejected_candidates(candidates, skipped_candidate_keys) do
     candidates
     |> Enum.map(fn candidate -> {candidate, rejection_reason_codes(candidate)} end)
     |> Enum.reject(fn {candidate, reason_codes} ->
-      MapSet.member?(skipped_node_ids, candidate.node_id) or reason_codes == []
+      MapSet.member?(skipped_candidate_keys, candidate_key(candidate)) or reason_codes == []
     end)
     |> Enum.map(fn {candidate, reason_codes} ->
-      %{node_id: candidate.node_id, reason_codes: reason_codes}
+      explanation_candidate(candidate, %{
+        eligible: false,
+        reason_codes: reason_codes
+      })
     end)
   end
 
   defp skipped_candidates(candidates, "loaded") do
     Enum.map(candidates, fn candidate ->
-      %{
-        node_id: candidate.node_id,
+      explanation_candidate(candidate, %{
+        eligible: true,
         reason_codes: ["lower_tier_not_considered"]
-      }
+      })
     end)
   end
 
   defp skipped_candidates(_candidates, _selected_tier), do: []
+
+  defp candidate_key(candidate), do: {candidate.node_id, explanation_target_ref(candidate)}
 
   defp rejection_reason_codes(candidate) do
     if dispatch_capacity_eligible?(candidate) do
@@ -434,6 +707,43 @@ defmodule Orchard.Scheduler.MultiNode do
   defp candidate_tier(%{loaded_model?: true}), do: "loaded"
   defp candidate_tier(_candidate), do: "cold"
 
+  defp snapshot_candidate(snapshot_candidate, request) do
+    observation =
+      Observation.new(%{
+        endpoint_id: snapshot_candidate.target.id,
+        target: snapshot_candidate.target,
+        observed_at: snapshot_candidate.observed_at,
+        availability: snapshot_candidate.availability,
+        worker_state: snapshot_candidate.worker_state,
+        aggregate_active_request_count: snapshot_candidate.active_request_count,
+        aggregate_max_concurrency: snapshot_candidate.max_concurrency,
+        placements: snapshot_candidate.placements,
+        runtime_memory_budgets: snapshot_candidate.runtime_memory_budgets,
+        runtime_prefix_cache_statuses: snapshot_candidate.runtime_prefix_cache_statuses,
+        supports_prompt_token_ids: snapshot_candidate.supports_prompt_token_ids
+      })
+
+    loaded_model? = model_loaded?(observation, request)
+
+    %{
+      node_id: snapshot_candidate.node.id,
+      target: snapshot_candidate.target,
+      node: snapshot_candidate.node,
+      observation: observation,
+      availability: snapshot_candidate.availability,
+      loaded_model?: loaded_model?,
+      active_request_count: snapshot_candidate.active_request_count,
+      max_concurrency: snapshot_candidate.max_concurrency,
+      supports_prompt_token_ids: snapshot_candidate.supports_prompt_token_ids,
+      candidate_source: "monitor_snapshot"
+    }
+    |> maybe_put_model_placement_capacity(
+      model_placement_capacity_for(observation, request.model_ref, loaded_model?)
+    )
+    |> maybe_put_prefix_cache_status(prefix_cache_status_for(observation, request.model_ref))
+    |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))
+  end
+
   defp probe_target(target, client, timeout, observed_at, request) do
     case client.connect(target) do
       {:ok, channel} ->
@@ -443,56 +753,73 @@ defmodule Orchard.Scheduler.MultiNode do
           disconnect_best_effort(client, channel)
         end
 
-      {:error, reason} ->
-        # Persist transport-like connect failures best-effort
-        Nodes.record_transport_failure(observation_target(target), reason, observed_at)
-        nil
+      {:error, _reason} ->
+        {:rejected,
+         compatibility_rejection(target, nil, "transport_unreachable", "connect_failed")}
     end
   end
 
-  defp probe_status(target, client, channel, timeout, observed_at, request) do
+  defp probe_status(target, client, channel, timeout, _observed_at, request) do
     case client.status(channel, timeout: timeout) do
       {:ok, response} ->
-        observation = normalize_status_observation(target, response)
-        resolve_probe_observation(target, observation, observed_at, request)
+        case normalize_status_observation(target, response) do
+          %Observation{} = observation ->
+            resolve_probe_observation(target, observation, request)
 
-      {:error, :authenticated_observation_rejected} ->
-        nil
+          nil ->
+            {:rejected,
+             compatibility_rejection(
+               target,
+               nil,
+               "transport_unreachable",
+               "status_failed"
+             )}
+        end
 
-      {:error, reason} ->
-        # Persist transport-like probe failures best-effort
-        Nodes.record_transport_failure(observation_target(target), reason, observed_at)
-        nil
+      {:error, _reason} ->
+        {:rejected,
+         compatibility_rejection(target, nil, "transport_unreachable", "status_failed")}
     end
   end
 
-  defp resolve_probe_observation(target, observation, observed_at, request) do
+  defp resolve_probe_observation(target, observation, request) do
     case BeamIdentity.resolve_candidate_node_id(target, observation) do
       :missing ->
-        nil
+        {:rejected,
+         compatibility_rejection(
+           target,
+           nil,
+           "runtime_identity_mismatch",
+           "identity_missing"
+         )}
 
-      {:rejected, reason} ->
-        Nodes.clear_target_queue_capacity_sources(observation_target(target), observed_at)
-        {:rejected, reason}
+      {:rejected, _reason} ->
+        {:rejected,
+         compatibility_rejection(
+           target,
+           target.node_id,
+           "runtime_identity_mismatch",
+           "identity_missing"
+         )}
 
       {:ok, node_id} ->
-        Nodes.observe_status(observation_target(target), observation, observed_at,
-          reserve_unassigned_node_grants?: true,
-          reserve_unassigned_source_grants?: true
-        )
-
+        target = schedule_target(target, node_id)
+        {:ok, capacity_management_class} = Authorization.classify_unmanaged_target(target)
         loaded_model? = model_loaded?(observation, request)
 
         {:candidate,
          %{
            node_id: node_id,
-           target: schedule_target(target, node_id),
+           target: target,
+           node: %{id: node_id, health: compatibility_health(observation)},
            observation: observation,
            availability: observation.availability,
            loaded_model?: loaded_model?,
            active_request_count: observation.aggregate_active_request_count,
            max_concurrency: node_max_concurrency(observation),
-           supports_prompt_token_ids: observation.supports_prompt_token_ids
+           supports_prompt_token_ids: observation.supports_prompt_token_ids,
+           capacity_management_class: capacity_management_class,
+           candidate_source: "bounded_compatibility_probe"
          }
          |> maybe_put_model_placement_capacity(
            model_placement_capacity_for(observation, request.model_ref, loaded_model?)
@@ -501,6 +828,10 @@ defmodule Orchard.Scheduler.MultiNode do
          |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))}
     end
   end
+
+  defp compatibility_health(%Observation{availability: :degraded}), do: :degraded
+  defp compatibility_health(%Observation{availability: :available}), do: :healthy
+  defp compatibility_health(_observation), do: :unhealthy
 
   defp disconnect_best_effort(client, channel) do
     client.disconnect(channel)
@@ -565,6 +896,21 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp observation_capacity_input(
+         %{capacity_management_class: capacity_management_class} = candidate,
+         placement_capacity,
+         _observed_at
+       )
+       when capacity_management_class in [
+              :unmanaged_source_development,
+              :unmanaged_compatibility
+            ] do
+    Authorization.unmanaged_input(candidate.target, candidate.observation,
+      placement_capacity: placement_capacity,
+      now: DateTime.utc_now()
+    )
+  end
+
+  defp observation_capacity_input(
          %{node: %Nodes.Node{} = node} = candidate,
          placement_capacity,
          observed_at
@@ -587,14 +933,25 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp dispatch_capacity_eligible?(_candidate), do: false
 
-  defp dispatch_capacity_input_provider(candidate, request, phase, opts) do
+  defp dispatch_capacity_input_provider(
+         candidate,
+         request,
+         phase,
+         refresh_strategy,
+         opts
+       ) do
     placement_capacity =
       Map.get(candidate, :model_placement_capacity, placement_default(candidate, phase))
 
-    if Keyword.has_key?(opts, :dispatch_capacity_input_provider) do
-      configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts)
-    else
-      fresh_dispatch_capacity_input_provider(candidate, request, phase, opts)
+    case {Keyword.has_key?(opts, :dispatch_capacity_input_provider), refresh_strategy} do
+      {true, _strategy} ->
+        configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts)
+
+      {false, :snapshot} ->
+        snapshot_dispatch_capacity_input_provider(candidate, request, phase, opts)
+
+      {false, :inline_status} ->
+        fresh_dispatch_capacity_input_provider(candidate, request, phase, opts)
     end
   end
 
@@ -604,6 +961,49 @@ defmodule Orchard.Scheduler.MultiNode do
         {:ok, input} -> input
         {:error, _reason} -> nil
       end
+    end
+  end
+
+  defp snapshot_dispatch_capacity_input_provider(candidate, request, phase, opts) do
+    fn -> snapshot_dispatch_capacity_input(candidate, request, phase, opts) end
+  end
+
+  defp snapshot_dispatch_capacity_input(candidate, request, phase, opts) do
+    observed_at = DateTime.utc_now()
+
+    with {:ok, [_active_target | _active_rest] = active_targets} <-
+           active_runtime_endpoint_targets(opts),
+         effective_targets <- runtime_endpoint_targets({:ok, active_targets}, opts),
+         {:ok, snapshot} <-
+           production_candidate_snapshot(effective_targets, active_targets, observed_at, opts),
+         {:ok, snapshot_candidate} <-
+           matching_snapshot_candidate(snapshot.candidates, candidate),
+         refreshed = snapshot_candidate(snapshot_candidate, request),
+         refreshed_placement <-
+           Map.get(
+             refreshed,
+             :model_placement_capacity,
+             placement_default(refreshed, phase)
+           ),
+         {:ok, input} <-
+           dispatch_capacity_input(
+             refreshed,
+             refreshed_placement,
+             opts,
+             snapshot_candidate.observed_at
+           ) do
+      input
+    else
+      _unavailable -> nil
+    end
+  end
+
+  defp matching_snapshot_candidate(candidates, selected) do
+    case Enum.find(candidates, fn candidate ->
+           candidate.node.id == selected.node_id and candidate.target == selected.target
+         end) do
+      nil -> {:error, :selected_candidate_unavailable}
+      candidate -> {:ok, candidate}
     end
   end
 
@@ -842,6 +1242,12 @@ defmodule Orchard.Scheduler.MultiNode do
       |> Map.put(:memory_headroom_ok?, tier == :headroom_ok)
     end)
   end
+
+  defp maybe_put_dispatch_identity_source(schedule, :snapshot) do
+    Map.put(schedule, :dispatch_identity_source, :trusted_monitor_snapshot)
+  end
+
+  defp maybe_put_dispatch_identity_source(schedule, _refresh_strategy), do: schedule
 
   defp maybe_put_prefix_cache_score(map, nil), do: map
 
@@ -1187,37 +1593,13 @@ defmodule Orchard.Scheduler.MultiNode do
 
   # -- Helpers --
 
-  defp fallback_schedule(request, [%Target{transport: :grpc_compat} = single_target], opts) do
-    SingleNode.default_schedule(request, dispatch_target(single_target), opts)
-  end
-
-  defp fallback_schedule(request, [%Target{} = single_target], opts) do
-    SingleNode.default_schedule(request, single_target, opts)
-  end
-
-  defp fallback_schedule(request, [single_target], opts) do
-    SingleNode.default_schedule(request, dispatch_target(single_target), opts)
-  end
-
-  defp fallback_schedule(request, [%Target{} | _] = targets, opts) do
-    case Enum.find(targets, &runtime_endpoint_fallback_target?/1) do
-      nil -> SingleNode.default_schedule(request, SingleNode.target(), opts)
-      %Target{} = target -> SingleNode.default_schedule(request, target, opts)
-    end
-  end
-
-  defp fallback_schedule(request, _targets, opts) do
-    SingleNode.default_schedule(request, SingleNode.target(), opts)
-  end
-
-  defp runtime_endpoint_fallback_target?(%Target{transport: :grpc_compat}), do: false
-  defp runtime_endpoint_fallback_target?(%Target{}), do: true
-
   defp normalize_status_observation(_target, %Observation{} = observation), do: observation
 
   defp normalize_status_observation(target, %{} = status_response) do
     GrpcCompatibilityMapper.observation_from_status(target, status_response)
   end
+
+  defp normalize_status_observation(_target, _invalid_status), do: nil
 
   defp runtime_model_ref(%CanonicalRequest.ModelRef{} = model_ref) do
     ModelRef.new!(model_ref.model_id, model_ref.version)
@@ -1231,10 +1613,4 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp maybe_put_runtime_client_target(schedule, _target), do: schedule
-
-  defp dispatch_target(%Target{transport: :grpc_compat, address: address}), do: address
-  defp dispatch_target(target), do: target
-
-  defp observation_target(%Target{transport: :grpc_compat, address: address}), do: address
-  defp observation_target(target), do: target
 end

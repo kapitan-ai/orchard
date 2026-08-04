@@ -52,6 +52,92 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMalformedExplanationSche
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubRejectedExplanationScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+
+  def schedule(%CanonicalRequest{} = request) do
+    {:error, :cluster_busy,
+     %{
+       strategy: :multi_node,
+       request_id: request.public_id,
+       selected_node_id: nil,
+       selection_tier: nil,
+       scored_candidates: [],
+       rejected_candidates: [
+         rejected_candidate(
+           "00000000-0000-4000-a000-0000000000cc",
+           "heartbeat_observation_missing",
+           "dispatch_capacity_facts_unavailable",
+           7
+         ),
+         rejected_candidate(
+           "00000000-0000-4000-a000-0000000000cd",
+           "heartbeat_target_identity_mismatch",
+           "runtime_identity_mismatch",
+           8
+         ),
+         rejected_candidate(
+           "00000000-0000-4000-a000-0000000000ce",
+           "malformed_heartbeat_payload",
+           "dispatch_capacity_facts_unavailable",
+           9
+         )
+       ],
+       skipped_candidates: [],
+       candidate_count: 3
+     }}
+  end
+
+  defp rejected_candidate(node_id, fact, reason_code, heartbeat_id) do
+    %{
+      node_id: node_id,
+      target_ref: "beam:#{node_id}",
+      eligible: false,
+      tier: nil,
+      score: nil,
+      components: %{},
+      diagnostics: %{
+        candidate_source: "monitor_snapshot",
+        fact: fact,
+        heartbeat_id: heartbeat_id
+      },
+      reason_codes: [reason_code]
+    }
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubMalformedRejectedExplanationScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+
+  def schedule(%CanonicalRequest{} = request) do
+    {:error, :cluster_busy,
+     %{
+       strategy: :multi_node,
+       request_id: request.public_id,
+       selected_node_id: nil,
+       selection_tier: nil,
+       scored_candidates: [],
+       rejected_candidates: [
+         %{node_id: "00000000-0000-4000-a000-0000000000dd", reason_codes: ["made_up"]}
+       ],
+       skipped_candidates: [],
+       candidate_count: 1
+     }}
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubBareFailureScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+
+  def schedule(%CanonicalRequest{}), do: {:error, :no_active_nodes}
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -68,13 +154,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetSch
         Target.grpc_compat(%{
           host: Keyword.fetch!(runtime_target, :host),
           port: Keyword.fetch!(runtime_target, :port),
+          node_id: schedule.node_id,
           metadata: %{
             bearer_token: "must-not-persist-runtime-target",
             tenant_hint: "tenant-secret"
           }
         })
 
-      {:ok, Map.put(schedule, :runtime_endpoint_target, target)}
+      {:ok,
+       schedule
+       |> Map.put(:runtime_endpoint_target, target)
+       |> Map.put(:dispatch_identity_source, :trusted_monitor_snapshot)}
     end
   end
 end
@@ -1022,7 +1112,87 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(decision, "rejected_candidates")
     refute Map.has_key?(decision, "skipped_candidates")
 
-    assert {:ok, %{scored_candidates: [], rejected_candidates: [], skipped_candidates: []}} =
+    assert {:error, :scheduler_explanation_not_found} =
+             SchedulerExplanationPresenter.show(request)
+  end
+
+  test "OpenSpec 6.4 execute/3 observationally persists a coherent rejected decision",
+       %{bundle: bundle} do
+    put_scheduler_config(
+      Orchard.Inference.RequestOrchestratorTest.StubRejectedExplanationScheduler
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-rejected-explanation")
+    canonical = canonical_request("request-orchestrator-rejected-explanation", stream?: false)
+
+    assert {:error, :cluster_busy} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert request.node_id == nil
+    assert decision["selected_node_id"] == nil
+    assert decision["selection_tier"] == nil
+    assert decision["candidate_count"] == 3
+
+    assert [missing, identity_mismatch, malformed] = decision["rejected_candidates"]
+    assert missing["target_ref"] == "beam:00000000-0000-4000-a000-0000000000cc"
+    assert missing["eligible"] == false
+
+    assert missing["diagnostics"] == %{
+             "candidate_source" => "monitor_snapshot",
+             "fact" => "heartbeat_observation_missing",
+             "heartbeat_id" => 7
+           }
+
+    assert identity_mismatch["diagnostics"]["fact"] == "heartbeat_target_identity_mismatch"
+    assert identity_mismatch["reason_codes"] == ["runtime_identity_mismatch"]
+    assert malformed["diagnostics"]["fact"] == "malformed_heartbeat_payload"
+    assert malformed["reason_codes"] == ["dispatch_capacity_facts_unavailable"]
+
+    assert {:ok, explanation} = SchedulerExplanationPresenter.show(request)
+    assert explanation.selected_node_id == nil
+
+    assert Enum.map(explanation.rejected_candidates, & &1.reason_codes) == [
+             ["dispatch_capacity_facts_unavailable"],
+             ["runtime_identity_mismatch"],
+             ["dispatch_capacity_facts_unavailable"]
+           ]
+  end
+
+  test "OpenSpec 6.4 malformed rejected explanation persistence remains observational",
+       %{bundle: bundle} do
+    put_scheduler_config(
+      Orchard.Inference.RequestOrchestratorTest.StubMalformedRejectedExplanationScheduler
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-malformed-rejected-explanation")
+
+    canonical =
+      canonical_request("request-orchestrator-malformed-rejected-explanation", stream?: false)
+
+    assert {:error, :cluster_busy} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.scheduler_decision["strategy"] == "multi_node"
+    refute Map.has_key?(request.scheduler_decision, "rejected_candidates")
+
+    assert {:error, :scheduler_explanation_not_found} =
+             SchedulerExplanationPresenter.show(request)
+  end
+
+  test "OpenSpec 6.4 bare scheduler failures leave no candidate explanation", %{bundle: bundle} do
+    put_scheduler_config(Orchard.Inference.RequestOrchestratorTest.StubBareFailureScheduler)
+
+    model = create_active_model!(bundle, "request-orchestrator-bare-scheduler-failure")
+    canonical = canonical_request("request-orchestrator-bare-scheduler-failure", stream?: false)
+
+    assert {:error, :no_active_nodes} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.scheduler_decision == nil
+
+    assert {:error, :scheduler_explanation_not_found} =
              SchedulerExplanationPresenter.show(request)
   end
 
@@ -1041,6 +1211,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert decision["strategy"] == "multi_node"
     assert decision["runtime_client_target"] == runtime_client_target_map()
     refute Map.has_key?(decision, "runtime_endpoint_target")
+    refute Map.has_key?(decision, "dispatch_identity_source")
     refute Map.has_key?(decision, "dispatch_capacity_input")
     refute Map.has_key?(decision, "dispatch_capacity_evaluation")
     refute Map.has_key?(decision, "dispatch_capacity_acquisition_input_provider")
@@ -3182,6 +3353,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       assert_receive {:captured_execute_request, execute_request}
       assert execute_request.cache_affinity_fingerprint in [nil, ""]
     end)
+  end
+
+  defp put_scheduler_config(scheduler) do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(:scheduler_impl, scheduler)
+
+    Application.put_env(:orchard_controller, :inference, inference)
   end
 
   defp put_multi_node_scheduler_config do

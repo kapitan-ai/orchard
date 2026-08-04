@@ -34,6 +34,9 @@ config :orchard_controller, Orchard.Repo,
   pool_size: 10
 
 config :orchard_controller,
+  multi_node_compatibility_probe_runner: Orchard.TestSupport.InProcessCompatibilityProbeRunner
+
+config :orchard_controller,
   start_repo: false,
   start_endpoint: false,
   enable_db_checks: false,

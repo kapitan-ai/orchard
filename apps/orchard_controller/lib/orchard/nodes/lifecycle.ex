@@ -130,6 +130,14 @@ defmodule Orchard.Nodes.Lifecycle do
       end
     end)
     |> unwrap_transaction_result()
+    |> case do
+      {:ok, %{node: %Node{} = node}} = result ->
+        Nodes.clear_dispatch_capacity_sources(node.id, opts)
+        result
+
+      error ->
+        error
+    end
   end
 
   def execute(_action, _node_id, _attrs, _opts), do: {:error, :lifecycle_action_unknown}

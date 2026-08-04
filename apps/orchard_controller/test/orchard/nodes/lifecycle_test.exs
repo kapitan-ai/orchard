@@ -13,6 +13,19 @@ defmodule Orchard.Nodes.LifecycleTest.FailingAuditLog do
   end
 end
 
+defmodule Orchard.Nodes.LifecycleTest.RecordingQueueManager do
+  @moduledoc false
+
+  def clear_capacity_sources(sources, opts) do
+    send(
+      Process.get(:lifecycle_queue_observer),
+      {:queue_sources_cleared, sources, opts, Orchard.Repo.in_transaction?()}
+    )
+
+    :ok
+  end
+end
+
 defmodule Orchard.Nodes.LifecycleTest do
   use ExUnit.Case, async: false
 
@@ -24,7 +37,10 @@ defmodule Orchard.Nodes.LifecycleTest do
   alias Orchard.Nodes.Node
   alias Orchard.Repo
 
+  @queue_manager Orchard.Nodes.LifecycleTest.RecordingQueueManager
+
   setup do
+    Process.put(:lifecycle_queue_observer, self())
     :ok = Sandbox.checkout(Repo)
     Sandbox.mode(Repo, {:shared, self()})
     :ok
@@ -45,8 +61,23 @@ defmodule Orchard.Nodes.LifecycleTest do
       node = insert_node!(state: from_state, display_name: "lifecycle-#{action}-#{from_state}")
 
       assert {:ok, %{node: updated, audit_log: audit_log}} =
-               Lifecycle.execute(action, node.id, %{reason: "operator requested"})
+               Lifecycle.execute(
+                 action,
+                 node.id,
+                 %{reason: "operator requested"},
+                 queue_manager: @queue_manager
+               )
 
+      assert_receive {:queue_sources_cleared, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :placement},
+                 {:node, node.id, :cold}
+               ])
+
+      assert opts[:promote?]
       assert updated.state == to_state
       assert Repo.get!(Node, node.id).state == to_state
       assert audit_log.scope == "cluster"
@@ -66,7 +97,10 @@ defmodule Orchard.Nodes.LifecycleTest do
     |> Ecto.Changeset.change(state: :cordoned)
     |> Repo.update!()
 
-    assert {:error, :node_not_active} = Lifecycle.execute(:cordon, node.id)
+    assert {:error, :node_not_active} =
+             Lifecycle.execute(:cordon, node.id, %{}, queue_manager: @queue_manager)
+
+    refute_receive {:queue_sources_cleared, _sources, _opts, _in_transaction?}
     assert Repo.get!(Node, node.id).state == :cordoned
   end
 
@@ -130,7 +164,10 @@ defmodule Orchard.Nodes.LifecycleTest do
 
     on_exit(fn -> Application.delete_env(:orchard_controller, :governance_audit_log_impl) end)
 
-    assert {:error, %Ecto.Changeset{}} = Lifecycle.execute(:cordon, node.id)
+    assert {:error, %Ecto.Changeset{}} =
+             Lifecycle.execute(:cordon, node.id, %{}, queue_manager: @queue_manager)
+
+    refute_receive {:queue_sources_cleared, _sources, _opts, _in_transaction?}
     assert Repo.get!(Node, node.id).state == :active
 
     assert 0 =

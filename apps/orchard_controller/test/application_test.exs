@@ -123,6 +123,13 @@ defmodule OrchardApplicationTest do
     node_id = Ecto.UUID.generate()
     parent = self()
 
+    assert :ok =
+             QueueManager.refresh_capacity("controller-restart-model", "v1", 1,
+               source: {:node, node_id}
+             )
+
+    assert node_source_limit_present?(node_id)
+
     owner_spec = %{
       id: make_ref(),
       restart: :temporary,
@@ -178,6 +185,8 @@ defmodule OrchardApplicationTest do
 
     assert is_pid(replacement_requests)
     assert is_pid(replacement_queue)
+    assert QueueManager.active_capacity_source_lanes({:node, node_id}) == []
+    refute node_source_limit_present?(node_id)
   end
 
   test "SPEC 4.5 queue loss preserves authority and live request ownership" do
@@ -188,6 +197,13 @@ defmodule OrchardApplicationTest do
     queue_manager = Process.whereis(QueueManager)
     node_id = Ecto.UUID.generate()
     parent = self()
+
+    assert :ok =
+             QueueManager.refresh_capacity("queue-restart-model", "v1", 1,
+               source: {:node, node_id}
+             )
+
+    assert node_source_limit_present?(node_id)
 
     owner_spec = %{
       id: make_ref(),
@@ -228,6 +244,8 @@ defmodule OrchardApplicationTest do
     refute_receive {:DOWN, ^owner_ref, :process, ^owner, _reason}
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     assert is_pid(replacement_queue)
+    assert QueueManager.active_capacity_source_lanes({:node, node_id}) == []
+    refute node_source_limit_present?(node_id)
 
     send(owner, :stop)
     assert_receive {:DOWN, ^owner_ref, :process, ^owner, :normal}
@@ -543,6 +561,13 @@ defmodule OrchardApplicationTest do
       {:error, :not_found} -> :ok
       {:error, {:not_found, Sentry.LoggerHandler}} -> :ok
     end
+  end
+
+  defp node_source_limit_present?(node_id) do
+    QueueManager
+    |> :sys.get_state()
+    |> Map.fetch!(:capacity_source_limits)
+    |> Map.has_key?({:node, node_id})
   end
 
   defp stop_controller_app do

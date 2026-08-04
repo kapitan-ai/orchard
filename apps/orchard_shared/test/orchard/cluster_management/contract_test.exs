@@ -226,6 +226,51 @@ defmodule Orchard.ClusterManagement.ContractTest do
              explanation.rejected_candidates
   end
 
+  test "scheduler explanation preserves additive target source and eligibility fields" do
+    assert {:ok, explanation} =
+             SchedulerExplanation.new(%{
+               rejected_candidates: [
+                 %{
+                   node_id: "node-rejected",
+                   target_ref: "beam:node-rejected",
+                   eligible: false,
+                   diagnostics: %{candidate_source: "monitor_snapshot"},
+                   reason_codes: ["dispatch_capacity_facts_unavailable"]
+                 }
+               ],
+               skipped_candidates: [
+                 %{
+                   node_id: "node-skipped",
+                   target_ref: "grpc_compat:127.0.0.1:50071",
+                   eligible: true,
+                   diagnostics: %{candidate_source: "bounded_compatibility_probe"},
+                   reason_codes: ["lower_tier_not_considered"]
+                 }
+               ]
+             })
+
+    assert [
+             %{
+               target_ref: "beam:node-rejected",
+               eligible: false,
+               diagnostics: rejected_diagnostics
+             }
+           ] =
+             explanation.rejected_candidates
+
+    assert rejected_diagnostics == %{candidate_source: "monitor_snapshot"}
+
+    assert [
+             %{
+               target_ref: "grpc_compat:127.0.0.1:50071",
+               eligible: true,
+               diagnostics: skipped_diagnostics
+             }
+           ] = explanation.skipped_candidates
+
+    assert skipped_diagnostics == %{candidate_source: "bounded_compatibility_probe"}
+  end
+
   test "scheduler explanation keeps skipped candidates out of rejection vocabulary" do
     assert {:error, {:unknown_code, :scheduler_skip, "node_not_active"}} =
              SchedulerExplanation.new(%{

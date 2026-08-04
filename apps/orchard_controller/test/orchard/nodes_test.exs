@@ -413,6 +413,31 @@ defmodule Orchard.NodesTest do
     end)
   end
 
+  describe "clear_dispatch_capacity_sources/2" do
+    test "ADR 0017 clears all trusted Node sources without a database lookup" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      node_id = Ecto.UUID.generate()
+
+      assert Repo.get(Node, node_id) == nil
+
+      assert :ok =
+               Nodes.clear_dispatch_capacity_sources(node_id,
+                 queue_manager: Orchard.NodesTest.TransactionProbeQueueManager
+               )
+
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node_id},
+                 {:node, node_id, :placement},
+                 {:node, node_id, :cold}
+               ])
+
+      assert opts[:promote?]
+    end
+  end
+
   # -- Schema validation --
 
   describe "Node schema" do
@@ -4602,7 +4627,9 @@ defmodule Orchard.NodesTest do
   # -- Schedulable nodes --
 
   describe "sweep_stale_node_heartbeats/1" do
-    test "SPEC.md §4.5 demotes active nodes past unreachable threshold" do
+    test "ADR 0017 stale sweep clears all Node-owned sources after commit" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_queue_manager_impl(Orchard.NodesTest.TransactionProbeQueueManager)
       hb_time = DateTime.utc_now()
 
       node =
@@ -4618,6 +4645,59 @@ defmodule Orchard.NodesTest do
 
       assert {:ok, 1} = Nodes.sweep_stale_node_heartbeats(observed_at)
       assert Repo.get!(Node, node.id).health == :unreachable
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :placement},
+                 {:node, node.id, :cold}
+               ])
+
+      assert opts[:promote?]
+    end
+
+    test "ADR 0017 freshness loss clears sources before unreachable health demotion" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.merge(previous_inference,
+          queue_manager_impl: Orchard.NodesTest.TransactionProbeQueueManager,
+          node_freshness_threshold_ms: 10_000,
+          node_unreachable_threshold_ms: 60_000
+        )
+      )
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :inference, previous_inference)
+      end)
+
+      heartbeat_at = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          state: :active,
+          health: :healthy,
+          last_heartbeat_at: heartbeat_at
+        })
+
+      observed_at = DateTime.add(heartbeat_at, 15, :second)
+
+      assert {:ok, 0} = Nodes.sweep_stale_node_heartbeats(observed_at)
+      assert Repo.get!(Node, node.id).health == :healthy
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :placement},
+                 {:node, node.id, :cold}
+               ])
+
+      assert opts[:promote?]
     end
 
     test "SPEC.md §4.5 does not demote when heartbeat is still within threshold" do

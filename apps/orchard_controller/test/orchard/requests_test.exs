@@ -1141,6 +1141,46 @@ defmodule Orchard.RequestsTest do
              }
     end
 
+    test "persists a normalized all-rejected decision with nil selection" do
+      request = create_request!(%{public_id: "req_schedule_all_rejected"})
+
+      decision = %{
+        strategy: :multi_node,
+        request_id: request.public_id,
+        selected_node_id: nil,
+        selection_tier: nil,
+        scored_candidates: [],
+        rejected_candidates: [
+          %{
+            node_id: nil,
+            target_ref: "grpc_compat:10.0.0.1:50061",
+            eligible: false,
+            diagnostics: %{
+              candidate_source: "bounded_compatibility_probe",
+              fact: "connect_failed"
+            },
+            reason_codes: [:transport_unreachable]
+          }
+        ],
+        skipped_candidates: [],
+        candidate_count: 1
+      }
+
+      assert {:ok, updated} = Requests.record_schedule(request, decision)
+      assert updated.node_id == nil
+
+      assert [rejected] = updated.scheduler_decision["rejected_candidates"]
+      assert rejected["target_ref"] == "grpc_compat:10.0.0.1:50061"
+      assert rejected["eligible"] == false
+
+      assert rejected["diagnostics"] == %{
+               "candidate_source" => "bounded_compatibility_probe",
+               "fact" => "connect_failed"
+             }
+
+      assert rejected["reason_codes"] == ["transport_unreachable"]
+    end
+
     test "rejects scheduler explanations with reason codes outside the accepted vocabulary" do
       request = create_request!(%{public_id: "req_schedule_invalid_reason"})
 

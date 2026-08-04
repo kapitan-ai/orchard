@@ -50,6 +50,29 @@ defmodule Orchard.Nodes do
 
   require Logger
 
+  @doc "Clears all process-local queue-capacity sources owned by a trusted Node ID."
+  @spec clear_dispatch_capacity_sources(Ecto.UUID.t(), keyword()) :: :ok
+  def clear_dispatch_capacity_sources(node_id, opts \\ []) do
+    with {:ok, node_id} <- Ecto.UUID.cast(node_id) do
+      queue_manager = Keyword.get(opts, :queue_manager, Orchard.Inference.queue_manager())
+
+      queue_manager.clear_capacity_sources(
+        node_queue_capacity_sources(node_id),
+        promote?: Keyword.get(opts, :promote?, true)
+      )
+    end
+
+    :ok
+  rescue
+    error ->
+      Logger.debug("Queue capacity source clear for node failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.debug("Queue capacity source clear for node exited: #{inspect(reason)}")
+      :ok
+  end
+
   alias Orchard.BeamPeerGrants
   alias Orchard.ControllerInstances
   alias Orchard.ControllerInstances.ControllerInstance
@@ -457,18 +480,51 @@ defmodule Orchard.Nodes do
         peer_identity,
         opts \\ []
       ) do
+    case normalize_authenticated_peer_identity(peer_identity) do
+      {:ok, peer_identity} ->
+        observe_with_authenticated_peer(
+          target,
+          status_response,
+          observed_at,
+          peer_identity,
+          opts
+        )
+
+      :error ->
+        clear_authenticated_peer_sources(peer_identity, opts)
+        :noop
+    end
+  end
+
+  defp clear_authenticated_peer_sources(
+         %AuthenticatedPeer{scheme: :mtls, node_id: node_id},
+         opts
+       ) do
+    case Ecto.UUID.cast(node_id) do
+      {:ok, trusted_node_id} -> clear_dispatch_capacity_sources(trusted_node_id, opts)
+      :error -> :ok
+    end
+  end
+
+  defp clear_authenticated_peer_sources(_peer_identity, _opts), do: :ok
+
+  defp observe_with_authenticated_peer(
+         target,
+         status_response,
+         observed_at,
+         peer_identity,
+         opts
+       ) do
     with true <- repo_available?(),
          :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
-         {:ok, peer_identity} <- normalize_authenticated_peer_identity(peer_identity),
          true <- authenticated_status_health_present?(status_response),
          {:ok, candidate_observation} <-
            normalize_candidate_observation(target, status_response),
          {:ok, observation} <-
            normalize_observation(target, candidate_observation, observed_at),
          true <- observation.id == peer_identity.node_id do
-      handle_observation_result(
+      handle_authenticated_observation_result(
         target,
-        observed_at,
         execute_authenticated_observe(
           target,
           observation,
@@ -477,13 +533,22 @@ defmodule Orchard.Nodes do
           opts
         ),
         candidate_observation,
+        peer_identity.node_id,
         opts
       )
     else
-      _other -> :noop
+      _other ->
+        clear_dispatch_capacity_sources(peer_identity.node_id, opts)
+        :noop
     end
   rescue
-    _ -> :noop
+    _error ->
+      clear_dispatch_capacity_sources(peer_identity.node_id, opts)
+      :noop
+  catch
+    _kind, _reason ->
+      clear_dispatch_capacity_sources(peer_identity.node_id, opts)
+      :noop
   end
 
   @doc """
@@ -761,6 +826,27 @@ defmodule Orchard.Nodes do
     end
   end
 
+  defp handle_authenticated_observation_result(
+         target,
+         result,
+         status_response,
+         trusted_node_id,
+         opts
+       ) do
+    case result do
+      {:ok, node} ->
+        refresh_observed_queue_capacities(target, node, status_response, opts)
+        {:ok, node}
+
+      {:noop, :out_of_order} ->
+        :noop
+
+      {:noop, _reason} ->
+        clear_dispatch_capacity_sources(trusted_node_id, opts)
+        :noop
+    end
+  end
+
   @doc """
   Records a transport-like failure for a target and persists node health.
 
@@ -790,7 +876,7 @@ defmodule Orchard.Nodes do
     if transport_failure_reason?(reason) do
       case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
         {:ok, %Node{} = node} = result ->
-          clear_node_queue_capacity_sources(node)
+          clear_dispatch_capacity_sources(node.id)
           result
 
         :noop ->
@@ -819,19 +905,41 @@ defmodule Orchard.Nodes do
     with true <- repo_available?(),
          :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
          true <- is_struct(observed_at, DateTime) do
-      cutoff = DateTime.add(observed_at, -unreachable_threshold_ms(), :millisecond)
+      freshness_cutoff =
+        DateTime.add(
+          observed_at,
+          -Orchard.Inference.node_freshness_threshold_ms(),
+          :millisecond
+        )
 
-      updated =
-        cutoff
+      stale_source_node_ids = stale_queue_capacity_source_node_ids(freshness_cutoff)
+      unreachable_cutoff = DateTime.add(observed_at, -unreachable_threshold_ms(), :millisecond)
+
+      demoted_node_ids =
+        unreachable_cutoff
         |> stale_heartbeat_node_ids()
-        |> Enum.count(&demote_stale_heartbeat_node(&1, observed_at))
+        |> Enum.filter(&demote_stale_heartbeat_node(&1, observed_at))
 
-      {:ok, updated}
+      stale_source_node_ids
+      |> Enum.concat(demoted_node_ids)
+      |> Enum.uniq()
+      |> Enum.each(&clear_dispatch_capacity_sources/1)
+
+      {:ok, length(demoted_node_ids)}
     else
       _ -> :noop
     end
   rescue
     _ -> :noop
+  end
+
+  defp stale_queue_capacity_source_node_ids(cutoff) do
+    Node
+    |> where([n], n.state == :active)
+    |> where([n], not is_nil(n.last_heartbeat_at))
+    |> where([n], n.last_heartbeat_at < ^cutoff)
+    |> select([n], n.id)
+    |> Repo.all()
   end
 
   defp stale_heartbeat_node_ids(cutoff) do
@@ -846,8 +954,7 @@ defmodule Orchard.Nodes do
 
   defp demote_stale_heartbeat_node(node_id, observed_at) do
     case execute_mark_unreachable({:node_id, node_id}, observed_at, :stale_sweep) do
-      {:ok, %Node{} = node} ->
-        clear_node_queue_capacity_sources(node)
+      {:ok, %Node{}} ->
         true
 
       :noop ->
@@ -1057,7 +1164,7 @@ defmodule Orchard.Nodes do
     cold_source = {:node, node.id, :cold}
 
     refresh = %{
-      clear_sources: node_queue_capacity_sources(node),
+      clear_sources: node_queue_capacity_sources(node.id),
       node_source: {:node, node.id},
       placement_source: placement_source,
       cold_source: cold_source,
@@ -1092,11 +1199,11 @@ defmodule Orchard.Nodes do
   rescue
     error ->
       Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
-      :ok
+      clear_dispatch_capacity_sources(node.id, opts)
   catch
     :exit, reason ->
       Logger.debug("Queue capacity refresh from node observation exited: #{inspect(reason)}")
-      :ok
+      clear_dispatch_capacity_sources(node.id, opts)
   end
 
   defp refresh_or_clear_dispatch_capacity_sources(node, input, refresh, queue_manager, opts) do
@@ -1144,26 +1251,9 @@ defmodule Orchard.Nodes do
 
   defp queue_capacity_refresh_target?(_target, _node), do: true
 
-  defp clear_node_queue_capacity_sources(%Node{} = node, opts \\ []) do
-    queue_manager = Orchard.Inference.queue_manager()
-
-    queue_manager.clear_capacity_sources(
-      node_queue_capacity_sources(node),
-      promote?: Keyword.get(opts, :promote?, true)
-    )
-  rescue
-    error ->
-      Logger.debug("Queue capacity source clear for node failed: #{inspect(error)}")
-      :ok
-  catch
-    :exit, reason ->
-      Logger.debug("Queue capacity source clear for node exited: #{inspect(reason)}")
-      :ok
-  end
-
   defp clear_ineligible_node_queue_capacity_sources(%Node{} = node) do
     unless queue_capacity_eligible_node?(node) do
-      clear_node_queue_capacity_sources(node)
+      clear_dispatch_capacity_sources(node.id)
     end
   end
 
@@ -1192,7 +1282,7 @@ defmodule Orchard.Nodes do
     if stale_target_observation?(node, observed_at) do
       :ok
     else
-      clear_node_queue_capacity_sources(node)
+      clear_dispatch_capacity_sources(node.id)
     end
   end
 
@@ -1216,8 +1306,8 @@ defmodule Orchard.Nodes do
 
   defp queue_capacity_eligible_observation?(_status_response), do: true
 
-  defp node_queue_capacity_sources(%Node{} = node),
-    do: [{:node, node.id}, {:node, node.id, :placement}, {:node, node.id, :cold}]
+  defp node_queue_capacity_sources(node_id),
+    do: [{:node, node_id}, {:node, node_id, :placement}, {:node, node_id, :cold}]
 
   defp extract_runtime_model_placements(%{runtime_model_placements: placements})
        when is_list(placements),
@@ -1462,9 +1552,8 @@ defmodule Orchard.Nodes do
            :ok <- ensure_authenticated_beam_target(target, node, enrollment, grant, controller),
            true <- accept_authenticated_observation_health?(node, observation),
            true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
-           :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation),
            :ok <- BeamPeerGrants.ensure_active_grant_current(grant.id, opts) do
-        update_authenticated_beam_observation(
+        update_fresh_authenticated_beam_observation(
           node,
           target,
           observation,
@@ -1497,9 +1586,14 @@ defmodule Orchard.Nodes do
            :ok <- ensure_authenticated_node(node, observation, peer_identity),
            :ok <- ensure_authenticated_target(target, node, enrollment),
            true <- accept_authenticated_observation_health?(node, observation),
-           true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
-           :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation) do
-        update_authenticated_observation(node, target, observation, status_response, opts)
+           true <- fresh_authenticated_observation?(observation.last_heartbeat_at) do
+        update_fresh_authenticated_observation(
+          node,
+          target,
+          observation,
+          status_response,
+          opts
+        )
       else
         _reason -> Repo.rollback(:authenticated_observation_rejected)
       end
@@ -1509,6 +1603,46 @@ defmodule Orchard.Nodes do
     error in Ecto.ConstraintError ->
       Logger.debug("Authenticated node observation conflicted: #{inspect(error.constraint)}")
       {:noop, :constraint_conflict}
+  end
+
+  defp update_fresh_authenticated_beam_observation(
+         node,
+         target,
+         observation,
+         status_response,
+         grant_id,
+         opts
+       ) do
+    case ensure_fresh_observation(%{existing_by_id: node}, observation) do
+      :ok ->
+        update_authenticated_beam_observation(
+          node,
+          target,
+          observation,
+          status_response,
+          grant_id,
+          opts
+        )
+
+      {:error, :stale} ->
+        Repo.rollback(:out_of_order)
+    end
+  end
+
+  defp update_fresh_authenticated_observation(
+         node,
+         target,
+         observation,
+         status_response,
+         opts
+       ) do
+    case ensure_fresh_observation(%{existing_by_id: node}, observation) do
+      :ok ->
+        update_authenticated_observation(node, target, observation, status_response, opts)
+
+      {:error, :stale} ->
+        Repo.rollback(:out_of_order)
+    end
   end
 
   defp authenticated_observe_result({:ok, node}), do: {:ok, node}

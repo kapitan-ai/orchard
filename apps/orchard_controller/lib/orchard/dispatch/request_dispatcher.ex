@@ -317,33 +317,19 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp acquire_capacity_claim(
          %{
-           node_id: node_id,
-           request_id: request_id
-         } = schedule
-       )
-       when is_binary(node_id) and is_binary(request_id) do
-    case dispatch_capacity_acquisition_input(schedule) do
-      %Orchard.DispatchCapacity.Evaluator.Input{} = input ->
-        opts = capacity_authority_opts(schedule)
-
-        case QueueManager.acquire_dispatch_capacity(node_id, request_id, input, opts) do
-          {:ok, claim, _result} -> {:ok, claim}
-          {:error, reason, _result} -> {:error, reason}
-        end
-
-      _missing_input ->
-        {:error, :dispatch_capacity_facts_unavailable}
-    end
-  end
-
-  defp acquire_capacity_claim(
-         %{
-           dispatch_capacity_input: %Orchard.DispatchCapacity.Evaluator.Input{} = input,
+           dispatch_capacity_input:
+             %Orchard.DispatchCapacity.Evaluator.Input{
+               management_classification: {:ok, management_class}
+             } = input,
            dispatch_capacity_evaluation: %Orchard.DispatchCapacity.Evaluator.Result{} = result,
            request_id: request_id
          } = schedule
        )
-       when is_binary(request_id) do
+       when is_binary(request_id) and
+              management_class in [
+                :unmanaged_source_development,
+                :unmanaged_compatibility
+              ] do
     with true <- unmanaged_dispatch_authorized?(input, result),
          %Orchard.DispatchCapacity.Evaluator.Input{} = fresh_input <-
            dispatch_capacity_acquisition_input(schedule),
@@ -356,7 +342,43 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
+  defp acquire_capacity_claim(
+         %{
+           node_id: node_id,
+           request_id: request_id
+         } = schedule
+       )
+       when is_binary(node_id) and is_binary(request_id) do
+    case dispatch_capacity_acquisition_input(schedule) do
+      %Orchard.DispatchCapacity.Evaluator.Input{} = input ->
+        acquire_production_capacity_claim(schedule, node_id, request_id, input)
+
+      _missing_input ->
+        {:error, :dispatch_capacity_facts_unavailable}
+    end
+  end
+
   defp acquire_capacity_claim(_schedule), do: {:error, :dispatch_capacity_facts_unavailable}
+
+  defp acquire_production_capacity_claim(
+         %{dispatch_identity_source: :trusted_monitor_snapshot},
+         _node_id,
+         _request_id,
+         %Orchard.DispatchCapacity.Evaluator.Input{
+           management_classification: {:ok, :production_managed},
+           health: :degraded
+         }
+       ),
+       do: {:error, :dispatch_capacity_unavailable}
+
+  defp acquire_production_capacity_claim(schedule, node_id, request_id, input) do
+    opts = capacity_authority_opts(schedule)
+
+    case QueueManager.acquire_dispatch_capacity(node_id, request_id, input, opts) do
+      {:ok, claim, _result} -> {:ok, claim}
+      {:error, reason, _result} -> {:error, reason}
+    end
+  end
 
   defp dispatch_capacity_acquisition_input(schedule) do
     case Map.get(schedule, :dispatch_capacity_acquisition_input_provider) do
@@ -472,15 +494,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp do_dispatch_with_channel(%{} = context) do
-    case probe_and_resolve_node(
-           context.client,
-           context.channel,
-           context.target,
-           context.model_load_request,
-           claimed_node_id(context),
-           context.on_node_resolved,
-           context.metrics
-         ) do
+    case prepare_dispatch_identity(context) do
       {:ok, model_load_request, metrics} ->
         context = %{context | model_load_request: model_load_request, metrics: metrics}
         ensure_start = System.monotonic_time(:millisecond)
@@ -498,6 +512,52 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {:error, reason, metrics} ->
         handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
     end
+  end
+
+  defp prepare_dispatch_identity(
+         %{
+           schedule: %{dispatch_identity_source: :trusted_monitor_snapshot}
+         } = context
+       ) do
+    trusted_snapshot_identity(context)
+  end
+
+  defp prepare_dispatch_identity(context) do
+    probe_and_resolve_node(
+      context.client,
+      context.channel,
+      context.target,
+      context.model_load_request,
+      claimed_node_id(context),
+      context.on_node_resolved,
+      context.metrics
+    )
+  end
+
+  defp trusted_snapshot_identity(%{
+         capacity_claim: %AllocationAuthority.Claim{node_id: claim_node_id},
+         schedule: %{node_id: schedule_node_id},
+         target: %Target{node_id: target_node_id} = target,
+         model_load_request: model_load_request,
+         on_node_resolved: on_node_resolved,
+         metrics: metrics
+       })
+       when is_binary(claim_node_id) and claim_node_id == schedule_node_id and
+              schedule_node_id == target_node_id do
+    {node_id, model_load_request, metrics} =
+      resolved_probe_identity(
+        {:ok, claim_node_id},
+        target,
+        model_load_request,
+        metrics
+      )
+
+    invoke_callback_safe(on_node_resolved, node_id)
+    {:ok, model_load_request, metrics}
+  end
+
+  defp trusted_snapshot_identity(%{metrics: metrics}) do
+    {:error, :dispatch_capacity_node_identity_mismatch, metrics}
   end
 
   defp ensure_loaded_for_dispatch(client, channel, target, model_load_request, model_load_timeout) do

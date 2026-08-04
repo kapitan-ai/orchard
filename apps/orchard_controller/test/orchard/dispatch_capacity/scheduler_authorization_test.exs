@@ -7,7 +7,9 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
   alias Orchard.DispatchCapacity.AllocationAuthority
   alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.DispatchCapacity.Policy
+  alias Orchard.NodeHeartbeats
   alias Orchard.Nodes.{AdmissionDecision, Node}
+  alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.MultiNode
   alias Orchard.Scheduler.SingleNode
 
@@ -95,7 +97,7 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
     configure_target(node)
     put_status(node)
 
-    assert {:error, :cluster_busy} =
+    assert {:error, :cluster_busy, _decision} =
              MultiNode.schedule(canonical_request(),
                status_client: StatusClient,
                dispatch_capacity_authority: authority,
@@ -135,7 +137,7 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
     put_status(node)
     stop_supervised!(AllocationAuthority)
 
-    assert {:error, :cluster_busy} =
+    assert {:error, :cluster_busy, _decision} =
              MultiNode.schedule(canonical_request(),
                status_client: StatusClient,
                dispatch_capacity_authority: authority,
@@ -160,19 +162,26 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
              )
   end
 
-  test "SPEC 4.6.2 MultiNode rejects a probe not bound to current authenticated evidence" do
+  test "SPEC 4.6.2 MultiNode rejects a production snapshot not bound to current authenticated evidence" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     evidence_at = DateTime.add(DateTime.utc_now(), -1, :second)
     observed_at = DateTime.utc_now()
     node = insert_node!(evidence_observed_at: evidence_at)
-    configure_target(node)
-    put_status(node)
+    runtime_target = trusted_runtime_target(node)
+    append_production_heartbeat!(node, runtime_target, observed_at)
 
-    assert {:error, :cluster_busy} =
+    assert {:error, :cluster_busy, _decision} =
              MultiNode.schedule(canonical_request(),
-               status_client: StatusClient,
                dispatch_capacity_authority: authority,
-               observed_at: observed_at
+               observed_at: observed_at,
+               active_runtime_endpoint_targets_provider: fn -> {:ok, [runtime_target]} end,
+               runtime_endpoint_targets_provider: fn
+                 {:ok, [^runtime_target]} ->
+                   [runtime_target]
+
+                 _inventory ->
+                   flunk("production identity rejection must not enter compatibility fallback")
+               end
              )
   end
 
@@ -238,6 +247,45 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
   end
 
   defp target(node), do: [host: node.advertise_addr, port: node.rpc_port]
+
+  defp trusted_runtime_target(node) do
+    Target.grpc_compat(
+      host: node.advertise_addr,
+      port: node.rpc_port,
+      node_id: node.id,
+      metadata: %{
+        source: :trusted_node_inventory,
+        authorization: :inference_dispatch,
+        certificate_identifier: "certificate-#{node.id}",
+        certificate_fingerprint: String.duplicate("a", 64)
+      }
+    )
+  end
+
+  defp append_production_heartbeat!(node, runtime_target, observed_at) do
+    observation = %{
+      endpoint_id: runtime_target.id,
+      availability: :available,
+      worker_state: :idle,
+      aggregate_active_request_count: 0,
+      aggregate_max_concurrency: 2
+    }
+
+    {:ok, _heartbeat} =
+      Repo.transaction(fn ->
+        current_node = Repo.get!(Node, node.id)
+
+        current_node =
+          current_node
+          |> Node.changeset(%{last_heartbeat_at: observed_at})
+          |> Repo.update!()
+
+        {:ok, heartbeat} =
+          NodeHeartbeats.append(current_node, runtime_target, observation, observed_at)
+
+        heartbeat
+      end)
+  end
 
   defp configure_target(node) do
     inference = Application.fetch_env!(:orchard_controller, :inference)

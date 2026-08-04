@@ -340,6 +340,9 @@ defmodule Orchard.DispatchCapacity.Authorization do
     end
   end
 
+  defp authoritative_health(:healthy, observation_health), do: observation_health
+  defp authoritative_health(node_health, _observation_health), do: node_health
+
   defp normalize_placement(%PlacementCapacity{
          status: :known,
          active_request_count: active,
@@ -393,7 +396,7 @@ defmodule Orchard.DispatchCapacity.Authorization do
     opts =
       opts
       |> Keyword.put(:evidence, evidence)
-      |> Keyword.put(:health, observation_health(observation))
+      |> Keyword.put(:health, authoritative_health(node.health, observation_health(observation)))
       |> Keyword.put(:trusted_identity?, true)
 
     case input(node, opts) do

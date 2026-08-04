@@ -255,7 +255,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          step_event_appender,
          terminal_persister
        ) do
-    with {:ok, schedule} <- schedule_request(canonical),
+    with {:ok, schedule} <- schedule_request(db_request, canonical),
          {:ok, _} <-
            record_scheduler_decision(db_request, scheduler_persistence_metadata(schedule)),
          :ok <- put_request_scheduled_context(schedule),
@@ -476,7 +476,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
              metadata,
              execution_opts.terminal_persister
            ),
-         {:ok, schedule} <- schedule_request(canonical),
+         {:ok, schedule} <- schedule_request(db_request, canonical),
          {:ok, _} <-
            record_scheduler_decision(
              db_request,
@@ -697,16 +697,34 @@ defmodule Orchard.Inference.RequestOrchestrator do
     RequestServer.transition(request_id, state)
   end
 
-  defp schedule_request(canonical) do
+  defp schedule_request(db_request, canonical) do
     case call_scheduler(canonical) do
       {:ok, schedule} when is_map(schedule) ->
         {:ok, schedule}
+
+      {:error, reason, decision} when is_map(decision) ->
+        persist_rejected_scheduler_decision(db_request, decision)
+        {:error, reason}
 
       {:error, _reason} = error ->
         error
 
       _other ->
         {:error, orchestration_crash(:scheduler, :invalid_return)}
+    end
+  end
+
+  defp persist_rejected_scheduler_decision(db_request, decision) do
+    case record_scheduler_decision(db_request, decision) do
+      {:ok, _request} ->
+        :ok
+
+      {:error, _reason} ->
+        log_error(
+          "failed to persist rejected scheduler decision for request #{db_request.public_id}"
+        )
+
+        :ok
     end
   end
 
@@ -845,6 +863,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp runtime_endpoint_metadata_key?(:runtime_endpoint_target), do: true
   defp runtime_endpoint_metadata_key?("runtime_endpoint_target"), do: true
+  defp runtime_endpoint_metadata_key?(:dispatch_identity_source), do: true
+  defp runtime_endpoint_metadata_key?("dispatch_identity_source"), do: true
   defp runtime_endpoint_metadata_key?(_key), do: false
 
   defp strip_dispatch_capacity_metadata(schedule) do
