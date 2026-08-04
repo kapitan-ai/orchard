@@ -40,6 +40,21 @@ _Avoid_: Worker, node agent
 The first-party node-local Orchard service that owns local runtime execution, model cache, worker supervision, diagnostics, status, and cleanup.
 _Avoid_: Controller agent, worker runtime
 
+**Node Identity Root**:
+The owner-only filesystem root that holds a Node's private key, Node Certificate, enrolled trust state, and stored BEAM Peer Grants.
+Managed lifecycle operations treat this root as identity-bearing state and do not mutate it until the exact outgoing Node Agent process instance is proven to have exited.
+_Avoid_: BEAM Authorization Root, model cache, generic support directory
+
+**Managed Node Agent Handover**:
+The bounded Orchard.app or PKG lifecycle interval that prevents relaunch, proves the exact outgoing Node Agent process instance exited, performs required managed mutation, and only then permits replacement start.
+It uses one shared lifecycle exclusion boundary across the app and PKG paths and guarantees zero managed process overlap.
+_Avoid_: rolling live overlap, process restart without identity proof, direct manual launch
+
+**Node Identity Root Lease**:
+A reserved future term for a possible lifetime ownership mechanism for the Node Identity Root.
+No Node Identity Root Lease is part of the current Managed Node Agent Handover contract.
+_Avoid_: current lifecycle exclusion boundary, existing BEAM Peer Grant storage lock
+
 **Runtime Endpoint**:
 A schedulable execution boundary that can receive model runtime work from the Controller through Orchard's runtime semantics.
 Orchard's v1 Runtime Endpoint is the first-party Node Agent; future Runtime Endpoints may be external compute or provider integrations.

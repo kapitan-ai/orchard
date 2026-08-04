@@ -4413,7 +4413,15 @@ System-root install, update, and uninstall operations SHALL require effective ro
 Validation against a non-system root SHALL relocate every installed path and SHALL simulate launchd effects without mutating the host installation.
 
 App-owned install and update SHALL preflight the payload and target before stopping services.
-If a failure occurs after mutation begins, Orchard SHALL restore the prior app-owned payload, command links, launchd plists, role marker, and loaded-service state before returning failure.
+If a failure occurs after mutation begins and restoration can be established safely, Orchard SHALL restore the prior app-owned payload, command links, launchd plists, role marker, and loaded-service state before returning failure.
+If restoration cannot be established safely, the app lifecycle SHALL fail closed and SHALL return failure for the affected lifecycle role; when the affected lifecycle includes the Node Agent, the uncertain-state rule below additionally forbids automatic restart.
+Managed Orchard.app and PKG Node Agent lifecycle mutations SHALL use one shared exclusion boundary, and every Managed Node Agent Handover SHALL use zero process overlap.
+Before mutating a Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root, the managed lifecycle SHALL prevent relaunch and prove that the exact outgoing Node Agent process instance has exited.
+The exit wait SHALL be bounded, and an unproven exit or timeout SHALL fail closed without mutation or replacement start.
+The replacement Node Agent SHALL start only after the exit proof succeeds and the required mutation finishes.
+If mutation or restoration state is uncertain, the managed lifecycle SHALL fail closed and SHALL NOT automatically restart the Node Agent.
+Direct or manual Node Agent launches that use the same Node Identity Root are unsupported and outside the managed handover guarantee.
+Existing BEAM Peer Grant storage locks SHALL remain operation-scoped and SHALL NOT become lifecycle locks.
 Install and update SHALL preserve operator-owned `config`, `data`, `models`, `bundles`, `logs`, and support-bundle contents.
 Default uninstall SHALL remove app-owned payloads, installed commands and links, launchd plists, and install markers while retaining those operator-owned paths.
 Destructive purge behavior is not part of the v1 app lifecycle contract.
@@ -4741,11 +4749,13 @@ For each node:
 1. cordon
 2. drain
 3. run the app-owned update lifecycle or install the package
-4. restart node agent
+4. the managed lifecycle starts the replacement node agent, only after the exact outgoing instance is proven exited and the required mutation succeeds
 5. verify heartbeat + status sync
 6. uncordon
 
 This supports rolling worker-plane upgrades without full cluster downtime.
+The Controller `N` support window for Node Agent versions `N` and `N-1` SHALL be made safe on each managed node by Managed Node Agent Handover, not by simultaneous use of one Node Identity Root.
+A bounded exit-wait timeout, a lifecycle failure, or uncertain mutation or restoration state SHALL NOT authorize a manual node agent restart.
 
 ### 13.5 Worker upgrade
 
