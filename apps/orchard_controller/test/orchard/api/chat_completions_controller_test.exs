@@ -813,6 +813,36 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
                "Inference failed: model did not emit any required tool calls"
     end
 
+    test "SPEC 7.5.5 non-stream terminal conformance failure is a generic 500" do
+      canonical = stub_chat_canonical(false)
+
+      stub_chat_orchestrator(
+        prepare: {:ok, canonical, %{}},
+        execute:
+          {:ok, canonical,
+           [
+             InferenceEvent.accepted(1_710_000_123_000),
+             InferenceEvent.failed(
+               "runtime_endpoint_missing_terminal",
+               "Runtime Endpoint stream ended without a terminal event",
+               false
+             )
+           ]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 500
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "api_error"
+      assert body["error"]["code"] == "internal_error"
+      assert body["error"]["message"] == "Internal error"
+    end
+
     @tag :db
     test "queue admission enabled queues overlapping same-model chat completions", %{
       bundle: bundle
@@ -1230,6 +1260,37 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
                _other -> false
              end)
 
+      refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+    end
+
+    test "SPEC 7.5.5 streaming terminal conformance failure emits one generic SSE error" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.failed(
+            "runtime_endpoint_missing_terminal",
+            "Runtime Endpoint stream ended without a terminal event",
+            false
+          )
+        ],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+
+      assert [{:error, payload}] = Enum.filter(events, fn {type, _payload} -> type == :error end)
+      assert payload["error"]["type"] == "server_error"
+      assert payload["error"]["code"] == "internal_error"
+      assert payload["error"]["message"] == "Internal error"
       refute Enum.any?(events, fn {type, _payload} -> type == :done end)
     end
 

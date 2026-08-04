@@ -1312,7 +1312,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
     base_attrs =
       case Enum.find(events, &InferenceEvent.terminal?/1) do
         nil ->
-          %{state: :completed, http_status: 200}
+          terminal_conformance_failure_attrs(
+            "runtime_endpoint_missing_terminal",
+            "Runtime Endpoint stream ended without a terminal event"
+          )
 
         %{event: %InferenceEvent.Completed{}} ->
           %{state: :completed, http_status: 200}
@@ -1324,6 +1327,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
       end
 
     Map.merge(base_attrs, usage)
+  end
+
+  defp terminal_conformance_failure_attrs(code, message) do
+    code
+    |> InferenceEvent.failed(message, false)
+    |> ChatError.from_failed_event()
+    |> ChatError.terminal_attrs()
   end
 
   defp inference_turn_step_context(canonical) do
