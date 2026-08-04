@@ -46,6 +46,78 @@ defmodule Orchard.Dispatch.DispatchTest.DisconnectRaisingClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.Dispatch.DispatchTest.TerminalContractClient do
+  @moduledoc false
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.InferenceEvent.Usage
+  alias Orchard.RuntimeEndpoint.Operation
+
+  def connect(_target), do: {:ok, :terminal_contract_channel}
+
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.get(opts, :owner, self())
+    ref = make_ref()
+
+    request.request_id
+    |> events_for()
+    |> Enum.each(fn event ->
+      send(owner, {:runtime_endpoint_event, ref, request.request_id, event})
+    end)
+
+    send(owner, {:runtime_endpoint_done, ref, done_result(request.request_id)})
+
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+
+  defp events_for("req-dispatch-duplicate-terminal") do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.completed(:finish_reason_stop, nil),
+      InferenceEvent.failed("late_terminal", "late terminal", false)
+    ]
+  end
+
+  defp events_for("req-dispatch-post-terminal-error") do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.completed(:finish_reason_stop, nil),
+      InferenceEvent.output_text_delta("late")
+    ]
+  end
+
+  defp events_for("req-dispatch-post-terminal-" <> event_kind) do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.completed(:finish_reason_stop, nil),
+      post_terminal_event(event_kind)
+    ]
+  end
+
+  defp events_for(_request_id), do: [InferenceEvent.accepted(0)]
+
+  defp done_result("req-dispatch-post-terminal-error"), do: {:error, :stream_failed}
+  defp done_result(_request_id), do: :ok
+
+  defp post_terminal_event("accepted"), do: InferenceEvent.accepted(1)
+  defp post_terminal_event("output-text-delta"), do: InferenceEvent.output_text_delta("late")
+  defp post_terminal_event("tool-call-delta"), do: InferenceEvent.tool_call_delta("call-1", "{}")
+
+  defp post_terminal_event("usage") do
+    InferenceEvent.usage_update(%Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2})
+  end
+
+  defp post_terminal_event("progress"), do: InferenceEvent.progress("late", "late progress")
+end
+
 defmodule Orchard.Dispatch.DispatchTest.NoConnectClient do
   @moduledoc false
 
@@ -80,6 +152,7 @@ defmodule Orchard.Dispatch.DispatchTest do
 
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Orchard.TestSupport.SentryContextHelpers
 
   alias Orchard.ArtifactBundle
@@ -265,6 +338,137 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert deltas == ["orchard ", "ready"]
     end
 
+    test "SPEC 7.5.5: accepted stream without a terminal becomes one failed terminal", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-missing-terminal"
+
+      handler = fn received_request_id, event ->
+        send(self(), {:handler_event, received_request_id, event})
+      end
+
+      assert {:ok, [accepted, failed]} =
+               RequestDispatcher.dispatch(
+                 build_schedule(request_id),
+                 execute_request(request_id),
+                 model_load_request(bundle),
+                 client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+                 event_handler: handler
+               )
+
+      assert InferenceEvent.kind(accepted) == :accepted
+      assert %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = failed
+      assert code == "runtime_endpoint_missing_terminal"
+      assert_received {:handler_event, ^request_id, ^accepted}
+      assert_received {:handler_event, ^request_id, ^failed}
+      refute_received {:handler_event, ^request_id, _event}
+    end
+
+    test "SPEC 7.5.5: duplicate terminal becomes one conformance failure", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-duplicate-terminal"
+
+      handler = fn received_request_id, event ->
+        send(self(), {:handler_event, received_request_id, event})
+      end
+
+      assert {:ok, [accepted, failed]} =
+               RequestDispatcher.dispatch(
+                 build_schedule(request_id),
+                 execute_request(request_id),
+                 model_load_request(bundle),
+                 client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+                 event_handler: handler
+               )
+
+      assert InferenceEvent.kind(accepted) == :accepted
+      assert %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = failed
+      assert code == "runtime_endpoint_duplicate_terminal"
+      assert_received {:handler_event, ^request_id, ^accepted}
+      assert_received {:handler_event, ^request_id, ^failed}
+      refute_received {:handler_event, ^request_id, _event}
+    end
+
+    test "SPEC 7.5.5: every nonterminal event after terminal becomes one failure", %{
+      bundle: bundle
+    } do
+      for event_kind <- ["accepted", "output-text-delta", "tool-call-delta", "usage", "progress"] do
+        request_id = "req-dispatch-post-terminal-#{event_kind}"
+
+        handler = fn received_request_id, event ->
+          send(self(), {:handler_event, received_request_id, event})
+        end
+
+        assert {:ok, [accepted, failed]} =
+                 RequestDispatcher.dispatch(
+                   build_schedule(request_id),
+                   execute_request(request_id),
+                   model_load_request(bundle),
+                   client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+                   event_handler: handler
+                 )
+
+        assert InferenceEvent.kind(accepted) == :accepted
+        assert %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = failed
+        assert code == "runtime_endpoint_post_terminal_event"
+        assert_received {:handler_event, ^request_id, ^accepted}
+        assert_received {:handler_event, ^request_id, ^failed}
+        refute_received {:handler_event, ^request_id, _event}
+      end
+    end
+
+    test "SPEC 7.5.5: observed post-terminal defect survives a later stream error", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-post-terminal-error"
+
+      assert {:ok, [accepted, failed]} =
+               RequestDispatcher.dispatch(
+                 build_schedule(request_id),
+                 execute_request(request_id),
+                 model_load_request(bundle),
+                 client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+               )
+
+      assert InferenceEvent.kind(accepted) == :accepted
+      assert %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = failed
+      assert code == "runtime_endpoint_post_terminal_event"
+    end
+
+    test "terminal conformance metrics distinguish each protocol defect", %{bundle: bundle} do
+      previous_level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: previous_level) end)
+      enable_controller_sentry()
+
+      defects = [
+        {"req-dispatch-missing-terminal", "missing_terminal"},
+        {"req-dispatch-duplicate-terminal", "duplicate_terminal"},
+        {"req-dispatch-post-terminal-output-text-delta", "post_terminal"}
+      ]
+
+      for {request_id, defect} <- defects do
+        log =
+          capture_log([level: :info], fn ->
+            assert {:ok, [_accepted, %InferenceEvent{event: %InferenceEvent.Failed{}}]} =
+                     RequestDispatcher.dispatch(
+                       build_schedule(request_id),
+                       execute_request(request_id),
+                       model_load_request(bundle),
+                       client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+                     )
+          end)
+
+        assert log =~ "conformance_defect=#{defect}"
+        assert log =~ "outcome=conformance_failed"
+
+        context = sentry_context()
+        assert context.tags.failure_category == "conformance_failed"
+        assert context.extra.orchard_conformance_defect == String.to_existing_atom(defect)
+      end
+    end
+
     test "returns streamed events when disconnect cleanup raises", %{bundle: bundle} do
       schedule = build_schedule("req-dispatch-cleanup-raises")
       execute = execute_request("req-dispatch-cleanup-raises")
@@ -365,14 +569,24 @@ defmodule Orchard.Dispatch.DispatchTest do
       # Dispatch in a separate process, monitoring the caller
       dispatch_pid =
         spawn(fn ->
+          event_handler = fn
+            _request_id, %InferenceEvent{event: %InferenceEvent.Accepted{}} ->
+              send(test_pid, :dispatch_accepted)
+
+            _request_id, _event ->
+              :ok
+          end
+
           result =
-            RequestDispatcher.dispatch(schedule, execute, model_load, caller: caller)
+            RequestDispatcher.dispatch(schedule, execute, model_load,
+              caller: caller,
+              event_handler: event_handler
+            )
 
           send(test_pid, {:dispatch_result, result})
         end)
 
-      # Give dispatch a moment to connect and start
-      Process.sleep(50)
+      assert_receive :dispatch_accepted, 10_000
 
       # Kill the caller to simulate disconnect
       Process.exit(caller, :kill)

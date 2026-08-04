@@ -2180,7 +2180,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
   end
 
-  test "execute/3 leaves a durable missing-terminal detector candidate after the request process exits",
+  test "SPEC 7.5.5: execute/3 persists a missing terminal as a durable failure",
        %{bundle: bundle} do
     target = [host: "10.0.0.1", port: 50_061]
     node = insert_runtime_node!(target)
@@ -2195,24 +2195,30 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       canonical_request("request-orchestrator-missing-terminal-detector", stream?: false)
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
-    assert Enum.map(events, &InferenceEvent.kind/1) == [:accepted]
-    assert TerminalCardinality.classify(events) == :zero
+    assert Enum.map(events, &InferenceEvent.kind/1) == [:accepted, :failed]
+    assert TerminalCardinality.classify(events) == :exactly_one
+
+    assert %InferenceEvent{
+             event: %InferenceEvent.Failed{code: "runtime_endpoint_missing_terminal"}
+           } = List.last(events)
 
     request = Requests.get_request_by_public_id(canonical.public_id)
-    assert request.state == :completed
-    assert request.http_status == 200
+    assert request.state == :failed
+    assert request.http_status == 500
+    assert request.error_code == "runtime_endpoint_missing_terminal"
+    assert request.error_message == "Runtime Endpoint stream ended without a terminal event"
 
     assert [started_step, terminal_step] = Requests.list_request_step_events(request)
     assert started_step.event_type == "request_step.started"
-    assert terminal_step.event_type == "request_step.completed"
+    assert terminal_step.event_type == "request_step.failed"
     refute Map.has_key?(terminal_step.result, "finish_reason")
+    assert terminal_step.result["error_code"] == "runtime_endpoint_missing_terminal"
 
     assert wait_until(fn ->
              RequestServer.get_state(request.id) == {:error, :not_found}
            end)
 
-    assert {:ok, :missing_finish_reason_candidate} =
-             Requests.classify_missing_terminal_candidate(request)
+    assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
   end
 
   test "execute/3 aborts before dispatch side effects when request_step.started persistence fails",

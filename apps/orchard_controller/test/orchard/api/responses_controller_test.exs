@@ -452,6 +452,32 @@ defmodule Orchard.API.ResponsesControllerTest do
              "Inference failed: model emitted tool call outside required function lookup_weather"
   end
 
+  test "SPEC 7.5.5 sync terminal conformance failure is a generic 500" do
+    canonical = stub_responses_canonical(false)
+
+    stub_responses_orchestrator(
+      prepare: {:ok, canonical, %{}},
+      execute:
+        {:ok, canonical,
+         [
+           InferenceEvent.accepted(1_710_000_123_000),
+           InferenceEvent.failed(
+             "runtime_endpoint_missing_terminal",
+             "Runtime Endpoint stream ended without a terminal event",
+             false
+           )
+         ]}
+    )
+
+    conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello"})
+
+    assert conn.status == 500
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "api_error"
+    assert body["error"]["code"] == "internal_error"
+    assert body["error"]["message"] == "Internal error"
+  end
+
   test "queue admission enabled queues overlapping same-model responses requests", %{
     bundle: bundle
   } do
@@ -1208,6 +1234,39 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     body = collect_chunked_body(conn)
     refute String.contains?(body, "[DONE]")
+  end
+
+  test "SPEC 7.5.5 streaming terminal conformance failure emits response.failed" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        InferenceEvent.failed(
+          "runtime_endpoint_missing_terminal",
+          "Runtime Endpoint stream ended without a terminal event",
+          false
+        )
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    terminal = List.last(events)
+    assert terminal.data["response"]["status"] == "failed"
+    assert terminal.data["response"]["error"]["type"] == "server_error"
+    assert terminal.data["response"]["error"]["code"] == "internal_error"
+    assert terminal.data["response"]["error"]["message"] == "Internal error"
+    refute String.contains?(collect_chunked_body(conn), "[DONE]")
   end
 
   test "post-start failure emits response.created then response.failed with no [DONE]" do

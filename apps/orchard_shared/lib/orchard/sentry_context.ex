@@ -84,7 +84,8 @@ defmodule Orchard.SentryContext do
       orchard_accepted_to_first_delta_ms: field(metrics, :accepted_to_first_delta_ms),
       orchard_accepted_to_terminal_ms: field(metrics, :accepted_to_terminal_ms),
       orchard_event_count: field(metrics, :event_count),
-      orchard_anomaly: field(metrics, :anomaly)
+      orchard_anomaly: field(metrics, :anomaly),
+      orchard_conformance_defect: field(metrics, :conformance_defect)
     }
     |> compact_absent_values()
   end

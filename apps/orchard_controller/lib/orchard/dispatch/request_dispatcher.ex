@@ -101,7 +101,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               terminal_source: :none,
               terminal_detail: :na,
               event_count: 0,
-              anomaly: :none
+              anomaly: :none,
+              conformance_defect: :none
 
     @type t :: %__MODULE__{
             request_id: String.t(),
@@ -117,12 +118,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             terminal_monotonic_ms: integer() | nil,
             accepted_to_first_delta_ms: non_neg_integer() | :na,
             accepted_to_terminal_ms: non_neg_integer() | :na,
-            outcome: :ok | :model_load_failed | :dispatch_failed,
+            outcome: :ok | :model_load_failed | :dispatch_failed | :conformance_failed,
             terminal_kind: :completed | :failed | :none,
             terminal_source: :stream | :synthesized | :none,
             terminal_detail: String.t() | :na,
             event_count: non_neg_integer(),
-            anomaly: :none | :delta_before_accepted | :terminal_before_accepted
+            anomaly: :none | :delta_before_accepted | :terminal_before_accepted,
+            conformance_defect: :none | :missing_terminal | :duplicate_terminal | :post_terminal
           }
 
     @spec new(keyword()) :: t()
@@ -146,7 +148,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         terminal_source: :none,
         terminal_detail: :na,
         event_count: 0,
-        anomaly: :none
+        anomaly: :none,
+        conformance_defect: :none
       }
     end
   end
@@ -211,8 +214,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:cancel_drain_timeout_ms` - bounded cancellation reconciliation grace period
                                  (default: the lesser of request timeout and 5 seconds)
 
-  Returns `{:ok, events}` with the list of all events received (including terminal),
-  or `{:error, reason}` if dispatch fails before streaming begins.
+  Returns `{:ok, events}` with the caller-visible event sequence and exactly one
+  terminal event. Invalid duplicate or post-terminal worker events are withheld
+  and replaced by a stable conformance failure. Returns `{:error, reason}` if
+  dispatch fails before streaming begins.
   Runtime Endpoint disconnect cleanup failures are logged and ignored after the
   dispatch outcome is known.
   """
@@ -966,9 +971,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
                 capacity_authority: capacity_authority,
                 capacity_node_id: capacity_node_id,
                 cancellation_started_before_acceptance?: false,
+                conformance_defect: :none,
                 metrics: metrics,
                 target: target,
                 task_ref: task_ref,
+                terminal_event: nil,
                 timer_ref: timer_ref
               },
               []
@@ -1000,43 +1007,17 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       metrics: metrics,
       task_ref: task_ref,
       timer_ref: timer_ref,
-      caller_ref: caller_ref,
-      event_handler: event_handler
+      caller_ref: caller_ref
     } = loop_ctx
 
     request_id = metrics.request_id
 
     receive do
       {:runtime_endpoint_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
-        loop_ctx = maybe_record_acceptance(loop_ctx, event)
-        events = [event | events]
-        metrics = update_metrics_for_event(metrics, event)
-        handler_result = emit_event_safely(event, request_id, event_handler)
-
-        cond do
-          InferenceEvent.terminal?(event) ->
-            stream_terminal_result(loop_ctx, events, metrics)
-
-          handler_failed?(handler_result) ->
-            cancel_and_drain(
-              %{loop_ctx | metrics: metrics},
-              events,
-              :event_handler_failed
-            )
-
-          cancelled_by_handler?(handler_result) ->
-            cancel_and_drain(
-              %{loop_ctx | metrics: metrics},
-              events,
-              :client_disconnect
-            )
-
-          true ->
-            receive_loop(%{loop_ctx | metrics: metrics}, events)
-        end
+        handle_stream_event(loop_ctx, events, event)
 
       {:runtime_endpoint_done, ^task_ref, :ok} ->
-        stream_terminal_result(loop_ctx, events, metrics)
+        stream_done_result(loop_ctx, events, metrics)
 
       {:runtime_endpoint_done, ^task_ref, {:error, reason}} ->
         mark_transport_failure(target, reason)
@@ -1050,6 +1031,44 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
+  defp handle_stream_event(%{terminal_event: nil} = loop_ctx, events, event) do
+    metrics = update_metrics_for_event(loop_ctx.metrics, event)
+
+    if InferenceEvent.terminal?(event) do
+      receive_loop(%{loop_ctx | metrics: metrics, terminal_event: event}, events)
+    else
+      loop_ctx = maybe_record_acceptance(loop_ctx, event)
+      handler_result = emit_event_safely(event, metrics.request_id, loop_ctx.event_handler)
+      events = [event | events]
+
+      cond do
+        handler_failed?(handler_result) ->
+          cancel_and_drain(%{loop_ctx | metrics: metrics}, events, :event_handler_failed)
+
+        cancelled_by_handler?(handler_result) ->
+          cancel_and_drain(%{loop_ctx | metrics: metrics}, events, :client_disconnect)
+
+        true ->
+          receive_loop(%{loop_ctx | metrics: metrics}, events)
+      end
+    end
+  end
+
+  defp handle_stream_event(%{terminal_event: %InferenceEvent{}} = loop_ctx, events, event) do
+    defect = if InferenceEvent.terminal?(event), do: :duplicate_terminal, else: :post_terminal
+
+    loop_ctx = %{
+      loop_ctx
+      | conformance_defect: first_conformance_defect(loop_ctx.conformance_defect, defect),
+        metrics: increment_event_count(loop_ctx.metrics)
+    }
+
+    receive_loop(loop_ctx, events)
+  end
+
+  defp first_conformance_defect(:none, defect), do: defect
+  defp first_conformance_defect(defect, _later_defect), do: defect
+
   defp maybe_record_acceptance(
          %{acceptance_gate: acceptance_gate} = loop_ctx,
          %InferenceEvent{event: %InferenceEvent.Accepted{}}
@@ -1059,6 +1078,20 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp maybe_record_acceptance(loop_ctx, _event), do: loop_ctx
+
+  defp stream_error_result(
+         %{
+           accepted?: true,
+           cancellation_started_before_acceptance?: false,
+           conformance_defect: defect
+         } = loop_ctx,
+         events,
+         metrics,
+         _reason
+       )
+       when defect != :none do
+    synthesize_terminal_contract_failure(loop_ctx, events, metrics, defect)
+  end
 
   defp stream_error_result(
          %{accepted?: true, cancellation_started_before_acceptance?: false} = loop_ctx,
@@ -1080,6 +1113,62 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp stream_error_result(_loop_ctx, _events, _metrics, reason),
     do: {:error, {:dispatch_failed, reason}}
+
+  defp stream_done_result(
+         %{accepted?: true, cancellation_started_before_acceptance?: false} = loop_ctx,
+         events,
+         metrics
+       ) do
+    case {loop_ctx.terminal_event, loop_ctx.conformance_defect} do
+      {nil, :none} ->
+        synthesize_terminal_contract_failure(loop_ctx, events, metrics, :missing_terminal)
+
+      {%InferenceEvent{} = terminal_event, :none} ->
+        _handler_result =
+          emit_event_safely(terminal_event, metrics.request_id, loop_ctx.event_handler)
+
+        stream_terminal_result(loop_ctx, [terminal_event | events], metrics)
+
+      {%InferenceEvent{}, defect} ->
+        synthesize_terminal_contract_failure(loop_ctx, events, metrics, defect)
+    end
+  end
+
+  defp stream_done_result(loop_ctx, events, metrics),
+    do: stream_terminal_result(loop_ctx, events, metrics)
+
+  defp synthesize_terminal_contract_failure(loop_ctx, events, metrics, defect) do
+    {code, message} = terminal_contract_failure(defect)
+
+    failed_event =
+      InferenceEvent.failed(code, message, false)
+
+    _handler_result =
+      emit_event_safely(failed_event, metrics.request_id, loop_ctx.event_handler)
+
+    metrics =
+      metrics
+      |> increment_event_count()
+      |> update_metrics_for_terminal(failed_event, :synthesized)
+      |> Map.put(:conformance_defect, defect)
+
+    stream_terminal_result(loop_ctx, [failed_event | events], metrics)
+  end
+
+  defp terminal_contract_failure(:missing_terminal),
+    do:
+      {"runtime_endpoint_missing_terminal",
+       "Runtime Endpoint stream ended without a terminal event"}
+
+  defp terminal_contract_failure(:duplicate_terminal),
+    do:
+      {"runtime_endpoint_duplicate_terminal",
+       "Runtime Endpoint stream emitted more than one terminal event"}
+
+  defp terminal_contract_failure(:post_terminal),
+    do:
+      {"runtime_endpoint_post_terminal_event",
+       "Runtime Endpoint stream emitted an event after its terminal event"}
 
   defp stream_terminal_result(loop_ctx, events, metrics),
     do: stream_terminal_result(loop_ctx, events, metrics, nil)
@@ -1122,6 +1211,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
     if cancel_reason == :event_handler_failed do
       case result do
+        {:ok, _events, %Metrics{conformance_defect: defect}} when defect != :none -> result
         {:ok, _events, _metrics} -> {:error, {:dispatch_failed, :event_handler_failed}}
         {:error, _reason} = error -> error
       end
@@ -1144,8 +1234,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp drain_until_terminal_or_done(%{} = loop_ctx, events, cancel_reason, cancel_deadline) do
     %{
       task_ref: task_ref,
-      metrics: metrics,
-      event_handler: event_handler
+      metrics: metrics
     } = loop_ctx
 
     request_id = metrics.request_id
@@ -1154,24 +1243,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     if remaining_ms > 0 do
       receive do
         {:runtime_endpoint_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
-          loop_ctx = maybe_record_acceptance(loop_ctx, event)
-          _handler_result = emit_event_safely(event, request_id, event_handler)
-          events = [event | events]
-          metrics = update_metrics_for_event(metrics, event)
-
-          if InferenceEvent.terminal?(event) do
-            stream_terminal_result(loop_ctx, events, metrics, cancel_reason)
-          else
-            drain_until_terminal_or_done(
-              %{loop_ctx | metrics: metrics},
-              events,
-              cancel_reason,
-              cancel_deadline
-            )
-          end
+          handle_drain_event(loop_ctx, events, event, cancel_reason, cancel_deadline)
 
         {:runtime_endpoint_done, ^task_ref, _result} ->
-          synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
+          drain_done_result(loop_ctx, events, cancel_reason)
       after
         remaining_ms -> cancel_drain_timeout_result(loop_ctx, events, cancel_reason)
       end
@@ -1180,9 +1255,78 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
+  defp handle_drain_event(%{terminal_event: nil} = loop_ctx, events, event, reason, deadline) do
+    metrics = update_metrics_for_event(loop_ctx.metrics, event)
+
+    if InferenceEvent.terminal?(event) do
+      drain_until_terminal_or_done(
+        %{loop_ctx | metrics: metrics, terminal_event: event},
+        events,
+        reason,
+        deadline
+      )
+    else
+      loop_ctx = maybe_record_acceptance(loop_ctx, event)
+      _handler_result = emit_event_safely(event, metrics.request_id, loop_ctx.event_handler)
+
+      drain_until_terminal_or_done(
+        %{loop_ctx | metrics: metrics},
+        [event | events],
+        reason,
+        deadline
+      )
+    end
+  end
+
+  defp handle_drain_event(
+         %{terminal_event: %InferenceEvent{}} = loop_ctx,
+         events,
+         event,
+         reason,
+         deadline
+       ) do
+    defect = if InferenceEvent.terminal?(event), do: :duplicate_terminal, else: :post_terminal
+
+    loop_ctx = %{
+      loop_ctx
+      | conformance_defect: first_conformance_defect(loop_ctx.conformance_defect, defect),
+        metrics: increment_event_count(loop_ctx.metrics)
+    }
+
+    drain_until_terminal_or_done(loop_ctx, events, reason, deadline)
+  end
+
+  defp drain_done_result(%{conformance_defect: defect} = loop_ctx, events, _cancel_reason)
+       when defect != :none do
+    synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
+  end
+
+  defp drain_done_result(
+         %{terminal_event: %InferenceEvent{} = terminal_event} = loop_ctx,
+         events,
+         cancel_reason
+       ) do
+    _handler_result =
+      emit_event_safely(terminal_event, loop_ctx.metrics.request_id, loop_ctx.event_handler)
+
+    stream_terminal_result(
+      loop_ctx,
+      [terminal_event | events],
+      loop_ctx.metrics,
+      cancel_reason
+    )
+  end
+
+  defp drain_done_result(loop_ctx, events, cancel_reason),
+    do: synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
+
   defp cancel_drain_timeout_result(loop_ctx, events, cancel_reason) do
     reconcile_cancel_drain_timeout(loop_ctx)
-    synthesize_cancel_terminal(loop_ctx, events, cancel_reason, " after drain timeout")
+
+    case loop_ctx.conformance_defect do
+      :none -> synthesize_cancel_terminal(loop_ctx, events, cancel_reason, " after drain timeout")
+      defect -> synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
+    end
   end
 
   defp synthesize_cancel_terminal(loop_ctx, events, cancel_reason, message_suffix) do
@@ -1619,11 +1763,16 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         "terminal_detail=#{serialize_na(metrics.terminal_detail)} " <>
         "outcome=#{metrics.outcome} " <>
         "event_count=#{metrics.event_count} " <>
-        "anomaly=#{metrics.anomaly}"
+        "anomaly=#{metrics.anomaly} " <>
+        "conformance_defect=#{metrics.conformance_defect}"
     )
   end
 
-  # For successful streams, finalize_metrics is not used - result already has final_metrics
+  defp finalize_metrics(%Metrics{conformance_defect: defect} = metrics, :ok)
+       when defect != :none do
+    %{metrics | outcome: :conformance_failed}
+  end
+
   defp finalize_metrics(%Metrics{} = metrics, :ok) do
     %{metrics | outcome: :ok}
   end

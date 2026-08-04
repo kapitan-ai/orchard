@@ -29,6 +29,7 @@ defmodule Orchard.Inference.ChatError do
           | :request_cancelled
           | :request_interrupted
           | :request_failed
+          | :runtime_endpoint_conformance
           | :orchestration_crash
           | :internal
 
@@ -310,6 +311,16 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def api_mapping(%__MODULE__{kind: :runtime_endpoint_conformance}) do
+    %{
+      status: :internal_server_error,
+      type: "api_error",
+      code: "internal_error",
+      message: "Internal error",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: :orchestration_crash}) do
     %{
       status: :internal_server_error,
@@ -343,6 +354,15 @@ defmodule Orchard.Inference.ChatError do
     |> ModelLoadFailure.api_mapping()
     |> Map.delete(:status)
     |> Map.put(:param, nil)
+  end
+
+  def sse_mapping(%__MODULE__{kind: :runtime_endpoint_conformance}) do
+    %{
+      type: "server_error",
+      code: "internal_error",
+      message: "Internal error",
+      param: nil
+    }
   end
 
   def sse_mapping(%__MODULE__{kind: kind} = error) when kind in @sse_passthrough_kinds do
@@ -445,6 +465,15 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def terminal_attrs(%__MODULE__{kind: :runtime_endpoint_conformance} = error) do
+    %{
+      state: :failed,
+      http_status: 500,
+      error_code: error.source_code,
+      error_message: error.source_message
+    }
+  end
+
   def terminal_attrs(%__MODULE__{kind: :request_failed} = error) do
     %{
       state: :failed,
@@ -500,6 +529,14 @@ defmodule Orchard.Inference.ChatError do
   defp failed_event_kind(code)
        when code in ["request_client_disconnect", "request_caller_disconnect"],
        do: :request_interrupted
+
+  defp failed_event_kind(code)
+       when code in [
+              "runtime_endpoint_missing_terminal",
+              "runtime_endpoint_duplicate_terminal",
+              "runtime_endpoint_post_terminal_event"
+            ],
+       do: :runtime_endpoint_conformance
 
   defp failed_event_kind(_code), do: :request_failed
 

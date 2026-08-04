@@ -140,7 +140,8 @@ defmodule Orchard.SentryContextTest do
       accepted_to_first_delta_ms: :na,
       accepted_to_terminal_ms: 80,
       event_count: 3,
-      anomaly: :none
+      anomaly: :none,
+      conformance_defect: :post_terminal
     }
 
     assert SentryContext.build_dispatch_extra(metrics,
@@ -154,7 +155,8 @@ defmodule Orchard.SentryContextTest do
              orchard_model_already_loaded: false,
              orchard_ensure_model_loaded_ms: 25,
              orchard_accepted_to_terminal_ms: 80,
-             orchard_event_count: 3
+             orchard_event_count: 3,
+             orchard_conformance_defect: :post_terminal
            }
   end
 

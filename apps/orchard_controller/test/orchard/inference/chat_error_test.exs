@@ -137,6 +137,43 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "terminal conformance failures stay generic publicly and specific durably" do
+    failures = [
+      {"runtime_endpoint_missing_terminal", "stream ended without a terminal"},
+      {"runtime_endpoint_duplicate_terminal", "stream emitted duplicate terminals"},
+      {"runtime_endpoint_post_terminal_event", "stream emitted a late event"}
+    ]
+
+    for {code, message} <- failures do
+      error =
+        code
+        |> InferenceEvent.failed(message, false)
+        |> ChatError.from_failed_event()
+
+      assert ChatError.api_mapping(error) == %{
+               status: :internal_server_error,
+               type: "api_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+
+      assert ChatError.terminal_attrs(error) == %{
+               state: :failed,
+               http_status: 500,
+               error_code: code,
+               error_message: message
+             }
+    end
+  end
+
   test "cancelled event persists cancelled state and controller message" do
     event = InferenceEvent.failed("request_cancelled", "request was cancelled upstream", false)
     error = ChatError.from_failed_event(event)

@@ -224,6 +224,52 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.NonterminalThenErr
   defdelegate cancel_inference(channel, request, opts), to: GateClient
 end
 
+defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.TerminalDefectClient do
+  @moduledoc false
+
+  alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
+  alias Orchard.InferenceEvent
+
+  defdelegate connect(target), to: GateClient
+  defdelegate disconnect(channel), to: GateClient
+  defdelegate status(channel, opts), to: GateClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: GateClient
+
+  def execute_inference(_channel, request, opts) do
+    owner = Keyword.fetch!(opts, :owner)
+    task_ref = make_ref()
+
+    request.request_id
+    |> events_for()
+    |> Enum.each(fn event ->
+      send(owner, {:runtime_endpoint_event, task_ref, request.request_id, event})
+    end)
+
+    send(owner, {:runtime_endpoint_done, task_ref, :ok})
+    {:ok, task_ref}
+  end
+
+  defdelegate cancel_inference(channel, request, opts), to: GateClient
+
+  defp events_for("request-terminal-defect-missing"), do: [InferenceEvent.accepted(0)]
+
+  defp events_for("request-terminal-defect-duplicate") do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.completed(:finish_reason_stop, nil),
+      InferenceEvent.failed("late_terminal", "late terminal", false)
+    ]
+  end
+
+  defp events_for("request-terminal-defect-post") do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.completed(:finish_reason_stop, nil),
+      InferenceEvent.output_text_delta("late")
+    ]
+  end
+end
+
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CancellableStreamClient do
   @moduledoc false
 
@@ -272,7 +318,21 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CancellableStreamC
                    InferenceEvent.failed("cancelled", "cancelled", false)}
                 )
 
-                send(owner, {:runtime_endpoint_done, task_ref, :ok})
+                if request.request_id in [
+                     "request-cancel-post-terminal",
+                     "request-cancel-post-terminal-timeout",
+                     "request-handler-failure-post-terminal"
+                   ] do
+                  send(
+                    owner,
+                    {:runtime_endpoint_event, task_ref, request.request_id,
+                     InferenceEvent.output_text_delta("late after cancellation terminal")}
+                  )
+                end
+
+                unless request.request_id == "request-cancel-post-terminal-timeout" do
+                  send(owner, {:runtime_endpoint_done, task_ref, :ok})
+                end
             end
         end
       end)
@@ -609,6 +669,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     PreAcceptanceCancelClient,
     ProductionFreshStatusClient,
     SlowLoadClient,
+    TerminalDefectClient,
     TerminalBeforeAcceptedClient,
     UnprobeableClient
   }
@@ -625,6 +686,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   @unprobeable_client UnprobeableClient
   @production_fresh_status_client ProductionFreshStatusClient
   @slow_load_client SlowLoadClient
+  @terminal_defect_client TerminalDefectClient
 
   # The request timeout now bounds connect, probe, and acceptance-gate waiting
   # as well as streaming, so it must outlast dispatch setup or the request
@@ -867,6 +929,30 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
+  test "SPEC 7.5.5 terminal defects release claim and acceptance gate resources" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+
+    for defect <- ["missing", "duplicate", "post"] do
+      node_id = claim_node_id()
+      request_id = "request-terminal-defect-#{defect}"
+
+      assert {:ok, events} =
+               RequestDispatcher.dispatch(
+                 capacity_schedule(authority, node_id, request_id),
+                 execute_request(request_id),
+                 model_load_request(node_id),
+                 client_impl: @terminal_defect_client
+               )
+
+      assert [%InferenceEvent{event: %InferenceEvent.Failed{}}] =
+               Enum.filter(events, &InferenceEvent.terminal?/1)
+
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+      assert {:ok, lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
+      assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
+    end
+  end
+
   test "SPEC 5.9 managed dispatch rejects cached capacity without fresh providers" do
     node_id = claim_node_id()
     request_id = "request-cached-capacity-authorization"
@@ -1086,6 +1172,112 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     send(emitter, :finish_cancel)
 
     assert {:error, {:dispatch_failed, :event_handler_failed}} = Task.await(dispatch)
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC 7.5.5 cancellation drain detects an event after terminal" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-cancel-post-terminal"
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          capacity_schedule(authority, node_id, request_id),
+          execute_request(request_id),
+          model_load_request(node_id),
+          client_impl: @cancellable_stream_client,
+          event_handler: fn
+            _request_id, %InferenceEvent{event: %InferenceEvent.OutputTextDelta{}} -> :cancel
+            _request_id, _event -> :ok
+          end
+        )
+      end)
+
+    assert_receive {:cancel_received, emitter}
+    assert AllocationAuthority.claim_count(authority, node_id) == 1
+    send(emitter, :finish_cancel)
+
+    assert {:ok, events} = Task.await(dispatch)
+
+    assert [%InferenceEvent{event: %InferenceEvent.Failed{code: code}}] =
+             Enum.filter(events, &InferenceEvent.terminal?/1)
+
+    assert code == "runtime_endpoint_post_terminal_event"
+
+    refute Enum.any?(
+             events,
+             &(InferenceEvent.kind(&1) == :output_text_delta and &1.event.delta =~ "late")
+           )
+
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC 7.5.5 cancellation drain timeout preserves an observed post-terminal defect" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-cancel-post-terminal-timeout"
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          capacity_schedule(authority, node_id, request_id),
+          execute_request(request_id),
+          model_load_request(node_id),
+          client_impl: @cancellable_stream_client,
+          cancel_drain_timeout_ms: 20,
+          event_handler: fn
+            _request_id, %InferenceEvent{event: %InferenceEvent.OutputTextDelta{}} -> :cancel
+            _request_id, _event -> :ok
+          end
+        )
+      end)
+
+    assert_receive {:cancel_received, emitter}
+    assert AllocationAuthority.claim_count(authority, node_id) == 1
+    send(emitter, :finish_cancel)
+
+    assert {:ok, events} = Task.await(dispatch)
+
+    assert [%InferenceEvent{event: %InferenceEvent.Failed{code: code}}] =
+             Enum.filter(events, &InferenceEvent.terminal?/1)
+
+    assert code == "runtime_endpoint_post_terminal_event"
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC 7.5.5 handler failure preserves a post-terminal defect observed while draining" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-handler-failure-post-terminal"
+
+    dispatch =
+      Task.async(fn ->
+        RequestDispatcher.dispatch(
+          capacity_schedule(authority, node_id, request_id),
+          execute_request(request_id),
+          model_load_request(node_id),
+          client_impl: @cancellable_stream_client,
+          event_handler: fn
+            _request_id, %InferenceEvent{event: %InferenceEvent.OutputTextDelta{}} ->
+              raise "delta handler failed"
+
+            _request_id, _event ->
+              :ok
+          end
+        )
+      end)
+
+    assert_receive {:cancel_received, emitter}
+    assert AllocationAuthority.claim_count(authority, node_id) == 1
+    send(emitter, :finish_cancel)
+
+    assert {:ok, events} = Task.await(dispatch)
+
+    assert [%InferenceEvent{event: %InferenceEvent.Failed{code: code}}] =
+             Enum.filter(events, &InferenceEvent.terminal?/1)
+
+    assert code == "runtime_endpoint_post_terminal_event"
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
