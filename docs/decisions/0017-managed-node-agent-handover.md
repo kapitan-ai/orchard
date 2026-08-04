@@ -19,10 +19,10 @@ ADR 0012 keeps BEAM Peer Grant storage locks scoped to individual store operatio
 Managed Orchard.app and PKG Node Agent lifecycle mutations use one shared exclusion boundary.
 Every Managed Node Agent Handover uses zero process overlap for the complete handover.
 The lifecycle prevents launchd relaunch before requesting managed shutdown.
-The lifecycle identifies the exact outgoing Node Agent process instance and proves that instance has exited before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
-The same exit proof precedes replacement start.
+Before mutating the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root, the lifecycle proves either that the exact identified outgoing Node Agent process instance has exited or that no managed Node Agent instance is running.
+Satisfaction of that same handover proof gate, through either branch, precedes replacement start.
 The wait for exit proof is bounded.
-Failure to acquire the shared exclusion boundary, prevent relaunch, identify the outgoing instance, or prove exit within the bound fails closed without mutation or replacement start.
+Failure to acquire the shared exclusion boundary, prevent relaunch, or prove within the bound either that the identified outgoing instance exited or that no managed Node Agent instance is running fails closed without mutation or replacement start; affirmative proof of absence satisfies the gate, while ambiguous or unproven absence remains fail-closed.
 If mutation or restoration state is uncertain, the lifecycle fails closed without automatically restarting the Node Agent.
 Direct or manual Node Agent launches using the same Node Identity Root are unsupported and remain outside the managed handover guarantee.
 Existing BEAM Peer Grant storage locks remain operation-scoped and do not become lifecycle locks.
