@@ -222,6 +222,178 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     end
   end
 
+  test "SPEC.md §7.5.0 load waits for first-install publication and returns its exact grant" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-load-race-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+    store_root = Path.join(root, "beam-peer-grants")
+    grant_path = Path.join(store_root, "#{identity.controller_id}.json")
+    parent = self()
+
+    installer =
+      Task.async(fn ->
+        BeamPeerGrantStore.install(
+          root,
+          identity,
+          delivery,
+          delivery.node_beam_name,
+          sync_directory: fn path ->
+            if path == root do
+              send(parent, {:first_store_ready_for_publication, self()})
+
+              receive do
+                :resume_publication -> :ok
+              end
+            end
+
+            :ok
+          end
+        )
+      end)
+
+    assert_receive {:first_store_ready_for_publication, installer_pid}, 5_000
+    assert private_mode(store_root) == 0o700
+    refute File.exists?(grant_path)
+
+    loader =
+      Task.async(fn ->
+        send(parent, :loader_started)
+        BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+      end)
+
+    try do
+      assert_receive :loader_started
+      assert Task.yield(loader, 250) == nil
+
+      send(installer_pid, :resume_publication)
+      assert {:ok, ^delivery} = Task.await(installer, 5_000)
+      assert {:ok, ^delivery} = Task.await(loader, 5_000)
+    after
+      send(installer_pid, :resume_publication)
+      Task.shutdown(installer, :brutal_kill)
+      Task.shutdown(loader, :brutal_kill)
+    end
+  end
+
+  test "SPEC.md §7.5.0 load preserves genuine absence without creating grant custody" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-missing-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    root_uid = File.stat!(root).uid
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:error, :beam_peer_grant_missing} =
+             BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+
+    refute File.exists?(Path.join(root, "beam-peer-grants"))
+
+    lock_path = Path.join(root, ".beam-peer-grants.install.lock")
+    assert File.lstat!(lock_path).type == :regular
+    assert private_mode(lock_path) == 0o600
+    assert File.stat!(lock_path).uid == root_uid
+  end
+
+  test "SPEC.md §7.5.0 load fails closed without repairing unsafe custody" do
+    Enum.each([:wide_store, :store_symlink, :wide_grant, :grant_symlink], fn unsafe_kind ->
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "orchard-node-peer-grant-unsafe-load-#{unsafe_kind}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      File.mkdir!(root)
+      File.chmod!(root, 0o700)
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      identity = identity()
+      delivery = delivery(identity)
+      store_root = Path.join(root, "beam-peer-grants")
+      grant_path = Path.join(store_root, "#{identity.controller_id}.json")
+
+      case unsafe_kind do
+        :wide_store ->
+          File.mkdir!(store_root)
+          File.chmod!(store_root, 0o755)
+
+        :store_symlink ->
+          target = Path.join(root, "store-target")
+          File.mkdir!(target)
+          File.chmod!(target, 0o700)
+          File.ln_s!(target, store_root)
+
+        :wide_grant ->
+          assert {:ok, ^delivery} =
+                   BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+          File.chmod!(grant_path, 0o644)
+
+        :grant_symlink ->
+          assert {:ok, ^delivery} =
+                   BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+          target = Path.join(root, "grant-target")
+          File.write!(target, "unchanged")
+          File.chmod!(target, 0o600)
+          File.rm!(grant_path)
+          File.ln_s!(target, grant_path)
+      end
+
+      assert {:error, :beam_peer_grant_store_invalid} =
+               BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+
+      case unsafe_kind do
+        :wide_store -> assert private_mode(store_root) == 0o755
+        :store_symlink -> assert File.lstat!(store_root).type == :symlink
+        :wide_grant -> assert private_mode(grant_path) == 0o644
+        :grant_symlink -> assert File.lstat!(grant_path).type == :symlink
+      end
+    end)
+  end
+
+  test "SPEC.md §7.5.0 load rejects malformed persisted grants" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-malformed-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:ok, ^delivery} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    grant_path = Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"])
+    File.write!(grant_path, "not-json")
+    File.chmod!(grant_path, 0o600)
+
+    assert {:error, :beam_peer_grant_store_invalid} =
+             BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
+
+    assert File.read!(grant_path) == "not-json"
+  end
+
   test "SPEC.md §7.5.0 install sweeps orphaned plaintext temporaries left by a crash" do
     root =
       Path.join(
