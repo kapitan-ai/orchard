@@ -4,7 +4,7 @@
 - [x] 1.2 Author this active OpenSpec package and scheduler/runtime-endpoint deltas
 - [x] 1.3 Reconcile `SPEC.md` only to the shipped first-party Controller-pull direction and 5000 ms default interval
 - [x] 1.4 Validate: `CI=1 OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate decouple-scheduler-candidate-source --type change --strict --no-interactive`
-- [ ] 1.5 Synchronize accepted candidate-source, payload, queue-source, explanation, and inline-probe behavior into `SPEC.md` during implementation acceptance/archive
+- [x] 1.5 Synchronize accepted candidate-source, payload, queue-source, explanation, and inline-probe behavior into `SPEC.md` during implementation acceptance/archive
 
 ## 2. Durable trusted observations
 
@@ -55,5 +55,5 @@
 
 ## 8. Archive and sync
 
-- [ ] 8.1 Archive/sync accepted deltas and review generated main specs for placeholder prose such as `Purpose TBD`
-- [ ] 8.2 Confirm the separate §9.1 heartbeat-lag metric/exporter remains tracked by its owning metrics-floor work
+- [x] 8.1 Archive/sync accepted deltas and review generated main specs for placeholder prose such as `Purpose TBD`
+- [x] 8.2 Confirm the separate §9.1 heartbeat-lag metric/exporter remains tracked by its owning metrics-floor work

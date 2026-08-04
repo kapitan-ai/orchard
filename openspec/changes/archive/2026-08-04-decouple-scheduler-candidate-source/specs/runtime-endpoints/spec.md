@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
 ### Requirement: Durable authenticated heartbeat observation
-For each successful, authenticated, non-stale trusted Runtime Endpoint Observation, the
-Active Controller SHALL append one `node_heartbeats` row in the same transaction that
+The Active Controller SHALL append one `node_heartbeats` row for each successful,
+authenticated, non-stale trusted Runtime Endpoint Observation in the same transaction that
 advances `nodes.last_heartbeat_at`, re-derives Node health, and refreshes aggregate
 DispatchCapacity evidence.
 A standby Controller MUST write nothing on this path.

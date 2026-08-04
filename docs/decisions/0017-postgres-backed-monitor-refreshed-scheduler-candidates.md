@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted; implementation is pending in the active
-`decouple-scheduler-candidate-source` OpenSpec change.
+Accepted and implemented; `decouple-scheduler-candidate-source` was archived as
+`2026-08-04-decouple-scheduler-candidate-source` after its deltas were synchronized into
+the main OpenSpec specs.
 
 This decision resolves the slice B question left open by
 [ADR 0015](0015-thin-active-node-liveness-monitor-before-scheduler-decoupling.md).
@@ -204,8 +205,9 @@ schedule reads Postgres. Database unavailability or incomplete snapshot reads fa
 as described above. Leadership loss stops background writes; a new Active Controller uses
 durable rows and begins new observation cycles.
 
-The `orchard_node_heartbeat_lag_seconds` exporter remains separate metrics-floor work.
-Scheduler freshness uses timestamps and does not require the exporter.
+The `orchard_node_heartbeat_lag_seconds{node}` exporter remains separate metrics-floor work
+owned by open GitHub issue #123. Scheduler freshness uses timestamps and does not require
+the exporter.
 
 ## Rejected alternatives
 
@@ -239,9 +241,8 @@ adding a production mirror.
 
 ## SPEC.md impact
 
-This ADR updates `SPEC.md` now only to reconcile the shipped first-party
-Controller-pull direction and 5000 ms default interval. Candidate persistence, configured
-target intersection, bounded unmanaged probing, snapshot reads, queue-source behavior,
-payload schema, explanations, and inline production-probe removal remain proposed in the
-active OpenSpec deltas. Their normative `SPEC.md` synchronization is pending
-implementation acceptance/archive. The §9.1 heartbeat-lag exporter remains deferred.
+`SPEC.md` now includes the accepted first-party Controller-pull direction, 5000 ms default
+interval, candidate persistence, configured target intersection, bounded unmanaged probing,
+snapshot reads, queue-source behavior, payload schema, explanations, and inline
+production-probe removal. The archived OpenSpec deltas are synchronized into the main
+specs. The §9.1 heartbeat-lag exporter remains deferred to open GitHub issue #123.
