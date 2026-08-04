@@ -254,7 +254,11 @@ defmodule Orchard.BuildInfoTest do
     File.mkdir_p!(bin)
 
     for command <- ~w(mix elixir erl dirname basename readlink cut sed mkdir) do
-      File.ln_s!(System.find_executable(command), Path.join(bin, command))
+      executable = System.find_executable(command)
+      wrapper = Path.join(bin, command)
+
+      File.write!(wrapper, "#!/bin/sh\nexec #{inspect(executable)} \"$@\"\n")
+      File.chmod!(wrapper, 0o755)
     end
 
     bin
