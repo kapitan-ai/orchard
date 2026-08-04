@@ -42,11 +42,12 @@ _Avoid_: Controller agent, worker runtime
 
 **Node Identity Root**:
 The owner-only filesystem root that holds a Node's private key, Node Certificate, enrolled trust state, and stored BEAM Peer Grants.
-Managed lifecycle operations treat this root as identity-bearing state and do not mutate it until the exact outgoing Node Agent process instance is proven to have exited.
+Managed lifecycle operations treat this root as identity-bearing state and do not mutate it until the Managed Node Agent Handover proof gate is satisfied by proven exit of the exact identified outgoing Node Agent process instance or by proven absence of any managed Node Agent instance.
 _Avoid_: BEAM Authorization Root, model cache, generic support directory
 
 **Managed Node Agent Handover**:
-The bounded Orchard.app or PKG lifecycle interval that prevents relaunch, proves the exact outgoing Node Agent process instance exited, performs required managed mutation, and only then permits replacement start.
+The bounded Orchard.app or PKG lifecycle interval that prevents relaunch, proves either that the exact identified outgoing Node Agent process instance exited or that no managed Node Agent instance is running, performs required managed mutation, and only then permits replacement start.
+Ambiguous or unproven absence does not satisfy that proof gate and remains fail-closed.
 It uses one shared lifecycle exclusion boundary across the app and PKG paths and guarantees zero managed process overlap.
 _Avoid_: rolling live overlap, process restart without identity proof, direct manual launch
 
