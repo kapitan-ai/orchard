@@ -266,14 +266,24 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
 
     loader =
       Task.async(fn ->
-        send(parent, :loader_started)
         BeamPeerGrantStore.load(root, identity, delivery.node_beam_name)
       end)
 
     try do
-      assert_receive :loader_started
-      assert Task.yield(loader, 250) == nil
+      wait_until(fn ->
+        case Process.info(loader.pid, :current_stacktrace) do
+          {:current_stacktrace, stacktrace} ->
+            Enum.any?(stacktrace, fn
+              {BeamPeerGrantStore, :await_lock, 1, _location} -> true
+              _frame -> false
+            end)
 
+          nil ->
+            false
+        end
+      end)
+
+      refute File.exists?(grant_path)
       send(installer_pid, :resume_publication)
       assert {:ok, ^delivery} = Task.await(installer, 5_000)
       assert {:ok, ^delivery} = Task.await(loader, 5_000)
