@@ -8,18 +8,18 @@
 
 ## 2. Durable trusted observations
 
-- [ ] 2.1 Add the `node_heartbeats` persistence module and migration required by `SPEC.md` §8
-- [ ] 2.2 Implement schema-version-1 allowlist normalization, structural/domain bounds, configurable 262144-byte default cap, and minimal invalid envelopes
-- [ ] 2.3 Append heartbeat history inside the authenticated Node/DispatchCapacity transaction; reject stale/identity-mismatched writes
-- [ ] 2.4 Exclude prohibited sensitive fields, raw prefix-cache fingerprints, Controller authority, and acquirability
-- [ ] 2.5 Enforce the §8.5 seven-day retention bound
+- [x] 2.1 Add the `node_heartbeats` persistence module and migration required by `SPEC.md` §8
+- [x] 2.2 Implement schema-version-1 allowlist normalization, structural/domain bounds, configurable 262144-byte default cap, and minimal invalid envelopes
+- [x] 2.3 Append heartbeat history inside the authenticated Node/DispatchCapacity transaction; reject stale/identity-mismatched writes
+- [x] 2.4 Exclude prohibited sensitive fields, raw prefix-cache fingerprints, Controller authority, and acquirability
+- [x] 2.5 Enforce the §8.5 seven-day retention bound
 
 ## 3. Production candidate snapshots
 
-- [ ] 3.1 Resolve the exact intersection of effective targets, certificate-backed active inventory, and identity-matching fresh heartbeat rows
-- [ ] 3.2 Read the latest accepted row per trusted target with deterministic one-snapshot semantics
-- [ ] 3.3 Normalize loadedness, active counts, capacity, sanitized prefix-cache status, memory budgets, and prompt-token-ID support
-- [ ] 3.4 Apply Node/observation freshness and fail closed on missing, malformed, stale, identity-mismatched, or database-unavailable facts
+- [x] 3.1 Resolve the exact intersection of effective targets, certificate-backed active inventory, and identity-matching fresh heartbeat rows
+- [x] 3.2 Read the latest accepted row per trusted target with deterministic one-snapshot semantics
+- [x] 3.3 Normalize loadedness, active counts, capacity, sanitized prefix-cache status, memory budgets, and prompt-token-ID support
+- [x] 3.4 Apply Node/observation freshness and fail closed on missing, malformed, stale, identity-mismatched, or database-unavailable facts
 - [ ] 3.5 Refactor MultiNode production candidates to use the snapshot and remove production inline status probing
 
 ## 4. Explicit unmanaged compatibility
@@ -45,8 +45,8 @@
 
 ## 7. Tests and quality gate
 
-- [ ] 7.1 Test transaction atomicity, schema/bounds, invalid envelopes, sensitive-field exclusion, and retention
-- [ ] 7.2 Test production target intersection, freshness, restart, target removal/reconfiguration, and database failures
+- [x] 7.1 Test transaction atomicity, schema/bounds, invalid envelopes, sensitive-field exclusion, and retention
+- [x] 7.2 Test production target intersection, freshness, restart, target removal/reconfiguration, and database failures
 - [ ] 7.3 Test bounded unmanaged compatibility and absence of production fallback or queue-source publication
 - [ ] 7.4 Test ingestion-time queue refresh/clearing and fail-closed restart recovery independently of scheduling reads
 - [ ] 7.5 Test selected, rejected, and skipped snapshot/compatibility explanations, including missing, stale, identity-mismatched, malformed, and database-unavailable cases

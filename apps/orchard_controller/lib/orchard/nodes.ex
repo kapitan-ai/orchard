@@ -65,6 +65,7 @@ defmodule Orchard.Nodes do
 
   alias Orchard.RuntimeEndpoint.{
     AuthenticatedPeer,
+    GrpcCompatibilityMapper,
     ModelRef,
     Observation,
     Placement,
@@ -460,14 +461,23 @@ defmodule Orchard.Nodes do
          :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
          {:ok, peer_identity} <- normalize_authenticated_peer_identity(peer_identity),
          true <- authenticated_status_health_present?(status_response),
-         {:ok, observation} <- normalize_observation(target, status_response, observed_at),
+         {:ok, candidate_observation} <-
+           normalize_candidate_observation(target, status_response),
+         {:ok, observation} <-
+           normalize_observation(target, candidate_observation, observed_at),
          true <- observation.id == peer_identity.node_id do
       handle_observation_result(
         target,
         observed_at,
-        execute_authenticated_observe(target, observation, peer_identity, opts),
-        status_response,
-        []
+        execute_authenticated_observe(
+          target,
+          observation,
+          peer_identity,
+          candidate_observation,
+          opts
+        ),
+        candidate_observation,
+        opts
       )
     else
       _other -> :noop
@@ -835,7 +845,7 @@ defmodule Orchard.Nodes do
   end
 
   defp demote_stale_heartbeat_node(node_id, observed_at) do
-    case execute_mark_unreachable({:node_id, node_id}, observed_at) do
+    case execute_mark_unreachable({:node_id, node_id}, observed_at, :stale_sweep) do
       {:ok, %Node{} = node} ->
         clear_node_queue_capacity_sources(node)
         true
@@ -892,13 +902,36 @@ defmodule Orchard.Nodes do
   defp mark_target_unreachable_without_queue_cleanup(target, observed_at) do
     with true <- repo_available?(),
          {:ok, target_lookup} <- target_lookup(target) do
-      execute_mark_unreachable(target_lookup, observed_at)
+      execute_mark_unreachable(target_lookup, observed_at, :transport_failure)
     else
       _ -> :noop
     end
   end
 
   # -- Observation Normalization --
+
+  defp normalize_candidate_observation(%Target{} = target, %Observation{} = observation) do
+    target = Target.normalize(target)
+
+    {:ok,
+     %{
+       observation
+       | endpoint_id: observation.endpoint_id || target.id,
+         target: target
+     }}
+  end
+
+  defp normalize_candidate_observation(%Target{} = target, status_response)
+       when is_map(status_response) do
+    {:ok,
+     target
+     |> Target.normalize()
+     |> GrpcCompatibilityMapper.observation_from_status(status_response)}
+  rescue
+    _error in ArgumentError -> :error
+  end
+
+  defp normalize_candidate_observation(_target, _status_response), do: :error
 
   defp normalize_observation(target, status_response, observed_at) do
     endpoint_transport = target_transport(target)
@@ -1409,6 +1442,7 @@ defmodule Orchard.Nodes do
          %Target{transport: :beam} = target,
          observation,
          peer_identity,
+         status_response,
          opts
        ) do
     Repo.transaction(fn ->
@@ -1430,7 +1464,14 @@ defmodule Orchard.Nodes do
            true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
            :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation),
            :ok <- BeamPeerGrants.ensure_active_grant_current(grant.id, opts) do
-        update_authenticated_beam_observation(node, observation, grant.id, opts)
+        update_authenticated_beam_observation(
+          node,
+          target,
+          observation,
+          status_response,
+          grant.id,
+          opts
+        )
       else
         _reason -> Repo.rollback(:authenticated_observation_rejected)
       end
@@ -1442,7 +1483,13 @@ defmodule Orchard.Nodes do
       {:noop, :constraint_conflict}
   end
 
-  defp execute_authenticated_observe(target, observation, peer_identity, _opts) do
+  defp execute_authenticated_observe(
+         target,
+         observation,
+         peer_identity,
+         status_response,
+         opts
+       ) do
     Repo.transaction(fn ->
       with %Enrollment{} = enrollment <- lock_authenticated_enrollment(peer_identity),
            %Node{} = node <- lock_authenticated_node(peer_identity.node_id),
@@ -1452,7 +1499,7 @@ defmodule Orchard.Nodes do
            true <- accept_authenticated_observation_health?(node, observation),
            true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
            :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation) do
-        update_authenticated_observation(node, observation)
+        update_authenticated_observation(node, target, observation, status_response, opts)
       else
         _reason -> Repo.rollback(:authenticated_observation_rejected)
       end
@@ -1538,8 +1585,11 @@ defmodule Orchard.Nodes do
   defp ensure_no_identity_conflict(_existing, _observation), do: :ok
 
   defp ensure_fresh_observation(%{existing_by_id: %Node{} = existing}, observation) do
-    if existing.last_heartbeat_at != nil and
-         DateTime.compare(existing.last_heartbeat_at, observation.last_heartbeat_at) != :lt do
+    if timestamp_at_or_after?(existing.last_heartbeat_at, observation.last_heartbeat_at) or
+         timestamp_at_or_after?(
+           existing.last_transport_failure_at,
+           observation.last_heartbeat_at
+         ) do
       {:error, :stale}
     else
       :ok
@@ -1563,17 +1613,39 @@ defmodule Orchard.Nodes do
     :candidate_persisted
   end
 
-  defp update_authenticated_observation(%Node{} = node, observation) do
+  defp update_authenticated_observation(
+         %Node{} = node,
+         target,
+         observation,
+         status_response,
+         opts
+       ) do
     node
     |> authenticated_observation_changeset(observation)
     |> Repo.update()
     |> case do
-      {:ok, updated} -> persist_authenticated_capacity_evidence(updated, observation)
-      {:error, _changeset} -> Repo.rollback(:authenticated_observation_rejected)
+      {:ok, updated} ->
+        persist_authenticated_capacity_evidence(
+          updated,
+          target,
+          observation,
+          status_response,
+          opts
+        )
+
+      {:error, _changeset} ->
+        Repo.rollback(:authenticated_observation_rejected)
     end
   end
 
-  defp update_authenticated_beam_observation(%Node{} = node, observation, grant_id, opts) do
+  defp update_authenticated_beam_observation(
+         %Node{} = node,
+         target,
+         observation,
+         status_response,
+         grant_id,
+         opts
+       ) do
     changeset = authenticated_observation_changeset(node, observation)
 
     if changeset.valid? do
@@ -1589,7 +1661,12 @@ defmodule Orchard.Nodes do
         {1, _rows} ->
           Node
           |> Repo.get!(node.id)
-          |> persist_authenticated_capacity_evidence(observation)
+          |> persist_authenticated_capacity_evidence(
+            target,
+            observation,
+            status_response,
+            opts
+          )
 
         _other ->
           Repo.rollback(:authenticated_observation_rejected)
@@ -1610,14 +1687,32 @@ defmodule Orchard.Nodes do
     )
   end
 
-  defp persist_authenticated_capacity_evidence(node, observation) do
+  defp persist_authenticated_capacity_evidence(
+         node,
+         target,
+         observation,
+         status_response,
+         opts
+       ) do
     attrs =
       observation.aggregate_capacity_evidence
       |> Map.put(:observed_at, observation.last_heartbeat_at)
 
     case DispatchCapacity.record_capacity_evidence(node.id, attrs) do
-      {:ok, _evidence} -> node
-      {:error, _changeset} -> Repo.rollback(:authenticated_observation_rejected)
+      {:ok, _evidence} ->
+        persist_authenticated_heartbeat(node, target, status_response, observation, opts)
+
+      {:error, _changeset} ->
+        Repo.rollback(:authenticated_observation_rejected)
+    end
+  end
+
+  defp persist_authenticated_heartbeat(node, target, status_response, observation, opts) do
+    heartbeat_context = Keyword.get(opts, :heartbeat_context, Orchard.NodeHeartbeats)
+
+    case heartbeat_context.append(node, target, status_response, observation.last_heartbeat_at) do
+      {:ok, _heartbeat} -> node
+      {:error, _reason} -> Repo.rollback(:authenticated_observation_rejected)
     end
   end
 
@@ -2365,14 +2460,14 @@ defmodule Orchard.Nodes do
 
   # -- Mark Unreachable --
 
-  defp execute_mark_unreachable(target_lookup, observed_at) do
+  defp execute_mark_unreachable(target_lookup, observed_at, demotion_source) do
     Repo.transaction(fn ->
       case fetch_node_for_transport_update(target_lookup) do
         nil ->
           Repo.rollback(:noop)
 
         %Node{} = node ->
-          update_transport_failure_health(node, observed_at)
+          update_transport_failure_health(node, observed_at, demotion_source)
       end
     end)
     |> case do
@@ -2393,44 +2488,55 @@ defmodule Orchard.Nodes do
     |> Repo.one()
   end
 
-  defp update_transport_failure_health(%Node{} = node, observed_at) do
+  defp update_transport_failure_health(%Node{} = node, observed_at, demotion_source) do
     case resolve_transport_failure_health(node, observed_at) do
       :noop ->
         Repo.rollback(:noop)
 
       health ->
         node
-        |> Ecto.Changeset.change(health: health)
+        |> Ecto.Changeset.change(demotion_changes(health, observed_at, demotion_source))
         |> Repo.update!()
     end
   end
 
-  defp resolve_transport_failure_health(%Node{last_heartbeat_at: nil}, _observed_at),
-    do: :unreachable
+  defp demotion_changes(health, observed_at, :transport_failure),
+    do: %{health: health, last_transport_failure_at: observed_at}
 
-  defp resolve_transport_failure_health(
-         %Node{health: health, last_heartbeat_at: last_hb},
-         observed_at
-       )
-       when is_struct(observed_at, DateTime) do
+  defp demotion_changes(health, _observed_at, :stale_sweep), do: %{health: health}
+
+  defp resolve_transport_failure_health(%Node{} = node, %DateTime{} = observed_at) do
     cond do
-      DateTime.compare(last_hb, observed_at) != :lt ->
+      timestamp_at_or_after?(node.last_transport_failure_at, observed_at) ->
         :noop
 
-      health == :unhealthy ->
+      timestamp_at_or_after?(node.last_heartbeat_at, observed_at) ->
+        :noop
+
+      is_nil(node.last_heartbeat_at) ->
+        :unreachable
+
+      node.health == :unhealthy ->
         :unhealthy
 
       DateTime.compare(
-        last_hb,
+        node.last_heartbeat_at,
         DateTime.add(observed_at, -unreachable_threshold_ms(), :millisecond)
-      ) ==
-          :lt ->
+      ) == :lt ->
         :unreachable
 
       true ->
         :degraded
     end
   end
+
+  defp resolve_transport_failure_health(_node, _observed_at), do: :noop
+
+  defp timestamp_at_or_after?(%DateTime{} = timestamp, %DateTime{} = boundary) do
+    DateTime.compare(timestamp, boundary) in [:eq, :gt]
+  end
+
+  defp timestamp_at_or_after?(_timestamp, _boundary), do: false
 
   # -- Helpers --
 

@@ -14,7 +14,8 @@ config :orchard_controller,
   transport_degraded: true,
   bundle_build_eager_preflight_enabled: true,
   bundle_build_preflight_timeout_ms: 60_000,
-  trust_manifest_compatibility_declarations: true
+  trust_manifest_compatibility_declarations: true,
+  node_heartbeat_payload_max_bytes: 262_144
 
 # Console feature flag and auth defaults.
 # Dev/test: enabled with no auth for frictionless local development.

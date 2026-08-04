@@ -15,11 +15,22 @@ defmodule Orchard.BeamPeerGrantsTest do
   alias Orchard.Node.{BeamPeerGrantBootstrap, BeamPeerGrantStore, RuntimeTLS}
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.NodeEnrollments
+  alias Orchard.NodeHeartbeats
+  alias Orchard.NodeHeartbeats.CandidateSnapshot.Candidate
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionDecision, Enrollment}
+  alias Orchard.Nodes.{AdmissionDecision, Enrollment, NodeHeartbeat}
   alias Orchard.Nodes.Node
   alias Orchard.NodeTrust
-  alias Orchard.RuntimeEndpoint.{ActivationProbe, AuthenticatedPeer, BeamClient, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    ActivationProbe,
+    AuthenticatedPeer,
+    BeamClient,
+    Placement,
+    PlacementCapacity,
+    Target
+  }
+
   alias Orchard.TransportTLS.CertificateIdentity
 
   defmodule AuthenticatedStatusServer do
@@ -41,6 +52,30 @@ defmodule Orchard.BeamPeerGrantsTest do
          },
          runtime_health: %{ready: true, health_code: "", health_message: ""}
        }}
+    end
+  end
+
+  defmodule FailingHeartbeatContext do
+    def append(_node, _target, _observation, _observed_at),
+      do: {:error, :forced_heartbeat_failure}
+  end
+
+  defmodule RecordingHeartbeatContext do
+    def append(node, target, observation, observed_at) do
+      send(Process.get(:heartbeat_observer), {:heartbeat_append, Orchard.Repo.in_transaction?()})
+      Orchard.NodeHeartbeats.append(node, target, observation, observed_at)
+    end
+  end
+
+  defmodule RecordingQueueManager do
+    def refresh_node_capacity_sources(_refresh) do
+      send(Process.get(:heartbeat_observer), {:queue_refresh, Orchard.Repo.in_transaction?()})
+      :ok
+    end
+
+    def clear_capacity_sources(_sources, _opts) do
+      send(Process.get(:heartbeat_observer), {:queue_clear, Orchard.Repo.in_transaction?()})
+      :ok
     end
   end
 
@@ -1492,6 +1527,252 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert evidence.active_request_count == 2
     assert evidence.validity == :valid
     assert evidence.observed_at == DateTime.truncate(observed_at, :microsecond)
+
+    heartbeat = Repo.one!(from(heartbeat in NodeHeartbeat, where: heartbeat.node_id == ^node.id))
+    assert heartbeat.observed_at == DateTime.truncate(observed_at, :microsecond)
+    assert heartbeat.health == :healthy
+    assert heartbeat.active_requests == 2
+    assert heartbeat.payload["schema_version"] == 1
+    assert heartbeat.payload["validity"] == "valid"
+  end
+
+  test "ADR 0017 authenticated gRPC status persists normalized placement capacity for snapshots",
+       %{
+         trust_root: trust_root,
+         authorization_root: authorization_root
+       } do
+    {_grant, beam_target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, beam_target.node_id)
+
+    beam_config = Application.fetch_env!(:orchard_controller, :beam_peer_grants)
+
+    Application.put_env(
+      :orchard_controller,
+      :beam_peer_grants,
+      Keyword.put(beam_config, :enabled, false)
+    )
+
+    assert {:ok, [%Target{transport: :grpc_compat} = target]} =
+             Nodes.activation_probe_runtime_endpoint_targets()
+
+    observed_at = DateTime.utc_now()
+
+    status = %{
+      node_metadata: %{
+        node_id: node.id,
+        display_name: node.display_name,
+        hostname: node.hostname,
+        listen_host: node.connect_host,
+        listen_port: node.connect_port,
+        agent_version: "0.5.0-dev"
+      },
+      runtime_health: %{ready: true, health_code: "", health_message: ""},
+      worker_state: 3,
+      active_request_count: 2,
+      max_concurrency: 4,
+      loaded_models: [%{model_id: "orchard/grpc-model", version: "v1"}],
+      runtime_model_placements: [
+        %{
+          model_ref: %{model_id: "orchard/grpc-model", version: "v1"},
+          active_request_count: 1,
+          max_concurrency: 3
+        }
+      ]
+    }
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               observed_at,
+               authenticated_peer!(node.id)
+             )
+
+    assert {:ok, snapshot} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [target],
+               [target],
+               observed_at: observed_at
+             )
+
+    assert [
+             %Candidate{
+               active_request_count: 2,
+               max_concurrency: 4,
+               placements: [
+                 %Placement{
+                   state: :loaded,
+                   capacity: %PlacementCapacity{
+                     active_request_count: 1,
+                     max_concurrency: 3,
+                     source: "grpc_compatibility_status"
+                   }
+                 }
+               ]
+             }
+           ] = snapshot.candidates
+
+    assert snapshot.rejections == []
+  end
+
+  test "ADR 0017 queue-source ingestion runs only after heartbeat transaction commits", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    Process.put(:heartbeat_observer, self())
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 1, max_concurrency: 4),
+               DateTime.utc_now(),
+               authenticated_peer!(node.id),
+               heartbeat_context: RecordingHeartbeatContext,
+               queue_manager: RecordingQueueManager
+             )
+
+    assert_received {:heartbeat_append, true}
+    assert_received {queue_action, false}
+    assert queue_action in [:queue_refresh, :queue_clear]
+  end
+
+  test "ADR 0017 heartbeat failure rolls back Node and aggregate capacity writes", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    observed_at = DateTime.utc_now()
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 2, max_concurrency: 4),
+               observed_at,
+               authenticated_peer!(node.id),
+               heartbeat_context: FailingHeartbeatContext
+             )
+
+    reloaded = Repo.get!(Node, node.id)
+    assert reloaded.state == :admitted
+    assert reloaded.last_heartbeat_at == nil
+    assert DispatchCapacity.get_capacity_evidence(node.id) == nil
+    assert Repo.aggregate(NodeHeartbeat, :count) == 0
+  end
+
+  test "ADR 0017 stale and identity-rejected observations append no heartbeat", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    observed_at = DateTime.utc_now()
+    status = authenticated_status(node, active_request_count: 1, max_concurrency: 4)
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(target, status, observed_at, peer)
+
+    assert :noop =
+             Nodes.observe_authenticated_status(target, status, observed_at, peer)
+
+    rejected =
+      put_in(status, [:node_metadata, :node_id], Ecto.UUID.generate())
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               rejected,
+               DateTime.add(observed_at, 1, :second),
+               peer
+             )
+
+    assert Repo.aggregate(NodeHeartbeat, :count) == 1
+  end
+
+  test "ADR 0017 transport failure watermark rejects late success and permits later recovery", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    success_at = DateTime.utc_now()
+    late_success_at = DateTime.add(success_at, 100, :millisecond)
+    failure_at = DateTime.add(success_at, 200, :millisecond)
+    recovery_at = DateTime.add(success_at, 300, :millisecond)
+    healthy = authenticated_status(node, active_request_count: 1, max_concurrency: 4)
+
+    assert {:ok, active} =
+             Nodes.observe_authenticated_status(target, healthy, success_at, peer)
+
+    assert active.health == :healthy
+
+    assert {:ok, failed} =
+             Nodes.record_transport_failure(target, :node_timeout, failure_at)
+
+    assert failed.health == :degraded
+    assert failed.last_transport_failure_at == DateTime.truncate(failure_at, :microsecond)
+
+    assert :noop =
+             Nodes.observe_authenticated_status(target, healthy, late_success_at, peer)
+
+    rejected = Repo.get!(Node, node.id)
+    assert rejected.last_heartbeat_at == DateTime.truncate(success_at, :microsecond)
+    assert rejected.last_transport_failure_at == DateTime.truncate(failure_at, :microsecond)
+    assert Repo.aggregate(NodeHeartbeat, :count) == 1
+
+    degraded =
+      put_in(healthy, [:runtime_health], %{
+        ready: true,
+        health_code: "SLOW",
+        health_message: "recovering"
+      })
+
+    assert {:ok, recovered} =
+             Nodes.observe_authenticated_status(target, degraded, recovery_at, peer)
+
+    assert recovered.health == :degraded
+    assert recovered.last_heartbeat_at == DateTime.truncate(recovery_at, :microsecond)
+    assert recovered.last_transport_failure_at == DateTime.truncate(failure_at, :microsecond)
+    assert Repo.aggregate(NodeHeartbeat, :count) == 2
+  end
+
+  test "ADR 0017 oversize payload commits a minimal invalid row with Node and capacity", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    previous = Application.get_env(:orchard_controller, :node_heartbeat_payload_max_bytes)
+    Application.put_env(:orchard_controller, :node_heartbeat_payload_max_bytes, 256)
+    on_exit(fn -> restore_env(:node_heartbeat_payload_max_bytes, previous) end)
+
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    observed_at = DateTime.utc_now()
+
+    assert {:ok, active} =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 2, max_concurrency: 4),
+               observed_at,
+               authenticated_peer!(node.id)
+             )
+
+    assert active.last_heartbeat_at == DateTime.truncate(observed_at, :microsecond)
+
+    evidence = DispatchCapacity.get_capacity_evidence(node.id)
+    assert evidence.active_request_count == 2
+    assert evidence.runtime_concurrency_limit == 4
+
+    heartbeat = Repo.one!(from(heartbeat in NodeHeartbeat, where: heartbeat.node_id == ^node.id))
+
+    assert heartbeat.payload == %{
+             "schema_version" => 1,
+             "validity" => "invalid",
+             "invalid_reason" => "payload_too_large"
+           }
   end
 
   test "SPEC.md §4.5 degraded authenticated observation is recorded for active nodes", %{
@@ -1737,6 +2018,23 @@ defmodule Orchard.BeamPeerGrantsTest do
              )
 
     assert Repo.get!(Node, node.id).state == :admitted
+  end
+
+  defp authenticated_status(node, overrides) do
+    Map.merge(
+      %{
+        node_metadata: %{
+          node_id: node.id,
+          display_name: node.display_name,
+          hostname: node.hostname,
+          listen_host: node.connect_host,
+          listen_port: node.connect_port,
+          agent_version: "0.5.0-dev"
+        },
+        runtime_health: %{ready: true, health_code: "", health_message: ""}
+      },
+      Map.new(overrides)
+    )
   end
 
   defp register_node!(trust, now, host \\ "10.0.0.20") do

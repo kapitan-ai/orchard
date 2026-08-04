@@ -4154,6 +4154,7 @@ defmodule Orchard.NodesTest do
 
       assert marked.id == node.id
       assert marked.health == :degraded
+      assert marked.last_transport_failure_at == observed_at
     end
 
     test "stale node + {:connect_failed, _} → unreachable" do
@@ -4342,7 +4343,9 @@ defmodule Orchard.NodesTest do
                  observed_at
                )
 
-      assert Repo.get!(Node, node.id).health == :healthy
+      reloaded = Repo.get!(Node, node.id)
+      assert reloaded.health == :healthy
+      assert reloaded.last_transport_failure_at == nil
     end
 
     test "SPEC.md §5.5 transport failure clears stale queue capacity sources" do
