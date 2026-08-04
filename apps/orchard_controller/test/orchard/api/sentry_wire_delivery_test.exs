@@ -143,7 +143,7 @@ defmodule Orchard.API.SentryWireDeliveryTest do
 
     assert payload["tags"] == %{
              "build_date" => "2026-07-30",
-             "build_sha" => "abcdef1234567890",
+             "build_sha" => "abcdef0123456789abcdef0123456789abcdef01",
              "orchard_app" => "controller",
              "orchard_build_channel" => "internal",
              "orchard_version" => "0.5.0-dev"
@@ -258,7 +258,7 @@ defmodule Orchard.API.SentryWireDeliveryTest do
   defp configure_sentry(port) do
     identity =
       SentryRelease.identity("orchard_controller", "0.5.0-dev",
-        build_sha: "abcdef1234567890",
+        build_sha: "abcdef0123456789abcdef0123456789abcdef01",
         build_date: "2026-07-30",
         build_channel: "internal"
       )

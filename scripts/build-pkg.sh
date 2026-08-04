@@ -1400,6 +1400,45 @@ validate_pkg_payload() {
 }
 
 
+source_status() {
+    git status --porcelain=v1 --untracked-files=all --
+}
+
+validate_captured_source_identity() {
+    local current_sha
+    local current_status
+
+    if ! current_sha="$(git rev-parse HEAD)"; then
+        log_error "Failed to revalidate Git HEAD during package construction"
+        return 1
+    fi
+
+    if [[ ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
+        log_error "Revalidated package source must be a 40-character lowercase Git SHA"
+        return 1
+    fi
+
+    if [[ "$current_sha" != "$FULL_GIT_SHA" ]]; then
+        log_error "Source HEAD changed during package construction"
+        log_error "Captured: $FULL_GIT_SHA"
+        log_error "Current:  $current_sha"
+        return 1
+    fi
+
+    if [[ "$ALLOW_DIRTY" != "true" ]]; then
+        if ! current_status="$(source_status)"; then
+            log_error "Failed to revalidate package source cleanliness"
+            return 1
+        fi
+
+        if [[ -n "$current_status" ]]; then
+            log_error "Build inputs changed during package construction"
+            printf '%s\n' "$current_status" >&2
+            return 1
+        fi
+    fi
+}
+
 cd "$REPO_ROOT"
 
 export MIX_ENV=prod
@@ -1447,6 +1486,24 @@ export ORCHARD_BUILD_SHA="$FULL_GIT_SHA"
 SHORT_GIT_SHA="${FULL_GIT_SHA:0:7}"
 PKG_FILENAME_REF="$SHORT_GIT_SHA"
 
+if ! INITIAL_SOURCE_STATUS="$(source_status)"; then
+    log_error "Failed to inspect tracked, staged, and untracked package inputs"
+    exit 1
+fi
+
+if [[ -n "$INITIAL_SOURCE_STATUS" ]]; then
+    if [[ "$ALLOW_DIRTY" == "true" ]]; then
+        log_warn "Uncommitted or untracked build inputs detected — continuing with --allow-dirty"
+        PKG_FILENAME_REF="${SHORT_GIT_SHA}-dirty"
+    else
+        log_error "Uncommitted or untracked build inputs detected"
+        printf '%s\n' "$INITIAL_SOURCE_STATUS" >&2
+        log_error "Commit changes first, or use --allow-dirty for a development build"
+        exit 1
+    fi
+fi
+unset INITIAL_SOURCE_STATUS
+
 # Preflight: Check for port conflicts (warn only)
 if lsof -ti :4000 >/dev/null 2>&1 || lsof -ti :50071 >/dev/null 2>&1; then
     log_warn "Dev server ports (4000 or 50071) appear to be in use"
@@ -1463,6 +1520,8 @@ if [[ -z "$APP_VERSION" ]] || [[ "$APP_VERSION" == *" "* ]]; then
     log_error "Ensure mix is available and project compiles"
     exit 1
 fi
+
+validate_captured_source_identity
 
 BUILD_DATE=$(date +%Y%m%d)
 PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${PKG_FILENAME_REF}.pkg"
@@ -1488,20 +1547,6 @@ fi
 if ! mkdir -p "$OUTPUT_DIR"; then
     log_error "Failed to create output directory: $OUTPUT_DIR"
     exit 1
-fi
-
-# Verify clean git state (fail by default)
-if ! git diff-index --quiet HEAD --; then
-    if [[ "$ALLOW_DIRTY" == "true" ]]; then
-        log_warn "Uncommitted changes detected — continuing with --allow-dirty"
-        PKG_FILENAME_REF="${SHORT_GIT_SHA}-dirty"
-        PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${PKG_FILENAME_REF}.pkg"
-        log_warn "Marked PKG filename as dirty: $PKG_NAME"
-    else
-        log_error "Uncommitted changes detected in repository"
-        log_error "Commit changes first, or use --allow-dirty to override"
-        exit 1
-    fi
 fi
 
 log_info "Validating packaging source provenance..."
@@ -1583,6 +1628,8 @@ mix release orchard_node_agent
 
 log_info "  → orchard_cli"
 mix release orchard_cli
+
+validate_captured_source_identity
 
 # Create staging directory
 log_info "Creating PKG staging..."
@@ -1775,6 +1822,7 @@ find "$STAGING/share/bin" -type f -exec chmod 755 {} \;
 
 log_info "Validating pre-pkgbuild metadata state..."
 assert_clean_provenance "pre-pkgbuild" "$STAGING_BASE"
+validate_captured_source_identity
 
 # Build the PKG
 log_info "Building PKG..."

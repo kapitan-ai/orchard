@@ -1,3 +1,81 @@
+defmodule Orchard.BuildInfo.Resolver do
+  @moduledoc false
+
+  @sha_pattern ~r/\A[0-9a-f]{40}\z/
+
+  @type git_state :: :override | :git_available | :git_unavailable | :repository_unavailable
+  @type metadata :: %{
+          git_sha: String.t(),
+          build_date: String.t(),
+          build_channel: String.t(),
+          git_state: git_state()
+        }
+
+  @doc "Resolves the current compile-time build metadata and provenance source state."
+  @spec resolve() :: metadata()
+  def resolve do
+    {git_sha, git_state} = resolve_git_sha()
+
+    %{
+      git_sha: git_sha,
+      build_date: Date.utc_today() |> Date.to_iso8601(),
+      build_channel: resolve_build_channel(),
+      git_state: git_state
+    }
+  end
+
+  defp resolve_git_sha do
+    case System.get_env("ORCHARD_BUILD_SHA") do
+      nil -> resolve_git_sha_from_repository()
+      value -> {validate_sha!(value, "ORCHARD_BUILD_SHA"), :override}
+    end
+  end
+
+  defp resolve_git_sha_from_repository do
+    case System.find_executable("git") do
+      nil ->
+        {"unknown", :git_unavailable}
+
+      executable ->
+        case run_git(executable) do
+          {:ok, sha} -> {validate_sha!(sha, "Git-derived build provenance"), :git_available}
+          {:error, :repository_unavailable} -> {"unknown", :repository_unavailable}
+          {:error, :git_unavailable} -> {"unknown", :git_unavailable}
+        end
+    end
+  end
+
+  defp run_git(executable) do
+    case System.cmd(executable, ["rev-parse", "HEAD"], stderr_to_stdout: true) do
+      {sha, 0} -> {:ok, sha}
+      {_output, _status} -> {:error, :repository_unavailable}
+    end
+  rescue
+    ArgumentError -> {:error, :git_unavailable}
+    ErlangError -> {:error, :git_unavailable}
+  end
+
+  defp validate_sha!(value, source) do
+    sha = String.trim(value)
+
+    if Regex.match?(@sha_pattern, sha) do
+      sha
+    else
+      raise ArgumentError, "#{source} must be a 40-character lowercase Git commit"
+    end
+  end
+
+  defp resolve_build_channel do
+    case System.get_env("ORCHARD_BUILD_CHANNEL") do
+      nil -> "dev"
+      channel -> channel |> String.trim() |> default_channel()
+    end
+  end
+
+  defp default_channel(""), do: "dev"
+  defp default_channel(channel), do: channel
+end
+
 defmodule Orchard.BuildInfo do
   @moduledoc """
   Compile-time build metadata.
@@ -7,54 +85,20 @@ defmodule Orchard.BuildInfo do
   Override with env vars for CI/release builds where `.git` is absent.
   """
 
-  @git_sha (case System.get_env("ORCHARD_BUILD_SHA") do
-              sha when is_binary(sha) and sha != "" ->
-                String.trim(sha)
+  alias Orchard.BuildInfo.Resolver
 
-              _ ->
-                case System.cmd("git", ["rev-parse", "HEAD"], stderr_to_stdout: true) do
-                  {sha, 0} -> String.trim(sha)
-                  _ -> "unknown"
-                end
-            end)
+  @build_info Resolver.resolve()
 
-  @build_date Date.utc_today() |> Date.to_iso8601()
-
-  @build_channel (case System.get_env("ORCHARD_BUILD_CHANNEL") do
-                    channel when is_binary(channel) ->
-                      case String.trim(channel) do
-                        "" -> "dev"
-                        trimmed -> trimmed
-                      end
-
-                    _ ->
-                      "dev"
-                  end)
-
-  @doc false
+  @doc "Returns whether any effective compile-time build metadata input changed."
   @spec __mix_recompile__?() :: boolean()
-  def __mix_recompile__? do
-    current_git_sha =
-      case System.get_env("ORCHARD_BUILD_SHA") do
-        sha when is_binary(sha) and sha != "" ->
-          String.trim(sha)
-
-        _ ->
-          case System.cmd("git", ["rev-parse", "HEAD"], stderr_to_stdout: true) do
-            {sha, 0} -> String.trim(sha)
-            _ -> "unknown"
-          end
-      end
-
-    current_git_sha != @git_sha
-  end
+  def __mix_recompile__?, do: Resolver.resolve() != @build_info
 
   @spec git_sha() :: String.t()
-  def git_sha, do: @git_sha
+  def git_sha, do: @build_info.git_sha
 
   @spec build_date() :: String.t()
-  def build_date, do: @build_date
+  def build_date, do: @build_info.build_date
 
   @spec build_channel() :: String.t()
-  def build_channel, do: @build_channel
+  def build_channel, do: @build_info.build_channel
 end
