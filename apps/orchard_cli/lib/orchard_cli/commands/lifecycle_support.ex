@@ -61,10 +61,12 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
         infer_role_from_plists(runtime)
 
       {:error, :invalid_marker, marker_value} ->
-        {:error, :invalid_marker, invalid_marker_error_message(marker_value), 1}
+        {:error, :invalid_marker,
+         invalid_marker_error_message(install_role_marker(runtime), marker_value), 1}
 
       {:error, :marker_read_error, reason} ->
-        {:error, :marker_read_error, marker_read_error_message(reason), 1}
+        {:error, :marker_read_error,
+         marker_read_error_message(install_role_marker(runtime), reason), 1}
     end
   end
 
@@ -206,6 +208,13 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   defp default_read_install_role, do: File.read(@install_role_marker)
 
+  defp install_role_marker(runtime) do
+    case Map.get(runtime, :install_role_marker) do
+      marker when is_binary(marker) -> marker
+      _other -> @install_role_marker
+    end
+  end
+
   defp normalize_marker_read({:ok, contents}) when is_binary(contents),
     do: parse_marker_role(contents)
 
@@ -249,7 +258,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
         {:ok, :node_agent}
 
       {false, false} ->
-        {:error, :legacy_not_found, install_role_error_message(), 1}
+        {:error, :legacy_not_found, install_role_error_message(install_role_marker(runtime)), 1}
     end
   end
 
@@ -348,26 +357,26 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
   defp display_service_id(:controller), do: "controller"
   defp display_service_id(other), do: to_string(other)
 
-  defp install_role_error_message do
+  defp install_role_error_message(marker) do
     "Error: Orchard packaged install not found.\n" <>
-      "Unable to determine install role from #{@install_role_marker}.\n" <>
+      "Unable to determine install role from #{marker}.\n" <>
       "Expected a valid role marker (all, controller, or node-agent), or installed legacy plist(s):\n" <>
       "  /Library/LaunchDaemons/com.orchard.controller.plist\n" <>
       "  /Library/LaunchDaemons/com.orchard.node-agent.plist\n\n" <>
       "Run the Orchard installer again, or restore the install role marker."
   end
 
-  defp invalid_marker_error_message(marker_value) do
+  defp invalid_marker_error_message(marker, marker_value) do
     found = if marker_value == "", do: "empty marker", else: inspect(marker_value)
 
-    "Error: invalid Orchard install role marker at #{@install_role_marker}.\n" <>
+    "Error: invalid Orchard install role marker at #{marker}.\n" <>
       "Expected one of: all, controller, node-agent.\n" <>
       "Found: #{found}\n\n" <>
       "Run the Orchard installer again, or restore the install role marker with a valid role."
   end
 
-  defp marker_read_error_message(reason) do
-    "Error: unable to read Orchard install role marker at #{@install_role_marker}.\n" <>
+  defp marker_read_error_message(marker, reason) do
+    "Error: unable to read Orchard install role marker at #{marker}.\n" <>
       "Reason: #{reason}\n\n" <>
       "Run the Orchard installer again, or restore marker permissions."
   end

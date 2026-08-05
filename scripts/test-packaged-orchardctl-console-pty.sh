@@ -121,7 +121,7 @@ sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { while guard_parent_matches; do /bin/sleep 0.01; done; return 1; }|' \
+  -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { while guard_parent_matches; do /bin/sleep 0.01 \|\| :; done; return 1; }|' \
   "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$GUARD_ORCHARDCTL"
 chmod 0755 "$GUARD_ORCHARDCTL"
 
@@ -136,7 +136,7 @@ sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { while guard_parent_matches; do /bin/sleep 0.01; done; return 1; }|' \
+  -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { while guard_parent_matches; do /bin/sleep 0.01 \|\| :; done; return 1; }|' \
   -e "s|^_guard_parent_probe=/bin/ps$|_guard_parent_probe=\"$TRANSIENT_PS_FIXTURE\"|" \
   "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$GUARD_TERM_PROBE_ORCHARDCTL"
 chmod 0755 "$GUARD_TERM_PROBE_ORCHARDCTL"
@@ -145,7 +145,7 @@ sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  -e 's|^cli_pre_launch_barrier() { :; }$|cli_pre_launch_barrier() { printf "__ORCHARD_PRE_LAUNCH__\\n__ORCHARD_LAUNCHER_PID__:%s\\n" "$_cli_pid"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01; done; }|' \
+  -e 's|^cli_pre_launch_barrier() { :; }$|cli_pre_launch_barrier() { printf "__ORCHARD_PRE_LAUNCH__\\n__ORCHARD_LAUNCHER_PID__:%s\\n" "$_cli_pid"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; }|' \
   -e "s|^_cli_launch_wait_command=/bin/sleep$|_cli_launch_wait_command=\"$LAUNCH_WAIT_FIXTURE\"|" \
   "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$LAUNCH_ORCHARDCTL"
 chmod 0755 "$LAUNCH_ORCHARDCTL"
@@ -153,21 +153,21 @@ chmod 0755 "$LAUNCH_ORCHARDCTL"
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  -e 's|^cli_pre_exit_barrier() { :; }$|cli_pre_exit_barrier() { printf "__ORCHARD_PRE_EXIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01; done; }|' \
+  -e 's|^cli_pre_exit_barrier() { :; }$|cli_pre_exit_barrier() { printf "__ORCHARD_PRE_EXIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; }|' \
   "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$EXIT_ORCHARDCTL"
 chmod 0755 "$EXIT_ORCHARDCTL"
 
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  -e 's|^cli_post_wait_barrier() { :; }$|cli_post_wait_barrier() { printf "__ORCHARD_CLI_POST_WAIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01; done; }|' \
+  -e 's|^cli_post_wait_barrier() { :; }$|cli_post_wait_barrier() { printf "__ORCHARD_CLI_POST_WAIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; }|' \
   "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$CLI_WAIT_ORCHARDCTL"
 chmod 0755 "$CLI_WAIT_ORCHARDCTL"
 
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  -e 's|^guard_post_wait_barrier() { :; }$|guard_post_wait_barrier() { printf "__ORCHARD_GUARD_POST_WAIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01; done; printf "__ORCHARD_GUARD_POST_SIGNAL__:%s\\n" "$_termination_status"; }|' \
+  -e 's|^guard_post_wait_barrier() { :; }$|guard_post_wait_barrier() { printf "__ORCHARD_GUARD_POST_WAIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; printf "__ORCHARD_GUARD_POST_SIGNAL__:%s\\n" "$_termination_status"; }|' \
   "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$GUARD_WAIT_ORCHARDCTL"
 chmod 0755 "$GUARD_WAIT_ORCHARDCTL"
 

@@ -505,10 +505,10 @@ trap 'exit 130' INT
 trap 'exit 131' QUIT
 trap 'exit 143' TERM
 if [ "${ORCHARD_TEST_WRAPPER_PID_MARKER:-}" = "1" ]; then
-    printf '__ORCHARD_WRAPPER_PID__:%s\n' "$$"
+    printf '__ORCHARD_WRAPPER_PID__:%s\n' "$$" >&2
 fi
 if [ "${ORCHARD_TEST_CUSTODY_DIR_MARKER:-}" = "1" ]; then
-    printf '__ORCHARD_CUSTODY_DIR__:%s\n' "$_completion_dir"
+    printf '__ORCHARD_CUSTODY_DIR__:%s\n' "$_completion_dir" >&2
 fi
 /bin/chmod 0700 "$_completion_dir" || exit 1
 _completion_identity=$(/usr/bin/stat -f '%d:%i:%Lp:%u' "$_completion_dir") || exit 1
@@ -533,7 +533,6 @@ _cli_waiting=""
 _cli_wait_interrupted=""
 _guard_waiting=""
 _guard_wait_interrupted=""
-_cli_launch_marker="$_completion_dir/launch-cli"
 _cli_launch_wait_command=/bin/sleep
 _cli_parent_probe=/bin/ps
 _cli_process_probe=/bin/ps
@@ -592,7 +591,7 @@ forward_standalone_signal() {
                 break
             fi
             /bin/kill -0 "$_cli_pid" 2>/dev/null || break
-            /bin/sleep 0.01
+            /bin/sleep 0.01 || :
         done
     fi
 }
@@ -618,7 +617,7 @@ trap '_custody_ready=1' USR1
             ) || return 1
             [ "$_remove_path_identity" = "$_completion_identity" ] || return 1
             /bin/rmdir "$_completion_dir" 2>/dev/null && return 0
-            /bin/sleep 0.01
+            /bin/sleep 0.01 || :
         done
     }
     _guard_ready=""
@@ -670,7 +669,7 @@ trap '_custody_ready=1' USR1
         if [ -n "$_custody_cancel" ] && [ -e ./available ]; then
             /bin/rm -f ./available || true
         fi
-        /bin/sleep 0.01
+        /bin/sleep 0.01 || :
     done
 
     while :; do
@@ -680,7 +679,7 @@ trap '_custody_ready=1' USR1
         if [ "$_guard_path_identity" = "$_guard_identity" ]; then
             break
         fi
-        /bin/sleep 0.01
+        /bin/sleep 0.01 || :
     done
     cd / || exit 125
     remove_completion_directory || exit 125
@@ -689,7 +688,7 @@ trap '_custody_ready=1' USR1
 _custody_guard_pid=$!
 
 if [ "${ORCHARD_TEST_GUARD_PID_MARKER:-}" = "1" ]; then
-    printf '__ORCHARD_GUARD_PID__:%s\n' "$_custody_guard_pid"
+    printf '__ORCHARD_GUARD_PID__:%s\n' "$_custody_guard_pid" >&2
 fi
 
 cleanup_standalone_guard_startup() {
@@ -735,7 +734,7 @@ terminate_and_reap_custody_guard() {
             break
         fi
         /bin/kill -0 "$_custody_guard_pid" 2>/dev/null || break
-        /bin/sleep 0.01
+        /bin/sleep 0.01 || :
     done
     while :; do
         _guard_wait_interrupted=""
@@ -771,7 +770,7 @@ terminate_and_reap_custody_guard() {
                 fi
             fi
             if /bin/kill -0 "$_custody_guard_pid" 2>/dev/null; then
-                /bin/sleep 0.01
+                /bin/sleep 0.01 || :
                 continue
             fi
             _retry_guard_wait=""
@@ -797,7 +796,7 @@ while [ -z "$_custody_ready" ] && [ -z "$_termination_signal" ]; do
                     ;;
                 '') ;;
                 *)
-                    /bin/sleep 0.01
+                    /bin/sleep 0.01 || :
                     continue
                     ;;
             esac
@@ -808,7 +807,7 @@ while [ -z "$_custody_ready" ] && [ -z "$_termination_signal" ]; do
         fi
     fi
     if /bin/kill -0 "$_custody_guard_pid" 2>/dev/null; then
-        /bin/sleep 0.01
+        /bin/sleep 0.01 || :
     else
         terminate_and_reap_custody_guard KILL
         cleanup_standalone_guard_startup
@@ -828,6 +827,14 @@ fi
 trap - USR1
 _setup_cleanup_pending=""
 trap - EXIT
+
+# The wrapper holds sole custody of the controlling terminal; the CLI receives
+# only non-terminal standard input.
+if [ ! -t 0 ] && { /usr/bin/true 3<&0; } 2>/dev/null; then
+    exec 3<&0
+else
+    exec 3</dev/null
+fi
 
 /bin/sh -c '
     _launch_directory=$1
@@ -867,14 +874,15 @@ trap - EXIT
     exec "$@"
 ' orchard-cli-launch "$_completion_dir" "$_completion_identity" \
     "$_completion_uid" "$$" "$_cli_launch_wait_command" \
-    "$ORCHARD_CLI" eval "OrchardCLI.main([$args])" &
+    "$ORCHARD_CLI" eval "OrchardCLI.main([$args])" <&3 3<&- &
 _cli_pid=$!
+exec 3<&-
 cli_pre_launch_barrier
 if [ -n "$_termination_signal" ]; then
     forward_standalone_signal "$_termination_signal" "$_termination_status"
 else
     if [ "${ORCHARD_TEST_CLI_PID_MARKER:-}" = "1" ]; then
-        printf '__ORCHARD_CLI_PID__:%s\n' "$_cli_pid"
+        printf '__ORCHARD_CLI_PID__:%s\n' "$_cli_pid" >&2
     fi
     if [ -n "$_termination_signal" ]; then
         forward_standalone_signal "$_termination_signal" "$_termination_status"
@@ -924,7 +932,7 @@ while :; do
             fi
         fi
         if /bin/kill -0 "$_cli_pid" 2>/dev/null; then
-            /bin/sleep 0.01
+            /bin/sleep 0.01 || :
             continue
         fi
         _retry_cli_wait=""
@@ -935,14 +943,17 @@ done
 _cli_pid=""
 remove_cli_launch_marker 2>/dev/null || true
 if [ "${ORCHARD_TEST_CLI_REAPED_MARKER:-}" = "1" ]; then
-    printf '__ORCHARD_CLI_REAPED__:%s\n' "$_cli_status"
+    printf '__ORCHARD_CLI_REAPED__:%s\n' "$_cli_status" >&2
 fi
 
 terminate_and_reap_custody_guard TERM
 if [ "$_custody_guard_status" -ne 0 ] || [ -e "$_completion_dir" ]; then
     printf 'orchardctl: terminal custody guard failed\n' >&2
+    printf 'orchardctl: refusing to return this terminal; unread input may still be queued\n' >&2
+    printf 'orchardctl: from another terminal run: sudo kill -9 %s\n' "$$" >&2
+    printf 'orchardctl: then restore this terminal with: stty sane\n' >&2
     while :; do
-        /bin/sleep 1
+        /bin/sleep 1 || :
     done
 fi
 

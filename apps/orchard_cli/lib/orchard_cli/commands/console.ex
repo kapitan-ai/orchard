@@ -225,10 +225,13 @@ defmodule OrchardCLI.Commands.Console do
   end
 
   defp role_runtime(runtime) do
-    Map.put_new_lazy(runtime, :read_install_role, fn ->
-      marker = Path.join([support_root(runtime), "support", ".install-role"])
-      fn -> File.read(marker) end
-    end)
+    marker =
+      Map.get(runtime, :install_role_marker) ||
+        Path.join([support_root(runtime), "support", ".install-role"])
+
+    runtime
+    |> Map.put(:install_role_marker, marker)
+    |> Map.put_new_lazy(:read_install_role, fn -> fn -> File.read(marker) end end)
   end
 
   defp default_tty?, do: SecretTTY.available?()
