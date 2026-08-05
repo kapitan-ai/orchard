@@ -161,6 +161,24 @@ If no different eligible Node exists, Orchard starts no second attempt, does not
 The logical Request terminalizes using attempt 1's original stable public failure mapping.
 `no_alternative_node` is durable internal retry-decision evidence, not a new public error code.
 
+### Circuit breaker interaction
+
+Each attempt that actually ran and failed contributes independently to the existing §5.10 Node-level or placement-level breaker, but only when its stable failure class is already breaker-eligible under that section.
+A Request that fails both attempts therefore contributes two breaker events rather than one, because each attempt is a real dispatch or a real model load against a real target.
+Every event is attributed to the Node or the `(node, model)` placement that produced it, so attempt 1's failure never counts against attempt 2's target and attempt 2's failure never counts against attempt 1's.
+The Automatic Attempt Retry decision itself is Controller-internal accounting and must not increment any breaker.
+Declining attempt 2 and recording `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `identity_unresolved`, `occupancy_unresolved`, or `no_alternative_node` adds no breaker event beyond the attempt failure that already qualified on its own.
+
+Attempt 2 performs its fresh eligibility decision after attempt 1's evidence and breaker effects are durable, so it must respect any Node or placement suppression that attempt 1 caused.
+Breaker suppression is already part of the §5.5 eligibility filter, so a suppressed Node is not a different eligible Node for this decision.
+Attempt 1's own breaker events land on attempt 1's Node and placement, which hard exclusion removes from attempt 2's candidate set anyway, so this ordering rule protects the correctness of shared breaker state and Operator-visible suppression rather than widening or narrowing attempt 2's candidates.
+
+If breaker filtering leaves no different eligible Node, the Request takes the existing `no_alternative_node` outcome.
+That outcome never weakens hard exclusion, re-enters the queue, or extends the deadline in order to wait out a suppression window.
+
+This decision defines interaction only.
+It does not redefine §5.10 thresholds, windows, or suppression durations, does not add a retry-specific breaker class, and does not change the Operator clear path.
+
 ## Rejected alternatives
 
 Using the first public SSE byte or non-streaming response byte as commitment is rejected because it creates transport-specific behavior and races between validated model output and client delivery.
@@ -171,6 +189,7 @@ Holding or transferring the first claim while acquiring alternate capacity is re
 Persisting opaque claim tokens is rejected because they are process-local synchronization details rather than durable domain identity.
 Re-admitting or requeueing the Request after `request_step.started` is rejected because it can reorder work, double-charge quota, widen policy, extend budgets, and produce a dispatch with no defined attempt identity, while the existing pre-start scheduler-busy requeue stays untouched by this decision.
 Making prior-Node exclusion a score penalty is rejected because the scheduler could still select the same physical Node.
+Counting a retried Request as one breaker event across both attempts is rejected because it would hide half of the real failure evidence from §5.10 and let a failing Node stay eligible longer than its actual failure rate warrants.
 Returning a new public no-alternative error is rejected because the original failure remains the cause of the logical Request failure.
 
 ## Consequences
@@ -180,7 +199,7 @@ The scheduler needs a hard Node-exclusion input, and the capacity authority must
 The Request FSM, public APIs, idempotency contract, quota model, and capture policy remain logical-Request scoped.
 Availability is intentionally sacrificed whenever output, execution termination, identity, or capacity release is ambiguous.
 
-Implementation tests must cover every retryability row, both APIs in streaming and non-streaming modes, text/tool/structured commitment, deadline and cancellation races, release-before-acquire ordering, same-Node defense, no alternative, idempotency during attempt 2, one quota settlement, capture non-widening, Request Step Event ordering, and logical-versus-attempt metric counts.
+Implementation tests must cover every retryability row, both APIs in streaming and non-streaming modes, text/tool/structured commitment, deadline and cancellation races, release-before-acquire ordering, same-Node defense, no alternative, idempotency during attempt 2, one quota settlement, capture non-widening, Request Step Event ordering, per-attempt breaker attribution, and logical-versus-attempt metric counts.
 
 ## SPEC.md impact
 
@@ -192,6 +211,7 @@ It must amend §5.3 so that quota reservation release on pre-output failure occu
 It must reconcile §5.9's release-and-requeue wording for failed serialized capacity revalidation with the no-queue-re-entry rule this decision states for every capacity rejection after `request_step.started`.
 It must settle one terminal event and public error mapping for caller disconnect across dispatch phases, because the dispatch-capacity `caller_disconnect` path currently reaches a generic `orchestration_error` while the pre-dispatch and cancel-drain disconnects reach the existing cancelled and interrupted mappings.
 It must preserve §4.6.2 quarantine for unresolved accepted execution and PR #160's non-retryable terminal-conformance classes.
+It must keep §5.10 thresholds, windows, and suppression durations unchanged while stating that each failed attempt contributes independently to the breaker it is attributed to, that only already breaker-eligible failure classes contribute, and that the retry decision itself never increments a breaker.
 
 Until those deltas are approved and synchronized, `SPEC.md` remains authoritative and implementation is blocked on any conflict.
 
