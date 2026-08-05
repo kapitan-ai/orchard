@@ -85,6 +85,18 @@ The gate therefore only reads durable eligibility and atomically consumes a matc
 Durable evidence is what survives owner death, and it must also survive reboot.
 It is recovery input and launch fencing only.
 It can deny a start, but it can never confer exclusion ownership and must never block a recovery owner from acquiring the kernel lock; otherwise one crashed owner would leave the host permanently unrecoverable.
+
+All four owner-side operations share one evidence schema, distinguished by operation kind, so a new path cannot end up unclassified and silently exempt from the record-before-mutate rule:
+
+| Kind | Requires prior terminal coherent evidence | Terminal coherent when | Carries staging/activation/rollback/start-policy fields |
+|---|---|---|---|
+| `handover` | yes | resulting active installed state verified, no-start outcome recorded | yes |
+| `managed_recovery` | no — may run on missing or uncertain evidence | coherent installed state verified or restored | yes |
+| `start_attempt` | yes | intended child verified and accepted | start policy only |
+| `managed_stop` | no — it only moves toward the fail-closed state | suppression, disablement, unloaded job, and every captured exit or valid pre-shutdown absence proven | no |
+
+Two consequences follow. Denial is scoped by kind, so a terminal coherent stopped record never blocks a later start — otherwise a routine stop would strand the host. And an interrupted non-terminal record of any kind is a reconciliation obligation, not a recovery trigger: the next lock-holding owner supersedes or marks it inside its own initial evidence and re-proves the live preconditions, rather than treating a half-written stop record as grounds for full payload recovery.
+
 The BEAM Peer Grant Store Lock remains scoped to one `Orchard.Node.BeamPeerGrantStore` install or load operation, including atomic publication when installing, and is not reused or broadened for lifecycle exclusion.
 
 ## PKG Stage-Then-Activate Topology
@@ -244,7 +256,8 @@ Coverage must prove suppression survives owner death, reboot, launchd domain rel
 Coverage must prove the child-side launch gate acquires, waits on, and inherits no canonical lock descriptor, succeeds while its own start owner holds the lock, permits normal operation under `enabled`, denies under `suppressed`, refuses to reclaim a claimed authorization, and never enables durable eligibility itself.
 Coverage must prove the gate denies on each matching component independently: a foreign attempt identity, a reused process id whose start generation differs, a stale nonce, a different launchd label, an unexpected active or staged generation or executable identity, a stale eligibility generation, and an already claimed authorization.
 Coverage must prove an owner death between recording `one_shot_pending` and bootstrap leaves the gate denying on owner liveness alone, including across a reboot that bootstraps the no-longer-disabled job, and that owner death after the atomic terminal transition leaves the accepted instance serving.
-Coverage must prove a claimed child stays provisional, adopts no cluster identity and does not serve before acceptance, exits when its recorded owner instance dies or is replaced, and serves only after acceptance bound to its exact identity.
+Coverage must prove a claimed child stays provisional, adopts no cluster identity and does not serve before acceptance, and that observed owner exit or replacement is resolved by the fresh authoritative read rather than by an unconditional exit: it exits only when that read finds no atomically committed terminal coherent start acceptance with durable `enabled` eligibility bound to its exact child identity, attempt, and eligibility generation.
+Coverage must separately exercise pre-acceptance owner death, post-acceptance owner exit, a torn, stale, or uncertain read, and a committed acceptance naming a different child, attempt, or eligibility generation.
 Coverage must prove every supported managed stop, including `orchardctl stop`, acquires the lock, sets suppression, invalidates outstanding authorization, and applies job-domain disablement before `bootout`, proves exact exit or absence before releasing the lock, and never leaves eligibility `enabled` or `one_shot_pending`.
 Coverage must prove each start entry state: an attempt from `suppressed`, an idempotent success under `enabled` with one verified healthy instance, recovery normalization from every other `enabled` combination, continuation only by the exact live recorded owner under `one_shot_pending`, and recovery normalization with a new attempt identity otherwise.
 Coverage must prove a start attempt after a reboot or job-domain reload that left the suppressed job loaded verifies or establishes an unloaded job with no managed Node Agent process before authorizing, and fails closed when it can prove neither.

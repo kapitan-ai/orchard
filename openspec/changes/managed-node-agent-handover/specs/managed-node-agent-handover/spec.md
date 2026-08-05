@@ -8,7 +8,10 @@ Managed Node Agent Start Eligibility State SHALL be the authoritative launch fen
 The child-side managed Node Agent launch gate SHALL NOT be an owner-side path, SHALL NOT acquire, wait on, or inherit any descriptor for the canonical lock, and SHALL NOT contend with the start owner that launched it.
 One privileged owner SHALL retain the same kernel lock ownership continuously, without ownership transfer or descriptor inheritance, from before initial operation evidence and durable suppression through immediate pre-`bootout` observation, every captured-instance exit or affirmative absence, active activation and protected mutation, the applicable start decision, and terminal-state reporting.
 Normal completion SHALL close the owning descriptor, and owner process death SHALL release ownership through the operating system.
-Before changing Managed Node Agent Start Eligibility State or any other protected active state, the owner SHALL durably record required handover or recovery evidence containing the operation identity and phase, the bound staging generation when applicable, prior active path and start policy as needed, and the intended mutation.
+Owner-side operations SHALL record durable lifecycle evidence in one shared schema whose operation kind is exactly one of `handover`, `managed_recovery`, `start_attempt`, or `managed_stop`.
+Before changing Managed Node Agent Start Eligibility State or any other protected active state, the owner SHALL durably record required evidence containing the operation identity, kind, and phase, the exact owner and target identities, the prior observed eligibility, launchd load, and managed process state, the bound staging generation when applicable, prior active path and start policy as needed, and the intended mutation.
+Evidence denial SHALL be scoped to the evidence kind the attempted operation actually requires, and evidence of a kind that operation does not depend on SHALL NOT deny it.
+An interrupted non-terminal evidence record SHALL NOT by itself require full payload recovery or substitute for live state proof; the next lock-holding owner-side path SHALL explicitly reconcile it and atomically supersede or mark it within that path's own initial evidence before proceeding, while re-proving every applicable live fence and installed-state precondition.
 A no-start handover or recovery SHALL become terminal coherent only after resulting active installed state is verified, and a later managed start SHALL use a distinct start-attempt identity and evidence record.
 Missing, incomplete, or uncertain evidence SHALL deny start but SHALL NOT constitute exclusion ownership, authorize mutation or start, or prevent a managed recovery owner from acquiring the canonical lock.
 
@@ -101,12 +104,15 @@ An established relaunch-prevention state SHALL NOT be deliberately reversed mere
 ### Requirement: Managed Stop Restores Suppression Under The Canonical Lock
 
 Every supported managed Node Agent stop, including `orchardctl stop` and any Orchard.app-initiated managed stop, SHALL acquire the canonical lock and retain it for the complete stop.
+Before protected mutation, the stop owner SHALL durably record `managed_stop` evidence carrying the operation identity, kind, and phase, the exact owner and target identities, the prior observed eligibility, launchd load, and managed process state, and the intended suppression, disablement, and unload mutation.
+A managed stop SHALL NOT require prior terminal coherent evidence of any kind, because it only moves toward the fail-closed state.
 Before `bootout`, the stop owner SHALL durably set Managed Node Agent Start Eligibility State to `suppressed`, invalidate any pending or non-terminal one-shot launch authorization, and apply persistent launchd job-domain disablement.
-It SHALL satisfy the Managed Node Agent Process Fence, capturing the exact stable instance or recording affirmative absence under suppression immediately before `bootout`, and SHALL prove exact captured-instance exit or affirmative managed-process absence before releasing the lock.
-A managed stop SHALL reuse only that process fence and SHALL NOT perform payload staging or activation.
+It SHALL satisfy the Managed Node Agent Process Fence, capturing the exact stable instance or recording affirmative absence under suppression immediately before `bootout`, and SHALL record the pre-shutdown capture or absence, the unload proof, and the exit proof for every captured instance as those phases complete.
+A managed stop SHALL reuse only that process fence, SHALL NOT perform payload staging or activation, and its evidence SHALL carry no staging, activation, rollback, or start-policy fields.
+The stop owner SHALL mark `managed_stop` evidence terminal coherent stopped only after proving suppressed eligibility, applied persistent job-domain disablement, an unloaded job, and every captured-instance exit or valid pre-shutdown absence, and SHALL then release the lock.
 An instance that survives `bootout` unobserved SHALL NOT be reported as stopped.
-Failure to establish suppression, prove the job unloaded, or prove every captured instance exited SHALL fail the stop closed with durable suppression retained.
-A managed stop SHALL NOT leave eligibility `enabled` or `one_shot_pending`.
+Known failure or uncertainty SHALL fail the stop closed with durable suppression retained and the relevant observed and captured evidence recorded.
+A managed stop SHALL NOT leave eligibility `enabled` or `one_shot_pending`, and a terminal coherent stopped `managed_stop` record SHALL NOT by itself deny a later managed start.
 
 #### Scenario: Operator stops a running Node Agent
 
@@ -117,8 +123,19 @@ A managed stop SHALL NOT leave eligibility `enabled` or `one_shot_pending`.
 #### Scenario: Stop then start is a defined cycle
 
 - **WHEN** an operator runs `orchardctl stop` and later runs `orchardctl start`
-- **THEN** the stop left eligibility `suppressed` with persistent job-domain disablement applied
-- **AND** the later start request therefore enters a managed start attempt from `suppressed` rather than from an undefined entry state
+- **THEN** the stop left eligibility `suppressed` with persistent job-domain disablement applied and its `managed_stop` evidence marked terminal coherent stopped
+- **AND** the later start request enters a managed start attempt from `suppressed`, and that terminal coherent stopped record does not by itself deny it
+
+#### Scenario: Stop runs without prior coherent evidence
+
+- **WHEN** a managed stop begins while prior handover or recovery evidence is missing, incomplete, or non-terminal
+- **THEN** it still proceeds, because a stop only moves toward the fail-closed state and requires no prior terminal coherent evidence of any kind
+
+#### Scenario: A later owner meets an interrupted stop record
+
+- **WHEN** a lock-holding owner-side path finds a non-terminal `managed_stop` record left by an interrupted stop owner
+- **THEN** it explicitly reconciles that record and atomically supersedes or marks it within its own initial evidence before proceeding
+- **AND** it re-proves every applicable live fence and installed-state precondition rather than trusting the interrupted record, while that record alone does not force full payload recovery
 
 #### Scenario: Stop cannot prove the outgoing instance exited
 
@@ -263,6 +280,11 @@ The supported later PKG start path SHALL be `orchardctl start` using this protoc
 - **WHEN** the owner completes the atomic transition binding acceptance to the exact claimed child, then reports terminal state, releases the lock, and exits, so the child observes owner-instance loss
 - **THEN** the child's fresh authoritative read finds the committed terminal coherent, `enabled`, and acceptance record bound to its exact identity
 - **AND** it leaves provisional state, serves, and stops monitoring owner liveness rather than exiting on the observed owner loss
+
+#### Scenario: Committed acceptance names a different child, attempt, or generation
+
+- **WHEN** a provisional child's fresh authoritative read finds a committed terminal coherent and `enabled` record whose acceptance names a different child identity, start attempt, or eligibility generation
+- **THEN** the child treats it as non-acceptance and exits without adopting cluster identity or serving
 
 #### Scenario: Non-Node-Agent role service starts normally
 

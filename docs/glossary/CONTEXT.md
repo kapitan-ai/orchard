@@ -892,6 +892,13 @@ The owner's single atomic commit of terminal coherent start evidence, `enabled` 
 On observing owner exit, replacement, or uncertain liveness the child performs a fresh consistent authoritative read and serves only if that committed record names its exact identity for this attempt and eligibility generation, dropping owner-liveness monitoring; otherwise it exits without adopting identity or serving, and incomplete, torn, or stale state counts as non-acceptance.
 _Avoid_: accepted instance, blind same-root restart, launchd retry survivor
 
+**Managed Lifecycle Evidence**:
+The one shared durable schema every owner-side Node Agent lifecycle operation records before protected mutation, tagged with an operation kind of `handover`, `managed_recovery`, `start_attempt`, or `managed_stop`.
+It is recovery input and start-eligibility fencing, never exclusion ownership.
+Denial is scoped to the kind an attempted operation actually requires, so a terminal coherent stopped `managed_stop` record never by itself denies a later start, and a managed stop requires no prior terminal coherent evidence because it only moves toward the fail-closed state.
+An interrupted non-terminal record obliges the next lock-holding owner-side path to reconcile and atomically supersede or mark it within its own initial evidence while re-proving live preconditions, rather than triggering full payload recovery on its own.
+_Avoid_: exclusion ownership, lock marker, unclassified lifecycle record
+
 **Managed Node Agent Process Fence**:
 The shared ordering every owner-side path that unloads or terminates the managed Node Agent job satisfies while holding the Managed Lifecycle Exclusion Boundary, covering Managed Node Agent Handover, managed stop, start-attempt precondition establishment, and Managed Node Agent Recovery.
 It establishes durable suppression, then observes managed process state under that suppression immediately before `bootout` or other termination, captures the exact non-reusable identity of exactly one stable live instance or affirmatively records absence, rejects additional, replacement, identity-unstable, or unknown state, prevents relaunch through verified job-domain control, and proves every captured instance exited within a bounded wait.
