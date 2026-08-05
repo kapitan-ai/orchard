@@ -24,60 +24,33 @@ Direct `/usr/sbin/installer` must remain supported without an Orchard-specific o
 
 ## Decision
 
-Managed Orchard.app and PKG Node Agent lifecycle mutations use one shared exclusion boundary at `/Library/Application Support/Orchard/support/.app-lifecycle.lock`.
-The boundary uses one interoperable exclusive kernel advisory lock protocol.
-Every Managed Node Agent Handover uses zero process overlap.
+Orchard adopts zero-overlap Managed Node Agent Handover: inert signed PKG staging followed by one privileged activation owner that holds a crash-released kernel advisory lock continuously through the active interval.
+`SPEC.md` §11.2, §11.4, and §13.4 hold the normative protocol, ordering, proof obligations, and fail-closed rules.
+This record fixes only the decision kernel and why each part was chosen over the alternatives below.
 
-One privileged handover owner acquires the canonical lock and retains the same kernel lock ownership continuously, without transfer or descriptor inheritance, from before initial operation evidence and durable suppression through immediate pre-`bootout` observation, every captured-instance exit or affirmative absence, active activation and protected mutation, the applicable start decision, and terminal reporting.
-Normal completion closes the owning descriptor.
-Owner process death releases the lock through the operating system.
-Contention performs no managed mutation or Node Agent start, and a later managed operation may retry after ownership is released.
-Before changing managed start eligibility or any other protected active state, the owner durably records required handover or recovery evidence containing the operation identity and phase, the bound staging generation when applicable, prior active path and start policy as needed, and the intended mutation.
-A no-start handover or recovery becomes terminal coherent only after installed-state verification, while any later managed start uses a distinct start-attempt identity and evidence record.
-Missing, incomplete, or uncertain evidence denies start but never constitutes exclusion ownership or prevents a recovery owner from acquiring the canonical kernel lock.
-Persistent metadata is recovery evidence and start-eligibility fencing, not exclusion ownership.
+1. **One shared exclusion boundary.** Every owner-side managed Orchard.app, PKG, recovery, and Node Agent start-attempt path contends on one interoperable exclusive kernel advisory lock at `/Library/Application Support/Orchard/support/.app-lifecycle.lock`. Ownership is never transferred or inherited; normal completion closes the descriptor and owner death releases it through the operating system, so no owner can leave stale exclusion behind.
+2. **Zero process overlap.** One owner holds that lock continuously from initial durable evidence and start suppression, through immediate pre-`bootout` capture of the exact outgoing instance or proven absence and every captured-instance exit, through activation and protected mutation, to terminal reporting. An outgoing Node Agent and its replacement never share the Node Identity Root, so protocol compatibility never has to carry concurrent identity-state safety.
+3. **Inert staging, then one `postinstall`-owned activation.** Apple Installer writes authenticated signed payload only into an inactive incoming staging root, `preinstall` leaves the running Node Agent and active state untouched, and `postinstall` synchronously invokes the single active-handover owner. Because the package invokes that owner itself, direct `/usr/sbin/installer -pkg ... -target /` stays safe with no external Orchard wrapper, which no lock-holding-script topology could offer across Installer's separate script processes.
+4. **Evidence fences launch but never owns exclusion.** Durable handover, recovery, and start-attempt records gate later launch eligibility across owner death and reboot. Missing, incomplete, or uncertain evidence denies start only; it never confers exclusion ownership and never blocks a recovery owner from acquiring the lock, so the system cannot deadlock on its own metadata.
+5. **Owner-side authorization is split from the child-side launch gate.** Owner-side paths hold the lock while inspecting or mutating eligibility, job-domain disablement, and one-shot authorization. The managed launch gate runs inside the launched service, takes no lock and inherits no descriptor, reads durable eligibility, and atomically consumes a single-consumer one-shot authorization. Without that split the gate would contend for a lock its own start owner is holding and no managed start could complete.
+6. **Suppression is Node Agent-only and reboot-durable.** Durable suppression pairs persistent launchd job-domain disablement with launch-gate denial beneath `RunAtLoad` and `KeepAlive`, so a suppressed job neither bootstraps at reboot nor executes if bootstrapped anyway. Other role-selected services are simply left stopped by PKG and use normal launchd start behavior; no eligibility fencing is invented for them.
+7. **A start attempt verifies or establishes its own preconditions.** Rather than assume an unloaded job, the lock-holding start owner boots out a loaded job and proves it unloaded with no managed process, lifts job-domain disablement for exactly one explicit bootstrap, issues the one-shot, bootstraps, verifies the intended instance, and only then atomically enables durable eligibility. Failure or owner death before that transition invalidates the one-shot and restores suppression.
+8. **Path-specific start policy.** PKG never auto-starts and never restores prior loaded state, leaving `orchardctl start` as the supported later path. Orchard.app may restore prior loaded-service state only through the same managed start-attempt protocol, after coherent success or verified rollback; unverifiable rollback is uncertain and stays stopped.
+9. **The BEAM Peer Grant Store Lock stays operation-scoped.** It serializes one `Orchard.Node.BeamPeerGrantStore` install or load operation, including atomic publication, and never becomes lifecycle exclusion or a Node Identity Root Lease.
 
-PKG uses stage-then-activate.
-Apple Installer places authenticated and signed payload only into an inactive incoming staging root that a running Node Agent cannot resolve, load, or execute.
-Before relaunch prevention or active mutation, the owner binds activation to one complete authenticated and signed staging generation in a unique namespace that concurrent or repeated installers cannot modify.
-The bound generation remains immutable or equivalently identity-stable through atomic activation and is fully revalidated immediately before activation.
-Initial invalidity fails before protected active lifecycle mutation, while any pre-activation identity mismatch fails before payload or installed-state activation and leaves start suppressed for recovery.
-PKG `preinstall` does not stop the active Node Agent, prevent relaunch, or mutate active payload, launchd records, command links, role state, or the Node Identity Root.
-After inert staging, PKG `postinstall` synchronously invokes one privileged handover owner for the complete active handover.
-The package itself invokes that owner, so direct `/usr/sbin/installer -pkg ... -target /` remains safe without an external wrapper.
+## Rejected alternatives
 
-While retaining the shared lock, the owner first durably records initial operation evidence and establishes protected durable start suppression.
-Under that suppression and immediately before `bootout`, the owner either captures non-reusable evidence for exactly one running outgoing instance and records it durably, or affirmatively proves no managed instance exists.
-The captured identity must remain stable through `bootout`, and an additional, replacement, or identity-unstable process fails the gate.
-The owner then prevents relaunch with verified launchd job-domain control such as `bootout` followed by proof that the job is unloaded.
-Relaunch prevention does not mutate or delete the protected plist before the handover gate.
-When an outgoing instance was captured, the owner waits for proof that every captured managed instance exited after managed shutdown.
-Only captured-instance exit or affirmative absence proven under suppression immediately before `bootout` satisfies the gate, and an observation failure before `bootout` cannot become proven absence afterward.
-The wait is bounded.
-Failure to acquire or retain exclusion, validate and identity-stabilize applicable staging, record evidence, establish suppression, capture stable exact process evidence, prevent relaunch, prove every captured exit, or prove immediate pre-`bootout` absence fails closed without active mutation or Node Agent start.
-Only after the gate succeeds may the owner activate the bound staged generation or mutate the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
+**Live historical and replacement overlap.** Running Node Agent `N-1` and `N` concurrently was rejected because §13.1 protocol compatibility does not establish safe concurrent ownership of one Node Identity Root; it would require a materially broader identity-state concurrency protocol.
 
-Orchard.app may restore the prior loaded-service state after a coherent successful operation for services still selected by the installed role only through the managed start-attempt protocol.
-After any post-mutation failure in app-owned install, update, or uninstall, Orchard.app always attempts complete rollback of prior app-owned payload, command links, launchd plists, role marker, and loaded-service state.
-If required rollback cannot be completed or verified, the state is uncertain and the Node Agent remains stopped.
+**A lifetime Node Identity Root Lease.** A process-lifetime lease was deferred because it adds runtime ownership, renewal, fencing, and recovery semantics beyond this decision. The handover needs lifecycle exclusion, not a new permanent runtime lease.
 
-PKG never automatically starts role-selected services and never restores their prior loaded-service state after either fresh install or upgrade.
-PKG leaves the protected Managed Node Agent Start Eligibility State suppressed even when the replacement plist uses `RunAtLoad` and `KeepAlive`.
-Publishing or loading that plist cannot make the Node Agent launch-eligible.
-The supported later PKG start path is `orchardctl start`.
-Every Orchard.app restoration or `orchardctl start` operation acquires the shared exclusion boundary, verifies prior terminal coherent handover or recovery evidence and installed state, records distinct non-terminal start-attempt evidence, verifies the job remains unloaded, and creates one operation-bound one-shot authorization for the current lock owner and explicit bootstrap.
-The same owner bootstraps and verifies the intended instance, then atomically marks the start attempt terminal coherent and enables durable eligibility for normal `RunAtLoad` and `KeepAlive` operation.
-Failure or owner death before that atomic transition invalidates the one-shot authorization, keeps or restores suppression, and prevents a provisional Node Agent from continuing.
-The managed launch gate enforces suppression across owner death, reboot, launchd domain reload, and `KeepAlive` retry.
+**Separate Orchard.app and PKG locks.** Independent per-path ownership cannot exclude cross-path races; all managed paths must contend on one canonical lock and protocol.
 
-Managed recovery reruns the applicable Orchard.app or PKG lifecycle while holding the same exclusion boundary.
-A recovery owner may acquire the canonical lock despite missing, incomplete, or uncertain evidence and treats that evidence as recovery input rather than lock ownership.
-It may permit a later managed start only after establishing suppression before final process observation, proving every captured outgoing-instance exit or affirmative absence under suppression immediately before `bootout`, verifying or restoring coherent installed state, and marking the handover or recovery evidence terminal coherent.
-Blind or manual same-root launch while uncertainty remains is unsupported.
-Direct or manual Node Agent launches that bypass the supported managed launch and start-eligibility path remain unsupported and outside the managed handover guarantee.
+**A durable lock marker or session fence as ownership.** Rejected because owner death turns a durable marker into stale state with unsafe reclamation questions. Durable evidence is still required, but only as recovery input and launch fencing while the live kernel lock remains the sole exclusion owner.
 
-The BEAM Peer Grant Store Lock remains operation-scoped and does not become a lifecycle lock, Managed Node Agent Handover exclusion, or Node Identity Root Lease.
-The Controller `N` compatibility window for Node Agent versions `N` and `N-1` is made safe on each managed node through managed shutdown and serialized replacement, not live coexistence.
+**An external installer wrapper.** A wrapper could hold the lock around `/usr/sbin/installer`, but direct installer invocation would bypass it. A wrapper may remain a convenience and cannot be required for correctness.
+
+**A coordinator spanning the whole installer transaction.** A process holding the lock across `preinstall`, payload placement, and `postinstall` has no authoritative transaction-lifetime signal when Installer aborts early: timeout release races ongoing Installer mutation, and indefinite retention becomes an availability failure.
 
 ## Non-goals
 
@@ -102,4 +75,4 @@ Future work may define a lifetime Node Identity Root Lease, but it must not sile
 
 ## SPEC.md impact
 
-`SPEC.md` sections 11.2, 11.4, and 13.4 define reboot-safe start suppression beneath `RunAtLoad` and `KeepAlive`, authenticated single-generation PKG activation, the single-owner crash-released exclusion boundary, pre-`bootout` process capture, required durable recovery evidence, manual PKG start, unconditional Orchard.app rollback, managed recovery, and historical-version serialization.
+`SPEC.md` sections 11.2, 11.4, and 13.4 define the orthogonal lifecycle state model, reboot-safe Node Agent start suppression through persistent launchd job-domain disablement beneath `RunAtLoad` and `KeepAlive`, the owner-side and child-side split of the exclusion boundary, authenticated single-generation PKG activation, the single-owner crash-released lock, pre-`bootout` process capture, required durable recovery evidence, verify-or-establish start preconditions, manual PKG start, unconditional Orchard.app rollback, managed recovery, and historical-version serialization.

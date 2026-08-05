@@ -40,8 +40,8 @@ Recovery SHALL record or reconcile initial evidence, establish suppression befor
 App-owned install and update SHALL preflight before stopping services.
 After any post-mutation failure in app-owned install, update, or uninstall, Orchard.app SHALL attempt complete rollback of the prior app-owned payload, command links, launchd plists, role marker, and loaded-service state.
 The app SHALL report whether rollback completed successfully.
-If rollback cannot be completed or verified, the app lifecycle SHALL classify the installed state as uncertain, keep the protected Node Agent start eligibility suppressed across reboot and launchd retries, fail closed for the affected lifecycle role, and SHALL NOT start the Node Agent.
-After successful rollback, any prior-loaded-state restoration SHALL use a distinct start-attempt evidence record, operation-bound one-shot authorization, explicit bootstrap, intended-instance verification, and atomic terminal coherent and enabled transition under the same canonical lock.
+If rollback cannot be completed or verified, the app lifecycle SHALL classify the installed state as uncertain, keep the protected Node Agent start eligibility suppressed across reboot and launchd retries through persistent launchd job-domain disablement and launch-gate denial, fail closed for the affected lifecycle role, and SHALL NOT start the Node Agent.
+After successful rollback, any prior-loaded-state restoration SHALL use a distinct start-attempt evidence record, verification or establishment of an unloaded job with no managed Node Agent process running, operation-bound single-consumer one-shot authorization, explicit bootstrap, intended-instance verification, and atomic terminal coherent and enabled transition under the same canonical lock.
 Failure or owner death before that atomic transition SHALL keep or restore suppression and prevent a provisional Node Agent from continuing.
 
 #### Scenario: Update fails after mutation begins and rollback succeeds

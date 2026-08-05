@@ -62,20 +62,30 @@ The wait SHALL be bounded, and failed final observation, unproven captured-insta
 
 ### Requirement: PKG Preserves Manual Start After Every Install
 
-PKG SHALL leave all role-selected services stopped and protected start eligibility suppressed after every successful fresh install and upgrade.
+PKG SHALL leave every role-selected service stopped when the package operation completes after a successful fresh install or upgrade.
 PKG SHALL NOT automatically start services and SHALL NOT restore prior loaded-service state.
-Suppression SHALL survive owner death, reboot, launchd job-domain reload, and `KeepAlive` retry, and publishing or loading a `RunAtLoad` and `KeepAlive` plist SHALL NOT authorize launch.
+For the Node Agent, PKG SHALL additionally leave Managed Node Agent Start Eligibility State `suppressed` with persistent launchd job-domain disablement applied.
+That suppression SHALL survive owner death, reboot, launchd job-domain reload, and `KeepAlive` retry, and publishing or loading a `RunAtLoad` and `KeepAlive` plist SHALL NOT authorize launch.
+Other role-selected services SHALL NOT use Managed Node Agent Start Eligibility State, one-shot authorization, or the managed Node Agent launch gate, and SHALL use normal supported launchd start behavior.
 The supported later start path SHALL be `orchardctl start`.
-Before starting the Node Agent, `orchardctl start` SHALL acquire the canonical lock, verify prior terminal coherent PKG handover or recovery evidence and coherent installed state, record distinct non-terminal start-attempt evidence, and verify the launchd job remains unloaded.
-It SHALL create operation-bound one-shot authorization valid only for the current start identity, current lock owner, and one explicit bootstrap, then bootstrap and verify the intended Node Agent instance.
-Only after verification SHALL it atomically mark the start attempt terminal coherent and enable durable eligibility for normal `RunAtLoad` and `KeepAlive` operation.
-Failure or owner death before that transition SHALL invalidate authorization, keep or restore suppression, and prevent a provisional Node Agent from continuing.
+Before starting the Node Agent, `orchardctl start` SHALL acquire the canonical lock, verify prior terminal coherent PKG handover or recovery evidence and coherent installed state, and record distinct non-terminal start-attempt evidence.
+While retaining the lock with eligibility still `suppressed`, it SHALL verify or establish the unloaded, not-running precondition rather than assume it: `bootout` a loaded job and prove it unloaded with no managed Node Agent process running, continue when the job is already unloaded with no managed process running, and otherwise fail closed with durable suppression retained.
+It SHALL then lift persistent job-domain disablement for exactly one explicit bootstrap, create operation-bound single-consumer one-shot authorization valid only for the current start identity, current lock owner, and that bootstrap, then bootstrap and verify the intended Node Agent instance.
+The child-side launch gate SHALL consume that authorization exactly once without acquiring the canonical lock and SHALL NOT replay a consumed authorization.
+Only after verification SHALL the owner atomically mark the start attempt terminal coherent and enable durable eligibility for normal `RunAtLoad` and `KeepAlive` operation.
+Failure or owner death before that transition SHALL invalidate authorization, keep or restore durable suppression including persistent job-domain disablement, and prevent a provisional Node Agent from continuing.
 
 #### Scenario: Fresh PKG install succeeds
 
 - **WHEN** a fresh PKG install completes successfully and publishes the `RunAtLoad` and `KeepAlive` plist
-- **THEN** role-selected services remain stopped and the Node Agent remains start-suppressed until the operator runs `orchardctl start`
-- **AND** reboot, launchd domain reload, or `KeepAlive` retry does not bypass suppression
+- **THEN** every role-selected service is left stopped and the Node Agent is left durably suppressed until the operator runs `orchardctl start`
+- **AND** reboot, launchd domain reload, or `KeepAlive` retry neither bootstraps the disabled Node Agent job nor bypasses launch-gate denial
+
+#### Scenario: Later start follows a reboot that reloaded the job domain
+
+- **WHEN** the operator runs `orchardctl start` after a reboot or launchd job-domain reload
+- **THEN** the lock-holding owner verifies or establishes an unloaded Node Agent job with no managed Node Agent process running before creating one-shot authorization
+- **AND** a job it cannot prove unloaded, or a managed process it cannot prove absent, fails the start attempt closed with suppression retained
 
 #### Scenario: Running-service PKG upgrade succeeds
 

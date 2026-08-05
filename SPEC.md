@@ -4391,7 +4391,9 @@ Required launchd properties:
 * dedicated non-root service user preferred
 
 For the Node Agent, `RunAtLoad` and `KeepAlive` SHALL remain subordinate to a protected Managed Node Agent Start Eligibility State that is checked by the managed launch path before Node Agent execution.
+Durable suppression SHALL combine persistent launchd job-domain disablement, so that a suppressed Node Agent job does not bootstrap at reboot or launchd job-domain reload, with managed launch-path denial as defense in depth.
 A suppressed state SHALL survive handover-owner death, reboot, launchd job-domain reload, and `KeepAlive` retry, and publishing or loading the launchd plist SHALL NOT by itself make the Node Agent launch-eligible.
+Managed Node Agent Start Eligibility State, one-shot launch authorization, and the managed launch gate SHALL apply only to the Node Agent, and other role-selected services SHALL use normal supported launchd start behavior.
 
 ### 11.3 DMG And Release Distribution Contents
 
@@ -4420,7 +4422,17 @@ If a failure occurs after any app-owned install, update, or uninstall mutation b
 Complete app rollback SHALL restore the prior app-owned payload, command links, launchd plists, role marker, and prior loaded-service state, and SHALL report whether rollback completed successfully.
 If required rollback cannot be completed or verified, the app lifecycle SHALL classify the installed state as uncertain, SHALL fail closed for the affected lifecycle role, and SHALL NOT start the Node Agent.
 
-Managed Orchard.app and PKG Node Agent lifecycle mutations, Managed Node Agent Handover recovery, and supported Node Agent start eligibility checks SHALL use one shared exclusion boundary, and every Managed Node Agent Handover SHALL use zero process overlap.
+Managed Node Agent lifecycle state SHALL be modeled as independent dimensions that the managed lifecycle observes and mutates separately: launchd plist presence, launchd job load state, managed Node Agent process presence, Managed Node Agent Start Eligibility State, and canonical lock ownership.
+Managed Node Agent Start Eligibility State SHALL be exactly one of `suppressed`, `one_shot_pending`, or `enabled`, and canonical lock ownership SHALL be either held by one current owner or free.
+Durable suppression SHALL combine persistent launchd job-domain disablement with managed launch-path denial, so that a suppressed Node Agent job neither bootstraps at reboot or launchd job-domain reload nor executes if it is bootstrapped anyway.
+No dimension SHALL be inferred from another, and plist presence in particular SHALL NOT be read as load state, managed process presence, or start eligibility.
+
+Managed Orchard.app and PKG Node Agent lifecycle mutations, Managed Node Agent Handover recovery, and owner-side Node Agent start authorization SHALL use one shared exclusion boundary, and every Managed Node Agent Handover SHALL use zero process overlap.
+Owner-side paths are the managed lifecycle, recovery, and start-attempt paths, including Orchard.app restoration and `orchardctl start`, that inspect or mutate Managed Node Agent Start Eligibility State, launchd job-domain disablement, or one-shot launch authorization, or that authorize a Node Agent start.
+Each owner-side path SHALL hold the canonical lock continuously for that work.
+The managed Node Agent launch path is the child-side gate that runs inside the launched Node Agent service before Node Agent execution and is not an owner-side path.
+It SHALL NOT acquire, wait on, or inherit any descriptor for the canonical lock, and it SHALL NOT contend with the start owner that launched it.
+It SHALL only read durable Managed Node Agent Start Eligibility State and atomically consume a matching single-consumer one-shot launch authorization, SHALL deny execution when eligibility is `suppressed` or when no matching unconsumed authorization exists, SHALL NOT replay a consumed authorization, and SHALL NOT transition durable eligibility to `enabled` on its own.
 The canonical boundary SHALL be one interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock`.
 One privileged handover owner SHALL acquire that lock and retain the same kernel lock ownership continuously, without ownership transfer or descriptor inheritance, from before initial operation evidence and durable start suppression through immediate pre-`bootout` observation, every captured-instance exit or affirmative absence, active payload activation and protected lifecycle mutation, the applicable start decision, and terminal-state reporting.
 Normal completion SHALL release the lock by closing the owning descriptor, owner process death SHALL release it through the operating system, and contention SHALL perform no managed mutation or Node Agent start.
@@ -4443,6 +4455,7 @@ After staging, PKG `postinstall` SHALL synchronously invoke one privileged hando
 Direct `/usr/sbin/installer -pkg ... -target /` invocation SHALL enter this package-owned handover path without requiring an external Orchard wrapper.
 
 While holding the shared lock, the handover owner SHALL first durably record the required initial handover or recovery evidence and then establish protected durable start suppression before observing outgoing process state.
+Establishing that suppression SHALL set Managed Node Agent Start Eligibility State to `suppressed`, invalidate any outstanding one-shot launch authorization, and apply persistent launchd job-domain disablement.
 Immediately before `bootout`, the owner SHALL affirmatively observe the managed Node Agent process state under that suppression.
 When exactly one outgoing instance is running, the owner SHALL capture non-reusable evidence that identifies that exact process instance, durably add that evidence to the operation record, and verify identity stability through `bootout`.
 Only when affirmative observation under suppression and immediately before `bootout` proves that no outgoing managed instance exists MAY the owner use proven absence instead of captured-instance exit.
@@ -4454,13 +4467,19 @@ The wait SHALL be bounded, and failure to acquire or retain exclusion, validate 
 Only after the handover gate succeeds MAY the owner activate the bound staged generation and mutate the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
 
 After a coherent successful Orchard.app operation or successful required rollback, Orchard.app MAY restore services that were previously loaded and remain selected by the installed role only through the managed start-attempt protocol.
-PKG SHALL leave all role-selected services stopped and start-suppressed after every successful fresh install and upgrade, SHALL NOT automatically start them, and SHALL NOT restore their prior loaded-service state.
+PKG SHALL leave every role-selected service stopped when the package operation completes after a successful fresh install or upgrade, SHALL NOT automatically start any of them, and SHALL NOT restore their prior loaded-service state.
+For the Node Agent, PKG SHALL additionally leave Managed Node Agent Start Eligibility State `suppressed` with persistent launchd job-domain disablement applied, so that reboot, launchd job-domain reload, and `KeepAlive` retry cannot start it.
+Other role-selected services SHALL NOT use Managed Node Agent Start Eligibility State, one-shot launch authorization, or the managed Node Agent launch gate, and their later start SHALL use normal supported launchd start behavior.
 `orchardctl start` SHALL be the supported later PKG start path.
-Every managed Node Agent start attempt, including Orchard.app restoration and `orchardctl start`, SHALL acquire the canonical lock, verify prior terminal coherent handover or recovery evidence and coherent installed state, record distinct non-terminal evidence for the current start attempt, and verify that the launchd job remains unloaded before changing eligibility.
-The owner SHALL then create operation-bound one-shot launch authorization that is valid only for that start identity, the current canonical lock owner, and one explicit bootstrap, and SHALL bootstrap the launchd job while retaining the lock.
-The managed launch path SHALL consume that authorization, start only the intended Node Agent instance from the verified coherent active state, and remain fail-closed unless the same owner verifies that exact instance.
-Only after that verification SHALL the owner atomically mark the start attempt terminal coherent and transition durable eligibility to enabled for normal `RunAtLoad` and `KeepAlive` operation.
-Failure or owner death before that atomic terminal transition SHALL invalidate the one-shot authorization, keep or restore durable suppression, and prevent any provisionally started Node Agent from continuing.
+Every managed Node Agent start attempt, including Orchard.app restoration and `orchardctl start`, SHALL acquire the canonical lock, verify prior terminal coherent handover or recovery evidence and coherent installed state, and record distinct non-terminal evidence for the current start attempt.
+While retaining the lock and with eligibility still `suppressed`, the owner SHALL verify or establish the unloaded, not-running precondition rather than assume it.
+If the Node Agent job is loaded, the owner SHALL `bootout` the job and then prove both that the job is unloaded and that no managed Node Agent process is running.
+If the job is already unloaded and no managed Node Agent process is running, the owner SHALL continue.
+If the owner can prove neither that the job is unloaded nor that no managed Node Agent process is running, the start attempt SHALL fail closed with durable suppression retained.
+The owner SHALL then lift persistent launchd job-domain disablement for exactly one explicit bootstrap, create operation-bound one-shot launch authorization that is valid only for that start identity, the current canonical lock owner, and that one explicit bootstrap, record eligibility as `one_shot_pending`, and bootstrap the launchd job while retaining the lock.
+The managed launch path SHALL consume that authorization exactly once, start only the intended Node Agent instance from the verified coherent active state, and remain fail-closed unless the same owner verifies that exact instance.
+Only after that verification SHALL the owner atomically mark the start attempt terminal coherent and transition durable eligibility to `enabled` for normal `RunAtLoad` and `KeepAlive` operation.
+Failure or owner death before that atomic terminal transition SHALL invalidate the one-shot authorization and SHALL keep or restore durable suppression, including persistent launchd job-domain disablement, so that any provisionally started Node Agent cannot continue and no later launch consumes the interrupted authorization.
 Publishing a launchd plist, loading a launchd domain, or a `RunAtLoad` or `KeepAlive` attempt SHALL NOT bypass suppressed start eligibility.
 If required evidence is missing, incomplete, or uncertain, or if mutation, rollback, activation, installed state, or the current start attempt is uncertain, start eligibility SHALL remain suppressed and the managed lifecycle SHALL NOT start the Node Agent.
 
