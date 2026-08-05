@@ -1,6 +1,9 @@
 defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
   use Orchard.DataCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.NodeHeartbeats
   alias Orchard.NodeHeartbeats.CandidateSnapshot.{Candidate, Rejection}
   alias Orchard.NodeHeartbeats.Payload
@@ -29,6 +32,35 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
   defmodule ExitingRepo do
     @moduledoc false
     def all(_query), do: exit(:database_read_failed)
+  end
+
+  defmodule BarrierRepo do
+    @moduledoc false
+    @owner_key {__MODULE__, :owner}
+
+    def configure(owner), do: :persistent_term.put(@owner_key, owner)
+    def clear, do: :persistent_term.erase(@owner_key)
+
+    def all(query) do
+      owner = :persistent_term.get(@owner_key)
+      send(owner, {:candidate_snapshot_query_ready, self()})
+
+      receive do
+        :continue_candidate_snapshot_query -> Orchard.Repo.all(query)
+      after
+        2_000 -> raise "candidate snapshot query barrier timed out"
+      end
+    end
+  end
+
+  defmodule MalformedBoundaryRepo do
+    @moduledoc false
+
+    def all(query) do
+      Enum.map(Orchard.Repo.all(query), fn {node, heartbeat, _observed_at} ->
+        {node, heartbeat, "invalid-boundary"}
+      end)
+    end
   end
 
   setup do
@@ -475,6 +507,67 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
            }
   end
 
+  test "ADR 0017 default boundary shares the candidate statement visibility boundary" do
+    initial_at = database_now()
+    node = insert_node!(last_heartbeat_at: initial_at)
+    target = target_for(node)
+    _initial = append_heartbeat!(node, target, initial_at)
+
+    BarrierRepo.configure(self())
+    on_exit(&BarrierRepo.clear/0)
+
+    task =
+      Task.async(fn ->
+        NodeHeartbeats.production_candidate_snapshot(
+          [target],
+          [target],
+          repo: BarrierRepo
+        )
+      end)
+
+    Sandbox.allow(Repo, self(), task.pid)
+    assert_receive {:candidate_snapshot_query_ready, query_pid}, 1_000
+
+    later_at = database_now()
+    later = append_heartbeat!(node, target, later_at)
+    send(query_pid, :continue_candidate_snapshot_query)
+
+    assert {:ok, snapshot} = Task.await(task, 2_000)
+
+    assert [
+             %Candidate{
+               heartbeat_id: heartbeat_id,
+               observed_at: ^later_at,
+               node: %Node{last_heartbeat_at: ^later_at}
+             }
+           ] = snapshot.candidates
+
+    assert heartbeat_id == later.id
+    assert DateTime.compare(snapshot.observed_at, later_at) in [:eq, :gt]
+  end
+
+  test "ADR 0017 empty default snapshot uses a database boundary" do
+    assert {:ok, snapshot} = NodeHeartbeats.production_candidate_snapshot([], [])
+
+    assert snapshot.candidates == []
+    assert snapshot.rejections == []
+    assert %DateTime{} = snapshot.observed_at
+  end
+
+  test "ADR 0017 malformed database boundaries fail closed" do
+    observed_at = DateTime.utc_now()
+    node = insert_node!(last_heartbeat_at: observed_at)
+    target = target_for(node)
+    append_heartbeat!(node, target, observed_at)
+
+    assert {:error, :candidate_snapshot_unavailable} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [target],
+               [target],
+               repo: MalformedBoundaryRepo
+             )
+  end
+
   test "ADR 0017 database and incomplete reads fail closed without partial evidence" do
     node = insert_node!()
     target = target_for(node)
@@ -515,6 +608,14 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
                 %Rejection{reason_codes: ["dispatch_capacity_facts_unavailable"]}
               ]
             }} = snapshot([target], [target])
+  end
+
+  defp database_now do
+    Repo.one(
+      from(_value in fragment("SELECT 1"),
+        select: type(fragment("statement_timestamp()"), :utc_datetime_usec)
+      )
+    )
   end
 
   defp snapshot(effective, active, opts \\ []) do

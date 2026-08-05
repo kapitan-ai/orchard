@@ -38,7 +38,7 @@ defmodule Orchard.NodesTest do
   alias Orchard.Governance.AuditLog
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
+  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node, NodeHeartbeat}
   alias Orchard.RuntimeEndpoint.GrpcCompatibilityMapper
   alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
 
@@ -1500,7 +1500,9 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      insert_node_from_status!(target, status)
+      authenticated_at = DateTime.add(now, -5, :second)
+      insert_node_from_status!(target, status, %{last_heartbeat_at: authenticated_at})
+
       assert {:ok, node} = observe_status(target, status, now)
       assert node.id == node_id
       assert node.state == :active
@@ -1510,6 +1512,37 @@ defmodule Orchard.NodesTest do
       assert node.rpc_port == 9444
       assert node.connect_host == "10.0.0.1"
       assert node.connect_port == 9444
+      assert node.last_heartbeat_at == authenticated_at
+      assert Repo.aggregate(NodeHeartbeat, :count) == 0
+    end
+
+    test "SPEC.md §4.5 unauthenticated metadata cannot restore scheduler freshness" do
+      now = DateTime.utc_now()
+      stale_at = DateTime.add(now, -60, :second)
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.101", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "metadata-refreshed",
+          hostname: "stale-node.local",
+          listen_host: "10.0.0.101",
+          listen_port: 9444,
+          agent_version: "0.2.0"
+        })
+
+      insert_node_from_status!(target, status, %{
+        display_name: "metadata-before",
+        last_heartbeat_at: stale_at
+      })
+
+      assert {:ok, updated} = observe_status(target, status, now)
+      assert updated.display_name == "metadata-refreshed"
+      assert updated.agent_version == "0.2.0"
+      assert updated.last_heartbeat_at == stale_at
+      assert Nodes.schedulable_nodes() == []
+      assert Repo.aggregate(NodeHeartbeat, :count) == 0
     end
 
     test "persists connect target separately from advertised bind-all address" do

@@ -511,7 +511,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
   @moduledoc false
 
   alias Orchard.InferenceEvent
-  alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
   alias Orchard.TestSupport.DispatchCapacityFixtures
 
   def connect(target), do: {:ok, target}
@@ -558,7 +558,15 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
      %Operation.EnsureModelLoadedResult{
        already_loaded: false,
        placement_state: :loaded,
-       worker_supports_prompt_token_ids: true
+       worker_supports_prompt_token_ids: true,
+       placement_capacity:
+         PlacementCapacity.new(%{
+           model_ref: model,
+           active_request_count: 0,
+           max_concurrency: 4,
+           source: :ensure_model_loaded_result
+         }),
+       placement_capacity_evidence_state: :valid
      }}
   end
 
@@ -628,9 +636,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter do
   alias Orchard.InferenceEvent
 
   @impl true
-  def get_status(_adapter_state, _opts),
-    do:
-      {:ok, %{ready: true, health_code: "", health_message: "", supports_prompt_token_ids: true}}
+  def get_status(_adapter_state, _opts) do
+    {:ok,
+     %{
+       ready: true,
+       health_code: "",
+       health_message: "",
+       supports_prompt_token_ids: true,
+       max_concurrency: Orchard.Node.effective_worker_request_limit()
+     }}
+  end
 
   @impl true
   def load_model(%ModelRef{} = model_ref, _opts), do: {:ok, %{model_ref: model_ref}}

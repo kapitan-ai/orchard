@@ -99,35 +99,42 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
 
   The active inventory must be the successful result of
   `Orchard.Nodes.active_runtime_endpoint_targets/0`. `:observed_at` injects the
-  request boundary for deterministic freshness checks. `:repo` is a test seam only.
+  request boundary for deterministic freshness checks; otherwise the boundary comes
+  from the candidate read statement. `:repo` is a test seam only.
   """
   @spec read([Target.t()], [Target.t()], keyword()) :: {:ok, t()} | {:error, error()}
   def read(effective_targets, active_targets, opts \\ [])
       when is_list(effective_targets) and is_list(active_targets) and is_list(opts) do
-    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     threshold_ms = configured_freshness_threshold_ms()
     repo = Keyword.get(opts, :repo, Orchard.Repo)
 
-    case {observed_at, threshold_ms} do
-      {%DateTime{}, threshold_ms} when is_integer(threshold_ms) and threshold_ms > 0 ->
-        build_snapshot(
-          normalize_targets(effective_targets),
-          normalize_targets(active_targets),
-          observed_at,
-          threshold_ms,
-          repo
-        )
-
-      _invalid ->
-        {:error, :invalid_snapshot_boundary}
+    with threshold_ms when is_integer(threshold_ms) and threshold_ms > 0 <- threshold_ms,
+         {:ok, boundary_mode} <- snapshot_boundary_mode(opts) do
+      build_snapshot(
+        normalize_targets(effective_targets),
+        normalize_targets(active_targets),
+        boundary_mode,
+        threshold_ms,
+        repo
+      )
+    else
+      _invalid -> {:error, :invalid_snapshot_boundary}
     end
   end
 
-  defp build_snapshot(effective, active, observed_at, threshold_ms, repo) do
+  defp snapshot_boundary_mode(opts) do
+    case Keyword.fetch(opts, :observed_at) do
+      {:ok, %DateTime{} = observed_at} -> {:ok, {:explicit, observed_at}}
+      {:ok, _invalid} -> {:error, :invalid_snapshot_boundary}
+      :error -> {:ok, :database}
+    end
+  end
+
+  defp build_snapshot(effective, active, boundary_mode, threshold_ms, repo) do
     {subjects, intersection_rejections} = intersect_targets(effective, active)
 
-    case read_latest_rows(subjects, repo) do
-      {:ok, rows_by_node_id} ->
+    case read_latest_rows(subjects, repo, boundary_mode) do
+      {:ok, observed_at, rows_by_node_id} ->
         {candidates, row_rejections} =
           evaluate_subjects(subjects, rows_by_node_id, observed_at, threshold_ms)
 
@@ -196,14 +203,31 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
     rejection(target, nil, "runtime_identity_mismatch", fact)
   end
 
-  defp read_latest_rows([], _repo), do: {:ok, %{}}
+  defp read_latest_rows([], repo, :database) do
+    case repo.one(database_boundary_query()) do
+      %DateTime{} = observed_at -> {:ok, observed_at, %{}}
+      _invalid -> {:error, :candidate_snapshot_unavailable}
+    end
+  rescue
+    _error in [
+      DBConnection.ConnectionError,
+      DBConnection.OwnershipError,
+      Ecto.QueryError,
+      Postgrex.Error
+    ] ->
+      {:error, :candidate_snapshot_unavailable}
+  end
 
-  defp read_latest_rows(subjects, repo) do
+  defp read_latest_rows([], _repo, {:explicit, %DateTime{} = observed_at}) do
+    {:ok, observed_at, %{}}
+  end
+
+  defp read_latest_rows(subjects, repo, boundary_mode) do
     node_ids = subjects |> Enum.map(& &1.node_id) |> Enum.uniq() |> Enum.sort()
-    query = latest_rows_query(node_ids)
+    query = latest_rows_query(node_ids, boundary_mode)
 
     case repo.all(query) do
-      rows when is_list(rows) -> validate_rows(rows, node_ids)
+      rows when is_list(rows) -> validate_rows(rows, node_ids, boundary_mode)
       _incomplete -> {:error, :candidate_snapshot_unavailable}
     end
   rescue
@@ -216,7 +240,13 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
       {:error, :candidate_snapshot_unavailable}
   end
 
-  defp latest_rows_query(node_ids) do
+  defp database_boundary_query do
+    from(_value in fragment("SELECT 1"),
+      select: type(fragment("statement_timestamp()"), :utc_datetime_usec)
+    )
+  end
+
+  defp latest_rows_query(node_ids, boundary_mode) do
     latest_heartbeat =
       from(heartbeat in NodeHeartbeat,
         where: heartbeat.node_id == parent_as(:node).id,
@@ -224,24 +254,68 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
         limit: 1
       )
 
-    from(node in Node,
-      as: :node,
-      where: node.id in ^node_ids,
-      left_lateral_join: heartbeat in subquery(latest_heartbeat),
-      on: true,
-      order_by: [asc: node.id],
-      select: {node, heartbeat}
-    )
+    base_query =
+      from(node in Node,
+        as: :node,
+        where: node.id in ^node_ids,
+        left_lateral_join: heartbeat in subquery(latest_heartbeat),
+        on: true,
+        order_by: [asc: node.id]
+      )
+
+    case boundary_mode do
+      :database ->
+        select(
+          base_query,
+          [node, heartbeat],
+          {node, heartbeat, type(fragment("statement_timestamp()"), :utc_datetime_usec)}
+        )
+
+      {:explicit, %DateTime{}} ->
+        select(base_query, [node, heartbeat], {node, heartbeat})
+    end
   end
 
-  defp validate_rows(rows, node_ids) do
+  defp validate_rows(rows, node_ids, {:explicit, %DateTime{} = observed_at}) do
+    with {:ok, rows_by_node_id} <- validate_explicit_rows(rows, node_ids) do
+      {:ok, observed_at, rows_by_node_id}
+    end
+  end
+
+  defp validate_rows(rows, node_ids, :database) do
+    row_node_ids =
+      Enum.flat_map(rows, fn
+        {%Node{id: node_id}, _heartbeat, %DateTime{}} -> [node_id]
+        _invalid -> []
+      end)
+
+    boundaries =
+      Enum.flat_map(rows, fn
+        {%Node{}, _heartbeat, %DateTime{} = observed_at} -> [observed_at]
+        _invalid -> []
+      end)
+
+    with true <- Enum.all?(rows, &valid_database_row?/1),
+         true <- length(row_node_ids) == length(node_ids),
+         true <- Enum.sort(row_node_ids) == node_ids,
+         [%DateTime{} = observed_at] <- Enum.uniq(boundaries) do
+      {:ok, observed_at,
+       Map.new(rows, fn {%Node{id: node_id} = node, heartbeat, _observed_at} ->
+         {node_id, {node, heartbeat}}
+       end)}
+    else
+      _incomplete -> {:error, :candidate_snapshot_unavailable}
+    end
+  end
+
+  defp validate_explicit_rows(rows, node_ids) do
     row_node_ids =
       Enum.flat_map(rows, fn
         {%Node{id: node_id}, _heartbeat} -> [node_id]
         _invalid -> []
       end)
 
-    with true <- Enum.all?(rows, &valid_row?/1),
+    with true <- Enum.all?(rows, &valid_explicit_row?/1),
          true <- length(row_node_ids) == length(node_ids),
          true <- Enum.sort(row_node_ids) == node_ids do
       {:ok,
@@ -253,9 +327,13 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
     end
   end
 
-  defp valid_row?({%Node{}, nil}), do: true
-  defp valid_row?({%Node{}, %NodeHeartbeat{}}), do: true
-  defp valid_row?(_row), do: false
+  defp valid_database_row?({%Node{}, nil, %DateTime{}}), do: true
+  defp valid_database_row?({%Node{}, %NodeHeartbeat{}, %DateTime{}}), do: true
+  defp valid_database_row?(_row), do: false
+
+  defp valid_explicit_row?({%Node{}, nil}), do: true
+  defp valid_explicit_row?({%Node{}, %NodeHeartbeat{}}), do: true
+  defp valid_explicit_row?(_row), do: false
 
   defp evaluate_subjects(subjects, rows_by_node_id, observed_at, threshold_ms) do
     Enum.reduce(subjects, {[], []}, fn target, {candidates, rejections} ->

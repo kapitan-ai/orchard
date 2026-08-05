@@ -9,7 +9,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
   }
 
   alias Orchard.InferenceEvent
-  alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
   alias Orchard.TestSupport.DispatchCapacityFixtures
 
   def connect(target) do
@@ -70,7 +70,15 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
      %Operation.EnsureModelLoadedResult{
        already_loaded: false,
        placement_state: :loaded,
-       worker_supports_prompt_token_ids: response.supports_prompt_token_ids
+       worker_supports_prompt_token_ids: response.supports_prompt_token_ids,
+       placement_capacity:
+         PlacementCapacity.new(%{
+           model_ref: model,
+           active_request_count: 0,
+           max_concurrency: 4,
+           source: :ensure_model_loaded_result
+         }),
+       placement_capacity_evidence_state: :valid
      }}
   end
 
@@ -192,6 +200,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
 
     insert_node!(%{id: id_a, advertise_addr: elem(capable_a, 0), rpc_port: elem(capable_a, 1)})
     insert_node!(%{id: id_b, advertise_addr: elem(capable_b, 0), rpc_port: elem(capable_b, 1)})
+
     stub_status(capable_a, status_response(id_a, capable_a, supports_prompt_token_ids: true))
     stub_status(capable_b, status_response(id_b, capable_b, supports_prompt_token_ids: true))
 

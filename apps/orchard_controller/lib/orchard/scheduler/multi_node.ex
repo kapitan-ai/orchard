@@ -85,27 +85,20 @@ defmodule Orchard.Scheduler.MultiNode do
   - `:status_client` - module implementing the Runtime Endpoint client callbacks
     (default: `Inference.runtime_endpoint_client/0`)
   - `:status_timeout_ms` - timeout for each status probe (default: #{@default_status_timeout_ms})
-  - `:observed_at` - timestamp for observations (default: `DateTime.utc_now()`)
+  - `:observed_at` - explicit deterministic observation/snapshot boundary for tests
   - `:compatibility_probe_runner` - internal compatibility-wave runner
   """
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
-    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
-
     case candidate_target_resolution(opts) do
       {:inline, []} ->
         {:error, :no_active_nodes}
 
       {:inline, targets} ->
+        observed_at = Keyword.get_lazy(opts, :observed_at, &DateTime.utc_now/0)
         schedule_inline_candidates(request, targets, opts, observed_at)
 
       {:production, effective_targets, active_targets} ->
-        schedule_production_candidates(
-          request,
-          effective_targets,
-          active_targets,
-          opts,
-          observed_at
-        )
+        schedule_production_candidates(request, effective_targets, active_targets, opts)
 
       :inventory_unavailable ->
         {:error, :no_active_nodes}
@@ -182,8 +175,8 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp schedule_production_candidates(request, targets, active_targets, opts, observed_at) do
-    case production_candidate_snapshot(targets, active_targets, observed_at, opts) do
+  defp schedule_production_candidates(request, targets, active_targets, opts) do
+    case production_candidate_snapshot(targets, active_targets, opts) do
       {:ok, snapshot} ->
         candidates =
           snapshot.candidates
@@ -366,7 +359,7 @@ defmodule Orchard.Scheduler.MultiNode do
         dispatch_capacity_evaluation: selected.dispatch_capacity_evaluation
       }
       |> maybe_put_runtime_client_target(selected.target)
-      |> maybe_put_dispatch_identity_source(refresh_strategy)
+      |> maybe_put_dispatch_identity_source(refresh_strategy, selected)
       |> Consumer.put_authority(opts)
       |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
       |> maybe_put_prefix_cache_fingerprint_match(selected, live_fingerprint_match_enabled?)
@@ -410,7 +403,7 @@ defmodule Orchard.Scheduler.MultiNode do
     provider.(inventory_result)
   end
 
-  defp production_candidate_snapshot(effective_targets, active_targets, observed_at, opts) do
+  defp production_candidate_snapshot(effective_targets, active_targets, opts) do
     provider =
       Keyword.get(
         opts,
@@ -418,7 +411,7 @@ defmodule Orchard.Scheduler.MultiNode do
         &NodeHeartbeats.production_candidate_snapshot/3
       )
 
-    provider.(effective_targets, active_targets, observed_at: observed_at)
+    provider.(effective_targets, active_targets, Keyword.take(opts, [:observed_at]))
   end
 
   defp scheduler_explanation(
@@ -951,9 +944,145 @@ defmodule Orchard.Scheduler.MultiNode do
         snapshot_dispatch_capacity_input_provider(candidate, request, phase, opts)
 
       {false, :inline_status} ->
-        fresh_dispatch_capacity_input_provider(candidate, request, phase, opts)
+        inline_status_dispatch_capacity_input_provider(
+          candidate,
+          request,
+          phase,
+          placement_capacity,
+          opts
+        )
     end
   end
+
+  defp inline_status_dispatch_capacity_input_provider(
+         candidate,
+         _request,
+         :acquisition,
+         placement_capacity,
+         opts
+       ) do
+    configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts)
+  end
+
+  defp inline_status_dispatch_capacity_input_provider(
+         candidate,
+         request,
+         :revalidation,
+         _placement_capacity,
+         opts
+       ) do
+    fn ensure_model_loaded_result ->
+      placement_capacity =
+        compatibility_revalidation_placement(
+          candidate,
+          request.model_ref,
+          ensure_model_loaded_result
+        )
+
+      with %PlacementCapacity{} <- placement_capacity,
+           {:ok, input} <-
+             dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()) do
+        input
+      else
+        _unavailable -> nil
+      end
+    end
+  end
+
+  defp compatibility_revalidation_placement(
+         %{loaded_model?: true} = candidate,
+         model_ref,
+         ensure_model_loaded_result
+       ) do
+    case load_result_placement_evidence(ensure_model_loaded_result, model_ref) do
+      {:valid, capacity} ->
+        capacity
+
+      :absent ->
+        valid_matching_placement(Map.get(candidate, :model_placement_capacity), model_ref)
+
+      :invalid ->
+        nil
+    end
+  end
+
+  defp compatibility_revalidation_placement(
+         _candidate,
+         model_ref,
+         ensure_model_loaded_result
+       ) do
+    case load_result_placement_evidence(ensure_model_loaded_result, model_ref) do
+      {:valid, capacity} -> capacity
+      state when state in [:absent, :invalid] -> nil
+    end
+  end
+
+  defp load_result_placement_evidence(ensure_model_loaded_result, model_ref)
+       when is_map(ensure_model_loaded_result) do
+    if loaded_result?(Map.get(ensure_model_loaded_result, :placement_state)) do
+      normalize_placement_capacity_evidence(ensure_model_loaded_result, model_ref)
+    else
+      :invalid
+    end
+  end
+
+  defp load_result_placement_evidence(_ensure_model_loaded_result, _model_ref), do: :invalid
+
+  defp normalize_placement_capacity_evidence(result, model_ref) do
+    normalize_placement_capacity_evidence(
+      Map.fetch(result, :placement_capacity_evidence_state),
+      Map.get(result, :placement_capacity),
+      model_ref
+    )
+  end
+
+  defp normalize_placement_capacity_evidence({:ok, :valid}, capacity, model_ref),
+    do: valid_placement_capacity_evidence(capacity, model_ref)
+
+  defp normalize_placement_capacity_evidence({:ok, :invalid}, _capacity, _model_ref),
+    do: :invalid
+
+  defp normalize_placement_capacity_evidence({:ok, :absent}, nil, _model_ref), do: :absent
+
+  defp normalize_placement_capacity_evidence({:ok, :absent}, _capacity, _model_ref),
+    do: :invalid
+
+  defp normalize_placement_capacity_evidence({:ok, _unknown}, _capacity, _model_ref),
+    do: :invalid
+
+  defp normalize_placement_capacity_evidence(:error, nil, _model_ref), do: :absent
+
+  defp normalize_placement_capacity_evidence(:error, capacity, model_ref),
+    do: valid_placement_capacity_evidence(capacity, model_ref)
+
+  defp valid_placement_capacity_evidence(capacity, model_ref) do
+    case valid_matching_placement(capacity, model_ref) do
+      %PlacementCapacity{} = valid_capacity -> {:valid, valid_capacity}
+      nil -> :invalid
+    end
+  end
+
+  defp loaded_result?(state)
+       when state in [:loaded, "loaded", :PLACEMENT_STATE_LOADED, 7],
+       do: true
+
+  defp loaded_result?(_state), do: false
+
+  defp valid_matching_placement(
+         %PlacementCapacity{
+           status: :known,
+           model_ref: capacity_model_ref,
+           active_request_count: active_request_count,
+           max_concurrency: max_concurrency
+         } = capacity,
+         model_ref
+       )
+       when is_integer(active_request_count) and active_request_count >= 0 and
+              is_integer(max_concurrency) and max_concurrency > 0 do
+    if ModelRef.equal?(capacity_model_ref, model_ref), do: capacity
+  end
+
+  defp valid_matching_placement(_capacity, _model_ref), do: nil
 
   defp configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts) do
     fn ->
@@ -969,13 +1098,11 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp snapshot_dispatch_capacity_input(candidate, request, phase, opts) do
-    observed_at = DateTime.utc_now()
-
     with {:ok, [_active_target | _active_rest] = active_targets} <-
            active_runtime_endpoint_targets(opts),
          effective_targets <- runtime_endpoint_targets({:ok, active_targets}, opts),
          {:ok, snapshot} <-
-           production_candidate_snapshot(effective_targets, active_targets, observed_at, opts),
+           production_candidate_snapshot(effective_targets, active_targets, opts),
          {:ok, snapshot_candidate} <-
            matching_snapshot_candidate(snapshot.candidates, candidate),
          refreshed = snapshot_candidate(snapshot_candidate, request),
@@ -1004,33 +1131,6 @@ defmodule Orchard.Scheduler.MultiNode do
          end) do
       nil -> {:error, :selected_candidate_unavailable}
       candidate -> {:ok, candidate}
-    end
-  end
-
-  defp fresh_dispatch_capacity_input_provider(candidate, request, phase, opts) do
-    client = Keyword.get(opts, :status_client, Inference.runtime_endpoint_client())
-    timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
-
-    fn -> fresh_dispatch_capacity_input(candidate, request, phase, opts, client, timeout) end
-  end
-
-  defp fresh_dispatch_capacity_input(candidate, request, phase, opts, client, timeout) do
-    observed_at = DateTime.utc_now()
-
-    with {:candidate, refreshed} <-
-           probe_target(candidate.target, client, timeout, observed_at, request),
-         true <- refreshed.node_id == candidate.node_id,
-         refreshed_placement <-
-           Map.get(
-             refreshed,
-             :model_placement_capacity,
-             placement_default(refreshed, phase)
-           ),
-         {:ok, input} <-
-           dispatch_capacity_input(refreshed, refreshed_placement, opts, observed_at) do
-      input
-    else
-      _unavailable -> nil
     end
   end
 
@@ -1243,11 +1343,21 @@ defmodule Orchard.Scheduler.MultiNode do
     end)
   end
 
-  defp maybe_put_dispatch_identity_source(schedule, :snapshot) do
+  defp maybe_put_dispatch_identity_source(schedule, :snapshot, _selected) do
     Map.put(schedule, :dispatch_identity_source, :trusted_monitor_snapshot)
   end
 
-  defp maybe_put_dispatch_identity_source(schedule, _refresh_strategy), do: schedule
+  defp maybe_put_dispatch_identity_source(
+         schedule,
+         :inline_status,
+         %{observation: %Observation{} = observation}
+       ) do
+    Map.put(
+      schedule,
+      :dispatch_identity_source,
+      {:bounded_compatibility_probe, observation}
+    )
+  end
 
   defp maybe_put_prefix_cache_score(map, nil), do: map
 

@@ -256,6 +256,12 @@ defmodule Orchard.Cluster.V1.EnsureModelLoadedResponse do
     type: :bool,
     json_name: "workerSupportsPromptTokenIds"
   )
+
+  field(:placement_capacity, 7,
+    proto3_optional: true,
+    type: Orchard.Cluster.V1.RuntimeModelPlacement,
+    json_name: "placementCapacity"
+  )
 end
 
 defmodule Orchard.Cluster.V1.UnloadModelRequest do

@@ -65,7 +65,8 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
          health_code: "",
          health_message: "",
          model_ref: Map.get(adapter_state, :model_ref),
-         supports_prompt_token_ids: true
+         supports_prompt_token_ids: true,
+         max_concurrency: Orchard.Node.effective_worker_request_limit()
        }}
     end
 

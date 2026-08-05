@@ -1315,7 +1315,7 @@ For each production MultiNode scheduling attempt, the candidate universe SHALL b
 
 The scheduler SHALL obtain one immutable request-scoped Postgres snapshot with one statement or equivalent read-transaction semantics, deterministically selecting the latest accepted row per intersected target by descending `observed_at` and then descending row identity. Per-Node observation times may differ; both `nodes.last_heartbeat_at` and the selected row's `observed_at` SHALL satisfy `node_freshness_threshold_ms` at query time. Controller or scheduler restart requires no production candidate-cache hydration; the next attempt reads Postgres.
 
-The explicitly unmanaged static compatibility branch is available only when static fallback is enabled, trusted admitted/active inventory is confirmed empty, and the normalized target exactly satisfies `Inference.static_runtime_target?/1`. It MAY run one bounded compatibility status-probe wave over at most the first four deduplicated configured targets, with one connect/status attempt per target, the existing **2000 ms** per-target timeout, and no retry; it SHOULD run as one bounded wave rather than serially multiplying that timeout. It MUST NOT run when trusted inventory exists, inventory availability cannot be proven, or the production snapshot fails, and it does not become trusted inventory or production authority.
+The explicitly unmanaged static compatibility branch is available only when static fallback is enabled, trusted admitted/active inventory is confirmed empty, and the normalized target exactly satisfies `Inference.static_runtime_target?/1`. It MAY run one bounded compatibility status-probe wave over at most the first four deduplicated configured targets, with one connect/status attempt per target for the entire logical request through terminal completion, the existing **2000 ms** per-target timeout, and no retry; it SHOULD run as one bounded wave rather than serially multiplying that timeout. Loading, final revalidation, failure handling, execution, and terminal completion MUST NOT initiate another status attempt for that target. It MUST NOT run when trusted inventory exists, inventory availability cannot be proven, or the production snapshot fails, and it does not become trusted inventory or production authority.
 
 Production scheduling and dispatch SHALL perform no inline Runtime Endpoint status probe anywhere on the request path; the bounded explicitly unmanaged compatibility wave is the sole exception. Database unavailability, incomplete reads, or absent usable facts SHALL fail closed without stale process memory or the unmanaged compatibility branch.
 
@@ -1498,6 +1498,8 @@ Dispatch sequence:
 6. call `ExecuteInference`
 7. wait for `accepted` while retaining the Node acceptance gate, or treat failure before `accepted` as pre-acceptance failure
 8. after `accepted`, release the acceptance gate, retain the allocation or temporary legacy claim through terminal completion, and transition request to `running`
+
+For an initially cold explicitly unmanaged compatibility candidate, final revalidation SHALL consume valid matching Placement Capacity from the successful `EnsureModelLoaded` result while preserving the captured target and resolved Node identity, aggregate capacity, availability, health, observation time and freshness behavior, and explicit unmanaged classification. Missing, malformed, zero-maximum, invalid-model-reference, or model-mismatched post-load evidence SHALL fail closed before `ExecuteInference` under the existing revalidation failure contract and SHALL NOT cause another status attempt. For an initially loaded compatibility candidate, an absent additive load-result field SHALL NOT replace or invalidate captured valid matching Placement Capacity; valid newer matching evidence MAY replace it. Production snapshot revalidation remains governed by the latest durable observation and current Controller-owned facts.
 
 Retry rule:
 
@@ -1809,6 +1811,10 @@ Air-gapped systems MUST support mode 1 and mode 2.
 ### 6.8 Load/unload semantics
 
 `EnsureModelLoaded` SHALL be idempotent.
+
+A successful `EnsureModelLoaded` result MAY include Node-owned Placement Capacity for the exact requested model reference, with a non-negative active request count and positive maximum concurrency. The evidence SHALL use the same canonical validity rules as Placement Capacity from Runtime Endpoint Observations and MUST NOT require an additional Controller Runtime Endpoint status attempt. Failed or non-loaded results MUST NOT supply placement authority. Absent, malformed, zero-maximum, negative, invalid-model-reference, or otherwise invalid evidence SHALL normalize to missing and MUST NOT be fabricated.
+
+This evidence is additive and optional for protocol compatibility. A new Controller receiving an old protobuf response or same-named BEAM result struct without the field or key SHALL treat it as missing without raising, and an old protobuf Controller MAY ignore evidence returned by a new agent.
 
 Behavior:
 
@@ -2895,6 +2901,7 @@ message EnsureModelLoadedResponse {
   string failure_code = 4;
   string failure_message = 5;
   bool worker_supports_prompt_token_ids = 6;
+  optional RuntimeModelPlacement placement_capacity = 7;
 }
 
 `StatusResponse.supports_prompt_token_ids` MAY inform opt-in scheduler preference only. `EnsureModelLoadedResponse.worker_supports_prompt_token_ids` remains the authoritative per-request dispatch gate for controller-supplied `prompt_token_ids`.

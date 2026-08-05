@@ -805,7 +805,44 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.dispatch_identity_source == :trusted_monitor_snapshot
       assert status_calls() == []
 
-      assert_receive {:snapshot_boundary, [^target], [^target], [observed_at: ^observed_at]}
+      _acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      _revalidation = schedule.dispatch_capacity_input_provider.()
+
+      for _read <- 1..3 do
+        assert_receive {:snapshot_boundary, [^target], [^target], [observed_at: ^observed_at]}
+      end
+    end
+
+    test "SPEC 5.5 default production snapshot calls use the database boundary" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+      test_pid = self()
+
+      put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
+
+      snapshot_provider = fn effective, active, opts ->
+        persist_snapshot_capacity_evidence!(snapshot)
+        send(test_pid, {:default_snapshot_boundary, effective, active, opts})
+        {:ok, snapshot}
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      _acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      _revalidation = schedule.dispatch_capacity_input_provider.()
+
+      for _read <- 1..3 do
+        assert_receive {:default_snapshot_boundary, [^target], [^target], []}
+      end
+
+      assert status_calls() == []
     end
 
     test "OpenSpec 6.2-6.3 explains selected skipped capacity and source-rejected snapshots" do
@@ -1181,7 +1218,17 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.runtime_endpoint_target.metadata.capacity_management_class ==
                :unmanaged_compatibility
 
-      refute Map.has_key?(schedule, :dispatch_identity_source)
+      _acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+
+      _revalidation =
+        schedule.dispatch_capacity_input_provider.(%{placement_state: :loaded})
+
+      assert :atomics.get(counters, 1) == 4
+      assert :atomics.get(counters, 2) == 4
+      assert :atomics.get(counters, 3) == 4
+
+      assert {:bounded_compatibility_probe, %Observation{}} =
+               schedule.dispatch_identity_source
     end
 
     test "ADR 0017 failed compatibility wave does not retry or fall back" do
@@ -1946,9 +1993,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 2
     end
 
-    test "SPEC.md §5.9 post-load provider probes fresh placement capacity" do
+    test "SPEC 5.5 compatibility providers reuse one captured loaded observation" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
-      model_id = "multi-post-load-capacity-model"
+      model_id = "multi-captured-placement-model"
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
 
       stub_probe(
@@ -1958,38 +2005,33 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           host: "10.0.0.1",
           port: 50_061,
           active_request_count: 0,
-          max_concurrency: 2,
-          runtime_model_placements: []
-        )
-      )
-
-      assert {:ok, schedule} =
-               MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
-
-      stub_probe(
-        "10.0.0.1",
-        50_061,
-        make_status(node.id,
-          host: "10.0.0.1",
-          port: 50_061,
-          active_request_count: 1,
           max_concurrency: 2,
           loaded_models: [%{model_id: model_id, version: "v1"}],
-          runtime_model_placements: [model_placement(model_id, "v1", 1, 1)]
+          runtime_model_placements: [model_placement(model_id, "v1", 0, 2)]
         )
       )
 
-      refreshed = schedule.dispatch_capacity_input_provider.()
-      result = Evaluator.evaluate(refreshed)
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
 
-      assert result.placement_capacity == {:valid, 1, 1}
-      assert result.eligible? == false
-      assert :placement_capacity_exhausted in result.reason_codes
+      acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+
+      revalidation =
+        schedule.dispatch_capacity_input_provider.(%{
+          placement_state: :loaded
+        })
+
+      assert schedule.node_id == node.id
+      assert acquisition.management_classification == {:ok, :unmanaged_compatibility}
+      assert revalidation.management_classification == {:ok, :unmanaged_compatibility}
+      assert acquisition.placement_capacity == {:valid, 0, 2}
+      assert revalidation.placement_capacity == {:valid, 0, 2}
+      assert length(status_calls()) == 1
     end
 
-    test "SPEC.md §5.9 acquisition provider probes fresh aggregate capacity before loading" do
+    test "SPEC 5.5 cold compatibility consumes matching load evidence and fails closed otherwise" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
-      model_id = "multi-acquisition-capacity-model"
+      model_id = "multi-captured-cold-model"
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
 
       stub_probe(
@@ -2007,52 +2049,53 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} =
                MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
 
-      stub_probe(
-        "10.0.0.1",
-        50_061,
-        make_status(node.id,
-          host: "10.0.0.1",
-          port: 50_061,
-          active_request_count: 2,
-          max_concurrency: 2,
-          runtime_model_placements: []
-        )
-      )
+      acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      acquisition_result = Evaluator.evaluate(acquisition)
 
-      refreshed = schedule.dispatch_capacity_acquisition_input_provider.()
-      result = Evaluator.evaluate(refreshed)
-
-      assert result.placement_capacity == :not_applicable
-      refute result.eligible?
-      assert :runtime_concurrency_limit_exhausted in result.reason_codes
-    end
-
-    test "SPEC.md §5.9 post-load provider rejects missing matching Placement Capacity" do
-      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
-      model_id = "multi-post-load-missing-placement-model"
-      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
-
-      stub_probe(
-        "10.0.0.1",
-        50_061,
-        make_status(node.id,
-          host: "10.0.0.1",
-          port: 50_061,
+      placement_capacity =
+        PlacementCapacity.new(%{
+          model_ref: %{model_id: model_id, version: "v1"},
           active_request_count: 0,
           max_concurrency: 2,
-          runtime_model_placements: []
-        )
-      )
+          source: :ensure_model_loaded_result
+        })
 
-      assert {:ok, schedule} =
-               MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
+      revalidation =
+        schedule.dispatch_capacity_input_provider.(%{
+          placement_state: :loaded,
+          placement_capacity: placement_capacity
+        })
 
-      refreshed = schedule.dispatch_capacity_input_provider.()
-      result = Evaluator.evaluate(refreshed)
+      assert acquisition.placement_capacity == :not_applicable
+      assert acquisition_result.eligible?
+      assert revalidation.placement_capacity == {:valid, 0, 2}
+      assert Evaluator.evaluate(revalidation).eligible?
 
-      assert result.placement_capacity == :unknown
-      assert result.eligible? == false
-      assert :placement_capacity_unknown in result.reason_codes
+      mismatched_capacity =
+        PlacementCapacity.new(%{
+          model_ref: %{model_id: "wrong-model", version: "v1"},
+          active_request_count: 0,
+          max_concurrency: 2,
+          source: :ensure_model_loaded_result
+        })
+
+      malformed_capacity = %{
+        placement_capacity
+        | active_request_count: -1,
+          max_concurrency: 0
+      }
+
+      for invalid_result <- [
+            %{placement_state: :loaded},
+            %{placement_state: :loaded, placement_capacity: %{max_concurrency: 2}},
+            %{placement_state: :loaded, placement_capacity: malformed_capacity},
+            %{placement_state: :loaded, placement_capacity: mismatched_capacity},
+            %{placement_state: :failed, placement_capacity: placement_capacity}
+          ] do
+        assert schedule.dispatch_capacity_input_provider.(invalid_result) == nil
+      end
+
+      assert length(status_calls()) == 1
     end
 
     test "SPEC.md §7.3.5 scheduler explanation separates selected rejected and skipped candidates" do

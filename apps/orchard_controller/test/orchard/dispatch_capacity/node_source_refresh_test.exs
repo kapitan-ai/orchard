@@ -223,7 +223,7 @@ defmodule Orchard.DispatchCapacity.NodeSourceRefreshTest do
                     }}
   end
 
-  defp insert_node!(_now) do
+  defp insert_node!(now) do
     unique = System.unique_integer([:positive])
 
     %Node{}
@@ -237,7 +237,8 @@ defmodule Orchard.DispatchCapacity.NodeSourceRefreshTest do
       connect_port: 50_071,
       state: :active,
       health: :healthy,
-      capabilities: %{}
+      capabilities: %{},
+      last_heartbeat_at: DateTime.add(now, -1, :second)
     })
     |> Repo.insert!()
   end

@@ -1737,6 +1737,7 @@ defmodule Orchard.Nodes do
     |> Node.changeset(
       observation
       |> Map.delete(:id)
+      |> Map.delete(:last_heartbeat_at)
       |> Map.put(:state, existing.state)
     )
     |> Repo.update!()

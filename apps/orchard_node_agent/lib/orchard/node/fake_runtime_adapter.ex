@@ -12,7 +12,13 @@ defmodule Orchard.Node.FakeRuntimeAdapter do
 
   @impl true
   def get_status(_adapter_state, _opts) do
-    {:ok, %{ready: true, health_code: "", health_message: ""}}
+    {:ok,
+     %{
+       ready: true,
+       health_code: "",
+       health_message: "",
+       max_concurrency: Orchard.Node.effective_worker_request_limit()
+     }}
   end
 
   @impl true

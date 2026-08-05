@@ -1572,7 +1572,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert heartbeat.payload["validity"] == "valid"
   end
 
-  test "ADR 0017 authenticated gRPC status persists normalized placement capacity for snapshots",
+  test "ADR 0017 authenticated heartbeat survives unauthenticated refresh in production snapshot",
        %{
          trust_root: trust_root,
          authorization_root: authorization_root
@@ -1624,15 +1624,53 @@ defmodule Orchard.BeamPeerGrantsTest do
                authenticated_peer!(node.id)
              )
 
+    authenticated_at = DateTime.truncate(observed_at, :microsecond)
+
+    heartbeat =
+      Repo.one!(
+        from(heartbeat in NodeHeartbeat,
+          where: heartbeat.node_id == ^node.id
+        )
+      )
+
+    assert heartbeat.observed_at == authenticated_at
+    assert Repo.get!(Node, node.id).last_heartbeat_at == authenticated_at
+
+    refreshed_at = DateTime.add(authenticated_at, 1, :second)
+
+    unauthenticated_status =
+      status
+      |> put_in([:node_metadata, :display_name], "metadata-refreshed")
+      |> put_in([:node_metadata, :agent_version], "0.5.1-dev")
+
+    assert {:ok, refreshed_node} =
+             Nodes.observe_status(target, unauthenticated_status, refreshed_at)
+
+    assert refreshed_node.display_name == "metadata-refreshed"
+    assert refreshed_node.agent_version == "0.5.1-dev"
+    assert refreshed_node.last_heartbeat_at == authenticated_at
+
+    assert Repo.aggregate(
+             from(heartbeat in NodeHeartbeat, where: heartbeat.node_id == ^node.id),
+             :count
+           ) == 1
+
     assert {:ok, snapshot} =
              NodeHeartbeats.production_candidate_snapshot(
                [target],
                [target],
-               observed_at: observed_at
+               observed_at: refreshed_at
              )
 
     assert [
              %Candidate{
+               node: %Node{
+                 display_name: "metadata-refreshed",
+                 agent_version: "0.5.1-dev",
+                 last_heartbeat_at: ^authenticated_at
+               },
+               heartbeat_id: heartbeat_id,
+               observed_at: ^authenticated_at,
                active_request_count: 2,
                max_concurrency: 4,
                placements: [
@@ -1648,6 +1686,7 @@ defmodule Orchard.BeamPeerGrantsTest do
              }
            ] = snapshot.candidates
 
+    assert heartbeat_id == heartbeat.id
     assert snapshot.rejections == []
   end
 

@@ -132,6 +132,25 @@ defmodule OrchardSharedTest do
              |> EnsureModelLoadedRequest.decode()
   end
 
+  test "round-trips EnsureModelLoadedResponse with additive placement capacity" do
+    model_ref = %ModelRef{model_id: "test-model", version: "v1"}
+
+    response = %EnsureModelLoadedResponse{
+      already_loaded: false,
+      placement_state: :PLACEMENT_STATE_LOADED,
+      placement_capacity: %RuntimeModelPlacement{
+        model_ref: model_ref,
+        active_request_count: 1,
+        max_concurrency: 3
+      }
+    }
+
+    assert response ==
+             response
+             |> EnsureModelLoadedResponse.encode()
+             |> EnsureModelLoadedResponse.decode()
+  end
+
   test "round-trips EnsureModelLoadedResponse with failure metadata" do
     response = %EnsureModelLoadedResponse{
       already_loaded: false,
