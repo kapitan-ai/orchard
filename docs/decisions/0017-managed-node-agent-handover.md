@@ -8,12 +8,11 @@ Owner decision recorded 2026-08-04 for issue #158.
 
 ## Context
 
-`SPEC.md` section 11.4 gives Orchard.app and PKG compatible installed paths, launchd labels, role values, and retained-state semantics, but before this decision it did not define their shared process-handover boundary.
+`SPEC.md` section 11.4 gives Orchard.app and PKG compatible installed paths, launchd labels, role values, and retained-state semantics, but it does not yet define their shared process-handover boundary.
 `SPEC.md` sections 13.1 and 13.4 require Controller version `N` to support Node Agent versions `N` and `N-1` during rolling node upgrades.
 That compatibility window does not make concurrent historical and replacement Node Agent processes safe when both can use one Node Identity Root.
 The Node Identity Root contains the Node private key, Node Certificate, enrolled trust state, and stored BEAM Peer Grants, so concurrent access can cross identity, authorization, and lifecycle mutation boundaries.
-ADR 0012 fixes per-Controller grant custody and atomic Node-local grant storage without establishing lifetime ownership of the Node Identity Root.
-`Orchard.Node.BeamPeerGrantStore` holds its store lock only for one install or load operation, so that lock is not a lifecycle lock either.
+ADR 0012 keeps BEAM Peer Grant storage locks scoped to individual store operations and does not establish lifetime ownership of the Node Identity Root.
 
 ## Decision
 
@@ -48,4 +47,4 @@ Future work may define a Node Identity Root Lease, but it must not silently broa
 
 ## SPEC.md impact
 
-`SPEC.md` sections 11.4 and 13.4 now define the managed zero-overlap boundary, the handover gate satisfied by exact outgoing-process exit proof or proven absence of any managed Node Agent instance, bounded fail-closed behavior, and historical-version serialization.
+`SPEC.md` sections 11.4 and 13.4 now define the managed zero-overlap boundary, exact outgoing-process exit proof, bounded fail-closed behavior, and historical-version serialization.
