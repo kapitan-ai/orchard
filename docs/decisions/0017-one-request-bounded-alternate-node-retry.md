@@ -48,7 +48,7 @@ Unknown categories and unknown codes are non-retryable.
 | Failure class | Automatic attempt retry | Required treatment |
 |---|---:|---|
 | Pre-acceptance Node or transport unavailability | Yes | Retry only after cleanup and capacity release are affirmatively resolved. |
-| Trusted candidate identity mismatch before execution | Yes | Record the mismatch and exclude the selected durable Node identity. |
+| Trusted candidate identity mismatch before execution, reported as `dispatch_capacity_node_identity_mismatch` | Yes | Record the mismatch and exclude the selected durable Node identity. |
 | Node-local model-load `acquisition_failed`, `runtime_unavailable`, `resource_exhausted`, or `timeout` | Yes | Retry only within the original absolute deadline. |
 | Deterministic model-load `model_invalid` | No | Preserve the stable terminal failure. |
 | Unknown or `internal` model-load failure | No | Fail closed. |
@@ -61,14 +61,17 @@ Unknown categories and unknown codes are non-retryable.
 | Caller cancellation or disconnect | No | Cancellation wins at every retry boundary. |
 | Original Request deadline expiry | No | Never extend or replace the deadline. |
 | Controller persistence, event-handler, or orchestration failure | No | Terminalize as the existing orchestration failure. |
-| Unresolved release, held claim, or quarantined execution | No | Do not acquire alternate capacity. |
-| Scheduler capacity rejection before attempt 1's started step | Not attempt retry | Use the existing same-lane requeue-or-fail path under the original queue deadline and record no attempt retry decision. |
-| Pre-acceptance dispatch-capacity revalidation rejection after attempt 1's started step | No | Record `not_retryable` and keep the existing same-lane requeue-or-fail behavior. |
-| Admission, quota, validation, queue timeout, `cluster_busy`, or `model_busy` before an execution attempt | Out of scope | Preserve existing admission and queue semantics. |
+| Unresolved release, held claim reported as `dispatch_capacity_request_already_claimed`, or quarantined execution | No | Do not acquire alternate capacity. |
+| Scheduler capacity rejection before `request_step.started` | Not attempt retry | Use the existing same-lane requeue-or-fail path under the original queue deadline and record no attempt retry decision. |
+| Any dispatch-capacity acquisition, acceptance-gate, or revalidation rejection after `request_step.started`, including `dispatch_capacity_unavailable`, `dispatch_capacity_facts_unavailable`, `dispatch_capacity_acceptance_gate_busy`, and `dispatch_capacity_revalidation_failed` | No | Record `not_retryable`, persist a durable attempt outcome, and keep the existing same-lane requeue-or-fail behavior. |
+| Admission, quota, validation, queue timeout, `cluster_busy`, or `model_busy` before `request_step.started` | Out of scope | Preserve existing admission and queue semantics with no attempt retry decision and no attempt or retry metric sample. |
 
 Capacity rejection is deliberately not reclassified as automatic attempt retry.
 `SPEC.md` §5.9 already requires failed serialized capacity revalidation to release and requeue or fail under the existing queue deadline, and issue #121 explicitly excludes queue re-entry.
-Those two capacity rows differ only in ordering relative to attempt 1's started step, and that ordering decides whether a durable retry decision and a retry metric sample exist at all.
+Scheduler capacity, admission, quota, validation, and queue-timeout outcomes resolve before `request_step.started` exists, so they produce no attempt retry decision and no attempt or retry metric sample.
+The whole dispatch-capacity acquisition, acceptance-gate, and revalidation family resolves after that step exists, so every one of its rejections records `not_retryable` with a durable attempt outcome and none of them may become the different-Node automatic retry.
+`dispatch_capacity_request_already_claimed` and `dispatch_capacity_node_identity_mismatch` keep their own rows because a held claim and a mismatched identity are distinct fail-closed conditions rather than ordinary capacity scarcity.
+This classification is normative for the retry contract and does not claim that the current same-lane capacity requeue wiring is already complete.
 
 ### Capacity ownership and sequencing
 
@@ -113,7 +116,7 @@ The closed `retry_decision` vocabulary is `retried`, `not_retryable`, `output_co
 A failed attempt 1 records `retried` when attempt 2 starts and otherwise records exactly one of the seven decline values.
 Each decline value covers one gate, where `output_committed`, `budget_exhausted`, `cancelled`, `identity_unresolved`, `occupancy_unresolved`, and `no_alternative_node` map to the retryability gates in their listed order and `not_retryable` covers the closed failure taxonomy check.
 `identity_unresolved` records that attempt 1's durable Node identity could not be established for hard exclusion, and that state must never be recorded as `no_alternative_node` because an eligible alternative may well have existed.
-A pre-acceptance dispatch-capacity revalidation rejection reaches a failed attempt terminal step and therefore records `not_retryable` rather than being treated as a Request that never made an attempt.
+Every dispatch-capacity acquisition, acceptance-gate, and revalidation rejection reaches a failed attempt terminal step and therefore records `not_retryable` rather than being treated as a Request that never made an attempt.
 When several gates fail together, the recorded decline value follows the gate order with the taxonomy check evaluated after cancellation, giving `output_committed`, `budget_exhausted`, `cancelled`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
 That precedence selects only which evidence value is stored because every decline value is equally terminal for retry.
 A failed attempt 2 always records `retry_exhausted` because the two-attempt bound makes further retry structurally impossible, and no other decision value may be overloaded for that state.
@@ -125,9 +128,9 @@ Logical metrics count admission, queue outcome, quota, tokens, public success or
 Attempt metrics count each dispatch, duration, Node outcome, model-load outcome, failure class, commitment state, time to first output, and retry result per attempt.
 Add `orchard_inference_attempts_total{attempt,outcome,failure_class}`, `orchard_inference_attempt_duration_seconds_bucket{attempt,outcome}`, and `orchard_inference_retries_total{reason,result}` where every label has a closed vocabulary.
 `orchard_inference_retries_total` emits exactly one sample for each logical Request whose attempt 1 recorded a `retry_decision`.
-A Request that succeeded on attempt 1 or terminalized before attempt 1's started step was appended records no attempt 1 retry decision and therefore emits no sample.
-Scheduler-busy requeue outcomes such as `cluster_busy` and `model_busy` resolve before attempt 1's started step exists, so they emit neither a retry decision nor a retry metric sample.
-A pre-acceptance dispatch-capacity revalidation rejection resolves after that step exists, so it emits one sample with `reason` of `not_retryable` and `result` of `declined` while still following the existing same-lane requeue-or-fail behavior.
+A Request that succeeded on attempt 1 or terminalized before `request_step.started` was appended records no attempt 1 retry decision and therefore emits no sample.
+Scheduler-busy requeue outcomes such as `cluster_busy` and `model_busy` resolve before `request_step.started` exists, so they emit neither a retry decision nor a retry metric sample.
+Each dispatch-capacity acquisition, acceptance-gate, and revalidation rejection resolves after that step exists, so it emits one sample with `reason` of `not_retryable` and `result` of `declined` while still following the existing same-lane requeue-or-fail behavior.
 Its `reason` label is the durable attempt 1 `retry_decision` value, so the closed `reason` vocabulary is `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `identity_unresolved`, `occupancy_unresolved`, and `no_alternative_node`.
 `retry_exhausted` never labels this counter because the counter reports the single attempt 1 decision rather than attempt 2's terminal state.
 Its closed `result` vocabulary is `succeeded`, `failed`, and `declined`, where `succeeded` and `failed` report attempt 2's terminal outcome for the logical Request and `declined` reports that no attempt 2 started.
