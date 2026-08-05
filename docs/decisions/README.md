@@ -20,3 +20,7 @@ conclusions as concise product-facing decision records.
 
 Start from [`_template.md`](_template.md) when useful. Decisions already fixed by
 `SPEC.md` do not need duplicate ADRs.
+
+## Decision index
+
+The current sequence ends with [ADR 0017: Managed Node Agent handover uses zero process overlap](0017-managed-node-agent-handover.md).
