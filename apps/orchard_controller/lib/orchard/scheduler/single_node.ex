@@ -24,7 +24,10 @@ defmodule Orchard.Scheduler.SingleNode do
   alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
 
-  @callback schedule(CanonicalRequest.t()) :: {:ok, map()} | {:error, term()}
+  @type schedule_result ::
+          {:ok, map()} | {:error, term()} | {:error, term(), map()}
+
+  @callback schedule(CanonicalRequest.t()) :: schedule_result()
 
   @default_status_timeout_ms 2_000
 

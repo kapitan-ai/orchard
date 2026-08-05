@@ -565,11 +565,14 @@ defmodule OrchardNodeAgentTest do
       if status_sleep_ms > 0, do: Process.sleep(status_sleep_ms)
 
       status = %{ready: true, health_code: "", health_message: ""}
-      max_concurrency = Keyword.get(runtime, :test_prompt_token_ids_max_concurrency)
 
       status =
-        if is_integer(max_concurrency) and max_concurrency > 0 do
-          Map.put(status, :max_concurrency, max_concurrency)
+        if Keyword.has_key?(runtime, :test_prompt_token_ids_max_concurrency) do
+          Map.put(
+            status,
+            :max_concurrency,
+            Keyword.get(runtime, :test_prompt_token_ids_max_concurrency)
+          )
         else
           status
         end
@@ -605,6 +608,48 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule WorkerStatusErrorRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok,
+       %{
+         ready: false,
+         health_code: "worker_status_error",
+         health_message: "worker status request failed",
+         max_concurrency: 2
+       }}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      send(Process.whereis(:load_timeout_test_pid), {:worker_status_error_load_started, self()})
+
+      receive do
+        :finish_load -> {:ok, %{model_ref: model_ref, generations: %{}}}
+      after
+        30_000 -> {:error, :load_timeout}
+      end
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   defmodule StatusProbeShortCircuitAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -624,6 +669,7 @@ defmodule OrchardNodeAgentTest do
          ready: true,
          health_code: "",
          health_message: "",
+         max_concurrency: 2,
          memory_budget: %{
            mode: "observe",
            budget_available: true,
@@ -1568,7 +1614,7 @@ defmodule OrchardNodeAgentTest do
   test "get_status advertises prompt token id support when loaded worker reports support", %{
     bundle: bundle
   } do
-    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+    with_prompt_token_ids_runtime(fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
@@ -1633,8 +1679,10 @@ defmodule OrchardNodeAgentTest do
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
-      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(status_error_bundle))
+      assert %EnsureModelLoadedResponse{
+               placement_state: :PLACEMENT_STATE_LOADED,
+               placement_capacity: nil
+             } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(status_error_bundle))
 
       assert %StatusResponse{} = response = NodeStatus.current()
 
@@ -1643,13 +1691,21 @@ defmodule OrchardNodeAgentTest do
   end
 
   test "ensure_model_loaded includes prompt token id support after fresh load", %{bundle: bundle} do
-    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+    with_prompt_token_ids_runtime(fn ->
       assert %EnsureModelLoadedResponse{
                already_loaded: false,
                placement_state: :PLACEMENT_STATE_LOADED,
-               worker_supports_prompt_token_ids: true
+               worker_supports_prompt_token_ids: true,
+               placement_capacity: %RuntimeModelPlacement{
+                 model_ref: %{model_id: model_id, version: version},
+                 active_request_count: 0,
+                 max_concurrency: max_concurrency
+               }
              } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
+      assert model_id == bundle.model_id
+      assert version == bundle.version
+      assert max_concurrency == 2
       assert_receive {:prompt_token_ids_status_probe, _worker_pid, model_ref}, 1_000
       assert model_ref.model_id == bundle.model_id
       assert model_ref.version == bundle.version
@@ -1659,7 +1715,7 @@ defmodule OrchardNodeAgentTest do
   test "ensure_model_loaded includes prompt token id support for already-loaded worker", %{
     bundle: bundle
   } do
-    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+    with_prompt_token_ids_runtime(fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
@@ -1668,13 +1724,83 @@ defmodule OrchardNodeAgentTest do
       assert %EnsureModelLoadedResponse{
                already_loaded: true,
                placement_state: :PLACEMENT_STATE_LOADED,
-               worker_supports_prompt_token_ids: true
+               worker_supports_prompt_token_ids: true,
+               placement_capacity: %RuntimeModelPlacement{
+                 model_ref: %{model_id: model_id, version: version},
+                 active_request_count: 0,
+                 max_concurrency: max_concurrency
+               }
              } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
+      assert model_id == bundle.model_id
+      assert version == bundle.version
+      assert max_concurrency == 2
       assert_receive {:prompt_token_ids_status_probe, _worker_pid, model_ref}, 1_000
       assert model_ref.model_id == bundle.model_id
       assert model_ref.version == bundle.version
     end)
+  end
+
+  test "ensure_model_loaded omits placement authority when successful status has no limit", %{
+    bundle: bundle
+  } do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{
+               already_loaded: false,
+               placement_state: :PLACEMENT_STATE_LOADED,
+               placement_capacity: nil
+             } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %EnsureModelLoadedResponse{
+               already_loaded: true,
+               placement_state: :PLACEMENT_STATE_LOADED,
+               placement_capacity: nil
+             } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+    end)
+  end
+
+  test "worker_status_error never supplies or caches placement capacity", %{bundle: bundle} do
+    with_runtime_adapter(WorkerStatusErrorRuntimeAdapter, fn ->
+      request = ensure_model_loaded_request(bundle)
+
+      first = Task.async(fn -> NodeStatus.ensure_model_loaded(request) end)
+      assert_receive {:worker_status_error_load_started, worker_pid}, 1_000
+
+      coalesced = Task.async(fn -> NodeStatus.ensure_model_loaded(request) end)
+      assert Task.yield(coalesced, 100) == nil
+      send(worker_pid, :finish_load)
+
+      for response <- [Task.await(first, 5_000), Task.await(coalesced, 5_000)] do
+        assert %EnsureModelLoadedResponse{
+                 already_loaded: false,
+                 placement_state: :PLACEMENT_STATE_LOADED,
+                 placement_capacity: nil
+               } = response
+      end
+
+      assert %EnsureModelLoadedResponse{
+               already_loaded: true,
+               placement_state: :PLACEMENT_STATE_LOADED,
+               placement_capacity: nil
+             } = NodeStatus.ensure_model_loaded(request)
+    end)
+  end
+
+  test "ensure_model_loaded omits malformed worker-status limits", %{bundle: bundle} do
+    for invalid_limit <- [nil, 0, -1, "2"] do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: PromptTokenIdsRuntimeAdapter,
+          test_prompt_token_ids_max_concurrency: invalid_limit
+        ],
+        fn ->
+          assert %EnsureModelLoadedResponse{
+                   placement_state: :PLACEMENT_STATE_LOADED,
+                   placement_capacity: nil
+                 } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+        end
+      )
+    end
   end
 
   test "ensure_model_loaded already-loaded support probe honors expired deadline", %{
@@ -1743,9 +1869,16 @@ defmodule OrchardNodeAgentTest do
         assert %EnsureModelLoadedResponse{
                  already_loaded: false,
                  placement_state: :PLACEMENT_STATE_LOADED,
-                 worker_supports_prompt_token_ids: true
+                 worker_supports_prompt_token_ids: true,
+                 placement_capacity: %RuntimeModelPlacement{
+                   model_ref: %{model_id: model_id, version: version},
+                   active_request_count: 0,
+                   max_concurrency: 2
+                 }
                } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 700))
 
+        assert model_id == bundle.model_id
+        assert version == bundle.version
         assert_receive {:prompt_token_ids_status_probe, _worker_pid, model_ref}, 1_000
         assert model_ref.model_id == bundle.model_id
         assert model_ref.version == bundle.version
@@ -2158,6 +2291,10 @@ defmodule OrchardNodeAgentTest do
       assert response.runtime_health.affected_model.version == blocked_bundle.version
       assert response.runtime_memory_budgets == []
       assert response.runtime_prefix_cache_statuses == []
+
+      placement = runtime_model_placement!(response, bundle.model_id, bundle.version)
+      assert placement.active_request_count == 0
+      assert placement.max_concurrency == 2
 
       assert Enum.any?(
                response.loaded_models,
@@ -3739,7 +3876,7 @@ defmodule OrchardNodeAgentTest do
   test "concurrent ensure_model_loaded calls single-flight to one acquisition task", %{
     bundle: bundle
   } do
-    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+    with_runtime_adapter(SingleSlotStatusRuntimeAdapter, fn ->
       request = ensure_model_loaded_request(bundle)
 
       # Spawn two concurrent ensure calls
@@ -3759,6 +3896,18 @@ defmodule OrchardNodeAgentTest do
 
       assert result1.placement_state == :PLACEMENT_STATE_LOADED
       assert result2.placement_state == :PLACEMENT_STATE_LOADED
+
+      for result <- [result1, result2] do
+        assert %RuntimeModelPlacement{
+                 model_ref: %{model_id: model_id, version: version},
+                 active_request_count: 0,
+                 max_concurrency: max_concurrency
+               } = result.placement_capacity
+
+        assert model_id == bundle.model_id
+        assert version == bundle.version
+        assert max_concurrency > 0
+      end
 
       # Only one worker should exist
       assert worker_count() == 1
@@ -5355,6 +5504,16 @@ defmodule OrchardNodeAgentTest do
 
   defp with_runtime_adapter(adapter, fun) when is_function(fun, 0) do
     with_runtime_config([runtime_adapter_impl: adapter], fun)
+  end
+
+  defp with_prompt_token_ids_runtime(fun) when is_function(fun, 0) do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: PromptTokenIdsRuntimeAdapter,
+        test_prompt_token_ids_max_concurrency: 2
+      ],
+      fun
+    )
   end
 
   defp with_real_worker_runtime(fun) when is_function(fun, 0) do

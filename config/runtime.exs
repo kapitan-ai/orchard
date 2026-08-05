@@ -599,10 +599,22 @@ bundle_build_preflight_timeout_ms =
      timeout_ms
    end).()
 
+node_heartbeat_payload_max_bytes =
+  (fn ->
+     max_bytes = env_int.("ORCHARD_NODE_HEARTBEAT_PAYLOAD_MAX_BYTES", "262144")
+
+     if max_bytes < 128 do
+       raise "ORCHARD_NODE_HEARTBEAT_PAYLOAD_MAX_BYTES must be >= 128, got: #{max_bytes}"
+     end
+
+     max_bytes
+   end).()
+
 config :orchard_controller,
   bundle_build_eager_preflight_enabled:
     env_bool.("ORCHARD_BUNDLE_BUILD_EAGER_PREFLIGHT_ENABLED", true),
   bundle_build_preflight_timeout_ms: bundle_build_preflight_timeout_ms,
+  node_heartbeat_payload_max_bytes: node_heartbeat_payload_max_bytes,
   trust_manifest_compatibility_declarations:
     env_bool.("ORCHARD_TRUST_MANIFEST_COMPATIBILITY_DECLARATIONS", true)
 

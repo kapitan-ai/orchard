@@ -73,6 +73,36 @@ defmodule Orchard.Requests.CapturePolicy do
     worker_unavailable
     worker_unloaded
   )
+  @scheduler_candidate_facts ~w(
+    active_target_node_id_missing
+    aggregate_capacity_facts_unavailable
+    connect_failed
+    duplicate_placement_model_ref
+    effective_target_identity_mismatch
+    heartbeat_node_identity_mismatch
+    heartbeat_observation_missing
+    heartbeat_observation_stale
+    heartbeat_target_identity_mismatch
+    identity_missing
+    malformed_heartbeat_payload
+    node_health_unhealthy
+    node_health_unreachable
+    node_heartbeat_observation_incoherent
+    node_heartbeat_stale
+    node_lifecycle_not_active
+    placement_entry_overflow
+    probe_task_failed
+    runtime_status_unavailable
+    status_failed
+    transport_failure_newer
+  )
+  @heartbeat_invalid_reasons ~w(
+    duplicate_placement_model_ref
+    malformed_required_envelope
+    payload_too_large
+    placement_entry_overflow
+    unsupported_schema_version
+  )
   @schedule_boolean_keys ~w(
     cache_affinity_enabled
     cache_affinity_hint_available
@@ -578,13 +608,69 @@ defmodule Orchard.Requests.CapturePolicy do
     %{}
     |> put_typed_values(candidate, ~w(score), &number?/1)
     |> put_typed_values(candidate, ~w(eligible), &is_boolean/1)
+    |> put_typed_values(candidate, ~w(target_ref), &candidate_target_ref?/1)
     |> put_enum_value(candidate, "tier", ~w(cold loaded))
     |> put_uuid_value(candidate, "node_id")
     |> put_reason_codes(candidate, vocabulary)
     |> maybe_put_score_components(candidate)
+    |> maybe_put_candidate_diagnostics(candidate)
   end
 
   defp sanitize_candidate(_candidate, _vocabulary), do: %{}
+
+  defp maybe_put_candidate_diagnostics(sanitized, candidate) do
+    case fetch_value(candidate, "diagnostics") do
+      diagnostics when is_map(diagnostics) ->
+        safe = safe_candidate_diagnostics(diagnostics)
+
+        if map_size(safe) == 0 do
+          sanitized
+        else
+          Map.put(sanitized, "diagnostics", safe)
+        end
+
+      _diagnostics ->
+        sanitized
+    end
+  end
+
+  defp safe_candidate_diagnostics(diagnostics) do
+    %{}
+    |> put_enum_value(
+      diagnostics,
+      "candidate_source",
+      ~w(monitor_snapshot bounded_compatibility_probe)
+    )
+    |> put_typed_value(
+      "heartbeat_id",
+      fetch_value(diagnostics, "heartbeat_id"),
+      &positive_integer?/1
+    )
+    |> maybe_put_candidate_fact(fetch_value(diagnostics, "fact"))
+  end
+
+  defp maybe_put_candidate_fact(diagnostics, fact)
+       when fact in @scheduler_candidate_facts,
+       do: Map.put(diagnostics, "fact", fact)
+
+  defp maybe_put_candidate_fact(diagnostics, fact) when is_map(fact) do
+    kind = fetch_value(fact, "kind")
+    detail = fetch_value(fact, "detail")
+
+    if kind == "invalid_heartbeat_payload" and detail in @heartbeat_invalid_reasons do
+      Map.put(diagnostics, "fact", %{"kind" => kind, "detail" => detail})
+    else
+      diagnostics
+    end
+  end
+
+  defp maybe_put_candidate_fact(diagnostics, _fact), do: diagnostics
+
+  defp candidate_target_ref?(value) when is_binary(value) and byte_size(value) <= 512 do
+    String.match?(value, ~r/\A(?:grpc_compat:[A-Za-z0-9.:-]+|beam:[A-Za-z0-9_.@:-]+)\z/)
+  end
+
+  defp candidate_target_ref?(_value), do: false
 
   defp put_step_identity(sanitized, payload) do
     case Map.get(sanitized, "step_type") do

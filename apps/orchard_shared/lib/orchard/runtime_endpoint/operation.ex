@@ -63,12 +63,18 @@ defmodule Orchard.RuntimeEndpoint.Operation do
   defmodule EnsureModelLoadedResult do
     @moduledoc false
 
+    alias Orchard.RuntimeEndpoint.PlacementCapacity
+
+    @type placement_capacity_evidence_state :: :absent | :valid | :invalid
+
     defstruct already_loaded: false,
               placement_state: :unknown,
               failure_category: nil,
               failure_code: nil,
               failure_message: nil,
-              worker_supports_prompt_token_ids: false
+              worker_supports_prompt_token_ids: false,
+              placement_capacity: nil,
+              placement_capacity_evidence_state: :absent
 
     @type t :: %__MODULE__{
             already_loaded: boolean(),
@@ -76,7 +82,9 @@ defmodule Orchard.RuntimeEndpoint.Operation do
             failure_category: atom() | String.t() | nil,
             failure_code: String.t() | nil,
             failure_message: String.t() | nil,
-            worker_supports_prompt_token_ids: boolean()
+            worker_supports_prompt_token_ids: boolean(),
+            placement_capacity: PlacementCapacity.t() | nil,
+            placement_capacity_evidence_state: placement_capacity_evidence_state()
           }
   end
 

@@ -406,7 +406,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert skipped_pos < rejected_pos
     end
 
-    test "SPEC.md §7.3.5 renders legacy candidate-less scheduler decisions as empty explanation shape",
+    test "SPEC.md §7.3.5 treats legacy candidate-less decisions as explanation not found",
          %{conn: conn} do
       request =
         create_request!(%{
@@ -420,13 +420,11 @@ defmodule OrchardConsole.RequestLiveTest do
       explanation_html = element(view, "#request-scheduler-explanation-card") |> render()
 
       assert explanation_html =~ "Scheduler Explanation"
-      assert explanation_html =~ request.public_id
-      assert explanation_html =~ "No selected candidate was recorded."
-      assert explanation_html =~ "No scored candidates were recorded."
-      assert explanation_html =~ "No skipped candidates were recorded."
-      assert explanation_html =~ "No rejected candidates were recorded."
+      assert explanation_html =~ "scheduler-explanation-not-found"
+      assert explanation_html =~ "No scheduler explanation recorded."
+      assert explanation_html =~ "This request has no persisted scheduler explanation."
+      refute explanation_html =~ "No selected candidate was recorded."
       refute explanation_html =~ "scheduler-explanation-invalid"
-      refute explanation_html =~ "scheduler-explanation-not-found"
     end
 
     test "SPEC.md §7.3.5 renders not-found state when a request has no scheduler explanation",

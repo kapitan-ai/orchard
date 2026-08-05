@@ -208,16 +208,25 @@ defmodule Orchard.Node.ModelManager do
         entry = Map.fetch!(state.workers, key)
         deadline_ms = effective_deadline_ms(request, System.system_time(:millisecond))
 
-        case probe_worker_prompt_token_ids_support(entry, deadline_ms) do
-          {:ok, supports_prompt_token_ids?} ->
-            {:reply,
-             %EnsureModelLoadedResponse{
-               already_loaded: true,
-               placement_state: :PLACEMENT_STATE_LOADED,
-               worker_supports_prompt_token_ids: supports_prompt_token_ids?
-             }, touch_worker_last_used(state, key)}
+        case probe_worker_prompt_token_ids_support_status(entry, deadline_ms) do
+          {{:ok, supports_prompt_token_ids?}, status_result} ->
+            request_limit = cacheable_request_limit_from_status_result(status_result)
 
-          {:error, :deadline_exceeded} ->
+            response =
+              loaded_response(
+                true,
+                supports_prompt_token_ids?,
+                placement_capacity(state, key, entry, request_limit)
+              )
+
+            next_state =
+              state
+              |> put_cached_worker_request_limit(key, request_limit)
+              |> touch_worker_last_used(key)
+
+            {:reply, response, next_state}
+
+          {{:error, :deadline_exceeded}, _status_result} ->
             {:reply, ModelLoadFailure.to_response(:deadline_exceeded), state}
         end
 
@@ -1048,17 +1057,12 @@ defmodule Orchard.Node.ModelManager do
 
   defp put_cached_worker_request_limit(state, _key, _request_limit), do: state
 
-  defp cacheable_request_limit_from_status_result({:ok, %{health_code: "worker_status_error"}}) do
-    nil
-  end
+  defp cacheable_request_limit_from_status_result({:ok, %{health_code: "worker_status_error"}}),
+    do: nil
 
   defp cacheable_request_limit_from_status_result({:ok, %{max_concurrency: value}})
        when is_integer(value) and value > 0 do
     value
-  end
-
-  defp cacheable_request_limit_from_status_result({:ok, _status}) do
-    fallback_worker_request_limit()
   end
 
   defp cacheable_request_limit_from_status_result(_status_result), do: nil
@@ -1790,11 +1794,14 @@ defmodule Orchard.Node.ModelManager do
       waiters
       |> waiters_by_deadline()
       |> Enum.reduce({:not_probed, nil}, fn waiter, {support_cache, request_limit} ->
-        {next_support_cache, status_result} =
-          reply_loaded_waiter_with_support_cache(waiter, support_cache, entry)
-
-        {next_support_cache,
-         request_limit || cacheable_request_limit_from_status_result(status_result)}
+        reply_loaded_waiter_with_support_cache(
+          waiter,
+          support_cache,
+          request_limit,
+          entry,
+          state,
+          key
+        )
       end)
 
     put_cached_worker_request_limit(state, key, request_limit)
@@ -1807,34 +1814,56 @@ defmodule Orchard.Node.ModelManager do
     |> Enum.map(fn {waiter, _index} -> waiter end)
   end
 
-  defp reply_loaded_waiter_with_support_cache(waiter, support_cache, entry) do
+  defp reply_loaded_waiter_with_support_cache(
+         waiter,
+         support_cache,
+         request_limit,
+         entry,
+         state,
+         key
+       ) do
     cond do
       deadline_expired?(waiter.deadline_unix_ms) ->
         reply_deadline_exceeded(waiter)
-        {support_cache, nil}
+        {support_cache, request_limit}
 
       support_cache?(support_cache) ->
         {:ok, supports_prompt_token_ids?} = support_cache
-        reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
-        {support_cache, nil}
+
+        reply_loaded_waiter_if_valid(
+          waiter,
+          supports_prompt_token_ids?,
+          placement_capacity(state, key, entry, request_limit)
+        )
+
+        {support_cache, request_limit}
 
       true ->
-        probe_and_reply_loaded_waiter(waiter, entry)
+        probe_and_reply_loaded_waiter(waiter, entry, state, key, request_limit)
     end
   end
 
   defp support_cache?({:ok, _supports_prompt_token_ids?}), do: true
   defp support_cache?(_support_cache), do: false
 
-  defp probe_and_reply_loaded_waiter(waiter, entry) do
+  defp probe_and_reply_loaded_waiter(waiter, entry, state, key, request_limit) do
     case probe_worker_prompt_token_ids_support_status(entry, waiter.deadline_unix_ms) do
       {{:ok, supports_prompt_token_ids?} = next_cache, status_result} ->
-        reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
-        {next_cache, status_result}
+        next_request_limit =
+          request_limit || cacheable_request_limit_from_status_result(status_result)
+
+        reply_loaded_waiter_if_valid(
+          waiter,
+          supports_prompt_token_ids?,
+          placement_capacity(state, key, entry, next_request_limit)
+        )
+
+        {next_cache, next_request_limit}
 
       {{:error, :deadline_exceeded}, status_result} ->
         reply_deadline_exceeded(waiter)
-        {:not_probed, status_result}
+
+        {:not_probed, request_limit || cacheable_request_limit_from_status_result(status_result)}
     end
   end
 
@@ -1842,30 +1871,36 @@ defmodule Orchard.Node.ModelManager do
     GenServer.reply(waiter.from, ModelLoadFailure.to_response(:deadline_exceeded))
   end
 
-  defp reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?) do
+  defp reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?, placement_capacity) do
     if deadline_expired?(waiter.deadline_unix_ms) do
       GenServer.reply(waiter.from, ModelLoadFailure.to_response(:deadline_exceeded))
     else
-      GenServer.reply(waiter.from, loaded_response(supports_prompt_token_ids?))
+      GenServer.reply(
+        waiter.from,
+        loaded_response(false, supports_prompt_token_ids?, placement_capacity)
+      )
     end
   end
 
-  defp loaded_response(supports_prompt_token_ids?) do
+  defp loaded_response(already_loaded?, supports_prompt_token_ids?, placement_capacity) do
     %EnsureModelLoadedResponse{
-      already_loaded: false,
+      already_loaded: already_loaded?,
       placement_state: :PLACEMENT_STATE_LOADED,
-      worker_supports_prompt_token_ids: supports_prompt_token_ids?
+      worker_supports_prompt_token_ids: supports_prompt_token_ids?,
+      placement_capacity: placement_capacity
     }
   end
 
-  defp probe_worker_prompt_token_ids_support(nil, _deadline_unix_ms), do: {:ok, false}
-
-  defp probe_worker_prompt_token_ids_support(entry, deadline_unix_ms) do
-    {result, _status_result} =
-      probe_worker_prompt_token_ids_support_status(entry, deadline_unix_ms)
-
-    result
+  defp placement_capacity(state, key, %{model_ref: model_ref}, request_limit)
+       when is_integer(request_limit) and request_limit > 0 do
+    %RuntimeModelPlacement{
+      model_ref: model_ref,
+      active_request_count: active_request_count_for_model(state.active_requests, key),
+      max_concurrency: request_limit
+    }
   end
+
+  defp placement_capacity(_state, _key, _entry, _request_limit), do: nil
 
   defp probe_worker_prompt_token_ids_support_status(nil, _deadline_unix_ms),
     do: {{:ok, false}, nil}

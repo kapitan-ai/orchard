@@ -263,12 +263,19 @@ defmodule Orchard.Inference do
   """
   @spec runtime_endpoint_targets() :: [Target.t()]
   def runtime_endpoint_targets do
-    case Nodes.active_runtime_endpoint_targets() do
-      {:ok, []} -> runtime_target_fallback_without_admitted_nodes()
-      {:ok, targets} -> targets
-      {:error, :node_inventory_unavailable} -> []
-    end
+    Nodes.active_runtime_endpoint_targets()
+    |> runtime_endpoint_targets()
   end
+
+  @doc """
+  Resolves effective targets from one previously resolved active-inventory result.
+  """
+  @spec runtime_endpoint_targets({:ok, [Target.t()]} | {:error, :node_inventory_unavailable}) :: [
+          Target.t()
+        ]
+  def runtime_endpoint_targets({:ok, []}), do: runtime_target_fallback_without_admitted_nodes()
+  def runtime_endpoint_targets({:ok, targets}), do: targets
+  def runtime_endpoint_targets({:error, :node_inventory_unavailable}), do: []
 
   @spec static_runtime_target_fallback_enabled?() :: boolean()
   def static_runtime_target_fallback_enabled? do

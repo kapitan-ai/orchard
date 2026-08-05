@@ -11,15 +11,28 @@ defmodule Orchard.BeamPeerGrantsTest do
   alias Orchard.ControllerInstances
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.ConformanceFixture
   alias Orchard.Governance.AuditLog
+  alias Orchard.Inference.QueueManager
   alias Orchard.Node.{BeamPeerGrantBootstrap, BeamPeerGrantStore, RuntimeTLS}
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.NodeEnrollments
+  alias Orchard.NodeHeartbeats
+  alias Orchard.NodeHeartbeats.CandidateSnapshot.Candidate
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionDecision, Enrollment}
+  alias Orchard.Nodes.{AdmissionDecision, Enrollment, NodeHeartbeat}
   alias Orchard.Nodes.Node
   alias Orchard.NodeTrust
-  alias Orchard.RuntimeEndpoint.{ActivationProbe, AuthenticatedPeer, BeamClient, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    ActivationProbe,
+    AuthenticatedPeer,
+    BeamClient,
+    Placement,
+    PlacementCapacity,
+    Target
+  }
+
   alias Orchard.TransportTLS.CertificateIdentity
 
   defmodule AuthenticatedStatusServer do
@@ -41,6 +54,64 @@ defmodule Orchard.BeamPeerGrantsTest do
          },
          runtime_health: %{ready: true, health_code: "", health_message: ""}
        }}
+    end
+  end
+
+  defmodule FailingHeartbeatContext do
+    def append(_node, _target, _observation, _observed_at),
+      do: {:error, :forced_heartbeat_failure}
+  end
+
+  defmodule RecordingHeartbeatContext do
+    def append(node, target, observation, observed_at) do
+      send(Process.get(:heartbeat_observer), {:heartbeat_append, Orchard.Repo.in_transaction?()})
+      Orchard.NodeHeartbeats.append(node, target, observation, observed_at)
+    end
+  end
+
+  defmodule RecordingQueueManager do
+    def refresh_node_capacity_sources(_refresh) do
+      send(Process.get(:heartbeat_observer), {:queue_refresh, Orchard.Repo.in_transaction?()})
+      :ok
+    end
+
+    def clear_capacity_sources(sources, opts) do
+      send(
+        Process.get(:heartbeat_observer),
+        {:queue_clear, sources, opts, Orchard.Repo.in_transaction?()}
+      )
+
+      :ok
+    end
+  end
+
+  defmodule ProcessQueueManager do
+    alias Orchard.Inference.QueueManager
+
+    def refresh_node_capacity_sources(refresh) do
+      QueueManager.refresh_node_capacity_sources(refresh,
+        server: Process.get(:queue_manager_server, QueueManager)
+      )
+    end
+
+    def clear_capacity_sources(sources, opts) do
+      QueueManager.clear_capacity_sources(
+        sources,
+        Keyword.put(opts, :server, Process.get(:queue_manager_server, QueueManager))
+      )
+    end
+  end
+
+  defmodule FailingConsumerQueueManager do
+    def refresh_node_capacity_sources(_refresh), do: raise("forced queue consumer failure")
+
+    def clear_capacity_sources(sources, opts) do
+      send(
+        Process.get(:heartbeat_observer),
+        {:queue_clear, sources, opts, Orchard.Repo.in_transaction?()}
+      )
+
+      :ok
     end
   end
 
@@ -1492,6 +1563,567 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert evidence.active_request_count == 2
     assert evidence.validity == :valid
     assert evidence.observed_at == DateTime.truncate(observed_at, :microsecond)
+
+    heartbeat = Repo.one!(from(heartbeat in NodeHeartbeat, where: heartbeat.node_id == ^node.id))
+    assert heartbeat.observed_at == DateTime.truncate(observed_at, :microsecond)
+    assert heartbeat.health == :healthy
+    assert heartbeat.active_requests == 2
+    assert heartbeat.payload["schema_version"] == 1
+    assert heartbeat.payload["validity"] == "valid"
+  end
+
+  test "ADR 0017 authenticated heartbeat survives unauthenticated refresh in production snapshot",
+       %{
+         trust_root: trust_root,
+         authorization_root: authorization_root
+       } do
+    {_grant, beam_target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, beam_target.node_id)
+
+    beam_config = Application.fetch_env!(:orchard_controller, :beam_peer_grants)
+
+    Application.put_env(
+      :orchard_controller,
+      :beam_peer_grants,
+      Keyword.put(beam_config, :enabled, false)
+    )
+
+    assert {:ok, [%Target{transport: :grpc_compat} = target]} =
+             Nodes.activation_probe_runtime_endpoint_targets()
+
+    observed_at = DateTime.utc_now()
+
+    status = %{
+      node_metadata: %{
+        node_id: node.id,
+        display_name: node.display_name,
+        hostname: node.hostname,
+        listen_host: node.connect_host,
+        listen_port: node.connect_port,
+        agent_version: "0.5.0-dev"
+      },
+      runtime_health: %{ready: true, health_code: "", health_message: ""},
+      worker_state: 3,
+      active_request_count: 2,
+      max_concurrency: 4,
+      loaded_models: [%{model_id: "orchard/grpc-model", version: "v1"}],
+      runtime_model_placements: [
+        %{
+          model_ref: %{model_id: "orchard/grpc-model", version: "v1"},
+          active_request_count: 1,
+          max_concurrency: 3
+        }
+      ]
+    }
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               observed_at,
+               authenticated_peer!(node.id)
+             )
+
+    authenticated_at = DateTime.truncate(observed_at, :microsecond)
+
+    heartbeat =
+      Repo.one!(
+        from(heartbeat in NodeHeartbeat,
+          where: heartbeat.node_id == ^node.id
+        )
+      )
+
+    assert heartbeat.observed_at == authenticated_at
+    assert Repo.get!(Node, node.id).last_heartbeat_at == authenticated_at
+
+    refreshed_at = DateTime.add(authenticated_at, 1, :second)
+
+    unauthenticated_status =
+      status
+      |> put_in([:node_metadata, :display_name], "metadata-refreshed")
+      |> put_in([:node_metadata, :agent_version], "0.5.1-dev")
+
+    assert {:ok, refreshed_node} =
+             Nodes.observe_status(target, unauthenticated_status, refreshed_at)
+
+    assert refreshed_node.display_name == "metadata-refreshed"
+    assert refreshed_node.agent_version == "0.5.1-dev"
+    assert refreshed_node.last_heartbeat_at == authenticated_at
+
+    assert Repo.aggregate(
+             from(heartbeat in NodeHeartbeat, where: heartbeat.node_id == ^node.id),
+             :count
+           ) == 1
+
+    assert {:ok, snapshot} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [target],
+               [target],
+               observed_at: refreshed_at
+             )
+
+    assert [
+             %Candidate{
+               node: %Node{
+                 display_name: "metadata-refreshed",
+                 agent_version: "0.5.1-dev",
+                 last_heartbeat_at: ^authenticated_at
+               },
+               heartbeat_id: heartbeat_id,
+               observed_at: ^authenticated_at,
+               active_request_count: 2,
+               max_concurrency: 4,
+               placements: [
+                 %Placement{
+                   state: :loaded,
+                   capacity: %PlacementCapacity{
+                     active_request_count: 1,
+                     max_concurrency: 3,
+                     source: "grpc_compatibility_status"
+                   }
+                 }
+               ]
+             }
+           ] = snapshot.candidates
+
+    assert heartbeat_id == heartbeat.id
+    assert snapshot.rejections == []
+  end
+
+  test "ADR 0017 accepted ingestion publishes independently after the heartbeat commit", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    Process.put(:heartbeat_observer, self())
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 1, max_concurrency: 4),
+               DateTime.utc_now(),
+               authenticated_peer!(node.id),
+               heartbeat_context: RecordingHeartbeatContext,
+               queue_manager: RecordingQueueManager,
+               dispatch_capacity_input: ConformanceFixture.input()
+             )
+
+    assert_received {:heartbeat_append, true}
+    assert_received {:queue_refresh, false}
+  end
+
+  test "ADR 0017 authenticated malformed and identity failures clear trusted Node sources", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    Process.put(:heartbeat_observer, self())
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    observed_at = DateTime.utc_now()
+    status = authenticated_status(node, active_request_count: 1, max_concurrency: 4)
+
+    invalid_statuses = [
+      %{status | runtime_health: nil},
+      put_in(status, [:node_metadata, :node_id], Ecto.UUID.generate())
+    ]
+
+    for invalid_status <- invalid_statuses do
+      assert :noop =
+               Nodes.observe_authenticated_status(
+                 target,
+                 invalid_status,
+                 observed_at,
+                 peer,
+                 queue_manager: RecordingQueueManager
+               )
+
+      assert_node_sources_cleared(node.id)
+    end
+
+    malformed_peer = %{peer | certificate_identifier: nil}
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               observed_at,
+               malformed_peer,
+               queue_manager: RecordingQueueManager
+             )
+
+    assert_node_sources_cleared(node.id)
+    unhealthy_status = put_in(status, [:runtime_health, :ready], false)
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               unhealthy_status,
+               observed_at,
+               peer,
+               queue_manager: RecordingQueueManager
+             )
+
+    assert_node_sources_cleared(node.id)
+
+    stale_at =
+      DateTime.add(
+        observed_at,
+        -Orchard.Inference.node_freshness_threshold_ms() - 1,
+        :millisecond
+      )
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               stale_at,
+               peer,
+               queue_manager: RecordingQueueManager
+             )
+
+    assert_node_sources_cleared(node.id)
+  end
+
+  test "ADR 0017 heartbeat failure rolls back Node and aggregate capacity writes", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    observed_at = DateTime.utc_now()
+
+    Process.put(:heartbeat_observer, self())
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 2, max_concurrency: 4),
+               observed_at,
+               authenticated_peer!(node.id),
+               heartbeat_context: FailingHeartbeatContext,
+               queue_manager: RecordingQueueManager
+             )
+
+    assert_node_sources_cleared(node.id)
+    reloaded = Repo.get!(Node, node.id)
+    assert reloaded.state == :admitted
+    assert reloaded.last_heartbeat_at == nil
+    assert DispatchCapacity.get_capacity_evidence(node.id) == nil
+    assert Repo.aggregate(NodeHeartbeat, :count) == 0
+  end
+
+  test "ADR 0017 stale and identity-rejected observations append no heartbeat", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    observed_at = DateTime.utc_now()
+    status = authenticated_status(node, active_request_count: 1, max_concurrency: 4)
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(target, status, observed_at, peer)
+
+    assert :noop =
+             Nodes.observe_authenticated_status(target, status, observed_at, peer)
+
+    rejected =
+      put_in(status, [:node_metadata, :node_id], Ecto.UUID.generate())
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               rejected,
+               DateTime.add(observed_at, 1, :second),
+               peer
+             )
+
+    assert Repo.aggregate(NodeHeartbeat, :count) == 1
+  end
+
+  test "ADR 0017 equal, older, and transport-superseded observations preserve newer sources", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    Process.put(:heartbeat_observer, self())
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    observed_at = DateTime.utc_now()
+    status = authenticated_status(node, active_request_count: 1, max_concurrency: 4)
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               observed_at,
+               peer,
+               queue_manager: RecordingQueueManager,
+               dispatch_capacity_input: ConformanceFixture.input()
+             )
+
+    assert_received {:queue_refresh, false}
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               observed_at,
+               peer,
+               queue_manager: RecordingQueueManager
+             )
+
+    refute_received {:queue_refresh, _in_transaction?}
+    refute_received {:queue_clear, _sources, _opts, _in_transaction?}
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               DateTime.add(observed_at, -1, :millisecond),
+               peer,
+               queue_manager: RecordingQueueManager
+             )
+
+    refute_received {:queue_refresh, _in_transaction?}
+    refute_received {:queue_clear, _sources, _opts, _in_transaction?}
+
+    failure_at = DateTime.add(observed_at, 2, :second)
+    assert {:ok, _failed} = Nodes.record_transport_failure(target, :node_timeout, failure_at)
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               DateTime.add(observed_at, 1, :second),
+               peer,
+               queue_manager: RecordingQueueManager
+             )
+
+    refute_received {:queue_refresh, _in_transaction?}
+    refute_received {:queue_clear, _sources, _opts, _in_transaction?}
+  end
+
+  test "ADR 0017 QueueManager restart stays empty until a fresh accepted observation", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    QueueManager.reset()
+    on_exit(fn -> QueueManager.reset() end)
+    Process.put(:queue_manager_server, QueueManager)
+
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    model_id = "restart-recovery-model"
+    observed_at = DateTime.utc_now()
+
+    assert {:queued, _ticket} =
+             QueueManager.acquire(queue_request("restart-before", model_id),
+               config: queue_config()
+             )
+
+    status =
+      authenticated_status(node,
+        active_request_count: 0,
+        max_concurrency: 1,
+        runtime_model_placements: [
+          %{
+            model_ref: %{model_id: model_id, version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ]
+      )
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               observed_at,
+               peer,
+               queue_manager: ProcessQueueManager,
+               dispatch_capacity_input: ConformanceFixture.input()
+             )
+
+    assert node_owned_source_present?(node.id)
+
+    previous_queue_manager = Process.whereis(QueueManager)
+    Process.exit(previous_queue_manager, :kill)
+    wait_for_replacement(QueueManager, previous_queue_manager)
+
+    refute node_owned_source_present?(node.id)
+
+    malformed = %{status | runtime_health: nil}
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               malformed,
+               DateTime.add(observed_at, 1, :millisecond),
+               peer,
+               queue_manager: ProcessQueueManager
+             )
+
+    refute node_owned_source_present?(node.id)
+
+    assert :noop =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               observed_at,
+               peer,
+               queue_manager: ProcessQueueManager
+             )
+
+    refute node_owned_source_present?(node.id)
+
+    assert {:queued, _ticket} =
+             QueueManager.acquire(queue_request("restart-after", model_id),
+               config: queue_config()
+             )
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               status,
+               DateTime.add(observed_at, 1, :second),
+               peer,
+               queue_manager: ProcessQueueManager,
+               dispatch_capacity_input: ConformanceFixture.input()
+             )
+
+    assert node_owned_source_present?(node.id)
+  end
+
+  test "ADR 0017 consumer failure clears all Node-owned sources after commit", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    Process.put(:heartbeat_observer, self())
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 1, max_concurrency: 4),
+               DateTime.utc_now(),
+               authenticated_peer!(node.id),
+               queue_manager: FailingConsumerQueueManager,
+               dispatch_capacity_input: ConformanceFixture.input()
+             )
+
+    assert_node_sources_cleared(node.id)
+    assert Repo.aggregate(NodeHeartbeat, :count) == 1
+  end
+
+  test "ADR 0017 evaluator failure clears all Node-owned sources after commit", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    Process.put(:heartbeat_observer, self())
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+
+    assert {:ok, _active} =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 1, max_concurrency: 4),
+               DateTime.utc_now(),
+               authenticated_peer!(node.id),
+               queue_manager: RecordingQueueManager,
+               dispatch_capacity_authority: :missing_dispatch_capacity_authority
+             )
+
+    assert_node_sources_cleared(node.id)
+    assert Repo.aggregate(NodeHeartbeat, :count) == 1
+  end
+
+  test "ADR 0017 transport failure watermark rejects late success and permits later recovery", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    peer = authenticated_peer!(node.id)
+    success_at = DateTime.utc_now()
+    late_success_at = DateTime.add(success_at, 100, :millisecond)
+    failure_at = DateTime.add(success_at, 200, :millisecond)
+    recovery_at = DateTime.add(success_at, 300, :millisecond)
+    healthy = authenticated_status(node, active_request_count: 1, max_concurrency: 4)
+
+    assert {:ok, active} =
+             Nodes.observe_authenticated_status(target, healthy, success_at, peer)
+
+    assert active.health == :healthy
+
+    assert {:ok, failed} =
+             Nodes.record_transport_failure(target, :node_timeout, failure_at)
+
+    assert failed.health == :degraded
+    assert failed.last_transport_failure_at == DateTime.truncate(failure_at, :microsecond)
+
+    assert :noop =
+             Nodes.observe_authenticated_status(target, healthy, late_success_at, peer)
+
+    rejected = Repo.get!(Node, node.id)
+    assert rejected.last_heartbeat_at == DateTime.truncate(success_at, :microsecond)
+    assert rejected.last_transport_failure_at == DateTime.truncate(failure_at, :microsecond)
+    assert Repo.aggregate(NodeHeartbeat, :count) == 1
+
+    degraded =
+      put_in(healthy, [:runtime_health], %{
+        ready: true,
+        health_code: "SLOW",
+        health_message: "recovering"
+      })
+
+    assert {:ok, recovered} =
+             Nodes.observe_authenticated_status(target, degraded, recovery_at, peer)
+
+    assert recovered.health == :degraded
+    assert recovered.last_heartbeat_at == DateTime.truncate(recovery_at, :microsecond)
+    assert recovered.last_transport_failure_at == DateTime.truncate(failure_at, :microsecond)
+    assert Repo.aggregate(NodeHeartbeat, :count) == 2
+  end
+
+  test "ADR 0017 oversize payload commits a minimal invalid row with Node and capacity", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    previous = Application.get_env(:orchard_controller, :node_heartbeat_payload_max_bytes)
+    Application.put_env(:orchard_controller, :node_heartbeat_payload_max_bytes, 256)
+    on_exit(fn -> restore_env(:node_heartbeat_payload_max_bytes, previous) end)
+
+    {_grant, target} = active_grant_target!(trust_root, authorization_root)
+    node = Repo.get!(Node, target.node_id)
+    observed_at = DateTime.utc_now()
+
+    assert {:ok, active} =
+             Nodes.observe_authenticated_status(
+               target,
+               authenticated_status(node, active_request_count: 2, max_concurrency: 4),
+               observed_at,
+               authenticated_peer!(node.id)
+             )
+
+    assert active.last_heartbeat_at == DateTime.truncate(observed_at, :microsecond)
+
+    evidence = DispatchCapacity.get_capacity_evidence(node.id)
+    assert evidence.active_request_count == 2
+    assert evidence.runtime_concurrency_limit == 4
+
+    heartbeat = Repo.one!(from(heartbeat in NodeHeartbeat, where: heartbeat.node_id == ^node.id))
+
+    assert heartbeat.payload == %{
+             "schema_version" => 1,
+             "validity" => "invalid",
+             "invalid_reason" => "payload_too_large"
+           }
   end
 
   test "SPEC.md §4.5 degraded authenticated observation is recorded for active nodes", %{
@@ -1739,6 +2371,23 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert Repo.get!(Node, node.id).state == :admitted
   end
 
+  defp authenticated_status(node, overrides) do
+    Map.merge(
+      %{
+        node_metadata: %{
+          node_id: node.id,
+          display_name: node.display_name,
+          hostname: node.hostname,
+          listen_host: node.connect_host,
+          listen_port: node.connect_port,
+          agent_version: "0.5.0-dev"
+        },
+        runtime_health: %{ready: true, health_code: "", health_message: ""}
+      },
+      Map.new(overrides)
+    )
+  end
+
   defp register_node!(trust, now, host \\ "10.0.0.20") do
     assert {:ok, created} =
              NodeEnrollments.create(
@@ -1969,6 +2618,67 @@ defmodule Orchard.BeamPeerGrantsTest do
     {:ok, {_ip, port}} = :inet.sockname(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp queue_request(public_id, model_id) do
+    %{
+      request_id: Ecto.UUID.generate(),
+      public_id: public_id,
+      tenant_id: Ecto.UUID.generate(),
+      model_id: model_id,
+      version: "v1",
+      caller_pid: Process.whereis(Orchard.Supervisor)
+    }
+  end
+
+  defp queue_config do
+    [
+      enabled: true,
+      capacity: 0,
+      max_queued_per_tenant: 32,
+      max_wait_ms: 60_000
+    ]
+  end
+
+  defp node_owned_source_present?(node_id) do
+    source_limits =
+      QueueManager
+      |> :sys.get_state()
+      |> Map.fetch!(:capacity_source_limits)
+
+    Enum.any?(
+      [{:node, node_id}, {:node, node_id, :placement}, {:node, node_id, :cold}],
+      &Map.has_key?(source_limits, &1)
+    )
+  end
+
+  defp wait_for_replacement(name, previous, attempts \\ 100)
+
+  defp wait_for_replacement(_name, _previous, 0),
+    do: flunk("supervised QueueManager was not replaced")
+
+  defp wait_for_replacement(name, previous, attempts) do
+    case Process.whereis(name) do
+      replacement when is_pid(replacement) and replacement != previous ->
+        replacement
+
+      _unavailable ->
+        Process.sleep(10)
+        wait_for_replacement(name, previous, attempts - 1)
+    end
+  end
+
+  defp assert_node_sources_cleared(node_id) do
+    assert_receive {:queue_clear, sources, opts, false}
+
+    assert Enum.sort(sources) ==
+             Enum.sort([
+               {:node, node_id},
+               {:node, node_id, :placement},
+               {:node, node_id, :cold}
+             ])
+
+    assert opts[:promote?]
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:orchard_controller, key)

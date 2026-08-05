@@ -8,9 +8,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.ClusterManagement.SchedulerExplanation
-  alias Orchard.DispatchCapacity.{Evaluator, Policy}
+  alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.{AllocationAuthority, Authorization, Evaluator, Policy}
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
+  alias Orchard.NodeHeartbeats.CandidateSnapshot
+  alias Orchard.NodeHeartbeats.CandidateSnapshot.{Candidate, Rejection}
   alias Orchard.Nodes.{AdmissionDecision, Node}
 
   alias Orchard.RuntimeEndpoint.{
@@ -22,6 +25,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   }
 
   alias Orchard.Scheduler.MultiNode
+  alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
 
   # -- Stub Status Client --
 
@@ -30,16 +34,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     alias Orchard.TestSupport.DispatchCapacityFixtures
 
-    @doc """
-    Stub client that reads probe results from the process dictionary.
-
-    Set `Process.put({:stub_status, target_key}, response)` before scheduling.
-    Target key is `{host, port}`.
-    """
     def connect(target) do
       key = target_key(target)
 
-      case Process.get({:stub_connect, key}) do
+      case Agent.get(state(), &Map.get(&1.connect_results, key)) do
         nil -> {:ok, target}
         error -> error
       end
@@ -47,10 +45,14 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     def status(target, opts) do
       key = target_key(target)
-      calls = Process.get(:stub_status_calls, [])
-      Process.put(:stub_status_calls, [{key, opts} | calls])
 
-      case Process.get({:stub_status, key}) do
+      response =
+        Agent.get_and_update(state(), fn stub ->
+          response = Map.get(stub.status_results, key)
+          {response, %{stub | status_calls: [{key, opts} | stub.status_calls]}}
+        end)
+
+      case response do
         nil ->
           {:error, :unavailable}
 
@@ -65,6 +67,24 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
           {:ok, response}
       end
+    end
+
+    def put_status(key, response) do
+      Agent.update(state(), &put_in(&1.status_results[key], response))
+    end
+
+    def put_connect_result(key, result) do
+      Agent.update(state(), &put_in(&1.connect_results[key], result))
+    end
+
+    def status_calls do
+      Agent.get(state(), &Enum.reverse(&1.status_calls))
+    end
+
+    defp state do
+      :orchard_controller
+      |> Application.fetch_env!(__MODULE__)
+      |> Keyword.fetch!(:state)
     end
 
     def disconnect(_channel), do: :ok
@@ -92,6 +112,55 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     def target_key(target) do
       {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
     end
+  end
+
+  defmodule ProcessLocalCompatibilityProbeClient do
+    @moduledoc false
+
+    def connect(target), do: {:ok, target}
+
+    def status(_target, _opts) do
+      send(Process.get({__MODULE__, :owner}), {:process_local_compatibility_probe, self()})
+      {:ok, Process.get({__MODULE__, :response})}
+    end
+
+    def disconnect(_channel), do: :ok
+  end
+
+  defmodule CompatibilityProbeClient do
+    @moduledoc false
+
+    def connect(target) do
+      config = config()
+      :atomics.add_get(config[:counters], 1, 1)
+      {:ok, target}
+    end
+
+    def status(target, opts) do
+      config = config()
+      :atomics.add_get(config[:counters], 2, 1)
+      send(config[:coordinator], {:compatibility_status, self(), target_key(target), opts})
+
+      receive do
+        {:compatibility_status_result, result} -> result
+      after
+        5_000 -> {:error, :test_probe_timeout}
+      end
+    end
+
+    def disconnect(_channel) do
+      config = config()
+      :atomics.add_get(config[:counters], 3, 1)
+      :ok
+    end
+
+    defp config, do: Application.fetch_env!(:orchard_controller, __MODULE__)
+
+    defp target_key(%Target{transport: :grpc_compat, address: address}),
+      do: target_key(address)
+
+    defp target_key(target),
+      do: {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
   end
 
   defmodule StubClientWithoutScore do
@@ -248,6 +317,54 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     node
   end
 
+  defp production_snapshot_candidate(node, target, opts \\ []) do
+    observed_at = Keyword.get(opts, :observed_at, node.last_heartbeat_at)
+    active_request_count = Keyword.get(opts, :active_request_count, 0)
+    max_concurrency = Keyword.get(opts, :max_concurrency, 4)
+
+    %Candidate{
+      target: target,
+      node: %{node | last_heartbeat_at: observed_at},
+      heartbeat_id: Keyword.get(opts, :heartbeat_id, 1),
+      observed_at: observed_at,
+      availability: Keyword.get(opts, :availability, :available),
+      worker_state: Keyword.get(opts, :worker_state, :idle),
+      active_request_count: active_request_count,
+      max_concurrency: max_concurrency,
+      aggregate_capacity_evidence: %{
+        active_request_count: active_request_count,
+        runtime_concurrency_limit: max_concurrency,
+        validity: :valid
+      },
+      placements: Keyword.get(opts, :placements, []),
+      runtime_memory_budgets: Keyword.get(opts, :runtime_memory_budgets, []),
+      runtime_prefix_cache_statuses: Keyword.get(opts, :runtime_prefix_cache_statuses, []),
+      supports_prompt_token_ids: Keyword.get(opts, :supports_prompt_token_ids, false),
+      candidate_source: Keyword.get(opts, :candidate_source, "monitor_snapshot")
+    }
+  end
+
+  defp production_snapshot(candidates, observed_at, rejections \\ []) do
+    %CandidateSnapshot{
+      observed_at: observed_at,
+      freshness_threshold_ms: 30_000,
+      candidates: candidates,
+      rejections: rejections
+    }
+  end
+
+  defp persist_snapshot_capacity_evidence!(snapshot) do
+    Enum.each(snapshot.candidates, fn candidate ->
+      {:ok, _evidence} =
+        DispatchCapacity.record_capacity_evidence(candidate.node.id, %{
+          active_request_count: candidate.active_request_count,
+          observed_at: candidate.observed_at,
+          runtime_concurrency_limit: candidate.max_concurrency,
+          validity: :valid
+        })
+    end)
+  end
+
   defp production_capacity_input(health, placement_capacity) do
     %Evaluator.Input{
       authority_phase: :enforcing,
@@ -323,15 +440,15 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   end
 
   defp stub_probe(host, port, response) do
-    Process.put({:stub_status, {host, port}}, response)
+    StubClient.put_status({host, port}, response)
   end
 
   defp stub_probe(%Target{} = target, response) do
-    Process.put({:stub_status, StubClient.target_key(target)}, response)
+    StubClient.put_status(StubClient.target_key(target), response)
   end
 
   defp stub_connect_failure(host, port, reason) do
-    Process.put({:stub_connect, {host, port}}, {:error, reason})
+    StubClient.put_connect_result({host, port}, {:error, reason})
   end
 
   defp stub_score(host, port, response) do
@@ -343,13 +460,56 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     |> Enum.reverse()
   end
 
-  defp status_calls do
-    Process.get(:stub_status_calls, [])
-    |> Enum.reverse()
-  end
+  defp status_calls, do: StubClient.status_calls()
 
   defp reset_score_calls do
     Process.delete(:stub_score_calls)
+  end
+
+  defp configure_compatibility_probe_client(responses, expected_count) do
+    previous = Application.fetch_env(:orchard_controller, CompatibilityProbeClient)
+    test_pid = self()
+    counters = :atomics.new(3, signed: false)
+
+    coordinator =
+      spawn_link(fn ->
+        compatibility_probe_coordinator(test_pid, responses, expected_count, [])
+      end)
+
+    Application.put_env(:orchard_controller, CompatibilityProbeClient,
+      coordinator: coordinator,
+      counters: counters
+    )
+
+    on_exit(fn ->
+      restore_application_env(CompatibilityProbeClient, previous)
+    end)
+
+    counters
+  end
+
+  defp compatibility_probe_coordinator(test_pid, responses, expected_count, calls) do
+    receive do
+      {:compatibility_status, caller, key, opts} ->
+        calls = [{caller, key, opts} | calls]
+        continue_compatibility_probe_wave(test_pid, responses, expected_count, calls)
+    end
+  end
+
+  defp continue_compatibility_probe_wave(test_pid, responses, expected_count, calls)
+       when length(calls) == expected_count do
+    Enum.each(calls, &reply_to_compatibility_probe(&1, responses))
+    send(test_pid, {:compatibility_wave_complete, Enum.reverse(calls)})
+  end
+
+  defp continue_compatibility_probe_wave(test_pid, responses, expected_count, calls) do
+    compatibility_probe_coordinator(test_pid, responses, expected_count, calls)
+  end
+
+  defp reply_to_compatibility_probe({caller, key, _opts}, responses) do
+    response = Map.fetch!(responses, key)
+    result = if match?({:error, _reason}, response), do: response, else: {:ok, response}
+    send(caller, {:compatibility_status_result, result})
   end
 
   defp put_tie_only_scoring_config(overrides \\ []) do
@@ -375,13 +535,6 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
     insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
     {id_a, id_b}
-  end
-
-  defp set_node_health!(node_id, health) do
-    Node
-    |> Repo.get!(node_id)
-    |> Node.changeset(%{health: health})
-    |> Repo.update!()
   end
 
   defp stub_tied_cold_nodes(id_a, id_b, model_id \\ "test-model", version \\ "v1") do
@@ -410,8 +563,6 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp assert_score_does_not_invert_signal(signal, id_a, id_b) do
     reset_score_calls()
-    set_node_health!(id_a, :healthy)
-    set_node_health!(id_b, if(signal == :health, do: :degraded, else: :healthy))
 
     model_id = "test-model-#{signal}"
     version = "v1"
@@ -461,7 +612,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       make_status(id_b,
         host: "10.0.0.2",
         port: 50_062,
-        health: %{ready: true, health_code: "warn", health_message: "degraded"}
+        health: %{ready: false, health_code: "warn", health_message: "degraded"}
       )
     )
   end
@@ -584,31 +735,980 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     Application.put_env(:orchard_controller, :inference, Keyword.merge(config, overrides))
   end
 
+  defp restore_application_env(key, {:ok, value}),
+    do: Application.put_env(:orchard_controller, key, value)
+
+  defp restore_application_env(key, :error),
+    do: Application.delete_env(:orchard_controller, key)
+
   setup do
-    previous = Application.fetch_env!(:orchard_controller, :inference)
-    Process.delete(:stub_status_calls)
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+    previous_stub_client = Application.fetch_env(:orchard_controller, StubClient)
+
+    previous_probe_runner =
+      Application.fetch_env(:orchard_controller, :multi_node_compatibility_probe_runner)
+
+    stub_state =
+      start_supervised!(
+        {Agent,
+         fn ->
+           %{connect_results: %{}, status_results: %{}, status_calls: []}
+         end}
+      )
+
+    Application.put_env(:orchard_controller, StubClient, state: stub_state)
+
+    Application.put_env(
+      :orchard_controller,
+      :multi_node_compatibility_probe_runner,
+      Orchard.TestSupport.InProcessCompatibilityProbeRunner
+    )
+
     Process.delete(:stub_score_calls)
-    on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :inference, previous_inference)
+      restore_application_env(StubClient, previous_stub_client)
+      restore_application_env(:multi_node_compatibility_probe_runner, previous_probe_runner)
+    end)
+
     :ok
+  end
+
+  describe "production candidate snapshots" do
+    test "ADR 0017 production scheduling uses the snapshot without inline status probing" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+      test_pid = self()
+
+      put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
+
+      snapshot_provider = fn effective, active, opts ->
+        persist_snapshot_capacity_evidence!(snapshot)
+        send(test_pid, {:snapshot_boundary, effective, active, opts})
+        {:ok, snapshot}
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node.id
+      assert schedule.runtime_endpoint_target == target
+      assert schedule.dispatch_identity_source == :trusted_monitor_snapshot
+      assert status_calls() == []
+
+      _acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      _revalidation = schedule.dispatch_capacity_input_provider.()
+
+      for _read <- 1..3 do
+        assert_receive {:snapshot_boundary, [^target], [^target], [observed_at: ^observed_at]}
+      end
+    end
+
+    test "SPEC 5.5 default production snapshot calls use the database boundary" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+      test_pid = self()
+
+      put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
+
+      snapshot_provider = fn effective, active, opts ->
+        persist_snapshot_capacity_evidence!(snapshot)
+        send(test_pid, {:default_snapshot_boundary, effective, active, opts})
+        {:ok, snapshot}
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      _acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      _revalidation = schedule.dispatch_capacity_input_provider.()
+
+      for _read <- 1..3 do
+        assert_receive {:default_snapshot_boundary, [^target], [^target], []}
+      end
+
+      assert status_calls() == []
+    end
+
+    test "OpenSpec 6.2-6.3 explains selected skipped capacity and source-rejected snapshots" do
+      selected_node = insert_node!(%{advertise_addr: "10.0.0.11", rpc_port: 50_061})
+      skipped_node = insert_node!(%{advertise_addr: "10.0.0.12", rpc_port: 50_062})
+      full_node = insert_node!(%{advertise_addr: "10.0.0.13", rpc_port: 50_063})
+      missing_node = insert_node!(%{advertise_addr: "10.0.0.14", rpc_port: 50_064})
+
+      selected_target =
+        Target.grpc_compat(host: "10.0.0.11", port: 50_061, node_id: selected_node.id)
+
+      skipped_target =
+        Target.grpc_compat(host: "10.0.0.12", port: 50_062, node_id: skipped_node.id)
+
+      full_target = Target.grpc_compat(host: "10.0.0.13", port: 50_063, node_id: full_node.id)
+
+      missing_target =
+        Target.grpc_compat(host: "10.0.0.14", port: 50_064, node_id: missing_node.id)
+
+      observed_at = selected_node.last_heartbeat_at
+
+      loaded_placement =
+        Placement.new(%{
+          model_ref: %{model_id: "test-model", version: "v1"},
+          state: :loaded,
+          capacity: %{active_request_count: 0, max_concurrency: 4, status: :available}
+        })
+
+      candidates = [
+        production_snapshot_candidate(selected_node, selected_target,
+          observed_at: observed_at,
+          placements: [loaded_placement]
+        ),
+        production_snapshot_candidate(skipped_node, skipped_target, observed_at: observed_at),
+        production_snapshot_candidate(full_node, full_target,
+          observed_at: observed_at,
+          active_request_count: 1,
+          max_concurrency: 1
+        )
+      ]
+
+      rejection = %Rejection{
+        target: missing_target,
+        node_id: missing_node.id,
+        observed_at: nil,
+        reason_codes: ["dispatch_capacity_facts_unavailable"],
+        diagnostics: %{
+          candidate_source: "monitor_snapshot",
+          fact: "heartbeat_observation_missing",
+          heartbeat_id: nil,
+          ignored: "must-not-persist"
+        },
+        candidate_source: "untrusted-injected-source"
+      }
+
+      snapshot = production_snapshot(candidates, observed_at, [rejection])
+      persist_snapshot_capacity_evidence!(snapshot)
+      targets = [selected_target, skipped_target, full_target, missing_target]
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, targets} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert [scored] = schedule.scored_candidates
+      assert scored.node_id == selected_node.id
+      assert scored.target_ref == selected_target.id
+      assert scored.eligible
+      assert scored.diagnostics == %{candidate_source: "monitor_snapshot"}
+
+      assert [capacity_rejected, source_rejected] = schedule.rejected_candidates
+      assert capacity_rejected.node_id == full_node.id
+      assert capacity_rejected.target_ref == full_target.id
+      refute capacity_rejected.eligible
+      assert capacity_rejected.diagnostics == %{candidate_source: "monitor_snapshot"}
+
+      assert source_rejected.node_id == missing_node.id
+      assert source_rejected.target_ref == missing_target.id
+      assert source_rejected.reason_codes == ["dispatch_capacity_facts_unavailable"]
+
+      assert source_rejected.diagnostics == %{
+               candidate_source: "monitor_snapshot",
+               fact: "heartbeat_observation_missing"
+             }
+
+      assert [skipped] = schedule.skipped_candidates
+      assert skipped.node_id == skipped_node.id
+      assert skipped.target_ref == skipped_target.id
+      assert skipped.eligible
+      assert skipped.reason_codes == ["lower_tier_not_considered"]
+      assert skipped.diagnostics == %{candidate_source: "monitor_snapshot"}
+      assert :ok = SchedulerExplanation.validate_map(schedule)
+    end
+
+    test "OpenSpec 6.3-6.4 coherent all-rejected snapshots retain exact mappings" do
+      node = insert_node!(%{advertise_addr: "10.0.0.21", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.21", port: 50_061, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      rejection = %Rejection{
+        target: target,
+        node_id: node.id,
+        observed_at: observed_at,
+        reason_codes: ["node_observation_stale"],
+        diagnostics: %{
+          candidate_source: "monitor_snapshot",
+          fact: "heartbeat_observation_stale",
+          heartbeat_id: 42
+        },
+        candidate_source: "monitor_snapshot"
+      }
+
+      snapshot = production_snapshot([], observed_at, [rejection])
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert decision.selected_node_id == nil
+      assert decision.selection_tier == nil
+      assert decision.scored_candidates == []
+      assert decision.skipped_candidates == []
+      assert decision.candidate_count == 1
+
+      assert decision.rejected_candidates == [
+               %{
+                 node_id: node.id,
+                 target_ref: target.id,
+                 eligible: false,
+                 tier: nil,
+                 score: nil,
+                 components: %{},
+                 diagnostics: %{
+                   candidate_source: "monitor_snapshot",
+                   fact: "heartbeat_observation_stale",
+                   heartbeat_id: 42
+                 },
+                 reason_codes: ["node_observation_stale"]
+               }
+             ]
+
+      assert :ok = SchedulerExplanation.validate_map(decision)
+    end
+
+    test "OpenSpec 7.5 maps identity-mismatched and malformed snapshot explanations" do
+      identity_node = insert_node!(%{advertise_addr: "10.0.0.22", rpc_port: 50_062})
+      malformed_node = insert_node!(%{advertise_addr: "10.0.0.23", rpc_port: 50_063})
+
+      identity_target =
+        Target.grpc_compat(host: "10.0.0.22", port: 50_062, node_id: identity_node.id)
+
+      malformed_target =
+        Target.grpc_compat(host: "10.0.0.23", port: 50_063, node_id: malformed_node.id)
+
+      observed_at = identity_node.last_heartbeat_at
+
+      rejections = [
+        %Rejection{
+          target: identity_target,
+          node_id: identity_node.id,
+          observed_at: observed_at,
+          reason_codes: ["runtime_identity_mismatch"],
+          diagnostics: %{
+            fact: "heartbeat_target_identity_mismatch",
+            heartbeat_id: 43
+          },
+          candidate_source: "monitor_snapshot"
+        },
+        %Rejection{
+          target: malformed_target,
+          node_id: malformed_node.id,
+          observed_at: observed_at,
+          reason_codes: ["dispatch_capacity_facts_unavailable"],
+          diagnostics: %{
+            fact: "malformed_heartbeat_payload",
+            heartbeat_id: 44
+          },
+          candidate_source: "monitor_snapshot"
+        }
+      ]
+
+      snapshot = production_snapshot([], observed_at, rejections)
+      targets = [identity_target, malformed_target]
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, targets} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert Enum.map(decision.rejected_candidates, & &1.reason_codes) == [
+               ["runtime_identity_mismatch"],
+               ["dispatch_capacity_facts_unavailable"]
+             ]
+
+      assert Enum.map(decision.rejected_candidates, & &1.target_ref) == [
+               identity_target.id,
+               malformed_target.id
+             ]
+
+      assert Enum.map(decision.rejected_candidates, & &1.diagnostics) == [
+               %{
+                 candidate_source: "monitor_snapshot",
+                 fact: "heartbeat_target_identity_mismatch",
+                 heartbeat_id: 43
+               },
+               %{
+                 candidate_source: "monitor_snapshot",
+                 fact: "malformed_heartbeat_payload",
+                 heartbeat_id: 44
+               }
+             ]
+
+      assert :ok = SchedulerExplanation.validate_map(decision)
+    end
+
+    test "ADR 0017 a production target cannot cross an empty-inventory branch boundary" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
+
+      assert {:error, :no_active_nodes} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> [] end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   flunk("production snapshot must not run after the empty inventory result")
+                 end
+               )
+
+      assert status_calls() == []
+    end
+
+    test "ADR 0017 production source failures fail closed without probing or fallback" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:error, :candidate_snapshot_unavailable}
+                 end
+               )
+
+      assert status_calls() == []
+
+      assert {:error, :no_active_nodes} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn ->
+                   {:error, :node_inventory_unavailable}
+                 end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   flunk("snapshot read must not run when inventory is unavailable")
+                 end
+               )
+
+      assert status_calls() == []
+    end
+
+    test "test runner preserves process-local compatibility fixtures" do
+      target = [host: "10.44.0.10", port: 50_071]
+
+      response =
+        make_status("00000000-0000-0000-0000-000000000010",
+          host: "10.44.0.10",
+          port: 50_071
+        )
+
+      Process.put({ProcessLocalCompatibilityProbeClient, :owner}, self())
+      Process.put({ProcessLocalCompatibilityProbeClient, :response}, response)
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: [target]
+      )
+
+      try do
+        assert {:ok, _schedule} =
+                 MultiNode.schedule(canonical_request(),
+                   status_client: ProcessLocalCompatibilityProbeClient,
+                   active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                   runtime_endpoint_targets_provider: fn {:ok, []} -> [target] end
+                 )
+
+        assert_receive {:process_local_compatibility_probe, probe_pid}
+        assert probe_pid == self()
+      after
+        Process.delete({ProcessLocalCompatibilityProbeClient, :owner})
+        Process.delete({ProcessLocalCompatibilityProbeClient, :response})
+      end
+    end
+
+    test "ADR 0017 bounds, deduplicates, filters, and concurrently probes static targets once" do
+      configured_targets =
+        Enum.map(1..5, fn index -> [host: "10.0.0.#{index}", port: 50_060 + index] end)
+
+      configured_responses =
+        configured_targets
+        |> Enum.with_index(1)
+        |> Map.new(fn {target, index} ->
+          key = {target[:host], target[:port]}
+
+          node_id =
+            "00000000-0000-0000-0000-#{String.pad_leading(Integer.to_string(index), 12, "0")}"
+
+          {key, make_status(node_id, host: target[:host], port: target[:port])}
+        end)
+
+      counters = configure_compatibility_probe_client(configured_responses, 4)
+      [first | remaining] = configured_targets
+      rogue = [host: "192.0.2.99", port: 59_999]
+
+      supplied_targets =
+        [first, Target.normalize(first), rogue | Enum.map(remaining, &Target.normalize/1)]
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: configured_targets
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: CompatibilityProbeClient,
+                 compatibility_probe_runner: CompatibilityProbeRunner,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> supplied_targets end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   flunk("production snapshot must not run for empty trusted inventory")
+                 end
+               )
+
+      assert_receive {:compatibility_wave_complete, calls}
+      assert length(calls) == 4
+
+      expected_keys =
+        configured_targets
+        |> Enum.take(4)
+        |> Enum.map(&{&1[:host], &1[:port]})
+        |> MapSet.new()
+
+      assert MapSet.new(Enum.map(calls, fn {_caller, key, _opts} -> key end)) == expected_keys
+
+      assert Enum.all?(calls, fn {_caller, _key, opts} -> opts == [timeout: 2_000] end)
+      assert :atomics.get(counters, 1) == 4
+      assert :atomics.get(counters, 2) == 4
+      assert :atomics.get(counters, 3) == 4
+      assert schedule.candidate_count == 4
+
+      assert schedule.dispatch_capacity_input.management_classification ==
+               {:ok, :unmanaged_compatibility}
+
+      assert schedule.dispatch_capacity_evaluation.authority_decision == :unmanaged_compatibility
+
+      assert schedule.runtime_endpoint_target.metadata.capacity_management_class ==
+               :unmanaged_compatibility
+
+      _acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+
+      _revalidation =
+        schedule.dispatch_capacity_input_provider.(%{placement_state: :loaded})
+
+      assert :atomics.get(counters, 1) == 4
+      assert :atomics.get(counters, 2) == 4
+      assert :atomics.get(counters, 3) == 4
+
+      assert {:bounded_compatibility_probe, %Observation{}} =
+               schedule.dispatch_identity_source
+    end
+
+    test "ADR 0017 failed compatibility wave does not retry or fall back" do
+      targets = [
+        [host: "10.0.0.1", port: 50_061],
+        [host: "10.0.0.2", port: 50_062]
+      ]
+
+      responses = %{
+        {"10.0.0.1", 50_061} => {:error, :unavailable},
+        {"10.0.0.2", 50_062} => {:error, :node_timeout}
+      }
+
+      counters = configure_compatibility_probe_client(responses, 2)
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: targets
+      )
+
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: CompatibilityProbeClient,
+                 compatibility_probe_runner: CompatibilityProbeRunner,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> targets end
+               )
+
+      assert_receive {:compatibility_wave_complete, calls}
+      assert length(calls) == 2
+      assert :atomics.get(counters, 1) == 2
+      assert :atomics.get(counters, 2) == 2
+      assert :atomics.get(counters, 3) == 2
+    end
+
+    test "OpenSpec 6.2 coherent compatibility failures stay bounded and attributed" do
+      targets = [
+        [host: "10.44.0.31", port: 50_071],
+        [host: "10.44.0.32", port: 50_072]
+      ]
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: targets
+      )
+
+      stub_connect_failure("10.44.0.31", 50_071, :connection_refused)
+      stub_probe("10.44.0.32", 50_072, :error)
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> targets end
+               )
+
+      assert decision.candidate_count == 2
+
+      assert Enum.map(decision.rejected_candidates, & &1.target_ref) == [
+               "grpc_compat:10.44.0.31:50071",
+               "grpc_compat:10.44.0.32:50072"
+             ]
+
+      assert Enum.map(decision.rejected_candidates, & &1.reason_codes) == [
+               ["transport_unreachable"],
+               ["transport_unreachable"]
+             ]
+
+      assert Enum.map(decision.rejected_candidates, & &1.diagnostics) == [
+               %{candidate_source: "bounded_compatibility_probe", fact: "connect_failed"},
+               %{candidate_source: "bounded_compatibility_probe", fact: "status_failed"}
+             ]
+    end
+
+    test "OpenSpec 7.5 keeps same-Node compatibility targets independently attributable" do
+      node_id = "00000000-0000-4000-a000-0000000000ee"
+
+      targets = [
+        [host: "10.44.0.41", port: 50_071],
+        [host: "10.44.0.42", port: 50_072],
+        [host: "10.44.0.43", port: 50_073]
+      ]
+
+      stub_probe(
+        "10.44.0.41",
+        50_071,
+        make_status(node_id, host: "10.44.0.41", port: 50_071)
+      )
+
+      stub_probe(
+        "10.44.0.42",
+        50_072,
+        make_status(node_id,
+          host: "10.44.0.42",
+          port: 50_072,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe(
+        "10.44.0.43",
+        50_073,
+        make_status(node_id,
+          host: "10.44.0.43",
+          port: 50_073,
+          active_request_count: 1,
+          max_concurrency: 1
+        )
+      )
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: targets
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> targets end
+               )
+
+      assert schedule.runtime_endpoint_target.id == "grpc_compat:10.44.0.42:50072"
+
+      assert Enum.map(schedule.skipped_candidates, & &1.target_ref) == [
+               "grpc_compat:10.44.0.41:50071"
+             ]
+
+      assert Enum.map(schedule.rejected_candidates, & &1.target_ref) == [
+               "grpc_compat:10.44.0.43:50073"
+             ]
+    end
+
+    test "ADR 0017 nil compatibility status fails closed without a task crash or retry" do
+      target = [host: "10.44.0.100", port: 50_071]
+      counters = configure_compatibility_probe_client(%{{"10.44.0.100", 50_071} => nil}, 1)
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: [target]
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:error, :cluster_busy, _decision} =
+                   MultiNode.schedule(canonical_request(),
+                     status_client: CompatibilityProbeClient,
+                     compatibility_probe_runner: CompatibilityProbeRunner,
+                     active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                     runtime_endpoint_targets_provider: fn {:ok, []} -> [target] end
+                   )
+        end)
+
+      assert_receive {:compatibility_wave_complete, [_call]}
+      refute log =~ "normalize_status_observation"
+      refute log =~ "FunctionClauseError"
+      assert :atomics.get(counters, 1) == 1
+      assert :atomics.get(counters, 2) == 1
+      assert :atomics.get(counters, 3) == 1
+    end
+
+    test "ADR 0013 preserves an explicit unmanaged source-development class" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+
+      target =
+        Target.grpc_compat(%{
+          host: "10.0.0.1",
+          port: 50_061,
+          metadata: %{capacity_management_class: :unmanaged_source_development}
+        })
+
+      node_id = "00000000-0000-0000-0000-000000000001"
+      response = make_status(node_id, host: "10.0.0.1", port: 50_061)
+      observation = GrpcCompatibilityMapper.observation_from_status(target, response)
+
+      assert {:ok, unmanaged_input} =
+               Authorization.unmanaged_input(target, observation,
+                 placement_capacity: :not_applicable,
+                 now: DateTime.utc_now()
+               )
+
+      assert AllocationAuthority.evaluate(authority, nil, unmanaged_input).eligible?
+      configure_compatibility_probe_client(%{{"10.0.0.1", 50_061} => response}, 1)
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [target],
+        runtime_client_targets: []
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: CompatibilityProbeClient,
+                 dispatch_capacity_authority: authority,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> [target] end
+               )
+
+      assert_receive {:compatibility_wave_complete, [_call]}
+
+      assert schedule.dispatch_capacity_input.management_classification ==
+               {:ok, :unmanaged_source_development}
+
+      assert schedule.dispatch_capacity_evaluation.authority_decision ==
+               :unmanaged_source_development
+
+      assert schedule.runtime_endpoint_target.metadata.capacity_management_class ==
+               :unmanaged_source_development
+    end
+
+    test "ADR 0017 static compatibility requires explicit enablement" do
+      put_inference(allow_static_runtime_target_fallback: false)
+
+      assert {:error, :no_active_nodes} =
+               MultiNode.schedule(canonical_request(),
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn _inventory ->
+                   flunk("disabled compatibility must not resolve configured targets")
+                 end
+               )
+    end
+
+    test "ADR 0013 compatibility probes do not mutate observations or queue sources" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+      QueueManager.reset()
+      target = [host: "10.0.0.1", port: 50_061]
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      original_node = Repo.get!(Node, node.id)
+      original_evidence = DispatchCapacity.get_capacity_evidence(node.id)
+      source = {:node, node.id, :cold}
+
+      assert :ok = QueueManager.refresh_capacity("test-model", "v1", 1, source: source)
+      original_queue_source_limits = :sys.get_state(QueueManager).capacity_source_limits
+      assert Map.has_key?(original_queue_source_limits, source)
+
+      response = make_status(node.id, host: "10.0.0.1", port: 50_061)
+      counters = configure_compatibility_probe_client(%{{"10.0.0.1", 50_061} => response}, 1)
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: [target]
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: CompatibilityProbeClient,
+                 dispatch_capacity_authority: authority,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> [target] end
+               )
+
+      assert_receive {:compatibility_wave_complete, [_call]}
+
+      assert schedule.dispatch_capacity_input.management_classification ==
+               {:ok, :unmanaged_compatibility}
+
+      assert Repo.get!(Node, node.id) == original_node
+      assert DispatchCapacity.get_capacity_evidence(node.id) == original_evidence
+      assert :sys.get_state(QueueManager).capacity_source_limits == original_queue_source_limits
+      assert :atomics.get(counters, 1) == 1
+      assert :atomics.get(counters, 2) == 1
+      assert :atomics.get(counters, 3) == 1
+    end
+
+    test "ADR 0013 acquisition refresh reads a newer production snapshot without status probing" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = DateTime.add(node.last_heartbeat_at, -1, :second)
+
+      initial =
+        production_snapshot(
+          [
+            production_snapshot_candidate(node, target,
+              max_concurrency: 2,
+              candidate_source: "renamed_snapshot_diagnostic"
+            )
+          ],
+          observed_at
+        )
+
+      exhausted =
+        production_snapshot(
+          [
+            production_snapshot_candidate(node, target,
+              observed_at: DateTime.add(observed_at, 1, :millisecond),
+              active_request_count: 2,
+              max_concurrency: 2,
+              heartbeat_id: 2
+            )
+          ],
+          observed_at
+        )
+
+      Process.put(:production_snapshot_read_count, 0)
+      put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
+
+      snapshot_provider = fn _effective, _active, _opts ->
+        count = Process.get(:production_snapshot_read_count, 0)
+        Process.put(:production_snapshot_read_count, count + 1)
+        snapshot = if count == 0, do: initial, else: exhausted
+        persist_snapshot_capacity_evidence!(snapshot)
+        {:ok, snapshot}
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      result = schedule.dispatch_capacity_acquisition_input_provider.() |> Evaluator.evaluate()
+
+      refute result.eligible?
+      assert :runtime_concurrency_limit_exhausted in result.reason_codes
+      assert Process.get(:production_snapshot_read_count) == 2
+      assert status_calls() == []
+    end
+
+    test "ADR 0013 final revalidation uses refreshed snapshot placement capacity" do
+      model_id = "snapshot-revalidation-model"
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = DateTime.add(node.last_heartbeat_at, -1, :second)
+
+      initial =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, max_concurrency: 2)],
+          observed_at
+        )
+
+      full_placement =
+        Placement.new(%{
+          model_ref: %{model_id: model_id, version: "v1"},
+          state: :loaded,
+          capacity: %{
+            active_request_count: 1,
+            max_concurrency: 1,
+            source: :runtime
+          }
+        })
+
+      refreshed =
+        production_snapshot(
+          [
+            production_snapshot_candidate(node, target,
+              observed_at: DateTime.add(observed_at, 1, :millisecond),
+              active_request_count: 1,
+              max_concurrency: 2,
+              placements: [full_placement],
+              heartbeat_id: 2
+            )
+          ],
+          observed_at
+        )
+
+      Process.put(:production_snapshot_read_count, 0)
+      put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
+
+      snapshot_provider = fn _effective, _active, _opts ->
+        count = Process.get(:production_snapshot_read_count, 0)
+        Process.put(:production_snapshot_read_count, count + 1)
+        snapshot = if count == 0, do: initial, else: refreshed
+        persist_snapshot_capacity_evidence!(snapshot)
+        {:ok, snapshot}
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model_id, "v1"),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      result = schedule.dispatch_capacity_input_provider.() |> Evaluator.evaluate()
+
+      refute result.eligible?
+      assert result.placement_capacity == {:valid, 1, 1}
+      assert :placement_capacity_exhausted in result.reason_codes
+      assert Process.get(:production_snapshot_read_count) == 2
+      assert status_calls() == []
+    end
+
+    test "ADR 0013 snapshot refresh failures fail closed for acquisition and revalidation" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+      Process.put(:production_snapshot_read_count, 0)
+
+      snapshot_provider = fn _effective, _active, _opts ->
+        count = Process.get(:production_snapshot_read_count, 0)
+        Process.put(:production_snapshot_read_count, count + 1)
+
+        if count == 0 do
+          persist_snapshot_capacity_evidence!(snapshot)
+          {:ok, snapshot}
+        else
+          {:error, :candidate_snapshot_unavailable}
+        end
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      assert schedule.dispatch_capacity_acquisition_input_provider.() == nil
+      assert schedule.dispatch_capacity_input_provider.() == nil
+      assert Process.get(:production_snapshot_read_count) == 3
+      assert status_calls() == []
+    end
+
+    test "ADR 0013 refresh inventory loss and candidate disappearance fail closed" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      initial = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+      missing = production_snapshot([], DateTime.add(observed_at, 1, :millisecond))
+      Process.put(:active_inventory_read_count, 0)
+      Process.put(:production_snapshot_read_count, 0)
+
+      inventory_provider = fn ->
+        count = Process.get(:active_inventory_read_count, 0)
+        Process.put(:active_inventory_read_count, count + 1)
+
+        if count == 1, do: {:ok, []}, else: {:ok, [target]}
+      end
+
+      snapshot_provider = fn _effective, _active, _opts ->
+        count = Process.get(:production_snapshot_read_count, 0)
+        Process.put(:production_snapshot_read_count, count + 1)
+        snapshot = if count == 0, do: initial, else: missing
+        persist_snapshot_capacity_evidence!(snapshot)
+        {:ok, snapshot}
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: inventory_provider,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      assert schedule.dispatch_capacity_acquisition_input_provider.() == nil
+      assert schedule.dispatch_capacity_input_provider.() == nil
+      assert Process.get(:active_inventory_read_count) == 3
+      assert Process.get(:production_snapshot_read_count) == 2
+      assert status_calls() == []
+    end
   end
 
   # -- Delegation to SingleNode --
 
   describe "single-node delegation" do
-    test "delegates to SingleNode when no plural targets configured" do
+    test "failed singular configured compatibility target does not fall back" do
       put_inference(runtime_client_targets: [])
       request = canonical_request()
 
-      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
-      assert schedule.strategy == :single_node
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
+
+      assert length(status_calls()) == 1
     end
 
-    test "delegates to SingleNode when only one target configured" do
+    test "failed one-target compatibility wave does not fall back" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
       request = canonical_request()
 
-      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
-      assert schedule.strategy == :single_node
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
+
+      assert status_calls() == [{{"10.0.0.1", 50_061}, [timeout: 2_000]}]
     end
 
     test "forwards status client options to no-candidate fallback" do
@@ -631,19 +1731,16 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         )
       )
 
-      assert {:error, :model_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(),
                  status_client: StubClient,
                  status_timeout_ms: 17
                )
 
-      assert status_calls() == [
-               {{"127.0.0.1", 1}, [timeout: 17]},
-               {{"127.0.0.1", 1}, [timeout: 17]}
-             ]
+      assert status_calls() == [{{"127.0.0.1", 1}, [timeout: 17]}]
     end
 
-    test "does not re-probe single-node capacity after all probes fail" do
+    test "does not retry or fall back after the compatibility wave fails" do
       target = [host: "127.0.0.1", port: 1]
 
       put_inference(
@@ -651,14 +1748,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         runtime_client_target: [host: "127.0.0.1", port: 50_071]
       )
 
-      assert {:ok, schedule} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(),
                  status_client: StubClient,
                  status_timeout_ms: 17
                )
 
-      assert schedule.strategy == :single_node
-      assert schedule.runtime_client_target == target
       assert status_calls() == [{{"127.0.0.1", 1}, [timeout: 17]}]
     end
 
@@ -672,7 +1767,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         runtime_client_target: [host: "127.0.0.1", port: 50_071]
       )
 
-      assert {:error, :model_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(),
                  status_client: StubClient,
                  status_timeout_ms: 17
@@ -681,7 +1776,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert status_calls() == [{{:beam, target.id}, [timeout: 17]}]
     end
 
-    test "source-dev BEAM target maps emit runtime endpoint schedules without legacy targets" do
+    test "failed source-dev BEAM compatibility probe does not fall back" do
       target_map = %{
         transport: :beam,
         address: "orchard_node_agent@127.0.0.1",
@@ -696,19 +1791,16 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         runtime_client_target: [host: "127.0.0.1", port: 50_071]
       )
 
-      assert {:ok, schedule} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(),
                  status_client: StubClient,
                  status_timeout_ms: 17
                )
 
-      assert schedule.strategy == :single_node
-      assert schedule.runtime_endpoint_target == target
-      refute Map.has_key?(schedule, :runtime_client_target)
       assert status_calls() == [{{:beam, target.id}, [timeout: 17]}]
     end
 
-    test "multi-target BEAM all-probe failure preserves Runtime Endpoint selection" do
+    test "multi-target BEAM failed wave does not select a fallback target" do
       target_a =
         Target.normalize(
           transport: :beam,
@@ -729,20 +1821,20 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         runtime_client_target: [host: "127.0.0.1", port: 50_071]
       )
 
-      assert {:ok, schedule} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(),
                  status_client: StubClient,
                  status_timeout_ms: 17
                )
 
-      assert schedule.strategy == :single_node
-      assert schedule.runtime_endpoint_target == target_a
-      refute Map.has_key?(schedule, :runtime_client_target)
+      calls = status_calls()
+      assert length(calls) == 2
 
-      assert status_calls() == [
-               {{:beam, target_a.id}, [timeout: 17]},
-               {{:beam, target_b.id}, [timeout: 17]}
-             ]
+      assert MapSet.new(calls) ==
+               MapSet.new([
+                 {{:beam, target_a.id}, [timeout: 17]},
+                 {{:beam, target_b.id}, [timeout: 17]}
+               ])
     end
 
     test "returns cluster_busy for one live full target instead of bypassing capacity checks" do
@@ -760,7 +1852,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         )
       )
 
-      assert {:error, :cluster_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(), status_client: StubClient)
     end
 
@@ -832,7 +1924,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       stub_probe("10.0.0.1", 50_061, observation)
 
-      assert {:error, :cluster_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(), status_client: StubClient)
     end
 
@@ -851,7 +1943,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         )
       )
 
-      assert {:error, :cluster_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(), status_client: StubClient)
     end
   end
@@ -901,9 +1993,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 2
     end
 
-    test "SPEC.md §5.9 post-load provider probes fresh placement capacity" do
+    test "SPEC 5.5 compatibility providers reuse one captured loaded observation" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
-      model_id = "multi-post-load-capacity-model"
+      model_id = "multi-captured-placement-model"
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
 
       stub_probe(
@@ -913,38 +2005,33 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           host: "10.0.0.1",
           port: 50_061,
           active_request_count: 0,
-          max_concurrency: 2,
-          runtime_model_placements: []
-        )
-      )
-
-      assert {:ok, schedule} =
-               MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
-
-      stub_probe(
-        "10.0.0.1",
-        50_061,
-        make_status(node.id,
-          host: "10.0.0.1",
-          port: 50_061,
-          active_request_count: 1,
           max_concurrency: 2,
           loaded_models: [%{model_id: model_id, version: "v1"}],
-          runtime_model_placements: [model_placement(model_id, "v1", 1, 1)]
+          runtime_model_placements: [model_placement(model_id, "v1", 0, 2)]
         )
       )
 
-      refreshed = schedule.dispatch_capacity_input_provider.()
-      result = Evaluator.evaluate(refreshed)
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
 
-      assert result.placement_capacity == {:valid, 1, 1}
-      assert result.eligible? == false
-      assert :placement_capacity_exhausted in result.reason_codes
+      acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+
+      revalidation =
+        schedule.dispatch_capacity_input_provider.(%{
+          placement_state: :loaded
+        })
+
+      assert schedule.node_id == node.id
+      assert acquisition.management_classification == {:ok, :unmanaged_compatibility}
+      assert revalidation.management_classification == {:ok, :unmanaged_compatibility}
+      assert acquisition.placement_capacity == {:valid, 0, 2}
+      assert revalidation.placement_capacity == {:valid, 0, 2}
+      assert length(status_calls()) == 1
     end
 
-    test "SPEC.md §5.9 acquisition provider probes fresh aggregate capacity before loading" do
+    test "SPEC 5.5 cold compatibility consumes matching load evidence and fails closed otherwise" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
-      model_id = "multi-acquisition-capacity-model"
+      model_id = "multi-captured-cold-model"
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
 
       stub_probe(
@@ -962,52 +2049,53 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} =
                MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
 
-      stub_probe(
-        "10.0.0.1",
-        50_061,
-        make_status(node.id,
-          host: "10.0.0.1",
-          port: 50_061,
-          active_request_count: 2,
-          max_concurrency: 2,
-          runtime_model_placements: []
-        )
-      )
+      acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      acquisition_result = Evaluator.evaluate(acquisition)
 
-      refreshed = schedule.dispatch_capacity_acquisition_input_provider.()
-      result = Evaluator.evaluate(refreshed)
-
-      assert result.placement_capacity == :not_applicable
-      refute result.eligible?
-      assert :runtime_concurrency_limit_exhausted in result.reason_codes
-    end
-
-    test "SPEC.md §5.9 post-load provider rejects missing matching Placement Capacity" do
-      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
-      model_id = "multi-post-load-missing-placement-model"
-      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
-
-      stub_probe(
-        "10.0.0.1",
-        50_061,
-        make_status(node.id,
-          host: "10.0.0.1",
-          port: 50_061,
+      placement_capacity =
+        PlacementCapacity.new(%{
+          model_ref: %{model_id: model_id, version: "v1"},
           active_request_count: 0,
           max_concurrency: 2,
-          runtime_model_placements: []
-        )
-      )
+          source: :ensure_model_loaded_result
+        })
 
-      assert {:ok, schedule} =
-               MultiNode.schedule(canonical_request(model_id, "v1"), status_client: StubClient)
+      revalidation =
+        schedule.dispatch_capacity_input_provider.(%{
+          placement_state: :loaded,
+          placement_capacity: placement_capacity
+        })
 
-      refreshed = schedule.dispatch_capacity_input_provider.()
-      result = Evaluator.evaluate(refreshed)
+      assert acquisition.placement_capacity == :not_applicable
+      assert acquisition_result.eligible?
+      assert revalidation.placement_capacity == {:valid, 0, 2}
+      assert Evaluator.evaluate(revalidation).eligible?
 
-      assert result.placement_capacity == :unknown
-      assert result.eligible? == false
-      assert :placement_capacity_unknown in result.reason_codes
+      mismatched_capacity =
+        PlacementCapacity.new(%{
+          model_ref: %{model_id: "wrong-model", version: "v1"},
+          active_request_count: 0,
+          max_concurrency: 2,
+          source: :ensure_model_loaded_result
+        })
+
+      malformed_capacity = %{
+        placement_capacity
+        | active_request_count: -1,
+          max_concurrency: 0
+      }
+
+      for invalid_result <- [
+            %{placement_state: :loaded},
+            %{placement_state: :loaded, placement_capacity: %{max_concurrency: 2}},
+            %{placement_state: :loaded, placement_capacity: malformed_capacity},
+            %{placement_state: :loaded, placement_capacity: mismatched_capacity},
+            %{placement_state: :failed, placement_capacity: placement_capacity}
+          ] do
+        assert schedule.dispatch_capacity_input_provider.(invalid_result) == nil
+      end
+
+      assert length(status_calls()) == 1
     end
 
     test "SPEC.md §7.3.5 scheduler explanation separates selected rejected and skipped candidates" do
@@ -1057,6 +2145,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.scored_candidates == [
                %{
                  node_id: node_b.id,
+                 target_ref: "grpc_compat:10.0.0.2:50062",
                  eligible: true,
                  tier: "loaded",
                  score: 1141,
@@ -1066,6 +2155,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                    load_bonus: 40,
                    health_bonus: 30
                  },
+                 diagnostics: %{candidate_source: "bounded_compatibility_probe"},
                  reason_codes: []
                }
              ]
@@ -1073,9 +2163,13 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.rejected_candidates == [
                %{
                  node_id: node_c.id,
+                 target_ref: "grpc_compat:10.0.0.3:50063",
+                 eligible: false,
+                 tier: nil,
+                 score: nil,
+                 components: %{},
+                 diagnostics: %{candidate_source: "bounded_compatibility_probe"},
                  reason_codes: [
-                   "controller_dispatch_ceiling_not_yet_enforcing",
-                   "dispatch_capacity_pre_cutover_legacy",
                    "runtime_concurrency_limit_exhausted",
                    "node_concurrency_exhausted"
                  ]
@@ -1085,6 +2179,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.skipped_candidates == [
                %{
                  node_id: node_a.id,
+                 target_ref: "grpc_compat:10.0.0.1:50061",
+                 eligible: true,
+                 tier: nil,
+                 score: nil,
+                 components: %{},
+                 diagnostics: %{candidate_source: "bounded_compatibility_probe"},
                  reason_codes: ["lower_tier_not_considered"]
                }
              ]
@@ -1112,7 +2212,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(degraded.id,
           host: "10.0.0.2",
           port: 50_062,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+          health: %{ready: false, health_code: "warn", health_message: "degraded"}
         )
       )
 
@@ -1129,14 +2229,21 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == healthy.id
 
       assert schedule.rejected_candidates == [
-               %{node_id: degraded.id, reason_codes: ["node_health_degraded"]}
+               %{
+                 node_id: degraded.id,
+                 target_ref: "grpc_compat:10.0.0.2:50062",
+                 eligible: false,
+                 tier: nil,
+                 score: nil,
+                 components: %{},
+                 diagnostics: %{candidate_source: "bounded_compatibility_probe"},
+                 reason_codes: ["node_health_degraded"]
+               }
              ]
     end
 
     test "SPEC.md §7.3.5 (OpenSpec task 7.4) scored candidate scores stay ordered with actual ranking" do
       {id_a, id_b} = insert_ordered_nodes!()
-      set_node_health!(id_a, :degraded)
-      set_node_health!(id_b, :healthy)
 
       stub_probe(
         "10.0.0.1",
@@ -1144,7 +2251,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(id_a,
           host: "10.0.0.1",
           port: 50_061,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          health: %{ready: false, health_code: "warn", health_message: "degraded"},
           loaded_models: [%{model_id: "test-model", version: "v1"}],
           runtime_model_placements: [model_placement("test-model", "v1", 0, 4)]
         )
@@ -1246,7 +2353,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert schedule.strategy == :multi_node
       assert schedule.node_id == node_a.id
-      assert schedule.runtime_endpoint_target == endpoint_target
+      assert schedule.runtime_endpoint_target.address == endpoint_target.address
+
+      assert schedule.runtime_endpoint_target.metadata.capacity_management_class ==
+               :unmanaged_compatibility
+
       assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
       assert schedule.selected_tier == "loaded"
     end
@@ -1296,7 +2407,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert schedule.strategy == :multi_node
       assert schedule.node_id == node.id
-      assert schedule.runtime_endpoint_target == endpoint_target
+      assert schedule.runtime_endpoint_target.address == endpoint_target.address
+
+      assert schedule.runtime_endpoint_target.metadata.capacity_management_class ==
+               :unmanaged_compatibility
+
       refute Map.has_key?(schedule, :runtime_client_target)
       assert schedule.selected_tier == "loaded"
     end
@@ -1340,7 +2455,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
       stub_probe(endpoint_target, observation)
 
-      assert {:error, :cluster_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request("test-model", "v1"),
                  status_client: StubClient
                )
@@ -1348,7 +2463,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert Repo.get(Node, reported_node_id) == nil
     end
 
-    test "SPEC.md §5.5 BEAM identity rejection clears stale cold queue capacity" do
+    test "ADR 0017 BEAM compatibility identity rejection leaves queue capacity untouched" do
       QueueManager.reset()
       stale_hb = DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
       observed_at = DateTime.utc_now()
@@ -1422,19 +2537,19 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
       stub_probe(endpoint_target, observation)
 
-      assert {:error, :cluster_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(model_id),
                  status_client: StubClient,
                  observed_at: observed_at
                )
 
       assert Repo.get(Node, reported_node_id) == nil
-      assert QueueManager.active_capacity_source_lanes({:node, configured_node.id, :cold}) == []
+
+      assert QueueManager.active_capacity_source_lanes({:node, configured_node.id, :cold}) == [
+               {model_id, "v1"}
+             ]
 
       assert :ok = QueueManager.release(first_grant)
-      refute Task.yield(second_awaiter, 100)
-
-      assert :ok = QueueManager.refresh_capacity(model_id, "v1", 1, source: {:test, :restore})
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_key == "#{model_id}@v1"
 
@@ -1782,7 +2897,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       request = canonical_request("cold-capacity-model", "v1")
 
-      assert {:error, :cluster_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
     end
 
     test "SPEC.md §5.5 reports cold-tier queue capacity from eligible node concurrency" do
@@ -1909,7 +3025,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(node_b.id,
           host: "10.0.0.2",
           port: 50_062,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          health: %{ready: false, health_code: "warn", health_message: "degraded"},
           loaded_models: [%{model_id: "test-model", version: "v1"}],
           active_request_count: 1,
           runtime_model_placements: [model_placement("test-model", "v1", 1, 3)]
@@ -2162,7 +3278,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       request = canonical_request("test-model", "v1")
 
-      assert {:error, :cluster_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
     end
 
     test "returns cluster_busy when all joined candidates exhaust aggregate capacity" do
@@ -2191,7 +3308,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         )
       )
 
-      assert {:error, :cluster_busy} =
+      assert {:error, :cluster_busy, _decision} =
                MultiNode.schedule(canonical_request(), status_client: StubClient)
     end
 
@@ -2216,7 +3333,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(node_a.id,
           host: "10.0.0.1",
           port: 50_061,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+          health: %{ready: false, health_code: "warn", health_message: "degraded"}
         )
       )
 
@@ -2475,7 +3592,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(id_b,
           host: "10.0.0.2",
           port: 50_062,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          health: %{ready: false, health_code: "warn", health_message: "degraded"},
           runtime_prefix_cache_statuses: [
             prefix_cache_status("test-model", "v1", %{
               prefix_cache_fingerprints: [affinity_key]
@@ -3547,7 +4664,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(id_b,
           host: "10.0.0.2",
           port: 50_062,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          health: %{ready: false, health_code: "warn", health_message: "degraded"},
           runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
         )
       )
@@ -3984,10 +5101,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       # Don't stub any probes — both will fail
       request = canonical_request()
 
-      assert {:error, :model_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
     end
 
-    test "fails closed when probed production nodes are not schedulable" do
+    test "unmanaged compatibility does not borrow persisted production lifecycle" do
       node_a =
         insert_node!(%{
           advertise_addr: "10.0.0.1",
@@ -4004,7 +5122,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       # Second target probe fails
       request = canonical_request()
 
-      assert {:error, :model_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.dispatch_capacity_input.management_classification ==
+               {:ok, :unmanaged_compatibility}
     end
 
     test "skips nodes with missing metadata" do
@@ -4145,7 +5266,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           host: "10.0.0.1",
           port: 50_061,
           active_request_count: 0,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+          health: %{ready: false, health_code: "warn", health_message: "degraded"}
         )
       )
 
@@ -4157,7 +5278,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           port: 50_062,
           active_request_count: 1,
           max_concurrency: 2,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+          health: %{ready: false, health_code: "warn", health_message: "degraded"}
         )
       )
 
@@ -4194,7 +5315,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           host: "10.0.0.1",
           port: 50_061,
           loaded_models: [%{model_id: "test-model", version: "v1"}],
-          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+          health: %{ready: false, health_code: "warn", health_message: "degraded"}
         )
       )
 
@@ -4204,7 +5325,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(node_b.id,
           host: "10.0.0.2",
           port: 50_062,
-          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+          health: %{ready: false, health_code: "warn", health_message: "degraded"}
         )
       )
 
@@ -4242,7 +5363,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       # Probes also fail — no stubs configured
       request = canonical_request()
 
-      assert {:error, :model_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
     end
   end
 
@@ -4302,13 +5424,14 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       request = canonical_request()
 
-      assert {:error, :model_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
     end
   end
 
-  # -- Probe-failure health persistence (M3c Session 1) --
+  # -- Compatibility probe isolation --
 
-  describe "probe-failure health persistence" do
+  describe "compatibility probe isolation" do
     setup do
       put_inference(
         runtime_client_targets: [
@@ -4320,7 +5443,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       :ok
     end
 
-    test "status transport failure marks fresh node as degraded" do
+    test "status transport failure does not mutate fresh Node health" do
       now = DateTime.utc_now()
       observed_at = now
 
@@ -4356,12 +5479,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.strategy == :multi_node
       assert schedule.node_id == node_b.id
 
-      # Node A health was updated to degraded
       reloaded = Repo.get!(Node, node_a.id)
-      assert reloaded.health == :degraded
+      assert reloaded.health == :healthy
     end
 
-    test "connect transport failure marks stale node as unreachable" do
+    test "connect transport failure does not mutate stale Node health" do
       stale_hb = DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
       observed_at = DateTime.utc_now()
 
@@ -4396,12 +5518,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.strategy == :multi_node
       assert schedule.node_id == node_b.id
 
-      # Node A marked unreachable (stale heartbeat beyond threshold)
       reloaded = Repo.get!(Node, node_a.id)
-      assert reloaded.health == :unreachable
+      assert reloaded.health == :healthy
     end
 
-    test "SPEC.md §5.5 scheduler connect failure clears stale cold queue capacity" do
+    test "ADR 0017 scheduler connect failure leaves Node queue capacity untouched" do
       QueueManager.reset()
       stale_hb = DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
       observed_at = DateTime.utc_now()
@@ -4454,12 +5575,13 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert schedule.strategy == :multi_node
       assert schedule.node_id == node_b.id
-      assert Repo.get!(Node, node_a.id).health == :unreachable
+      assert Repo.get!(Node, node_a.id).health == :healthy
+
+      assert QueueManager.active_capacity_source_lanes({:node, node_a.id, :cold}) == [
+               {model_id, "v1"}
+             ]
 
       assert :ok = QueueManager.release(first_grant)
-      refute Task.yield(second_awaiter, 100)
-
-      assert :ok = QueueManager.refresh_capacity(model_id, "v1", 1, source: {:test, :restore})
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_key == "#{model_id}@v1"
 
@@ -4528,7 +5650,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert reloaded.health == :healthy
     end
 
-    test "mixed cluster: failed target downgraded, healthy target wins scheduling" do
+    test "mixed cluster leaves failed target unchanged and schedules healthy observation" do
       now = DateTime.utc_now()
       observed_at = now
 
@@ -4571,9 +5693,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == node_b.id
       assert schedule.candidate_count == 1
 
-      # Node A degraded
       reloaded_a = Repo.get!(Node, node_a.id)
-      assert reloaded_a.health == :degraded
+      assert reloaded_a.health == :healthy
 
       # Node B still healthy
       reloaded_b = Repo.get!(Node, node_b.id)
@@ -4599,7 +5720,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       request = canonical_request()
 
-      assert {:error, :model_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
     end
 
     test "no-candidate admitted fallback fails closed without a live observation" do
@@ -4617,7 +5739,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       # Probes succeed but nodes are not schedulable (no stubs → probes fail)
       request = canonical_request()
 
-      assert {:error, :model_busy} = MultiNode.schedule(request, status_client: StubClient)
+      assert {:error, :cluster_busy, _decision} =
+               MultiNode.schedule(request, status_client: StubClient)
     end
   end
 

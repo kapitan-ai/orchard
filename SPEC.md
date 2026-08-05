@@ -799,7 +799,7 @@ Valid health values:
 
 Required controller thresholds:
 
-* heartbeat interval: **2000 ms**
+* background status observation interval: **5000 ms** default, and strictly below both freshness thresholds
 * heartbeat freshness threshold (`node_freshness_threshold_ms`): **30000 ms** default
 * heartbeat unreachable threshold (`node_unreachable_threshold_ms`): **15000 ms** default
 
@@ -846,16 +846,13 @@ Serious conditions:
 
 ### 4.6 Heartbeat payload
 
-> **Implementation note (ADR 0015 / issue #148):** `SPEC.md` §4.6 historically describes a
-> Node-push heartbeat every 2 seconds, while §4.6.1 and the shipped Controller implement
-> pull-based Runtime Endpoint status-probe ingestion (inline scheduler probes and the
-> leader-owned background `ActivationProbe`). Slice A of the thin active-node liveness
-> monitor extends that existing pull-based path and does not introduce a push loop.
-> Full reconciliation of §4.6 to pull-based observation (or an explicit dual-path contract)
-> is deferred and coupled to the deferred §8 `node_heartbeats` work (slice B / metrics floor).
-> Silent divergence is not acceptable; this note is the explicit deferral.
+For first-party v1 Runtime Endpoints, the Active Controller obtains heartbeat and
+inventory evidence by pulling authenticated Runtime Endpoint status through the
+leader-owned background observer defined in §4.5 at a 5000 ms default interval. A
+first-party Node Agent answers that status operation; it does not originate a separate
+periodic push heartbeat loop.
 
-Node agent SHALL send heartbeats every 2 seconds with:
+The observation payload includes:
 
 ```json
 {
@@ -905,7 +902,7 @@ Rules:
 
 * the durable implementation seam for runtime status SHALL be a Runtime Endpoint Observation produced through the Runtime Endpoint Interface
 * the current gRPC Compatibility Adapter SHALL derive Runtime Endpoint Observations from `NodeRuntimeService.GetStatus` returning `StatusResponse`
-* controller-owned active-Node liveness and inventory freshness SHALL also be refreshed by a leader-owned background status probe on a bounded interval independent of request traffic, consuming authenticated observations through the same seam
+* controller-owned active-Node liveness and inventory freshness SHALL be refreshed by a leader-owned background status probe on a bounded interval independent of request traffic, consuming authenticated observations through the same seam
 * heartbeat payloads MAY carry equivalent hosted-tool data in a later slice, but controller-owned hosted-tool observation SHALL currently be derived from Runtime Endpoint status-probe ingestion
 * this contract defines future hosted routing inputs only; it SHALL NOT by itself enable controller-owned hosted `/v1/responses` execution or any other hosted execution behavior
 * Runtime Endpoint Observations are observational until reconciled to a trusted Node
@@ -913,6 +910,12 @@ Rules:
 * unregistered observations SHALL NOT update Node lifecycle state
 * unregistered observations SHALL NOT refresh queue capacity sources
 * gRPC and BEAM Runtime Endpoint Observations SHALL affect scheduling only after the target identity resolves to a persisted trusted Node
+
+Each successful authenticated, non-stale observation of a trusted target SHALL append one `node_heartbeats` row in the same transaction that advances `nodes.last_heartbeat_at`, re-derives Node health, and refreshes aggregate DispatchCapacity evidence. Failure of any write rolls back all effects. A standby Controller writes nothing on this path, and a transport failure SHALL NOT create a synthetic successful heartbeat row.
+
+`node_heartbeats.payload` SHALL use Controller-produced schema version `1` with a closed top-level allowlist: `schema_version`, `validity`, optional `invalid_reason`, `endpoint_id`, `target`, `availability`, `worker_state`, `aggregate_active_request_count`, `aggregate_max_concurrency`, `aggregate_capacity_evidence`, `placements`, `runtime_memory_budgets`, `runtime_prefix_cache_statuses`, and `supports_prompt_token_ids`. The row columns remain canonical for trusted `node_id` and `observed_at`. `target` is limited to `id`, `transport`, `address`, and `node_id`; each placement is limited to `model_ref`, `state`, `capacity`, and `last_used_at`; each model reference to `model_id` and `version`; each Placement Capacity to `active_request_count`, `max_concurrency`, `status`, and `source`; and aggregate capacity evidence to `runtime_concurrency_limit`, `active_request_count`, and `validity`. Maps and lists are capped at 40 entries, nesting at depth 4, and otherwise-unbounded strings at 512 bytes; narrower domain, numeric, and status-vocabulary bounds take precedence. The complete encoded JSON is capped by validated `node_heartbeat_payload_max_bytes`, default **262144 bytes**.
+
+Memory-budget entries SHALL use `Orchard.Runtime.MemoryBudget.normalize/1`, and prefix-cache entries SHALL use `Orchard.Runtime.PrefixCacheStatus.normalize/1`, not scheduler-specific normalization. Persisted prefix-cache data SHALL exclude raw fingerprint sets while retaining only sanitized status, fingerprint count, and warmth information. Unknown fields are dropped. An unknown schema, malformed required envelope, or payload still over the byte cap after normalization SHALL commit as a minimal bounded version-1 `validity = "invalid"` envelope with a stable `invalid_reason`; it cannot produce a positive scheduler candidate and maps to `dispatch_capacity_facts_unavailable`. The payload SHALL NOT contain credentials or secrets, DSNs, prompt or response bodies, raw tokens, tenant identifiers, raw metadata or diagnostics, local paths or evidence, tool/session identifiers, Controller policy, Controller-accounted Allocation, quarantine, authority decisions, acquirability, or another derived eligibility result.
 
 Hosted-tool observation vocabulary:
 
@@ -926,7 +929,7 @@ Compatibility and defaulting rules:
 * absent hosted-tool capability/readiness fields on a Runtime Endpoint Observation SHALL mean the endpoint advertises no hosted tools
 * absent hosted-tool capability/readiness fields SHALL NOT be treated as a status-probe error
 * readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
-* `supports_prompt_token_ids` indicates that the endpoint's loaded worker can accept controller-supplied prompt token IDs on the runtime execution request. Absence or `false` is treated as legacy capability, not as a probe failure. When `tokenizer_safe_mode_prefer_capable=true` and `tokenizer_safe_mode` is not `:off`, this live status-probe field MAY inform opt-in scheduler preference only; it is not dispatch authority.
+* `supports_prompt_token_ids` indicates that the endpoint's loaded worker can accept controller-supplied prompt token IDs on the runtime execution request. Absence or `false` is treated as legacy capability, not as an observation failure. When `tokenizer_safe_mode_prefer_capable=true` and `tokenizer_safe_mode` is not `:off`, this field from a fresh durable scheduler snapshot MAY inform opt-in scheduler preference only; it is not dispatch authority.
 * absent or empty runtime memory budgets on a Runtime Endpoint Observation SHALL mean no memory-budget observation is available
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
 * `runtime_memory_budgets` SHALL remain observe-only telemetry except for the Phase 4E scheduler-ranking guard defined in §5.7 and §7.5.3; it SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, hosted-tool eligibility, public error contracts, queue ordering, or memory-budget enforcement
@@ -1119,7 +1122,7 @@ Serialized per-Node capacity policy mutation that cannot acquire the Node accept
 The term `Admitted Capacity` SHALL NOT be used for any of these concepts.
 
 Durable dispatch permits, leadership epochs and dispatch fencing, crash or handover reservation recovery, durable quarantine survival across Controller restart, audited quarantine release after verified reconciliation, and compromised-node occupancy integrity are M7-aligned follow-ups outside F11.
-Malformed aggregate active-count handling, production probe-failure direct scheduling fallback, queue-source expiry and reservation provenance, and configured-base versus live-capacity provenance are separate follow-ups outside F11.
+Malformed aggregate active-count handling, queue-source expiry and reservation provenance, and configured-base versus live-capacity provenance are separate follow-ups outside F11.
 
 ### 4.7 Pool model
 
@@ -1300,17 +1303,21 @@ Scheduler wake-up triggers:
 * placement state change
 * periodic tick every `100 ms` while queue non-empty
 
-Queue lane capacity SHALL be the configured base lane capacity plus live capacity sources.
-Valid loaded-placement observations MAY add source-scoped capacity for the matching model/version lane.
-Eligible cold/no-placement node observations MAY add conservative source-scoped capacity for queued model/version lanes, bounded by the shared authority decision's available slots and by one unreserved cold slot per lane per node observation.
-Live capacity source refreshes SHALL be allowed to wake queued requests without a new admission event.
-Stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed node and placement observations SHALL NOT inflate queue admission capacity and SHALL clear any stale capacity source owned by that node or target.
-BEAM Runtime Endpoint observations MAY refresh queue capacity only when the target resolves back to the same persisted node identity; address-only or mismatched BEAM observations SHALL NOT publish queue capacity.
-Runtime Endpoint Admission Candidates SHALL NOT publish queue lane capacity.
-Queue lane capacity SHALL come only from trusted active Nodes or Runtime Endpoints resolved to trusted active Nodes.
-Configured base lane capacity and live capacity sources SHALL NOT authorize production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
+Queue lane capacity SHALL be the configured base lane capacity plus live capacity sources. Node-owned live sources are process-local scheduling hints owned by accepted-observation ingestion after the observation transaction commits; a MultiNode request snapshot SHALL NOT publish, rebuild, or clear them. The ingestion consumer SHALL rerun the shared capacity evaluation before refreshing matching source-scoped loaded/cold contributions, and positive contributions remain bounded by its available slots and by one unreserved cold slot per lane per node observation. Live refreshes MAY wake queued requests without a new admission event.
+
+Identity rejection, transport failure, heartbeat-age demotion, lifecycle, health, or freshness loss, malformed or unavailable capacity facts, failed observation commit, and evaluator or consumer failure SHALL clear affected sources. BEAM observations may refresh them only when the target resolves to the same persisted trusted active Node; address-only or mismatched observations, Runtime Endpoint Admission Candidates, and explicitly unmanaged compatibility probes SHALL NOT publish production Node-owned sources. QueueManager or Controller restart starts with no Node-owned source contributions; no heartbeat-history replay or request snapshot reconstructs them, and only a later accepted eligible observation may repopulate them.
+
+Configured base lane capacity remains separate. Neither it nor a live capacity source authorizes production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
 
 ### 5.5 Eligibility filter
+
+For each production MultiNode scheduling attempt, the candidate universe SHALL be the exact intersection of the effective normalized targets returned by `Inference.runtime_endpoint_targets/0`, the certificate-backed active inventory returned by `Nodes.active_runtime_endpoint_targets/0`, and the latest accepted scheduler-fresh `node_heartbeats` rows whose Node and normalized target identities match. A fresh row does not admit an unconfigured, inactive, untrusted, address-only, removed, reconfigured, or identity-mismatched target.
+
+The scheduler SHALL obtain one immutable request-scoped Postgres snapshot with one statement or equivalent read-transaction semantics, deterministically selecting the latest accepted row per intersected target by descending `observed_at` and then descending row identity. Per-Node observation times may differ; both `nodes.last_heartbeat_at` and the selected row's `observed_at` SHALL satisfy `node_freshness_threshold_ms` at query time. Controller or scheduler restart requires no production candidate-cache hydration; the next attempt reads Postgres.
+
+The explicitly unmanaged static compatibility branch is available only when static fallback is enabled, trusted admitted/active inventory is confirmed empty, and the normalized target exactly satisfies `Inference.static_runtime_target?/1`. It MAY run one bounded compatibility status-probe wave over at most the first four deduplicated configured targets, with one connect/status attempt per target for the entire logical request through terminal completion, the existing **2000 ms** per-target timeout, and no retry; it SHOULD run as one bounded wave rather than serially multiplying that timeout. Loading, final revalidation, failure handling, execution, and terminal completion MUST NOT initiate another status attempt for that target. It MUST NOT run when trusted inventory exists, inventory availability cannot be proven, or the production snapshot fails, and it does not become trusted inventory or production authority.
+
+Production scheduling and dispatch SHALL perform no inline Runtime Endpoint status probe anywhere on the request path; the bounded explicitly unmanaged compatibility wave is the sole exception. Database unavailability, incomplete reads, or absent usable facts SHALL fail closed without stale process memory or the unmanaged compatibility branch.
 
 A node is eligible only if all conditions are true:
 
@@ -1441,9 +1448,9 @@ Controller-side cache-affinity, safe-tokenization capable-worker preference, Pha
 1. loaded model already present
 2. lower active request count for the requested placement when valid matching Placement Capacity is available, otherwise lower endpoint aggregate `active_request_count`
 3. healthier node (`healthy` before `degraded`)
-4. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
+4. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true` and bounded non-persisted evidence is available; production snapshot candidates cannot derive this signal from their sanitized payload and remain rank-neutral at this step
 5. historical cache-affinity match from recent completed placements, when cache affinity is enabled
-6. safe-tokenization capable-worker preference, only when `tokenizer_safe_mode_prefer_capable=true`, `tokenizer_safe_mode` is not `:off`, and the live status probe reports `supports_prompt_token_ids=true`
+6. safe-tokenization capable-worker preference, only when `tokenizer_safe_mode_prefer_capable=true`, `tokenizer_safe_mode` is not `:off`, and the fresh durable scheduler snapshot reports `supports_prompt_token_ids=true`
 7. explicit memory-headroom observation, only when `memory_admission.enabled=true` and the candidate's matching `RuntimeMemoryBudget` has `status_code = "ok"` and `headroom_available = true`
 8. lexicographically smaller `node_id`
 
@@ -1451,7 +1458,7 @@ Default Phase 4D runtime behavior remains observe-only (`prefix_cache_scoring.ra
 
 When `prefix_cache_scoring.enabled=true`, `cache_affinity.enabled=true`, `cache_affinity.live_fingerprint_match_enabled=true`, and `prefix_cache_scoring.ranking_mode = :tie_only`, the scheduler MAY apply one bounded conditional score step immediately before step 8, only for the leading rank-equivalence group where steps 1–7 are equal and only deterministic `node_id` differs. Candidate scoring in this conditional step is capped at 2 (incumbent + challenger). The challenger MAY be promoted only when challenger score normalizes to `status_code = "ok"` with `resident_fingerprint_match = true` and `score_tier = "resident_fingerprint"`, and the incumbent score is comparable `ok` non-resident (`status_code = "ok"`, `resident_fingerprint_match = false`, and `score_tier` is `"no_match"` or `"recent_fingerprint_only"`). Any non-`ok`, timeout, unsupported, unavailable, `model_not_loaded`, `invalid_request`, missing, malformed, contradictory, or transport-failure score outcome for either candidate SHALL preserve base order fail-open and deterministic `node_id` fallback.
 
-A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
+A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity; production snapshot candidates remain rank-neutral when the sanitized durable payload cannot provide the raw match. Request-specific `ScorePrefixCache` behavior remains subject to the selected-only/two-candidate limits in §7.5.3 and SHALL NOT introduce status or score fan-out. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
 
 ### 5.8 Scheduling algorithm
 
@@ -1479,16 +1486,20 @@ schedule(req):
 
 ### 5.9 Dispatch rules
 
+A production candidate snapshot is selection evidence, not a dispatch permit. Production scheduling and dispatch SHALL NOT status-probe a Runtime Endpoint anywhere on the request path; the bounded explicitly unmanaged compatibility wave in §5.5 is the sole exception.
+
 Dispatch sequence:
 
 1. reserve request in request FSM (`scheduled`)
 2. resolve trusted admitted production inventory and identity before applying configured classification, then consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots; `fail_closed` SHALL NOT proceed to `ExecuteInference`
 3. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
-4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
+4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks against the latest durable observation and current Controller-owned facts; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
 5. if revalidation fails, release the allocation exactly once and requeue or fail under the existing queue deadline and public error contract
 6. call `ExecuteInference`
 7. wait for `accepted` while retaining the Node acceptance gate, or treat failure before `accepted` as pre-acceptance failure
 8. after `accepted`, release the acceptance gate, retain the allocation or temporary legacy claim through terminal completion, and transition request to `running`
+
+For an initially cold explicitly unmanaged compatibility candidate, final revalidation SHALL consume valid matching Placement Capacity from the successful `EnsureModelLoaded` result while preserving the captured target and resolved Node identity, aggregate capacity, availability, health, observation time and freshness behavior, and explicit unmanaged classification. Missing, malformed, zero-maximum, invalid-model-reference, or model-mismatched post-load evidence SHALL fail closed before `ExecuteInference` under the existing revalidation failure contract and SHALL NOT cause another status attempt. For an initially loaded compatibility candidate, an absent additive load-result field SHALL NOT replace or invalidate captured valid matching Placement Capacity; valid newer matching evidence MAY replace it. Production snapshot revalidation remains governed by the latest durable observation and current Controller-owned facts.
 
 Retry rule:
 
@@ -1498,7 +1509,7 @@ Retry rule:
 * after first token, no automatic retry
 
 Runtime Endpoint disconnect and channel cleanup failures are cleanup-only failures.
-They SHALL be logged best-effort and MUST NOT overwrite an otherwise successful scheduler probe or dispatch result.
+They SHALL be logged best-effort and MUST NOT overwrite an otherwise successful candidate evaluation, bounded compatibility probe, or dispatch result.
 
 ### 5.10 Circuit breakers
 
@@ -1800,6 +1811,10 @@ Air-gapped systems MUST support mode 1 and mode 2.
 ### 6.8 Load/unload semantics
 
 `EnsureModelLoaded` SHALL be idempotent.
+
+A successful `EnsureModelLoaded` result MAY include Node-owned Placement Capacity for the exact requested model reference, with a non-negative active request count and positive maximum concurrency. The evidence SHALL use the same canonical validity rules as Placement Capacity from Runtime Endpoint Observations and MUST NOT require an additional Controller Runtime Endpoint status attempt. Failed or non-loaded results MUST NOT supply placement authority. Absent, malformed, zero-maximum, negative, invalid-model-reference, or otherwise invalid evidence SHALL normalize to missing and MUST NOT be fabricated.
+
+This evidence is additive and optional for protocol compatibility. A new Controller receiving an old protobuf response or same-named BEAM result struct without the field or key SHALL treat it as missing without raising, and an old protobuf Controller MAY ignore evidence returned by a new agent.
 
 Behavior:
 
@@ -2357,8 +2372,8 @@ Response example:
 }
 ```
 
-Scheduler explanations SHALL expose stable reason codes for selected, rejected, and skipped candidates.
-Scheduler explanations are produced whenever at least one runtime target is configured and the scheduler evaluates lifecycle-managed candidates; the no-candidate fallback path emits no explanation.
+Snapshot and bounded compatibility candidates SHALL use the `cluster_management.scheduler_explanation.v1` selected/scored, rejected, and skipped structures with stable reason codes. Candidate diagnostics SHALL remain bounded and set `candidate_source = "monitor_snapshot"` for snapshot candidates or `candidate_source = "bounded_compatibility_probe"` for the unmanaged exception.
+Scheduler explanations are produced whenever at least one runtime target is configured and the scheduler coherently evaluates snapshot or bounded compatibility candidates. For a coherent snapshot of lifecycle-managed targets, selected, rejected, and skipped entries remain observable even when all candidates are rejected and the existing `cluster_busy` or queue-waitable live-node-capacity outcome follows. Missing or structurally malformed snapshot facts use `dispatch_capacity_facts_unavailable`, stale facts use `node_observation_stale`, identity conflicts use `runtime_identity_mismatch`, eligible lower-tier candidates use `lower_tier_not_considered`, and existing runtime and shared-capacity failures retain their stable codes. If trusted inventory is unavailable, MultiNode preserves internal `:no_active_nodes` and emits no explanation. If the snapshot read fails after target resolution, it preserves the existing `:cluster_busy` or bounded queue outcome and emits no candidate explanation because no coherent candidate evaluation can be proven. Neither failure path probes production targets or uses stale process memory.
 Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and tests.
 Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
 Rejected candidates SHALL include at least one stable rejection reason code.
@@ -2886,6 +2901,7 @@ message EnsureModelLoadedResponse {
   string failure_code = 4;
   string failure_message = 5;
   bool worker_supports_prompt_token_ids = 6;
+  optional RuntimeModelPlacement placement_capacity = 7;
 }
 
 `StatusResponse.supports_prompt_token_ids` MAY inform opt-in scheduler preference only. `EnsureModelLoadedResponse.worker_supports_prompt_token_ids` remains the authoritative per-request dispatch gate for controller-supplied `prompt_token_ids`.
@@ -4699,7 +4715,7 @@ Recovery:
 
 * on heartbeat resumption, health recalculated
 * loaded placements may be reused after state refresh
-* controller requests a full `GetStatus` before rescheduling node
+* a new accepted background Runtime Endpoint Observation is required before the node becomes schedulable again
 
 ### 12.2 Worker crash
 

@@ -38,7 +38,7 @@ defmodule Orchard.NodesTest do
   alias Orchard.Governance.AuditLog
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
+  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node, NodeHeartbeat}
   alias Orchard.RuntimeEndpoint.GrpcCompatibilityMapper
   alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
 
@@ -411,6 +411,31 @@ defmodule Orchard.NodesTest do
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, inference)
     end)
+  end
+
+  describe "clear_dispatch_capacity_sources/2" do
+    test "ADR 0017 clears all trusted Node sources without a database lookup" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      node_id = Ecto.UUID.generate()
+
+      assert Repo.get(Node, node_id) == nil
+
+      assert :ok =
+               Nodes.clear_dispatch_capacity_sources(node_id,
+                 queue_manager: Orchard.NodesTest.TransactionProbeQueueManager
+               )
+
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node_id},
+                 {:node, node_id, :placement},
+                 {:node, node_id, :cold}
+               ])
+
+      assert opts[:promote?]
+    end
   end
 
   # -- Schema validation --
@@ -1475,7 +1500,9 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      insert_node_from_status!(target, status)
+      authenticated_at = DateTime.add(now, -5, :second)
+      insert_node_from_status!(target, status, %{last_heartbeat_at: authenticated_at})
+
       assert {:ok, node} = observe_status(target, status, now)
       assert node.id == node_id
       assert node.state == :active
@@ -1485,6 +1512,37 @@ defmodule Orchard.NodesTest do
       assert node.rpc_port == 9444
       assert node.connect_host == "10.0.0.1"
       assert node.connect_port == 9444
+      assert node.last_heartbeat_at == authenticated_at
+      assert Repo.aggregate(NodeHeartbeat, :count) == 0
+    end
+
+    test "SPEC.md §4.5 unauthenticated metadata cannot restore scheduler freshness" do
+      now = DateTime.utc_now()
+      stale_at = DateTime.add(now, -60, :second)
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.101", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "metadata-refreshed",
+          hostname: "stale-node.local",
+          listen_host: "10.0.0.101",
+          listen_port: 9444,
+          agent_version: "0.2.0"
+        })
+
+      insert_node_from_status!(target, status, %{
+        display_name: "metadata-before",
+        last_heartbeat_at: stale_at
+      })
+
+      assert {:ok, updated} = observe_status(target, status, now)
+      assert updated.display_name == "metadata-refreshed"
+      assert updated.agent_version == "0.2.0"
+      assert updated.last_heartbeat_at == stale_at
+      assert Nodes.schedulable_nodes() == []
+      assert Repo.aggregate(NodeHeartbeat, :count) == 0
     end
 
     test "persists connect target separately from advertised bind-all address" do
@@ -4154,6 +4212,7 @@ defmodule Orchard.NodesTest do
 
       assert marked.id == node.id
       assert marked.health == :degraded
+      assert marked.last_transport_failure_at == observed_at
     end
 
     test "stale node + {:connect_failed, _} → unreachable" do
@@ -4342,7 +4401,9 @@ defmodule Orchard.NodesTest do
                  observed_at
                )
 
-      assert Repo.get!(Node, node.id).health == :healthy
+      reloaded = Repo.get!(Node, node.id)
+      assert reloaded.health == :healthy
+      assert reloaded.last_transport_failure_at == nil
     end
 
     test "SPEC.md §5.5 transport failure clears stale queue capacity sources" do
@@ -4599,7 +4660,9 @@ defmodule Orchard.NodesTest do
   # -- Schedulable nodes --
 
   describe "sweep_stale_node_heartbeats/1" do
-    test "SPEC.md §4.5 demotes active nodes past unreachable threshold" do
+    test "ADR 0017 stale sweep clears all Node-owned sources after commit" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_queue_manager_impl(Orchard.NodesTest.TransactionProbeQueueManager)
       hb_time = DateTime.utc_now()
 
       node =
@@ -4615,6 +4678,59 @@ defmodule Orchard.NodesTest do
 
       assert {:ok, 1} = Nodes.sweep_stale_node_heartbeats(observed_at)
       assert Repo.get!(Node, node.id).health == :unreachable
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :placement},
+                 {:node, node.id, :cold}
+               ])
+
+      assert opts[:promote?]
+    end
+
+    test "ADR 0017 freshness loss clears sources before unreachable health demotion" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.merge(previous_inference,
+          queue_manager_impl: Orchard.NodesTest.TransactionProbeQueueManager,
+          node_freshness_threshold_ms: 10_000,
+          node_unreachable_threshold_ms: 60_000
+        )
+      )
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :inference, previous_inference)
+      end)
+
+      heartbeat_at = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          state: :active,
+          health: :healthy,
+          last_heartbeat_at: heartbeat_at
+        })
+
+      observed_at = DateTime.add(heartbeat_at, 15, :second)
+
+      assert {:ok, 0} = Nodes.sweep_stale_node_heartbeats(observed_at)
+      assert Repo.get!(Node, node.id).health == :healthy
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :placement},
+                 {:node, node.id, :cold}
+               ])
+
+      assert opts[:promote?]
     end
 
     test "SPEC.md §4.5 does not demote when heartbeat is still within threshold" do

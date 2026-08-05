@@ -180,6 +180,7 @@ message EnsureModelLoadedResponse {
   string failure_message = 5;
 
   bool worker_supports_prompt_token_ids = 6;
+  optional RuntimeModelPlacement placement_capacity = 7;
 }
 
 message UnloadModelRequest {

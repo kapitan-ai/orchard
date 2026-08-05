@@ -317,33 +317,19 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp acquire_capacity_claim(
          %{
-           node_id: node_id,
-           request_id: request_id
-         } = schedule
-       )
-       when is_binary(node_id) and is_binary(request_id) do
-    case dispatch_capacity_acquisition_input(schedule) do
-      %Orchard.DispatchCapacity.Evaluator.Input{} = input ->
-        opts = capacity_authority_opts(schedule)
-
-        case QueueManager.acquire_dispatch_capacity(node_id, request_id, input, opts) do
-          {:ok, claim, _result} -> {:ok, claim}
-          {:error, reason, _result} -> {:error, reason}
-        end
-
-      _missing_input ->
-        {:error, :dispatch_capacity_facts_unavailable}
-    end
-  end
-
-  defp acquire_capacity_claim(
-         %{
-           dispatch_capacity_input: %Orchard.DispatchCapacity.Evaluator.Input{} = input,
+           dispatch_capacity_input:
+             %Orchard.DispatchCapacity.Evaluator.Input{
+               management_classification: {:ok, management_class}
+             } = input,
            dispatch_capacity_evaluation: %Orchard.DispatchCapacity.Evaluator.Result{} = result,
            request_id: request_id
          } = schedule
        )
-       when is_binary(request_id) do
+       when is_binary(request_id) and
+              management_class in [
+                :unmanaged_source_development,
+                :unmanaged_compatibility
+              ] do
     with true <- unmanaged_dispatch_authorized?(input, result),
          %Orchard.DispatchCapacity.Evaluator.Input{} = fresh_input <-
            dispatch_capacity_acquisition_input(schedule),
@@ -356,7 +342,32 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
+  defp acquire_capacity_claim(
+         %{
+           node_id: node_id,
+           request_id: request_id
+         } = schedule
+       )
+       when is_binary(node_id) and is_binary(request_id) do
+    case dispatch_capacity_acquisition_input(schedule) do
+      %Orchard.DispatchCapacity.Evaluator.Input{} = input ->
+        acquire_production_capacity_claim(schedule, node_id, request_id, input)
+
+      _missing_input ->
+        {:error, :dispatch_capacity_facts_unavailable}
+    end
+  end
+
   defp acquire_capacity_claim(_schedule), do: {:error, :dispatch_capacity_facts_unavailable}
+
+  defp acquire_production_capacity_claim(schedule, node_id, request_id, input) do
+    opts = capacity_authority_opts(schedule)
+
+    case QueueManager.acquire_dispatch_capacity(node_id, request_id, input, opts) do
+      {:ok, claim, _result} -> {:ok, claim}
+      {:error, reason, _result} -> {:error, reason}
+    end
+  end
 
   defp dispatch_capacity_acquisition_input(schedule) do
     case Map.get(schedule, :dispatch_capacity_acquisition_input_provider) do
@@ -472,15 +483,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp do_dispatch_with_channel(%{} = context) do
-    case probe_and_resolve_node(
-           context.client,
-           context.channel,
-           context.target,
-           context.model_load_request,
-           claimed_node_id(context),
-           context.on_node_resolved,
-           context.metrics
-         ) do
+    case prepare_dispatch_identity(context) do
       {:ok, model_load_request, metrics} ->
         context = %{context | model_load_request: model_load_request, metrics: metrics}
         ensure_start = System.monotonic_time(:millisecond)
@@ -500,6 +503,102 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
+  defp prepare_dispatch_identity(
+         %{
+           schedule: %{dispatch_identity_source: :trusted_monitor_snapshot}
+         } = context
+       ) do
+    trusted_snapshot_identity(context)
+  end
+
+  defp prepare_dispatch_identity(
+         %{
+           schedule: %{
+             dispatch_identity_source: {:bounded_compatibility_probe, %Observation{}}
+           }
+         } = context
+       ) do
+    captured_compatibility_identity(context)
+  end
+
+  defp prepare_dispatch_identity(context) do
+    probe_and_resolve_node(
+      context.client,
+      context.channel,
+      context.target,
+      context.model_load_request,
+      claimed_node_id(context),
+      context.on_node_resolved,
+      context.metrics
+    )
+  end
+
+  defp trusted_snapshot_identity(%{
+         capacity_claim: %AllocationAuthority.Claim{node_id: claim_node_id},
+         schedule: %{node_id: schedule_node_id},
+         target: %Target{node_id: target_node_id} = target,
+         model_load_request: model_load_request,
+         on_node_resolved: on_node_resolved,
+         metrics: metrics
+       })
+       when is_binary(claim_node_id) and claim_node_id == schedule_node_id and
+              schedule_node_id == target_node_id do
+    {node_id, model_load_request, metrics} =
+      resolved_probe_identity(
+        {:ok, claim_node_id},
+        target,
+        model_load_request,
+        metrics
+      )
+
+    invoke_callback_safe(on_node_resolved, node_id)
+    {:ok, model_load_request, metrics}
+  end
+
+  defp trusted_snapshot_identity(%{metrics: metrics}) do
+    {:error, :dispatch_capacity_node_identity_mismatch, metrics}
+  end
+
+  defp captured_compatibility_identity(%{
+         schedule: %{
+           dispatch_identity_source: {:bounded_compatibility_probe, %Observation{} = observation},
+           dispatch_capacity_input: %Orchard.DispatchCapacity.Evaluator.Input{
+             management_classification: {:ok, management_class}
+           },
+           node_id: schedule_node_id
+         },
+         target: %Target{node_id: target_node_id} = target,
+         model_load_request: model_load_request,
+         on_node_resolved: on_node_resolved,
+         metrics: metrics
+       })
+       when management_class in [
+              :unmanaged_compatibility,
+              :unmanaged_source_development
+            ] and is_binary(schedule_node_id) and
+              (is_nil(target_node_id) or schedule_node_id == target_node_id) do
+    case BeamIdentity.resolve_candidate_node_id(target, observation) do
+      {:ok, ^schedule_node_id} ->
+        {node_id, model_load_request, metrics} =
+          resolved_probe_identity(
+            {:ok, schedule_node_id},
+            target,
+            model_load_request,
+            metrics
+          )
+
+        invoke_callback_safe(on_node_resolved, node_id)
+        {:ok, model_load_request, metrics}
+
+      _identity_mismatch ->
+        {:error, :dispatch_capacity_node_identity_mismatch, metrics}
+    end
+  end
+
+  defp captured_compatibility_identity(%{metrics: metrics}) do
+    {:error, :dispatch_capacity_node_identity_mismatch, metrics}
+  end
+
   defp ensure_loaded_for_dispatch(client, channel, target, model_load_request, model_load_timeout) do
     do_ensure_model_loaded(client, channel, target, model_load_request, model_load_timeout)
   end
@@ -515,7 +614,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
     put_ensure_model_load_completed_context(metrics)
 
-    context = %{context | deadline_ms: context.deadline_ms + (ensure_end - ensure_start)}
+    context =
+      context
+      |> Map.put(:ensure_model_loaded_result, ensure_load_meta)
+      |> Map.update!(:deadline_ms, &(&1 + ensure_end - ensure_start))
 
     result = execute_loaded_request(context, ensure_load_meta, metrics)
 
@@ -587,9 +689,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     release_dispatch_acceptance_gate(acceptance_gate)
   end
 
-  defp revalidate_capacity_claim(%{capacity_claim: claim, schedule: schedule}) do
+  defp revalidate_capacity_claim(%{
+         capacity_claim: claim,
+         schedule: schedule,
+         ensure_model_loaded_result: ensure_model_loaded_result
+       }) do
     with %Orchard.DispatchCapacity.Evaluator.Input{} = input <-
-           dispatch_capacity_revalidation_input(schedule),
+           dispatch_capacity_revalidation_input(schedule, ensure_model_loaded_result),
          result <-
            revalidate_dispatch_capacity(
              claim,
@@ -605,9 +711,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
-  defp revalidate_capacity_claim(%{schedule: schedule}) do
+  defp revalidate_capacity_claim(%{
+         schedule: schedule,
+         ensure_model_loaded_result: ensure_model_loaded_result
+       }) do
     with %Orchard.DispatchCapacity.Evaluator.Input{} = input <-
-           dispatch_capacity_revalidation_input(schedule),
+           dispatch_capacity_revalidation_input(schedule, ensure_model_loaded_result),
          result <- evaluate_dispatch_capacity(capacity_authority(schedule), nil, input),
          true <- unmanaged_dispatch_authorized?(input, result) do
       :ok
@@ -616,8 +725,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
-  defp dispatch_capacity_revalidation_input(schedule) do
+  defp dispatch_capacity_revalidation_input(schedule, ensure_model_loaded_result) do
     case Map.get(schedule, :dispatch_capacity_input_provider) do
+      provider when is_function(provider, 1) -> provider.(ensure_model_loaded_result)
       provider when is_function(provider, 0) -> provider.()
       _provider -> nil
     end
@@ -819,11 +929,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {:ok, %Operation.EnsureModelLoadedResult{} = response} ->
         case normalize_placement_state(response.placement_state) do
           :loaded ->
-            {:ok,
-             %{
-               already_loaded: response.already_loaded,
-               worker_supports_prompt_token_ids: response.worker_supports_prompt_token_ids
-             }}
+            {:ok, response}
 
           :failed ->
             {:error, ModelLoadFailure.from_result(response)}

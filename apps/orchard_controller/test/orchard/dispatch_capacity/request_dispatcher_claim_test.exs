@@ -640,6 +640,93 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.ProductionFreshSta
   def cancel_inference(_channel, _request, _opts), do: :ok
 end
 
+defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.MonitorSnapshotClient do
+  @moduledoc false
+
+  alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
+
+  def configure(test_pid), do: :persistent_term.put({__MODULE__, :test_pid}, test_pid)
+  def clear, do: :persistent_term.erase({__MODULE__, :test_pid})
+
+  def connect(target), do: {:ok, target}
+  def disconnect(_channel), do: :ok
+
+  def status(_channel, _opts \\ []) do
+    send(:persistent_term.get({__MODULE__, :test_pid}), :monitor_snapshot_status_called)
+    raise "monitor-snapshot dispatch must not call status"
+  end
+
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts \\ []) do
+    send(:persistent_term.get({__MODULE__, :test_pid}), :monitor_snapshot_model_loaded)
+
+    {:ok,
+     %Operation.EnsureModelLoadedResult{
+       already_loaded: false,
+       placement_state: :loaded,
+       worker_supports_prompt_token_ids: true
+     }}
+  end
+
+  def execute_inference(_channel, request, opts) do
+    test_pid = :persistent_term.get({__MODULE__, :test_pid})
+    send(test_pid, :monitor_snapshot_execute_called)
+    owner = Keyword.fetch!(opts, :owner)
+    task_ref = make_ref()
+
+    send(
+      owner,
+      {:runtime_endpoint_event, task_ref, request.request_id, InferenceEvent.accepted(0)}
+    )
+
+    send(
+      owner,
+      {:runtime_endpoint_event, task_ref, request.request_id,
+       InferenceEvent.completed(:finish_reason_stop, nil)}
+    )
+
+    send(owner, {:runtime_endpoint_done, task_ref, :ok})
+    {:ok, task_ref}
+  end
+
+  def cancel_inference(_channel, _request, _opts), do: :ok
+end
+
+defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CompatibilitySingleWaveClient do
+  @moduledoc false
+
+  alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
+  alias Orchard.RuntimeEndpoint.Operation
+
+  def configure(test_pid, response, load_result) do
+    :persistent_term.put({__MODULE__, :test_pid}, test_pid)
+    :persistent_term.put({__MODULE__, :response}, response)
+    :persistent_term.put({__MODULE__, :load_result}, load_result)
+  end
+
+  def clear do
+    :persistent_term.erase({__MODULE__, :test_pid})
+    :persistent_term.erase({__MODULE__, :response})
+    :persistent_term.erase({__MODULE__, :load_result})
+  end
+
+  defdelegate connect(target), to: GateClient
+  defdelegate disconnect(channel), to: GateClient
+
+  def status(_channel, _opts) do
+    send(:persistent_term.get({__MODULE__, :test_pid}), :compatibility_status_called)
+    {:ok, :persistent_term.get({__MODULE__, :response})}
+  end
+
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts) do
+    send(:persistent_term.get({__MODULE__, :test_pid}), :model_loaded)
+    {:ok, :persistent_term.get({__MODULE__, :load_result})}
+  end
+
+  defdelegate execute_inference(channel, request, opts), to: GateClient
+  defdelegate cancel_inference(channel, request, opts), to: GateClient
+end
+
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   use Orchard.DataCase, async: false
 
@@ -654,16 +741,21 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   alias Orchard.Inference
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
+  alias Orchard.NodeHeartbeats.CandidateSnapshot
+  alias Orchard.NodeHeartbeats.CandidateSnapshot.Candidate
   alias Orchard.Nodes.{AdmissionDecision, Node}
+  alias Orchard.RuntimeEndpoint.{Operation, Placement, PlacementCapacity, Target}
   alias Orchard.Scheduler.{MultiNode, SingleNode}
   alias Orchard.TestSupport.DispatchCapacityFixtures
 
   alias __MODULE__.{
     CancellableStreamClient,
     Client,
+    CompatibilitySingleWaveClient,
     DoneBeforeAcceptedClient,
     ExecuteErrorClient,
     GateClient,
+    MonitorSnapshotClient,
     NoisyCancelClient,
     NonterminalThenErrorClient,
     PreAcceptanceCancelClient,
@@ -675,12 +767,14 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   }
 
   @client Client
+  @compatibility_single_wave_client CompatibilitySingleWaveClient
   @gate_client GateClient
   @execute_error_client ExecuteErrorClient
   @done_before_accepted_client DoneBeforeAcceptedClient
   @terminal_before_accepted_client TerminalBeforeAcceptedClient
   @nonterminal_then_error_client NonterminalThenErrorClient
   @cancellable_stream_client CancellableStreamClient
+  @monitor_snapshot_client MonitorSnapshotClient
   @noisy_cancel_client NoisyCancelClient
   @pre_acceptance_cancel_client PreAcceptanceCancelClient
   @unprobeable_client UnprobeableClient
@@ -699,15 +793,18 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     @client.configure(self())
     @gate_client.configure(self())
     @cancellable_stream_client.configure(self())
+    @monitor_snapshot_client.configure(self())
     @noisy_cancel_client.configure(self())
     @pre_acceptance_cancel_client.configure(self())
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
       @client.clear()
+      @compatibility_single_wave_client.clear()
       @gate_client.clear()
       @terminal_before_accepted_client.clear()
       @cancellable_stream_client.clear()
+      @monitor_snapshot_client.clear()
       @noisy_cancel_client.clear()
       @pre_acceptance_cancel_client.clear()
       @production_fresh_status_client.clear()
@@ -1770,6 +1867,425 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, remapped_node.id) == 0
   end
 
+  test "ADR 0017 monitor-snapshot dispatch executes from newer eligible facts with no status call" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+
+    {schedule, node, snapshot_reads} =
+      monitor_snapshot_schedule(authority, :eligible)
+
+    assert schedule.dispatch_identity_source == :trusted_monitor_snapshot
+    assert schedule.node_id == schedule.runtime_endpoint_target.node_id
+
+    assert {:ok, _events} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(schedule.request_id),
+               model_load_request(node.id),
+               client_impl: @monitor_snapshot_client
+             )
+
+    assert_receive :monitor_snapshot_model_loaded
+    assert_receive :monitor_snapshot_execute_called
+    refute_receive :monitor_snapshot_status_called
+    assert Agent.get(snapshot_reads, & &1) == 3
+    assert AllocationAuthority.claim_count(authority, node.id) == 0
+    assert_acceptance_gate_available(authority, node.id)
+  end
+
+  for management_class <- [
+        :unmanaged_compatibility,
+        :unmanaged_source_development
+      ] do
+    test "SPEC 5.5 #{management_class} dispatch performs one status attempt through completion" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+
+      {schedule, node_id} =
+        compatibility_single_wave_schedule(authority, unquote(management_class))
+
+      assert {:ok, _events} =
+               RequestDispatcher.dispatch(
+                 schedule,
+                 execute_request(schedule.request_id),
+                 model_load_request(node_id),
+                 client_impl: @compatibility_single_wave_client
+               )
+
+      assert_receive :compatibility_status_called
+      refute_receive :compatibility_status_called
+      assert_receive :model_loaded
+      assert_receive :execute_called
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+      assert_acceptance_gate_available(authority, node_id)
+    end
+
+    for evidence_scenario <- [:absent, :invalid, :mismatched] do
+      test "SPEC 5.5 cold #{management_class} #{evidence_scenario} load evidence fails closed without reprobe" do
+        authority = start_supervised!({AllocationAuthority, name: nil})
+
+        load_result = compatibility_load_result(unquote(evidence_scenario))
+
+        {schedule, node_id} =
+          compatibility_single_wave_schedule(
+            authority,
+            unquote(management_class),
+            load_result
+          )
+
+        assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
+                 RequestDispatcher.dispatch(
+                   schedule,
+                   execute_request(schedule.request_id),
+                   model_load_request(node_id),
+                   client_impl: @compatibility_single_wave_client
+                 )
+
+        assert_receive :compatibility_status_called
+        refute_receive :compatibility_status_called
+        assert_receive :model_loaded
+        refute_receive :execute_called
+        assert AllocationAuthority.claim_count(authority, node_id) == 0
+        assert_acceptance_gate_available(authority, node_id)
+      end
+    end
+
+    test "SPEC 5.9 cold #{management_class} old BEAM load result without evidence state fails closed" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+
+      {schedule, node_id} =
+        compatibility_single_wave_schedule(
+          authority,
+          unquote(management_class),
+          compatibility_load_result(:legacy_absent)
+        )
+
+      assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
+               RequestDispatcher.dispatch(
+                 schedule,
+                 execute_request(schedule.request_id),
+                 model_load_request(node_id),
+                 client_impl: @compatibility_single_wave_client
+               )
+
+      assert_receive :compatibility_status_called
+      refute_receive :compatibility_status_called
+      assert_receive :model_loaded
+      refute_receive :execute_called
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+      assert_acceptance_gate_available(authority, node_id)
+    end
+
+    test "SPEC 5.9 initially loaded #{management_class} old BEAM load result uses captured matching capacity" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+
+      {schedule, node_id} =
+        compatibility_single_wave_schedule(
+          authority,
+          unquote(management_class),
+          compatibility_load_result(:legacy_absent),
+          :loaded
+        )
+
+      assert {:ok, _events} =
+               RequestDispatcher.dispatch(
+                 schedule,
+                 execute_request(schedule.request_id),
+                 model_load_request(node_id),
+                 client_impl: @compatibility_single_wave_client
+               )
+
+      assert_receive :compatibility_status_called
+      refute_receive :compatibility_status_called
+      assert_receive :model_loaded
+      assert_receive :execute_called
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+      assert_acceptance_gate_available(authority, node_id)
+    end
+
+    test "SPEC 5.9 initially loaded #{management_class} uses captured capacity only when load evidence is absent" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+
+      {schedule, node_id} =
+        compatibility_single_wave_schedule(
+          authority,
+          unquote(management_class),
+          compatibility_load_result(:absent),
+          :loaded
+        )
+
+      assert {:ok, _events} =
+               RequestDispatcher.dispatch(
+                 schedule,
+                 execute_request(schedule.request_id),
+                 model_load_request(node_id),
+                 client_impl: @compatibility_single_wave_client
+               )
+
+      assert_receive :compatibility_status_called
+      refute_receive :compatibility_status_called
+      assert_receive :model_loaded
+      assert_receive :execute_called
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+      assert_acceptance_gate_available(authority, node_id)
+    end
+
+    for evidence_scenario <- [:invalid, :mismatched] do
+      test "SPEC 5.9 initially loaded #{management_class} #{evidence_scenario} evidence fails closed without captured fallback" do
+        authority = start_supervised!({AllocationAuthority, name: nil})
+
+        {schedule, node_id} =
+          compatibility_single_wave_schedule(
+            authority,
+            unquote(management_class),
+            compatibility_load_result(unquote(evidence_scenario)),
+            :loaded
+          )
+
+        assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
+                 RequestDispatcher.dispatch(
+                   schedule,
+                   execute_request(schedule.request_id),
+                   model_load_request(node_id),
+                   client_impl: @compatibility_single_wave_client
+                 )
+
+        assert_receive :compatibility_status_called
+        refute_receive :compatibility_status_called
+        assert_receive :model_loaded
+        refute_receive :execute_called
+        assert AllocationAuthority.claim_count(authority, node_id) == 0
+        assert_acceptance_gate_available(authority, node_id)
+      end
+    end
+
+    test "SPEC 5.5 captured #{management_class} identity mismatch fails closed without reprobe" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+
+      {schedule, node_id} =
+        compatibility_single_wave_schedule(authority, unquote(management_class))
+
+      {:bounded_compatibility_probe, observation} = schedule.dispatch_identity_source
+
+      mismatched_observation = %{
+        observation
+        | metadata: Map.put(observation.metadata, :node_id, Ecto.UUID.generate())
+      }
+
+      schedule = %{
+        schedule
+        | dispatch_identity_source: {:bounded_compatibility_probe, mismatched_observation}
+      }
+
+      assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
+               RequestDispatcher.dispatch(
+                 schedule,
+                 execute_request(schedule.request_id),
+                 model_load_request(node_id),
+                 client_impl: @compatibility_single_wave_client
+               )
+
+      assert_receive :compatibility_status_called
+      refute_receive :compatibility_status_called
+      refute_receive :model_loaded
+      refute_receive :execute_called
+      assert AllocationAuthority.claim_count(authority, node_id) == 0
+      assert_acceptance_gate_available(authority, node_id)
+    end
+  end
+
+  test "SPEC 4.6.2 pre-cutover degraded monitor-snapshot acquisition reaches execution" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+
+    {schedule, node, snapshot_reads} =
+      monitor_snapshot_schedule(authority, :degraded_acquisition)
+
+    assert {:ok, _events} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(schedule.request_id),
+               model_load_request(node.id),
+               client_impl: @monitor_snapshot_client
+             )
+
+    assert_receive :monitor_snapshot_model_loaded
+    assert_receive :monitor_snapshot_execute_called
+    refute_receive :monitor_snapshot_status_called
+    assert Agent.get(snapshot_reads, & &1) == 3
+    assert AllocationAuthority.claim_count(authority, node.id) == 0
+    assert_acceptance_gate_available(authority, node.id)
+  end
+
+  for scenario <- [
+        :stale,
+        :unhealthy,
+        :disappeared,
+        :aggregate_exhausted,
+        :placement_exhausted,
+        :placement_missing,
+        :snapshot_unavailable
+      ] do
+    test "ADR 0017 monitor-snapshot final #{scenario} facts refuse execution with no status call" do
+      authority = start_supervised!({AllocationAuthority, name: nil})
+
+      {schedule, node, snapshot_reads} =
+        monitor_snapshot_schedule(authority, unquote(scenario))
+
+      assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
+               RequestDispatcher.dispatch(
+                 schedule,
+                 execute_request(schedule.request_id),
+                 model_load_request(node.id),
+                 client_impl: @monitor_snapshot_client
+               )
+
+      assert_receive :monitor_snapshot_model_loaded
+      refute_receive :monitor_snapshot_execute_called
+      refute_receive :monitor_snapshot_status_called
+      assert Agent.get(snapshot_reads, & &1) == 3
+      assert AllocationAuthority.claim_count(authority, node.id) == 0
+      assert_acceptance_gate_available(authority, node.id)
+    end
+  end
+
+  test "SPEC 4.6.2 pre-cutover degraded final revalidation reaches execution" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+
+    {schedule, node, snapshot_reads} =
+      monitor_snapshot_schedule(authority, :degraded)
+
+    assert {:ok, _events} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(schedule.request_id),
+               model_load_request(node.id),
+               client_impl: @monitor_snapshot_client
+             )
+
+    assert_receive :monitor_snapshot_model_loaded
+    assert_receive :monitor_snapshot_execute_called
+    refute_receive :monitor_snapshot_status_called
+    assert Agent.get(snapshot_reads, & &1) == 3
+    assert AllocationAuthority.claim_count(authority, node.id) == 0
+    assert_acceptance_gate_available(authority, node.id)
+  end
+
+  test "SPEC 4.6.2 enforcing degraded acquisition fails before model load" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-enforcing-degraded-acquisition"
+    degraded = %{enforcing_input() | health: :degraded}
+
+    schedule =
+      authority
+      |> capacity_schedule(node_id, request_id)
+      |> Map.put(:dispatch_identity_source, :trusted_monitor_snapshot)
+      |> Map.put(:dispatch_capacity_acquisition_input_provider, fn -> degraded end)
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_unavailable}} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    refute_receive :model_loaded
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+    assert_acceptance_gate_available(authority, node_id)
+  end
+
+  test "SPEC 4.6.2 enforcing degraded final revalidation suppresses execution" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-enforcing-degraded-revalidation"
+    degraded = %{enforcing_input() | health: :degraded}
+
+    schedule =
+      authority
+      |> capacity_schedule(node_id, request_id)
+      |> Map.put(:dispatch_capacity_input_provider, fn -> degraded end)
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    assert_receive :model_loaded
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+    assert_acceptance_gate_available(authority, node_id)
+  end
+
+  test "ADR 0017 target removal before acquisition fails closed without probing" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+
+    {schedule, node, snapshot_reads} =
+      monitor_snapshot_schedule(authority, :target_removed_before_acquisition)
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_facts_unavailable}} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(schedule.request_id),
+               model_load_request(node.id),
+               client_impl: @monitor_snapshot_client
+             )
+
+    refute_receive :monitor_snapshot_model_loaded
+    refute_receive :monitor_snapshot_execute_called
+    refute_receive :monitor_snapshot_status_called
+    assert Agent.get(snapshot_reads, & &1) == 2
+    assert AllocationAuthority.claim_count(authority, node.id) == 0
+    assert_acceptance_gate_available(authority, node.id)
+  end
+
+  test "ADR 0017 target removal before final revalidation suppresses execution" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+
+    {schedule, node, snapshot_reads} =
+      monitor_snapshot_schedule(authority, :target_removed_before_final)
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(schedule.request_id),
+               model_load_request(node.id),
+               client_impl: @monitor_snapshot_client
+             )
+
+    assert_receive :monitor_snapshot_model_loaded
+    refute_receive :monitor_snapshot_execute_called
+    refute_receive :monitor_snapshot_status_called
+    assert Agent.get(snapshot_reads, & &1) == 3
+    assert AllocationAuthority.claim_count(authority, node.id) == 0
+    assert_acceptance_gate_available(authority, node.id)
+  end
+
+  test "ADR 0017 marked snapshot dispatch rejects claim schedule target identity mismatch without probing" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+
+    {schedule, node, _snapshot_reads} =
+      monitor_snapshot_schedule(authority, :eligible)
+
+    mismatched_target = %{schedule.runtime_endpoint_target | node_id: Ecto.UUID.generate()}
+    schedule = %{schedule | runtime_endpoint_target: mismatched_target}
+
+    assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
+             RequestDispatcher.dispatch(
+               schedule,
+               execute_request(schedule.request_id),
+               model_load_request(node.id),
+               client_impl: @monitor_snapshot_client
+             )
+
+    refute_receive :monitor_snapshot_model_loaded
+    refute_receive :monitor_snapshot_execute_called
+    refute_receive :monitor_snapshot_status_called
+    assert AllocationAuthority.claim_count(authority, node.id) == 0
+  end
+
   test "SPEC 5.9 dispatch probe cannot move execution away from the claimed Node" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     target = SingleNode.target()
@@ -2053,6 +2569,402 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       model_id: "test/model",
       version: "v1"
     }
+  end
+
+  defp compatibility_single_wave_schedule(
+         authority,
+         management_class,
+         load_result \\ compatibility_load_result(:valid),
+         candidate_state \\ :cold
+       ) do
+    configured_address = SingleNode.target()
+
+    configured_target =
+      Target.grpc_compat(
+        host: Keyword.fetch!(configured_address, :host),
+        port: Keyword.fetch!(configured_address, :port),
+        metadata: %{capacity_management_class: management_class}
+      )
+
+    node_id = claim_node_id()
+
+    node = %Node{
+      id: node_id,
+      display_name: "compatibility-node",
+      hostname: "compatibility-node.local"
+    }
+
+    response =
+      case candidate_state do
+        :cold ->
+          production_status(node, configured_address, [])
+
+        :loaded ->
+          node
+          |> production_status(configured_address, [%{model_id: "test/model", version: "v1"}])
+          |> Map.put(:runtime_model_placements, [
+            %{
+              model_ref: %{model_id: "test/model", version: "v1"},
+              placement_state: :PLACEMENT_STATE_LOADED,
+              active_request_count: 0,
+              max_concurrency: 2
+            }
+          ])
+      end
+
+    @compatibility_single_wave_client.configure(self(), response, load_result)
+
+    put_inference(
+      allow_static_runtime_target_fallback: true,
+      runtime_endpoint_targets: [],
+      runtime_client_targets: [configured_address]
+    )
+
+    assert {:ok, schedule} =
+             MultiNode.schedule(
+               canonical_request(),
+               status_client: @compatibility_single_wave_client,
+               active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+               runtime_endpoint_targets_provider: fn {:ok, []} -> [configured_target] end,
+               dispatch_capacity_authority: authority
+             )
+
+    {schedule, node_id}
+  end
+
+  defp compatibility_load_result(:valid) do
+    %Operation.EnsureModelLoadedResult{
+      already_loaded: false,
+      placement_state: :loaded,
+      worker_supports_prompt_token_ids: true,
+      placement_capacity: compatibility_placement_capacity("test/model"),
+      placement_capacity_evidence_state: :valid
+    }
+  end
+
+  defp compatibility_load_result(:absent) do
+    %Operation.EnsureModelLoadedResult{
+      already_loaded: false,
+      placement_state: :loaded,
+      worker_supports_prompt_token_ids: true,
+      placement_capacity: nil,
+      placement_capacity_evidence_state: :absent
+    }
+  end
+
+  defp compatibility_load_result(:legacy_absent) do
+    :absent
+    |> compatibility_load_result()
+    |> Map.delete(:placement_capacity_evidence_state)
+  end
+
+  defp compatibility_load_result(:invalid) do
+    %Operation.EnsureModelLoadedResult{
+      already_loaded: false,
+      placement_state: :loaded,
+      worker_supports_prompt_token_ids: true,
+      placement_capacity: nil,
+      placement_capacity_evidence_state: :invalid
+    }
+  end
+
+  defp compatibility_load_result(:mismatched) do
+    %Operation.EnsureModelLoadedResult{
+      already_loaded: false,
+      placement_state: :loaded,
+      worker_supports_prompt_token_ids: true,
+      placement_capacity: compatibility_placement_capacity("other/model"),
+      placement_capacity_evidence_state: :valid
+    }
+  end
+
+  defp compatibility_placement_capacity(model_id) do
+    PlacementCapacity.new(%{
+      model_ref: %{model_id: model_id, version: "v1"},
+      active_request_count: 0,
+      max_concurrency: 2,
+      source: :ensure_model_loaded_result
+    })
+  end
+
+  defp monitor_snapshot_schedule(authority, final_scenario) do
+    configured_target = SingleNode.target()
+    now = DateTime.utc_now()
+    initial_at = DateTime.add(now, -2, :second)
+    acquisition_at = DateTime.add(now, -1, :second)
+    node = insert_admitted_node!(configured_target, initial_at)
+
+    target =
+      Target.grpc_compat(
+        host: Keyword.fetch!(configured_target, :host),
+        port: Keyword.fetch!(configured_target, :port),
+        node_id: node.id,
+        metadata: %{
+          authorization: :inference_dispatch,
+          source: :trusted_node_inventory
+        }
+      )
+
+    initial =
+      monitor_snapshot(
+        [monitor_snapshot_candidate(node, target, initial_at)],
+        initial_at
+      )
+
+    acquisition =
+      monitor_snapshot_acquisition(final_scenario, node, target, acquisition_at)
+
+    final = monitor_snapshot_final(final_scenario, node, target, now)
+
+    snapshot_reads =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Agent, fn -> 0 end},
+          id: {__MODULE__, :monitor_snapshot_schedule_snapshot_reads}
+        )
+      )
+
+    effective_reads =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Agent, fn -> 0 end},
+          id: {__MODULE__, :monitor_snapshot_schedule_effective_reads}
+        )
+      )
+
+    effective_targets_provider = fn {:ok, [^target]} ->
+      read_count = Agent.get_and_update(effective_reads, fn count -> {count, count + 1} end)
+
+      case {final_scenario, read_count} do
+        {:target_removed_before_acquisition, count} when count >= 1 -> []
+        {:target_removed_before_final, count} when count >= 2 -> []
+        _available -> [target]
+      end
+    end
+
+    snapshot_provider = fn effective_targets, _active_targets, _opts ->
+      read_count = Agent.get_and_update(snapshot_reads, fn count -> {count, count + 1} end)
+
+      result =
+        monitor_snapshot_schedule_result(
+          effective_targets,
+          target,
+          read_count,
+          initial,
+          acquisition,
+          final,
+          now
+        )
+
+      persist_monitor_snapshot_evidence(result)
+      result
+    end
+
+    put_inference(
+      allow_static_runtime_target_fallback: true,
+      runtime_endpoint_targets: [],
+      runtime_client_targets: [configured_target]
+    )
+
+    assert {:ok, schedule} =
+             MultiNode.schedule(
+               canonical_request(),
+               active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+               runtime_endpoint_targets_provider: effective_targets_provider,
+               production_candidate_snapshot_provider: snapshot_provider,
+               dispatch_capacity_authority: authority
+             )
+
+    {schedule, node, snapshot_reads}
+  end
+
+  defp monitor_snapshot_schedule_result(
+         effective_targets,
+         target,
+         read_count,
+         initial,
+         acquisition,
+         final,
+         now
+       ) do
+    if effective_targets == [target] do
+      case read_count do
+        0 -> {:ok, initial}
+        1 -> {:ok, acquisition}
+        _later -> final
+      end
+    else
+      {:ok, monitor_snapshot([], now)}
+    end
+  end
+
+  defp monitor_snapshot_acquisition(:degraded_acquisition, node, target, observed_at) do
+    degraded_node = %{node | health: :degraded}
+
+    monitor_snapshot(
+      [monitor_snapshot_candidate(degraded_node, target, observed_at)],
+      observed_at
+    )
+  end
+
+  defp monitor_snapshot_acquisition(_scenario, node, target, observed_at) do
+    monitor_snapshot(
+      [monitor_snapshot_candidate(node, target, observed_at)],
+      observed_at
+    )
+  end
+
+  defp monitor_snapshot_final(:eligible, node, target, observed_at) do
+    placement = monitor_snapshot_placement(0, 2)
+
+    {:ok,
+     monitor_snapshot(
+       [monitor_snapshot_candidate(node, target, observed_at, placements: [placement])],
+       observed_at
+     )}
+  end
+
+  defp monitor_snapshot_final(:aggregate_exhausted, node, target, observed_at) do
+    {:ok,
+     monitor_snapshot(
+       [
+         monitor_snapshot_candidate(node, target, observed_at,
+           active_request_count: 2,
+           max_concurrency: 2
+         )
+       ],
+       observed_at
+     )}
+  end
+
+  defp monitor_snapshot_final(:placement_exhausted, node, target, observed_at) do
+    placement = monitor_snapshot_placement(1, 1)
+
+    {:ok,
+     monitor_snapshot(
+       [monitor_snapshot_candidate(node, target, observed_at, placements: [placement])],
+       observed_at
+     )}
+  end
+
+  defp monitor_snapshot_final(:placement_missing, node, target, observed_at) do
+    {:ok,
+     monitor_snapshot(
+       [monitor_snapshot_candidate(node, target, observed_at)],
+       observed_at
+     )}
+  end
+
+  defp monitor_snapshot_final(:degraded, node, target, observed_at) do
+    degraded_node = %{node | health: :degraded}
+    placement = monitor_snapshot_placement(0, 2)
+
+    {:ok,
+     monitor_snapshot(
+       [monitor_snapshot_candidate(degraded_node, target, observed_at, placements: [placement])],
+       observed_at
+     )}
+  end
+
+  defp monitor_snapshot_final(scenario, node, target, observed_at)
+       when scenario in [
+              :degraded_acquisition,
+              :target_removed_before_acquisition,
+              :target_removed_before_final
+            ],
+       do: monitor_snapshot_final(:eligible, node, target, observed_at)
+
+  defp monitor_snapshot_final(:snapshot_unavailable, _node, _target, _observed_at) do
+    {:error, :candidate_snapshot_unavailable}
+  end
+
+  defp monitor_snapshot_final(scenario, node, target, observed_at)
+       when scenario in [:stale, :unhealthy, :disappeared] do
+    reason_code =
+      case scenario do
+        :stale -> "node_observation_stale"
+        :unhealthy -> "node_health_unhealthy"
+        :disappeared -> "node_not_active"
+      end
+
+    rejection = %CandidateSnapshot.Rejection{
+      target: target,
+      node_id: node.id,
+      observed_at: observed_at,
+      reason_codes: [reason_code],
+      diagnostics: %{fact: Atom.to_string(scenario)},
+      candidate_source: "monitor_snapshot"
+    }
+
+    {:ok, monitor_snapshot([], observed_at, [rejection])}
+  end
+
+  defp monitor_snapshot(candidates, observed_at, rejections \\ []) do
+    %CandidateSnapshot{
+      observed_at: observed_at,
+      freshness_threshold_ms: 30_000,
+      candidates: candidates,
+      rejections: rejections
+    }
+  end
+
+  defp monitor_snapshot_candidate(node, target, observed_at, opts \\ []) do
+    active_request_count = Keyword.get(opts, :active_request_count, 0)
+    max_concurrency = Keyword.get(opts, :max_concurrency, 2)
+
+    %Candidate{
+      target: target,
+      node: %{node | last_heartbeat_at: observed_at},
+      heartbeat_id: System.unique_integer([:positive]),
+      observed_at: observed_at,
+      availability: :available,
+      worker_state: :idle,
+      active_request_count: active_request_count,
+      max_concurrency: max_concurrency,
+      aggregate_capacity_evidence: %{
+        active_request_count: active_request_count,
+        runtime_concurrency_limit: max_concurrency,
+        validity: :valid
+      },
+      placements: Keyword.get(opts, :placements, []),
+      runtime_memory_budgets: [],
+      runtime_prefix_cache_statuses: [],
+      supports_prompt_token_ids: true,
+      candidate_source: "monitor_snapshot"
+    }
+  end
+
+  defp monitor_snapshot_placement(active_request_count, max_concurrency) do
+    Placement.new(%{
+      model_ref: %{model_id: "test/model", version: "v1"},
+      state: :loaded,
+      capacity: %{
+        active_request_count: active_request_count,
+        max_concurrency: max_concurrency,
+        source: :runtime
+      }
+    })
+  end
+
+  defp persist_monitor_snapshot_evidence({:ok, snapshot}) do
+    Enum.each(snapshot.candidates, fn candidate ->
+      assert {:ok, _evidence} =
+               Orchard.DispatchCapacity.record_capacity_evidence(candidate.node.id, %{
+                 active_request_count: candidate.active_request_count,
+                 observed_at: candidate.observed_at,
+                 runtime_concurrency_limit: candidate.max_concurrency,
+                 validity: :valid
+               })
+    end)
+  end
+
+  defp persist_monitor_snapshot_evidence({:error, _reason}), do: :ok
+
+  defp assert_acceptance_gate_available(authority, node_id) do
+    assert {:ok, lease} =
+             QueueManager.acquire_acceptance_gate(node_id, authority: authority)
+
+    assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
   end
 
   defp capacity_schedule(authority, node_id, request_id) do

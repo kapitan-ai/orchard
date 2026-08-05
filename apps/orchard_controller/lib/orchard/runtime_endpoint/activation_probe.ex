@@ -13,6 +13,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   alias Orchard.ControlPlane
   alias Orchard.Inference
+  alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.{BeamClient, GrpcCompatibilityClient}
 
@@ -66,6 +67,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
     client = Keyword.get(opts, :client, Inference.runtime_endpoint_client())
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
+    heartbeat_context = Keyword.get(opts, :heartbeat_context, NodeHeartbeats)
 
     with :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
          true <- allowed_client?(client) do
@@ -79,6 +81,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
         |> Enum.flat_map(&probe_target(&1, client, timeout, observed_at))
 
       _ = Nodes.sweep_stale_node_heartbeats(observed_at)
+      safe_prune_heartbeats(heartbeat_context, observed_at)
 
       {:ok, results}
     else
@@ -117,6 +120,19 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   catch
     kind, reason ->
       Logger.debug("Activation status probe aborted: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  defp safe_prune_heartbeats(heartbeat_context, observed_at) do
+    _ = heartbeat_context.prune_expired(observed_at)
+    :ok
+  rescue
+    exception ->
+      Logger.debug("Node heartbeat retention failed: #{Exception.message(exception)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.debug("Node heartbeat retention aborted: #{inspect({kind, reason})}")
       :ok
   end
 

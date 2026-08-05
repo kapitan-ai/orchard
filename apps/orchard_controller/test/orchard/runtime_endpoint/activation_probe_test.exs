@@ -3,7 +3,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
 
   alias Orchard.Inference
   alias Orchard.Nodes
-  alias Orchard.Nodes.Node
+  alias Orchard.Nodes.{Node, NodeHeartbeat}
   alias Orchard.RuntimeEndpoint.ActivationProbe
   alias Orchard.RuntimeEndpoint.Target
 
@@ -24,6 +24,10 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
     def connect(target), do: {:ok, %{target: target}}
     def disconnect(_connection), do: :ok
     def status(_connection, _opts), do: {:ok, %{}}
+  end
+
+  defmodule RaisingHeartbeatContext do
+    def prune_expired(_observed_at), do: raise("retention unavailable")
   end
 
   setup do
@@ -145,6 +149,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
              )
 
     assert Repo.get!(Node, node.id).health == :degraded
+    assert Repo.aggregate(NodeHeartbeat, :count) == 0
   end
 
   test "SPEC.md §4.5 seam rejection during probe does not demote" do
@@ -178,6 +183,16 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
 
     reloaded = Repo.get!(Node, node.id)
     assert reloaded.health == :healthy
+    assert Repo.aggregate(NodeHeartbeat, :count) == 0
+  end
+
+  test "SPEC.md §8.5 retention failure cannot interrupt the leader probe seam" do
+    assert {:ok, []} =
+             ActivationProbe.run_once(
+               client: IdleClient,
+               heartbeat_context: RaisingHeartbeatContext,
+               targets: []
+             )
   end
 
   test "SPEC.md §4.5 standby controller run_once writes nothing" do

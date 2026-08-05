@@ -44,6 +44,7 @@ defmodule Orchard.Nodes.Node do
     field(:tool_readiness, :map, default: %{})
     field(:agent_version, :string)
     field(:last_heartbeat_at, :utc_datetime_usec)
+    field(:last_transport_failure_at, :utc_datetime_usec)
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -94,7 +95,8 @@ defmodule Orchard.Nodes.Node do
       :capabilities,
       :tool_readiness,
       :agent_version,
-      :last_heartbeat_at
+      :last_heartbeat_at,
+      :last_transport_failure_at
     ])
     |> validate_required([
       :hostname,

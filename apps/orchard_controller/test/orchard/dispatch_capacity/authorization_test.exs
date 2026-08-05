@@ -150,6 +150,32 @@ defmodule Orchard.DispatchCapacity.AuthorizationTest do
              )
   end
 
+  test "ADR 0013 live availability cannot improve Controller-owned degraded health" do
+    node = %{active_node() | health: :degraded}
+
+    observation =
+      Observation.new(%{
+        target: Target.beam(node.id, address: "orchard_node_agent@127.0.0.1"),
+        observed_at: @now,
+        availability: :available,
+        aggregate_active_request_count: 0,
+        aggregate_max_concurrency: 2
+      })
+
+    assert {:ok, input} =
+             Authorization.input_for_observation(node, observation,
+               authority: %Authority{enforcement_phase: :enforcing},
+               policy: %Policy{policy_state: :enforcing, controller_dispatch_ceiling: 2},
+               evidence: evidence(node.id),
+               now: @now
+             )
+
+    assert input.health == :degraded
+    result = Evaluator.evaluate(input)
+    refute result.eligible?
+    assert :node_health_degraded in result.reason_codes
+  end
+
   test "SPEC 4.6.2 current authenticated evidence authorizes newer live capacity operands" do
     node = active_node()
     observed_at = DateTime.add(@now, 1, :second)

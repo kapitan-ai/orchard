@@ -112,22 +112,20 @@ defmodule OrchardCLI.Commands.RequestsTest do
              }
     end
 
-    test "documented legacy scheduler decisions without candidates render an empty explanation shape" do
+    test "legacy scheduler decisions without candidates are not explanations" do
       request =
         create_request!(%{
           public_id: "resp_cli_legacy_scheduler_decision",
           scheduler_decision: %{"strategy" => "single_node", "node_id" => nil}
         })
 
-      assert {:ok, output} = RequestsCmd.run(["inspect", request.public_id, "--json"])
+      assert {:error, output, 1} =
+               RequestsCmd.run(["inspect", request.public_id, "--json"])
 
       assert Jason.decode!(output) == %{
-               "request_id" => request.public_id,
-               "selected_node_id" => nil,
-               "selection_tier" => nil,
-               "scored_candidates" => [],
-               "rejected_candidates" => [],
-               "skipped_candidates" => []
+               "object" => "error",
+               "code" => "scheduler_explanation_not_found",
+               "message" => "Scheduler explanation was not found."
              }
     end
 

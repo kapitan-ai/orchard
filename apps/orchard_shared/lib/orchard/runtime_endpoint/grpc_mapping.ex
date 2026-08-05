@@ -8,7 +8,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcMapping do
     UnloadModelRequest
   }
 
-  alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
 
   @spec ensure_model_loaded_request_to_proto(Operation.EnsureModelLoadedRequest.t()) ::
           EnsureModelLoadedRequest.t()
@@ -27,15 +27,60 @@ defmodule Orchard.RuntimeEndpoint.GrpcMapping do
   @spec ensure_model_loaded_result_from_response(EnsureModelLoadedResponse.t()) ::
           Operation.EnsureModelLoadedResult.t()
   def ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{} = response) do
+    {placement_capacity_evidence_state, placement_capacity} =
+      ensure_model_loaded_placement_capacity(response)
+
     %Operation.EnsureModelLoadedResult{
       already_loaded: response.already_loaded,
       placement_state: normalize_placement_state(response.placement_state),
       failure_category: normalize_failure_category(response.failure_category),
       failure_code: empty_to_nil(response.failure_code),
       failure_message: empty_to_nil(response.failure_message),
-      worker_supports_prompt_token_ids: response.worker_supports_prompt_token_ids
+      worker_supports_prompt_token_ids: response.worker_supports_prompt_token_ids,
+      placement_capacity: placement_capacity,
+      placement_capacity_evidence_state: placement_capacity_evidence_state
     }
   end
+
+  defp ensure_model_loaded_placement_capacity(%EnsureModelLoadedResponse{} = response) do
+    raw_capacity = Map.get(response, :placement_capacity)
+
+    cond do
+      is_nil(raw_capacity) ->
+        {:absent, nil}
+
+      normalize_placement_state(response.placement_state) != :loaded ->
+        {:invalid, nil}
+
+      capacity =
+          placement_capacity_from_runtime_model_placement(
+            raw_capacity,
+            :ensure_model_loaded_result
+          ) ->
+        {:valid, capacity}
+
+      true ->
+        {:invalid, nil}
+    end
+  end
+
+  @spec placement_capacity_from_runtime_model_placement(term(), atom() | String.t()) ::
+          PlacementCapacity.t() | nil
+  def placement_capacity_from_runtime_model_placement(nil, _source), do: nil
+
+  def placement_capacity_from_runtime_model_placement(%{} = placement, source) do
+    capacity =
+      PlacementCapacity.new(%{
+        model_ref: map_value(placement, :model_ref),
+        active_request_count: map_value(placement, :active_request_count),
+        max_concurrency: map_value(placement, :max_concurrency),
+        source: source
+      })
+
+    if PlacementCapacity.known?(capacity), do: capacity
+  end
+
+  def placement_capacity_from_runtime_model_placement(_placement, _source), do: nil
 
   @spec unload_model_request_to_proto(Operation.UnloadModelRequest.t()) :: UnloadModelRequest.t()
   def unload_model_request_to_proto(%Operation.UnloadModelRequest{} = request) do
@@ -107,6 +152,10 @@ defmodule Orchard.RuntimeEndpoint.GrpcMapping do
   defp empty_to_nil(nil), do: nil
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
+
+  defp map_value(%{} = map, key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
 
   defp list_value(attrs, key) do
     case Operation.value(attrs, key) do

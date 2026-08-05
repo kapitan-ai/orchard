@@ -200,12 +200,25 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
       GrpcMapping.ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{
         already_loaded: true,
         placement_state: :PLACEMENT_STATE_LOADED,
-        worker_supports_prompt_token_ids: true
+        worker_supports_prompt_token_ids: true,
+        placement_capacity: %RuntimeModelPlacement{
+          model_ref: rpc_model_ref(),
+          active_request_count: 1,
+          max_concurrency: 2
+        }
       })
 
     assert loaded.already_loaded == true
     assert loaded.placement_state == :loaded
     assert loaded.worker_supports_prompt_token_ids == true
+
+    assert %PlacementCapacity{
+             status: :known,
+             model_ref: %{model_id: @model_id, version: @version},
+             active_request_count: 1,
+             max_concurrency: 2,
+             source: :ensure_model_loaded_result
+           } = loaded.placement_capacity
 
     failed =
       GrpcMapping.ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{
