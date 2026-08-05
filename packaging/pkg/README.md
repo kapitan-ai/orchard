@@ -313,8 +313,17 @@ launchd plists or global environment.
 # Example: rollback to stub backend
 echo 'ORCHARD_WORKER_BACKEND=stub' | sudo tee \
   '/Library/Application Support/Orchard/config/node-agent.env'
-sudo launchctl kickstart -k system/com.orchard.node-agent
+sudo orchardctl stop
+sudo orchardctl start
 ```
+
+Remove that env file (or set `ORCHARD_WORKER_BACKEND=mlx`) and restart the same
+way to restore MLX inference.
+
+`orchardctl stop` and `orchardctl start` act on the services selected by the
+installed role. Restart the node-agent through them rather than through direct
+`launchctl` control: SPEC §11.4 places manual Node Agent launches that bypass
+the `orchardctl start` eligibility path outside the managed handover guarantee.
 
 No `ORCHARD_WORKER_GENERATION_MODE` override is required for this rollback path;
 when the backend is `stub` and the mode env var is unset, packaged runtime
@@ -728,7 +737,8 @@ To remove runtime licensing impact quickly, set:
 ORCHARD_LICENSE_ENFORCEMENT=off
 ```
 
-Then restart the node-agent service.
+Then restart the node-agent service through the supported managed lifecycle
+path described in [Env File Overrides](#env-file-overrides).
 
 If you need to intentionally reset Orchard back to `missing_bundle`, remove the
 local bundle file:
