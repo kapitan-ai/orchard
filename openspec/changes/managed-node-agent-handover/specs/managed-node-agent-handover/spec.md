@@ -44,13 +44,14 @@ Missing, incomplete, or uncertain evidence SHALL deny start but SHALL NOT consti
 
 ### Requirement: Relaunch Prevention And Exact Exit Precede Active Mutation
 
-While retaining the shared exclusion boundary, a Managed Node Agent Handover SHALL durably record initial operation evidence and establish protected durable start suppression before final process observation.
-Under that suppression and immediately before `bootout`, the owner SHALL either capture non-reusable evidence identifying exactly one running outgoing instance and durably add it to the operation record, or affirmatively prove that no managed instance exists.
-The captured identity SHALL remain stable through `bootout`, and an additional, replacement, or identity-unstable managed process SHALL fail the gate.
-The handover SHALL then prevent relaunch through verified launchd job-domain control such as successful `bootout` followed by proof that the job is unloaded.
-Relaunch prevention SHALL NOT edit or delete the protected launchd plist before the proof gate.
-When an outgoing instance was captured, the owner SHALL wait after `bootout` for proof that every captured managed instance exited before active payload activation or mutation of the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
-Only every captured-instance exit or affirmative absence proven under suppression immediately before `bootout` SHALL satisfy the gate, and failed observation SHALL NOT be reinterpreted as later absence.
+Every owner-side path that unloads or terminates the managed Node Agent job SHALL satisfy the Managed Node Agent Process Fence while retaining the shared exclusion boundary, and Managed Node Agent Handover, managed stop, start-attempt precondition establishment, and managed recovery SHALL all be such paths.
+The fence SHALL first establish protected durable start suppression, setting eligibility `suppressed`, invalidating any outstanding one-shot authorization, and applying persistent launchd job-domain disablement, before final process observation.
+Under that suppression and immediately before `bootout` or any other termination, the owner SHALL either capture non-reusable evidence identifying exactly one stable running instance and durably add it to the operation record, or affirmatively prove and durably record that no managed instance exists.
+The captured identity SHALL remain stable through shutdown, and an additional, replacement, identity-unstable, or unknown managed process state SHALL fail the fence, with unknown state never becoming proven absence.
+The owner SHALL then prevent relaunch through verified launchd job-domain control such as successful `bootout` followed by proof that the job is unloaded, and SHALL NOT edit or delete the protected launchd plist before the proof gate.
+When an instance was captured, the owner SHALL wait within a bounded period for proof that every captured managed instance exited before active payload activation or mutation of the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
+Only every captured-instance exit or affirmative absence recorded under suppression immediately before shutdown SHALL satisfy the fence, failed observation SHALL NOT be reinterpreted as later absence, and post-shutdown non-observation SHALL NOT substitute for pre-shutdown absence evidence.
+A Managed Node Agent Handover SHALL durably record initial operation evidence before satisfying the fence, and managed stop and start-attempt precondition establishment SHALL reuse only this fence rather than payload staging or activation.
 
 #### Scenario: Managed replacement reaches the mutation gate
 
@@ -101,7 +102,9 @@ An established relaunch-prevention state SHALL NOT be deliberately reversed mere
 
 Every supported managed Node Agent stop, including `orchardctl stop` and any Orchard.app-initiated managed stop, SHALL acquire the canonical lock and retain it for the complete stop.
 Before `bootout`, the stop owner SHALL durably set Managed Node Agent Start Eligibility State to `suppressed`, invalidate any pending or non-terminal one-shot launch authorization, and apply persistent launchd job-domain disablement.
-It SHALL then unload the launchd job and prove exact captured-instance exit or affirmative managed-process absence before releasing the lock.
+It SHALL satisfy the Managed Node Agent Process Fence, capturing the exact stable instance or recording affirmative absence under suppression immediately before `bootout`, and SHALL prove exact captured-instance exit or affirmative managed-process absence before releasing the lock.
+A managed stop SHALL reuse only that process fence and SHALL NOT perform payload staging or activation.
+An instance that survives `bootout` unobserved SHALL NOT be reported as stopped.
 Failure to establish suppression, prove the job unloaded, or prove every captured instance exited SHALL fail the stop closed with durable suppression retained.
 A managed stop SHALL NOT leave eligibility `enabled` or `one_shot_pending`.
 
@@ -122,6 +125,12 @@ A managed stop SHALL NOT leave eligibility `enabled` or `one_shot_pending`.
 - **WHEN** a managed stop cannot prove that every captured managed Node Agent instance exited within its bound
 - **THEN** it fails closed with durable suppression retained rather than reporting a successful stop
 
+#### Scenario: Stop observes process state before shutdown
+
+- **WHEN** a managed stop reaches `bootout` without having observed managed Node Agent process state under suppression immediately beforehand
+- **THEN** it fails the fence rather than inferring absence from a post-`bootout` look
+- **AND** a hung instance that survives `bootout` unobserved is never reported as a successful stop
+
 ### Requirement: Protected Start Eligibility Enforces Path-Specific Start Policies
 
 Launchd plist presence, launchd job load state, managed Node Agent process presence, Managed Node Agent Start Eligibility State, and canonical lock ownership SHALL be independent observable dimensions, and no dimension SHALL be inferred from another.
@@ -134,13 +143,18 @@ Under `enabled` with exactly one verified healthy managed instance running from 
 `one_shot_pending` SHALL be non-transferable: only the exact live recorded owner instance MAY continue its own bounded attempt, and a different owner, a recorded owner that is not observably live, or any uncertainty SHALL normalize through managed recovery to `suppressed` with a new start-attempt identity.
 An owner SHALL NOT release the canonical lock while its own start attempt remains pending.
 Each managed start attempt SHALL record a distinct non-terminal start identity and evidence record.
-While retaining the canonical lock with eligibility still `suppressed`, the owner SHALL verify or establish the unloaded, not-running precondition rather than assume it: `bootout` a loaded job and then prove it unloaded with no managed Node Agent process running, continue when the job is already unloaded with no managed process running, and otherwise fail closed with durable suppression retained.
+While retaining the canonical lock with eligibility still `suppressed`, the owner SHALL prove both that the launchd job is unloaded and that no managed Node Agent process is running before recording any authorization or bootstrapping, verifying or establishing that state rather than assuming it.
+A loaded job SHALL require the Managed Node Agent Process Fence: capture the exact non-reusable identity of exactly one stable live instance under suppression immediately before `bootout` or record affirmative absence at that observation, then prove the job unloaded and prove every captured instance exited.
+An already unloaded job with affirmatively proven managed-process absence MAY proceed.
+In any other case, including an unloaded job together with a live, additional, replacement, identity-unstable, or unknown managed process, the owner SHALL NOT bootstrap and the attempt SHALL fail closed with durable suppression retained for managed recovery, and unknown process state SHALL NOT become proven absence.
 The current canonical lock owner SHALL then lift persistent job-domain disablement for exactly one explicit bootstrap, durably record one single-consumer one-shot authorization, record eligibility as `one_shot_pending`, then bootstrap and verify the intended Node Agent instance from coherent active state.
 That authorization SHALL carry, and the child-side gate SHALL match without acquiring the canonical lock, the unique start-attempt identity, the exact non-reusable owner process identity expressed as its process id with a kernel-supplied start generation or start time or equivalent non-reusable discriminator, a per-bootstrap nonce, the intended launchd label, the expected active or staged generation and executable identity, the eligibility generation, and the single-consumer claim state.
 The gate SHALL permit normal `RunAtLoad` and `KeepAlive` operation under `enabled`, deny under `suppressed`, and under `one_shot_pending` permit execution only by atomically claiming a matching unclaimed authorization whose recorded owner instance is observably live, treating process-id reuse, a stale generation or nonce, a replacement owner, a launchd retry, any mismatch, and any uncertainty as denial.
 At most one child SHALL claim that authorization, a losing or retrying child SHALL exit without serving, and the gate SHALL NOT reclaim a claimed authorization or enable durable eligibility itself.
-A claimed child SHALL record its own exact non-reusable child identity and run provisional without adopting cluster identity or serving, observing the exact recorded owner instance with race-safe exit observation and re-verification, and SHALL exit without serving if that owner instance is not observably the same live instance.
-Only after the same owner verifies that exact claimed child SHALL it atomically mark the start attempt terminal coherent and enable durable eligibility bound to that child, after which the child MAY serve.
+A claimed child SHALL record its own exact non-reusable child identity and run provisional without adopting cluster identity or serving, observing the exact recorded owner instance.
+The owner's single atomic transition marking the start attempt terminal coherent, setting durable eligibility `enabled`, and binding acceptance to that exact claimed child SHALL be the sole linearization point at which the child may serve.
+On observing that the recorded owner instance has exited, been replaced, or become uncertain, a provisional child SHALL perform a fresh consistent authoritative read of durable state rather than exit on that observation alone.
+It SHALL leave provisional state, serve, and stop monitoring owner liveness only if one atomically committed record shows the start attempt terminal coherent for this attempt and eligibility generation, eligibility `enabled`, and acceptance bound to this exact child identity; otherwise it SHALL exit without adopting cluster identity or serving, and incomplete, torn, or stale state SHALL count as non-acceptance.
 Failure, mismatch, uncertainty, or owner death before that atomic transition SHALL invalidate authorization, cause any provisional child to exit without serving, and keep or restore durable suppression including persistent job-domain disablement.
 Owner death after a successful atomic terminal transition SHALL be normal operation and SHALL NOT invalidate the accepted instance.
 After coherent Orchard.app success or successful required rollback, the app MAY restore prior loaded-service state for services still selected by the resulting role only through this protocol.
@@ -175,6 +189,17 @@ The supported later PKG start path SHALL be `orchardctl start` using this protoc
 - **WHEN** `orchardctl start` acquires the canonical lock and verifies prior terminal coherent evidence and coherent installed state
 - **THEN** it records distinct non-terminal start-attempt evidence, verifies or establishes an unloaded job with no managed Node Agent process running, lifts job-domain disablement for one explicit bootstrap, creates one operation-bound authorization, bootstraps and verifies the intended instance, and only then atomically records terminal coherent start evidence with durable enabled eligibility
 - **AND** it retains the canonical lock through terminal reporting
+
+#### Scenario: Start attempt finds an unloaded job with a live orphan process
+
+- **WHEN** an earlier managed stop or handover unloaded the job but could not prove its captured instance exited, leaving eligibility `suppressed`, the job provably unloaded, and a managed Node Agent process provably still running
+- **THEN** the start attempt does not treat the unloaded job as satisfying the precondition, records no authorization, and does not bootstrap
+- **AND** it fails closed with durable suppression retained for managed recovery, so no second Node Agent runs against the live Node Identity Root
+
+#### Scenario: Start attempt cannot determine process state
+
+- **WHEN** a start attempt from `suppressed` cannot affirmatively determine whether a managed Node Agent process is running
+- **THEN** it treats that unknown state as neither absence nor a satisfied precondition and fails closed with durable suppression retained
 
 #### Scenario: Start attempt finds the suppressed job already loaded
 
@@ -227,10 +252,17 @@ The supported later PKG start path SHALL be `orchardctl start` using this protoc
 - **WHEN** a launchd retry or a replacement child reaches the gate after another child already claimed the matching authorization
 - **THEN** the later child finds the authorization claimed, exits without serving, and does not reclaim it
 
-#### Scenario: Provisional child loses its owner
+#### Scenario: Provisional child loses its owner before acceptance
 
-- **WHEN** a child has claimed the authorization and is running provisional while its recorded owner instance dies or is replaced
-- **THEN** the child observes that the exact recorded owner instance is no longer the same live instance and exits without adopting cluster identity or serving
+- **WHEN** a child has claimed the authorization and is running provisional while its recorded owner instance dies or is replaced before the atomic terminal transition
+- **THEN** the child performs a fresh consistent authoritative read, finds no committed record accepting its exact identity, and exits without adopting cluster identity or serving
+- **AND** incomplete, torn, or stale durable state counts as non-acceptance
+
+#### Scenario: Owner exits immediately after accepting its child
+
+- **WHEN** the owner completes the atomic transition binding acceptance to the exact claimed child, then reports terminal state, releases the lock, and exits, so the child observes owner-instance loss
+- **THEN** the child's fresh authoritative read finds the committed terminal coherent, `enabled`, and acceptance record bound to its exact identity
+- **AND** it leaves provisional state, serves, and stops monitoring owner liveness rather than exiting on the observed owner loss
 
 #### Scenario: Non-Node-Agent role service starts normally
 

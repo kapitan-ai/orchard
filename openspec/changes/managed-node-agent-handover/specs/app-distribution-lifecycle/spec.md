@@ -25,7 +25,7 @@ The wait SHALL be bounded, and failed final observation, unproven captured-insta
 
 An interrupted or uncertain app-owned handover SHALL be recovered only by rerunning the applicable app lifecycle under the shared exclusion boundary.
 Missing, incomplete, or uncertain recovery evidence SHALL keep start eligibility suppressed but SHALL NOT prevent a recovery owner from acquiring the canonical kernel lock.
-Recovery SHALL record or reconcile initial evidence, establish suppression before final process observation or protected reconciliation, prove every captured outgoing-instance exit or affirmative absence under suppression immediately before `bootout`, verify or restore coherent app-owned state, and mark handover or recovery evidence terminal coherent before permitting a later managed start.
+Recovery SHALL record or reconcile initial evidence, satisfy the Managed Node Agent Process Fence before protected reconciliation, prove every captured outgoing-instance exit or affirmative absence recorded under suppression immediately before shutdown, verify or restore coherent app-owned state, and mark handover or recovery evidence terminal coherent before permitting a later managed start.
 
 #### Scenario: App recovers an interrupted transaction
 
@@ -41,7 +41,8 @@ App-owned install and update SHALL preflight before stopping services.
 After any post-mutation failure in app-owned install, update, or uninstall, Orchard.app SHALL attempt complete rollback of the prior app-owned payload, command links, launchd plists, role marker, and loaded-service state.
 The app SHALL report whether rollback completed successfully.
 If rollback cannot be completed or verified, the app lifecycle SHALL classify the installed state as uncertain, keep the protected Node Agent start eligibility suppressed across reboot and launchd retries through persistent launchd job-domain disablement and launch-gate denial, fail closed for the affected lifecycle role, and SHALL NOT start the Node Agent.
-After successful rollback, any prior-loaded-state restoration SHALL use a distinct start-attempt evidence record, verification or establishment of an unloaded job with no managed Node Agent process running, operation-bound single-consumer one-shot authorization, explicit bootstrap, intended-instance verification, and atomic terminal coherent and enabled transition under the same canonical lock.
+After successful rollback, any prior-loaded-state restoration SHALL use a distinct start-attempt evidence record, proof that the launchd job is unloaded and that no managed Node Agent process is running before any authorization is recorded, operation-bound single-consumer one-shot authorization, explicit bootstrap, intended-instance verification, and atomic terminal coherent and enabled transition under the same canonical lock.
+An unloaded job accompanied by a live, additional, replacement, identity-unstable, or unknown managed process SHALL NOT satisfy that precondition.
 Failure or owner death before that atomic transition SHALL keep or restore suppression and prevent a provisional Node Agent from continuing.
 
 #### Scenario: Update fails after mutation begins and rollback succeeds

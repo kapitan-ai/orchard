@@ -887,9 +887,17 @@ _Avoid_: reusable launch token, durable enablement, exclusion ownership
 
 **Provisional Node Agent Instance**:
 A child that has claimed a one-shot authorization but has not yet been accepted by its start owner.
-It adopts no cluster identity, does not serve, records its exact non-reusable child identity, and observes the exact recorded owner instance with race-safe exit observation and re-verification.
-It may serve only after that same owner atomically records terminal coherent start evidence and `enabled` eligibility bound to it; owner death or mismatch before that transition makes it exit without serving, while owner death after acceptance is normal and leaves it valid.
+It adopts no cluster identity, does not serve, records its exact non-reusable child identity, and observes the exact recorded owner instance.
+The owner's single atomic commit of terminal coherent start evidence, `enabled` eligibility, and acceptance bound to that exact child is the sole linearization point for serving.
+On observing owner exit, replacement, or uncertain liveness the child performs a fresh consistent authoritative read and serves only if that committed record names its exact identity for this attempt and eligibility generation, dropping owner-liveness monitoring; otherwise it exits without adopting identity or serving, and incomplete, torn, or stale state counts as non-acceptance.
 _Avoid_: accepted instance, blind same-root restart, launchd retry survivor
+
+**Managed Node Agent Process Fence**:
+The shared ordering every owner-side path that unloads or terminates the managed Node Agent job satisfies while holding the Managed Lifecycle Exclusion Boundary, covering Managed Node Agent Handover, managed stop, start-attempt precondition establishment, and Managed Node Agent Recovery.
+It establishes durable suppression, then observes managed process state under that suppression immediately before `bootout` or other termination, captures the exact non-reusable identity of exactly one stable live instance or affirmatively records absence, rejects additional, replacement, identity-unstable, or unknown state, prevents relaunch through verified job-domain control, and proves every captured instance exited within a bounded wait.
+Post-shutdown non-observation never substitutes for pre-shutdown absence evidence, and unknown state never becomes proven absence.
+Managed stop and start-precondition establishment reuse only this fence, not payload staging or activation.
+_Avoid_: post-`bootout` absence inference, plist mutation before the gate, payload activation
 
 **Managed Node Agent Handover**:
 The bounded Orchard.app or PKG active lifecycle interval in which one privileged owner holds the Managed Lifecycle Exclusion Boundary, records initial evidence, establishes durable start suppression, captures stable exact outgoing-instance evidence or proves absence under suppression immediately before `bootout`, prevents relaunch through verified launchd job-domain control, proves every captured-instance exit, activates or mutates coherent installed state, applies the path-specific start decision, and reports the terminal result.
