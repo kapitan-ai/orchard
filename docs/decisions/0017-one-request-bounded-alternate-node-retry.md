@@ -57,7 +57,7 @@ Unknown categories and unknown codes are non-retryable.
 | Runtime `Failed` before Output Commitment with allowlisted transient code and `retryable: true` | Yes | Treat both the code and flag as necessary, not individually sufficient. |
 | Runtime `Failed` with `retryable: false`, deterministic code, or unknown code | No | Preserve the terminal failure. |
 | `runtime_endpoint_missing_terminal`, `runtime_endpoint_duplicate_terminal`, or `runtime_endpoint_post_terminal_event` | No | Preserve PR #160's terminal-conformance classification. |
-| Caller cancellation or disconnect, including `dispatch_capacity_caller_down` | No | Cancellation wins at every retry boundary and records `cancelled`. |
+| Caller cancellation or disconnect, including `dispatch_capacity_caller_down` | No | Cancellation wins at every retry boundary, terminalizes as `request_step.cancelled`, and records `cancelled`. |
 | Original Request deadline expiry | No | Never extend or replace the deadline. |
 | Controller persistence, event-handler, or orchestration failure | No | Terminalize as the existing orchestration failure. |
 | Unresolved capacity release, quarantined execution, or `dispatch_capacity_quarantine_store_unavailable` | No | Do not acquire alternate capacity and record `occupancy_unresolved`. |
@@ -73,9 +73,9 @@ Ordinary dispatch-capacity scarcity resolves after that step exists, so each of 
 Issue #121 excludes queue re-entry and bounds a Request to two attempts, so a dispatch-capacity rejection after `request_step.started` does not requeue into the same lane and this decision makes no claim that it does.
 Any future post-start capacity requeue is separate contract work that must first define a unique attempt identity, its durable step persistence, and its retry metric accounting, because the two-attempt vocabulary here has no identity for a third dispatch of the same logical Request.
 `dispatch_capacity_caller_down`, `dispatch_capacity_request_already_claimed`, `dispatch_capacity_node_identity_mismatch`, and `dispatch_capacity_quarantine_store_unavailable` are excluded from that ordinary scarcity family and keep their own rows.
-`dispatch_capacity_caller_down` is a caller disconnect that the dispatcher already maps to `caller_disconnect`, so it follows the cancellation row, records `cancelled`, and keeps cancellation ahead of every capacity classification.
+`dispatch_capacity_caller_down` is a caller disconnect that the dispatcher already maps to `caller_disconnect`, so it follows the cancellation row, terminalizes as `request_step.cancelled` instead of through the failure path, records `cancelled`, and keeps cancellation ahead of every capacity classification.
 A held claim, a mismatched or unverified candidate identity, and an unresolved quarantine store are fail-closed conditions rather than capacity scarcity, so they fail their named retryability gate rather than the closed taxonomy check and record `occupancy_unresolved`, `identity_unresolved`, and `occupancy_unresolved` respectively.
-This classification is normative for the retry contract and does not claim that the current dispatch-capacity failure wiring already persists these attempt outcomes.
+This classification is normative for the retry contract and does not claim that the current dispatch-capacity terminal wiring already persists these attempt outcomes or already maps `dispatch_capacity_caller_down` onto the cancellation terminal state.
 
 ### Capacity ownership and sequencing
 
@@ -115,15 +115,18 @@ Attempt 1's terminal step must be durable before attempt 2's started step is app
 The coarse Request becomes terminal exactly once after the final attempt or after the retry decision declines attempt 2.
 
 Each attempt records its attempt number, stable Node identifier and capture-safe target reference, start and end timestamps, acceptance state, Output Commitment state and kind, stable failure class and code, runtime retryability flag when present, Controller retry decision and reason, capacity release outcome, exclusion reason, and attempt outcome.
-The Controller evaluates a retry decision on every failed attempt terminal step, and a successful attempt records no retry decision because no retry evaluation occurs.
+The Controller evaluates a retry decision on every unsuccessful attempt terminal step that reaches a retry boundary, meaning `request_step.failed`, `request_step.cancelled`, `request_step.timed_out`, or `request_step.interrupted`.
+A successful attempt terminalizes as `request_step.completed` and records no retry decision because no retry evaluation occurs.
 The closed `retry_decision` vocabulary is `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `identity_unresolved`, `occupancy_unresolved`, `no_alternative_node`, and `retry_exhausted`.
-A failed attempt 1 records `retried` when attempt 2 starts and otherwise records exactly one of the seven decline values.
+An unsuccessful attempt 1 records `retried` when attempt 2 starts and otherwise records exactly one of the seven decline values.
 Each decline value covers one gate, where `output_committed`, `budget_exhausted`, `cancelled`, `identity_unresolved`, `occupancy_unresolved`, and `no_alternative_node` map to the retryability gates in their listed order and `not_retryable` covers the closed failure taxonomy check.
 `identity_unresolved` records that attempt 1's durable Node identity could not be established for hard exclusion, and that state must never be recorded as `no_alternative_node` because an eligible alternative may well have existed.
-Every dispatch-capacity acquisition, acceptance-gate, and revalidation rejection reaches a failed attempt terminal step rather than being treated as a Request that never made an attempt, where ordinary scarcity records `not_retryable` and the carved-out codes record `cancelled`, `occupancy_unresolved`, or `identity_unresolved` according to their rows.
+Every dispatch-capacity acquisition, acceptance-gate, and revalidation rejection reaches an unsuccessful attempt terminal step rather than being treated as a Request that never made an attempt.
+Ordinary scarcity terminalizes as `request_step.failed` and records `not_retryable`, a held claim or an unresolved quarantine store records `occupancy_unresolved`, and a mismatched or unverified candidate identity records `identity_unresolved`.
+`dispatch_capacity_caller_down` is the one member of that set that does not terminalize as a failure, because it reaches the distinct `request_step.cancelled` terminal event and records `cancelled`.
 When several gates fail together, the recorded decline value follows the gate order with the taxonomy check evaluated after cancellation, giving `output_committed`, `budget_exhausted`, `cancelled`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
 That precedence selects only which evidence value is stored because every decline value is equally terminal for retry.
-A failed attempt 2 always records `retry_exhausted` because the two-attempt bound makes further retry structurally impossible, and no other decision value may be overloaded for that state.
+An unsuccessful attempt 2 always records `retry_exhausted` because the two-attempt bound makes further retry structurally impossible, and no other decision value may be overloaded for that state.
 `retry_exhausted` is reserved to attempt 2 and never appears on an attempt 1 step.
 Attempt 2 additionally records the first Node as excluded.
 Raw failure text remains capture-gated.
@@ -172,6 +175,7 @@ Returning a new public no-alternative error is rejected because the original fai
 
 The dispatcher remains a single-target, single-attempt primitive, while the orchestrator owns the bounded retry loop and durable attempt ordering.
 The scheduler needs a hard Node-exclusion input, and the capacity authority must expose an unambiguous release outcome before alternate acquisition.
+The Controller must map `dispatch_capacity_caller_down` onto the cancellation terminal state so the disconnect records `request_step.cancelled` rather than falling through to a generic orchestration failure.
 The Request FSM, public APIs, idempotency contract, quota model, and capture policy remain logical-Request scoped.
 Availability is intentionally sacrificed whenever output, execution termination, identity, or capacity release is ambiguous.
 
