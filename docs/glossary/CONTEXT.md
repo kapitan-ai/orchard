@@ -858,7 +858,7 @@ The app or package lifecycle selection that determines whether one Mac installs 
 _Avoid_: RBAC Role, Access Level, Node Lifecycle State
 
 **Managed Lifecycle Exclusion Boundary**:
-The interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock` shared by owner-side managed Orchard.app, PKG, recovery, and Node Agent start-attempt paths.
+The interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock` shared by owner-side managed Orchard.app, PKG, recovery, and Node Agent start and stop paths, including `orchardctl start` and `orchardctl stop`.
 One privileged owner retains the same crash-released kernel ownership for the complete active handover without transfer or descriptor inheritance.
 The child-side managed Node Agent launch gate is not an owner-side path and never acquires, waits on, or inherits this lock.
 Required persistent recovery evidence and start-eligibility fencing never constitute this exclusion ownership or prevent a recovery owner from acquiring it.
@@ -872,14 +872,24 @@ Initial invalidity is rejected before protected active lifecycle mutation, and a
 _Avoid_: active support root, replacement activation, Node Identity Root
 
 **Managed Node Agent Start Eligibility State**:
-Protected durable Node Agent state, valued `suppressed`, `one_shot_pending`, or `enabled`, that the child-side managed launch path checks before Node Agent execution.
+The authoritative protected durable launch fence for the Node Agent, valued `suppressed`, `one_shot_pending`, or `enabled`, that the child-side managed launch gate checks before Node Agent execution.
+Launchd load state is operational control, not this fence.
+The gate permits normal `RunAtLoad` and `KeepAlive` operation under `enabled`, denies under `suppressed`, and under `one_shot_pending` permits only a child that atomically claims a matching unclaimed single-consumer one-shot authorization.
 Durable suppression pairs persistent launchd job-domain disablement, so the suppressed job does not bootstrap at reboot or launchd domain reload, with launch-gate denial as defense in depth.
-An owner-side start attempt holds the canonical lock, records non-terminal start-attempt evidence, and creates operation-bound single-consumer one-shot authorization; the launch gate consumes that authorization exactly once without replaying it or enabling durable eligibility itself.
-Only the same lock owner, after verifying the intended instance, atomically records terminal coherent start evidence and enables durable eligibility.
-Failure or owner death before that transition invalidates the authorization, keeps or restores suppression, and prevents a provisional Node Agent from continuing.
-Publishing or loading a launchd plist does not itself establish eligibility, and this state applies only to the Node Agent.
-The state is recovery evidence and fencing, not exclusion ownership.
+A managed start attempt is defined only from `suppressed`; `enabled` with one verified healthy exact managed instance is an idempotent success, any other `enabled` combination is incoherent, and `one_shot_pending` is non-transferable to any owner other than the exact live recorded one.
 _Avoid_: launchd plist presence, launchd job load state, stale lock marker, direct binary launch
+
+**One-shot Launch Authorization**:
+The single-consumer record an owner-side start attempt creates under the canonical lock so exactly one child launch may proceed while eligibility is `one_shot_pending`.
+The child-side gate matches it without acquiring the lock against the start-attempt identity, the exact non-reusable owner process identity, a per-bootstrap nonce, the intended launchd label, the expected active or staged generation and executable identity, the eligibility generation, and the claim state, and denies on any mismatch, process-id reuse, stale generation or nonce, replacement owner, launchd retry, uncertainty, or an owner instance that is not observably live.
+Because a dead owner leaves no actor to restore job-domain disablement, that liveness requirement is the operative fence until managed recovery runs.
+_Avoid_: reusable launch token, durable enablement, exclusion ownership
+
+**Provisional Node Agent Instance**:
+A child that has claimed a one-shot authorization but has not yet been accepted by its start owner.
+It adopts no cluster identity, does not serve, records its exact non-reusable child identity, and observes the exact recorded owner instance with race-safe exit observation and re-verification.
+It may serve only after that same owner atomically records terminal coherent start evidence and `enabled` eligibility bound to it; owner death or mismatch before that transition makes it exit without serving, while owner death after acceptance is normal and leaves it valid.
+_Avoid_: accepted instance, blind same-root restart, launchd retry survivor
 
 **Managed Node Agent Handover**:
 The bounded Orchard.app or PKG active lifecycle interval in which one privileged owner holds the Managed Lifecycle Exclusion Boundary, records initial evidence, establishes durable start suppression, captures stable exact outgoing-instance evidence or proves absence under suppression immediately before `bootout`, prevents relaunch through verified launchd job-domain control, proves every captured-instance exit, activates or mutates coherent installed state, applies the path-specific start decision, and reports the terminal result.

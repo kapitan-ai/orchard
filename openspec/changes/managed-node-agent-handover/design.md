@@ -50,7 +50,7 @@ Five dimensions are observed and mutated independently. Conflating any two of th
 | Launchd plist presence | present, absent | payload activation during install, upgrade, or uninstall |
 | Launchd job load state | loaded, unloaded | job-domain control by the lock-holding owner, and by launchd itself at boot and domain reload |
 | Managed Node Agent process | running, proven absent, unknown | observation under suppression immediately before `bootout` |
-| Start eligibility | `suppressed`, `one_shot_pending`, `enabled` | owner-side start attempts and handover suppression only |
+| Start eligibility | `suppressed`, `one_shot_pending`, `enabled` | owner-side start, stop, handover, and recovery paths only |
 | Canonical lock ownership | held by one owner, free | acquisition, descriptor close, owner death |
 
 macOS bootstraps plists in `/Library/LaunchDaemons` at boot, so publishing a plist cannot leave load state durably false.
@@ -58,6 +58,18 @@ Durable suppression therefore has two parts: persistent launchd job-domain disab
 For the same reason a start attempt cannot treat an unloaded job as a precondition it merely checks; it verifies or establishes that state while holding the lock.
 An `unknown` process observation is never coerced into `proven absent`.
 Eligibility, one-shot authorization, and the managed launch gate apply only to the Node Agent; other role-selected services are simply left stopped by PKG and use normal launchd start behavior.
+
+Eligibility, not load state, is the authoritative fence. That is what forces every supported stop — `orchardctl stop` included — to be an owner-side path: a stop that only unloaded the job would leave eligibility `enabled` while nothing is running, and the next start request would face an entry state its protocol never defined. Under the single protocol every reachable entry state has exactly one path:
+
+| Entry state | Start request behavior |
+|---|---|
+| `suppressed` | Run a managed start attempt (the only state that defines one) |
+| `enabled`, one verified healthy exact instance | Idempotent success; not a new attempt |
+| `enabled`, any other combination | Managed recovery under the lock, normalize to `suppressed`, then a distinct attempt |
+| `one_shot_pending`, this exact live recorded owner | Continue that owner's own bounded attempt |
+| `one_shot_pending`, any other or non-live owner | Managed recovery to `suppressed`, new attempt identity |
+
+An owner never releases the lock with its own attempt still pending, so `one_shot_pending` outliving its owner always means a crash, never a handoff.
 
 ## Shared Exclusion Boundary
 
@@ -118,15 +130,42 @@ A managed start attempt is a separate operation from the handover that preceded 
 1. Verify prior terminal coherent handover or recovery evidence and coherent installed state; leave suppression in place and stop here if either is missing, incomplete, uncertain, or non-terminal.
 2. Record distinct non-terminal start-attempt evidence.
 3. With eligibility still `suppressed`, verify or establish the unloaded, not-running precondition: `bootout` a loaded job and prove it unloaded with no managed Node Agent process running; continue if the job is already unloaded with no managed process; otherwise fail closed with suppression retained.
-4. Lift persistent job-domain disablement for exactly one explicit bootstrap, create operation-bound single-consumer one-shot authorization bound to this start identity, this lock owner, and that bootstrap, and record eligibility as `one_shot_pending`.
-5. Bootstrap the job while retaining the lock; the child-side gate consumes the authorization exactly once and starts only the intended instance.
-6. Verify that exact instance, then atomically mark the start attempt terminal coherent and enable durable eligibility for normal `RunAtLoad` and `KeepAlive` operation.
+4. Lift persistent job-domain disablement for exactly one explicit bootstrap, durably record one single-consumer one-shot authorization, and record eligibility as `one_shot_pending`.
+5. Bootstrap the job while retaining the lock; at most one child claims the authorization and runs provisional.
+6. Verify that exact claimed child, then atomically mark the start attempt terminal coherent and enable durable eligibility bound to it, after which it may serve.
 
 Step 3 exists because launchd, not Orchard, decides load state at boot and domain reload, so a start attempt after reboot would otherwise face a permanently unsatisfiable precondition.
-Steps 4 through 6 are the crash fence: any failure or owner death before the atomic transition in step 6 invalidates the authorization and keeps or restores suppression with job-domain disablement, so no provisional Node Agent survives and no later `KeepAlive` retry, reload, or reboot can consume the interrupted authorization.
+Steps 4 through 6 are the crash fence, and its hard constraint is that the gate cannot use the lock to tell whether the owner is alive.
+So the authorization has to carry everything the gate needs to decide alone:
+
+| Component | What it rules out |
+|---|---|
+| Unique start-attempt identity | Reuse across attempts |
+| Exact non-reusable owner process identity (pid plus kernel start generation or start time) | Process-id reuse; a replacement owner impersonating the recorded one |
+| Per-bootstrap nonce | A second bootstrap, a `KeepAlive` retry, or a post-reboot launch matching an earlier attempt |
+| Intended launchd label | A different job consuming the authorization |
+| Expected active or staged generation and executable identity | Launching something other than the verified active state |
+| Eligibility generation | A stale record surviving a later suppression cycle |
+| Single-consumer claim state | Two children both proceeding |
+
+The gate additionally requires the recorded owner instance to be observably live. That requirement is what closes the crash window: when an owner dies between recording `one_shot_pending` and bootstrapping, nothing is left running to re-apply job-domain disablement, so the gate's own liveness check — not a live actor — is the operative fence until managed recovery runs.
+
+A claimed child stays provisional: it records its exact non-reusable child identity, adopts no cluster identity, does not serve, and watches the exact recorded owner instance with race-safe exit observation and re-verification. It serves only once that same owner atomically records terminal coherent evidence and `enabled` eligibility bound to it. Owner death before that transition makes it exit; owner death after is ordinary and leaves it valid, because acceptance is already durable.
 
 Orchard.app may restore previously loaded services still selected by the resulting role through this same protocol after coherent success or successful required rollback.
 PKG never auto-starts and never restores prior loaded-service state, leaving `orchardctl start` as the supported later path.
+
+## Stop Ordering
+
+A managed stop is an owner-side path for the same reason a start is. While holding the canonical lock:
+
+1. Durably set eligibility `suppressed`.
+2. Invalidate any pending or non-terminal one-shot authorization.
+3. Apply persistent launchd job-domain disablement.
+4. `bootout` and unload the launchd job.
+5. Prove exact captured-instance exit or affirmative managed-process absence, then release the lock.
+
+Steps 1 through 3 precede step 4 so no `KeepAlive` retry or racing bootstrap can slip through the window between unload and fence. A stop that cannot complete step 5 fails closed with suppression retained rather than reporting success.
 
 ## Failure And Managed Recovery
 
@@ -194,9 +233,14 @@ Coverage must prove initial evidence and suppression precede final process obser
 Coverage must cover an outgoing instance exiting and a `KeepAlive` replacement attempt around suppression, and must reject additional, replacement, or identity-unstable managed processes.
 Coverage must prove activation uses a unique immutable or equivalently identity-stable generation, revalidates it immediately before atomic activation, and rejects partial, stale, mixed-generation, untrusted, ambiguous, replaced, modified, or missing staged content, including concurrent repeated-installer mutation attempts.
 Coverage must prove suppression survives owner death, reboot, launchd domain reload, and `KeepAlive` retry through both persistent job-domain disablement and launch-gate denial, and that plist publication alone never authorizes launch.
-Coverage must prove the child-side launch gate acquires, waits on, and inherits no canonical lock descriptor, succeeds while its own start owner holds the lock, denies a suppressed state or an absent authorization, refuses to replay a consumed authorization, and never enables durable eligibility itself.
+Coverage must prove the child-side launch gate acquires, waits on, and inherits no canonical lock descriptor, succeeds while its own start owner holds the lock, permits normal operation under `enabled`, denies under `suppressed`, refuses to reclaim a claimed authorization, and never enables durable eligibility itself.
+Coverage must prove the gate denies on each matching component independently: a foreign attempt identity, a reused process id whose start generation differs, a stale nonce, a different launchd label, an unexpected active or staged generation or executable identity, a stale eligibility generation, and an already claimed authorization.
+Coverage must prove an owner death between recording `one_shot_pending` and bootstrap leaves the gate denying on owner liveness alone, including across a reboot that bootstraps the no-longer-disabled job, and that owner death after the atomic terminal transition leaves the accepted instance serving.
+Coverage must prove a claimed child stays provisional, adopts no cluster identity and does not serve before acceptance, exits when its recorded owner instance dies or is replaced, and serves only after acceptance bound to its exact identity.
+Coverage must prove every supported managed stop, including `orchardctl stop`, acquires the lock, sets suppression, invalidates outstanding authorization, and applies job-domain disablement before `bootout`, proves exact exit or absence before releasing the lock, and never leaves eligibility `enabled` or `one_shot_pending`.
+Coverage must prove each start entry state: an attempt from `suppressed`, an idempotent success under `enabled` with one verified healthy instance, recovery normalization from every other `enabled` combination, continuation only by the exact live recorded owner under `one_shot_pending`, and recovery normalization with a new attempt identity otherwise.
 Coverage must prove a start attempt after a reboot or job-domain reload that left the suppressed job loaded verifies or establishes an unloaded job with no managed Node Agent process before authorizing, and fails closed when it can prove neither.
-Coverage must prove a second start attempt during an in-flight one contends on the lock without creating authorization or mutating eligibility.
+Coverage must prove a second start attempt during an in-flight one contends on the lock without creating authorization or mutating eligibility, and that no owner releases the lock with its own attempt still pending.
 Coverage must prove eligibility, one-shot authorization, and the launch gate apply only to the Node Agent and that other role-selected services use normal supported launchd start behavior.
 Coverage must prove PKG never auto-starts after fresh install or upgrade and that later `orchardctl start` acquires the lock, records distinct start-attempt evidence, creates one crash-invalid operation-bound authorization, explicitly bootstraps and verifies the intended instance, and only then atomically records terminal coherent start evidence with durable enabled eligibility.
 Coverage must exercise owner death and reboot after one-shot authorization but before bootstrap and after bootstrap but before the atomic terminal transition.
