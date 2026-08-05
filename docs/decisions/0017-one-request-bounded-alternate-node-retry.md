@@ -106,13 +106,25 @@ Attempt 1's terminal step must be durable before attempt 2's started step is app
 The coarse Request becomes terminal exactly once after the final attempt or after the retry decision declines attempt 2.
 
 Each attempt records its attempt number, stable Node identifier and capture-safe target reference, start and end timestamps, acceptance state, Output Commitment state and kind, stable failure class and code, runtime retryability flag when present, Controller retry decision and reason, capacity release outcome, exclusion reason, and attempt outcome.
-The closed `retry_decision` vocabulary is `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `occupancy_unresolved`, and `no_alternative_node`.
+The Controller evaluates a retry decision on every failed attempt terminal step, and a successful attempt records no retry decision because no retry evaluation occurs.
+The closed `retry_decision` vocabulary is `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `occupancy_unresolved`, `no_alternative_node`, and `retry_exhausted`.
+A failed attempt 1 records `retried` when attempt 2 starts and otherwise records exactly one of the six decline values.
+When several gates fail together, the recorded decline value follows the retryability gate order as `output_committed`, `budget_exhausted`, `cancelled`, `not_retryable`, `occupancy_unresolved`, then `no_alternative_node`.
+That precedence selects only which evidence value is stored because every decline value is equally terminal for retry.
+A failed attempt 2 always records `retry_exhausted` because the two-attempt bound makes further retry structurally impossible, and no other decision value may be overloaded for that state.
+`retry_exhausted` is reserved to attempt 2 and never appears on an attempt 1 step.
 Attempt 2 additionally records the first Node as excluded.
 Raw failure text remains capture-gated.
 
 Logical metrics count admission, queue outcome, quota, tokens, public success or failure, and Request duration exactly once per Request.
 Attempt metrics count each dispatch, duration, Node outcome, model-load outcome, failure class, commitment state, time to first output, and retry result per attempt.
-Add `orchard_inference_attempts_total{attempt,outcome,failure_class}`, `orchard_inference_attempt_duration_seconds_bucket{attempt,outcome}`, and `orchard_inference_retries_total{reason,result}` where every label has a closed vocabulary and `result` is `success`, `failed`, or `no_alternative_node`.
+Add `orchard_inference_attempts_total{attempt,outcome,failure_class}`, `orchard_inference_attempt_duration_seconds_bucket{attempt,outcome}`, and `orchard_inference_retries_total{reason,result}` where every label has a closed vocabulary.
+`orchard_inference_retries_total` emits exactly one sample for each logical Request whose attempt 1 recorded a `retry_decision`.
+A Request that succeeded on attempt 1, terminalized before an Inference Attempt started, or resolved through the same-lane capacity requeue-or-fail path records no attempt 1 retry decision and therefore emits no sample.
+Its `reason` label is the durable attempt 1 `retry_decision` value, so the closed `reason` vocabulary is `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `occupancy_unresolved`, and `no_alternative_node`.
+`retry_exhausted` never labels this counter because the counter reports the single attempt 1 decision rather than attempt 2's terminal state.
+Its closed `result` vocabulary is `succeeded`, `failed`, and `declined`, where `succeeded` and `failed` report attempt 2's terminal outcome for the logical Request and `declined` reports that no attempt 2 started.
+`reason` is `retried` exactly when `result` is `succeeded` or `failed`, and each of the six decline reasons pairs only with `declined`, which bounds the counter to eight valid label combinations.
 The retry counter is finalized with the logical Request so its result is counted once rather than once at decision time and again at terminal time.
 Metric labels must never contain Request IDs, claim tokens, target addresses, raw error codes outside the closed taxonomy, or other unbounded identifiers.
 Traces and durable events carry high-cardinality correlation.
@@ -154,10 +166,10 @@ Implementation tests must cover every retryability row, both APIs in streaming a
 ## SPEC.md impact
 
 The required OpenSpec package must reconcile `SPEC.md` before implementation.
-It must replace ambiguous "first token" wording in §§5.8-5.9, §§12.1-12.3, §12.7, and M4 acceptance with the Output Commitment boundary while preserving the prohibition on retry after meaningful output.
+It must replace ambiguous "first token" wording in §5.3, §§5.8-5.9, §§12.1-12.3, §12.7, and M4 acceptance with the Output Commitment boundary while preserving the prohibition on retry after meaningful output.
 It must bound §5.8's apparent candidate loop to two execution attempts and make attempt 2 a fresh schedule with hard prior-Node exclusion.
 It must clarify that `timeout_at` is the absolute logical deadline and that model-load handling cannot extend it.
-It must clarify that quota reservation release on pre-output failure occurs only when the logical Request terminalizes, not between attempts.
+It must amend §5.3 so that quota reservation release on pre-output failure occurs only when the logical Request terminalizes, not between attempts.
 It must preserve §4.6.2 quarantine for unresolved accepted execution and PR #160's non-retryable terminal-conformance classes.
 
 Until those deltas are approved and synchronized, `SPEC.md` remains authoritative and implementation is blocked on any conflict.
