@@ -3,27 +3,29 @@ defmodule OrchardCLI.SecretTTY do
 
   @setup_error "could not disable terminal echo; refusing to read secret input"
   @restore_error "could not restore the prior terminal state; Console credentials were not saved"
-  @protocol_limit 16_384
-  @timeout_ms 5_000
+  @timeout_ms 10_000
 
   @type read_result :: {:ok, String.t()} | :eof | {:error, String.t()}
   @type reader :: (String.t() -> read_result())
 
   @spec available?() :: boolean()
   def available? do
-    match?({:ok, _path}, controlling_tty_path())
+    match?({:ok, _path}, controlling_tty_path()) and
+      match?({:ok, _group}, foreground_process_group()) and
+      match?({:ok, _custody}, terminal_custody()) and is_binary(helper_path())
   end
 
   @spec run((reader() -> result), keyword()) :: result | {:error, String.t()}
         when result: var
   def run(callback, opts \\ []) when is_function(callback, 1) do
-    stty_path = Keyword.get(opts, :stty_path, "/bin/stty")
     timeout = Keyword.get(opts, :timeout_ms, @timeout_ms)
 
     with {:ok, tty_path} <- tty_path(opts),
-         {:ok, port} <- open_guard(tty_path, stty_path),
+         {:ok, foreground_group} <- foreground_group(opts),
+         {:ok, custody} <- terminal_custody(),
+         {:ok, port} <- open_helper(tty_path, foreground_group, custody, opts),
          :ok <- await_ready(port, timeout) do
-      execute(port, callback, timeout)
+      execute(port, callback)
     else
       {:error, :tty} -> {:error, "interactive terminal unavailable"}
       {:error, :open} -> {:error, "interactive terminal unavailable"}
@@ -35,6 +37,14 @@ defmodule OrchardCLI.SecretTTY do
     case Keyword.fetch(opts, :tty_path) do
       {:ok, path} -> {:ok, path}
       :error -> controlling_tty_path()
+    end
+  end
+
+  defp foreground_group(opts) do
+    case Keyword.fetch(opts, :foreground_group) do
+      {:ok, group} when is_integer(group) and group > 1 -> {:ok, group}
+      {:ok, _group} -> {:error, :tty}
+      :error -> foreground_process_group()
     end
   end
 
@@ -55,59 +65,168 @@ defmodule OrchardCLI.SecretTTY do
     end
   end
 
-  defp execute(port, callback, timeout) do
+  defp foreground_process_group do
+    args = ["-o", "pgid=", "-o", "tpgid=", "-p", System.pid()]
+
+    case System.cmd("/bin/ps", args, stderr_to_stdout: true) do
+      {output, 0} -> normalize_foreground_group(output)
+      _other -> {:error, :tty}
+    end
+  end
+
+  defp normalize_foreground_group(output) do
+    case output |> String.split() |> Enum.map(&Integer.parse/1) do
+      [{group, ""}, {group, ""}] when group > 1 -> {:ok, group}
+      _other -> {:error, :tty}
+    end
+  end
+
+  defp execute(port, callback) do
     reader = fn prompt -> read_value(port, prompt) end
 
     try do
       result = callback.(reader)
 
-      case restore(port, timeout) do
+      case restore(port, :infinity) do
         :ok -> result
         {:error, :restore} -> {:error, @restore_error}
       end
     catch
       kind, reason ->
-        _result = restore(port, timeout)
+        _result = restore(port, :infinity)
         :erlang.raise(kind, reason, __STACKTRACE__)
     after
       close_port(port)
     end
   end
 
-  defp open_guard(tty_path, stty_path) do
-    port =
-      Port.open(
-        {:spawn_executable, "/bin/sh"},
-        [
-          :binary,
-          :exit_status,
-          :use_stdio,
-          args: ["-c", guard_script(), "orchard-secret-tty", tty_path, stty_path]
-        ]
-      )
+  defp open_helper(tty_path, foreground_group, {completion_dir, completion_identity}, opts) do
+    case helper_path(opts) do
+      path when is_binary(path) ->
+        args =
+          [
+            tty_path,
+            Integer.to_string(foreground_group),
+            System.pid(),
+            "supervisor=#{foreground_supervisor_pid()}",
+            "completion=#{completion_dir}",
+            "completion-identity=#{completion_identity}"
+          ] ++ fault_args(opts)
 
-    {:ok, port}
+        port =
+          Port.open(
+            {:spawn_executable, path},
+            [
+              :binary,
+              :exit_status,
+              :use_stdio,
+              {:packet, 4},
+              args: args
+            ]
+          )
+
+        {:ok, port}
+
+      nil ->
+        {:error, :open}
+    end
   rescue
     ArgumentError -> {:error, :open}
   end
 
-  defp await_ready(port, timeout) do
-    case await_line(port, timeout, "") do
-      {:ok, "READY"} ->
-        :ok
+  defp helper_path(opts \\ []) do
+    name =
+      if Keyword.has_key?(opts, :test_fault),
+        do: "orchard-secret-tty-test",
+        else: "orchard-secret-tty"
+
+    with priv_dir when is_list(priv_dir) <- :code.priv_dir(:orchard_cli),
+         path = Path.join(List.to_string(priv_dir), name),
+         true <- File.regular?(path) do
+      path
+    else
+      _other -> nil
+    end
+  end
+
+  defp fault_args(opts) do
+    case Keyword.get(opts, :test_fault) do
+      nil ->
+        []
+
+      fault
+      when fault in [
+             :partial_protect,
+             :post_protect,
+             :signal_int,
+             :signal_hup,
+             :signal_term,
+             :signal_kill,
+             :marker_pre_ready_kill,
+             :watchdog_handshake,
+             :watchdog_custody_handshake,
+             :watchdog_protected_handshake,
+             :restorer_parent_kill,
+             :restorer_pre_teardown_kill,
+             :restorer_identity_retry,
+             :restorer_signal_setup,
+             :watchdog_idle,
+             :watchdog_read
+           ] ->
+        [fault |> Atom.to_string() |> String.replace("_", "-")]
 
       _other ->
-        close_port(port)
-        {:error, :setup}
+        ["invalid"]
+    end
+  end
+
+  defp foreground_supervisor_pid do
+    case System.get_env("ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID") do
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {pid, ""} when pid > 1 -> Integer.to_string(pid)
+          _other -> System.pid()
+        end
+
+      nil ->
+        System.pid()
+    end
+  end
+
+  defp terminal_custody do
+    directory = System.get_env("ORCHARD_CLI_COMPLETION_DIR")
+    identity = System.get_env("ORCHARD_CLI_COMPLETION_IDENTITY")
+
+    if is_binary(directory) and Path.type(directory) == :absolute and
+         is_binary(identity) and Regex.match?(~r/\A[0-9]+:[0-9]+\z/, identity) do
+      {:ok, {directory, identity}}
+    else
+      {:error, :open}
+    end
+  end
+
+  defp await_ready(port, timeout) do
+    case await_packet(port, timeout) do
+      {:ok, "PREPARED"} -> enter_protected_mode(port)
+      _other -> close_with_error(port, :setup)
+    end
+  end
+
+  defp enter_protected_mode(port) do
+    if command(port, "ENTER") do
+      case await_packet(port, :infinity) do
+        {:ok, "READY"} -> :ok
+        _other -> close_with_error(port, :setup)
+      end
+    else
+      close_with_error(port, :setup)
     end
   end
 
   defp read_value(port, prompt) do
-    command = "READ:" <> Base.encode64(prompt) <> "\n"
-
-    if Port.command(port, command) do
-      case await_line(port, :infinity, "") do
-        {:ok, "VALUE:" <> encoded} -> decode_value(encoded)
+    if command(port, "READ:" <> prompt) do
+      case await_packet(port, :infinity) do
+        {:ok, "VALUE:" <> value} -> {:ok, value}
         {:ok, "EOF"} -> :eof
         _other -> {:error, "unable to read Console credential prompt input"}
       end
@@ -116,16 +235,9 @@ defmodule OrchardCLI.SecretTTY do
     end
   end
 
-  defp decode_value(encoded) do
-    case Base.decode64(encoded) do
-      {:ok, value} -> {:ok, value}
-      :error -> {:error, "unable to read Console credential prompt input"}
-    end
-  end
-
   defp restore(port, timeout) do
-    if Port.command(port, "RESTORE\n") do
-      case await_line(port, timeout, "") do
+    if command(port, "RESTORE") do
+      case await_packet(port, timeout) do
         {:ok, "RESTORED"} -> :ok
         _other -> {:error, :restore}
       end
@@ -134,156 +246,30 @@ defmodule OrchardCLI.SecretTTY do
     end
   end
 
-  defp await_line(_port, _timeout, buffer) when byte_size(buffer) > @protocol_limit,
-    do: {:error, :protocol}
+  defp command(port, message) do
+    Port.info(port) != nil and Port.command(port, message)
+  rescue
+    ArgumentError -> false
+  end
 
-  defp await_line(port, timeout, buffer) do
-    case String.split(buffer, "\n", parts: 2) do
-      [line, _rest] ->
-        {:ok, String.trim_trailing(line, "\r")}
-
-      [_partial] ->
-        receive do
-          {^port, {:data, data}} -> await_line(port, timeout, buffer <> data)
-          {^port, {:exit_status, _status}} -> {:error, :closed}
-        after
-          timeout -> {:error, :timeout}
-        end
+  defp await_packet(port, timeout) do
+    receive do
+      {^port, {:data, data}} -> {:ok, data}
+      {^port, {:exit_status, _status}} -> {:error, :closed}
+    after
+      timeout -> {:error, :timeout}
     end
+  end
+
+  defp close_with_error(port, reason) do
+    close_port(port)
+    {:error, reason}
   end
 
   defp close_port(port) do
-    if Port.info(port) do
-      Port.close(port)
-    end
-
+    if Port.info(port), do: Port.close(port)
     :ok
   rescue
     ArgumentError -> :ok
-  end
-
-  defp guard_script do
-    ~S'''
-    tty=$1
-    stty=$2
-
-    restore() {
-      "$stty" -f "$tty" "$state" >/dev/null 2>&1
-    }
-
-    state=$("$stty" -f "$tty" -g 2>/dev/null) || {
-      printf 'SETUP_ERROR\n'
-      exit 1
-    }
-    trap '' HUP INT TERM
-    "$stty" -f "$tty" -echo -echonl >/dev/null 2>&1 || {
-      printf 'SETUP_ERROR\n'
-      exit 1
-    }
-    exec 3<>"$tty" || {
-      restore
-      printf 'SETUP_ERROR\n'
-      exit 1
-    }
-    umask 077
-    pipe_root=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/orchard-secret-tty.XXXXXX") || {
-      restore
-      printf 'SETUP_ERROR\n'
-      exit 1
-    }
-    /usr/bin/mkfifo "$pipe_root/events" || {
-      /bin/rmdir "$pipe_root"
-      restore
-      printf 'SETUP_ERROR\n'
-      exit 1
-    }
-    exec 5<>"$pipe_root/events"
-    /bin/rm "$pipe_root/events"
-    /bin/rmdir "$pipe_root"
-    exec 4<&0
-
-    (
-      trap - HUP INT TERM
-      while IFS= read -r owner_command <&4; do
-        printf 'COMMAND:%s\n' "$owner_command" >&5
-      done
-      printf 'OWNER_EOF\n' >&5
-    ) &
-    owner_monitor=$!
-    tty_reader=
-
-    stop_child() {
-      child_pid=$1
-      if [ -n "$child_pid" ]; then
-        kill "$child_pid" >/dev/null 2>&1
-        wait "$child_pid" 2>/dev/null
-      fi
-    }
-
-    cleanup_children() {
-      stop_child "$tty_reader"
-      tty_reader=
-      stop_child "$owner_monitor"
-      owner_monitor=
-    }
-
-    printf 'READY\n'
-
-    while IFS= read -r event <&5; do
-      case "$event" in
-        COMMAND:READ:*)
-          if [ -n "$tty_reader" ]; then
-            printf 'PROTOCOL_ERROR\n'
-            cleanup_children
-            restore
-            exit 1
-          fi
-          prompt=${event#COMMAND:READ:}
-          (
-            trap - HUP INT TERM
-            if printf '%s' "$prompt" | /usr/bin/base64 -D >&3 2>/dev/null; then
-              if IFS= read -r value <&3; then
-                printf '\n' >&3
-                encoded=$(printf '%s' "$value" | /usr/bin/base64 -b 0) &&
-                  printf 'TTY:VALUE:%s\n' "$encoded" >&5
-              else
-                printf '\n' >&3
-                printf 'TTY:EOF\n' >&5
-              fi
-            else
-              printf 'TTY:READ_ERROR\n' >&5
-            fi
-          ) &
-          tty_reader=$!
-          ;;
-        TTY:*)
-          wait "$tty_reader" 2>/dev/null
-          tty_reader=
-          printf '%s\n' "${event#TTY:}"
-          ;;
-        COMMAND:RESTORE)
-          cleanup_children
-          if restore; then
-            printf 'RESTORED\n'
-            exit 0
-          else
-            printf 'RESTORE_ERROR\n'
-            exit 1
-          fi
-          ;;
-        OWNER_EOF)
-          cleanup_children
-          restore
-          exit 0
-          ;;
-        *)
-          printf 'PROTOCOL_ERROR\n'
-          ;;
-      esac
-    done
-
-    cleanup_children
-    restore
-    '''
   end
 end

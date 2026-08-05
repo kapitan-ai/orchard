@@ -16,7 +16,10 @@ defmodule OrchardCLI.PackagingWrapperTest do
     assert content =~ "set -a"
     assert content =~ ". \"$ENV_FILE\""
     assert content =~ "set +a"
-    assert content =~ "exec \"$ORCHARD_CLI\" eval \"OrchardCLI.main([$args])\""
+    assert content =~ "ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID=$$"
+    assert content =~ "\"$ORCHARD_CLI\" eval \"OrchardCLI.main([$args])\" &"
+    assert content =~ "_cli_pid=$!"
+    assert content =~ "wait \"$_cli_pid\""
   end
 
   test "packaged orchardctl wrapper propagates DATABASE_URL from secure controller.env" do

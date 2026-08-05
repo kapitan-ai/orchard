@@ -11,6 +11,8 @@ defmodule OrchardCLI.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      make_cwd: "c_src",
       elixirc_paths: elixirc_paths(Mix.env()),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
@@ -35,6 +37,7 @@ defmodule OrchardCLI.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
+      {:elixir_make, "~> 0.9", runtime: false},
       {:nimble_csv, "~> 1.2"},
       {:req, "~> 0.5"},
       {:orchard_shared, in_umbrella: true},
