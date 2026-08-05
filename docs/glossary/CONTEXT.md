@@ -45,16 +45,37 @@ The owner-only filesystem root that holds a Node's private key, Node Certificate
 Managed lifecycle operations treat this root as identity-bearing state and do not mutate it until the Managed Node Agent Handover proof gate is satisfied by proven exit of the exact identified outgoing Node Agent process instance or by proven absence of any managed Node Agent instance.
 _Avoid_: BEAM Authorization Root, model cache, generic support directory
 
+**Managed Lifecycle Exclusion Boundary**:
+The interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock` shared by managed Orchard.app, PKG, recovery, and Node Agent start eligibility paths.
+One privileged owner retains the same crash-released kernel ownership for the complete active handover without transfer or descriptor inheritance.
+Persistent metadata may describe a transaction or recovery state but never constitutes this exclusion ownership.
+_Avoid_: durable lock marker, separate app and PKG locks, BEAM Peer Grant Store Lock
+
+**Inactive Incoming Staging Root**:
+The PKG destination for signed payload content that no running Node Agent resolves, loads, or executes before active handover.
+Apple Installer may populate this inert root without stopping or mutating the active Node Agent installation.
+_Avoid_: active support root, replacement activation, Node Identity Root
+
 **Managed Node Agent Handover**:
-The bounded Orchard.app or PKG lifecycle interval that prevents relaunch, proves either that the exact identified outgoing Node Agent process instance exited or that no managed Node Agent instance is running, performs required managed mutation, and only then permits replacement start.
-Ambiguous or unproven absence does not satisfy that proof gate and remains fail-closed.
-It uses one shared lifecycle exclusion boundary across the app and PKG paths and guarantees zero managed process overlap.
-_Avoid_: rolling live overlap, process restart without identity proof, direct manual launch
+The bounded Orchard.app or PKG active lifecycle interval in which one privileged owner holds the Managed Lifecycle Exclusion Boundary, prevents relaunch through verified launchd job-domain control, proves exact outgoing-instance exit or managed-process absence, activates or mutates coherent installed state, applies the path-specific start decision, and reports the terminal result.
+Ambiguous or unproven absence does not satisfy the proof gate and remains fail-closed.
+The handover guarantees zero managed process overlap.
+_Avoid_: inactive PKG staging, rolling live overlap, blind same-root restart
+
+**Managed Node Agent Recovery**:
+A rerun of the applicable Orchard.app or PKG managed lifecycle under the Managed Lifecycle Exclusion Boundary after a failed or interrupted handover.
+It may reauthorize start only after proving exact outgoing-instance exit or managed-process absence and verifying or restoring coherent installed state.
+_Avoid_: blind launchctl kickstart, manual binary launch, stale-marker deletion
+
+**BEAM Peer Grant Store Lock**:
+The operation-scoped lock used by `Orchard.Node.BeamPeerGrantStore` to serialize one Peer Grant install or load operation, including atomic publication when installing in the owner-only Node Identity Root.
+It ends with that store operation and provides neither Node Agent process-lifetime ownership nor Managed Node Agent Handover exclusion.
+_Avoid_: Managed Lifecycle Exclusion Boundary, Node Identity Root Lease, Postgres leadership lock
 
 **Node Identity Root Lease**:
 A reserved future term for a possible lifetime ownership mechanism for the Node Identity Root.
 No Node Identity Root Lease is part of the current Managed Node Agent Handover contract.
-_Avoid_: current lifecycle exclusion boundary, existing BEAM Peer Grant storage lock
+_Avoid_: Managed Lifecycle Exclusion Boundary, BEAM Peer Grant Store Lock
 
 **Runtime Endpoint**:
 A schedulable execution boundary that can receive model runtime work from the Controller through Orchard's runtime semantics.
