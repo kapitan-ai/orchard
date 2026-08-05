@@ -88,14 +88,16 @@ It can deny a start, but it can never confer exclusion ownership and must never 
 
 All four owner-side operations share one evidence schema, distinguished by operation kind, so a new path cannot end up unclassified and silently exempt from the record-before-mutate rule:
 
-| Kind | Requires prior terminal coherent evidence | Terminal coherent when | Carries staging/activation/rollback/start-policy fields |
+| Kind | Requires prior terminal coherent evidence to begin | Terminal coherent when | Carries staging/activation/rollback/start-policy fields |
 |---|---|---|---|
-| `handover` | yes | resulting active installed state verified, no-start outcome recorded | yes |
-| `managed_recovery` | no — may run on missing or uncertain evidence | coherent installed state verified or restored | yes |
-| `start_attempt` | yes | intended child verified and accepted | start policy only |
+| `handover` | no — may begin on missing, interrupted, or uncertain evidence | resulting active installed state verified, no-start outcome recorded | yes |
+| `managed_recovery` | no — may begin on missing, interrupted, or uncertain evidence | coherent installed state verified or restored | yes |
+| `start_attempt` | yes — prior terminal coherent `handover` or `managed_recovery` evidence plus coherent installed state | intended child verified and accepted | start policy only |
 | `managed_stop` | no — it only moves toward the fail-closed state | suppression, disablement, unloaded job, and every captured exit or valid pre-shutdown absence proven | no |
 
-Two consequences follow. Denial is scoped by kind, so a terminal coherent stopped record never blocks a later start — otherwise a routine stop would strand the host. And an interrupted non-terminal record of any kind is a reconciliation obligation, not a recovery trigger: the next lock-holding owner supersedes or marks it inside its own initial evidence and re-proves the live preconditions, rather than treating a half-written stop record as grounds for full payload recovery.
+Only the start attempt gates on prior evidence, because it is the only kind that puts a Node Agent back on the identity root. A handover or recovery that demanded a prior terminal coherent record could never run a fresh PKG install on a clean Mac — there is no prior record of any kind — and could never repair a host whose last handover was interrupted, which is the situation those kinds exist to resolve. Both still acquire the canonical lock, record fresh initial evidence before protected mutation, establish durable suppression, and stay fail-closed until they produce terminal coherent evidence of their own.
+
+Two further consequences follow. Denial is scoped by kind, so a terminal coherent stopped record never blocks a later start — otherwise a routine stop would strand the host. And an interrupted non-terminal record of any kind is a reconciliation obligation, not a recovery trigger: the next lock-holding owner supersedes or marks it inside its own initial evidence and re-proves the live preconditions, rather than treating a half-written stop record as grounds for full payload recovery.
 
 The BEAM Peer Grant Store Lock remains scoped to one `Orchard.Node.BeamPeerGrantStore` install or load operation, including atomic publication when installing, and is not reused or broadened for lifecycle exclusion.
 
