@@ -312,6 +312,19 @@ _Avoid_: Request lifecycle state, Tool Execution outcome
 A request-step type representing one model inference turn.
 _Avoid_: Message, prompt
 
+**Inference Attempt**:
+One bounded execution try within an Inference Turn, identified by its attempt number and execution target while remaining part of the same logical Request.
+_Avoid_: Request, queue re-entry, Operator Retry
+
+**Output Commitment**:
+The irreversible point at which the Controller observes the first externally meaningful inference output for a Request: a non-empty text or structured-output delta, or any tool-call delta carrying its stable tool-call identity.
+Accepted, progress, usage, empty text, and other control events do not create Output Commitment.
+_Avoid_: first network byte, Runtime Endpoint acceptance, first token only
+
+**Automatic Attempt Retry**:
+The single Controller-initiated second Inference Attempt allowed before Output Commitment for an explicitly retryable first-attempt failure, under the original Request identity and budgets, and only on a different eligible Node.
+_Avoid_: queue re-entry, Operator Retry, cohort retry, same-Node redispatch
+
 **Tool Call**:
 A model-proposed function invocation returned to the client in current base v1 behavior.
 _Avoid_: Tool Execution, server-side tool run
