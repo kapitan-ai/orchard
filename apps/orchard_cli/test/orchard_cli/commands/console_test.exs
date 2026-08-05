@@ -355,6 +355,26 @@ defmodule OrchardCLI.Commands.ConsoleTest do
     end
   end
 
+  test "support root supplies the packaged install-role marker path" do
+    support_root = tmp_support_root()
+    role_marker = Path.join([support_root, "support", ".install-role"])
+    File.mkdir_p!(Path.dirname(role_marker))
+    File.write!(role_marker, "controller\n")
+
+    runtime =
+      base_runtime(%{support_root: support_root})
+      |> Map.delete(:read_install_role)
+
+    try do
+      assert {:ok, _message} = Console.run(["disable"], runtime)
+
+      assert File.read!(Path.join([support_root, "config", "console.env"])) ==
+               "ORCHARD_CONSOLE_ENABLED=\"false\"\n"
+    after
+      File.rm_rf(support_root)
+    end
+  end
+
   test "disable writes only disabled flag with mode 0600 and removes credentials" do
     support_root = tmp_support_root()
     console_env = Path.join([support_root, "config", "console.env"])
