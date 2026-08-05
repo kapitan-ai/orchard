@@ -4390,6 +4390,9 @@ Required launchd properties:
 * restart throttling enabled
 * dedicated non-root service user preferred
 
+For the Node Agent, `RunAtLoad` and `KeepAlive` SHALL remain subordinate to a protected Managed Node Agent Start Eligibility State that is checked by the managed launch path before Node Agent execution.
+A suppressed state SHALL survive handover-owner death, reboot, launchd job-domain reload, and `KeepAlive` retry, and publishing or loading the launchd plist SHALL NOT by itself make the Node Agent launch-eligible.
+
 ### 11.3 DMG And Release Distribution Contents
 
 DMG SHALL include:
@@ -4419,32 +4422,53 @@ If required rollback cannot be completed or verified, the app lifecycle SHALL cl
 
 Managed Orchard.app and PKG Node Agent lifecycle mutations, Managed Node Agent Handover recovery, and supported Node Agent start eligibility checks SHALL use one shared exclusion boundary, and every Managed Node Agent Handover SHALL use zero process overlap.
 The canonical boundary SHALL be one interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock`.
-One privileged handover owner SHALL acquire that lock and retain the same kernel lock ownership continuously, without ownership transfer or descriptor inheritance, from before relaunch prevention through exact outgoing-instance exit or proven absence, active payload activation and protected lifecycle mutation, the applicable start decision, and terminal-state reporting.
+One privileged handover owner SHALL acquire that lock and retain the same kernel lock ownership continuously, without ownership transfer or descriptor inheritance, from before initial operation evidence and durable start suppression through immediate pre-`bootout` observation, every captured-instance exit or affirmative absence, active payload activation and protected lifecycle mutation, the applicable start decision, and terminal-state reporting.
 Normal completion SHALL release the lock by closing the owning descriptor, owner process death SHALL release it through the operating system, and contention SHALL perform no managed mutation or Node Agent start.
 A later managed operation MAY retry after kernel ownership is released.
-Persistent transaction or rendezvous metadata MAY support diagnosis and recovery, but it SHALL NOT constitute exclusion ownership, SHALL NOT authorize mutation or start, and SHALL NOT block managed recovery solely because a record exists.
+Before changing Managed Node Agent Start Eligibility State or performing any other protected active mutation, the owner SHALL durably record required handover or recovery evidence containing the operation identity and phase, the bound staging generation when applicable, prior active path and start policy as needed, and the intended mutation.
+For an operation that does not start the Node Agent, the owner SHALL mark that handover or recovery evidence terminal coherent only after verifying the resulting active installed state and recording the applicable no-start policy outcome.
+A later managed start SHALL use a distinct start-attempt identity and evidence record.
+Missing, incomplete, or uncertain required recovery evidence SHALL deny Node Agent start but SHALL NOT constitute exclusion ownership or prevent a managed recovery owner from acquiring the canonical kernel lock.
+Persistent metadata is recovery evidence and start-eligibility fencing, not exclusion ownership, and it SHALL NOT authorize mutation or start independently of a current canonical lock owner.
 
-PKG payload placement by Apple Installer SHALL write signed content only into an inactive incoming staging root that a running Node Agent never resolves, loads, or executes.
+PKG payload placement by Apple Installer SHALL write authenticated and signed content only into an inactive incoming staging root that a running Node Agent never resolves, loads, or executes.
 Inactive staging is not active Node Agent installation mutation and MAY occur before the shared lock is acquired while the current Node Agent continues running.
+Before relaunch prevention or active mutation, the handover owner SHALL bind activation to exactly one complete authenticated and signed staging generation in a unique per-generation namespace and verify that generation's identity, completeness, integrity, trust, and intended installation target.
+The bound generation SHALL be an immutable or equivalently identity-stable snapshot that concurrent or repeated installers cannot replace or modify through activation.
+The owner SHALL revalidate the bound pathname or descriptor identity, manifest, signature, complete file set, content integrity, trust, and target immediately before atomic activation.
+Initial discovery of partial, stale, mixed-generation, untrusted, ambiguous, replaced, modified, or missing staged content SHALL fail before any protected active Node Agent lifecycle mutation.
+Any bound-generation identity or content mismatch detected by immediate pre-activation revalidation SHALL fail before payload or installed-state activation and SHALL leave start eligibility suppressed for managed recovery.
 PKG `preinstall` SHALL NOT stop the active Node Agent, prevent its relaunch, or mutate active payload, launchd records, command links, role state, or the Node Identity Root.
 After staging, PKG `postinstall` SHALL synchronously invoke one privileged handover owner that acquires and retains the canonical lock for the complete active handover.
 Direct `/usr/sbin/installer -pkg ... -target /` invocation SHALL enter this package-owned handover path without requiring an external Orchard wrapper.
 
-Before active Node Agent payload or lifecycle mutation, the handover owner SHALL prevent relaunch through verified launchd job-domain control, such as successful `bootout` followed by proof that the job is unloaded, without first editing or deleting the protected launchd plist.
-While holding the shared lock, the owner SHALL then establish either that the exact identified outgoing Node Agent process instance has exited after managed shutdown or that no managed Node Agent instance is running.
-Only proven exit or proven absence SHALL satisfy that handover gate, and absence that cannot be proven SHALL be treated as an unproven exit.
-The wait SHALL be bounded, and failure to acquire or retain exclusion, prevent relaunch, prove exact exit, or prove absence SHALL fail closed without active mutation or Node Agent start.
-Only after the handover gate succeeds MAY the owner activate staged payload and mutate the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
+While holding the shared lock, the handover owner SHALL first durably record the required initial handover or recovery evidence and then establish protected durable start suppression before observing outgoing process state.
+Immediately before `bootout`, the owner SHALL affirmatively observe the managed Node Agent process state under that suppression.
+When exactly one outgoing instance is running, the owner SHALL capture non-reusable evidence that identifies that exact process instance, durably add that evidence to the operation record, and verify identity stability through `bootout`.
+Only when affirmative observation under suppression and immediately before `bootout` proves that no outgoing managed instance exists MAY the owner use proven absence instead of captured-instance exit.
+An additional, replacement, or identity-unstable managed process SHALL fail the gate.
+The owner SHALL then prevent relaunch through verified launchd job-domain control, such as successful `bootout` followed by proof that the job is unloaded, without first editing or deleting the protected launchd plist.
+When an outgoing instance was captured, the owner SHALL wait for proof that every captured managed instance exited after managed shutdown.
+Only captured-instance exit or affirmative proven absence under suppression immediately before `bootout` SHALL satisfy the handover gate, and a failure to observe process state before `bootout` SHALL NOT be converted into proven absence afterward.
+The wait SHALL be bounded, and failure to acquire or retain exclusion, validate and identity-stabilize applicable staging, record required recovery evidence, establish durable suppression, capture stable exact process evidence, prevent relaunch, prove every captured exit, or prove immediate pre-`bootout` absence SHALL fail closed without active mutation or Node Agent start.
+Only after the handover gate succeeds MAY the owner activate the bound staged generation and mutate the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
 
-After a coherent successful Orchard.app operation, Orchard.app MAY restore the prior loaded-service state for services still selected by the installed role.
-PKG SHALL leave all role-selected services stopped after every successful fresh install and upgrade, SHALL NOT automatically start them, and SHALL NOT restore their prior loaded-service state.
-`orchardctl start` SHALL be the supported later PKG start path and, before starting the Node Agent, SHALL use the shared exclusion boundary to verify coherent installed state and satisfied handover eligibility.
-If mutation, rollback, activation, or installed state is uncertain, the managed lifecycle SHALL fail closed and SHALL NOT start the Node Agent.
+After a coherent successful Orchard.app operation or successful required rollback, Orchard.app MAY restore services that were previously loaded and remain selected by the installed role only through the managed start-attempt protocol.
+PKG SHALL leave all role-selected services stopped and start-suppressed after every successful fresh install and upgrade, SHALL NOT automatically start them, and SHALL NOT restore their prior loaded-service state.
+`orchardctl start` SHALL be the supported later PKG start path.
+Every managed Node Agent start attempt, including Orchard.app restoration and `orchardctl start`, SHALL acquire the canonical lock, verify prior terminal coherent handover or recovery evidence and coherent installed state, record distinct non-terminal evidence for the current start attempt, and verify that the launchd job remains unloaded before changing eligibility.
+The owner SHALL then create operation-bound one-shot launch authorization that is valid only for that start identity, the current canonical lock owner, and one explicit bootstrap, and SHALL bootstrap the launchd job while retaining the lock.
+The managed launch path SHALL consume that authorization, start only the intended Node Agent instance from the verified coherent active state, and remain fail-closed unless the same owner verifies that exact instance.
+Only after that verification SHALL the owner atomically mark the start attempt terminal coherent and transition durable eligibility to enabled for normal `RunAtLoad` and `KeepAlive` operation.
+Failure or owner death before that atomic terminal transition SHALL invalidate the one-shot authorization, keep or restore durable suppression, and prevent any provisionally started Node Agent from continuing.
+Publishing a launchd plist, loading a launchd domain, or a `RunAtLoad` or `KeepAlive` attempt SHALL NOT bypass suppressed start eligibility.
+If required evidence is missing, incomplete, or uncertain, or if mutation, rollback, activation, installed state, or the current start attempt is uncertain, start eligibility SHALL remain suppressed and the managed lifecycle SHALL NOT start the Node Agent.
 
 Managed recovery SHALL rerun the applicable Orchard.app or PKG lifecycle under the same shared exclusion boundary.
-Managed recovery MAY reauthorize a Node Agent start only after proving exact outgoing-instance exit or managed-process absence and verifying or restoring a coherent installed state, followed by the applicable Orchard.app or PKG start policy.
+A recovery owner MAY acquire the canonical lock despite missing, incomplete, or uncertain recovery evidence, but it SHALL record or reconcile initial recovery evidence, establish durable suppression before final process observation or protected reconciliation, and treat that evidence as input rather than exclusion ownership.
+Managed recovery MAY permit a later managed start only after proving every captured outgoing-instance exit or affirmative managed-process absence under suppression immediately before `bootout`, verifying or restoring a coherent installed state, and marking the handover or recovery evidence terminal coherent, followed by the applicable Orchard.app or PKG managed start policy.
 A blind or manual same-root Node Agent launch while uncertainty remains is unsupported and SHALL NOT be treated as recovery.
-Direct or manual Node Agent launches that bypass the supported managed lifecycle and `orchardctl start` eligibility path remain outside the managed handover guarantee.
+Direct or manual Node Agent launches that bypass the supported managed launch path and `orchardctl start` eligibility path remain unsupported and outside the managed handover guarantee.
 
 The BEAM Peer Grant Store Lock is the operation-scoped lock used by `Orchard.Node.BeamPeerGrantStore` to serialize one grant store install or load operation, including atomic publication when installing in the owner-only Node Identity Root.
 It SHALL end with that store operation and SHALL NOT become a lifecycle lock, Managed Node Agent Handover exclusion, or Node Identity Root Lease.
@@ -4775,8 +4799,8 @@ For each node:
 1. cordon
 2. drain
 3. run the app-owned update lifecycle or install the package
-4. complete the §11.4 Managed Node Agent Handover gate and activate coherent replacement state under the shared exclusion boundary
-5. after an Orchard.app update, permit the app to restore the prior loaded Node Agent state only after proven success; after a PKG upgrade, keep the Node Agent stopped until the operator runs the supported `orchardctl start` path
+4. complete the §11.4 Managed Node Agent Handover gate, activate coherent replacement state under the shared exclusion boundary, and mark the required recovery evidence terminal coherent
+5. after an Orchard.app update, permit prior loaded-state restoration only through a distinct verified managed start attempt; after a PKG upgrade, keep the Node Agent start-suppressed until a later eligible `orchardctl start` uses that protocol
 6. verify heartbeat + status sync after the Node Agent is started
 7. uncordon
 

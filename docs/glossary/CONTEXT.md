@@ -48,23 +48,34 @@ _Avoid_: BEAM Authorization Root, model cache, generic support directory
 **Managed Lifecycle Exclusion Boundary**:
 The interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock` shared by managed Orchard.app, PKG, recovery, and Node Agent start eligibility paths.
 One privileged owner retains the same crash-released kernel ownership for the complete active handover without transfer or descriptor inheritance.
-Persistent metadata may describe a transaction or recovery state but never constitutes this exclusion ownership.
+Required persistent recovery evidence and start-eligibility fencing never constitute this exclusion ownership or prevent a recovery owner from acquiring it.
 _Avoid_: durable lock marker, separate app and PKG locks, BEAM Peer Grant Store Lock
 
 **Inactive Incoming Staging Root**:
-The PKG destination for signed payload content that no running Node Agent resolves, loads, or executes before active handover.
+The PKG destination for authenticated and signed payload content that no running Node Agent resolves, loads, or executes before active handover.
 Apple Installer may populate this inert root without stopping or mutating the active Node Agent installation.
+Activation binds to one validated complete generation in a unique namespace that remains immutable or equivalently identity-stable through atomic activation and is fully revalidated immediately before activation.
+Initial invalidity is rejected before protected active lifecycle mutation, and any later revalidation mismatch is rejected before payload or installed-state activation while start remains suppressed.
 _Avoid_: active support root, replacement activation, Node Identity Root
 
+**Managed Node Agent Start Eligibility State**:
+Protected durable state that the managed launch path checks before Node Agent execution and that suppresses launch across owner death, reboot, launchd domain reload, and `KeepAlive` retry.
+A managed start uses current non-terminal start-attempt evidence and operation-bound one-shot authorization until the same lock owner verifies the intended instance and atomically records terminal coherent start evidence with durable enabled eligibility.
+Failure or owner death before that transition invalidates the authorization, keeps or restores suppression, and prevents a provisional Node Agent from continuing.
+Publishing or loading a launchd plist does not itself establish eligibility.
+The state is recovery evidence and fencing, not exclusion ownership.
+_Avoid_: launchd plist presence, stale lock marker, direct binary launch
+
 **Managed Node Agent Handover**:
-The bounded Orchard.app or PKG active lifecycle interval in which one privileged owner holds the Managed Lifecycle Exclusion Boundary, prevents relaunch through verified launchd job-domain control, proves exact outgoing-instance exit or managed-process absence, activates or mutates coherent installed state, applies the path-specific start decision, and reports the terminal result.
-Ambiguous or unproven absence does not satisfy the proof gate and remains fail-closed.
+The bounded Orchard.app or PKG active lifecycle interval in which one privileged owner holds the Managed Lifecycle Exclusion Boundary, records initial evidence, establishes durable start suppression, captures stable exact outgoing-instance evidence or proves absence under suppression immediately before `bootout`, prevents relaunch through verified launchd job-domain control, proves every captured-instance exit, activates or mutates coherent installed state, applies the path-specific start decision, and reports the terminal result.
+Ambiguous or unproven pre-`bootout` process state does not satisfy the proof gate and remains fail-closed.
 The handover guarantees zero managed process overlap.
 _Avoid_: inactive PKG staging, rolling live overlap, blind same-root restart
 
 **Managed Node Agent Recovery**:
 A rerun of the applicable Orchard.app or PKG managed lifecycle under the Managed Lifecycle Exclusion Boundary after a failed or interrupted handover.
-It may reauthorize start only after proving exact outgoing-instance exit or managed-process absence and verifying or restoring coherent installed state.
+It may acquire the canonical lock despite missing, incomplete, or uncertain recovery evidence, but it records or reconciles initial evidence and establishes suppression before final process observation or protected reconciliation.
+It permits a later managed start only after proving every captured outgoing-instance exit or affirmative absence under suppression immediately before `bootout`, verifying or restoring coherent installed state, and marking the handover or recovery evidence terminal coherent.
 _Avoid_: blind launchctl kickstart, manual binary launch, stale-marker deletion
 
 **BEAM Peer Grant Store Lock**:

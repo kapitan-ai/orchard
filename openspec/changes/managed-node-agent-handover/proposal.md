@@ -8,8 +8,10 @@ Apple Installer also separates package scripts from payload placement, so PKG ne
 ## What Changes
 
 - Define one canonical crash-released Managed Lifecycle Exclusion Boundary shared by Orchard.app, PKG, managed recovery, and Node Agent start eligibility paths.
-- Require one privileged owner to retain the same kernel advisory lock continuously, without ownership transfer or descriptor inheritance, through relaunch prevention, exact exit or proven absence, active mutation, start policy, and terminal reporting.
-- Require PKG to stage signed payload only in an inactive incoming root, keep `preinstall` from stopping or mutating the active Node Agent installation, and have `postinstall` synchronously invoke the active handover owner.
+- Require one privileged owner to retain the same kernel advisory lock continuously, without ownership transfer or descriptor inheritance, from durable suppression and immediate pre-`bootout` process observation through every captured-instance exit or proven absence, active mutation, start policy, and terminal reporting.
+- Require distinct durable handover, recovery, and start-attempt evidence before protected mutation and terminal coherent marking only after the applicable verification without treating metadata as exclusion ownership.
+- Require protected start suppression beneath launchd `RunAtLoad` and `KeepAlive`, with crash-invalid operation-bound one-shot authorization before explicit bootstrap and durable enablement only after the intended instance is verified.
+- Require PKG to stage one complete authenticated and signed generation in a unique immutable or equivalently identity-stable incoming namespace, fully revalidate it immediately before atomic activation, reject invalid or changed generations before active mutation, keep `preinstall` from stopping or mutating the active Node Agent installation, and have `postinstall` synchronously invoke the active handover owner.
 - Preserve direct `/usr/sbin/installer` support without an external wrapper.
 - Preserve manual `orchardctl start` after every successful PKG fresh install and upgrade, with no PKG automatic start or prior-loaded-state restoration.
 - Preserve Orchard.app's unconditional full rollback attempt after post-mutation failure and classify incomplete or unverifiable rollback as uncertain and stopped.
@@ -22,7 +24,7 @@ Apple Installer also separates package scripts from payload placement, so PKG ne
 
 ### New Capabilities
 
-- `managed-node-agent-handover`: Defines inert PKG staging, the single-owner exclusion boundary, exact outgoing-process exit proof, zero-overlap ordering, path-specific start policy, managed recovery, fail-closed behavior, and guarantee limits.
+- `managed-node-agent-handover`: Defines immutable authenticated single-generation PKG staging, the single-owner exclusion boundary, suppression-before-capture ordering, durable operation evidence, crash-fenced start authorization, reboot-safe suppression, zero-overlap ordering, path-specific start policy, managed recovery, fail-closed behavior, and guarantee limits.
 
 ### Modified Capabilities
 
@@ -31,10 +33,10 @@ Apple Installer also separates package scripts from payload placement, so PKG ne
 
 ## Impact
 
-- SPEC.md impact: this change updates §11.4 and §13.4 with stage-then-activate PKG delivery, single-owner crash-released exclusion, manual PKG start, unconditional Orchard.app rollback, managed recovery, and historical-version serialization.
-- Domain impact: the glossary defines Managed Lifecycle Exclusion Boundary, Inactive Incoming Staging Root, Managed Node Agent Recovery, and BEAM Peer Grant Store Lock, and refines Managed Node Agent Handover.
+- SPEC.md impact: this change updates §11.2, §11.4, and §13.4 with reboot-safe start suppression, authenticated single-generation PKG delivery, single-owner crash-released exclusion, pre-`bootout` process capture, required durable recovery evidence, manual PKG start, unconditional Orchard.app rollback, managed recovery, and historical-version serialization.
+- Domain impact: the glossary defines Managed Lifecycle Exclusion Boundary, Inactive Incoming Staging Root, Managed Node Agent Start Eligibility State, Managed Node Agent Recovery, and BEAM Peer Grant Store Lock, and refines Managed Node Agent Handover.
 - Decision impact: ADR 0017 records the accepted stage-then-activate and single-owner design and corrects ADR 0012 attribution.
-- Packaging impact: implementation must move Installer-managed payload out of active paths, make `postinstall` invoke one privileged active handover owner, and keep `preinstall` non-disruptive.
-- Availability impact: PKG staging does not interrupt the running Node Agent, active handover incurs a bounded interruption, and successful PKG installs remain stopped until `orchardctl start`.
-- Recovery impact: timeout, owner death, and uncertain state require the applicable managed lifecycle to reestablish coherence under the shared exclusion boundary.
+- Packaging impact: implementation must move Installer-managed payload out of active paths, bind activation to one immutable or equivalently identity-stable unique staging generation, revalidate before activation, make `postinstall` invoke one privileged active handover owner, and keep `preinstall` non-disruptive.
+- Availability impact: PKG staging does not interrupt the running Node Agent, active handover incurs a bounded interruption, and durable suppression plus crash-invalid one-shot authorization keeps successful PKG installs and uncertain start attempts stopped across reboot and launchd retries until verified enablement.
+- Recovery impact: timeout, owner death, missing or incomplete evidence, and uncertain state require the applicable managed lifecycle to reestablish coherence under the shared exclusion boundary.
 - Security impact: the handover protects identity-bearing Node state from concurrent managed process use without broadening the BEAM Peer Grant Store Lock into lifecycle ownership.
