@@ -4,7 +4,7 @@
 # Usage: ./scripts/build-pkg.sh [--allow-dirty] [--clean] [--stage-only] [output_dir]
 #
 # Options:
-#   --allow-dirty    Allow building with uncommitted changes (marks PKG as -dirty)
+#   --allow-dirty    Allow building with uncommitted changes (marks PKG filename as -dirty)
 #   --clean          Deep clean: removes _build/ and deps/ before building
 #   --stage-only     Stop after staging, venv closure verification, and optional payload signing
 #   output_dir       Destination directory (default: ./artifacts/pkg-builds/YYYY-MM-DD)
@@ -1400,6 +1400,47 @@ validate_pkg_payload() {
 }
 
 
+source_status() {
+    git status --porcelain=v1 --untracked-files=all -- \
+        . \
+        ":(exclude,literal)apps/orchard_controller/priv/static/images/orchard-mark.svg.gz"
+}
+
+validate_captured_source_identity() {
+    local current_sha
+    local current_status
+
+    if ! current_sha="$(git rev-parse HEAD)"; then
+        log_error "Failed to revalidate Git HEAD during package construction"
+        return 1
+    fi
+
+    if [[ ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
+        log_error "Revalidated package source must be a 40-character lowercase Git SHA"
+        return 1
+    fi
+
+    if [[ "$current_sha" != "$FULL_GIT_SHA" ]]; then
+        log_error "Source HEAD changed during package construction"
+        log_error "Captured: $FULL_GIT_SHA"
+        log_error "Current:  $current_sha"
+        return 1
+    fi
+
+    if [[ "$ALLOW_DIRTY" != "true" ]]; then
+        if ! current_status="$(source_status)"; then
+            log_error "Failed to revalidate package source cleanliness"
+            return 1
+        fi
+
+        if [[ -n "$current_status" ]]; then
+            log_error "Build inputs changed during package construction"
+            printf '%s\n' "$current_status" >&2
+            return 1
+        fi
+    fi
+}
+
 cd "$REPO_ROOT"
 
 export MIX_ENV=prod
@@ -1433,6 +1474,38 @@ case "$ORCHARD_BUILD_CHANNEL" in
         ;;
 esac
 
+if ! FULL_GIT_SHA="$(git rev-parse HEAD)"; then
+    log_error "Failed to resolve the Git HEAD for packaged build provenance"
+    exit 1
+fi
+
+if [[ ! "$FULL_GIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    log_error "Packaged build provenance must be a 40-character lowercase Git SHA"
+    exit 1
+fi
+
+export ORCHARD_BUILD_SHA="$FULL_GIT_SHA"
+SHORT_GIT_SHA="${FULL_GIT_SHA:0:7}"
+PKG_FILENAME_REF="$SHORT_GIT_SHA"
+
+if ! INITIAL_SOURCE_STATUS="$(source_status)"; then
+    log_error "Failed to inspect tracked, staged, and untracked package inputs"
+    exit 1
+fi
+
+if [[ -n "$INITIAL_SOURCE_STATUS" ]]; then
+    if [[ "$ALLOW_DIRTY" == "true" ]]; then
+        log_warn "Uncommitted or untracked build inputs detected — continuing with --allow-dirty"
+        PKG_FILENAME_REF="${SHORT_GIT_SHA}-dirty"
+    else
+        log_error "Uncommitted or untracked build inputs detected"
+        printf '%s\n' "$INITIAL_SOURCE_STATUS" >&2
+        log_error "Commit changes first, or use --allow-dirty for a development build"
+        exit 1
+    fi
+fi
+unset INITIAL_SOURCE_STATUS
+
 # Preflight: Check for port conflicts (warn only)
 if lsof -ti :4000 >/dev/null 2>&1 || lsof -ti :50071 >/dev/null 2>&1; then
     log_warn "Dev server ports (4000 or 50071) appear to be in use"
@@ -1450,13 +1523,15 @@ if [[ -z "$APP_VERSION" ]] || [[ "$APP_VERSION" == *" "* ]]; then
     exit 1
 fi
 
-GIT_SHA=$(git rev-parse --short HEAD)
+validate_captured_source_identity
+
 BUILD_DATE=$(date +%Y%m%d)
-PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${GIT_SHA}.pkg"
+PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${PKG_FILENAME_REF}.pkg"
 
 log_info "Building Orchard PKG"
 log_info "  App version: $APP_VERSION"
-log_info "  Git SHA: $GIT_SHA"
+log_info "  Build SHA: $ORCHARD_BUILD_SHA"
+log_info "  PKG filename ref: $PKG_FILENAME_REF"
 log_info "  Build date: $BUILD_DATE"
 log_info "  Build channel: $ORCHARD_BUILD_CHANNEL"
 log_info "  Output: $OUTPUT_DIR/$PKG_NAME"
@@ -1474,20 +1549,6 @@ fi
 if ! mkdir -p "$OUTPUT_DIR"; then
     log_error "Failed to create output directory: $OUTPUT_DIR"
     exit 1
-fi
-
-# Verify clean git state (fail by default)
-if ! git diff-index --quiet HEAD --; then
-    if [[ "$ALLOW_DIRTY" == "true" ]]; then
-        log_warn "Uncommitted changes detected — continuing with --allow-dirty"
-        GIT_SHA="${GIT_SHA}-dirty"
-        PKG_NAME="Orchard-${APP_VERSION}-${BUILD_DATE}-${GIT_SHA}.pkg"
-        log_warn "Marked as dirty: $PKG_NAME"
-    else
-        log_error "Uncommitted changes detected in repository"
-        log_error "Commit changes first, or use --allow-dirty to override"
-        exit 1
-    fi
 fi
 
 log_info "Validating packaging source provenance..."
@@ -1569,6 +1630,8 @@ mix release orchard_node_agent
 
 log_info "  → orchard_cli"
 mix release orchard_cli
+
+validate_captured_source_identity
 
 # Create staging directory
 log_info "Creating PKG staging..."
@@ -1747,6 +1810,13 @@ if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
 fi
 
 if [[ "$STAGE_ONLY" == "true" ]]; then
+    if ! validate_captured_source_identity; then
+        rm -rf "$STAGING_BASE"
+        STAGING_CREATED=false
+        log_error "Removed staged payload after source identity changed"
+        exit 1
+    fi
+
     printf 'STAGING_BASE=%s\n' "$STAGING_BASE"
     log_info "Stage-only build complete; preserved staging directory: $STAGING_BASE"
     BUILD_SUCCEEDED=true
@@ -1761,6 +1831,7 @@ find "$STAGING/share/bin" -type f -exec chmod 755 {} \;
 
 log_info "Validating pre-pkgbuild metadata state..."
 assert_clean_provenance "pre-pkgbuild" "$STAGING_BASE"
+validate_captured_source_identity
 
 # Build the PKG
 log_info "Building PKG..."
@@ -1791,6 +1862,12 @@ if [[ -f "$OUTPUT_DIR/$PKG_NAME" ]]; then
     if ! validate_pkg_payload "$OUTPUT_DIR/$PKG_NAME"; then
         cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
         log_error "Removed malformed PKG outputs: $OUTPUT_DIR/$PKG_NAME"
+        exit 1
+    fi
+
+    if ! validate_captured_source_identity; then
+        cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
+        log_error "Removed PKG outputs after source identity changed"
         exit 1
     fi
 

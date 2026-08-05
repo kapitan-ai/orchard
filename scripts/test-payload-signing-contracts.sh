@@ -455,14 +455,39 @@ write_build_pkg_fakes() {
     local tools="$1"
     mkdir -p "$tools"
 
+    cat > "$tools/bash" <<SH
+#!/bin/sh
+exec "$(command -v bash)" "\$@"
+SH
+
     cat > "$tools/git" <<'SH'
 #!/bin/sh
 if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'git\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
 fi
 case "$1" in
-  rev-parse) echo abcdef0 ;;
-  diff-index) exit 0 ;;
+  rev-parse)
+    count=1
+    if [ -n "${ORCHARD_FAKE_GIT_STATE_FILE:-}" ]; then
+      if [ -f "$ORCHARD_FAKE_GIT_STATE_FILE" ]; then
+        count="$(cat "$ORCHARD_FAKE_GIT_STATE_FILE")"
+        count=$((count + 1))
+      fi
+      printf '%s\n' "$count" > "$ORCHARD_FAKE_GIT_STATE_FILE"
+    fi
+    if [ -n "${ORCHARD_FAKE_GIT_HEAD_CHANGE_AT:-}" ] && [ "$count" -ge "$ORCHARD_FAKE_GIT_HEAD_CHANGE_AT" ]; then
+      echo 1234567890abcdef1234567890abcdef12345678
+    else
+      echo abcdef0123456789abcdef0123456789abcdef01
+    fi
+    ;;
+  status)
+    if [ -n "${ORCHARD_FAKE_GIT_STATUS_OUTPUT+x}" ]; then
+      printf '%s' "$ORCHARD_FAKE_GIT_STATUS_OUTPUT"
+    else
+      printf ' M fake-source\n'
+    fi
+    ;;
   *) echo "unexpected git invocation: $*" >&2; exit 1 ;;
 esac
 SH
@@ -670,7 +695,7 @@ fi
 if [ "${1:-}" = "deps.get" ]; then
   exit 0
 fi
-if [ "${1:-}" = "assets.deploy" ]; then
+if [ "${1:-}" = "assets.setup" ] || [ "${1:-}" = "assets.deploy" ]; then
   exit 0
 fi
 if [ "${1:-}" = "release" ]; then
@@ -1065,11 +1090,14 @@ emit_clean_payload_files() {
 ./Library/Application Support/Orchard/share/bin/orchardctl
 ./Library/Application Support/Orchard/share/bin/orchard-controller
 ./Library/Application Support/Orchard/share/bin/orchard-node-agent
+./Library/Application Support/Orchard/share/bin/orchard-managed-postgres
 ./Library/Application Support/Orchard/share/launchd/com.orchard.controller.plist
 ./Library/Application Support/Orchard/share/launchd/com.orchard.node-agent.plist
 ./Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli
 ./Library/Application Support/Orchard/releases/orchard_controller/bin/orchard_controller
 ./Library/Application Support/Orchard/releases/orchard_node_agent/bin/orchard_node_agent
+./Library/Application Support/Orchard/native/orchard_tokenizer/.venv/bin/orchard-tokenizer
+./Library/Application Support/Orchard/native/orchard_worker_mlx/.venv/bin/orchard-worker-mlx
 OUT
 }
 
@@ -1084,10 +1112,10 @@ write_package_info() {
     sed -n '/<pkg-info/,$p' "$pkg" > "$dest/PackageInfo"
     return 0
   fi
-  files=8
+  files=11
   kbytes=0
   if [ "${ORCHARD_FAKE_PKGUTIL_SIDECARS:-}" = "1" ] && ! is_repaired_pkg "$pkg"; then
-    files=10
+    files=13
   fi
   if [ "${ORCHARD_FAKE_PACKAGEINFO_STALE_COUNT:-}" = "1" ]; then
     files=999
@@ -1442,7 +1470,7 @@ fi
 exec /usr/bin/shasum "$@"
 SH
 
-    chmod +x "$tools/git" "$tools/uv" "$tools/find" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/security" "$tools/codesign" "$tools/chmod" "$tools/xattr" "$tools/pkgbuild" "$tools/pkgutil" "$tools/lsbom" "$tools/mkbom" "$tools/cpio" "$tools/tar" "$tools/gzip" "$tools/shasum"
+    chmod +x "$tools/bash" "$tools/git" "$tools/uv" "$tools/find" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/security" "$tools/codesign" "$tools/chmod" "$tools/xattr" "$tools/pkgbuild" "$tools/pkgutil" "$tools/lsbom" "$tools/mkbom" "$tools/cpio" "$tools/tar" "$tools/gzip" "$tools/shasum"
 }
 
 write_sign_pkg_fakes() {
@@ -2510,6 +2538,23 @@ if find "$out_dir" -name '*.pkg' -print -quit | grep -q .; then
     find "$out_dir" -name '*.pkg' >&2
     exit 1
 fi
+
+late_stage="$case_dir/late-stage"
+late_stage_git_state="$case_dir/late-stage-git-state"
+assert_fails_with 'Removed staged payload after source identity changed' "$case_dir/late-stage.out" env ORCHARD_FAKE_GIT_HEAD_CHANGE_AT=4 ORCHARD_FAKE_GIT_STATE_FILE="$late_stage_git_state" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$late_stage" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir"
+assert_no_grep '^STAGING_BASE=' "$case_dir/late-stage.out"
+test ! -e "$late_stage"
+
+late_pkg_staging="$case_dir/late-pkg-staging"
+late_pkg_out="$case_dir/late-pkg-out"
+late_pkg_git_state="$case_dir/late-pkg-git-state"
+assert_fails_with 'Removed PKG outputs after source identity changed' "$case_dir/late-pkg.out" env ORCHARD_FAKE_GIT_HEAD_CHANGE_AT=5 ORCHARD_FAKE_GIT_STATE_FILE="$late_pkg_git_state" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$late_pkg_staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$late_pkg_out"
+if find "$late_pkg_out" \( -name '*.pkg' -o -name '*.pkg.sha256' -o -name '*.pkg.signing-manifest.txt' \) -print -quit | grep -q .; then
+    echo "post-assembly source mutation must not retain PKG outputs" >&2
+    find "$late_pkg_out" -type f >&2
+    exit 1
+fi
+
 assert_fails_with 'Selected staging path already exists' "$case_dir/existing.out" env ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir"
 
 preexisting="$case_dir/preexisting"

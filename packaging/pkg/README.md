@@ -696,6 +696,7 @@ and do not affect license enforcement.
 | Variable | Default | Intended use |
 |----------|---------|--------------|
 | `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in authenticated `/ops/v1/health`. Distributed package builds must use a non-`dev` channel (`internal`, `trial`, `pilot`, or `release`). |
+| `ORCHARD_BUILD_SHA` | Unset for source builds | Compile-time Git provenance, surfaced in authenticated `/ops/v1/health`. A present value must be a 40-character lowercase hexadecimal commit. When absent, compilation falls back to the validated full `git rev-parse HEAD`, or `unknown` only when Git or repository metadata is unavailable. `build-pkg.sh` exports and bakes the validated full committed `HEAD`; inherited values are ignored. |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
@@ -1347,10 +1348,16 @@ This produces a PKG file following the [naming convention below](#filename-forma
 
 The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because distributed packages must not ship with source-dev enforcement defaults.
 
+Before its first Mix invocation, the script resolves and validates the full 40-character lowercase `git rev-parse HEAD`, then exports it as `ORCHARD_BUILD_SHA`. This authoritative value replaces any inherited `ORCHARD_BUILD_SHA` and is baked into all packaged releases. The clean-build gate covers tracked modifications, staged changes, and untracked inputs before Mix runs; the script revalidates the exact captured `HEAD` and clean input state during construction and immediately before assembly. `--allow-dirty` is a development-only escape hatch whose provenance identifies committed `HEAD`, not uncommitted bytes.
+
+Direct source/dev compilation records the same full commit through its own `git rev-parse HEAD` fallback. A present `ORCHARD_BUILD_SHA` must be exactly 40 lowercase hexadecimal characters or compilation fails. Only an absent override with unavailable Git or repository metadata resolves to `unknown`. Effective SHA, trimmed/defaulted build channel, current UTC build date, and Git availability changes all participate in Mix recompilation under `SPEC.md` §13.1.
+
+Three surfaces present an abbreviated form. These are presentation only and are derived from the full recorded commit, not a shorter provenance value: Sentry release names use a seven-character suffix while the `build_sha` tag carries the complete value, the Console sidebar appends seven characters while authenticated `/ops/v1/health` `build_ref` carries the complete value, and the [PKG filename](#filename-format) uses a seven-character segment.
+
 | Flag | Purpose |
 |------|---------|
 | `--clean` | Deep clean: removes `_build/` and `deps/` before building (slow, but maximally reproducible) |
-| `--allow-dirty` | Supported dev-build escape hatch when your tree is not clean (adds `-dirty` to the git SHA segment) |
+| `--allow-dirty` | Supported dev-build escape hatch when your tree is not clean (adds `-dirty` to the filename reference only) |
 | `--stage-only` | Stage the payload, verify Python venv closure, optionally payload-sign Mach-O files, print `STAGING_BASE=<path>`, and skip `pkgbuild` |
 | `output_dir` | Custom output directory (default: `./artifacts/pkg-builds/YYYY-MM-DD/`) |
 
@@ -1386,7 +1393,7 @@ Before building:
    mise toolchain, bootstraps the mise-owned Hex/Rebar installs, fetches Elixir
    deps, syncs native Python packages, and installs root npm tool/asset pins.
 2. **Build shell**: Run builds through `mise exec -- ./scripts/build-pkg.sh`.
-3. **Git**: Clean working tree recommended (use `--allow-dirty` if needed)
+3. **Git**: A clean tracked, staged, and untracked input state is required for governed builds (`--allow-dirty` is development-only)
 4. **macOS**: PKG build only works on macOS (uses `pkgbuild`)
 5. **No dev server running**: Ports 4000/50071 should be free (warns if in use)
 
@@ -1611,14 +1618,16 @@ Orchard-<app_version>-<YYYYMMDD>-<git_sha7>.pkg
 ```
 
 There is no separate "dev" filename marker. Development builds use the same
-format; when `--allow-dirty` is used, `-dirty` is appended to the git-SHA
-segment only.
+format; when `--allow-dirty` is used, `-dirty` is appended to the filename
+reference only. It is not part of the exported or baked SHA. Dirty-build
+provenance identifies committed `HEAD` only and cannot identify uncommitted
+payload differences.
 
 | Component | Example | Purpose |
 |-----------|---------|---------|
 | `app_version` | `0.5.0-dev` | Matches `orchardctl status` output |
 | `YYYYMMDD` | `20260417` | Build date (chronological sorting) |
-| `git_sha7` | `e152300` | Traceability for debug/support |
+| `git_sha7` | `e152300` | Traceability for debug/support. First seven characters of the full commit baked as Build Provenance, not a shorter provenance value. |
 
 ### Example
 

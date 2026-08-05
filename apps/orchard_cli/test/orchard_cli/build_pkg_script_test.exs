@@ -75,6 +75,73 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     assert allowlist_index < mix_release_index
   end
 
+  test "clean package preflight exports the exact full HEAD before Mix" do
+    fixture = create_packaging_fixture!()
+    head = git!(fixture, ["rev-parse", "HEAD"])
+
+    {output, status} = run_packaging_fixture(fixture, advance_head: true)
+
+    refute status == 0, output
+    assert output =~ "Source HEAD changed during package construction"
+    assert File.read!(Path.join(fixture, ".git/mix.log")) =~ "sha=#{head} args=run --no-start"
+  end
+
+  test "package cleanliness rejects tracked staged and untracked inputs before Mix" do
+    for dirty_input <- [:tracked, :staged, :untracked] do
+      fixture = create_packaging_fixture!()
+      dirty_packaging_fixture!(fixture, dirty_input)
+
+      {output, status} = run_packaging_fixture(fixture)
+
+      refute status == 0, "#{dirty_input} input unexpectedly passed:\n#{output}"
+      assert output =~ "Uncommitted or untracked build inputs detected"
+      refute File.exists?(Path.join(fixture, ".git/mix.log"))
+    end
+  end
+
+  test "only the known generated static gzip is excluded from source inputs" do
+    fixture = create_packaging_fixture!()
+
+    generated_gzip =
+      Path.join(fixture, "apps/orchard_controller/priv/static/images/orchard-mark.svg.gz")
+
+    File.mkdir_p!(Path.dirname(generated_gzip))
+    File.write!(generated_gzip, "generated gzip\n")
+
+    {output, status} = run_packaging_fixture(fixture)
+
+    refute status == 0, output
+    refute output =~ "Uncommitted or untracked build inputs detected"
+    refute output =~ "Build inputs changed during package construction"
+    assert File.exists?(Path.join(fixture, ".git/mix.log"))
+
+    unexpected_fixture = create_packaging_fixture!()
+
+    unexpected_gzip =
+      Path.join(unexpected_fixture, "apps/orchard_controller/priv/static/images/operator.css.gz")
+
+    File.mkdir_p!(Path.dirname(unexpected_gzip))
+    File.write!(unexpected_gzip, "unexpected gzip\n")
+
+    {unexpected_output, unexpected_status} = run_packaging_fixture(unexpected_fixture)
+
+    refute unexpected_status == 0, unexpected_output
+    assert unexpected_output =~ "Uncommitted or untracked build inputs detected"
+    refute File.exists?(Path.join(unexpected_fixture, ".git/mix.log"))
+  end
+
+  test "dirty marker is separate from the exported build SHA" do
+    script = File.read!(@script_path)
+
+    assert script =~ "SHORT_GIT_SHA=\"${FULL_GIT_SHA:0:7}\""
+    assert script =~ "PKG_FILENAME_REF=\"${SHORT_GIT_SHA}-dirty\""
+    assert script =~ "Build SHA: $ORCHARD_BUILD_SHA"
+    assert script =~ "PKG filename ref: $PKG_FILENAME_REF"
+
+    refute script =~ "ORCHARD_BUILD_SHA=\"${ORCHARD_BUILD_SHA}-dirty\""
+    refute script =~ "FULL_GIT_SHA=\"${FULL_GIT_SHA}-dirty\""
+  end
+
   test "build channel defaults only when environment variable is unset" do
     script = File.read!(@script_path)
 
@@ -150,6 +217,15 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     end
   end
 
+  test "package runbook identifies all three abbreviated presentation surfaces" do
+    readme = File.read!(@pkg_readme)
+
+    assert readme =~ "Three surfaces present an abbreviated form"
+    assert readme =~ "Sentry release names use a seven-character suffix"
+    assert readme =~ "Console sidebar appends seven characters"
+    assert readme =~ "PKG filename"
+  end
+
   test "package runbook describes source exposure as deterrence only" do
     readme = File.read!(@pkg_readme)
 
@@ -157,6 +233,84 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     assert readme =~ "does not provide compiled source protection"
     assert readme =~ "duplicate native helper source trees are not staged"
     refute readme =~ "accepted source exposure risk"
+  end
+
+  defp create_packaging_fixture! do
+    fixture =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-package-preflight-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir_p!(Path.join(fixture, "scripts"))
+    File.cp!(@script_path, Path.join(fixture, "scripts/build-pkg.sh"))
+    File.write!(Path.join(fixture, "mix.exs"), "# package preflight fixture\n")
+
+    fake_bin = Path.join(fixture, "fake-bin")
+    File.mkdir_p!(fake_bin)
+
+    File.write!(Path.join(fake_bin, "mix"), """
+    #!/bin/bash
+    mkdir -p "$(dirname "$FAKE_MIX_LOG")"
+    printf 'sha=%s args=%s\\n' "$ORCHARD_BUILD_SHA" "$*" >> "$FAKE_MIX_LOG"
+    if [[ "${ORCHARD_FAKE_ADVANCE_HEAD:-0}" == "1" ]]; then
+      printf '# changed during build\\n' >> mix.exs
+      git add mix.exs
+      git -c user.name='Orchard Test' -c user.email='orchard-test@invalid' commit -m 'advance during build' >/dev/null
+    fi
+    printf '0.5.0-dev\\n'
+    """)
+
+    File.chmod!(Path.join(fake_bin, "mix"), 0o755)
+    git!(fixture, ["init", "--quiet"])
+    git!(fixture, ["add", "."])
+    git!(fixture, ["commit", "-m", "package fixture"])
+
+    on_exit(fn -> File.rm_rf!(fixture) end)
+    fixture
+  end
+
+  defp run_packaging_fixture(fixture, opts \\ []) do
+    env = [
+      {"FAKE_MIX_LOG", Path.join(fixture, ".git/mix.log")},
+      {"ORCHARD_FAKE_ADVANCE_HEAD", if(Keyword.get(opts, :advance_head), do: "1", else: "0")},
+      {"PATH", Path.join(fixture, "fake-bin") <> ":" <> System.fetch_env!("PATH")}
+    ]
+
+    System.cmd(
+      "/bin/bash",
+      [Path.join(fixture, "scripts/build-pkg.sh"), Path.join(fixture, "out")],
+      cd: fixture,
+      env: env,
+      stderr_to_stdout: true
+    )
+  end
+
+  defp dirty_packaging_fixture!(fixture, :tracked) do
+    File.write!(Path.join(fixture, "mix.exs"), "# tracked change\n", [:append])
+  end
+
+  defp dirty_packaging_fixture!(fixture, :staged) do
+    dirty_packaging_fixture!(fixture, :tracked)
+    git!(fixture, ["add", "mix.exs"])
+  end
+
+  defp dirty_packaging_fixture!(fixture, :untracked) do
+    File.mkdir_p!(Path.join(fixture, "packaging"))
+    File.write!(Path.join(fixture, "packaging/new-input"), "untracked package input\n")
+  end
+
+  defp git!(fixture, args) do
+    {output, status} =
+      System.cmd(
+        "git",
+        ["-c", "user.name=Orchard Test", "-c", "user.email=orchard-test@invalid" | args],
+        cd: fixture,
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+    String.trim(output)
   end
 
   defp index_of(haystack, needle) do
