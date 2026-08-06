@@ -7,6 +7,7 @@ defmodule Orchard.NodeTrust do
 
   alias Orchard.ControlPlane
   alias Orchard.Governance
+  alias Orchard.Governance.AuditWriter
   alias Orchard.NodeEnrollment.PKI, as: EnrollmentPKI
   alias Orchard.Nodes.{ClusterIdentity, TrustAuthority}
   alias Orchard.NodeTrust.{PKI, Store}
@@ -165,7 +166,7 @@ defmodule Orchard.NodeTrust do
   end
 
   defp initialize_transaction(root, opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       Repo.query!(
         "SELECT pg_advisory_xact_lock(hashtext($1))",
         [@advisory_lock_name]

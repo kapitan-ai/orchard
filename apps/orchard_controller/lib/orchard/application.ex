@@ -221,7 +221,8 @@ defmodule Orchard.Application do
   end
 
   defp maybe_add_metrics(children) do
-    if Application.get_env(:orchard_controller, :start_metrics, true) do
+    if Application.get_env(:orchard_controller, :start_metrics, true) and
+         not peer_grant_control_mode?() do
       children ++ [{Orchard.Metrics.Bootstrap, metrics_options()}]
     else
       children

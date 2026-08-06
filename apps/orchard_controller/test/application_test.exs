@@ -516,6 +516,8 @@ defmodule OrchardApplicationTest do
   end
 
   test "SPEC.md §7.5.0 grant-control mode is non-distributed and starts no runtime dispatch" do
+    Application.put_env(:orchard_controller, :start_metrics, true)
+
     Application.put_env(:orchard_controller, :beam_peer_grants,
       enabled: true,
       mode: :grant_control,
@@ -533,6 +535,14 @@ defmodule OrchardApplicationTest do
 
     refute Enum.any?(children, fn
              {Orchard.BeamPeerGrants.ControllerStartupVerifier, _opts} -> true
+             {Orchard.Metrics.Bootstrap, _opts} -> true
+             _other -> false
+           end)
+
+    Application.put_env(:orchard_controller, :beam_peer_grants, enabled: false)
+
+    assert Enum.any?(Orchard.Application.child_specs(), fn
+             {Orchard.Metrics.Bootstrap, _opts} -> true
              _other -> false
            end)
   end

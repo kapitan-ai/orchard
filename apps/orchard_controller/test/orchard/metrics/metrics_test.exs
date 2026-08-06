@@ -169,6 +169,64 @@ defmodule Orchard.MetricsTest do
     assert CardinalityLedger.active_series() == 0
   end
 
+  test "transient admission unavailability clears on the next successful admission" do
+    admission = Process.whereis(SeriesAdmission)
+    :ok = :sys.suspend(admission)
+
+    on_exit(fn ->
+      if Process.alive?(admission), do: :sys.resume(admission)
+    end)
+
+    assert {:error, :metrics_degraded} = SeriesAdmission.emit(:api_key_auth_failures, 1, %{})
+    refute Status.healthy?()
+
+    :ok = :sys.resume(admission)
+
+    assert :ok = SeriesAdmission.emit(:api_key_auth_failures, 1, %{})
+    assert Status.healthy?()
+  end
+
+  test "a rejected tuple keeps its reporter generation degraded" do
+    assert {:error, :metrics_degraded} =
+             SeriesAdmission.emit(:quota_rejections, 1, %{tenant: "tenant-a", reason: "arbitrary"})
+
+    refute Status.healthy?()
+
+    assert :ok = SeriesAdmission.emit(:api_key_auth_failures, 1, %{})
+    refute Status.healthy?()
+  end
+
+  test "expiring a failed gauge family retries an unavailable ledger release" do
+    now = System.monotonic_time(:millisecond)
+    store = Process.whereis(GaugeSnapshotStore)
+    ledger = Process.whereis(CardinalityLedger)
+
+    assert :ok =
+             GaugeSnapshotStore.replace(
+               :scheduler_queue_depth,
+               [%{labels: %{tenant: "tenant-a"}, value: 1}],
+               now,
+               40
+             )
+
+    assert :ok = GaugeSnapshotStore.fail(:scheduler_queue_depth)
+    :ok = :sys.suspend(ledger)
+
+    on_exit(fn ->
+      if Process.alive?(ledger), do: :sys.resume(ledger)
+    end)
+
+    Process.sleep(120)
+
+    assert Process.alive?(store)
+    assert [%{value: 1}] = GaugeSnapshotStore.snapshots().scheduler_queue_depth
+
+    :ok = :sys.resume(ledger)
+    wait_until_expired(:scheduler_queue_depth)
+
+    assert CardinalityLedger.active_series() == 0
+  end
+
   test "sum-compatible counters expose measurement deltas and zero adds nothing" do
     assert :ok =
              SeriesAdmission.emit(:input_tokens, 7, %{tenant: "tenant-a", model: "model-a"})
@@ -274,7 +332,7 @@ defmodule Orchard.MetricsTest do
 
   test "failed gauge snapshot is retained for two poll intervals then releases its charge" do
     now = System.monotonic_time(:millisecond)
-    poll_interval_ms = 40
+    poll_interval_ms = 400
 
     assert :ok =
              GaugeSnapshotStore.replace(
@@ -288,12 +346,11 @@ defmodule Orchard.MetricsTest do
     assert [%{value: 1}] = GaugeSnapshotStore.snapshots().scheduler_queue_depth
     assert CardinalityLedger.active_series() == 1
 
-    Process.sleep(50)
+    Process.sleep(poll_interval_ms)
     assert [%{value: 1}] = GaugeSnapshotStore.snapshots().scheduler_queue_depth
     assert CardinalityLedger.active_series() == 1
 
-    Process.sleep(50)
-    refute Map.has_key?(GaugeSnapshotStore.snapshots(), :scheduler_queue_depth)
+    wait_until_expired(:scheduler_queue_depth)
     assert CardinalityLedger.active_series() == 0
   end
 
@@ -341,6 +398,19 @@ defmodule Orchard.MetricsTest do
     start_supervised!({MetricsSupervisor, gauge_source: EmptyGaugeSource})
 
     wait_until_polled()
+  end
+
+  defp wait_until_expired(family, attempts \\ 100)
+
+  defp wait_until_expired(family, 0), do: flunk("#{family} snapshot was never expired")
+
+  defp wait_until_expired(family, attempts) do
+    if Map.has_key?(GaugeSnapshotStore.snapshots(), family) do
+      Process.sleep(10)
+      wait_until_expired(family, attempts - 1)
+    else
+      :ok
+    end
   end
 
   defp wait_until_polled do

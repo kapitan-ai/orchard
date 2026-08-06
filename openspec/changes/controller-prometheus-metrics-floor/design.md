@@ -150,7 +150,10 @@ the canonical model identifier, and `node` the stable physical Node identifier.
 | Audit `outcome` | `succeeded`, `failed`, `denied` |
 
 Unknown categorical inputs are not turned into arbitrary labels: they are
-dropped and reporting is marked degraded. Target addresses, hostnames, Request
+dropped and reporting is marked degraded. The audit writer maps concrete audit
+actions onto the eight bounded action domains before admission; an action
+outside those domains emits no audit event instead of materializing an
+out-of-vocabulary label. Target addresses, hostnames, Request
 IDs, user IDs, claim tokens, raw errors, and runtime-provided arbitrary codes
 are never labels. There are no HMAC pilot aliases. Issue #115 must strip tenant
 and user dimensions before later external egress.
@@ -240,9 +243,15 @@ replacement snapshot and updates shared identifier reference counts atomically. 
 or complete gauge snapshot that would exceed its family ceiling or the 5,000
 global ceiling is rejected without aliasing; reporting becomes degraded and
 authorized scrapes return `503`. A later valid complete gauge snapshot can
-clear gauge degradation. Counter/histogram admission degradation clears only
+clear gauge degradation. Counter/histogram *rejection* degradation clears only
 with a clean reporter/registry restart because missed counter history cannot be
 reconstructed safely.
+
+Admission *unavailability* is a separate, recoverable degradation class: a 25
+millisecond deadline expiry, registry or ledger process unavailability, and a
+contained exception leave ledger and reporter state untouched, so the next
+successful admission clears that class while a rejected tuple keeps its
+generation degraded.
 
 ### Failure isolation
 
@@ -252,7 +261,13 @@ database, network, filesystem, or domain mutation. An emitter waits at most 25
 milliseconds for SeriesAdmission; timeout or process exit degrades metrics and
 returns control without the default five-second `GenServer.call/3` wait. Poll callbacks are read-only
 and bounded; raises, exits, throws, malformed snapshots, and timeouts become
-reporting failures only. Reporter, admission-registry, cardinality-ledger, or snapshot-store startup
+reporting failures only. A gauge authority that this host's role does not
+supervise fails only the families it owns, and the metrics subtree is not
+supervised at all in peer-grant control mode, where the polled inference
+authorities are absent by design. Expiring a retained failed gauge family
+retries its ledger release rather than crashing the store, because a store
+restart would discard the whole counter/histogram generation. Reporter,
+admission-registry, cardinality-ledger, or snapshot-store startup
 failure leaves metrics disabled without failing Controller boot. SeriesAdmission
 cannot restart into an existing reporter generation: both reset together or
 scrapes remain `503`. Repeated reporter failure must not exhaust a parent

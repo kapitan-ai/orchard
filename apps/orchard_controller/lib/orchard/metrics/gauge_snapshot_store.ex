@@ -5,6 +5,7 @@ defmodule Orchard.Metrics.GaugeSnapshotStore do
   alias Orchard.Metrics.{CardinalityLedger, Catalog, Normalizer, Status}
 
   @retention_intervals 2
+  @release_retry_ms 100
 
   @type entry :: %{labels: map(), value: number()}
 
@@ -63,11 +64,21 @@ defmodule Orchard.Metrics.GaugeSnapshotStore do
   def handle_info({:expire_failed, family, token}, state) do
     case Map.get(state, family) do
       %{failure_token: ^token} ->
-        :ok = CardinalityLedger.release_gauge(family)
-        {:noreply, Map.delete(state, family)}
+        {:noreply, expire_failed_snapshot(family, token, state)}
 
       _snapshot ->
         {:noreply, state}
+    end
+  end
+
+  defp expire_failed_snapshot(family, token, state) do
+    case CardinalityLedger.release_gauge(family) do
+      :ok ->
+        Map.delete(state, family)
+
+      {:error, _reason} ->
+        Process.send_after(self(), {:expire_failed, family, token}, @release_retry_ms)
+        state
     end
   end
 

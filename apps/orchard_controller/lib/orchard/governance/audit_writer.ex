@@ -79,7 +79,7 @@ defmodule Orchard.Governance.AuditWriter do
   defp action_domain("node_lifecycle." <> _rest), do: {:ok, "node_lifecycle"}
   defp action_domain("provisioning_batch." <> _rest), do: {:ok, "service_account"}
   defp action_domain("cluster" <> _rest), do: {:ok, "cluster"}
-  defp action_domain(_action), do: {:ok, "unknown"}
+  defp action_domain(_action), do: :error
 
   defp outcome(_action, {:error, _changeset}), do: "failed"
   defp outcome("api_key.auth_failed", {:ok, _audit_log}), do: "denied"

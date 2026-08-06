@@ -164,6 +164,7 @@ No unsupported core pre-materialization API is required.
 A rejected tuple or snapshot SHALL NOT be aliased or coalesced.
 It SHALL mark reporting degraded, emit only a bounded rate-limited structured log, and make authorized scrapes return `503`.
 A valid later gauge snapshot MAY clear gauge degradation; missed counter/histogram history SHALL NOT be reconstructed.
+Admission unavailability, meaning a bounded deadline expiry, an unavailable admission or ledger process, or a contained exception, SHALL be tracked as a distinct recoverable degradation class that a later successful admission MAY clear, while a rejected counter/histogram tuple SHALL keep its generation degraded.
 
 #### Scenario: Prospective counter tuple exceeds a ceiling
 - **WHEN** Orchard's Series Admission registry determines that a normalized tuple would exceed its family or global ceiling
@@ -179,6 +180,8 @@ A valid later gauge snapshot MAY clear gauge degradation; missed counter/histogr
 Metrics initialization, event handling, polling, aggregation, admission, snapshot storage, and rendering SHALL be non-authoritative and SHALL NOT prevent Controller boot or alter inference, admission, quota, scheduling, dispatch, recovery, or persistence outcomes.
 Telemetry handlers SHALL perform only bounded in-memory normalization and Series Admission and SHALL be exception-contained with no database, network, filesystem, or domain mutation.
 Poll callbacks SHALL be read-only and bounded; raises, exits, throws, malformed snapshots, and timeouts SHALL become reporting failures only.
+An unavailable gauge authority SHALL fail only the families that authority owns, and a host role that does not supervise the polled authorities SHALL NOT supervise the metrics subtree.
+Expiring a retained failed gauge family SHALL retry its ledger release rather than crash the snapshot store and discard the counter/histogram generation.
 Reporter, Series Admission, Cardinality Ledger, or Gauge Snapshot Store startup or repeated crash SHALL leave metrics disabled or degraded without exhausting a parent supervisor's restart intensity.
 Series Admission SHALL NOT reset independently while the core reporter retains an older generation.
 Rendering SHALL be bounded and SHALL return complete core-plus-gauge exposition or sanitized `503`.

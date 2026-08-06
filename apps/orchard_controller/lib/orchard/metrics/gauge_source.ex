@@ -11,6 +11,7 @@ defmodule Orchard.Metrics.GaugeSource do
   alias Orchard.Requests.Request
 
   @query_timeout_ms 500
+  @authority_timeout_ms 100
   @managed_node_limit 5
 
   @type entry :: %{labels: map(), value: number()}
@@ -18,18 +19,45 @@ defmodule Orchard.Metrics.GaugeSource do
 
   @spec snapshots(DateTime.t()) :: snapshots()
   def snapshots(now \\ DateTime.utc_now()) do
-    tenants = Governance.list_tenants()
-    queue_depths = QueueManager.queue_depths(timeout: 100)
     node_heartbeats = managed_node_heartbeats()
 
     %{
-      scheduler_queue_depth: queue_entries(tenants, queue_depths),
       node_heartbeat_lag: heartbeat_lag_entries(node_heartbeats, now),
       node_available_memory: memory_entries(node_heartbeats, now, :available_memory_bytes),
       node_swap_used: memory_entries(node_heartbeats, now, :swap_used_bytes),
-      active_requests: active_request_entries(node_heartbeats),
       model_resident: placement_entries(node_heartbeats, :model_resident)
     }
+    |> put_queue_depths()
+    |> put_active_requests(node_heartbeats)
+  end
+
+  defp put_queue_depths(snapshots) do
+    read = fn -> QueueManager.queue_depths(timeout: @authority_timeout_ms) end
+
+    case read_authority(QueueManager, read) do
+      {:ok, depths} ->
+        tenants = Governance.list_tenants()
+        Map.put(snapshots, :scheduler_queue_depth, queue_entries(tenants, depths))
+
+      :unavailable ->
+        snapshots
+    end
+  end
+
+  defp put_active_requests(snapshots, node_heartbeats) do
+    case read_authority(AllocationAuthority, &AllocationAuthority.live_claims/0) do
+      {:ok, claims} ->
+        Map.put(snapshots, :active_requests, active_request_entries(node_heartbeats, claims))
+
+      :unavailable ->
+        snapshots
+    end
+  end
+
+  defp read_authority(server, read) do
+    if is_pid(GenServer.whereis(server)), do: {:ok, read.()}, else: :unavailable
+  catch
+    :exit, _reason -> :unavailable
   end
 
   defp managed_node_heartbeats do
@@ -102,12 +130,12 @@ defmodule Orchard.Metrics.GaugeSource do
     |> merge_placement_entries(family)
   end
 
-  defp active_request_entries(node_heartbeats) do
+  defp active_request_entries(node_heartbeats, claims) do
     managed_node_ids =
       MapSet.new(node_heartbeats, fn {%Node{id: node_id}, _heartbeat} -> node_id end)
 
     authority_entries =
-      AllocationAuthority.live_claims()
+      claims
       |> Enum.filter(&MapSet.member?(managed_node_ids, &1.node_id))
       |> active_claim_entries()
 

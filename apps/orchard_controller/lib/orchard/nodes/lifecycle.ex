@@ -4,7 +4,7 @@ defmodule Orchard.Nodes.Lifecycle do
   """
 
   alias Orchard.Governance
-  alias Orchard.Governance.AuditLog
+  alias Orchard.Governance.{AuditLog, AuditWriter}
   alias Orchard.Nodes
   alias Orchard.Nodes.Node
   alias Orchard.Repo
@@ -117,7 +117,7 @@ defmodule Orchard.Nodes.Lifecycle do
   def execute(action, node_id, attrs, opts) when action in @actions do
     attrs = SchemaSupport.normalize_attrs(attrs)
 
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, node} <- Nodes.lock_node(node_id),
            [] <- blocker_codes(action, node),
            {:ok, updated_node} <- update_node_state(node, target_state(action)),

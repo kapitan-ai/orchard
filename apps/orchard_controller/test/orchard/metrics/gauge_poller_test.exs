@@ -154,6 +154,35 @@ defmodule Orchard.Metrics.GaugePollerTest do
            ]
   end
 
+  test "SPEC.md §9.1 an unavailable queue authority fails only the family it owns" do
+    node = insert_node!(:active)
+    now = DateTime.utc_now()
+    insert_heartbeat!(node, now, payload: payload("model-a", "loaded", 1))
+
+    manager = Process.whereis(QueueManager)
+    :ok = :sys.suspend(manager)
+
+    on_exit(fn ->
+      if Process.alive?(manager), do: :sys.resume(manager)
+    end)
+
+    snapshots = GaugeSource.snapshots(now)
+
+    refute Map.has_key?(snapshots, :scheduler_queue_depth)
+    assert Enum.any?(snapshots.node_heartbeat_lag, &(&1.labels.node == node.id))
+    assert entry(%{node: node.id, model: "model-a"}, 1) in snapshots.model_resident
+    assert Map.has_key?(snapshots, :active_requests)
+
+    assert :ok = GaugePoller.poll(source: GaugeSource, poll_interval_ms: 1_000)
+
+    assert Enum.any?(
+             GaugeSnapshotStore.snapshots().node_heartbeat_lag,
+             &(&1.labels.node == node.id)
+           )
+
+    :ok = :sys.resume(manager)
+  end
+
   test "SPEC.md §9.1 poll failure is isolated and expires retained gauges after two intervals" do
     snapshot =
       Map.new(@families, fn family ->

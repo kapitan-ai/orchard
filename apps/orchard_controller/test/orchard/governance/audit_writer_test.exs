@@ -2,6 +2,7 @@ defmodule Orchard.Governance.AuditWriterTest do
   use Orchard.DataCase, async: false
 
   alias Orchard.Governance.{AuditLog, AuditWriter}
+  alias Orchard.Metrics.Normalizer
   alias Orchard.Repo
 
   setup do
@@ -68,6 +69,18 @@ defmodule Orchard.Governance.AuditWriterTest do
 
     refute_receive {^ref, %{value: 1}, %{action: "tenant", outcome: "succeeded"}}
     refute Repo.get_by(AuditLog, action: "tenant.created")
+  end
+
+  test "SPEC.md §9.1 an unmapped audit action domain emits no out-of-vocabulary label" do
+    ref = attach_metric()
+
+    assert {:error, :invalid_labels} =
+             Normalizer.normalize(:audit_events, %{action: "unknown", outcome: "succeeded"})
+
+    assert {:ok, %AuditLog{}} =
+             "unmapped_domain.created" |> valid_changeset() |> AuditWriter.insert()
+
+    refute_receive {^ref, _measurements, _metadata}
   end
 
   test "metrics timeout does not alter the authoritative audit write result" do

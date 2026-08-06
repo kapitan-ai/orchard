@@ -5,6 +5,8 @@ defmodule Orchard.Metrics.SeriesAdmission do
   alias Orchard.Metrics.{CardinalityLedger, Catalog, Normalizer, Status}
 
   @call_timeout_ms 25
+  @unavailable {:series_admission, :unavailable}
+  @rejected {:series_admission, :rejected}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
@@ -19,9 +21,7 @@ defmodule Orchard.Metrics.SeriesAdmission do
       remaining_ms(deadline)
     )
   catch
-    :exit, _reason ->
-      Status.degrade(:series_admission)
-      {:error, :metrics_degraded}
+    :exit, _reason -> degrade(@unavailable)
   end
 
   def emit(_family, _value, _labels), do: {:error, :metrics_degraded}
@@ -31,28 +31,31 @@ defmodule Orchard.Metrics.SeriesAdmission do
 
   @impl true
   def handle_call({:emit, family, value, labels, deadline}, _from, state) do
-    result =
-      with false <- expired?(deadline),
-           {:ok, normalized} <- Normalizer.normalize(family, labels),
-           {:ok, _admission} <- CardinalityLedger.admit_event(family, normalized, deadline),
-           false <- expired?(deadline) do
-        :telemetry.execute(Catalog.event_name(family), %{value: value}, normalized)
-        :ok
-      else
-        _error ->
-          Status.degrade(:series_admission)
-          {:error, :metrics_degraded}
-      end
-
-    {:reply, result, state}
+    {:reply, admit_and_emit(family, value, labels, deadline), state}
   rescue
-    _exception ->
-      Status.degrade(:series_admission)
-      {:reply, {:error, :metrics_degraded}, state}
+    _exception -> {:reply, degrade(@unavailable), state}
   catch
-    _kind, _reason ->
-      Status.degrade(:series_admission)
-      {:reply, {:error, :metrics_degraded}, state}
+    _kind, _reason -> {:reply, degrade(@unavailable), state}
+  end
+
+  defp admit_and_emit(family, value, labels, deadline) do
+    with false <- expired?(deadline),
+         {:ok, normalized} <- Normalizer.normalize(family, labels),
+         {:ok, _admission} <- CardinalityLedger.admit_event(family, normalized, deadline),
+         false <- expired?(deadline) do
+      :telemetry.execute(Catalog.event_name(family), %{value: value}, normalized)
+      Status.recover(@unavailable)
+      :ok
+    else
+      true -> degrade(@unavailable)
+      {:error, :deadline_exceeded} -> degrade(@unavailable)
+      _rejected -> degrade(@rejected)
+    end
+  end
+
+  defp degrade(reason) do
+    Status.degrade(reason)
+    {:error, :metrics_degraded}
   end
 
   defp deadline, do: System.monotonic_time(:millisecond) + @call_timeout_ms
