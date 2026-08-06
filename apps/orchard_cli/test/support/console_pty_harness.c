@@ -652,7 +652,7 @@ static void generated_value(char *output, size_t length, const char *prefix) {
 
 static void run_pasted(int master, int slave, pid_t child,
                        const struct termios *initial, int expect_success,
-                       int delay_ms) {
+                       int delay_ms, const char *expected_output) {
   struct capture capture = {0};
   char username[48];
   char password[48];
@@ -692,6 +692,8 @@ static void run_pasted(int master, int slave, pid_t child,
   if (!protected_at_password) fail("echo-enabled-at-password-prompt");
   if (!protected_at_confirmation) fail("echo-enabled-at-confirmation-prompt");
   if (contains(&capture, password) || contains(&capture, confirmation)) fail("secret-captured");
+  if (expected_output != NULL && !contains(&capture, expected_output))
+    fail("expected-output-missing");
   if (expect_success && !successful_result) fail("unexpected-exit");
   if (!expect_success && successful_result) fail("unexpected-success");
 }
@@ -1631,13 +1633,22 @@ int main(int argc, char **argv) {
   if (slave < 0) fail("open-slave");
 
   if (strcmp(scenario_name, "pasted-success") == 0) {
-    run_pasted(master, slave, child, &initial, 1, 0);
+    run_pasted(master, slave, child, &initial, 1, 0, NULL);
   } else if (strcmp(scenario_name, "pasted-mismatch") == 0) {
-    run_pasted(master, slave, child, &initial, 0, 0);
+    run_pasted(master, slave, child, &initial, 0, 0, NULL);
+  } else if (strcmp(scenario_name, "wrapper-success-not-loaded") == 0) {
+    run_pasted(master, slave, child, &initial, 1, 0,
+               "Controller is not loaded.");
+  } else if (strcmp(scenario_name, "wrapper-success-loaded") == 0) {
+    run_pasted(master, slave, child, &initial, 1, 0,
+               "Controller restarted.");
+  } else if (strcmp(scenario_name, "wrapper-success-rotate") == 0) {
+    run_pasted(master, slave, child, &initial, 1, 0,
+               "Console credentials rotated.");
   } else if (strcmp(scenario_name, "unwrapped") == 0) {
     run_setup_failure(master, slave, child, &initial);
   } else if (strcmp(scenario_name, "delayed-success") == 0) {
-    run_pasted(master, slave, child, &initial, 1, 6000);
+    run_pasted(master, slave, child, &initial, 1, 6000, NULL);
   } else if (strcmp(scenario_name, "utf8-erase") == 0) {
     run_utf8_erase(master, slave, child, &initial);
   } else if (strcmp(scenario_name, "owner-exit") == 0) {

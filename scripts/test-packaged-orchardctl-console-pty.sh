@@ -55,8 +55,12 @@ SH
 
 cat > "$TOOLS/launchctl" <<'SH'
 #!/bin/sh
-: > "$ORCHARD_TEST_LAUNCHCTL_MARKER"
-exit 113
+printf '%s\n' "$*" >> "$ORCHARD_TEST_LAUNCHCTL_MARKER"
+case "${ORCHARD_TEST_LAUNCHCTL_LOADED:-}:$*" in
+  1:print\ *) exit 0 ;;
+  1:kickstart\ *) exit 0 ;;
+  *) exit 113 ;;
+esac
 SH
 chmod 0755 "$TOOLS/id" "$TOOLS/launchctl"
 
@@ -346,6 +350,63 @@ OUTPUT=$(
 [[ "$OUTPUT" = 'console PTY ok: pasted-mismatch' ]] || fail "unexpected harness result"
 [[ ! -e "$CONSOLE_ENV" ]] || fail "aborted enable created console.env"
 [[ ! -e "$LAUNCHCTL_MARKER" ]] || fail "aborted enable attempted controller readiness or restart"
+
+for _attempt in 1 2 3 4; do
+  rm -f "$CONSOLE_ENV" "$LAUNCHCTL_MARKER"
+  SUCCESS_OUTPUT=$(
+    ORCHARD_SUPPORT_ROOT="$STAGED_ROOT" \
+      ORCHARD_TEST_LAUNCHCTL_MARKER="$LAUNCHCTL_MARKER" \
+      "$HARNESS" wrapper-success-not-loaded -- "$ORCHARDCTL" console enable
+  )
+  [[ "$SUCCESS_OUTPUT" = 'console PTY ok: wrapper-success-not-loaded' ]] || \
+    fail "packaged successful enable did not exit cleanly"
+  [[ -f "$CONSOLE_ENV" ]] || fail "packaged successful enable did not persist console.env"
+  [[ "$(stat -f '%Lp' "$CONSOLE_ENV")" = '600' ]] || \
+    fail "packaged successful enable did not protect console.env"
+  grep -q '^ORCHARD_CONSOLE_ENABLED="true"$' "$CONSOLE_ENV" || \
+    fail "packaged successful enable did not enable Console"
+  grep -q '^ORCHARD_CONSOLE_USERNAME=' "$CONSOLE_ENV" || \
+    fail "packaged successful enable did not persist a username"
+  grep -q '^ORCHARD_CONSOLE_PASSWORD=' "$CONSOLE_ENV" || \
+    fail "packaged successful enable did not persist a password hash"
+  [[ "$(cat "$LAUNCHCTL_MARKER")" = \
+    'print system/com.orchard.controller' ]] || \
+    fail "packaged successful enable did not complete not-loaded handling"
+done
+
+rm -f "$CONSOLE_ENV" "$LAUNCHCTL_MARKER"
+LOADED_OUTPUT=$(
+  ORCHARD_SUPPORT_ROOT="$STAGED_ROOT" \
+    ORCHARD_TEST_LAUNCHCTL_MARKER="$LAUNCHCTL_MARKER" \
+    ORCHARD_TEST_LAUNCHCTL_LOADED=1 \
+    "$HARNESS" wrapper-success-loaded -- "$ORCHARDCTL" console enable
+)
+[[ "$LOADED_OUTPUT" = 'console PTY ok: wrapper-success-loaded' ]] || \
+  fail "packaged successful enable did not complete loaded restart handling"
+[[ -f "$CONSOLE_ENV" ]] || fail "loaded restart did not persist console.env"
+[[ "$(stat -f '%Lp' "$CONSOLE_ENV")" = '600' ]] || \
+  fail "loaded restart did not protect console.env"
+[[ "$(cat "$LAUNCHCTL_MARKER")" = $'print system/com.orchard.controller\nkickstart -k system/com.orchard.controller' ]] || \
+  fail "packaged successful enable did not restart a loaded controller"
+
+ENABLED_CHECKSUM=$(cksum "$CONSOLE_ENV")
+rm -f "$LAUNCHCTL_MARKER"
+ROTATE_OUTPUT=$(
+  ORCHARD_SUPPORT_ROOT="$STAGED_ROOT" \
+    ORCHARD_TEST_LAUNCHCTL_MARKER="$LAUNCHCTL_MARKER" \
+    "$HARNESS" wrapper-success-rotate -- "$ORCHARDCTL" console rotate
+)
+[[ "$ROTATE_OUTPUT" = 'console PTY ok: wrapper-success-rotate' ]] || \
+  fail "packaged successful rotate did not exit cleanly"
+[[ -f "$CONSOLE_ENV" ]] || fail "packaged successful rotate removed console.env"
+[[ "$(stat -f '%Lp' "$CONSOLE_ENV")" = '600' ]] || \
+  fail "packaged successful rotate did not protect console.env"
+[[ "$(cksum "$CONSOLE_ENV")" != "$ENABLED_CHECKSUM" ]] || \
+  fail "packaged successful rotate did not replace the credential"
+[[ "$(cat "$LAUNCHCTL_MARKER")" = \
+  'print system/com.orchard.controller' ]] || \
+  fail "packaged successful rotate did not complete not-loaded handling"
+rm -f "$CONSOLE_ENV" "$LAUNCHCTL_MARKER"
 
 WRAPPER_OUTPUT=$(
   ORCHARD_SUPPORT_ROOT="$STAGED_ROOT" \

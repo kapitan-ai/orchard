@@ -871,6 +871,7 @@ fi
     [ "$_observed_parent" = "$_launch_parent" ] || exit 125
     _observed_identity=$(/usr/bin/stat -f "%d:%i:%Lp:%u" .) || exit 125
     [ "$_observed_identity" = "$_launch_identity" ] || exit 125
+    cd / || exit 125
     exec "$@"
 ' orchard-cli-launch "$_completion_dir" "$_completion_identity" \
     "$_completion_uid" "$$" "$_cli_launch_wait_command" \
