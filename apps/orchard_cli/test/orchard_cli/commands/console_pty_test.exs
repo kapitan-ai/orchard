@@ -2,6 +2,9 @@ defmodule OrchardCLI.Commands.ConsolePTYTest do
   use ExUnit.Case, async: false
 
   @moduletag :capture_log
+  # Paced-paste scenarios drive a real PTY for tens of seconds once macOS timer
+  # coalescing stretches their sleep intervals, well past the 60s ExUnit default.
+  @moduletag timeout: 180_000
 
   @harness_source Path.expand("../../support/console_pty_harness.c", __DIR__)
 

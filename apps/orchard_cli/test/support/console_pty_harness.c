@@ -20,6 +20,11 @@
 #define PROCESS_LIMIT 2048
 #define TRACKED_PROCESS_LIMIT 32
 #define TIMEOUT_MS 15000
+// Paced writers sleep between every write, and macOS timer coalescing routinely
+// stretches each 50ms interval several times past its nominal length, so a
+// 220-write paste takes far longer than its nominal 11s. Budget the writer wait
+// independently of the ordinary harness I/O timeout.
+#define WRITER_TIMEOUT_MS 120000
 
 struct capture {
   char bytes[CAPTURE_LIMIT];
@@ -480,7 +485,7 @@ static pid_t spawn_started_paced_writer(int master, unsigned char first,
 }
 
 static void wait_for_writer(pid_t writer) {
-  long long deadline = now_ms() + TIMEOUT_MS;
+  long long deadline = now_ms() + WRITER_TIMEOUT_MS;
   while (now_ms() < deadline) {
     int status;
     pid_t waited = waitpid(writer, &status, WNOHANG);
