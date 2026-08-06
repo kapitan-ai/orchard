@@ -42,6 +42,13 @@ The mise environment also sets:
 `uv` remains the package and virtualenv manager for `native/**`. `mise` owns
 the Python interpreter version that `uv` is allowed to use.
 
+Apple's C toolchain is also required and is outside mise, the same way the
+Swift and signing tools are. Compiling `apps/orchard_cli` builds the
+`orchard-secret-tty` terminal helper from `apps/orchard_cli/c_src` through
+`elixir_make`, so `mix compile`, `mix test`, and package builds need the host
+Xcode Command Line Tools for `xcrun clang`. Install them with
+`xcode-select --install` if `xcrun clang --version` fails.
+
 ## Standard Commands
 
 Either activate mise in your shell or prefix commands with `mise exec --`.
