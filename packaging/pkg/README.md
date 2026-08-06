@@ -1105,6 +1105,11 @@ the terminal, because unread input may still be queued. Follow the printed
 recovery steps: from a second terminal run `sudo kill -9 <printed pid>`, then
 run `stty sane` in the affected terminal.
 
+`Error: License key source was empty.` from
+`sudo orchardctl license activate --key-stdin` means the key was typed at the
+terminal instead of redirected. Use the redirected form in
+[Activation workflow](#activation-workflow) or `--key-file`.
+
 `Error: interactive TTY required to collect Console credentials.` means the
 command has no controlling terminal or is not the terminal's foreground job —
 for example `ssh` without a TTY, a launchd job, or a backgrounded invocation.
