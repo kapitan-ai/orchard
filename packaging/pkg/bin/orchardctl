@@ -482,4 +482,492 @@ for arg in "$@"; do
   fi
 done
 
-exec "$ORCHARD_CLI" eval "OrchardCLI.main([$args])"
+ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID=$$
+export ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID
+_launch_original_cwd=$(/bin/pwd -P 2>/dev/null) || _launch_original_cwd=""
+case "$_launch_original_cwd" in
+    /*) ;;
+    *) _launch_original_cwd=/ ;;
+esac
+_completion_dir=""
+_completion_identity=""
+_setup_cleanup_pending=""
+cleanup_standalone_setup() {
+    [ -n "$_setup_cleanup_pending" ] || return
+    if [ -n "$_completion_identity" ]; then
+        _setup_cleanup_identity=$(
+            /usr/bin/stat -f '%d:%i:%Lp:%u' "$_completion_dir" 2>/dev/null
+        ) || return
+        [ "$_setup_cleanup_identity" = "$_completion_identity" ] || return
+    fi
+    /bin/rmdir "$_completion_dir" 2>/dev/null || true
+}
+_completion_dir=$(/usr/bin/mktemp -d /private/tmp/orchardctl.XXXXXX) || exit 1
+_setup_cleanup_pending=1
+trap cleanup_standalone_setup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 131' QUIT
+trap 'exit 143' TERM
+if [ "${ORCHARD_TEST_WRAPPER_PID_MARKER:-}" = "1" ]; then
+    printf '__ORCHARD_WRAPPER_PID__:%s\n' "$$" >&2
+fi
+if [ "${ORCHARD_TEST_CUSTODY_DIR_MARKER:-}" = "1" ]; then
+    printf '__ORCHARD_CUSTODY_DIR__:%s\n' "$_completion_dir" >&2
+fi
+/bin/chmod 0700 "$_completion_dir" || exit 1
+_completion_identity=$(/usr/bin/stat -f '%d:%i:%Lp:%u' "$_completion_dir") || exit 1
+_completion_uid=$(/usr/bin/id -u) || exit 1
+case "$_completion_identity" in
+    *:700:"$_completion_uid") ;;
+    *) exit 1 ;;
+esac
+_completion_device=${_completion_identity%%:*}
+_completion_rest=${_completion_identity#*:}
+_completion_inode=${_completion_rest%%:*}
+ORCHARD_CLI_COMPLETION_DIR=$_completion_dir
+export ORCHARD_CLI_COMPLETION_DIR
+ORCHARD_CLI_COMPLETION_IDENTITY="$_completion_device:$_completion_inode"
+export ORCHARD_CLI_COMPLETION_IDENTITY
+_cli_pid=""
+_custody_guard_pid=""
+_custody_ready=""
+_termination_status=""
+_termination_signal=""
+_cli_waiting=""
+_cli_wait_interrupted=""
+_guard_waiting=""
+_guard_wait_interrupted=""
+_cli_launch_wait_command=/bin/sleep
+_cli_parent_probe=/bin/ps
+_cli_process_probe=/bin/ps
+_guard_parent_probe=/bin/ps
+_guard_process_probe=/bin/ps
+
+guard_pre_ready_barrier() { :; }
+cli_pre_launch_barrier() { :; }
+cli_pre_exit_barrier() { :; }
+cli_post_wait_barrier() { :; }
+guard_post_wait_barrier() { :; }
+
+create_cli_launch_marker() (
+    cd "$_completion_dir" 2>/dev/null || exit 1
+    _launch_directory_identity=$(/usr/bin/stat -f '%d:%i:%Lp:%u' .) || exit 1
+    [ "$_launch_directory_identity" = "$_completion_identity" ] || exit 1
+    [ ! -e ./launch-cli ] && [ ! -L ./launch-cli ] || exit 1
+    umask 077
+    set -C
+    : > ./launch-cli || exit 1
+    [ -f ./launch-cli ] && [ ! -L ./launch-cli ] || exit 1
+    _launch_marker_identity=$(/usr/bin/stat -f '%u:%Lp' ./launch-cli) || exit 1
+    [ "$_launch_marker_identity" = "$_completion_uid:600" ] || exit 1
+)
+
+remove_cli_launch_marker() (
+    cd "$_completion_dir" 2>/dev/null || exit 1
+    _launch_directory_identity=$(/usr/bin/stat -f '%d:%i:%Lp:%u' .) || exit 1
+    [ "$_launch_directory_identity" = "$_completion_identity" ] || exit 1
+    [ ! -L ./launch-cli ] || exit 1
+    if [ -e ./launch-cli ]; then
+        [ -f ./launch-cli ] || exit 1
+        _launch_marker_identity=$(/usr/bin/stat -f '%u:%Lp' ./launch-cli) || exit 1
+        [ "$_launch_marker_identity" = "$_completion_uid:600" ] || exit 1
+        /bin/rm -f ./launch-cli || exit 1
+    fi
+)
+
+forward_standalone_signal() {
+    _termination_signal=$1
+    _termination_status=$2
+    if [ -n "$_cli_waiting" ]; then
+        _cli_wait_interrupted=1
+    fi
+    if [ -n "$_guard_waiting" ]; then
+        _guard_wait_interrupted=1
+    fi
+    if [ -n "$_cli_pid" ]; then
+        while :; do
+            _cli_parent=$("$_cli_parent_probe" -o ppid= -p "$_cli_pid" 2>/dev/null | /usr/bin/tr -d ' ')
+            if [ -n "$_cli_parent" ]; then
+                if [ "$_cli_parent" = "$$" ]; then
+                    _forward_signal=TERM
+                    /bin/kill -"$_forward_signal" "$_cli_pid" 2>/dev/null || true
+                fi
+                break
+            fi
+            /bin/kill -0 "$_cli_pid" 2>/dev/null || break
+            /bin/sleep 0.01 || :
+        done
+    fi
+}
+
+trap 'forward_standalone_signal HUP 129' HUP
+trap 'forward_standalone_signal INT 130' INT
+trap 'forward_standalone_signal QUIT 131' QUIT
+trap 'forward_standalone_signal TERM 143' TERM
+
+trap '_custody_ready=1' USR1
+(
+    if ! cd "$_completion_dir"; then
+        exit 125
+    fi
+    _guard_identity=$(/usr/bin/stat -f '%d:%i:%Lp:%u' .) || exit 125
+    if [ "$_guard_identity" != "$_completion_identity" ]; then
+        exit 125
+    fi
+    remove_completion_directory() {
+        while :; do
+            _remove_path_identity=$(
+                /usr/bin/stat -f '%d:%i:%Lp:%u' "$_completion_dir" 2>/dev/null
+            ) || return 1
+            [ "$_remove_path_identity" = "$_completion_identity" ] || return 1
+            /bin/rmdir "$_completion_dir" 2>/dev/null && return 0
+            /bin/sleep 0.01 || :
+        done
+    }
+    _guard_ready=""
+    cleanup_guard_before_ready() {
+        [ -z "$_guard_ready" ] || return
+        /bin/rm -f ./guard-pid ./available 2>/dev/null || true
+        [ ! -e ./active ] || return
+        cd / || return
+        remove_completion_directory || true
+    }
+    trap cleanup_guard_before_ready EXIT
+    umask 077
+    /bin/sh -c 'printf "%s\n" "$PPID"' > ./guard-pid || exit 125
+    IFS= read -r _guard_pid < ./guard-pid || exit 125
+    /bin/rm -f ./guard-pid || exit 125
+    case "$_guard_pid" in
+        ''|*[!0-9]*) exit 125 ;;
+    esac
+    guard_parent_matches() {
+        _observed_guard_parent=$(
+            /bin/ps -o ppid= -p "$_guard_pid" 2>/dev/null | /usr/bin/tr -d ' '
+        )
+        [ "$_observed_guard_parent" = "$ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID" ]
+    }
+    _custody_cancel=""
+    _custody_acquired=""
+    trap '_custody_cancel=1' HUP INT QUIT TERM
+    guard_parent_matches || exit 125
+    guard_pre_ready_barrier || exit 125
+    : > ./available || exit 125
+    guard_parent_matches || exit 125
+    /bin/kill -USR1 "$ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID" || exit 125
+    _guard_ready=1
+    trap - EXIT
+
+    while :; do
+        if ! guard_parent_matches; then
+            _custody_cancel=1
+        fi
+        if [ -e ./active ]; then
+            _custody_acquired=1
+        fi
+        if [ -n "$_custody_acquired" ] && [ ! -e ./active ]; then
+            break
+        fi
+        if [ ! -e ./available ] && [ ! -e ./active ]; then
+            break
+        fi
+        if [ -n "$_custody_cancel" ] && [ -e ./available ]; then
+            /bin/rm -f ./available || true
+        fi
+        /bin/sleep 0.01 || :
+    done
+
+    while :; do
+        _guard_path_identity=$(
+            /usr/bin/stat -f '%d:%i:%Lp:%u' "$_completion_dir" 2>/dev/null
+        ) || _guard_path_identity=""
+        if [ "$_guard_path_identity" = "$_guard_identity" ]; then
+            break
+        fi
+        /bin/sleep 0.01 || :
+    done
+    cd / || exit 125
+    remove_completion_directory || exit 125
+    exit 0
+) &
+_custody_guard_pid=$!
+
+if [ "${ORCHARD_TEST_GUARD_PID_MARKER:-}" = "1" ]; then
+    printf '__ORCHARD_GUARD_PID__:%s\n' "$_custody_guard_pid" >&2
+fi
+
+cleanup_standalone_guard_startup() {
+    if (
+        cd "$_completion_dir" 2>/dev/null || exit 1
+        _cleanup_identity=$(/usr/bin/stat -f '%d:%i:%Lp:%u' .) || exit 1
+        [ "$_cleanup_identity" = "$_completion_identity" ] || exit 1
+        [ ! -e ./active ] || exit 1
+        for _cleanup_marker in available guard-pid; do
+            if [ -e "./$_cleanup_marker" ] || [ -L "./$_cleanup_marker" ]; then
+                [ -f "./$_cleanup_marker" ] || exit 1
+                [ ! -L "./$_cleanup_marker" ] || exit 1
+                _cleanup_marker_identity=$(
+                    /usr/bin/stat -f '%u:%Lp' "./$_cleanup_marker"
+                ) || exit 1
+                [ "$_cleanup_marker_identity" = "$_completion_uid:600" ] || exit 1
+            fi
+        done
+        /bin/rm -f ./available ./guard-pid
+        [ -z "$(/bin/ls -A .)" ] || exit 1
+    ); then
+        _cleanup_path_identity=$(
+            /usr/bin/stat -f '%d:%i:%Lp:%u' "$_completion_dir" 2>/dev/null
+        ) || _cleanup_path_identity=""
+        if [ "$_cleanup_path_identity" = "$_completion_identity" ]; then
+            /bin/rmdir "$_completion_dir" 2>/dev/null || true
+        fi
+    fi
+}
+
+terminate_and_reap_custody_guard() {
+    _guard_signal=$1
+    while :; do
+        _guard_parent=$(
+            "$_guard_parent_probe" -o ppid= -p "$_custody_guard_pid" 2>/dev/null |
+                /usr/bin/tr -d ' '
+        )
+        if [ -n "$_guard_parent" ]; then
+            if [ "$_guard_parent" = "$$" ]; then
+                /bin/kill -"$_guard_signal" \
+                    "$_custody_guard_pid" 2>/dev/null || true
+            fi
+            break
+        fi
+        /bin/kill -0 "$_custody_guard_pid" 2>/dev/null || break
+        /bin/sleep 0.01 || :
+    done
+    while :; do
+        _guard_wait_interrupted=""
+        _guard_waiting=1
+        if wait "$_custody_guard_pid"; then
+            _custody_guard_status=0
+        else
+            _custody_guard_status=$?
+        fi
+        guard_post_wait_barrier
+        _guard_waiting=""
+        if [ -z "$_guard_wait_interrupted" ]; then
+            return
+        fi
+
+        while :; do
+            if _guard_process=$(
+                "$_guard_process_probe" -o ppid= -o stat= \
+                    -p "$_custody_guard_pid" 2>/dev/null
+            ); then
+                set -- $_guard_process
+                _guard_parent=${1:-}
+                _guard_state=${2:-}
+                if [ -n "$_guard_parent" ] && [ -n "$_guard_state" ]; then
+                    if [ "$_guard_parent" = "$$" ]; then
+                        /bin/kill -"$_guard_signal" \
+                            "$_custody_guard_pid" 2>/dev/null || true
+                        _retry_guard_wait=1
+                    else
+                        _retry_guard_wait=""
+                    fi
+                    break
+                fi
+            fi
+            if /bin/kill -0 "$_custody_guard_pid" 2>/dev/null; then
+                /bin/sleep 0.01 || :
+                continue
+            fi
+            _retry_guard_wait=""
+            break
+        done
+        [ -n "$_retry_guard_wait" ] || return 0
+    done
+}
+
+while [ -z "$_custody_ready" ] && [ -z "$_termination_signal" ]; do
+    if _guard_process=$(
+        "$_guard_process_probe" -o ppid= -o stat= -p "$_custody_guard_pid" 2>/dev/null
+    ); then
+        set -- $_guard_process
+        _guard_parent=${1:-}
+        _guard_state=${2:-}
+        if [ "$_guard_parent" = "$$" ]; then
+            case "$_guard_state" in
+                Z*)
+                    terminate_and_reap_custody_guard KILL
+                    cleanup_standalone_guard_startup
+                    exit 1
+                    ;;
+                '') ;;
+                *)
+                    /bin/sleep 0.01 || :
+                    continue
+                    ;;
+            esac
+        elif [ -n "$_guard_parent" ]; then
+            terminate_and_reap_custody_guard KILL
+            cleanup_standalone_guard_startup
+            exit 1
+        fi
+    fi
+    if /bin/kill -0 "$_custody_guard_pid" 2>/dev/null; then
+        /bin/sleep 0.01 || :
+    else
+        terminate_and_reap_custody_guard KILL
+        cleanup_standalone_guard_startup
+        exit 1
+    fi
+done
+
+if [ -n "$_termination_signal" ]; then
+    terminate_and_reap_custody_guard KILL
+    cleanup_standalone_guard_startup
+    if [ ! -e "$_completion_dir" ]; then
+        _setup_cleanup_pending=""
+        trap - EXIT
+    fi
+    exit "$_termination_status"
+fi
+trap - USR1
+_setup_cleanup_pending=""
+trap - EXIT
+
+# The wrapper holds sole custody of the controlling terminal; the CLI receives
+# only non-terminal standard input.
+if [ ! -t 0 ] && { /usr/bin/true 3<&0; } 2>/dev/null; then
+    exec 3<&0
+else
+    exec 3</dev/null
+fi
+
+/bin/sh -c '
+    _launch_directory=$1
+    _launch_identity=$2
+    _launch_uid=$3
+    _launch_parent=$4
+    _launch_wait_command=$5
+    _launch_original_cwd=$6
+    shift 6
+    cd "$_launch_directory" || exit 125
+    _observed_identity=$(/usr/bin/stat -f "%d:%i:%Lp:%u" .) || exit 125
+    [ "$_observed_identity" = "$_launch_identity" ] || exit 125
+    while [ ! -e ./launch-cli ] && [ ! -L ./launch-cli ]; do
+        _observed_parent=$(
+            /bin/ps -o ppid= -p "$$" 2>/dev/null | /usr/bin/tr -d " "
+        )
+        [ "$_observed_parent" = "$_launch_parent" ] || exit 125
+        _observed_identity=$(/usr/bin/stat -f "%d:%i:%Lp:%u" .) || exit 125
+        [ "$_observed_identity" = "$_launch_identity" ] || exit 125
+        "$_launch_wait_command" 0.01
+    done
+    _observed_parent=$(
+        /bin/ps -o ppid= -p "$$" 2>/dev/null | /usr/bin/tr -d " "
+    )
+    [ "$_observed_parent" = "$_launch_parent" ] || exit 125
+    _observed_identity=$(/usr/bin/stat -f "%d:%i:%Lp:%u" .) || exit 125
+    [ "$_observed_identity" = "$_launch_identity" ] || exit 125
+    [ -f ./launch-cli ] && [ ! -L ./launch-cli ] || exit 125
+    _observed_marker=$(/usr/bin/stat -f "%u:%Lp" ./launch-cli) || exit 125
+    [ "$_observed_marker" = "$_launch_uid:600" ] || exit 125
+    /bin/rm -f ./launch-cli || exit 125
+    _observed_parent=$(
+        /bin/ps -o ppid= -p "$$" 2>/dev/null | /usr/bin/tr -d " "
+    )
+    [ "$_observed_parent" = "$_launch_parent" ] || exit 125
+    _observed_identity=$(/usr/bin/stat -f "%d:%i:%Lp:%u" .) || exit 125
+    [ "$_observed_identity" = "$_launch_identity" ] || exit 125
+    cd -- "$_launch_original_cwd" 2>/dev/null || cd / || exit 125
+    exec "$@"
+' orchard-cli-launch "$_completion_dir" "$_completion_identity" \
+    "$_completion_uid" "$$" "$_cli_launch_wait_command" \
+    "$_launch_original_cwd" \
+    "$ORCHARD_CLI" eval "OrchardCLI.main([$args])" <&3 3<&- &
+_cli_pid=$!
+exec 3<&-
+cli_pre_launch_barrier
+if [ -n "$_termination_signal" ]; then
+    forward_standalone_signal "$_termination_signal" "$_termination_status"
+else
+    if [ "${ORCHARD_TEST_CLI_PID_MARKER:-}" = "1" ]; then
+        printf '__ORCHARD_CLI_PID__:%s\n' "$_cli_pid" >&2
+    fi
+    if [ -n "$_termination_signal" ]; then
+        forward_standalone_signal "$_termination_signal" "$_termination_status"
+    else
+        if ! create_cli_launch_marker; then
+            _termination_signal=TERM
+            _termination_status=1
+            forward_standalone_signal "$_termination_signal" "$_termination_status"
+        elif [ -n "$_termination_signal" ]; then
+            remove_cli_launch_marker 2>/dev/null || true
+            forward_standalone_signal "$_termination_signal" "$_termination_status"
+        fi
+    fi
+fi
+while :; do
+    _cli_wait_interrupted=""
+    _cli_waiting=1
+    if wait "$_cli_pid"; then
+        _cli_status=0
+    else
+        _cli_status=$?
+    fi
+    cli_post_wait_barrier
+    _cli_waiting=""
+    if [ -z "$_cli_wait_interrupted" ]; then
+        break
+    fi
+
+    while :; do
+        if _cli_process=$(
+            "$_cli_process_probe" -o ppid= -o stat= -p "$_cli_pid" 2>/dev/null
+        ); then
+            set -- $_cli_process
+            _cli_parent=${1:-}
+            _cli_state=${2:-}
+            if [ -n "$_cli_parent" ] && [ -n "$_cli_state" ]; then
+                if [ "$_cli_parent" = "$$" ]; then
+                    if [ -n "$_termination_signal" ]; then
+                        forward_standalone_signal \
+                            "$_termination_signal" "$_termination_status"
+                    fi
+                    _retry_cli_wait=1
+                else
+                    _retry_cli_wait=""
+                fi
+                break
+            fi
+        fi
+        if /bin/kill -0 "$_cli_pid" 2>/dev/null; then
+            /bin/sleep 0.01 || :
+            continue
+        fi
+        _retry_cli_wait=""
+        break
+    done
+    [ -n "$_retry_cli_wait" ] || break
+done
+_cli_pid=""
+remove_cli_launch_marker 2>/dev/null || true
+if [ "${ORCHARD_TEST_CLI_REAPED_MARKER:-}" = "1" ]; then
+    printf '__ORCHARD_CLI_REAPED__:%s\n' "$_cli_status" >&2
+fi
+
+terminate_and_reap_custody_guard TERM
+if [ "$_custody_guard_status" -ne 0 ] || [ -e "$_completion_dir" ]; then
+    printf 'orchardctl: terminal custody guard failed\n' >&2
+    printf 'orchardctl: refusing to return this terminal; unread input may still be queued\n' >&2
+    printf 'orchardctl: from another terminal run: sudo kill -9 %s\n' "$$" >&2
+    printf 'orchardctl: then restore this terminal with: stty sane\n' >&2
+    while :; do
+        /bin/sleep 1 || :
+    done
+fi
+
+cli_pre_exit_barrier
+trap - HUP INT QUIT TERM
+if [ -n "$_termination_status" ]; then
+    exit "$_termination_status"
+fi
+exit "$_cli_status"

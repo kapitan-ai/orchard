@@ -1074,6 +1074,42 @@ credentials from the URL automatically. If you see this on an older version,
 navigate to the clean URL manually after authenticating — the session cookie
 persists.
 
+### Credential prompt and terminal custody
+
+The packaged `orchardctl` wrapper keeps sole custody of the controlling
+terminal for the whole command and hands the CLI only non-terminal standard
+input. Redirected or piped input such as
+`sudo orchardctl license activate --key-stdin <<<"$KEY"` still reaches the CLI;
+input typed at the terminal does not. `sudo orchardctl console enable`,
+`sudo orchardctl console rotate`, and `sudo orchardctl init --console`
+therefore collect credentials through a dedicated terminal helper rather than
+through standard input.
+
+Expected behavior:
+
+- Neither the username nor the password echoes while the prompt is active.
+- Input typed or pasted past the prompts is discarded, and the helper waits for
+  a short quiet period after the last keystroke before returning the terminal,
+  so an abandoned paste cannot run as a command in the parent shell.
+- The prior terminal settings are restored exactly on success, on `Ctrl-C` or
+  `Ctrl-\`, and on `SIGHUP`/`SIGTERM`; when the terminal window closes there is
+  no terminal left to restore.
+- An interrupted, failed, or mismatched `enable`/`rotate` leaves
+  `config/console.env` untouched, so `enable` does not turn the Console on and
+  `rotate` keeps the existing credentials.
+- A signalled run exits `129` (HUP), `130` (INT), `131` (QUIT), or `143` (TERM).
+
+If the wrapper cannot confirm that terminal custody ended cleanly it prints
+`orchardctl: terminal custody guard failed` and deliberately refuses to return
+the terminal, because unread input may still be queued. Follow the printed
+recovery steps: from a second terminal run `sudo kill -9 <printed pid>`, then
+run `stty sane` in the affected terminal.
+
+`Error: interactive TTY required to collect Console credentials.` means the
+command has no controlling terminal or is not the terminal's foreground job —
+for example `ssh` without a TTY, a launchd job, or a backgrounded invocation.
+Rerun it as a foreground command in an interactive terminal.
+
 ## Permission Expectations
 
 ### Directories
@@ -1245,8 +1281,9 @@ controller-bearing installs (`all` or `controller`):
    generated-CA direct HTTPS path, or configure an operator-managed direct HTTPS
    certificate/reverse-proxy transport before starting services.
 7. Optional, when browser Console access is desired: run
-   `sudo orchardctl console enable` and enter credentials only through the
-   interactive prompt.
+   `sudo orchardctl console enable` from a foreground interactive terminal and
+   enter credentials only through the interactive prompt. See
+   [Credential prompt and terminal custody](#credential-prompt-and-terminal-custody).
 8. Run `sudo orchardctl start`.
 9. Verify with `orchardctl status`.
 

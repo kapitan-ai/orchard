@@ -2,6 +2,7 @@ defmodule OrchardCLI.Commands.Console do
   @moduledoc false
 
   alias OrchardCLI.Commands.LifecycleSupport
+  alias OrchardCLI.SecretTTY
   alias OrchardCLI.ShellEnv
 
   @default_support_root "/Library/Application Support/Orchard"
@@ -28,7 +29,7 @@ defmodule OrchardCLI.Commands.Console do
 
   defp run_action(action, args, runtime) do
     with {:ok, :run} <- parse_action_args(action, args),
-         {:ok, role} <- LifecycleSupport.install_role(runtime) do
+         {:ok, role} <- LifecycleSupport.install_role(role_runtime(runtime)) do
       run_for_role(action, role, runtime)
     else
       {:help, usage} -> {:ok, usage}
@@ -113,6 +114,14 @@ defmodule OrchardCLI.Commands.Console do
   end
 
   defp prompt_credentials(runtime) do
+    if Map.has_key?(runtime, :prompt) do
+      prompt_injected_credentials(runtime)
+    else
+      SecretTTY.run(&prompt_guarded_credentials/1)
+    end
+  end
+
+  defp prompt_injected_credentials(runtime) do
     with {:ok, username} <- prompt_value(runtime, "Console username: ", echo: true),
          :ok <- validate_credential(:username, username),
          {:ok, password} <- prompt_value(runtime, "Console password: ", echo: false),
@@ -124,8 +133,29 @@ defmodule OrchardCLI.Commands.Console do
     end
   end
 
+  defp prompt_guarded_credentials(reader) do
+    with {:ok, username} <- guarded_prompt_value(reader, "Console username: "),
+         :ok <- validate_credential(:username, username),
+         {:ok, password} <- guarded_prompt_value(reader, "Console password: "),
+         :ok <- validate_credential(:password, password),
+         {:ok, confirmation} <- guarded_prompt_value(reader, "Confirm console password: "),
+         :ok <- validate_credential(:password_confirmation, confirmation),
+         :ok <- validate_confirmation(password, confirmation) do
+      {:ok, %{username: username, password: password}}
+    end
+  end
+
+  defp guarded_prompt_value(reader, prompt) do
+    case reader.(prompt) do
+      {:ok, value} when is_binary(value) -> {:ok, value}
+      :eof -> {:error, "unable to read Console credential prompt input"}
+      {:error, message} when is_binary(message) -> {:error, message}
+      _other -> {:error, "unable to read Console credential prompt input"}
+    end
+  end
+
   defp prompt_value(runtime, prompt, opts) do
-    prompt_fn = Map.get(runtime, :prompt, &default_prompt/2)
+    prompt_fn = Map.fetch!(runtime, :prompt)
 
     case prompt_fn.(prompt, opts) do
       {:ok, value} when is_binary(value) -> {:ok, value}
@@ -194,87 +224,17 @@ defmodule OrchardCLI.Commands.Console do
       @default_support_root
   end
 
-  defp default_prompt(prompt, opts) do
-    echo? = Keyword.get(opts, :echo, true)
+  defp role_runtime(runtime) do
+    marker =
+      Map.get(runtime, :install_role_marker) ||
+        Path.join([support_root(runtime), "support", ".install-role"])
 
-    if echo? do
-      read_prompt(prompt)
-    else
-      read_secret_prompt(prompt)
-    end
+    runtime
+    |> Map.put(:install_role_marker, marker)
+    |> Map.put_new_lazy(:read_install_role, fn -> fn -> File.read(marker) end end)
   end
 
-  defp read_prompt(prompt) do
-    case open_tty() do
-      {:ok, tty} ->
-        try do
-          IO.write(tty, prompt)
-
-          case IO.gets(tty, "") do
-            :eof -> :eof
-            value -> {:ok, String.trim_trailing(value, "\n")}
-          end
-        after
-          File.close(tty)
-        end
-
-      {:error, _reason} ->
-        {:error, "interactive terminal unavailable"}
-    end
-  end
-
-  defp read_secret_prompt(prompt) do
-    case open_tty() do
-      {:ok, tty} ->
-        read_secret_from_tty(prompt, tty)
-
-      {:error, _reason} ->
-        {:error, "interactive terminal unavailable"}
-    end
-  end
-
-  defp read_secret_from_tty(prompt, tty) do
-    IO.write(tty, prompt)
-
-    case tty_stty("-echo") do
-      :ok ->
-        try do
-          case IO.gets(tty, "") do
-            :eof ->
-              :eof
-
-            value ->
-              {:ok, value |> String.trim_trailing("\n") |> String.trim_trailing("\r")}
-          end
-        after
-          tty_stty("echo")
-          IO.write(tty, "\n")
-          File.close(tty)
-        end
-
-      {:error, _output} ->
-        tty_stty("echo")
-        IO.write(tty, "\n")
-        File.close(tty)
-        {:error, "could not disable terminal echo; refusing to read secret input"}
-    end
-  end
-
-  defp open_tty, do: File.open("/dev/tty", [:read, :write])
-
-  defp tty_stty(mode) do
-    case System.cmd("sh", ["-c", "stty #{mode} < /dev/tty"], stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, _code} -> {:error, output}
-    end
-  end
-
-  defp default_tty? do
-    case System.cmd("sh", ["-c", "[ -r /dev/tty ] && [ -w /dev/tty ]"], stderr_to_stdout: true) do
-      {_output, 0} -> true
-      _other -> false
-    end
-  end
+  defp default_tty?, do: SecretTTY.available?()
 
   defp default_uid do
     case System.cmd("id", ["-u"], stderr_to_stdout: true) do
@@ -307,9 +267,9 @@ defmodule OrchardCLI.Commands.Console do
     """
     orchardctl console enable
 
-    Prompt on an interactive TTY for a Console username and no-echo password,
-    write config/console.env with Console-only keys, and restart the loaded
-    controller service if present.
+    Prompt on an interactive TTY for a Console username and password, neither of
+    which is echoed, then write config/console.env with Console-only keys and
+    restart the loaded controller service if present.
 
     Credentials are not accepted through flags, environment variables, or argv.
 

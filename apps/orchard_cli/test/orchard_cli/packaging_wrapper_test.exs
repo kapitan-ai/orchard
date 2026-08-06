@@ -16,7 +16,10 @@ defmodule OrchardCLI.PackagingWrapperTest do
     assert content =~ "set -a"
     assert content =~ ". \"$ENV_FILE\""
     assert content =~ "set +a"
-    assert content =~ "exec \"$ORCHARD_CLI\" eval \"OrchardCLI.main([$args])\""
+    assert content =~ "ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID=$$"
+    assert content =~ "\"$ORCHARD_CLI\" eval \"OrchardCLI.main([$args])\" <&3 3<&- &"
+    assert content =~ "_cli_pid=$!"
+    assert content =~ "wait \"$_cli_pid\""
   end
 
   test "packaged orchardctl wrapper propagates DATABASE_URL from secure controller.env" do
@@ -41,6 +44,65 @@ defmodule OrchardCLI.PackagingWrapperTest do
       assert output =~ "group/world bits set"
       assert output =~ "DATABASE_URL="
       refute output =~ "DATABASE_URL=ecto://user:pass@localhost/orchard_controller"
+    end)
+  end
+
+  test "packaged orchardctl wrapper forwards piped stdin to the supervised CLI" do
+    with_temp_wrapper(fn wrapper, _root ->
+      assert {output, 0} =
+               System.cmd(
+                 "sh",
+                 [
+                   "-c",
+                   ~s(printf 'activation-key\\n' | "$1" license activate --key-stdin),
+                   "orchardctl-stdin-regression",
+                   wrapper
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert output =~ "STDIN=activation-key"
+    end)
+  end
+
+  test "packaged orchardctl wrapper tolerates a closed standard input" do
+    with_temp_wrapper(fn wrapper, _root ->
+      assert {output, 0} =
+               System.cmd(
+                 "sh",
+                 [
+                   "-c",
+                   ~s("$1" license activate --key-stdin 0<&-),
+                   "orchardctl-closed-stdin-regression",
+                   wrapper
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert output =~ "STDIN=<eof>"
+    end)
+  end
+
+  test "packaged orchardctl wrapper runs the CLI in the invocation directory" do
+    with_temp_wrapper(fn wrapper, _root ->
+      workdir = Path.join(Path.dirname(wrapper), "operator-cwd")
+      File.mkdir_p!(workdir)
+      File.write!(Path.join(workdir, "cwd-marker"), "relative-path-resolution\n")
+
+      assert {output, 0} =
+               System.cmd(
+                 "sh",
+                 [
+                   "-c",
+                   ~s(cd "$2" && "$1" upgrade plan),
+                   "orchardctl-cwd-regression",
+                   wrapper,
+                   workdir
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert output =~ "CWD_MARKER=relative-path-resolution"
     end)
   end
 
@@ -76,6 +138,19 @@ defmodule OrchardCLI.PackagingWrapperTest do
     #!/bin/sh
     printf 'DATABASE_URL=%s\n' "${DATABASE_URL:-}"
     printf 'ARGS=%s\n' "$*"
+    if [ -f ./cwd-marker ]; then
+      IFS= read -r _marker < ./cwd-marker
+      printf 'CWD_MARKER=%s\n' "$_marker"
+    fi
+    case "$*" in
+      *--key-stdin*)
+        if IFS= read -r _line; then
+          printf 'STDIN=%s\n' "$_line"
+        else
+          printf 'STDIN=<eof>\n'
+        fi
+        ;;
+    esac
     """)
 
     File.chmod!(cli_path, 0o755)

@@ -115,6 +115,9 @@ jobs:
       - name: Test packaged orchardctl Controller runtime routing
         run: scripts/test-packaged-orchardctl-controller-runtime.sh
 
+      - name: Test packaged orchardctl PTY secret input
+        run: scripts/test-packaged-orchardctl-console-pty.sh
+
       - name: Test packaged orchardctl assembled Controller release RPC
         run: scripts/test-packaged-orchardctl-controller-release.sh
 

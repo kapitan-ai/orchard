@@ -90,13 +90,17 @@ mkdir -p "$UNTRUSTED_TMP"
 printf 'controller-cookie\n' > "$PACKAGE_ROOT/config/beam.cookie"
 chmod 0600 "$PACKAGE_ROOT/config/beam.cookie"
 
+# The packaged wrapper requires a root-owned 0600 cookie, which an unprivileged
+# test fixture cannot create. Fake ownership for that file only; every other
+# query (including the standalone custody identity checks) must stay truthful.
 cat > "$TOOLS/stat" <<'SH'
 #!/bin/sh
-case "${2:-}" in
-  '%u:%Lp') printf '0:600\n' ;;
-  '%z') /usr/bin/stat -f '%z' "$3" ;;
-  *) exit 1 ;;
-esac
+if [ "${2:-}" = '%u:%Lp' ]; then
+  case "${3:-}" in
+    */config/beam.cookie) printf '0:600\n' ; exit 0 ;;
+  esac
+fi
+exec /usr/bin/stat "$@"
 SH
 chmod +x "$TOOLS/stat"
 
@@ -158,8 +162,11 @@ case "$FAKE_RPC_MODE" in
     printf 'ORCHARDCTL_RPC_V1:0:stdout:Y29udHJvbGxlciBzdWNjZXNz\n\n'
     ;;
   nonresponsive)
+    # sh defers the trap until the foreground sleep returns, so keep the sleep
+    # granularity well under RPC_TERM_GRACE_SECONDS or the watchdog SIGKILLs
+    # this fixture before it can record the TERM it received.
     trap 'printf "terminated\n" >> "$FAKE_RPC_PROCESS_EVENTS"; exit 143' TERM
-    while :; do /bin/sleep 1; done
+    while :; do /bin/sleep 0.05; done
     ;;
   term-resistant)
     printf 'term-resistant:%s\n' "$$" >> "$FAKE_RPC_PROCESS_EVENTS"
