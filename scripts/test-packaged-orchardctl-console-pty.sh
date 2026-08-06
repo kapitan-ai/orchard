@@ -368,7 +368,7 @@ for _attempt in 1 2 3 4; do
   grep -q '^ORCHARD_CONSOLE_USERNAME=' "$CONSOLE_ENV" || \
     fail "packaged successful enable did not persist a username"
   grep -q '^ORCHARD_CONSOLE_PASSWORD=' "$CONSOLE_ENV" || \
-    fail "packaged successful enable did not persist a password hash"
+    fail "packaged successful enable did not persist a password"
   [[ "$(cat "$LAUNCHCTL_MARKER")" = \
     'print system/com.orchard.controller' ]] || \
     fail "packaged successful enable did not complete not-loaded handling"

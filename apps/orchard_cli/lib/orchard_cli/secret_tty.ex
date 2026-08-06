@@ -3,6 +3,8 @@ defmodule OrchardCLI.SecretTTY do
 
   @setup_error "could not disable terminal echo; refusing to read secret input"
   @restore_error "could not restore the prior terminal state; Console credentials were not saved"
+  @read_error "unable to read Console credential prompt input"
+  @abort_error "Console credential prompt was interrupted; Console credentials were not saved"
   @timeout_ms 10_000
 
   @type read_result :: {:ok, String.t()} | :eof | {:error, String.t()}
@@ -82,14 +84,20 @@ defmodule OrchardCLI.SecretTTY do
   end
 
   defp execute(port, callback) do
-    reader = fn prompt -> read_value(port, prompt) end
+    session = :atomics.new(1, signed: false)
+    reader = fn prompt -> read_value(port, session, prompt) end
 
     try do
       result = callback.(reader)
 
-      case restore(port, :infinity) do
-        :ok -> result
-        {:error, :restore} -> {:error, @restore_error}
+      if aborted?(session) do
+        result
+      else
+        case restore(port, :infinity) do
+          :ok -> result
+          {:error, :aborted} -> {:error, @abort_error}
+          {:error, :restore} -> {:error, @restore_error}
+        end
       end
     catch
       kind, reason ->
@@ -223,22 +231,31 @@ defmodule OrchardCLI.SecretTTY do
     end
   end
 
-  defp read_value(port, prompt) do
+  defp read_value(port, session, prompt) do
     if command(port, "READ:" <> prompt) do
       case await_packet(port, :infinity) do
         {:ok, "VALUE:" <> value} -> {:ok, value}
         {:ok, "EOF"} -> :eof
-        _other -> {:error, "unable to read Console credential prompt input"}
+        {:ok, "ABORTED"} -> mark_aborted(session)
+        _other -> {:error, @read_error}
       end
     else
-      {:error, "unable to read Console credential prompt input"}
+      {:error, @read_error}
     end
   end
+
+  defp mark_aborted(session) do
+    :atomics.put(session, 1, 1)
+    {:error, @abort_error}
+  end
+
+  defp aborted?(session), do: :atomics.get(session, 1) == 1
 
   defp restore(port, timeout) do
     if command(port, "RESTORE") do
       case await_packet(port, timeout) do
         {:ok, "RESTORED"} -> :ok
+        {:ok, "ABORTED"} -> {:error, :aborted}
         _other -> {:error, :restore}
       end
     else

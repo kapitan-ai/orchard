@@ -1,3 +1,5 @@
+#define __STDC_WANT_LIB_EXT1__ 1
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -935,11 +937,20 @@ static int handle_read(int control_fd, const unsigned char *frame, size_t frame_
   memcpy(response, "VALUE:", 6U);
   size_t value_length = 0;
   int status = read_tty_line(control_fd, response + 6U, &value_length);
-  if (status <= -2) return status;
-  if (write_all(tty_fd, "\n", 1U) != 0) return -1;
-  if (status == 0) return send_frame("EOF", 3U);
-  if (status < 0) return send_frame("READ_ERROR", 10U);
-  return send_frame(response, value_length + 6U);
+  int result;
+  if (status <= -2) {
+    result = status;
+  } else if (write_all(tty_fd, "\n", 1U) != 0) {
+    result = -1;
+  } else if (status == 0) {
+    result = send_frame("EOF", 3U);
+  } else if (status < 0) {
+    result = send_frame("READ_ERROR", 10U);
+  } else {
+    result = send_frame(response, value_length + 6U);
+  }
+  (void)memset_s(response, sizeof(response), 0, sizeof(response));
+  return result;
 }
 
 static int run_protocol(int control_fd, pid_t watchdog) {

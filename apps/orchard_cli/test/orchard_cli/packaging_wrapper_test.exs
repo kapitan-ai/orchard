@@ -83,6 +83,29 @@ defmodule OrchardCLI.PackagingWrapperTest do
     end)
   end
 
+  test "packaged orchardctl wrapper runs the CLI in the invocation directory" do
+    with_temp_wrapper(fn wrapper, _root ->
+      workdir = Path.join(Path.dirname(wrapper), "operator-cwd")
+      File.mkdir_p!(workdir)
+      File.write!(Path.join(workdir, "cwd-marker"), "relative-path-resolution\n")
+
+      assert {output, 0} =
+               System.cmd(
+                 "sh",
+                 [
+                   "-c",
+                   ~s(cd "$2" && "$1" upgrade plan),
+                   "orchardctl-cwd-regression",
+                   wrapper,
+                   workdir
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      assert output =~ "CWD_MARKER=relative-path-resolution"
+    end)
+  end
+
   test "packaged orchardctl wrapper remains valid POSIX shell" do
     assert {"", 0} = System.cmd("sh", ["-n", @orchardctl], stderr_to_stdout: true)
   end
@@ -115,6 +138,10 @@ defmodule OrchardCLI.PackagingWrapperTest do
     #!/bin/sh
     printf 'DATABASE_URL=%s\n' "${DATABASE_URL:-}"
     printf 'ARGS=%s\n' "$*"
+    if [ -f ./cwd-marker ]; then
+      IFS= read -r _marker < ./cwd-marker
+      printf 'CWD_MARKER=%s\n' "$_marker"
+    fi
     case "$*" in
       *--key-stdin*)
         if IFS= read -r _line; then

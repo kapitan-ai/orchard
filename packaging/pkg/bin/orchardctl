@@ -484,6 +484,11 @@ done
 
 ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID=$$
 export ORCHARD_CLI_FOREGROUND_SUPERVISOR_PID
+_launch_original_cwd=$(/bin/pwd -P 2>/dev/null) || _launch_original_cwd=""
+case "$_launch_original_cwd" in
+    /*) ;;
+    *) _launch_original_cwd=/ ;;
+esac
 _completion_dir=""
 _completion_identity=""
 _setup_cleanup_pending=""
@@ -533,6 +538,7 @@ _cli_waiting=""
 _cli_wait_interrupted=""
 _guard_waiting=""
 _guard_wait_interrupted=""
+WAIT_NO_CHILD_STATUS=127
 _cli_launch_wait_command=/bin/sleep
 _cli_parent_probe=/bin/ps
 _cli_process_probe=/bin/ps
@@ -721,6 +727,7 @@ cleanup_standalone_guard_startup() {
 
 terminate_and_reap_custody_guard() {
     _guard_signal=$1
+    _custody_guard_status_observed=""
     while :; do
         _guard_parent=$(
             "$_guard_parent_probe" -o ppid= -p "$_custody_guard_pid" 2>/dev/null |
@@ -740,14 +747,19 @@ terminate_and_reap_custody_guard() {
         _guard_wait_interrupted=""
         _guard_waiting=1
         if wait "$_custody_guard_pid"; then
-            _custody_guard_status=0
+            _guard_wait_status=0
         else
-            _custody_guard_status=$?
+            _guard_wait_status=$?
         fi
         guard_post_wait_barrier
         _guard_waiting=""
+        if [ -z "$_custody_guard_status_observed" ] ||
+           [ "$_guard_wait_status" -ne "$WAIT_NO_CHILD_STATUS" ]; then
+            _custody_guard_status=$_guard_wait_status
+            _custody_guard_status_observed=1
+        fi
         if [ -z "$_guard_wait_interrupted" ]; then
-            return
+            return 0
         fi
 
         while :; do
@@ -762,9 +774,6 @@ terminate_and_reap_custody_guard() {
                     if [ "$_guard_parent" = "$$" ]; then
                         /bin/kill -"$_guard_signal" \
                             "$_custody_guard_pid" 2>/dev/null || true
-                        _retry_guard_wait=1
-                    else
-                        _retry_guard_wait=""
                     fi
                     break
                 fi
@@ -773,10 +782,8 @@ terminate_and_reap_custody_guard() {
                 /bin/sleep 0.01 || :
                 continue
             fi
-            _retry_guard_wait=""
             break
         done
-        [ -n "$_retry_guard_wait" ] || return 0
     done
 }
 
@@ -842,7 +849,8 @@ fi
     _launch_uid=$3
     _launch_parent=$4
     _launch_wait_command=$5
-    shift 5
+    _launch_original_cwd=$6
+    shift 6
     cd "$_launch_directory" || exit 125
     _observed_identity=$(/usr/bin/stat -f "%d:%i:%Lp:%u" .) || exit 125
     [ "$_observed_identity" = "$_launch_identity" ] || exit 125
@@ -871,10 +879,11 @@ fi
     [ "$_observed_parent" = "$_launch_parent" ] || exit 125
     _observed_identity=$(/usr/bin/stat -f "%d:%i:%Lp:%u" .) || exit 125
     [ "$_observed_identity" = "$_launch_identity" ] || exit 125
-    cd / || exit 125
+    cd -- "$_launch_original_cwd" 2>/dev/null || cd / || exit 125
     exec "$@"
 ' orchard-cli-launch "$_completion_dir" "$_completion_identity" \
     "$_completion_uid" "$$" "$_cli_launch_wait_command" \
+    "$_launch_original_cwd" \
     "$ORCHARD_CLI" eval "OrchardCLI.main([$args])" <&3 3<&- &
 _cli_pid=$!
 exec 3<&-
