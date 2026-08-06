@@ -755,6 +755,26 @@ license state.
 
 Packaged-host lifecycle smoke completed on 2026-04-18 against an actual PKG + launchd install, covering `orchardctl status`, `start`, and `stop`, including non-root status behavior and idempotent start/stop checks. Treat packaged licensing rollout as historically exercised for that release cycle rather than pending a separate active smoke gate.
 
+## Controller Metrics Scrape
+
+The controller serves Prometheus exposition at `GET /metrics` on the same HTTP
+listener as the API and Console. There is no separate metrics port, bind
+address, or metrics-specific env var to configure; reach it through whichever
+transport mode is active (see
+[Controller Transport Behavior](#controller-transport-behavior)), for example
+`https://<public-host>:8443/metrics` under `direct_https`.
+
+The route requires the same cluster-scoped Operator or admin API Client Bearer
+token as `/ops/v1/health`. Configure the scraper with that token; do not add an
+unauthenticated metrics path and do not publish `/metrics` beyond the trusted
+private network or VPN.
+
+Responses carry `Cache-Control: no-store`. Metrics are non-authoritative
+observation: an authorized scrape returns `503` with `metrics unavailable` when
+valid exposition cannot be produced, and that condition does not change
+readiness, other route behavior, or inference. `SPEC.md` §9.1 owns the endpoint
+contract and the required metric families.
+
 ## Controller Transport Behavior
 
 The packaged controller is certificate-provider-neutral. The PKG does not generate, procure, or trust TLS certificate material by default. Transport mode is resolved at install time (`postinstall`) for diagnostics and at each service start (wrapper boot gate and `config/runtime.exs`) for runtime behavior.

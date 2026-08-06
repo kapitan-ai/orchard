@@ -1,7 +1,7 @@
 defmodule Orchard.API.ScopedRequestContext do
   @moduledoc """
   Shared bearer-token authentication and authorization plug for cluster-scoped
-  API surfaces (`/admin/v1/*`, `/ops/v1/*`).
+  API surfaces (`/admin/v1/*`, `/ops/v1/*`, `/metrics`).
 
   Concrete plugs configure the authorization callback and the role-required
   error via `use Orchard.API.ScopedRequestContext, ...`, keeping their own
