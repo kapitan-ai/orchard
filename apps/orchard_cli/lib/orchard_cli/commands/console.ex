@@ -267,9 +267,9 @@ defmodule OrchardCLI.Commands.Console do
     """
     orchardctl console enable
 
-    Prompt on an interactive TTY for a Console username and no-echo password,
-    write config/console.env with Console-only keys, and restart the loaded
-    controller service if present.
+    Prompt on an interactive TTY for a Console username and password, neither of
+    which is echoed, then write config/console.env with Console-only keys and
+    restart the loaded controller service if present.
 
     Credentials are not accepted through flags, environment variables, or argv.
 
