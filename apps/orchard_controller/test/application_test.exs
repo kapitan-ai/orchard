@@ -28,6 +28,23 @@ defmodule OrchardApplicationTest.ExitingMetricsReporter do
   def start_link(_opts), do: exit(:forced_metrics_reporter_exit)
 end
 
+defmodule OrchardApplicationTest.FlakyMetricsReporter do
+  @moduledoc false
+
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+  end
+
+  def start_link(_opts) do
+    if :persistent_term.get({__MODULE__, :fail?}, false) do
+      :persistent_term.put({__MODULE__, :fail?}, false)
+      {:error, :forced_first_metrics_start_failure}
+    else
+      Agent.start_link(fn -> :ok end, name: Orchard.Metrics.Reporter)
+    end
+  end
+end
+
 defmodule OrchardApplicationTest do
   use ExUnit.Case, async: false
 
@@ -39,6 +56,7 @@ defmodule OrchardApplicationTest do
   }
 
   alias Orchard.Inference.QueueManager
+  alias Orchard.Metrics.CardinalityLedger
 
   @sentry_dsn "https://public@example.invalid/1"
 
@@ -150,6 +168,46 @@ defmodule OrchardApplicationTest do
 
       :ok = Application.stop(:orchard_controller)
     end
+  end
+
+  test "SPEC.md §9.1 a stopped metrics generation is replaced by a new clean generation" do
+    Application.put_env(:orchard_controller, :start_metrics, true)
+    Application.put_env(:orchard_controller, :metrics, restart_delay_ms: 10)
+
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+
+    bootstrap = Process.whereis(Orchard.Metrics.Bootstrap)
+    generation = Process.whereis(Orchard.Metrics.Supervisor)
+    ledger = Process.whereis(CardinalityLedger)
+    assert is_pid(generation)
+    assert is_pid(ledger)
+
+    :ok = Supervisor.stop(generation)
+
+    assert is_pid(wait_for_replacement(Orchard.Metrics.Supervisor, generation))
+    assert is_pid(wait_for_replacement(CardinalityLedger, ledger))
+    assert Process.whereis(Orchard.Metrics.Bootstrap) == bootstrap
+    assert CardinalityLedger.active_series() == 0
+  end
+
+  test "SPEC.md §9.1 a failed metrics generation start is retried without failing boot" do
+    :persistent_term.put({OrchardApplicationTest.FlakyMetricsReporter, :fail?}, true)
+
+    on_exit(fn ->
+      :persistent_term.erase({OrchardApplicationTest.FlakyMetricsReporter, :fail?})
+    end)
+
+    Application.put_env(:orchard_controller, :start_metrics, true)
+
+    Application.put_env(:orchard_controller, :metrics,
+      reporter: OrchardApplicationTest.FlakyMetricsReporter,
+      restart_delay_ms: 10
+    )
+
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+    assert is_pid(Process.whereis(Orchard.Metrics.Bootstrap))
+    assert is_pid(wait_for_replacement(Orchard.Metrics.Supervisor, nil))
+    refute :persistent_term.get({OrchardApplicationTest.FlakyMetricsReporter, :fail?})
   end
 
   test "SPEC 4.8 readiness proof is independent of root quarantine startup order" do

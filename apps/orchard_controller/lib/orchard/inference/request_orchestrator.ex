@@ -1928,13 +1928,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp terminal_model_id(db_request, nil) do
     get_in(db_request.canonical_request, ["model_ref", "model_id"]) ||
-      requested_model_id(db_request.requested_model)
-  end
-
-  defp requested_model_id(requested_model) when is_binary(requested_model) do
-    requested_model
-    |> String.split("@", parts: 2)
-    |> List.first()
+      Request.canonical_model_id(db_request.requested_model)
   end
 
   defp terminal_output_tokens(attrs, db_request) do

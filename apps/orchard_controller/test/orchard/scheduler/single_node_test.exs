@@ -264,6 +264,54 @@ defmodule Orchard.Scheduler.SingleNodeTest do
              )
   end
 
+  test "SPEC.md §9.1 selected tier follows authoritative loaded state, not placement capacity" do
+    unloaded_status = %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: [
+        placement("single-tier-model", "v1", active_request_count: 0, max_concurrency: 2)
+      ]
+    }
+
+    Process.put(:single_node_status, unloaded_status)
+
+    assert {:ok, unloaded_schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-tier-model"),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    assert unloaded_schedule.selected_tier == "cold"
+
+    Process.put(
+      :single_node_status,
+      Map.put(unloaded_status, :loaded_models, [
+        %{model_id: "single-tier-model", version: "v1"}
+      ])
+    )
+
+    assert {:ok, loaded_schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-tier-model"),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    assert loaded_schedule.selected_tier == "loaded"
+  end
+
+  test "SPEC.md §9.1 an unreachable single-node probe reports the cold tier" do
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-unreachable-tier-model"),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    assert schedule.selected_tier == "cold"
+  end
+
   test "uses one conservative unmanaged slot when aggregate capacity is missing" do
     Process.put(:single_node_status, %{runtime_model_placements: []})
 

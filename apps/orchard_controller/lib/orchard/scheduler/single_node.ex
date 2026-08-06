@@ -85,7 +85,8 @@ defmodule Orchard.Scheduler.SingleNode do
             request_id: request.public_id,
             request_timeout_ms: Inference.request_timeout_ms(),
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
-            node_id: node && node.id
+            node_id: node && node.id,
+            selected_tier: "cold"
           }
           |> put_target(target)
 
@@ -153,6 +154,7 @@ defmodule Orchard.Scheduler.SingleNode do
 
   defp capacity_schedule(schedule, request, target, node, response, opts) do
     placement_capacity = model_placement_capacity_for(response, request.model_ref)
+    schedule = Map.put(schedule, :selected_tier, selected_tier(response, request.model_ref))
 
     case capacity_input(node, target, response, placement_capacity, opts) do
       {:ok, input} ->
@@ -433,6 +435,10 @@ defmodule Orchard.Scheduler.SingleNode do
     do: Map.put(schedule, :runtime_endpoint_target, target)
 
   defp put_target(schedule, target), do: Map.put(schedule, :runtime_client_target, target)
+
+  defp selected_tier(response, %CanonicalRequest.ModelRef{} = model_ref) do
+    if model_loaded?(response, model_ref), do: "loaded", else: "cold"
+  end
 
   defp model_placement_capacity_for(
          %Observation{} = observation,

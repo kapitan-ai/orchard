@@ -4,7 +4,7 @@ defmodule Orchard.Metrics.GaugeSource do
   import Ecto.Query
 
   alias Orchard.DispatchCapacity.AllocationAuthority
-  alias Orchard.Governance
+  alias Orchard.Governance.Tenant
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.{Node, NodeHeartbeat}
   alias Orchard.Repo
@@ -13,6 +13,8 @@ defmodule Orchard.Metrics.GaugeSource do
   @query_timeout_ms 500
   @authority_timeout_ms 100
   @managed_node_limit 5
+  @tenant_limit 5
+  @claim_lookup_limit 256
 
   @type entry :: %{labels: map(), value: number()}
   @type snapshots :: %{required(atom()) => [entry()]}
@@ -36,8 +38,7 @@ defmodule Orchard.Metrics.GaugeSource do
 
     case read_authority(QueueManager, read) do
       {:ok, depths} ->
-        tenants = Governance.list_tenants()
-        Map.put(snapshots, :scheduler_queue_depth, queue_entries(tenants, depths))
+        Map.put(snapshots, :scheduler_queue_depth, queue_entries(bounded_tenants(), depths))
 
       :unavailable ->
         snapshots
@@ -45,19 +46,29 @@ defmodule Orchard.Metrics.GaugeSource do
   end
 
   defp put_active_requests(snapshots, node_heartbeats) do
-    case read_authority(AllocationAuthority, &AllocationAuthority.live_claims/0) do
-      {:ok, claims} ->
-        Map.put(snapshots, :active_requests, active_request_entries(node_heartbeats, claims))
-
-      :unavailable ->
-        snapshots
+    with {:ok, claims} <- read_authority(AllocationAuthority, &bounded_live_claims/0),
+         {:ok, entries} <- active_request_entries(node_heartbeats, claims) do
+      Map.put(snapshots, :active_requests, entries)
+    else
+      _unavailable -> snapshots
     end
+  end
+
+  defp bounded_live_claims do
+    AllocationAuthority.live_claims(AllocationAuthority, timeout: @authority_timeout_ms)
   end
 
   defp read_authority(server, read) do
     if is_pid(GenServer.whereis(server)), do: {:ok, read.()}, else: :unavailable
   catch
     :exit, _reason -> :unavailable
+  end
+
+  defp bounded_tenants do
+    Tenant
+    |> order_by([tenant], asc: tenant.slug)
+    |> limit(@tenant_limit)
+    |> Repo.all(timeout: @query_timeout_ms)
   end
 
   defp managed_node_heartbeats do
@@ -134,29 +145,37 @@ defmodule Orchard.Metrics.GaugeSource do
     managed_node_ids =
       MapSet.new(node_heartbeats, fn {%Node{id: node_id}, _heartbeat} -> node_id end)
 
-    authority_entries =
-      claims
-      |> Enum.filter(&MapSet.member?(managed_node_ids, &1.node_id))
-      |> active_claim_entries()
+    managed_claims = Enum.filter(claims, &MapSet.member?(managed_node_ids, &1.node_id))
 
+    case active_claim_entries(managed_claims) do
+      {:ok, authority_entries} ->
+        {:ok, merged_active_entries(node_heartbeats, authority_entries)}
+
+      :unbounded ->
+        :unbounded
+    end
+  end
+
+  defp merged_active_entries(node_heartbeats, authority_entries) do
     node_heartbeats
     |> placement_entries(:active_requests)
     |> Kernel.++(authority_entries)
     |> merge_placement_entries(:active_requests)
   end
 
-  defp active_claim_entries([]), do: []
+  defp active_claim_entries([]), do: {:ok, []}
 
   defp active_claim_entries(claims) do
-    request_ids = Enum.map(claims, & &1.request_id)
+    request_ids = claims |> Enum.map(& &1.request_id) |> Enum.uniq()
 
-    models_by_request =
-      Request
-      |> where([request], request.public_id in ^request_ids)
-      |> select([request], {request.public_id, request.requested_model})
-      |> Repo.all(timeout: @query_timeout_ms)
-      |> Map.new()
+    if length(request_ids) > @claim_lookup_limit do
+      :unbounded
+    else
+      {:ok, claim_entries(claims, canonical_models_by_request(request_ids))}
+    end
+  end
 
+  defp claim_entries(claims, models_by_request) do
     Enum.flat_map(claims, fn claim ->
       case Map.get(models_by_request, claim.request_id) do
         model_id when is_binary(model_id) and model_id != "" ->
@@ -165,6 +184,17 @@ defmodule Orchard.Metrics.GaugeSource do
         _missing_request ->
           []
       end
+    end)
+  end
+
+  defp canonical_models_by_request(request_ids) do
+    Request
+    |> where([request], request.public_id in ^request_ids)
+    |> where([request], not is_nil(request.requested_model))
+    |> select([request], {request.public_id, request.requested_model})
+    |> Repo.all(timeout: @query_timeout_ms)
+    |> Map.new(fn {public_id, requested_model} ->
+      {public_id, Request.canonical_model_id(requested_model)}
     end)
   end
 

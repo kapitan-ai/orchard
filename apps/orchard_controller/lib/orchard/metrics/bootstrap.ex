@@ -4,6 +4,8 @@ defmodule Orchard.Metrics.Bootstrap do
 
   require Logger
 
+  @restart_delay_ms 60_000
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -14,24 +16,35 @@ defmodule Orchard.Metrics.Bootstrap do
   end
 
   @impl true
-  def handle_continue(:start_metrics, state) do
-    case start_metrics(state.opts) do
-      {:ok, pid} ->
-        {:noreply, %{state | supervisor: pid}}
-
-      {:error, reason} ->
-        Logger.warning("Metrics subsystem unavailable: #{inspect(reason)}")
-        {:noreply, state}
-    end
-  end
+  def handle_continue(:start_metrics, state), do: {:noreply, start_generation(state)}
 
   @impl true
   def handle_info({:EXIT, pid, reason}, %{supervisor: pid} = state) do
     Logger.warning("Metrics subsystem stopped: #{inspect(reason)}")
-    {:noreply, %{state | supervisor: nil}}
+    {:noreply, schedule_generation(%{state | supervisor: nil})}
   end
 
+  def handle_info(:start_metrics, %{supervisor: nil} = state),
+    do: {:noreply, start_generation(state)}
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp start_generation(state) do
+    case start_metrics(state.opts) do
+      {:ok, pid} ->
+        %{state | supervisor: pid}
+
+      {:error, reason} ->
+        Logger.warning("Metrics subsystem unavailable: #{inspect(reason)}")
+        schedule_generation(state)
+    end
+  end
+
+  defp schedule_generation(state) do
+    delay = Keyword.get(state.opts, :restart_delay_ms, @restart_delay_ms)
+    Process.send_after(self(), :start_metrics, delay)
+    state
+  end
 
   defp start_metrics(opts) do
     case Orchard.Metrics.Supervisor.start_link(opts) do

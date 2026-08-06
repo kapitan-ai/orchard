@@ -107,6 +107,20 @@ defmodule Orchard.DomainMetricsTest do
     assert_metric(:scheduler_rejections, 1, %{reason: "cluster_busy"})
   end
 
+  test "SPEC.md §9.1 a schedule without an authoritative tier emits duration but no decision" do
+    DomainMetrics.scheduler_decision(
+      {:ok,
+       %{
+         strategy: :single_node,
+         dispatch_capacity_evaluation: %{placement_capacity: {:valid, 1, 2}}
+       }},
+      0.004
+    )
+
+    assert_metric(:scheduler_duration, 0.004, %{})
+    refute_receive {:metric, [:orchard, :metrics, :scheduler_decisions], _, _}
+  end
+
   test "SPEC.md §9.1 implemented tenant concurrency rejection is bounded" do
     DomainMetrics.scheduler_rejection(:queue_timeout)
     DomainMetrics.quota_rejection("tenant-1", :tenant_concurrency)

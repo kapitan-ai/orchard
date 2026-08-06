@@ -94,10 +94,7 @@ defmodule Orchard.DomainMetrics do
   def decode_throughput(_node_id, _model_id, _output_tokens, _duration_ms), do: :ok
 
   defp scheduler_labels({:ok, schedule}) when is_map(schedule) do
-    tier =
-      Map.get(schedule, :selected_tier) ||
-        Map.get(schedule, :selection_tier) ||
-        single_node_tier(schedule)
+    tier = Map.get(schedule, :selected_tier) || Map.get(schedule, :selection_tier)
 
     if tier in [:loaded, :cached, :cold, "loaded", "cached", "cold"] do
       {:ok, %{result: :selected, tier: tier}}
@@ -113,16 +110,6 @@ defmodule Orchard.DomainMetrics do
     do: {:ok, %{result: result, tier: :none}}
 
   defp scheduler_labels(_result), do: :error
-
-  defp single_node_tier(%{strategy: :single_node} = schedule) do
-    case Map.get(schedule, :dispatch_capacity_evaluation) do
-      %{placement_capacity: :not_applicable} -> :cold
-      %{placement_capacity: _placement_capacity} -> :loaded
-      _missing -> nil
-    end
-  end
-
-  defp single_node_tier(_schedule), do: nil
 
   defp emit(family, value, labels) do
     _result = SeriesAdmission.emit(family, value, labels)

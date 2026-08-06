@@ -140,12 +140,14 @@ defmodule Orchard.Metrics.GaugePollerTest do
     now = DateTime.utc_now()
 
     insert_heartbeat!(node, now, payload: payload("model-authoritative", "loaded", 7))
-    insert_request!(tenant, public_id, "model-authoritative")
+    insert_request!(tenant, public_id, "model-authoritative@v1")
 
     assert {:ok, claim, _evaluation} =
              AllocationAuthority.acquire(node.id, public_id, ConformanceFixture.input())
 
-    assert entry(%{node: node.id, model: "model-authoritative"}, 1) in GaugeSource.snapshots(now).active_requests
+    assert GaugeSource.snapshots(now).active_requests == [
+             entry(%{node: node.id, model: "model-authoritative"}, 1)
+           ]
 
     assert :ok = AllocationAuthority.release(claim)
 
