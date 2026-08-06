@@ -2658,6 +2658,7 @@ defmodule OrchardNodeAgentTest do
                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       request = execute_inference_request("req-r3-worker-down")
+      crash_count_before = worker_crash_count(NodeStatus.current(), @test_model_id)
 
       assert :ok = NodeStatus.prepare_request(request, self())
       assert :ok = NodeStatus.start_request(request)
@@ -2669,7 +2670,10 @@ defmodule OrchardNodeAgentTest do
                       %Orchard.InferenceEvent{event: %{code: "worker_down"}}},
                      1_000
 
-      assert %StatusResponse{active_request_count: 0, loaded_models: []} = NodeStatus.current()
+      status = NodeStatus.current()
+      assert %StatusResponse{active_request_count: 0, loaded_models: []} = status
+      assert worker_crash_count(status, @test_model_id) == crash_count_before + 1
+      assert worker_crash_counter_version(status, @test_model_id) != ""
     end)
   end
 
@@ -2725,6 +2729,7 @@ defmodule OrchardNodeAgentTest do
       assert :ok = NodeStatus.start_request(request)
 
       wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+      crash_count_before = worker_crash_count(NodeStatus.current(), @test_model_id)
 
       assert %{ok: true, message: "unload accepted"} =
                NodeStatus.unload_model(%UnloadModelRequest{
@@ -2738,7 +2743,9 @@ defmodule OrchardNodeAgentTest do
                       %Orchard.InferenceEvent{event: %{code: "worker_unloaded"}}},
                      1_000
 
-      assert %StatusResponse{active_request_count: 0, loaded_models: []} = NodeStatus.current()
+      status = NodeStatus.current()
+      assert %StatusResponse{active_request_count: 0, loaded_models: []} = status
+      assert worker_crash_count(status, @test_model_id) == crash_count_before
     end)
   end
 
@@ -2755,13 +2762,16 @@ defmodule OrchardNodeAgentTest do
         end)
 
       request = execute_inference_request("req-r3-prepared-disconnect")
+      crash_count_before = worker_crash_count(NodeStatus.current(), @test_model_id)
 
       assert :ok = NodeStatus.prepare_request(request, subscriber)
       Process.exit(subscriber, :kill)
 
       wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
 
-      assert %StatusResponse{active_request_count: 0} = NodeStatus.current()
+      status = NodeStatus.current()
+      assert %StatusResponse{active_request_count: 0} = status
+      assert worker_crash_count(status, @test_model_id) == crash_count_before
 
       assert %{ok: true, message: "unload accepted"} =
                NodeStatus.unload_model(%UnloadModelRequest{
@@ -3845,9 +3855,12 @@ defmodule OrchardNodeAgentTest do
     assert {:ok, ^expected_hash} = ArtifactBundle.tree_sha256(bundle.cache_path)
   end
 
-  test "ensure_model_loaded hash mismatch returns FAILED", %{bundle: bundle} do
+  test "ensure_model_loaded hash mismatch returns FAILED without counting a worker crash", %{
+    bundle: bundle
+  } do
     # Remove cache and request with wrong hash
     File.rm_rf!(bundle.cache_path)
+    crash_count_before = worker_crash_count(NodeStatus.current(), @test_model_id)
 
     request = %EnsureModelLoadedRequest{
       node_id: "node-local",
@@ -3864,6 +3877,7 @@ defmodule OrchardNodeAgentTest do
     assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID
     assert result.failure_code == "artifact_hash_mismatch"
     assert result.failure_message != ""
+    assert worker_crash_count(NodeStatus.current(), @test_model_id) == crash_count_before
 
     # Staging directory should be cleaned up
     staging_dir = Path.join([Node.models_root(), ".staging"])
@@ -5414,6 +5428,20 @@ defmodule OrchardNodeAgentTest do
       cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
       deadline_unix_ms: System.system_time(:millisecond) + 5_000
     }
+  end
+
+  defp worker_crash_count(%StatusResponse{} = status, model_id) do
+    case Enum.find(status.worker_crash_counters, &(&1.model_id == model_id)) do
+      nil -> 0
+      counter -> counter.count
+    end
+  end
+
+  defp worker_crash_counter_version(%StatusResponse{} = status, model_id) do
+    case Enum.find(status.worker_crash_counters, &(&1.model_id == model_id)) do
+      nil -> ""
+      counter -> counter.counter_version
+    end
   end
 
   defp worker_count do

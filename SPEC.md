@@ -3993,6 +3993,10 @@ OpenTelemetry Erlang/Elixir currently documents traces as stable while metrics/l
 * controller: `/metrics`
 * node agent: `/metrics` optional, disabled externally by default
 
+The Controller SHALL serve `GET /metrics` on its existing HTTP listener and SHALL NOT create a separate metrics listener. The route SHALL require the cluster-scoped operator-or-admin service-account bearer boundary defined for the Operator API. Metrics initialization, collection, aggregation, and rendering are non-authoritative: their failure SHALL NOT prevent Controller boot or alter inference, admission, quota, scheduling, dispatch, recovery, or persistence outcomes. An authorized scrape MAY return `503` when valid exposition cannot be produced.
+
+The protected site-local endpoint MAY expose the canonical stable Tenant identifier as the raw `tenant` label. Orchard SHALL NOT hash, alias, truncate, or substitute that identifier for the pilot, and SHALL NOT include a user identifier as a metric label. Any later external metrics egress SHALL remove tenant and user dimensions before transmission.
+
 Required metric families:
 
 **HTTP/API**

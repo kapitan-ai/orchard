@@ -65,6 +65,13 @@ defmodule Orchard.NodeHeartbeatsTest do
           dsn: "postgres://secret"
         }
       ],
+      worker_crash_counters: [
+        %{model_id: "model-a", count: 2, counter_version: "epoch-1"},
+        %{model_id: "model-b", count: 3, counter_version: "epoch-1"},
+        %{model_id: "model-c", count: 4, counter_version: "epoch-1"},
+        %{model_id: "model-d", count: 5, counter_version: "epoch-1"},
+        %{model_id: "model-e", count: 6, counter_version: "epoch-1"}
+      ],
       runtime_prefix_cache_statuses: [
         %{
           model_ref: "model@v1",
@@ -103,6 +110,7 @@ defmodule Orchard.NodeHeartbeatsTest do
                supports_prompt_token_ids
                target
                validity
+               worker_crash_counters
                worker_state
              )
 
@@ -111,6 +119,13 @@ defmodule Orchard.NodeHeartbeatsTest do
     assert payload["supports_prompt_token_ids"] == true
     assert byte_size(payload["endpoint_id"]) == 512
     assert length(payload["placements"]) == 40
+
+    assert Enum.map(payload["worker_crash_counters"], & &1["model_id"]) ==
+             ~w(model-a model-b model-c model-d)
+
+    assert Enum.all?(payload["worker_crash_counters"], fn counter ->
+             Map.keys(counter) |> Enum.sort() == ~w(count counter_version model_id)
+           end)
 
     assert String.length(get_in(payload, ["placements", Access.at(0), "model_ref", "model_id"])) +
              String.length(get_in(payload, ["placements", Access.at(0), "model_ref", "version"])) +

@@ -20,6 +20,7 @@ defmodule Orchard.Scheduler.SingleNode do
   alias Orchard.CanonicalRequest
   alias Orchard.Dispatch.GrpcNodeRuntimeClient
   alias Orchard.DispatchCapacity.Authorization
+  alias Orchard.DomainMetrics
   alias Orchard.Inference
   alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
@@ -69,6 +70,13 @@ defmodule Orchard.Scheduler.SingleNode do
   end
 
   def default_schedule(%CanonicalRequest{} = request, target, opts) when is_list(opts) do
+    started_at = System.monotonic_time()
+    result = do_default_schedule(request, target, opts)
+    DomainMetrics.scheduler_decision(result, elapsed_seconds(started_at))
+    result
+  end
+
+  defp do_default_schedule(request, target, opts) do
     case resolve_node(target, opts) do
       {:ok, node} ->
         schedule =
@@ -86,6 +94,13 @@ defmodule Orchard.Scheduler.SingleNode do
       {:error, :node_inventory_unavailable} ->
         {:error, :model_busy}
     end
+  end
+
+  defp elapsed_seconds(started_at) do
+    System.monotonic_time()
+    |> Kernel.-(started_at)
+    |> System.convert_time_unit(:native, :nanosecond)
+    |> Kernel./(1_000_000_000)
   end
 
   defp resolve_node(target, opts) do

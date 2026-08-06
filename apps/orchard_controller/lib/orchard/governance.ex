@@ -14,6 +14,7 @@ defmodule Orchard.Governance do
     ApiKey,
     ApiKeySecret,
     AuditLog,
+    AuditWriter,
     ProvisioningBatch,
     RoleBinding,
     ServiceAccount,
@@ -53,7 +54,7 @@ defmodule Orchard.Governance do
   def create_tenant(attrs) do
     attrs = normalize_attrs(attrs)
 
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, tenant} <- insert_tenant(attrs),
            {:ok, _audit_log} <- insert_tenant_audit_log(tenant, "tenant.created", utc_now()) do
         {:ok, tenant}
@@ -80,7 +81,7 @@ defmodule Orchard.Governance do
   end
 
   defp create_api_key_transaction(tenant_id, attrs, generated) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
            {:ok, tenant} <- fetch_tenant(tenant_id),
            {:ok, api_key} <- insert_api_key(tenant, attrs, generated),
@@ -97,7 +98,7 @@ defmodule Orchard.Governance do
   def upsert_api_client(tenant_or_id, attrs, opts \\ []) do
     attrs = normalize_attrs(attrs)
 
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, tenant} <- resolve_tenant(tenant_or_id),
            {:ok, api_client, action} <- upsert_api_client_row(tenant, attrs),
            {:ok, _audit_log} <-
@@ -164,7 +165,7 @@ defmodule Orchard.Governance do
     do: disable_api_client(tenant_or_id, service_account_id, opts)
 
   def disable_api_client(tenant_or_id, service_account_id, opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, tenant} <- resolve_tenant(tenant_or_id),
            {:ok, service_account_id} <- normalize_service_account_id(service_account_id),
            {:ok, api_client} <- lock_api_client_for_tenant(tenant.id, service_account_id),
@@ -221,7 +222,7 @@ defmodule Orchard.Governance do
   end
 
   defp create_api_client_api_token_transaction(service_account_or_id, attrs, generated, opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, api_client} <- resolve_api_client(service_account_or_id),
            :ok <- ensure_api_client_enabled(api_client),
            {:ok, api_key} <- insert_service_account_api_key(api_client, attrs, generated),
@@ -241,7 +242,7 @@ defmodule Orchard.Governance do
   end
 
   defp rotate_api_client_api_token_transaction(service_account_or_id, attrs, generated, opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, api_client} <- resolve_api_client(service_account_or_id),
            :ok <- ensure_api_client_enabled(api_client),
            {:ok, revoked_keys} <-
@@ -283,7 +284,7 @@ defmodule Orchard.Governance do
           {:ok, RoleBinding.t()}
           | {:error, Changeset.t() | :api_client_not_found | :tenant_not_found}
   def ensure_inference_client_access(service_account_or_id, tenant_or_id, opts \\ []) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, api_client} <- resolve_api_client(service_account_or_id),
            {:ok, tenant} <- resolve_tenant(tenant_or_id),
            {:ok, role_binding, created?} <-
@@ -301,7 +302,7 @@ defmodule Orchard.Governance do
   @spec ensure_cluster_admin_access(ServiceAccount.t() | Ecto.UUID.t(), keyword()) ::
           {:ok, RoleBinding.t()} | {:error, Changeset.t() | :api_client_not_found}
   def ensure_cluster_admin_access(service_account_or_id, opts \\ []) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, api_client} <- resolve_api_client(service_account_or_id),
            {:ok, role_binding, created?} <- ensure_cluster_admin_role_binding(api_client),
            {:ok, _audit_log} <-
@@ -445,7 +446,7 @@ defmodule Orchard.Governance do
           occurred_at: utc_now(),
           payload: %{"reason" => Atom.to_string(reason), "token_prefix" => token_prefix}
         })
-        |> Repo.insert()
+        |> AuditWriter.insert()
         |> case do
           {:ok, _audit_log} -> :ok
           {:error, changeset} -> {:error, sanitize_changeset(changeset)}
@@ -479,7 +480,7 @@ defmodule Orchard.Governance do
         occurred_at: utc_now(),
         payload: support_bundle_audit_payload(attrs)
       })
-      |> Repo.insert()
+      |> AuditWriter.insert()
       |> case do
         {:ok, _audit_log} -> :ok
         {:error, changeset} -> {:error, sanitize_changeset(changeset)}
@@ -509,7 +510,7 @@ defmodule Orchard.Governance do
       occurred_at: Map.get(attrs, "occurred_at", utc_now()),
       payload: Map.get(attrs, "payload", %{})
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   @spec revoke_api_key(ApiKey.t() | Ecto.UUID.t()) ::
@@ -521,7 +522,7 @@ defmodule Orchard.Governance do
   def revoke_api_key(%ApiKey{id: api_key_id}, opts), do: revoke_api_key(api_key_id, opts)
 
   def revoke_api_key(api_key_id, opts) when is_list(opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, api_key_id} <- normalize_api_key_id(api_key_id),
            {:ok, api_key} <- lock_api_key(api_key_id),
            {:ok, api_key} <- revoke_locked_api_key(api_key, opts) do
@@ -555,7 +556,7 @@ defmodule Orchard.Governance do
 
   def revoke_api_key(tenant_id, api_key_id, opts)
       when is_binary(tenant_id) and is_binary(api_key_id) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
            {:ok, _tenant} <- fetch_tenant(tenant_id),
            {:ok, api_key_id} <- normalize_api_key_id(api_key_id),
@@ -1179,7 +1180,7 @@ defmodule Orchard.Governance do
       occurred_at: occurred_at,
       payload: put_audit_context_payload(api_key_audit_payload(api_key), opts)
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp insert_api_client_audit_log(%ServiceAccount{} = api_client, action, occurred_at, opts) do
@@ -1195,7 +1196,7 @@ defmodule Orchard.Governance do
       occurred_at: occurred_at,
       payload: api_client_audit_payload(api_client, opts)
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp maybe_insert_disable_audit_log(_api_client, false, _opts), do: {:ok, nil}
@@ -1231,7 +1232,7 @@ defmodule Orchard.Governance do
         |> Map.put("service_account_id", api_client.id)
         |> put_audit_context_payload(opts)
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp insert_key_rotation_audit_log(
@@ -1261,7 +1262,7 @@ defmodule Orchard.Governance do
         }
         |> put_audit_context_payload(opts)
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp maybe_insert_key_rotation_audit_log(_api_client, _api_key, [], _occurred_at, _opts),
@@ -1302,7 +1303,7 @@ defmodule Orchard.Governance do
           |> put_audit_context_payload(opts)
       })
     )
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp role_binding_audit_scope_attrs(%RoleBinding{tenant_scope_id: nil}) do
@@ -1326,7 +1327,7 @@ defmodule Orchard.Governance do
       occurred_at: occurred_at,
       payload: %{"slug" => tenant.slug, "name" => tenant.name}
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp api_key_effective_tenant_id(%ApiKey{tenant_id: tenant_id}) when is_binary(tenant_id),

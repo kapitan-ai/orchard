@@ -69,6 +69,13 @@ defmodule Orchard.BeamPeerGrantsTest do
     end
   end
 
+  defmodule RecordingWorkerCrashObserver do
+    def observe(node_id, entries) do
+      send(Process.get(:worker_crash_observer), {:worker_crash_observed, node_id, entries})
+      :ok
+    end
+  end
+
   defmodule RecordingQueueManager do
     def refresh_node_capacity_sources(_refresh) do
       send(Process.get(:heartbeat_observer), {:queue_refresh, Orchard.Repo.in_transaction?()})
@@ -1822,13 +1829,27 @@ defmodule Orchard.BeamPeerGrantsTest do
     node = Repo.get!(Node, target.node_id)
     peer = authenticated_peer!(node.id)
     observed_at = DateTime.utc_now()
-    status = authenticated_status(node, active_request_count: 1, max_concurrency: 4)
+    Process.put(:worker_crash_observer, self())
+
+    counters = [%{model_id: "model-a", count: 2, counter_version: "epoch-1"}]
+
+    status =
+      authenticated_status(node,
+        active_request_count: 1,
+        max_concurrency: 4,
+        worker_crash_counters: counters
+      )
+
+    observer_opts = [worker_crash_observer: RecordingWorkerCrashObserver]
 
     assert {:ok, _active} =
-             Nodes.observe_authenticated_status(target, status, observed_at, peer)
+             Nodes.observe_authenticated_status(target, status, observed_at, peer, observer_opts)
+
+    assert_received {:worker_crash_observed, node_id, ^counters}
+    assert node_id == node.id
 
     assert :noop =
-             Nodes.observe_authenticated_status(target, status, observed_at, peer)
+             Nodes.observe_authenticated_status(target, status, observed_at, peer, observer_opts)
 
     rejected =
       put_in(status, [:node_metadata, :node_id], Ecto.UUID.generate())
@@ -1838,9 +1859,11 @@ defmodule Orchard.BeamPeerGrantsTest do
                target,
                rejected,
                DateTime.add(observed_at, 1, :second),
-               peer
+               peer,
+               observer_opts
              )
 
+    refute_received {:worker_crash_observed, _, _}
     assert Repo.aggregate(NodeHeartbeat, :count) == 1
   end
 

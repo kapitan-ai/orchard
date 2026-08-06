@@ -1,5 +1,5 @@
 defmodule Orchard.API.RequestContext do
-  alias Orchard.API.ErrorHelpers
+  alias Orchard.API.{AuthenticationFailure, ErrorHelpers}
   alias Orchard.Governance
   alias Orchard.SentryContext
 
@@ -85,7 +85,7 @@ defmodule Orchard.API.RequestContext do
   defp parse_bearer_header(_header), do: {:error, :malformed_header}
 
   defp audit_auth_failure(conn, token, reason) do
-    Governance.audit_api_key_auth_failure(token, reason)
+    AuthenticationFailure.record(token, reason)
     put_auth_failure_context(reason)
     conn
   end

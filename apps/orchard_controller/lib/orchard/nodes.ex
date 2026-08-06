@@ -836,6 +836,7 @@ defmodule Orchard.Nodes do
     case result do
       {:ok, node} ->
         refresh_observed_queue_capacities(target, node, status_response, opts)
+        observe_worker_crashes(trusted_node_id, status_response, opts)
         {:ok, node}
 
       {:noop, :out_of_order} ->
@@ -845,6 +846,15 @@ defmodule Orchard.Nodes do
         clear_dispatch_capacity_sources(trusted_node_id, opts)
         :noop
     end
+  end
+
+  defp observe_worker_crashes(node_id, status_response, opts) do
+    observer = Keyword.get(opts, :worker_crash_observer, Orchard.Metrics.WorkerCrashDeduplicator)
+    observer.observe(node_id, Map.get(status_response, :worker_crash_counters, []))
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   @doc """

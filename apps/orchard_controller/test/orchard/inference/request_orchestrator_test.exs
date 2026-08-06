@@ -2025,6 +2025,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   test "queue admission requeues post-grant cluster_busy then schedules when live capacity returns",
        %{bundle: bundle} do
+    metric_ref = attach_scheduler_rejection_metric()
     put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
@@ -2063,6 +2064,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert state_before?(states, :admitted, :queued)
     assert state_before?(states, :queued, :scheduled)
     assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+    refute_receive {^metric_ref, _measurements, _metadata}
 
     assert {:ok, next_grant} = hold_queue_lane(canonical)
     assert :ok = QueueManager.release(next_grant)
@@ -2070,6 +2072,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   test "queue admission requeues post-grant model_busy then schedules when live capacity returns",
        %{bundle: bundle} do
+    metric_ref = attach_scheduler_rejection_metric()
     put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
@@ -2114,12 +2117,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert state_before?(states, :admitted, :queued)
     assert state_before?(states, :queued, :scheduled)
     assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+    refute_receive {^metric_ref, _measurements, _metadata}
 
     assert {:ok, next_grant} = hold_queue_lane(canonical)
     assert :ok = QueueManager.release(next_grant)
   end
 
   test "queue admission times out post-grant cluster_busy without dispatching", %{bundle: bundle} do
+    metric_ref = attach_scheduler_rejection_metric()
     put_queue_admission_config(enabled: true, max_wait_ms: 60, poll_interval_ms: 10)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
@@ -2138,6 +2143,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.error_code == "queue_timeout"
     assert_queue_metadata(request, "queue_timeout", queued?: true)
     refute :scheduled in request_event_states(request)
+    assert_receive {^metric_ref, %{value: 1}, %{reason: "queue_timeout"}}
+    refute_receive {^metric_ref, _measurements, _metadata}
 
     assert {:ok, next_grant} = hold_queue_lane(canonical)
     assert :ok = QueueManager.release(next_grant)
@@ -3973,6 +3980,29 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
           {:error, :unexpected_terminal_step_appender_call}
       end
     end
+  end
+
+  defp attach_scheduler_rejection_metric do
+    if Process.whereis(Orchard.Metrics.Supervisor) == nil do
+      start_supervised!(Orchard.Metrics.Supervisor)
+    end
+
+    owner = self()
+    ref = make_ref()
+    handler_id = {__MODULE__, ref}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:orchard, :metrics, :scheduler_rejections],
+        fn _event, measurements, metadata, _config ->
+          send(owner, {ref, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    ref
   end
 
   defp restore_runtime_events(nil),

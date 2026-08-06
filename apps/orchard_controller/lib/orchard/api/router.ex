@@ -26,6 +26,11 @@ defmodule Orchard.API.Router do
     plug(Orchard.API.OperatorRequestContext)
   end
 
+  pipeline :metrics do
+    plug(Orchard.API.Plugs.NoStore)
+    plug(Orchard.API.OperatorRequestContext)
+  end
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -47,6 +52,14 @@ defmodule Orchard.API.Router do
 
     get("/health/live", Orchard.API.HealthController, :live)
     get("/health/ready", Orchard.API.HealthController, :ready)
+  end
+
+  scope "/" do
+    pipe_through(:metrics)
+
+    get("/metrics", Orchard.API.MetricsController, :show)
+    match(:*, "/metrics", Orchard.API.MetricsController, :method_not_allowed)
+    match(:*, "/metrics/*path", Orchard.API.MetricsController, :not_found)
   end
 
   scope "/bootstrap/v1", Orchard.API.Bootstrap do

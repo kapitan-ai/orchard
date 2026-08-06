@@ -27,6 +27,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.UnloadModelRequest
+  alias Orchard.Cluster.V1.WorkerCrashCounter
   alias Orchard.Node
   alias Orchard.Node.ModelAcquisition
   alias Orchard.Node.ModelAcquisition.Request, as: AcquisitionRequest
@@ -94,6 +95,7 @@ defmodule Orchard.Node.ModelManager do
   @score_prefix_cache_default_timeout_ms 150
   @score_prefix_cache_local_timeout_grace_ms 50
   @prompt_token_ids_support_probe_max_timeout_ms 1_000
+  @worker_crash_model_limit 4
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -116,6 +118,8 @@ defmodule Orchard.Node.ModelManager do
           inflight_loads: %{optional({String.t(), String.t()}) => inflight_load()},
           load_refs: %{optional(reference()) => {String.t(), String.t()}},
           subscriber_refs: %{optional(reference()) => String.t()},
+          worker_crash_counter_version: String.t(),
+          worker_crashes: %{optional(String.t()) => non_neg_integer()},
           worker_refs: %{optional(reference()) => {String.t(), String.t()}},
           workers: %{optional({String.t(), String.t()}) => worker_entry()}
         }
@@ -196,7 +200,10 @@ defmodule Orchard.Node.ModelManager do
       _ = DynamicSupervisor.terminate_child(WorkerSupervisor, entry.pid)
     end)
 
-    {:reply, :ok, initial_state()}
+    next_state =
+      initial_state(state.worker_crash_counter_version, state.worker_crashes)
+
+    {:reply, :ok, next_state}
   end
 
   def handle_call({:ensure_model_loaded, %EnsureModelLoadedRequest{} = request}, from, state) do
@@ -485,7 +492,10 @@ defmodule Orchard.Node.ModelManager do
         cleanup_reason = cleanup_reason_for_worker_exit(reason)
 
         next_state =
-          cleanup_worker_unavailable(drop_worker(state, key, monitor_ref), key, cleanup_reason)
+          state
+          |> drop_worker(key, monitor_ref)
+          |> increment_worker_crash(key)
+          |> cleanup_worker_unavailable(key, cleanup_reason)
 
         {:noreply, next_state}
 
@@ -1351,11 +1361,25 @@ defmodule Orchard.Node.ModelManager do
       hosted_tool_readiness: tool_snapshot.readiness,
       runtime_memory_budgets: runtime_memory_budgets,
       runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
+      worker_crash_counters: worker_crash_counters(state),
       supports_prompt_token_ids: supports_prompt_token_ids,
       runtime_model_placements: runtime_model_placements(state, worker_request_limits)
     }
 
     {response, put_worker_request_limits(state, worker_request_limits)}
+  end
+
+  defp worker_crash_counters(state) do
+    state.worker_crashes
+    |> Enum.sort_by(fn {model_id, _count} -> model_id end)
+    |> Enum.take(@worker_crash_model_limit)
+    |> Enum.map(fn {model_id, count} ->
+      %WorkerCrashCounter{
+        model_id: model_id,
+        count: count,
+        counter_version: state.worker_crash_counter_version
+      }
+    end)
   end
 
   defp build_node_metadata do
@@ -2037,15 +2061,36 @@ defmodule Orchard.Node.ModelManager do
 
   defp call_timeout_for(_request), do: Node.worker_load_timeout_ms() + 10_000
 
-  defp initial_state do
+  defp initial_state(counter_version \\ new_worker_crash_counter_version(), worker_crashes \\ %{}) do
     %{
       workers: %{},
       worker_refs: %{},
       active_requests: %{},
       subscriber_refs: %{},
       inflight_loads: %{},
-      load_refs: %{}
+      load_refs: %{},
+      worker_crash_counter_version: counter_version,
+      worker_crashes: worker_crashes
     }
+  end
+
+  defp new_worker_crash_counter_version do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode16(case: :lower)
+  end
+
+  defp increment_worker_crash(state, {model_id, _version}) do
+    cond do
+      Map.has_key?(state.worker_crashes, model_id) ->
+        update_in(state, [:worker_crashes, model_id], &min(&1 + 1, @uint64_max))
+
+      map_size(state.worker_crashes) < @worker_crash_model_limit ->
+        put_in(state, [:worker_crashes, model_id], 1)
+
+      true ->
+        state
+    end
   end
 
   # -- Eviction helpers ------------------------------------------------------

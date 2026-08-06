@@ -1,3 +1,33 @@
+defmodule OrchardApplicationTest.FailingMetricsReporter do
+  @moduledoc false
+
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+  end
+
+  def start_link(_opts), do: {:error, :forced_metrics_start_failure}
+end
+
+defmodule OrchardApplicationTest.RaisingMetricsReporter do
+  @moduledoc false
+
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+  end
+
+  def start_link(_opts), do: raise("forced metrics reporter raise")
+end
+
+defmodule OrchardApplicationTest.ExitingMetricsReporter do
+  @moduledoc false
+
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+  end
+
+  def start_link(_opts), do: exit(:forced_metrics_reporter_exit)
+end
+
 defmodule OrchardApplicationTest do
   use ExUnit.Case, async: false
 
@@ -19,6 +49,8 @@ defmodule OrchardApplicationTest do
       enable_db_checks: Application.get_env(:orchard_controller, :enable_db_checks, true),
       beam_peer_grants: Application.get_env(:orchard_controller, :beam_peer_grants),
       controller_membership: Application.get_env(:orchard_controller, :controller_membership),
+      start_metrics: Application.get_env(:orchard_controller, :start_metrics),
+      metrics: Application.get_env(:orchard_controller, :metrics),
       sentry_dsn: Application.get_env(:sentry, :dsn)
     }
 
@@ -45,6 +77,9 @@ defmodule OrchardApplicationTest do
         :controller_membership,
         previous_env.controller_membership
       )
+
+      restore_app_env(:orchard_controller, :start_metrics, previous_env.start_metrics)
+      restore_app_env(:orchard_controller, :metrics, previous_env.metrics)
 
       Application.put_env(:sentry, :dsn, previous_env.sentry_dsn)
       remove_sentry_handler()
@@ -78,6 +113,43 @@ defmodule OrchardApplicationTest do
     assert is_pid(Process.whereis(QuarantineStore))
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
     assert is_pid(Process.whereis(OrchardConsole.ModelHubDownloadCoordinator))
+  end
+
+  test "SPEC.md §9.1 metrics startup failure does not prevent Controller boot" do
+    Application.put_env(:orchard_controller, :start_metrics, true)
+
+    Application.put_env(:orchard_controller, :metrics,
+      reporter: OrchardApplicationTest.FailingMetricsReporter
+    )
+
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+    assert is_pid(Process.whereis(Orchard.Supervisor))
+    assert is_pid(Process.whereis(Orchard.Metrics.Bootstrap))
+    assert Process.whereis(Orchard.Metrics.Supervisor) == nil
+  end
+
+  test "SPEC.md §9.1 metrics raises and exits cannot exhaust root Controller supervision" do
+    Application.put_env(:orchard_controller, :start_metrics, true)
+
+    for reporter <- [
+          OrchardApplicationTest.RaisingMetricsReporter,
+          OrchardApplicationTest.ExitingMetricsReporter
+        ] do
+      Application.put_env(:orchard_controller, :metrics, reporter: reporter)
+
+      assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+      root = Process.whereis(Orchard.Supervisor)
+      bootstrap = Process.whereis(Orchard.Metrics.Bootstrap)
+
+      assert is_pid(root)
+      assert is_pid(bootstrap)
+      Process.sleep(20)
+      assert Process.alive?(root)
+      assert Process.alive?(bootstrap)
+      assert Process.whereis(Orchard.Metrics.Supervisor) == nil
+
+      :ok = Application.stop(:orchard_controller)
+    end
   end
 
   test "SPEC 4.8 readiness proof is independent of root quarantine startup order" do

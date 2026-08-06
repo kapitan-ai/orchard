@@ -146,6 +146,19 @@ defmodule Orchard.Cluster.V1.RuntimeModelPlacement do
   field(:max_concurrency, 3, type: :uint32, json_name: "maxConcurrency")
 end
 
+defmodule Orchard.Cluster.V1.WorkerCrashCounter do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.WorkerCrashCounter",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:model_id, 1, type: :string, json_name: "modelId")
+  field(:count, 2, type: :uint64)
+  field(:counter_version, 3, type: :string, json_name: "counterVersion")
+end
+
 defmodule Orchard.Cluster.V1.StatusResponse do
   @moduledoc false
 
@@ -208,6 +221,12 @@ defmodule Orchard.Cluster.V1.StatusResponse do
   )
 
   field(:max_concurrency, 12, type: :uint32, json_name: "maxConcurrency")
+
+  field(:worker_crash_counters, 13,
+    repeated: true,
+    type: Orchard.Cluster.V1.WorkerCrashCounter,
+    json_name: "workerCrashCounters"
+  )
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do

@@ -46,6 +46,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   use Orchard.DispatchCapacity.Consumer, wiring: :final_dispatch_revalidation
 
+  alias Orchard.DomainMetrics
   alias Orchard.Inference
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Inference.QueueManager
@@ -87,6 +88,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               model_id: "unknown",
               version: "unknown",
               input_tokens: 0,
+              output_tokens: 0,
               node_id: nil,
               scheduler_strategy: nil,
               model_already_loaded: :unknown,
@@ -109,6 +111,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             model_id: String.t(),
             version: String.t(),
             input_tokens: non_neg_integer(),
+            output_tokens: non_neg_integer(),
             node_id: String.t() | nil,
             scheduler_strategy: atom() | String.t() | nil,
             model_already_loaded: boolean() | :unknown,
@@ -134,6 +137,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         model_id: Keyword.get(opts, :model_id, "unknown"),
         version: Keyword.get(opts, :version, "unknown"),
         input_tokens: Keyword.get(opts, :input_tokens, 0),
+        output_tokens: 0,
         node_id: Keyword.get(opts, :node_id),
         scheduler_strategy: Keyword.get(opts, :scheduler_strategy),
         model_already_loaded: :unknown,
@@ -614,6 +618,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
     put_ensure_model_load_completed_context(metrics)
 
+    unless ensure_load_meta.already_loaded do
+      DomainMetrics.model_load(metrics.node_id, metrics.model_id, metrics.ensure_model_loaded_ms)
+    end
+
     context =
       context
       |> Map.put(:ensure_model_loaded_result, ensure_load_meta)
@@ -634,6 +642,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     }
 
     error_metrics = finalize_metrics(metrics, {:error, {:model_load_failed, reason}})
+    DomainMetrics.model_load(metrics.node_id, metrics.model_id, metrics.ensure_model_loaded_ms)
     put_dispatch_terminal_context(error_metrics, context.target)
     emit_timing_log(error_metrics, {:error, {:model_load_failed, reason}})
     {:error, {:model_load_failed, reason}}
@@ -1742,6 +1751,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     |> increment_event_count()
     |> track_accepted_event(event)
     |> track_first_delta(event)
+    |> track_usage(event)
     |> track_terminal_event(event)
   end
 
@@ -1784,6 +1794,29 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp track_first_delta(metrics, _event), do: metrics
+
+  defp track_usage(
+         %Metrics{} = metrics,
+         %InferenceEvent{event: %InferenceEvent.UsageUpdate{usage: usage}}
+       ) do
+    put_output_tokens(metrics, usage)
+  end
+
+  defp track_usage(
+         %Metrics{} = metrics,
+         %InferenceEvent{event: %InferenceEvent.Completed{usage: usage}}
+       ) do
+    put_output_tokens(metrics, usage)
+  end
+
+  defp track_usage(metrics, _event), do: metrics
+
+  defp put_output_tokens(metrics, %{output_tokens: output_tokens})
+       when is_integer(output_tokens) and output_tokens >= 0 do
+    %{metrics | output_tokens: output_tokens}
+  end
+
+  defp put_output_tokens(metrics, _usage), do: metrics
 
   # Track terminal events (Completed or Failed)
   defp track_terminal_event(%Metrics{} = metrics, %InferenceEvent{} = event) do
@@ -1853,6 +1886,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp emit_timing_log(%Metrics{} = metrics, result) do
     # Finalize metrics based on result
     metrics = finalize_metrics(metrics, result)
+    emit_decode_throughput(metrics)
 
     Logger.info(
       "dispatch_timing " <>
@@ -1873,6 +1907,26 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         "conformance_defect=#{metrics.conformance_defect}"
     )
   end
+
+  defp emit_decode_throughput(%Metrics{
+         outcome: :ok,
+         terminal_kind: :completed,
+         node_id: node_id,
+         model_id: model_id,
+         output_tokens: output_tokens,
+         first_delta_monotonic_ms: first_delta_ms,
+         terminal_monotonic_ms: terminal_ms
+       })
+       when is_integer(first_delta_ms) and is_integer(terminal_ms) do
+    DomainMetrics.decode_throughput(
+      node_id,
+      model_id,
+      output_tokens,
+      terminal_ms - first_delta_ms
+    )
+  end
+
+  defp emit_decode_throughput(_metrics), do: :ok
 
   defp finalize_metrics(%Metrics{conformance_defect: defect} = metrics, :ok)
        when defect != :none do
