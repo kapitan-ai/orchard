@@ -1,6 +1,6 @@
 defmodule Orchard.API.OperatorRequestContext do
   @moduledoc """
-  Plug that resolves and authorizes `/ops/v1/*` caller context.
+  Plug that resolves and authorizes `/ops/v1/*` and `/metrics` caller context.
   """
 
   use Orchard.API.ScopedRequestContext,
