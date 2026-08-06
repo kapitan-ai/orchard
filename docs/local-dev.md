@@ -12,7 +12,6 @@ orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 | Dependency | Version | Notes |
 |------------|---------|-------|
 | mise | see `../mise.toml` | Required for Erlang/OTP, Elixir, Python, uv, Node.js, and npm |
-| Xcode Command Line Tools | host toolchain | Outside mise; `mix compile` builds a C helper for `apps/orchard_cli`. See [Tooling](tooling.md) |
 | PostgreSQL | ≥ 15 | Local instance |
 
 See [Tooling](tooling.md) for the pinned runtime versions and standard
