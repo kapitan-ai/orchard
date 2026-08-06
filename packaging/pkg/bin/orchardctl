@@ -538,7 +538,6 @@ _cli_waiting=""
 _cli_wait_interrupted=""
 _guard_waiting=""
 _guard_wait_interrupted=""
-WAIT_NO_CHILD_STATUS=127
 _cli_launch_wait_command=/bin/sleep
 _cli_parent_probe=/bin/ps
 _cli_process_probe=/bin/ps
@@ -727,7 +726,6 @@ cleanup_standalone_guard_startup() {
 
 terminate_and_reap_custody_guard() {
     _guard_signal=$1
-    _custody_guard_status_observed=""
     while :; do
         _guard_parent=$(
             "$_guard_parent_probe" -o ppid= -p "$_custody_guard_pid" 2>/dev/null |
@@ -747,19 +745,14 @@ terminate_and_reap_custody_guard() {
         _guard_wait_interrupted=""
         _guard_waiting=1
         if wait "$_custody_guard_pid"; then
-            _guard_wait_status=0
+            _custody_guard_status=0
         else
-            _guard_wait_status=$?
+            _custody_guard_status=$?
         fi
         guard_post_wait_barrier
         _guard_waiting=""
-        if [ -z "$_custody_guard_status_observed" ] ||
-           [ "$_guard_wait_status" -ne "$WAIT_NO_CHILD_STATUS" ]; then
-            _custody_guard_status=$_guard_wait_status
-            _custody_guard_status_observed=1
-        fi
         if [ -z "$_guard_wait_interrupted" ]; then
-            return 0
+            return
         fi
 
         while :; do
@@ -774,6 +767,9 @@ terminate_and_reap_custody_guard() {
                     if [ "$_guard_parent" = "$$" ]; then
                         /bin/kill -"$_guard_signal" \
                             "$_custody_guard_pid" 2>/dev/null || true
+                        _retry_guard_wait=1
+                    else
+                        _retry_guard_wait=""
                     fi
                     break
                 fi
@@ -782,8 +778,10 @@ terminate_and_reap_custody_guard() {
                 /bin/sleep 0.01 || :
                 continue
             fi
+            _retry_guard_wait=""
             break
         done
+        [ -n "$_retry_guard_wait" ] || return 0
     done
 }
 
