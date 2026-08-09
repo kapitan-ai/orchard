@@ -5,8 +5,10 @@ Orchard SHALL perform Automatic Attempt Retry as an internal continuation of one
 Both attempts MUST share the original Request ID, canonical payload, body hash, idempotency scope, admission result, queue grant, quota reservation, Payload Capture Mode, and caller-visible response.
 Attempt 2 MUST NOT repeat admission or re-enter a queue.
 One coarse Request FSM SHALL span both attempts without a new state.
-The Request SHALL remain in `dispatching` while attempt 1 resolution, the retry decision, alternate scheduling, and attempt 2 dispatch run.
-A Request that reached `running` on attempt 1 SHALL take the bounded `running -> dispatching` edge exactly once at the atomic attempt 2 start boundary, and SHALL NOT re-enter `received`, `validated`, `admitted`, `queued`, or `scheduled`.
+A Request whose attempt 1 has not reached `running` SHALL remain in `dispatching` through attempt 1 resolution, the retry decision, alternate scheduling, and attempt 2 dispatch.
+A Request whose attempt 1 reached `running` SHALL remain in `running` through attempt 1 resolution, the retry decision, and alternate scheduling, and SHALL take the bounded `running -> dispatching` edge exactly once at the atomic attempt 2 start boundary.
+A declined retry SHALL take no backward edge and SHALL terminalize from the state attempt 1 already held.
+Neither attempt SHALL re-enter `received`, `validated`, `admitted`, `queued`, or `scheduled`.
 This requirement traces to `SPEC.md` §3.6, §3.7.1, §5.3, §5.4, §5.8, §5.9, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Retry succeeds under one Request
@@ -27,9 +29,15 @@ This requirement traces to `SPEC.md` §3.6, §3.7.1, §5.3, §5.4, §5.8, §5.9,
 
 #### Scenario: Coarse Request state crosses the attempt boundary
 - **WHEN** attempt 1 reached `running` and every retry gate passes
-- **THEN** the Request takes the bounded `running -> dispatching` edge exactly once
+- **THEN** the Request stays in `running` through attempt 1 resolution, the retry decision, and alternate scheduling
+- **AND** it takes the bounded `running -> dispatching` edge exactly once at the atomic attempt 2 start boundary
 - **AND** it does not re-enter `queued` or `scheduled`
 - **AND** no retry-specific Request FSM state is introduced
+
+#### Scenario: Declined retry takes no backward edge
+- **WHEN** attempt 1 reached `running` and the retry decision declines with `no_alternative_node`, `cancelled`, or `budget_exhausted`
+- **THEN** the Request never takes the `running -> dispatching` edge
+- **AND** it terminalizes from the state attempt 1 already held
 
 ### Requirement: One absolute Request deadline
 Orchard SHALL assign `requests.timeout_at` once when it creates the Request.

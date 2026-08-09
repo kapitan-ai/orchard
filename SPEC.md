@@ -492,8 +492,9 @@ Rules:
 * `running` means node accepted and worker prefill began
 * `streaming` means Output Commitment has occurred through a validated externally meaningful text, tool-call, or structured-output delta
 * one coarse Request FSM SHALL span both Inference Attempts of one logical Request; Automatic Attempt Retry SHALL NOT add a retry-specific state
-* the Request SHALL remain in `dispatching` while attempt 1 resolution, the retry decision, alternate scheduling, and attempt 2's dispatch sequence run
-* a Request that reached `running` on attempt 1 SHALL take the `running -> dispatching` edge exactly once, at the atomic attempt 2 start boundary in §5.8; this is the only backward edge in this FSM and it SHALL NOT be taken after Output Commitment
+* a Request whose attempt 1 has not reached `running` SHALL remain in `dispatching` through attempt 1 resolution, the retry decision, alternate scheduling, and attempt 2's dispatch sequence
+* a Request whose attempt 1 reached `running` SHALL remain in `running` through attempt 1 resolution, the retry decision, and alternate scheduling, and SHALL take the `running -> dispatching` edge exactly once at the atomic attempt 2 start boundary in §5.8; this is the only backward edge in this FSM and it SHALL NOT be taken after Output Commitment
+* a declined retry SHALL take no backward edge and SHALL terminalize from the state attempt 1 already held, so `no_alternative_node`, `cancelled`, and `budget_exhausted` outcomes never move the Request backward
 * attempt 2 SHALL NOT re-enter `received`, `validated`, `admitted`, `queued`, or `scheduled`, and the Request SHALL terminalize exactly once from its final attempt
 * `interrupted` is used for controller/process failure after dispatch but before terminal reconciliation
 * once a request row has reached `validated`, scheduler or dispatch orchestration crashes MUST terminalize it as `failed` with durable `error_code = "orchestration_error"` and a sanitized public `internal_error`

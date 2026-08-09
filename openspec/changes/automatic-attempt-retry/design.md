@@ -150,7 +150,7 @@ Before attempt 2 dispatch, Orchard must complete this sequence:
 8. Recheck caller liveness and the absolute deadline before persisting either scheduler result.
 9. If that gate fails, terminalize attempt 1 with `cancelled` or `budget_exhausted` and append no attempt 2 evidence.
 10. If no candidate exists, append attempt 1 terminal evidence with `no_alternative_node` and terminalize the Request.
-11. If a valid different candidate exists, atomically append attempt 1 terminal evidence with `retried` and the sole attempt 2 started event.
+11. If a valid different candidate exists, atomically append attempt 1 terminal evidence with `retried` and the sole attempt 2 started event, and take the bounded `running -> dispatching` edge here when attempt 1 had reached `running`.
 12. Recheck caller liveness and the absolute deadline immediately before a dispatch side effect.
 13. If the post-start gate fails, terminalize attempt 2 as `cancelled` for caller cancellation or as `timed_out` with `retry_exhausted` for deadline exhaustion, without dispatch or a third attempt.
 14. Begin attempt 2 dispatch using the existing started attempt context.
