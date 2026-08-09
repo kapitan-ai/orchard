@@ -58,7 +58,8 @@ large spec sections.
 ### I want to run a pilot
 
 - [`pilots/README.md`](pilots/README.md) — pilot artifact pin ownership,
-  producer commit and configuration digest contract, update and rollback.
+  producer commit and configuration digest contract, the CP1 recurring
+  HTTP-only consumer and probe-loss evidence contract, update and rollback.
 - [`local-dev.md`](local-dev.md) — Phase 0 observability probe invocation and
   exit semantics.
 
