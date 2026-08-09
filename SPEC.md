@@ -2342,8 +2342,8 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `404` model not found
 * `409` idempotency conflict
 * `429` quota exceeded or queue full
-* `503` cluster busy / model busy / no eligible node
 * `499` caller cancelled or disconnected when a response remains deliverable
+* `503` cluster busy / model busy / no eligible node
 * `504` request timeout
 
 ---
