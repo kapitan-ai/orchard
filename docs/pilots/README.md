@@ -30,6 +30,38 @@ configuration:
 shasum -a 256 pilot-owned/issue-118-cp1-observability-probe.json
 ```
 
+## Issue #118 recurring HTTP-only consumer
+
+The CP1 remote consumer runs the pinned probe over HTTPS every five minutes
+with configuration and result schema version 1 and
+`terminal_validation: "http_only"`. It retains each stdout result separately
+from stderr without overwriting earlier runs and produces an immutable daily
+digest for the retained result set.
+
+Probe freshness advances only when the result sink receives one parseable
+schema-version-1 result object. Both `pass` and `fail` outcomes prove that the
+consumer is still publishing observations. Starting the scheduled process,
+creating an output file, or receiving missing or malformed stdout does not
+advance freshness.
+
+Transport, HTTP, and invalid-stream failures normally produce a `fail` result,
+so they are probe observations rather than probe loss. The no-data alert fires
+after 12 minutes without a qualifying result. Prove that alert by interrupting
+the consumer or its result-publication path, then restore publication and
+record the alert recovery. Breaking the inference endpoint alone is not
+probe-loss proof when the consumer retains a failure result.
+
+The actual pin, byte-exact non-secret configuration, scheduler definition,
+protected result location, retained results, daily digests, and operational
+screenshots are site-local evidence. Record sanitized references and outcomes
+on issue #118 or child issue #182; do not commit them, credentials, raw
+results, machine-specific paths, hostnames, tenant or user identifiers, or
+response content.
+
+This recurring consumer and no-data proof do not satisfy #118's separate
+Controller-local reconciliation cadence or its independent readiness-failure
+and inference-failure alert proofs.
+
 ## Update and rollback
 
 For an update, review the producer change, copy the new configuration if its
