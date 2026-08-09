@@ -38,18 +38,41 @@ with configuration and result schema version 1 and
 from stderr without overwriting earlier runs and produces an immutable daily
 digest for the retained result set.
 
+Compute that digest over the exact retained bytes of one UTC day's results,
+using bytewise filename ordering so the same retained set always reproduces the
+same value:
+
+```sh
+cd "$day_result_dir" &&
+  LC_ALL=C ls -1 |
+  LC_ALL=C sort |
+  tr '\n' '\0' |
+  xargs -0 shasum -a 256 |
+  shasum -a 256
+```
+
 Probe freshness advances only when the result sink receives one parseable
-schema-version-1 result object. Both `pass` and `fail` outcomes prove that the
-consumer is still publishing observations. Starting the scheduled process,
-creating an output file, or receiving missing or malformed stdout does not
+schema-version-1 result object whose `probe_id` equals the `probe_id` in the
+pinned configuration. A result carrying a null or mismatched `probe_id` does
+not identify the accepted pin and is not a qualifying result. Both `pass` and
+`fail` outcomes prove that the consumer is still publishing observations.
+Starting the scheduled process, creating an output file, or receiving missing
+or malformed stdout does not advance freshness.
+
+Transport, HTTP, invalid-stream, and configuration or environment refusal
+failures normally produce a `fail` result, so they are probe observations
+rather than probe loss whenever that identity check passes. Unsetting the
+credential environment variable still emits an `invalid_config` result carrying
+the pinned `probe_id`, so it is an observation and does not induce probe loss.
+A refusal that loses the pinned identity, such as an unreadable or
+non-parseable configuration, emits a null `probe_id` and therefore does not
 advance freshness.
 
-Transport, HTTP, and invalid-stream failures normally produce a `fail` result,
-so they are probe observations rather than probe loss. The no-data alert fires
-after 12 minutes without a qualifying result. Prove that alert by interrupting
-the consumer or its result-publication path, then restore publication and
-record the alert recovery. Breaking the inference endpoint alone is not
-probe-loss proof when the consumer retains a failure result.
+The no-data alert fires after 12 minutes without a qualifying result. Prove
+that alert by interrupting the consumer or its result-publication path, then
+restore publication and record the alert recovery. Breaking the inference
+endpoint alone is not probe-loss proof when the consumer retains a failure
+result.
 
 The actual pin, byte-exact non-secret configuration, scheduler definition,
 protected result location, retained results, daily digests, and operational
