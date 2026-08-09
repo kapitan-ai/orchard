@@ -3,7 +3,7 @@
 ## Why
 
 `SPEC.md` requires at most one automatic retry before externally meaningful output, but the Controller currently schedules and dispatches only once and persists only `inference_turn:t1:a1`.
-PR #162 merged `docs/decisions/0017-one-request-bounded-alternate-node-retry.md` and settled the logical Request versus Inference Attempt model, Output Commitment, retry taxonomy, capacity sequencing, hard prior-Node exclusion, evidence, breaker, and metric contracts.
+PR #162 merged `docs/decisions/0019-one-request-bounded-alternate-node-retry.md` and settled the logical Request versus Inference Attempt model, Output Commitment, retry taxonomy, capacity sequencing, hard prior-Node exclusion, evidence, breaker, and metric contracts.
 Issue #120 is closed, so terminal-conformance classification is no longer an open prerequisite.
 Implementation remains blocked until this OpenSpec package and the accompanying `SPEC.md` reconciliation are accepted.
 
@@ -14,7 +14,8 @@ Implementation remains blocked until this OpenSpec package and the accompanying 
 - Make `Orchard.Inference.RequestOrchestrator` own the bounded retry decision and second attempt.
 - Define Output Commitment before public handler or serializer delivery for text, tool-call, and structured-output deltas.
 - Require a closed allowlist and fail-closed gates before retry.
-- Require attempt 2 to use a fresh scheduler decision with hard exclusion of attempt 1's durable Node identity.
+- Require attempt 2 to use a fresh scheduler decision with hard exclusion of attempt 1's durable Node identity, reported as `previous_attempt_node_excluded`.
+- Keep the per-logical-Request prefix-cache scoring and unmanaged compatibility status-probe budgets unreallocated across attempts.
 - Require attempt 1 execution resolution and affirmative capacity release before alternate acquisition.
 - Persist append-only attempt evidence under `request_events` and separate logical Request metrics from per-attempt metrics.
 - Attribute breaker-eligible failures to the Node or placement that produced each actual attempt.
@@ -38,11 +39,13 @@ Implementation remains blocked until this OpenSpec package and the accompanying 
 
 This change reconciles:
 
-- §3.6 and §3.7.1 for Output Commitment, two attempt identities, ordering, and durable evidence.
+- §3.6 and §3.7.1 for Output Commitment, two attempt identities, the bounded `running -> dispatching` re-entry edge without a new Request state, ordering, and durable evidence.
 - §4.6.2 and the active `controller-dispatch-capacity-authority` delta for observable idempotent release, release-before-acquire, and the no-queue-re-entry boundary after attempt start.
 - §5.3 for one quota reservation and terminal reconciliation.
 - §§5.4-5.9 for the queue boundary, hard Node exclusion, bounded retry algorithm, original deadline, cancellation, and public outcomes.
-- §5.10 for per-attempt breaker attribution.
+- §5.10 for per-attempt breaker attribution and the eligible failure-class mapping that excludes ordinary capacity scarcity.
+- §7.3.5 for the `previous_attempt_node_excluded` scheduler rejection reason code.
+- §7.5.3 for keeping the `ScorePrefixCache` caps per logical Request across both attempts.
 - §9.1 for bounded attempt and retry metrics.
 - §§12.1-12.4 and §12.7 for Node, worker, load, timeout, cancellation, and supportability behavior.
 - Milestone 4 delivery and acceptance language.

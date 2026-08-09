@@ -4,7 +4,10 @@
 Orchard SHALL perform Automatic Attempt Retry as an internal continuation of one logical Request with at most attempt 1 and attempt 2.
 Both attempts MUST share the original Request ID, canonical payload, body hash, idempotency scope, admission result, queue grant, quota reservation, Payload Capture Mode, and caller-visible response.
 Attempt 2 MUST NOT repeat admission or re-enter a queue.
-This requirement traces to `SPEC.md` §3.7.1, §5.3, §5.4, §5.8, §5.9, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+One coarse Request FSM SHALL span both attempts without a new state.
+The Request SHALL remain in `dispatching` while attempt 1 resolution, the retry decision, alternate scheduling, and attempt 2 dispatch run.
+A Request that reached `running` on attempt 1 SHALL take the bounded `running -> dispatching` edge exactly once at the atomic attempt 2 start boundary, and SHALL NOT re-enter `received`, `validated`, `admitted`, `queued`, or `scheduled`.
+This requirement traces to `SPEC.md` §3.6, §3.7.1, §5.3, §5.4, §5.8, §5.9, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Retry succeeds under one Request
 - **WHEN** attempt 1 fails with an explicitly retryable pre-commit failure and every retry gate passes
@@ -22,11 +25,17 @@ This requirement traces to `SPEC.md` §3.7.1, §5.3, §5.4, §5.8, §5.9, and `d
 - **THEN** its terminal evidence records `cancelled`
 - **AND** Orchard starts no third attempt
 
+#### Scenario: Coarse Request state crosses the attempt boundary
+- **WHEN** attempt 1 reached `running` and every retry gate passes
+- **THEN** the Request takes the bounded `running -> dispatching` edge exactly once
+- **AND** it does not re-enter `queued` or `scheduled`
+- **AND** no retry-specific Request FSM state is introduced
+
 ### Requirement: One absolute Request deadline
 Orchard SHALL assign `requests.timeout_at` once when it creates the Request.
 Queueing, scheduling, model loading, execution, cleanup, attempt evidence persistence, and alternate scheduling MUST consume that same absolute deadline.
 No model-load or attempt-local timeout MAY extend it.
-This requirement traces to `SPEC.md` §5.8, §5.9, §12.4, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §5.8, §5.9, §12.4, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Attempt 1 exhausts the budget
 - **WHEN** attempt 1 cleanup leaves no positive time before `timeout_at`
@@ -42,7 +51,7 @@ Orchard SHALL mark Output Commitment when the Controller validates and observes 
 The Controller MUST record commitment before invoking a public event handler or serializer.
 Accepted, progress, usage, model-load, empty text, and terminal events MUST NOT commit output.
 Commitment SHALL be monotonic and identical for streaming and non-streaming Chat Completions and Responses.
-This requirement traces to `SPEC.md` §3.6, §5.8, §5.9, §12.7, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §3.6, §5.8, §5.9, §12.7, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Tool-call identity prevents retry
 - **WHEN** attempt 1 emits a valid tool-call delta with a stable identity and empty arguments
@@ -65,7 +74,7 @@ An inference Runtime Endpoint `Failed` event MUST carry both `retryable: true` a
 A model-load failure MUST qualify only through a normalized category of `acquisition_failed`, `runtime_unavailable`, `resource_exhausted`, or `timeout`; its failure code or message MUST NOT independently authorize retry.
 Unknown, deterministic, terminal-conformance, persistence, handler, serializer, orchestration, occupancy-ambiguous, and identity-ambiguous failures SHALL NOT retry.
 Attempt 1 decline precedence SHALL be `output_committed`, `budget_exhausted`, `cancelled`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
-This requirement traces to `SPEC.md` §5.8, §5.9, §§12.1-12.4, §12.7, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §5.8, §5.9, §§12.1-12.4, §12.7, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Runtime assertion is insufficient by itself
 - **WHEN** a Runtime Endpoint reports `retryable: true` with an unknown or non-allowlisted code
@@ -81,13 +90,28 @@ This requirement traces to `SPEC.md` §5.8, §5.9, §§12.1-12.4, §12.7, and `d
 Attempt 2 SHALL run a fresh scheduler decision with attempt 1's durable Node identity in `exclude_node_ids`.
 The scheduler MUST apply exclusion before eligibility, tiering, ranking, scoring, and prefix-cache scoring.
 The orchestrator MUST reject an excluded, missing, or mismatched selected identity before dispatch.
+A candidate removed by that hard filter SHALL be reported in the scheduler explanation as a rejected candidate with the stable reason code `previous_attempt_node_excluded`.
+Alternate scheduling MUST NOT reallocate the per-logical-Request `ScorePrefixCache` budgets in `SPEC.md` §7.5.3; attempt 2 MAY score only within their unconsumed remainder and MUST otherwise rank fail-open on deterministic base order.
+Alternate scheduling MUST NOT initiate a second explicitly unmanaged compatibility status-probe wave, so an attempt 1 dispatched to a compatibility candidate SHALL start no attempt 2 and SHALL record `no_alternative_node` unless an earlier decline reason applies.
 No alternative SHALL preserve attempt 1's original public failure without queue re-entry or deadline extension.
-This requirement traces to `SPEC.md` §5.5, §5.6, §5.8, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §5.5, §5.6, §5.7, §5.8, §7.3.5, §7.5.3, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Another address resolves to the same Node
 - **WHEN** an alternate target address resolves to attempt 1's durable Node identity
 - **THEN** the candidate remains excluded
+- **AND** the scheduler explanation rejects it with `previous_attempt_node_excluded`
 - **AND** Orchard does not dispatch it as attempt 2
+
+#### Scenario: Prefix-cache budget is already consumed
+- **WHEN** attempt 1 consumed the per-logical-Request `ScorePrefixCache` budget
+- **THEN** alternate scheduling issues no further `ScorePrefixCache` RPC
+- **AND** attempt 2 ranks fail-open on deterministic base order
+
+#### Scenario: Attempt 1 used the unmanaged compatibility branch
+- **WHEN** attempt 1 was dispatched to an explicitly unmanaged static compatibility candidate and fails with an otherwise retryable pre-commit failure
+- **THEN** Orchard runs no second compatibility status-probe wave
+- **AND** attempt 1 records `no_alternative_node`
+- **AND** the logical Request returns attempt 1's stable public failure
 
 #### Scenario: No alternative exists
 - **WHEN** hard exclusion leaves no different eligible Node
@@ -115,7 +139,7 @@ Closed attempt evidence SHALL remain durable under `none` and `metadata`, while 
 Attempt 1 SHALL have no excluded Node, while attempt 2 SHALL record exactly attempt 1's durable Node UUID as excluded.
 A target reference SHALL be an approved stable identifier under `full` or a deterministic hash outside `full`, never a raw target address.
 The coarse Request SHALL terminalize exactly once.
-This requirement traces to `SPEC.md` §3.7.1 and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §3.7.1 and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Attempt 2 boundary is atomic
 - **WHEN** every retry gate passes for a valid different candidate
@@ -137,7 +161,7 @@ Input-token accounting SHALL occur once and the output reservation SHALL remain 
 Quota SHALL reconcile once when the logical Request terminalizes.
 The effective Payload Capture Mode SHALL apply unchanged to both attempts.
 Discarded pre-commit attempt output SHALL NOT contribute logical usage or public output.
-This requirement traces to `SPEC.md` §5.3, §5.8, §9.1, §10.10, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §5.3, §5.8, §9.1, §10.10, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Attempt 1 is discarded
 - **WHEN** attempt 1 fails before commitment and attempt 2 starts
@@ -150,7 +174,7 @@ Caller disconnect SHALL prevent further dispatch and map consistently to Request
 A disconnect before the atomic attempt 2 boundary SHALL terminalize attempt 1 with `cancelled` and append no attempt 2 evidence.
 After either attempt starts, a disconnect SHALL persist `request_step.cancelled`, durable code `request_caller_disconnect`, and retry decision `cancelled` on that started attempt.
 When a response remains deliverable it SHALL use HTTP `499` and public code `request_cancelled`.
-This requirement traces to `SPEC.md` §5.9, §12.7, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §5.9, §12.7, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Caller disconnects before attempt 2 starts
 - **WHEN** the caller disconnects after attempt 1 fails but before the atomic attempt 2 boundary
@@ -164,6 +188,8 @@ This requirement traces to `SPEC.md` §5.9, §12.7, and `docs/decisions/0017-one
 
 ### Requirement: Per-attempt breakers and bounded metrics
 Each actual breaker-eligible failed attempt SHALL contribute independently to the existing breaker for the Node or placement that produced it.
+The Node-level breaker SHALL count an attempt failure only when its `failure_class` is `pre_acceptance_unavailable` or `worker_or_node_loss`, and the placement-level breaker only when it is `model_load_failure`.
+`capacity_rejection`, `runtime_failure`, `terminal_conformance`, `cancellation`, `deadline`, `controller_failure`, `occupancy_unresolved`, and `identity_unresolved` MUST NOT contribute to either breaker, and an unsuccessful attempt MUST contribute to at most one breaker.
 Attempt 1 breaker effects MUST be durable and visible before the fresh alternate scheduler decision.
 The retry decision itself MUST NOT increment a breaker.
 Logical Request metrics SHALL emit once per Request and attempt metrics SHALL emit once per started attempt.
@@ -171,7 +197,12 @@ For the attempt counter, `attempt` SHALL be `1` or `2`, `outcome` SHALL use the 
 `orchard_inference_retries_total` SHALL emit once per Request whose attempt 1 has a retry decision.
 Its `reason` SHALL be `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `identity_unresolved`, `occupancy_unresolved`, or `no_alternative_node`, and `result` SHALL be `succeeded`, `failed`, or `declined` in the combinations defined by `SPEC.md` §9.1.
 Metric labels MUST use closed vocabularies and MUST NOT contain high-cardinality identifiers.
-This requirement traces to `SPEC.md` §5.10, §9.1, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §5.10, §9.1, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
+
+#### Scenario: Post-start capacity scarcity does not suppress a Node
+- **WHEN** three attempts on a healthy Node fail after `request_step.started` with `capacity_rejection`
+- **THEN** neither the Node-level nor the placement-level breaker counts those failures
+- **AND** the Node remains eligible for later scheduling decisions
 
 #### Scenario: Attempt 1 breaker effect precedes alternate selection
 - **WHEN** attempt 1 produces a breaker-eligible failure and qualifies for retry

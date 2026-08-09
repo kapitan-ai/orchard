@@ -3,12 +3,12 @@
 ## Context
 
 The current Controller owns one logical Request but dispatches only one execution attempt.
-`docs/decisions/0017-one-request-bounded-alternate-node-retry.md` fixes the contract for a single second attempt before Output Commitment.
+`docs/decisions/0019-one-request-bounded-alternate-node-retry.md` fixes the contract for a single second attempt before Output Commitment.
 The implementation must add that behavior without repeating admission or weakening capacity, deadline, quota, idempotency, capture, and public API invariants.
 
 ## Goals
 
-- Represent attempt-local state explicitly while keeping Request state coarse.
+- Represent attempt-local state explicitly while keeping Request state coarse and free of a retry-specific FSM state.
 - Preserve the dispatcher as the single-attempt execution and cleanup boundary.
 - Make retry decisions deterministic, closed, durable, and testable.
 - Prevent discarded attempt output from contaminating either public API.
@@ -97,11 +97,15 @@ Opaque claim tokens remain process-local.
 ### Prior-Node exclusion is hard
 
 Attempt 2 schedules fresh with `exclude_node_ids` containing attempt 1's durable Node identity.
-The scheduler filters that identity before tiering, ranking, scoring, and prefix-cache scoring.
+The scheduler filters that identity before tiering, ranking, scoring, and prefix-cache scoring, and reports the removed candidate with the `SPEC.md` §7.3.5 rejection reason code `previous_attempt_node_excluded`.
 A different address for the same Node does not satisfy the rule.
 The orchestrator rechecks the returned Node identity before dispatch.
 Unresolved or conflicting identity records `identity_unresolved`.
 No alternative preserves attempt 1's original public failure and does not re-enter the queue.
+
+Alternate scheduling reuses the existing per-logical-Request budgets rather than doubling them.
+The §7.5.3 `ScorePrefixCache` caps stay per Request, so attempt 2 scores only within their unconsumed remainder and otherwise falls back to deterministic base order.
+The §5.5 explicitly unmanaged compatibility branch keeps its single status-probe wave per logical Request, so an attempt 1 on that branch never produces an attempt 2 and records `no_alternative_node` instead.
 
 ### Attempt evidence remains append-only
 
@@ -122,6 +126,8 @@ Controller or process failure without caller cancellation remains `interrupted`.
 ### Breakers and metrics use separate boundaries
 
 Each actual breaker-eligible failed attempt contributes to the existing breaker for the Node or placement that produced it.
+`SPEC.md` §5.10 fixes eligibility over the closed failure-class vocabulary: `pre_acceptance_unavailable` and `worker_or_node_loss` for the Node-level breaker, `model_load_failure` for the placement-level breaker, and nothing else.
+Ordinary post-start capacity scarcity is `capacity_rejection` and never suppresses a healthy but busy Node.
 Attempt 1 breaker effects are durable before alternate scheduling.
 The retry decision adds no breaker event.
 

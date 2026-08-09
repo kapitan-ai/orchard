@@ -5,7 +5,7 @@ Allocation and temporary-claim release SHALL remain idempotent and SHALL report 
 An unavailable authority, ambiguous cleanup, unresolved cancel drain, or unavailable quarantine store MUST NOT be reported as confirmed release.
 Attempt 2 scheduling and acquisition SHALL require attempt 1 execution resolution and an affirmative release result.
 Opaque claim tokens MUST remain process-local and MUST NOT be persisted or transferred between attempts.
-This requirement traces to `SPEC.md` §4.6.2, §5.9, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §4.6.2, §5.9, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: First claim is released before second acquisition
 - **WHEN** attempt 1 ends before Output Commitment and qualifies for retry
@@ -27,7 +27,7 @@ Every dispatch-capacity acquisition, acceptance-gate, or revalidation rejection 
 On attempt 1, ordinary scarcity SHALL record `not_retryable`, a held same-Request claim or unavailable quarantine store SHALL record `occupancy_unresolved`, and unverified or mismatched Node identity SHALL record `identity_unresolved`.
 On either attempt, caller disconnect SHALL record `cancelled`.
 On attempt 2, every other unsuccessful capacity outcome SHALL record `retry_exhausted` while preserving its specific failure class and code.
-This requirement traces to `SPEC.md` §4.6.2, §5.4, §5.9, and `docs/decisions/0017-one-request-bounded-alternate-node-retry.md`.
+This requirement traces to `SPEC.md` §4.6.2, §5.4, §5.9, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Ordinary scarcity occurs after attempt 1 starts
 - **WHEN** attempt 1 post-start capacity revalidation reports ordinary scarcity

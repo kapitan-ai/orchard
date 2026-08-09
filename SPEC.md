@@ -477,6 +477,9 @@ received
   -> streaming
   -> completed
 
+bounded Automatic Attempt Retry edge:
+  running -> dispatching
+
 failure exits:
   -> failed
   -> cancelled
@@ -488,6 +491,10 @@ Rules:
 
 * `running` means node accepted and worker prefill began
 * `streaming` means Output Commitment has occurred through a validated externally meaningful text, tool-call, or structured-output delta
+* one coarse Request FSM SHALL span both Inference Attempts of one logical Request; Automatic Attempt Retry SHALL NOT add a retry-specific state
+* the Request SHALL remain in `dispatching` while attempt 1 resolution, the retry decision, alternate scheduling, and attempt 2's dispatch sequence run
+* a Request that reached `running` on attempt 1 SHALL take the `running -> dispatching` edge exactly once, at the atomic attempt 2 start boundary in §5.8; this is the only backward edge in this FSM and it SHALL NOT be taken after Output Commitment
+* attempt 2 SHALL NOT re-enter `received`, `validated`, `admitted`, `queued`, or `scheduled`, and the Request SHALL terminalize exactly once from its final attempt
 * `interrupted` is used for controller/process failure after dispatch but before terminal reconciliation
 * once a request row has reached `validated`, scheduler or dispatch orchestration crashes MUST terminalize it as `failed` with durable `error_code = "orchestration_error"` and a sanitized public `internal_error`
 * once terminal, state is immutable
@@ -1357,6 +1364,8 @@ The scheduler SHALL obtain one immutable request-scoped Postgres snapshot with o
 
 The explicitly unmanaged static compatibility branch is available only when static fallback is enabled, trusted admitted/active inventory is confirmed empty, and the normalized target exactly satisfies `Inference.static_runtime_target?/1`. It MAY run one bounded compatibility status-probe wave over at most the first four deduplicated configured targets, with one connect/status attempt per target for the entire logical request through terminal completion, the existing **2000 ms** per-target timeout, and no retry; it SHOULD run as one bounded wave rather than serially multiplying that timeout. Loading, final revalidation, failure handling, execution, and terminal completion MUST NOT initiate another status attempt for that target. It MUST NOT run when trusted inventory exists, inventory availability cannot be proven, or the production snapshot fails, and it does not become trusted inventory or production authority.
 
+Automatic Attempt Retry SHALL NOT reallocate that probe budget. Alternate scheduling for attempt 2 SHALL NOT initiate a second compatibility status-probe wave or any further connect/status attempt, because the existing budget already covers the entire logical request through terminal completion. A logical Request whose attempt 1 was dispatched to an explicitly unmanaged compatibility candidate SHALL therefore start no attempt 2: its retry decision SHALL resolve to `no_alternative_node` unless an earlier reason in the §5.8 decline precedence applies, preserving attempt 1's stable public failure without queue re-entry or deadline extension.
+
 Production scheduling and dispatch SHALL perform no inline Runtime Endpoint status probe anywhere on the request path; the bounded explicitly unmanaged compatibility wave is the sole exception. Database unavailability, incomplete reads, or absent usable facts SHALL fail closed without stale process memory or the unmanaged compatibility branch.
 
 A node is eligible only if all conditions are true:
@@ -1375,6 +1384,8 @@ Unresolved, untrusted, rejected, provisioned, registered, or admitted-but-not-ac
 For attempt 2, `exclude_node_ids` SHALL contain attempt 1's stable Node identity and SHALL be applied as a hard eligibility filter before tiering, ranking, scoring, and prefix-cache scoring.
 A different target address for the same Node SHALL NOT satisfy this exclusion.
 An unresolved or mismatched Node identity SHALL fail closed with `identity_unresolved`, and the orchestrator SHALL reject any scheduler result that selects an excluded Node.
+An excluded Node SHALL appear in the §7.3.5 scheduler explanation as a rejected candidate with the stable reason code `previous_attempt_node_excluded`.
+The `ScorePrefixCache` budgets in §7.5.3 remain per logical Request and SHALL NOT be reallocated per attempt; attempt 2 SHALL issue prefix-cache scoring only within the unconsumed remainder of that budget and SHALL otherwise rank fail-open on deterministic base order.
 
 Memory eligibility formula:
 
@@ -1501,7 +1512,7 @@ Default Phase 4D runtime behavior remains observe-only (`prefix_cache_scoring.ra
 
 When `prefix_cache_scoring.enabled=true`, `cache_affinity.enabled=true`, `cache_affinity.live_fingerprint_match_enabled=true`, and `prefix_cache_scoring.ranking_mode = :tie_only`, the scheduler MAY apply one bounded conditional score step immediately before step 8, only for the leading rank-equivalence group where steps 1–7 are equal and only deterministic `node_id` differs. Candidate scoring in this conditional step is capped at 2 (incumbent + challenger). The challenger MAY be promoted only when challenger score normalizes to `status_code = "ok"` with `resident_fingerprint_match = true` and `score_tier = "resident_fingerprint"`, and the incumbent score is comparable `ok` non-resident (`status_code = "ok"`, `resident_fingerprint_match = false`, and `score_tier` is `"no_match"` or `"recent_fingerprint_only"`). Any non-`ok`, timeout, unsupported, unavailable, `model_not_loaded`, `invalid_request`, missing, malformed, contradictory, or transport-failure score outcome for either candidate SHALL preserve base order fail-open and deterministic `node_id` fallback.
 
-A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity; production snapshot candidates remain rank-neutral when the sanitized durable payload cannot provide the raw match. Request-specific `ScorePrefixCache` behavior remains subject to the selected-only/two-candidate limits in §7.5.3 and SHALL NOT introduce status or score fan-out. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
+A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity; production snapshot candidates remain rank-neutral when the sanitized durable payload cannot provide the raw match. Request-specific `ScorePrefixCache` behavior remains subject to the selected-only/two-candidate limits in §7.5.3; those limits are per logical Request and SHALL span both Inference Attempts, so attempt 2 SHALL consume only their unconsumed remainder and SHALL rank without prefix-cache scoring once the Request budget is exhausted. It SHALL NOT introduce status or score fan-out. Safe-tokenization capable-worker preference is default-off and SHALL bias ranking only after live and historical cache-affinity signals and before memory-headroom admission. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live cache-affinity, historical cache-affinity, and any enabled safe-tokenization capable-worker preference, and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
 
 ### 5.8 Scheduling algorithm
 
@@ -1584,7 +1595,7 @@ A production candidate snapshot is selection evidence, not a dispatch permit. Pr
 
 Dispatch sequence:
 
-1. reserve request in request FSM (`scheduled`)
+1. reserve request in request FSM (`scheduled`) for attempt 1; attempt 2 already holds `dispatching` from the §5.8 atomic start boundary under §3.6 and SHALL NOT re-enter `queued` or `scheduled`
 2. confirm that the orchestrator has appended exactly one `request_step.started` event for the selected Inference Attempt; the dispatcher SHALL NOT append another
 3. resolve trusted admitted production inventory and identity before applying configured classification, then consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots; `fail_closed` SHALL NOT proceed to `ExecuteInference`
 4. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
@@ -1608,6 +1619,7 @@ Retry rule:
 * on attempt 1, ordinary post-start capacity scarcity records `not_retryable`, held-claim or quarantine uncertainty records `occupancy_unresolved`, and unresolved identity records `identity_unresolved`
 * on either attempt, caller disconnect records `cancelled`
 * on attempt 2, every other unsuccessful post-start capacity outcome records `retry_exhausted` while preserving its specific failure class and code
+* an attempt 1 dispatched to an explicitly unmanaged compatibility candidate starts no attempt 2 and records `no_alternative_node` unless an earlier decline reason applies, because §5.5 grants that branch one status-probe wave for the entire logical request
 * no different eligible Node preserves the original public failure and records `no_alternative_node`
 
 Caller disconnect SHALL map consistently across pre-dispatch, capacity-gate, and runtime-drain phases to Request state `cancelled`, attempt event `request_step.cancelled` after an attempt starts, durable code `request_caller_disconnect`, retry decision `cancelled`, HTTP status `499` when a response remains deliverable, and public code `request_cancelled`.
@@ -1631,6 +1643,15 @@ Placement-level breaker:
 Operator MAY clear either breaker through Operator API.
 
 Each actually run failed attempt SHALL contribute independently only when its stable failure class is already eligible for the applicable Node-level or placement-level breaker.
+
+Breaker eligibility over the closed §3.7.1 `failure_class` vocabulary is:
+
+* the Node-level breaker SHALL count an attempt failure only when its `failure_class` is `pre_acceptance_unavailable` or `worker_or_node_loss`, which are the dispatch failures its trigger already counts
+* the placement-level breaker SHALL count an attempt failure only when its `failure_class` is `model_load_failure`, which is the load failure its trigger already counts
+* `capacity_rejection`, `runtime_failure`, `terminal_conformance`, `cancellation`, `deadline`, `controller_failure`, `occupancy_unresolved`, and `identity_unresolved` SHALL NOT contribute to either breaker
+* ordinary post-start capacity scarcity is `capacity_rejection` and SHALL NOT suppress a healthy but busy Node or placement
+* an unsuccessful attempt SHALL contribute to at most one breaker
+
 The failure SHALL be attributed to the Node or `(node, model)` placement that produced it.
 Attempt 1 breaker effects SHALL be durable before attempt 2's fresh scheduler decision, and that decision SHALL respect any resulting suppression.
 The retry decision and a declined retry SHALL NOT add a breaker event.
@@ -2490,7 +2511,8 @@ Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and
 Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
 Rejected candidates SHALL include at least one stable rejection reason code.
 Skipped candidates SHALL be represented in `skipped_candidates` outside the rejected-candidate list and SHALL include at least one stable skip reason code.
-The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_degraded`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, `unknown_capacity`, `dispatch_capacity_facts_unavailable`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_phase_policy_mismatch`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, and `dispatch_ceiling_not_approved`.
+The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_degraded`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, `unknown_capacity`, `dispatch_capacity_facts_unavailable`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_phase_policy_mismatch`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, `dispatch_ceiling_not_approved`, and `previous_attempt_node_excluded`.
+`previous_attempt_node_excluded` SHALL be used only for a candidate removed by the §5.5 hard `exclude_node_ids` filter during an Automatic Attempt Retry alternate scheduling decision.
 The scheduler rejection vocabulary SHALL additionally accept every stable capacity reason code when a shared dispatch-capacity evaluation excludes a candidate.
 The initial scheduler skip vocabulary SHALL include `lower_tier_not_considered`, `not_scored_after_selection`, `not_applicable_to_request`, and `candidate_limit_reached`.
 Queue-waitable capacity outcomes SHALL preserve whether the wait reason is live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
@@ -3158,8 +3180,9 @@ Runtime prefix-cache observation semantics:
 
 * Runtime Endpoint Observations SHALL report observe-only aggregate prefix-cache snapshots for loaded runtime/model paths
 * the current gRPC Compatibility Adapter maps those observations to and from `StatusResponse.runtime_prefix_cache_statuses` through the existing `GetStatus` probe
-* `prefix_cache_scoring.ranking_mode` defaults to `:observe_only`; in observe-only mode Orchard MAY issue a bounded `ScorePrefixCache` RPC only for the already-selected candidate, after ranking, and at most once per request
-* when `prefix_cache_scoring.ranking_mode = :tie_only`, Orchard MAY additionally score only the challenger in the leading rank-equivalence group (equal on current ranking elements except final deterministic `node_id`, including any enabled safe-tokenization capable-worker preference), with total scored candidates capped at 2 per request (incumbent + challenger)
+* `prefix_cache_scoring.ranking_mode` defaults to `:observe_only`; in observe-only mode Orchard MAY issue a bounded `ScorePrefixCache` RPC only for the already-selected candidate, after ranking, and at most once per logical request
+* when `prefix_cache_scoring.ranking_mode = :tie_only`, Orchard MAY additionally score only the challenger in the leading rank-equivalence group (equal on current ranking elements except final deterministic `node_id`, including any enabled safe-tokenization capable-worker preference), with total scored candidates capped at 2 per logical request (incumbent + challenger)
+* both caps are per logical request and SHALL span its Inference Attempts; Automatic Attempt Retry SHALL NOT reallocate them, so an alternate-Node attempt SHALL score only within the unconsumed remainder and SHALL preserve deterministic base order fail-open once the request budget is exhausted
 * tie-only mode SHALL NOT introduce top-N scoring, all-candidate scoring, prompt-byte fan-out, token-ID fan-out, or parallel score fan-out
 * omitted or empty `runtime_prefix_cache_statuses` SHALL mean no prefix-cache observation is available
 * omitted, empty, stale, unavailable, or invalid prefix-cache observations SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure

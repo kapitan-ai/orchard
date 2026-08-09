@@ -1,6 +1,6 @@
 ## 1. Contract and planning
 
-- [x] 1.1 Record the accepted retry decision in `docs/decisions/0017-one-request-bounded-alternate-node-retry.md` through merged PR #162
+- [x] 1.1 Record the accepted retry decision in `docs/decisions/0019-one-request-bounded-alternate-node-retry.md` through merged PR #162
 - [x] 1.2 Reconcile Output Commitment, attempt ordering, absolute deadline, quota, queue, exclusion, capacity, breaker, metric, and failure contracts in `SPEC.md`
 - [x] 1.3 Update glossary terms from target language to normative language
 - [x] 1.4 Author this OpenSpec package with proposal, design, and requirement deltas
@@ -36,7 +36,7 @@
 
 ## 5. Closed failure taxonomy and cancellation
 
-- [ ] 5.1 Normalize every failure row in `docs/decisions/0017-one-request-bounded-alternate-node-retry.md` into a closed retry classification
+- [ ] 5.1 Normalize every failure row in `docs/decisions/0019-one-request-bounded-alternate-node-retry.md` into a closed retry classification
 - [ ] 5.2 Require both runtime `retryable: true` and an allowlisted transient code
 - [ ] 5.3 Keep terminal-conformance, persistence, handler, serializer, orchestration, unknown, and deterministic failures non-retryable
 - [ ] 5.4 Apply the attempt 1 decline precedence and the attempt 2 `retry_exhausted` rule with caller cancellation taking precedence
@@ -46,13 +46,15 @@
 
 - [ ] 6.1 Extend scheduler contracts with hard `exclude_node_ids`
 - [ ] 6.2 Filter excluded Node identities before tiering, ranking, scoring, and prefix-cache scoring
-- [ ] 6.3 Record `previous_attempt_node_excluded` in scheduler explanations
+- [ ] 6.3 Record the `SPEC.md` §7.3.5 rejection reason code `previous_attempt_node_excluded` in scheduler explanations
 - [ ] 6.4 Make admitted single-target scheduling fail when its Node is excluded
 - [ ] 6.5 Recheck the selected Node in the orchestrator before dispatch
+- [ ] 6.6 Keep the §7.5.3 `ScorePrefixCache` caps per logical Request so attempt 2 uses only their unconsumed remainder and otherwise ranks fail-open
+- [ ] 6.7 Prove alternate scheduling runs no second compatibility status-probe wave and records `no_alternative_node` on that branch
 
 ## 7. Breaker attribution prerequisite
 
-- [ ] 7.1 Attribute each actual breaker-eligible failure to its producing Node or placement
+- [ ] 7.1 Attribute each actual breaker-eligible failure to its producing Node or placement using the `SPEC.md` §5.10 eligible failure-class mapping, excluding `capacity_rejection`
 - [ ] 7.2 Make attempt 1 breaker effects durable and visible before alternate scheduling
 - [ ] 7.3 Prove retry decisions and declined retries add no breaker events
 - [ ] 7.4 Preserve existing breaker thresholds, windows, suppression durations, and Operator clear behavior
