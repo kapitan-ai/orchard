@@ -2,7 +2,7 @@
 
 `SPEC.md` §11.4 requires Orchard.app and PKG to remain compatible managed lifecycle paths for the same installed roles, paths, launchd labels, and retained state.
 `SPEC.md` §13.1 requires Controller version `N` to support Node Agent versions `N` and `N-1`, while §13.4 makes that historical compatibility safe through Managed Node Agent Handover rather than simultaneous access to one Node Identity Root.
-ADR 0017 records the selected zero-overlap and stage-then-activate decision.
+ADR 0018 records the selected zero-overlap and stage-then-activate decision.
 
 The Node Identity Root contains the Node private key, Node Certificate, enrolled trust state, and stored BEAM Peer Grants.
 An outgoing Node Agent and its replacement must not overlap while using that identity-bearing state.
@@ -38,7 +38,7 @@ A lock descriptor held by either script therefore cannot span direct active-path
 - Automatic Node Agent restart after uncertain state.
 - Support for blind or manual same-root launch while uncertainty remains.
 
-`SPEC.md` §11.2, §11.4, and §13.4 hold the normative contract and ADR 0017 holds the decision kernel.
+`SPEC.md` §11.2, §11.4, and §13.4 hold the normative contract and ADR 0018 holds the decision kernel.
 The sections below cover only the mechanics, state model, risks, and verification those documents imply.
 
 ## Lifecycle State Model

@@ -487,7 +487,7 @@ failure exits:
 Rules:
 
 * `running` means node accepted and worker prefill began
-* `streaming` means at least one token or structured delta has been emitted
+* `streaming` means Output Commitment has occurred through a validated externally meaningful text, tool-call, or structured-output delta
 * `interrupted` is used for controller/process failure after dispatch but before terminal reconciliation
 * once a request row has reached `validated`, scheduler or dispatch orchestration crashes MUST terminalize it as `failed` with durable `error_code = "orchestration_error"` and a sanitized public `internal_error`
 * once terminal, state is immutable
@@ -557,6 +557,35 @@ Each request-step payload SHALL carry:
 * `result`
 
 When applicable, payloads MAY also carry `call_id`, `tool_name`, `arguments_json`, `model_id`, and `model_version`.
+
+One logical Request MAY contain at most two Inference Attempts for its first Inference Turn.
+Those attempts SHALL use `inference_turn:t1:a1` and `inference_turn:t1:a2`, remain under the same Request row and Request FSM, and SHALL NOT repeat admission, quota reservation, idempotency resolution, queue admission, or Payload Capture Mode resolution.
+Attempt 1 terminal evidence SHALL precede attempt 2 started evidence in request-event sequence order.
+A successful attempt SHALL carry no `retry_decision`.
+An unsuccessful attempt 2 SHALL carry `retry_decision = "retry_exhausted"` unless caller cancellation or disconnect caused its terminal outcome, in which case `cancelled` SHALL take precedence.
+Attempt 1 SHALL never carry `retry_exhausted`.
+
+The orchestrator SHALL append exactly one `request_step.started` event for each Inference Attempt.
+Attempt 1 started evidence SHALL be durable before its initial dispatch sequence begins.
+After the final pre-start caller and deadline gate, attempt 2 started evidence SHALL be appended atomically with attempt 1 terminal evidence carrying `retried`.
+The dispatcher SHALL consume that existing attempt context and SHALL NOT append a second started event.
+
+A terminal Inference Attempt result SHALL record `attempt_outcome`, `started_at`, `ended_at`, `accepted`, `output_committed`, `execution_resolution`, `capacity_release_outcome`, and the stable Node identity when resolved.
+The closed `attempt_outcome` vocabulary is `completed`, `failed`, `cancelled`, `timed_out`, and `interrupted`.
+The optional `output_commitment_kind` SHALL be absent when `output_committed = false` and otherwise SHALL be one of `text`, `tool_call`, or `structured_output`.
+The closed `execution_resolution` vocabulary is `not_started`, `terminated`, and `unresolved`.
+The closed `capacity_release_outcome` vocabulary is `released`, `already_released`, `not_applicable`, and `unresolved`.
+The closed `failure_class` vocabulary is `pre_acceptance_unavailable`, `model_load_failure`, `worker_or_node_loss`, `runtime_failure`, `terminal_conformance`, `capacity_rejection`, `cancellation`, `deadline`, `controller_failure`, `occupancy_unresolved`, and `identity_unresolved`.
+A non-completed attempt SHALL carry one `failure_class` and a Controller-normalized stable `failure_code` from the `requests.error_code` vocabulary in §8.2; raw or unknown runtime text SHALL NOT become a failure code or metric label.
+The normalization SHALL retain an allowlisted stable inference Runtime Endpoint code, map a model-load category to its Controller-owned default stable code, map caller disconnect to `request_caller_disconnect`, map logical deadline exhaustion to `request_timeout`, preserve the existing stable `cluster_busy` or `model_busy` public mapping for ordinary post-start capacity scarcity, and map terminal-conformance, unresolved occupancy, unresolved identity, unknown, or untrusted source codes to `internal_error` or `orchestration_error` according to the existing Controller-owned public failure mapping.
+A raw source failure code MAY persist separately only under `full`; it SHALL NOT control retry, public mapping, or metric labels.
+A runtime-provided retryability assertion MAY persist as a boolean only when present.
+The closed `retry_decision` vocabulary is `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `identity_unresolved`, `occupancy_unresolved`, `no_alternative_node`, and `retry_exhausted`.
+A successful attempt SHALL omit `retry_decision`; every unsuccessful attempt SHALL carry one.
+The optional `target_ref` SHALL be an approved stable identifier under `full` or a deterministic hash outside `full`, never a raw target address.
+`excluded_node_ids` SHALL be empty for attempt 1 and SHALL contain exactly attempt 1's durable Node UUID for attempt 2.
+Closed attempt evidence, timestamps, booleans, stable Node UUIDs, and deterministic target hashes SHALL remain durable under `none` and `metadata` after validation.
+Raw runtime messages, content, target addresses, and arguments remain governed by §10.10 and MUST NOT be persisted outside the effective capture policy.
 
 Durable retention of these payload fields is bounded by the Request capture mode in §10.10. Outside `full`, `call_id` persists only as a deterministic hash, the step identifiers derived from it embed that hash, and `tool_name`, `arguments_json`, `model_id`, and `model_version` are not retained.
 
@@ -1051,6 +1080,11 @@ A `pre_cutover` phase with an `enforcing` policy, or an `enforcing` phase with `
 Controller-accounted Allocation SHALL count unique, non-released, Node-scoped logical allocations owned by the current Active Controller.
 Queued requests, unassigned queue grants, configured base lane capacity, Node-reported active request counts, and Placement Capacity telemetry SHALL NOT count as Controller-accounted Allocation.
 One request SHALL acquire at most one allocation on a Node before model loading or execution, retain it through dispatch and running work, and release it exactly once before retrying another Node or after cancellation, pre-acceptance failure, or terminal completion.
+Release SHALL remain idempotent and SHALL report whether the live claim transitioned to released, was already released, was not applicable, or could not be confirmed.
+An unavailable authority, ambiguous release, unresolved cancellation drain, or unavailable quarantine store SHALL report unresolved ownership rather than synthetic success.
+Alternate scheduling and acquisition SHALL begin only after attempt 1 execution is resolved and release is affirmatively `released`, `already_released`, or `not_applicable`.
+Opaque process-local claim tokens SHALL NOT be persisted or transferred between attempts.
+A same-Request held-claim rejection SHALL remain a fail-closed defense against overlapping logical ownership.
 Acquisition of the final unit of Dispatch Headroom SHALL be serialized so two concurrent requests cannot both claim it.
 This F11 accounting contract is Controller-local and SHALL NOT be represented as a durable dispatch permit, leader epoch, Node-verifiable token, crash-recoverable reservation ledger, or proof of actual Node occupancy.
 
@@ -1092,7 +1126,8 @@ Configured base queue capacity and source-scoped lane capacity govern queue flow
 
 While the authority decision is `f11_enforcing`, lowering a Controller Dispatch Ceiling SHALL affect new allocation and pre-acceptance revalidation immediately, SHALL NOT forcibly cancel accepted, running, or streaming work solely because of the reduction, and SHALL leave Dispatch Headroom at `0` while Controller-accounted Allocation is greater than or equal to the lowered Effective Dispatch Limit.
 Accepted, running, and streaming work SHALL finish naturally, and new allocation MAY resume only after Dispatch Headroom becomes positive.
-Pre-acceptance work that no longer passes serialized held-allocation revalidation SHALL release its allocation exactly once and requeue or fail under the existing contract.
+Pre-acceptance work that no longer passes serialized held-allocation revalidation after `request_step.started` SHALL release its allocation effectively once, persist the applicable closed attempt outcome under §5.9, and fail without queue re-entry.
+On attempt 1, ordinary scarcity records `not_retryable`; on attempt 2, every such non-cancellation failure records `retry_exhausted` while preserving its specific failure class.
 While the authority decision is `f11_enforcing`, raising a Controller Dispatch Ceiling SHALL create no allocation by itself, SHALL remain bounded by the current Runtime Concurrency Enforcement Limit and all other eligibility gates, and MAY wake queued work only after shared capacity re-evaluation.
 
 Existing Nodes SHALL migrate through policy states `shadow_legacy`, `approved_explicit`, and `enforcing` in that order.
@@ -1260,13 +1295,18 @@ Admission accounting:
 
   * actual output tokens charged
   * unused reserved output tokens released
-* on failure before first token:
+* on an unsuccessful attempt before Output Commitment:
 
-  * reserved output tokens fully released
-* on partial failure after streaming starts:
+  * the reservation remains held when Automatic Attempt Retry will start
+  * the reservation is fully released only when the logical Request terminalizes without committed output
+* on partial failure after Output Commitment:
 
   * already emitted output tokens remain charged
   * unused reserved output tokens released
+
+Input-token accounting SHALL occur once for the logical Request.
+Attempt 1 SHALL NOT release or reacquire quota when attempt 2 will run.
+Final usage and quota reconciliation SHALL occur exactly once when the logical Request terminalizes, using the terminal attempt under the existing quota policy.
 
 ### 5.4 Queue model
 
@@ -1332,6 +1372,9 @@ A node is eligible only if all conditions are true:
 
 Runtime Endpoint Admission Candidates are never eligible nodes.
 Unresolved, untrusted, rejected, provisioned, registered, or admitted-but-not-active candidates and Nodes SHALL be excluded before candidate tiering and scoring.
+For attempt 2, `exclude_node_ids` SHALL contain attempt 1's stable Node identity and SHALL be applied as a hard eligibility filter before tiering, ranking, scoring, and prefix-cache scoring.
+A different target address for the same Node SHALL NOT satisfy this exclusion.
+An unresolved or mismatched Node identity SHALL fail closed with `identity_unresolved`, and the orchestrator SHALL reject any scheduler result that selects an excluded Node.
 
 Memory eligibility formula:
 
@@ -1463,26 +1506,77 @@ A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It 
 ### 5.8 Scheduling algorithm
 
 ```text
-schedule(req):
-  candidates = filter_eligible_nodes(req)
+run_request(req):
+  initial_schedule = schedule(req, exclude_node_ids = [])
 
-  if candidates.empty?:
-    enqueue_or_reject(req)
+  if initial_schedule is pre_start_busy:
+    requeue_or_terminalize_under_original_queue_deadline(req, initial_schedule)
+  else:
+    attempt_1 = start_and_dispatch_attempt(req, initial_schedule.candidate)
 
-  tiered = pick_best_nonempty_tier(candidates)
-
-  ordered = sort_by_score_then_tie_break(tiered)
-
-  for node in ordered:
-    if dispatch(req, node) == ok:
-      return ok
-    else if failure_before_first_token and retryable:
-      continue
+    if attempt_1 succeeds:
+      terminalize(req, attempt_1)
     else:
-      fail req
+      retry_gates = evaluate_retry_gates_before_alternate_schedule(
+        attempt_1,
+        req.timeout_at
+      )
 
-  enqueue_or_reject(req)
+      if retry_gates decline:
+        terminalize(req, attempt_1)
+      else:
+        alternate_schedule = schedule(
+          req,
+          exclude_node_ids = [attempt_1.node_id]
+        )
+        decision = finalize_retry_decision(attempt_1, alternate_schedule)
+
+        if decision permits retry:
+          attempt_2 = start_and_dispatch_attempt(
+            req,
+            alternate_schedule.candidate
+          )
+          terminalize(req, attempt_2)
+        else:
+          terminalize(req, attempt_1)
 ```
+
+Automatic Attempt Retry is an internal continuation of the same logical Request and SHALL be bounded to one second attempt.
+The Controller SHALL assign `requests.timeout_at` once at Request creation and every scheduling, model-load, execution, cleanup, persistence, and retry action SHALL consume that same absolute deadline.
+Model loading SHALL NOT extend the logical deadline, and a non-positive remaining budget SHALL prevent alternate scheduling or dispatch.
+The same Request ID, canonical payload, body hash, idempotency scope, admission result, queue grant, quota reservation, Payload Capture Mode snapshot, and caller-visible response SHALL span both attempts.
+A duplicate idempotent submission SHALL observe the existing Request as in progress throughout both attempts.
+
+Output Commitment is the transport-independent point at which the Controller validates and observes the first non-empty `OutputTextDelta`, including JSON text used for structured output, any valid `ToolCallDelta` with a stable non-empty tool-call identity, or the first content-bearing future structured-output delta.
+The Controller SHALL record Output Commitment before invoking the public event handler or serializer.
+`Accepted`, `Progress`, `UsageUpdate`, empty text deltas, model-load events, and terminal failures SHALL NOT commit output.
+Once output commits, Orchard SHALL NOT retry even when handler, serializer, or client delivery later fails.
+Validated pre-commit events SHALL remain attempt-local until the retry decision is known.
+When an event establishes Output Commitment, Orchard SHALL deliver all earlier buffered validated events in original order before exposing the committing event downstream.
+When attempt 2 starts, attempt 1 buffered events SHALL be discarded from the logical public response.
+When retry is declined or the final attempt completes without commitment, that final attempt's buffered events SHALL be delivered in original order.
+A handler or serializer failure during a final buffered flush SHALL be a terminal non-retryable orchestration failure.
+`first_token_at` SHALL remain the timestamp of the first non-empty text delta and SHALL NOT be redefined as the generic commitment timestamp.
+
+Retry SHALL fail closed and SHALL require attempt 1, no Output Commitment, remaining deadline, a live caller, resolved first-Node identity, resolved execution, affirmative capacity release, an explicitly retryable failure, and a different eligible Node.
+A structured inference Runtime Endpoint `Failed` event SHALL require both `retryable: true` and one of the allowlisted stable transient codes `node_unavailable`, `node_timeout`, `runtime_unavailable`, `resource_exhausted`, `timeout`, `worker_unavailable`, or `worker_down`.
+Model-load retry eligibility SHALL be based only on the normalized `ModelLoadFailure` category and SHALL be limited to `acquisition_failed`, `runtime_unavailable`, `resource_exhausted`, or `timeout`; a model-load failure code or message SHALL NOT independently authorize retry.
+Unknown classes, unknown codes, deterministic failures, `retryable: false`, terminal-conformance failures, persistence failures, event-handler failures, orchestration failures, unresolved occupancy, and unresolved identity SHALL NOT retry.
+Retry-capable failures are limited to resolved pre-acceptance Node or transport unavailability, the closed transient model-load categories, resolved worker or Node loss before acceptance, and an accepted pre-commit transient failure whose drain proves termination.
+
+The attempt 1 decline precedence SHALL be `output_committed`, `budget_exhausted`, `cancelled`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
+An unsuccessful attempt 2 SHALL record `retry_exhausted` unless caller cancellation or disconnect caused its terminal outcome, in which case it SHALL record `cancelled`; no attempt 2 outcome SHALL trigger a third attempt.
+If no different eligible Node exists, Orchard SHALL start no second attempt, SHALL NOT re-enter the queue or extend a budget, and SHALL preserve attempt 1's stable public failure while recording `no_alternative_node` as internal evidence.
+Attempt 1's stable failure classification SHALL be fixed in its typed outcome, and any breaker-eligible failure effect SHALL be durable before the fresh alternate scheduler decision.
+The alternate scheduler decision is side-effect-free with respect to dispatch.
+Because `no_alternative_node` is part of the terminal attempt evidence, the final attempt 1 terminal event SHALL be appended only after this decision determines whether a different candidate exists.
+After the alternate scheduler decision and before persisting either `no_alternative_node` or the attempt 2 start boundary, Orchard SHALL recheck caller liveness and the absolute deadline so `cancelled` and `budget_exhausted` retain precedence.
+Failure of that post-scheduling gate SHALL terminalize attempt 1 with `cancelled` or `budget_exhausted` and SHALL append no attempt 2 evidence.
+If the gate passes and no candidate exists, Orchard SHALL persist attempt 1 terminal evidence with `no_alternative_node`.
+If the gate passes and a valid different candidate exists, Orchard SHALL atomically append attempt 1 terminal evidence with `retried` and attempt 2 started evidence.
+After the atomic append and immediately before any attempt 2 dispatch side effect, Orchard SHALL recheck caller liveness and the absolute deadline to close the transaction-to-dispatch race.
+Caller cancellation or disconnect at that post-start gate SHALL terminalize attempt 2 as `cancelled`; deadline exhaustion SHALL terminalize attempt 2 as `timed_out` with `retry_exhausted`; neither outcome SHALL dispatch or start a third attempt.
+The effective Payload Capture Mode SHALL resolve before the first Request write and SHALL apply unchanged to every attempt.
 
 ### 5.9 Dispatch rules
 
@@ -1491,22 +1585,33 @@ A production candidate snapshot is selection evidence, not a dispatch permit. Pr
 Dispatch sequence:
 
 1. reserve request in request FSM (`scheduled`)
-2. resolve trusted admitted production inventory and identity before applying configured classification, then consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots; `fail_closed` SHALL NOT proceed to `ExecuteInference`
-3. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
-4. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks against the latest durable observation and current Controller-owned facts; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
-5. if revalidation fails, release the allocation exactly once and requeue or fail under the existing queue deadline and public error contract
-6. call `ExecuteInference`
-7. wait for `accepted` while retaining the Node acceptance gate, or treat failure before `accepted` as pre-acceptance failure
-8. after `accepted`, release the acceptance gate, retain the allocation or temporary legacy claim through terminal completion, and transition request to `running`
+2. confirm that the orchestrator has appended exactly one `request_step.started` event for the selected Inference Attempt; the dispatcher SHALL NOT append another
+3. resolve trusted admitted production inventory and identity before applying configured classification, then consume the shared capacity authority decision; under `f11_enforcing`, atomically acquire or recognize exactly one Node-scoped Controller allocation under Dispatch Headroom, while under `legacy_pre_cutover`, acquire or recognize exactly one serialized Node-scoped temporary legacy claim under the centrally calculated slots; `fail_closed` SHALL NOT proceed to `ExecuteInference`
+4. if placement not `loaded`, call `EnsureModelLoaded` while retaining the allocation
+5. after load and immediately before execution, acquire the Node acceptance gate and re-run the same authority decision and Placement Capacity checks against the latest durable observation and current Controller-owned facts; `f11_enforcing` SHALL revalidate the recognized pre-acceptance allocation after excluding only that allocation from the allocation operand, while `legacy_pre_cutover` SHALL revalidate the recognized temporary claim after excluding only that claim from the claimed-allocation operand
+6. if acquisition, the acceptance gate, or revalidation fails, release the allocation effectively once, persist the applicable closed attempt outcome from the retry rule below, and fail without queue re-entry
+7. call `ExecuteInference`
+8. wait for `accepted` while retaining the Node acceptance gate, or treat failure before `accepted` as pre-acceptance failure
+9. after `accepted`, release the acceptance gate, retain the allocation or temporary legacy claim through terminal completion, and transition request to `running`
+
+Only scheduler `cluster_busy` and `model_busy` outcomes that occur before this dispatch sequence and before `request_step.started` MAY use the existing same-lane requeue path.
 
 For an initially cold explicitly unmanaged compatibility candidate, final revalidation SHALL consume valid matching Placement Capacity from the successful `EnsureModelLoaded` result while preserving the captured target and resolved Node identity, aggregate capacity, availability, health, observation time and freshness behavior, and explicit unmanaged classification. Missing, malformed, zero-maximum, invalid-model-reference, or model-mismatched post-load evidence SHALL fail closed before `ExecuteInference` under the existing revalidation failure contract and SHALL NOT cause another status attempt. For an initially loaded compatibility candidate, an absent additive load-result field SHALL NOT replace or invalidate captured valid matching Placement Capacity; valid newer matching evidence MAY replace it. Production snapshot revalidation remains governed by the latest durable observation and current Controller-owned facts.
 
 Retry rule:
 
-* automatic retry at most **once**
-* only if failure occurs **before first token emitted**
-* retry must choose a different node if one exists
-* after first token, no automatic retry
+* automatic retry occurs at most once and produces only attempt 2
+* retry is allowed only before Output Commitment and within the original absolute Request deadline
+* attempt 2 performs a fresh scheduler decision with hard exclusion of attempt 1's durable Node identity
+* attempt 2 acquisition SHALL occur only after attempt 1 execution and capacity ownership are affirmatively resolved
+* every post-`request_step.started` capacity acquisition, acceptance-gate, or revalidation rejection is an attempt outcome and SHALL NOT re-enter the queue
+* on attempt 1, ordinary post-start capacity scarcity records `not_retryable`, held-claim or quarantine uncertainty records `occupancy_unresolved`, and unresolved identity records `identity_unresolved`
+* on either attempt, caller disconnect records `cancelled`
+* on attempt 2, every other unsuccessful post-start capacity outcome records `retry_exhausted` while preserving its specific failure class and code
+* no different eligible Node preserves the original public failure and records `no_alternative_node`
+
+Caller disconnect SHALL map consistently across pre-dispatch, capacity-gate, and runtime-drain phases to Request state `cancelled`, attempt event `request_step.cancelled` after an attempt starts, durable code `request_caller_disconnect`, retry decision `cancelled`, HTTP status `499` when a response remains deliverable, and public code `request_cancelled`.
+Controller or process failure without caller cancellation SHALL remain `interrupted`.
 
 Runtime Endpoint disconnect and channel cleanup failures are cleanup-only failures.
 They SHALL be logged best-effort and MUST NOT overwrite an otherwise successful candidate evaluation, bounded compatibility probe, or dispatch result.
@@ -1524,6 +1629,12 @@ Placement-level breaker:
 * effect: suppress cold/warm load on that node for 15 minutes
 
 Operator MAY clear either breaker through Operator API.
+
+Each actually run failed attempt SHALL contribute independently only when its stable failure class is already eligible for the applicable Node-level or placement-level breaker.
+The failure SHALL be attributed to the Node or `(node, model)` placement that produced it.
+Attempt 1 breaker effects SHALL be durable before attempt 2's fresh scheduler decision, and that decision SHALL respect any resulting suppression.
+The retry decision and a declined retry SHALL NOT add a breaker event.
+This attempt accounting SHALL NOT change breaker thresholds, windows, suppression durations, or the Operator clear path.
 
 ---
 
@@ -2210,6 +2321,7 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `409` idempotency conflict
 * `429` quota exceeded or queue full
 * `503` cluster busy / model busy / no eligible node
+* `499` caller cancelled or disconnected when a response remains deliverable
 * `504` request timeout
 
 ---
@@ -4004,9 +4116,21 @@ Required metric families:
 
 * `orchard_inference_requests_total{endpoint,tenant,model,status}`
 * `orchard_inference_request_duration_seconds_bucket{tenant,model,status}`
+* `orchard_inference_attempts_total{attempt,outcome,failure_class}`
+* `orchard_inference_attempt_duration_seconds_bucket{attempt,outcome}`
+* `orchard_inference_retries_total{reason,result}`
 * `orchard_input_tokens_total{tenant,model}`
 * `orchard_output_tokens_total{tenant,model}`
 * `orchard_decode_tokens_per_second_bucket{model,node}`
+
+Logical Request metrics SHALL count admission, quota, tokens, public outcome, and Request duration once per Request.
+Attempt metrics SHALL count every started attempt.
+For `orchard_inference_attempts_total`, `attempt` SHALL be `1` or `2`, `outcome` SHALL use the closed `attempt_outcome` vocabulary in §3.7.1, and `failure_class` SHALL use the closed §3.7.1 failure vocabulary for non-completed attempts or the metric-only value `none` for completed attempts.
+`orchard_inference_retries_total` SHALL emit exactly once for each Request whose attempt 1 records a retry decision.
+Its closed `reason` vocabulary SHALL be `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `identity_unresolved`, `occupancy_unresolved`, or `no_alternative_node`, and its closed `result` vocabulary SHALL be `succeeded`, `failed`, or `declined`.
+`reason = "retried"` SHALL pair only with `result` of `succeeded` or `failed`; each attempt 1 decline reason SHALL pair only with `result = "declined"`; `retry_exhausted` SHALL never label this counter.
+A retried Request whose attempt 2 does not complete SHALL emit `result = "failed"`, including cancelled and timed-out attempt 2 outcomes.
+Metric labels SHALL use closed vocabularies and SHALL NOT contain Request IDs, Node IDs, target addresses, claim tokens, or arbitrary runtime codes.
 
 **Scheduler**
 
@@ -4707,8 +4831,9 @@ Detection:
 Behavior:
 
 * scheduler immediately excludes node
-* active requests on node marked `interrupted` if stream already started
-* if failure before first token and retryable, controller retries once on another node
+* after Output Commitment, an affected Request terminalizes as `failed` through the stable Node-loss mapping and SHALL NOT use Automatic Attempt Retry
+* before Output Commitment, the Controller applies the closed execution-resolution, capacity-release, identity, deadline, caller, and failure-taxonomy gates and retries at most once only when every gate passes
+* controller or process failure after dispatch remains the sole owner of Request state `interrupted` under §3.6
 * node remains in lifecycle state but health becomes `unreachable`
 
 Recovery:
@@ -4722,7 +4847,7 @@ Recovery:
 Behavior:
 
 * node agent marks affected worker `failed`
-* in-flight request fails or retries if no token emitted
+* an in-flight Request fails or retries at most once only when no Output Commitment occurred and execution resolution, deadline, capacity release, identity, and failure classification satisfy the closed retry gates
 * worker restart backoff:
 
   * 1s, 2s, 4s, 8s, 16s, capped 30s
@@ -4743,7 +4868,7 @@ Behavior:
 * `EnsureModelLoaded` returns failure code and message
 * placement state -> `failed`
 * request fails if no alternate candidate exists
-* if alternate node exists and no token emitted, retry once
+* if a different eligible Node exists and the transient load failure satisfies every closed retry gate before Output Commitment, retry once within the original deadline
 
 Common error codes:
 
@@ -4755,7 +4880,9 @@ Common error codes:
 
 ### 12.4 Request timeout
 
-Controller SHALL assign `timeout_at` at admission.
+Controller SHALL assign `timeout_at` once at Request creation during admission.
+Queueing, scheduling, model loading, attempt 1, cleanup, evidence persistence, alternate scheduling, and attempt 2 SHALL share that absolute deadline.
+Model-load and execution deadlines SHALL be capped by the remaining time and SHALL NOT extend `timeout_at`.
 
 On timeout:
 
@@ -4800,9 +4927,11 @@ The system SHALL guarantee:
 
 * no request is terminal in two different states
 * no node in non-`active` lifecycle state receives new work
-* no auto-retry occurs after first token emitted
+* no auto-retry occurs after Output Commitment
+* caller disconnect prevents retry and terminalizes as cancelled under the unified public mapping
+* no alternate capacity is acquired while attempt 1 execution or release remains unresolved
 * no pinned placement is auto-evicted
-* quota reservations are always released on terminal reconciliation
+* quota reservations are always released on terminal reconciliation and never between attempts
 
 ---
 
@@ -4996,14 +5125,17 @@ Deliver:
 * queueing
 * model placements
 * `EnsureModelLoaded`
-* retries before first token
+* bounded Automatic Attempt Retry before Output Commitment
 * scheduler explanation endpoint
 
 Acceptance:
 
 * requests land on best loaded node
 * cached/cold tier behavior works
-* automatic retry before first token works once
+* Automatic Attempt Retry performs at most one second attempt on a different Node before Output Commitment, within one absolute deadline, with release-before-acquire ordering and durable attempt evidence
+* text, tool-call identity, and structured-output commitment prevent retry while empty text and control events do not
+* admission, idempotency, quota reservation, logical Request metrics, and capture policy remain exactly once per Request
+* each started attempt records bounded evidence, breaker attribution, and attempt metrics without high-cardinality metric labels
 * scheduler explanation matches actual decision
 
 ### Milestone 5 - Observability and diagnostics

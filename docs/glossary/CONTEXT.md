@@ -324,12 +324,12 @@ _Avoid_: Request, queue re-entry, Operator Retry
 **Output Commitment**:
 The irreversible point at which the Controller observes the first externally meaningful inference output for a Request: a non-empty text or structured-output delta, or any tool-call delta carrying its stable tool-call identity.
 Accepted, progress, usage, empty text, and other control events do not create Output Commitment.
-`SPEC.md` still states this boundary as "first token", so Output Commitment is target language until that reconciliation lands.
+This boundary is normative in `SPEC.md` and applies identically to streaming and non-streaming requests.
 _Avoid_: first network byte, Runtime Endpoint acceptance, first token only
 
 **Automatic Attempt Retry**:
 The single Controller-initiated second Inference Attempt allowed before Output Commitment for an explicitly retryable first-attempt failure, under the original Request identity and budgets, and only on a different eligible Node.
-Its bound, fail-closed gating, and commitment boundary are target language until `SPEC.md` §§5.8-5.9 are reconciled.
+Its two-attempt bound, fail-closed gates, hard prior-Node exclusion, and original-deadline rule are normative in `SPEC.md` §§5.8-5.9.
 _Avoid_: queue re-entry, Operator Retry, cohort retry, same-Node redispatch
 
 **Tool Call**:
