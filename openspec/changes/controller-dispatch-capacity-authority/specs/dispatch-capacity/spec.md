@@ -212,7 +212,7 @@ This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
 #### Scenario: Two requests race for one unit
 - **WHEN** two concurrent requests attempt to acquire the final unit of Dispatch Headroom on one Node
 - **THEN** exactly one request acquires the allocation
-- **AND** the other request waits, retries, or fails under the existing queue contract
+- **AND** the other started attempt persists a non-retryable outcome and fails without queue re-entry
 
 #### Scenario: Node occupancy telemetry is malformed
 - **WHEN** Node-reported aggregate active-request telemetry is missing or malformed
@@ -229,7 +229,7 @@ This requirement traces to `SPEC.md` §4.5, §4.6.2, §5.4, §5.5, and §5.9.
 - **THEN** Orchard does not call `ExecuteInference`
 - **AND** Orchard excludes only that request's recognized allocation from the serialized allocation operand during revalidation
 - **AND** Orchard releases the allocation exactly once
-- **AND** Orchard requeues or fails under the existing deadline and public error contract
+- **AND** Orchard persists the applicable closed attempt outcome under the Automatic Attempt Retry contract and fails without queue re-entry under the existing deadline and public error contract
 
 ### Requirement: Atomic Admission Policy Persistence
 Every new Node Admission SHALL lock and read the durable authority phase and atomically persist the admission transition, admission decision, cluster audit evidence, and phase-derived dispatch-capacity policy.

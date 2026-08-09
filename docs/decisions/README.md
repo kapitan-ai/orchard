@@ -23,4 +23,4 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence ends with [ADR 0017: Managed Node Agent handover uses zero process overlap](0017-managed-node-agent-handover.md).
+The current sequence ends with [ADR 0019: Automatic inference retry is one fail-closed alternate-node attempt within the original Request](0019-one-request-bounded-alternate-node-retry.md).

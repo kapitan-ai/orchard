@@ -1,6 +1,6 @@
 ## Why
 
-`SPEC.md` §11.4 and §13.4 and ADR 0017 establish the zero-overlap contract for managed Node Agent replacement.
+`SPEC.md` §11.4 and §13.4 and ADR 0018 establish the zero-overlap contract for managed Node Agent replacement.
 Orchard.app and PKG both manage the same launchd service, installed state, and Node Identity Root, so active handover needs one shared exclusion and recovery contract.
 Without that contract, outgoing and replacement Node Agent processes could overlap on identity-bearing state even though Controller `N` supports Node Agent versions `N` and `N-1`.
 Apple Installer also separates package scripts from payload placement, so PKG needs inert staging before one continuously owned active handover.
@@ -45,7 +45,7 @@ Apple Installer also separates package scripts from payload placement, so PKG ne
 - SPEC.md impact: this change updates §11.2, §11.4, and §13.4 with the orthogonal lifecycle state model, reboot-safe Node Agent start suppression through persistent launchd job-domain disablement, the owner-side and child-side split of the exclusion boundary, the lock-held managed stop protocol, per-entry-state start dispatch, the observable one-shot matching predicate and provisional child phase, authenticated single-generation PKG delivery, single-owner crash-released exclusion, pre-`bootout` process capture, required durable recovery evidence, verify-or-establish start preconditions, manual PKG start, unconditional Orchard.app rollback, managed recovery, and historical-version serialization.
 - Domain impact: the glossary's Packaging, Trust, and Operations section defines Managed Lifecycle Exclusion Boundary, Inactive Incoming Staging Root, Managed Node Agent Start Eligibility State, One-shot Launch Authorization, Provisional Node Agent Instance, Managed Lifecycle Evidence, Managed Node Agent Process Fence, Managed Node Agent Recovery, BEAM Peer Grant Store Lock, and Node Identity Root Lease, and refines Managed Node Agent Handover, while Topology keeps Node Agent and Node Identity Root.
 - Operator impact: `orchardctl stop` becomes an owner-side protocol path rather than a bare launchd unload, so it acquires the canonical lock and leaves the Node Agent durably suppressed.
-- Decision impact: ADR 0017 records the accepted stage-then-activate and single-owner design and corrects ADR 0012 attribution.
+- Decision impact: ADR 0018 records the accepted stage-then-activate and single-owner design and corrects ADR 0012 attribution.
 - Packaging impact: implementation must move Installer-managed payload out of active paths, bind activation to one immutable or equivalently identity-stable unique staging generation, revalidate before activation, make `postinstall` invoke one privileged active handover owner, and keep `preinstall` non-disruptive.
 - Availability impact: PKG staging does not interrupt the running Node Agent, active handover incurs a bounded interruption, and durable suppression plus crash-invalid one-shot authorization keeps successful PKG installs and uncertain start attempts stopped across reboot and launchd retries until verified enablement.
 - Recovery impact: timeout, owner death, missing or incomplete evidence, and uncertain state require the applicable managed lifecycle to reestablish coherence under the shared exclusion boundary.

@@ -184,12 +184,13 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
     assert {:ok, snapshot} =
              snapshot([first_target, second_target], [first_target, second_target])
 
-    assert Enum.map(snapshot.candidates, &{&1.node.id, &1.heartbeat_id, &1.observed_at}) == [
-             {first_node.id, latest.id, @now},
-             {second_node.id, second.id, earlier}
-           ]
-
-    assert Enum.map(snapshot.candidates, & &1.active_request_count) == [3, 2]
+    assert Map.new(
+             snapshot.candidates,
+             &{&1.node.id, {&1.heartbeat_id, &1.observed_at, &1.active_request_count}}
+           ) == %{
+             first_node.id => {latest.id, @now, 3},
+             second_node.id => {second.id, earlier, 2}
+           }
   end
 
   test "ADR 0017 removed targets are absent and reconfigured identities are rejected" do

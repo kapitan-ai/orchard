@@ -114,7 +114,7 @@ Queued requests, unassigned queue grants, configured lane capacity, Runtime Endp
 The final unit of headroom must be serialized so concurrent requests cannot both acquire it.
 Dispatch Headroom authorizes acquisition of a new allocation only.
 For revalidation before Node acceptance, the same shared evaluation serializes with allocation changes, excludes only the request's recognized allocation from the allocation operand, and requires the resulting value to be positive without counting that claim twice.
-If the held allocation no longer fits, dispatch releases it exactly once and requeues or fails under the existing contract.
+If the held allocation no longer fits, dispatch releases it effectively once, persists the applicable closed attempt outcome under the Automatic Attempt Retry contract, and fails without queue re-entry under the existing deadline and public error contract.
 A request already accepted by the Node, running, or streaming is not forcibly cancelled solely because a ceiling is lowered.
 
 One Controller-local acceptance gate exists per admitted production Node.
