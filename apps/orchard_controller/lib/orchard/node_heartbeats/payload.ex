@@ -14,6 +14,8 @@ defmodule Orchard.NodeHeartbeats.Payload do
   @model_ref_limit 160
   @status_limit 80
   @uint32_max 4_294_967_295
+  @uint64_max 18_446_744_073_709_551_615
+  @worker_crash_entry_limit 4
 
   @availability_values ~w(available unavailable degraded unknown)
   @worker_state_values ~w(starting idle busy stopping failed stopped unknown)
@@ -109,6 +111,8 @@ defmodule Orchard.NodeHeartbeats.Payload do
             value(observation, :runtime_prefix_cache_statuses),
             &PrefixCacheStatus.normalize/1
           ),
+        "worker_crash_counters" =>
+          normalize_worker_crash_counters(value(observation, :worker_crash_counters)),
         "supports_prompt_token_ids" => value(observation, :supports_prompt_token_ids) == true
       }
     else
@@ -424,6 +428,34 @@ defmodule Orchard.NodeHeartbeats.Payload do
   defp normalize_last_used_at(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
   defp normalize_last_used_at(value) when is_binary(value), do: bounded_binary(value)
   defp normalize_last_used_at(_value), do: nil
+
+  defp normalize_worker_crash_counters(entries) when is_list(entries) do
+    entries
+    |> Enum.take(@worker_crash_entry_limit)
+    |> Enum.flat_map(&normalize_worker_crash_counter/1)
+  end
+
+  defp normalize_worker_crash_counters(_entries), do: []
+
+  defp normalize_worker_crash_counter(entry) when is_map(entry) do
+    model_id = value(entry, :model_id)
+    count = value(entry, :count)
+    counter_version = value(entry, :counter_version)
+
+    if valid_worker_crash_string?(model_id) and count in 0..@uint64_max and
+         valid_worker_crash_string?(counter_version) do
+      [%{"model_id" => model_id, "count" => count, "counter_version" => counter_version}]
+    else
+      []
+    end
+  end
+
+  defp normalize_worker_crash_counter(_entry), do: []
+
+  defp valid_worker_crash_string?(value) do
+    is_binary(value) and value != "" and String.valid?(value) and
+      byte_size(value) <= @string_limit_bytes
+  end
 
   defp normalize_entries(entries, normalizer) when is_list(entries) do
     entries

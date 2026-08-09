@@ -335,6 +335,27 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   end
 
   describe "missing metadata from old node-agent" do
+    test "SPEC.md §9.1 warm already-loaded checks do not emit model load duration", ctx do
+      ref = attach_model_load_metric()
+
+      configure_stub(%{
+        status: {:ok, old_agent_status()},
+        ensure_model_loaded:
+          {:ok,
+           %Operation.EnsureModelLoadedResult{
+             already_loaded: true,
+             placement_state: :loaded
+           }}
+      })
+
+      assert {:ok, _events} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      refute_receive {^ref, _measurements, _metadata}
+    end
+
     test "dispatch succeeds and keeps original node_id", ctx do
       configure_stub(%{status: {:ok, old_agent_status()}})
 
@@ -856,6 +877,29 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
       assert marked.health == :degraded
     end
+  end
+
+  defp attach_model_load_metric do
+    if Process.whereis(Orchard.Metrics.Supervisor) == nil do
+      start_supervised!(Orchard.Metrics.Supervisor)
+    end
+
+    owner = self()
+    ref = make_ref()
+    handler_id = {__MODULE__, ref}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:orchard, :metrics, :model_load_duration],
+        fn _event, measurements, metadata, _config ->
+          send(owner, {ref, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    ref
   end
 
   describe "repo-off during probe observation" do

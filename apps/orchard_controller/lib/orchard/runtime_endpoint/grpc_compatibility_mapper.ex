@@ -46,6 +46,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
       hosted_tool_readiness: list_value(response, :hosted_tool_readiness),
       runtime_memory_budgets: list_value(response, :runtime_memory_budgets),
       runtime_prefix_cache_statuses: list_value(response, :runtime_prefix_cache_statuses),
+      worker_crash_counters: list_value(response, :worker_crash_counters),
       supports_prompt_token_ids: value(response, :supports_prompt_token_ids) == true
     })
   end

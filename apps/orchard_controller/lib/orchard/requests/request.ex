@@ -92,6 +92,20 @@ defmodule Orchard.Requests.Request do
   @spec active_states() :: [atom()]
   def active_states, do: @states -- @terminal_states
 
+  @doc """
+  Returns the canonical model identifier carried by a persisted `requested_model`.
+
+  `requested_model` is persisted as `"<model_id>@<version>"`, so consumers that
+  need the canonical `model_id` (labels, comparisons against Runtime Endpoint
+  placements) must strip the version suffix rather than use the raw value.
+  """
+  @spec canonical_model_id(String.t()) :: String.t()
+  def canonical_model_id(requested_model) when is_binary(requested_model) do
+    requested_model
+    |> String.split("@", parts: 2)
+    |> List.first()
+  end
+
   @spec create_changeset(struct(), map()) :: Ecto.Changeset.t()
   def create_changeset(request, attrs) do
     request

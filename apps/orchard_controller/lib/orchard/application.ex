@@ -65,6 +65,7 @@ defmodule Orchard.Application do
     |> maybe_add_membership_owner()
     |> maybe_add_activation_probe()
     |> maybe_add_inference_stack()
+    |> maybe_add_metrics()
     |> add_pubsub_and_coordinator()
     |> maybe_add_endpoint()
   end
@@ -217,6 +218,19 @@ defmodule Orchard.Application do
   defp peer_grant_control_mode? do
     config = Application.get_env(:orchard_controller, :beam_peer_grants, [])
     Keyword.get(config, :enabled, false) and Keyword.get(config, :mode) == :grant_control
+  end
+
+  defp maybe_add_metrics(children) do
+    if Application.get_env(:orchard_controller, :start_metrics, true) and
+         not peer_grant_control_mode?() do
+      children ++ [{Orchard.Metrics.Bootstrap, metrics_options()}]
+    else
+      children
+    end
+  end
+
+  defp metrics_options do
+    Application.get_env(:orchard_controller, :metrics, [])
   end
 
   defp add_pubsub_and_coordinator(children) do

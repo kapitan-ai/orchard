@@ -10,6 +10,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.CanonicalRequest
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.DomainMetrics
   alias Orchard.Inference
 
   alias Orchard.Inference.{
@@ -51,6 +52,16 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   @spec execute(CanonicalRequest.t(), map(), keyword()) :: execute_result()
   def execute(%CanonicalRequest{} = canonical, model, opts \\ []) do
+    previous_started_at = Process.put({__MODULE__, :metrics_started_at}, System.monotonic_time())
+
+    try do
+      do_execute(canonical, model, opts)
+    after
+      restore_metrics_started_at(previous_started_at)
+    end
+  end
+
+  defp do_execute(canonical, model, opts) do
     event_handler = Keyword.get(opts, :event_handler)
     caller = Keyword.get(opts, :caller, self())
     success_persistence = Keyword.get(opts, :success_persistence)
@@ -66,6 +77,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
          :ok <- put_request_validated_context(canonical),
          {:ok, db_request} <- persist_request(canonical, model, idempotency) do
       put_request_persisted_context(db_request, canonical)
+
+      DomainMetrics.input_accounted(
+        canonical.tenant_id,
+        canonical.model_ref.model_id,
+        canonical.input_token_count
+      )
 
       start_and_dispatch(
         db_request,
@@ -229,10 +246,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp handle_dispatch_pipeline_result(
          {:error, {:admission_already_terminalized, reason}},
-         _db_request,
+         db_request,
          _terminal_persister
-       ),
-       do: {:error, reason}
+       ) do
+    DomainMetrics.scheduler_rejection(reason)
+    emit_terminal_metrics(db_request, terminal_status_for_queue_reason(reason))
+    {:error, reason}
+  end
 
   defp handle_dispatch_pipeline_result({:error, reason}, db_request, terminal_persister) do
     fail_and_return_error(db_request, reason, nil, terminal_persister)
@@ -386,18 +406,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
          already_terminal?
        ) do
     if already_terminal? or terminal_request?(db_request.id) do
+      maybe_emit_tenant_quota_rejection(db_request, metadata, :request_caller_disconnect)
       {:error, {:admission_already_terminalized, terminal_queue_reason(db_request.id)}}
     else
       persist_queue_terminal_metadata(db_request, metadata, :request_caller_disconnect)
     end
   end
 
-  defp handle_queue_await_error(db_request, _metadata, _reason, true) do
+  defp handle_queue_await_error(db_request, metadata, reason, true) do
+    maybe_emit_tenant_quota_rejection(db_request, metadata, reason)
     {:error, {:admission_already_terminalized, terminal_queue_reason(db_request.id)}}
   end
 
   defp handle_queue_await_error(db_request, metadata, reason, false) do
     if terminal_request?(db_request.id) do
+      maybe_emit_tenant_quota_rejection(db_request, metadata, reason)
       {:error, {:admission_already_terminalized, terminal_queue_reason(db_request.id)}}
     else
       persist_queue_terminal_metadata(db_request, metadata, reason)
@@ -406,8 +429,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp persist_queue_terminal_metadata(db_request, metadata, reason) do
     case Requests.record_schedule(db_request, metadata) do
-      {:ok, _request} -> {:error, reason}
-      {:error, persist_reason} -> {:error, {:queue_metadata_persist_failed, persist_reason}}
+      {:ok, _request} ->
+        maybe_emit_tenant_quota_rejection(db_request, metadata, reason)
+        {:error, reason}
+
+      {:error, persist_reason} ->
+        {:error, {:queue_metadata_persist_failed, persist_reason}}
     end
   end
 
@@ -1246,6 +1273,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          ) do
       {:ok, _updated} ->
         advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
+        emit_terminal_metrics(db_request, terminal_attrs.state, terminal_attrs, canonical)
         {:ok, canonical, events}
 
       {:error, reason} ->
@@ -1271,6 +1299,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
          ) do
       {:ok, _request} ->
         advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
+        DomainMetrics.scheduler_rejection(reason)
+        emit_terminal_metrics(db_request, terminal_attrs.state, terminal_attrs)
         :ok
 
       {:error, persist_reason} ->
@@ -1868,6 +1898,70 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
+
+  defp maybe_emit_tenant_quota_rejection(db_request, metadata, :queue_timeout) do
+    queue_wait_reason =
+      Map.get(metadata, :queue_wait_reason) || Map.get(metadata, "queue_wait_reason")
+
+    if queue_wait_reason in [:tenant_active_capacity, "tenant_active_capacity"] do
+      DomainMetrics.quota_rejection(db_request.tenant_id, :tenant_concurrency)
+    end
+
+    :ok
+  end
+
+  defp maybe_emit_tenant_quota_rejection(_db_request, _metadata, _reason), do: :ok
+
+  defp emit_terminal_metrics(db_request, status, attrs \\ %{}, canonical \\ nil) do
+    DomainMetrics.inference_terminal(
+      db_request.endpoint,
+      db_request.tenant_id,
+      terminal_model_id(db_request, canonical),
+      status,
+      request_duration_seconds(),
+      terminal_output_tokens(attrs, db_request)
+    )
+  end
+
+  defp terminal_model_id(_db_request, %CanonicalRequest{} = canonical),
+    do: canonical.model_ref.model_id
+
+  defp terminal_model_id(db_request, nil) do
+    get_in(db_request.canonical_request, ["model_ref", "model_id"]) ||
+      Request.canonical_model_id(db_request.requested_model)
+  end
+
+  defp terminal_output_tokens(attrs, db_request) do
+    case Map.get(attrs, :output_tokens, db_request.output_tokens) do
+      tokens when is_integer(tokens) and tokens >= 0 -> tokens
+      _other -> 0
+    end
+  end
+
+  defp request_duration_seconds do
+    case Process.get({__MODULE__, :metrics_started_at}) do
+      started_at when is_integer(started_at) ->
+        System.monotonic_time()
+        |> Kernel.-(started_at)
+        |> System.convert_time_unit(:native, :nanosecond)
+        |> Kernel./(1_000_000_000)
+
+      _missing ->
+        0.0
+    end
+  end
+
+  defp terminal_status_for_queue_reason(:queue_timeout), do: :timed_out
+  defp terminal_status_for_queue_reason(:request_caller_disconnect), do: :cancelled
+  defp terminal_status_for_queue_reason(:request_controller_restarted), do: :interrupted
+  defp terminal_status_for_queue_reason(_reason), do: :failed
+
+  defp restore_metrics_started_at(nil), do: Process.delete({__MODULE__, :metrics_started_at})
+
+  defp restore_metrics_started_at(previous_started_at) do
+    Process.put({__MODULE__, :metrics_started_at}, previous_started_at)
+    :ok
+  end
 
   defp log_warn(message) do
     require Logger

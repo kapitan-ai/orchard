@@ -138,6 +138,15 @@ message RuntimeModelPlacement {
   uint32 max_concurrency = 3;
 }
 
+// Bounded process-lifetime monotonic crash count for one model identifier.
+// counter_version is controller-internal deduplication state and is never a
+// Prometheus label.
+message WorkerCrashCounter {
+  string model_id = 1;
+  uint64 count = 2;
+  string counter_version = 3;
+}
+
 // M1 assumes one effective worker/runtime path per node for the single-node MVP.
 // Fields 4-5 added for persistent node inventory (M3a Session 1).
 message StatusResponse {
@@ -156,6 +165,7 @@ message StatusResponse {
   // Aggregate runtime request capacity for the node. Controllers must treat
   // absent or zero values as node capacity 1.
   uint32 max_concurrency = 12;
+  repeated WorkerCrashCounter worker_crash_counters = 13;
 }
 
 message EnsureModelLoadedRequest {

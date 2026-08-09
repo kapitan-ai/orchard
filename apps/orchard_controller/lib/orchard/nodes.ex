@@ -80,7 +80,7 @@ defmodule Orchard.Nodes do
   alias Orchard.DispatchCapacity
   alias Orchard.DispatchCapacity.Authorization
   alias Orchard.Governance
-  alias Orchard.Governance.AuditLog
+  alias Orchard.Governance.{AuditLog, AuditWriter}
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Enrollment, Node}
   alias Orchard.Nodes.ToolCapability
   alias Orchard.Nodes.ToolReadiness
@@ -648,7 +648,7 @@ defmodule Orchard.Nodes do
 
   defp admit_node_with_policy_gate(node_id, attrs, opts) do
     DispatchCapacity.with_policy_mutation_gate(node_id, fn ->
-      Repo.transaction(fn -> admit_node_locked(node_id, attrs, opts) end)
+      AuditWriter.transaction(fn -> admit_node_locked(node_id, attrs, opts) end)
     end)
     |> unwrap_transaction_result()
   end
@@ -836,6 +836,7 @@ defmodule Orchard.Nodes do
     case result do
       {:ok, node} ->
         refresh_observed_queue_capacities(target, node, status_response, opts)
+        observe_worker_crashes(trusted_node_id, status_response, opts)
         {:ok, node}
 
       {:noop, :out_of_order} ->
@@ -845,6 +846,15 @@ defmodule Orchard.Nodes do
         clear_dispatch_capacity_sources(trusted_node_id, opts)
         :noop
     end
+  end
+
+  defp observe_worker_crashes(node_id, status_response, opts) do
+    observer = Keyword.get(opts, :worker_crash_observer, Orchard.Metrics.WorkerCrashDeduplicator)
+    observer.observe(node_id, Map.get(status_response, :worker_crash_counters, []))
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   @doc """
@@ -2006,7 +2016,7 @@ defmodule Orchard.Nodes do
   defp do_reject_admission(lock_target, attrs, opts) do
     attrs = normalize_attrs(attrs)
 
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, target} <- lock_target.(),
            {:ok, reason} <- required_reason(attrs),
            {:ok, candidate} <- reject_admission_target(target),
@@ -2030,7 +2040,7 @@ defmodule Orchard.Nodes do
   defp do_clear_admission_rejection(lock_candidate, attrs, opts) do
     attrs = normalize_attrs(attrs)
 
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, candidate} <- lock_candidate.(),
            {:ok, restored} <- restore_candidate_pending_category(candidate),
            {:ok, audit_log} <-

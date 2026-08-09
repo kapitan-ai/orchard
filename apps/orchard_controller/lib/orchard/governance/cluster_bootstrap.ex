@@ -7,7 +7,16 @@ defmodule Orchard.Governance.ClusterBootstrap do
 
   alias Orchard.ControlPlane
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, RoleBinding, ServiceAccount}
+
+  alias Orchard.Governance.{
+    ApiKey,
+    ApiKeySecret,
+    AuditLog,
+    AuditWriter,
+    RoleBinding,
+    ServiceAccount
+  }
+
   alias Orchard.Repo
 
   @default_client_name "orchard-bootstrap-admin"
@@ -54,7 +63,7 @@ defmodule Orchard.Governance.ClusterBootstrap do
         "error_summary" => sanitize_error_summary(error_summary)
       }
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp mint_admin(opts, recovery?) do
@@ -64,7 +73,7 @@ defmodule Orchard.Governance.ClusterBootstrap do
   end
 
   defp mint_admin_transaction(opts, recovery?) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with :ok <- lock_bootstrap_guard(),
            :ok <- maybe_ensure_not_initialized(recovery?),
            {:ok, api_client} <- insert_api_client(opts),
@@ -161,7 +170,7 @@ defmodule Orchard.Governance.ClusterBootstrap do
         "recovery" => recovery?
       }
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp mint_result(api_client, api_key, token, recovery?) do

@@ -41,6 +41,7 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
       hosted_tool_readiness: response.hosted_tool_readiness,
       runtime_memory_budgets: response.runtime_memory_budgets,
       runtime_prefix_cache_statuses: response.runtime_prefix_cache_statuses,
+      worker_crash_counters: response.worker_crash_counters,
       supports_prompt_token_ids: response.supports_prompt_token_ids
     })
   end

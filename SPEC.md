@@ -220,7 +220,8 @@ The controller SHALL be a Phoenix/Plug HTTP service plus Runtime Endpoint client
   * `reverse_proxy`: controller provides a local/private HTTP backend for an operator-managed TLS-terminating proxy.
   * `plain_http_localhost`: controller provides loopback HTTP only for local development or break-glass recovery.
 * `:8444` gRPC/mTLS for node registration/heartbeat/event ingress while the compatibility transport remains enabled
-* `:9464` Prometheus metrics endpoint
+
+Prometheus metrics are served on the public/admin/operator API listener above; the controller SHALL NOT create a separate metrics listener (§9.1).
 
 **Required readiness conditions**
 
@@ -950,7 +951,7 @@ Rules:
 
 Each successful authenticated, non-stale observation of a trusted target SHALL append one `node_heartbeats` row in the same transaction that advances `nodes.last_heartbeat_at`, re-derives Node health, and refreshes aggregate DispatchCapacity evidence. Failure of any write rolls back all effects. A standby Controller writes nothing on this path, and a transport failure SHALL NOT create a synthetic successful heartbeat row.
 
-`node_heartbeats.payload` SHALL use Controller-produced schema version `1` with a closed top-level allowlist: `schema_version`, `validity`, optional `invalid_reason`, `endpoint_id`, `target`, `availability`, `worker_state`, `aggregate_active_request_count`, `aggregate_max_concurrency`, `aggregate_capacity_evidence`, `placements`, `runtime_memory_budgets`, `runtime_prefix_cache_statuses`, and `supports_prompt_token_ids`. The row columns remain canonical for trusted `node_id` and `observed_at`. `target` is limited to `id`, `transport`, `address`, and `node_id`; each placement is limited to `model_ref`, `state`, `capacity`, and `last_used_at`; each model reference to `model_id` and `version`; each Placement Capacity to `active_request_count`, `max_concurrency`, `status`, and `source`; and aggregate capacity evidence to `runtime_concurrency_limit`, `active_request_count`, and `validity`. Maps and lists are capped at 40 entries, nesting at depth 4, and otherwise-unbounded strings at 512 bytes; narrower domain, numeric, and status-vocabulary bounds take precedence. The complete encoded JSON is capped by validated `node_heartbeat_payload_max_bytes`, default **262144 bytes**.
+`node_heartbeats.payload` SHALL use Controller-produced schema version `1` with a closed top-level allowlist: `schema_version`, `validity`, optional `invalid_reason`, `endpoint_id`, `target`, `availability`, `worker_state`, `aggregate_active_request_count`, `aggregate_max_concurrency`, `aggregate_capacity_evidence`, `placements`, `runtime_memory_budgets`, `runtime_prefix_cache_statuses`, `worker_crash_counters`, and `supports_prompt_token_ids`. The row columns remain canonical for trusted `node_id` and `observed_at`. `target` is limited to `id`, `transport`, `address`, and `node_id`; each placement is limited to `model_ref`, `state`, `capacity`, and `last_used_at`; each model reference to `model_id` and `version`; each Placement Capacity to `active_request_count`, `max_concurrency`, `status`, and `source`; aggregate capacity evidence to `runtime_concurrency_limit`, `active_request_count`, and `validity`; and each worker-crash counter to `model_id`, `count`, and `counter_version`, capped at 4 entries per payload. Maps and lists are capped at 40 entries, nesting at depth 4, and otherwise-unbounded strings at 512 bytes; narrower domain, numeric, and status-vocabulary bounds take precedence. The complete encoded JSON is capped by validated `node_heartbeat_payload_max_bytes`, default **262144 bytes**.
 
 Memory-budget entries SHALL use `Orchard.Runtime.MemoryBudget.normalize/1`, and prefix-cache entries SHALL use `Orchard.Runtime.PrefixCacheStatus.normalize/1`, not scheduler-specific normalization. Persisted prefix-cache data SHALL exclude raw fingerprint sets while retaining only sanitized status, fingerprint count, and warmth information. Unknown fields are dropped. An unknown schema, malformed required envelope, or payload still over the byte cap after normalization SHALL commit as a minimal bounded version-1 `validity = "invalid"` envelope with a stable `invalid_reason`; it cannot produce a positive scheduler candidate and maps to `dispatch_capacity_facts_unavailable`. The payload SHALL NOT contain credentials or secrets, DSNs, prompt or response bodies, raw tokens, tenant identifiers, raw metadata or diagnostics, local paths or evidence, tool/session identifiers, Controller policy, Controller-accounted Allocation, quarantine, authority decisions, acquirability, or another derived eligibility result.
 
@@ -2665,16 +2666,15 @@ PATCH /admin/v1/observability
     "otlp_endpoint": "https://otel-collector.local:4318",
     "sample_ratio": 0.1
   },
-  "metrics": {
-    "bind": "0.0.0.0:9464",
-    "basic_auth_enabled": false
-  },
   "logging": {
     "level": "info",
     "retention_days": 7
   }
 }
 ```
+
+Metrics exposure is not configurable through this endpoint; §9.1 fixes the
+shared HTTP listener and the operator-or-admin bearer boundary for `/metrics`.
 
 ---
 
@@ -2991,6 +2991,14 @@ message RuntimeModelPlacement {
   uint32 max_concurrency = 3;
 }
 
+// Bounded process-lifetime monotonic crash count for one model identifier.
+// counter_version is controller-internal deduplication state, never a metric label.
+message WorkerCrashCounter {
+  string model_id = 1;
+  uint64 count = 2;
+  string counter_version = 3;
+}
+
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
@@ -3007,6 +3015,7 @@ message StatusResponse {
   // Node-owned Runtime Concurrency Enforcement Limit.
   // Only explicit unmanaged compatibility may normalize absent or zero to 1.
   uint32 max_concurrency = 12;
+  repeated WorkerCrashCounter worker_crash_counters = 13;
 }
 
 message EnsureModelLoadedRequest {
@@ -4128,6 +4137,10 @@ OpenTelemetry Erlang/Elixir currently documents traces as stable while metrics/l
 
 * controller: `/metrics`
 * node agent: `/metrics` optional, disabled externally by default
+
+The Controller SHALL serve `GET /metrics` on its existing HTTP listener and SHALL NOT create a separate metrics listener. The route SHALL require the cluster-scoped operator-or-admin service-account bearer boundary defined for the Operator API. Metrics initialization, collection, aggregation, and rendering are non-authoritative: their failure SHALL NOT prevent Controller boot or alter inference, admission, quota, scheduling, dispatch, recovery, or persistence outcomes. An authorized scrape MAY return `503` when valid exposition cannot be produced.
+
+The protected site-local endpoint MAY expose the canonical stable Tenant identifier as the raw `tenant` label. Orchard SHALL NOT hash, alias, truncate, or substitute that identifier for the pilot, and SHALL NOT include a user identifier as a metric label. Any later external metrics egress SHALL remove tenant and user dimensions before transmission.
 
 Required metric families:
 

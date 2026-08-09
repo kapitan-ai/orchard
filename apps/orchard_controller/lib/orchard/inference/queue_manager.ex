@@ -423,6 +423,14 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:queued_model_lanes, unique?})
   end
 
+  @doc "Returns the current queued request count keyed by Tenant identity."
+  @spec queue_depths(keyword()) :: %{optional(String.t()) => non_neg_integer()}
+  def queue_depths(opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    timeout = Keyword.get(opts, :timeout, 100)
+    call_manager(server, :queue_depths, timeout)
+  end
+
   @spec release(Grant.t() | String.t(), keyword()) :: :ok
   def release(grant_or_id, opts \\ [])
 
@@ -483,6 +491,15 @@ defmodule Orchard.Inference.QueueManager do
 
   def handle_call(:queued_model_lanes, _from, state) do
     {:reply, queued_model_lanes_from_state(state), state}
+  end
+
+  def handle_call(:queue_depths, _from, state) do
+    depths =
+      Enum.reduce(state.entries, %{}, fn {_ticket_ref, entry}, acc ->
+        Map.update(acc, entry.tenant_id, 1, &(&1 + 1))
+      end)
+
+    {:reply, depths, state}
   end
 
   def handle_call({:queued_model_lanes, unique?}, _from, state) do

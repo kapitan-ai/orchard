@@ -103,6 +103,14 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert PlacementCapacity.spare?(Observation.placement_capacity_for(observation, model_ref))
   end
 
+  test "status observations preserve bounded worker crash counter entries" do
+    counters = [%{model_id: "model-a", count: 2, counter_version: "epoch-1"}]
+    observation = Observation.new(%{worker_crash_counters: counters})
+
+    assert observation.worker_crash_counters == counters
+    assert Observation.new(%{}).worker_crash_counters == []
+  end
+
   test "SPEC.md §4.6.2 observations preserve aggregate capacity evidence before fallbacks" do
     observation =
       Observation.new(%{

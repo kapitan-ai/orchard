@@ -40,6 +40,7 @@ defmodule Orchard.Scheduler.MultiNode do
 
   alias Orchard.CanonicalRequest
   alias Orchard.DispatchCapacity.Authorization
+  alias Orchard.DomainMetrics
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.NodeHeartbeats
@@ -89,6 +90,13 @@ defmodule Orchard.Scheduler.MultiNode do
   - `:compatibility_probe_runner` - internal compatibility-wave runner
   """
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
+    started_at = System.monotonic_time()
+    result = do_schedule(request, opts)
+    DomainMetrics.scheduler_decision(result, elapsed_seconds(started_at))
+    result
+  end
+
+  defp do_schedule(request, opts) do
     case candidate_target_resolution(opts) do
       {:inline, []} ->
         {:error, :no_active_nodes}
@@ -106,6 +114,13 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   # -- Internal --
+
+  defp elapsed_seconds(started_at) do
+    System.monotonic_time()
+    |> Kernel.-(started_at)
+    |> System.convert_time_unit(:native, :nanosecond)
+    |> Kernel./(1_000_000_000)
+  end
 
   defp candidate_target_resolution(opts) do
     inventory_result = active_runtime_endpoint_targets(opts)

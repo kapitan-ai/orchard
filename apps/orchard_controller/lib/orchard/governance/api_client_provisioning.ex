@@ -11,6 +11,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   alias Orchard.Governance.{
     ApiKey,
     AuditLog,
+    AuditWriter,
     ProvisioningBatch,
     SecretField,
     ServiceAccount,
@@ -335,7 +336,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   end
 
   defp apply_plan(plan, opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, batch} <- insert_batch(plan, opts),
            {:ok, _audit_log} <- insert_batch_audit_log(batch, "provisioning_batch.started", %{}),
            {:ok, result} <- apply_rows(plan, batch, opts),
@@ -375,7 +376,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   end
 
   defp persist_failed_apply_batch(plan, opts, reason) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, batch} <- insert_failed_batch(plan, opts, reason),
            {:ok, _audit_log} <-
              insert_batch_audit_log(batch, "provisioning_batch.failed", %{
@@ -470,7 +471,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   end
 
   defp output_failed_transaction(batch, error_summary) do
-    Repo.transaction(fn -> update_output_failed_batch(batch, error_summary) end)
+    AuditWriter.transaction(fn -> update_output_failed_batch(batch, error_summary) end)
     |> case do
       {:ok, %ProvisioningBatch{} = batch} -> {:ok, batch}
       {:error, reason} -> {:error, reason}
@@ -505,7 +506,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
         |> Map.merge(payload)
         |> sanitize_batch_audit_payload()
     })
-    |> Repo.insert()
+    |> AuditWriter.insert()
   end
 
   defp validate_resolved_api_client_identities(rows) do

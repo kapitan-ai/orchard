@@ -20,6 +20,7 @@ defmodule Orchard.Scheduler.SingleNode do
   alias Orchard.CanonicalRequest
   alias Orchard.Dispatch.GrpcNodeRuntimeClient
   alias Orchard.DispatchCapacity.Authorization
+  alias Orchard.DomainMetrics
   alias Orchard.Inference
   alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
@@ -69,6 +70,13 @@ defmodule Orchard.Scheduler.SingleNode do
   end
 
   def default_schedule(%CanonicalRequest{} = request, target, opts) when is_list(opts) do
+    started_at = System.monotonic_time()
+    result = do_default_schedule(request, target, opts)
+    DomainMetrics.scheduler_decision(result, elapsed_seconds(started_at))
+    result
+  end
+
+  defp do_default_schedule(request, target, opts) do
     case resolve_node(target, opts) do
       {:ok, node} ->
         schedule =
@@ -77,7 +85,8 @@ defmodule Orchard.Scheduler.SingleNode do
             request_id: request.public_id,
             request_timeout_ms: Inference.request_timeout_ms(),
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
-            node_id: node && node.id
+            node_id: node && node.id,
+            selected_tier: "cold"
           }
           |> put_target(target)
 
@@ -86,6 +95,13 @@ defmodule Orchard.Scheduler.SingleNode do
       {:error, :node_inventory_unavailable} ->
         {:error, :model_busy}
     end
+  end
+
+  defp elapsed_seconds(started_at) do
+    System.monotonic_time()
+    |> Kernel.-(started_at)
+    |> System.convert_time_unit(:native, :nanosecond)
+    |> Kernel./(1_000_000_000)
   end
 
   defp resolve_node(target, opts) do
@@ -138,6 +154,7 @@ defmodule Orchard.Scheduler.SingleNode do
 
   defp capacity_schedule(schedule, request, target, node, response, opts) do
     placement_capacity = model_placement_capacity_for(response, request.model_ref)
+    schedule = Map.put(schedule, :selected_tier, selected_tier(response, request.model_ref))
 
     case capacity_input(node, target, response, placement_capacity, opts) do
       {:ok, input} ->
@@ -418,6 +435,10 @@ defmodule Orchard.Scheduler.SingleNode do
     do: Map.put(schedule, :runtime_endpoint_target, target)
 
   defp put_target(schedule, target), do: Map.put(schedule, :runtime_client_target, target)
+
+  defp selected_tier(response, %CanonicalRequest.ModelRef{} = model_ref) do
+    if model_loaded?(response, model_ref), do: "loaded", else: "cold"
+  end
 
   defp model_placement_capacity_for(
          %Observation{} = observation,

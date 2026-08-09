@@ -6,7 +6,8 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
     RuntimeModelPlacement,
     RuntimeNodeMetadata,
     ScorePrefixCacheResponse,
-    StatusResponse
+    StatusResponse,
+    WorkerCrashCounter
   }
 
   alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
@@ -27,6 +28,9 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
       runtime_model_placements: [
         %RuntimeModelPlacement{model_ref: model_ref, active_request_count: 1, max_concurrency: 2}
       ],
+      worker_crash_counters: [
+        %WorkerCrashCounter{model_id: model_ref.model_id, count: 3, counter_version: "epoch-1"}
+      ],
       supports_prompt_token_ids: true
     }
 
@@ -42,6 +46,9 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
     assert observation.aggregate_max_concurrency == 2
     assert observation.metadata.node_id == "node-1"
     assert observation.supports_prompt_token_ids
+
+    assert [%WorkerCrashCounter{model_id: "mlx-community/phi-3", count: 3}] =
+             observation.worker_crash_counters
 
     assert %PlacementCapacity{status: :known, active_request_count: 1, max_concurrency: 2} =
              capacity

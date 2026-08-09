@@ -127,6 +127,21 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
           MapSet.t(Ecto.UUID.t()) | {:error, quarantine_error()}
   def quarantined_nodes(server), do: GenServer.call(server, :quarantined_nodes)
 
+  @doc """
+  Returns the live Controller-owned dispatch claims.
+
+  Read-only callers with their own latency budget pass `:timeout` instead of
+  waiting the default `GenServer.call/3` five seconds.
+  """
+  @spec live_claims() :: [Claim.t()]
+  def live_claims, do: live_claims(__MODULE__)
+
+  @spec live_claims(GenServer.server()) :: [Claim.t()]
+  @spec live_claims(GenServer.server(), keyword()) :: [Claim.t()]
+  def live_claims(server, opts \\ []) do
+    GenServer.call(server, :live_claims, Keyword.get(opts, :timeout, 5_000))
+  end
+
   @doc "Returns the number of live claims owned for one Node."
   @spec claim_count(Ecto.UUID.t()) :: non_neg_integer()
   def claim_count(node_id), do: claim_count(__MODULE__, node_id)
@@ -466,6 +481,10 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   def handle_call(:quarantined_nodes, _from, state) do
     {reply, state} = quarantined_nodes_from_store(state)
     {:reply, reply, state}
+  end
+
+  def handle_call(:live_claims, _from, state) do
+    {:reply, Map.values(state.claims), state}
   end
 
   def handle_call({:claim_count, node_id}, _from, state) do

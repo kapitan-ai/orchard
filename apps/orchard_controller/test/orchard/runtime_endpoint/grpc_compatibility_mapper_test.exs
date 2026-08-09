@@ -9,7 +9,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     RuntimeModelPlacement,
     RuntimeNodeMetadata,
     ScorePrefixCacheResponse,
-    StatusResponse
+    StatusResponse,
+    WorkerCrashCounter
   }
 
   alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
@@ -44,6 +45,9 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
             max_concurrency: 2
           }
         ],
+        worker_crash_counters: [
+          %WorkerCrashCounter{model_id: @model_id, count: 7, counter_version: "epoch-1"}
+        ],
         supports_prompt_token_ids: true
       )
 
@@ -57,6 +61,9 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     assert observation.metadata.node_id == node_id
     assert observation.health.ready == true
     assert observation.supports_prompt_token_ids == true
+
+    assert [%WorkerCrashCounter{model_id: @model_id, count: 7, counter_version: "epoch-1"}] =
+             observation.worker_crash_counters
 
     assert [placement] = observation.placements
     assert placement.model_ref == domain_model_ref()
@@ -351,6 +358,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
       },
       runtime_health: Keyword.get(opts, :runtime_health),
       runtime_model_placements: Keyword.get(opts, :runtime_model_placements, []),
+      worker_crash_counters: Keyword.get(opts, :worker_crash_counters, []),
       supports_prompt_token_ids: Keyword.get(opts, :supports_prompt_token_ids, false)
     }
   end

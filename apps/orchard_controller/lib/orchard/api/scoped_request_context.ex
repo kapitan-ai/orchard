@@ -1,14 +1,14 @@
 defmodule Orchard.API.ScopedRequestContext do
   @moduledoc """
   Shared bearer-token authentication and authorization plug for cluster-scoped
-  API surfaces (`/admin/v1/*`, `/ops/v1/*`).
+  API surfaces (`/admin/v1/*`, `/ops/v1/*`, `/metrics`).
 
   Concrete plugs configure the authorization callback and the role-required
   error via `use Orchard.API.ScopedRequestContext, ...`, keeping their own
   public module names while sharing the authentication and error-response flow.
   """
 
-  alias Orchard.API.AdminErrorHelpers
+  alias Orchard.API.{AdminErrorHelpers, AuthenticationFailure}
   alias Orchard.Governance
 
   @invalid_api_key_message "Invalid API key provided."
@@ -103,7 +103,7 @@ defmodule Orchard.API.ScopedRequestContext do
   defp parse_bearer_header(_header), do: {:error, :malformed_header}
 
   defp audit_auth_failure(conn, token, reason) do
-    Governance.audit_api_key_auth_failure(token, reason)
+    AuthenticationFailure.record(token, reason)
     conn
   end
 

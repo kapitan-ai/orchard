@@ -7,6 +7,7 @@ defmodule Orchard.NodeEnrollments do
 
   alias Orchard.ControlPlane
   alias Orchard.Governance
+  alias Orchard.Governance.AuditWriter
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.Nodes, as: NodeInventory
   alias Orchard.Nodes.{Enrollment, EnrollmentToken, Node}
@@ -99,7 +100,7 @@ defmodule Orchard.NodeEnrollments do
     node_id = Ecto.UUID.generate()
     generated_token = EnrollmentToken.generate()
 
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, node} <- insert_provisioned_node(node_id, value(attrs, :node)),
            {:ok, enrollment} <-
              insert_enrollment(
@@ -124,7 +125,7 @@ defmodule Orchard.NodeEnrollments do
   defp redeem_transaction(id, request, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
 
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with %Enrollment{} = enrollment <- lock_enrollment(id),
            %Node{} = node <- lock_node(enrollment.node_id) do
         redeem_locked(enrollment, node, request, now, opts)
@@ -416,7 +417,7 @@ defmodule Orchard.NodeEnrollments do
   end
 
   defp mark_output_failed_transaction(id, opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, enrollment, changed?} <- mark_locked_output_failed(id, opts),
            {:ok, _audit} <- maybe_insert_output_failed_audit(enrollment, changed?, opts) do
         enrollment
@@ -447,7 +448,7 @@ defmodule Orchard.NodeEnrollments do
   end
 
   defp reconcile_pending_enrollment(id, cutoff, now) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with %Enrollment{} = enrollment <- lock_stale_pending_enrollment(id, cutoff),
            {:ok, failed} <- fail_pending_enrollment(enrollment, now),
            {:ok, _audit} <-
@@ -487,7 +488,7 @@ defmodule Orchard.NodeEnrollments do
   end
 
   defp mark_issued_transaction(id, opts) do
-    Repo.transaction(fn ->
+    AuditWriter.transaction(fn ->
       with {:ok, enrollment, changed?} <- mark_locked_issued(id, opts),
            {:ok, _audit} <- maybe_insert_issued_audit(enrollment, changed?, opts) do
         enrollment

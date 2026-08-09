@@ -24,6 +24,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
             hosted_tool_readiness: [],
             runtime_memory_budgets: [],
             runtime_prefix_cache_statuses: [],
+            worker_crash_counters: [],
             supports_prompt_token_ids: false
 
   @type availability :: :unknown | :available | :unavailable | :degraded | atom()
@@ -47,6 +48,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
           hosted_tool_readiness: [term()],
           runtime_memory_budgets: [term()],
           runtime_prefix_cache_statuses: [term()],
+          worker_crash_counters: [term()],
           supports_prompt_token_ids: boolean()
         }
 
@@ -70,6 +72,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       hosted_tool_readiness: list_value(attrs, :hosted_tool_readiness),
       runtime_memory_budgets: list_value(attrs, :runtime_memory_budgets),
       runtime_prefix_cache_statuses: list_value(attrs, :runtime_prefix_cache_statuses),
+      worker_crash_counters: list_value(attrs, :worker_crash_counters),
       supports_prompt_token_ids: value(attrs, :supports_prompt_token_ids) == true
     }
   end
