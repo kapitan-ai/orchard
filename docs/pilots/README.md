@@ -40,16 +40,29 @@ digest for the retained result set.
 
 Compute that digest over the exact retained bytes of one UTC day's results,
 using bytewise filename ordering so the same retained set always reproduces the
-same value:
+same value. Run it as a script. It digests every regular file under the day
+directory and fails closed: if any of them cannot be hashed, or the day
+retained nothing, it exits nonzero without emitting a digest instead of
+recording one that covers only part of the set.
 
-```sh
-cd "$day_result_dir" &&
-  LC_ALL=C ls -1 |
-  LC_ALL=C sort |
-  tr '\n' '\0' |
-  xargs -0 shasum -a 256 |
-  shasum -a 256
+```bash
+set -euo pipefail
+
+manifest=$(
+  cd "$day_result_dir" &&
+    find . -type f -print0 |
+    LC_ALL=C sort -z |
+    xargs -0 -r shasum -a 256
+)
+
+[ -n "$manifest" ] || { echo "no retained results to digest" >&2; exit 1; }
+
+printf '%s\n' "$manifest" | shasum -a 256
 ```
+
+Accept a day's digest only from a run that exited zero. A nonzero exit means
+the retained set was unreadable or empty, which is a retention failure to
+investigate rather than a value to record.
 
 Probe freshness advances only when the result sink receives one parseable
 schema-version-1 result object whose `probe_id` equals the `probe_id` in the
