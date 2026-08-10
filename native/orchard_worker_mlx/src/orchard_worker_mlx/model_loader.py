@@ -601,16 +601,22 @@ def _default_mlx_deps() -> MLXDeps:
         import inspect
 
         _reject_model_file_config(model_path)
-        # Prefer disabling model-side remote code when the installed mlx_lm
-        # accepts the kwarg. Newer mlx_lm loaders reject unknown kwargs.
+        # Forced disable when accepted. Never let callers re-enable remote code.
+        # Newer mlx_lm loaders reject unknown kwargs, so strip when unsupported.
         try:
             params = inspect.signature(mlx_lm_load).parameters
-            if "trust_remote_code" in params or any(
+            accepts_trust = "trust_remote_code" in params or any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-            ):
-                kwargs.setdefault("trust_remote_code", False)
+            )
         except (TypeError, ValueError):
-            pass
+            # Fail closed: if signature inspection fails, still force disable.
+            accepts_trust = True
+
+        if accepts_trust:
+            kwargs["trust_remote_code"] = False
+        else:
+            kwargs.pop("trust_remote_code", None)
+
         return mlx_lm_load(Path(model_path), **kwargs)
 
     def _load_tokenizer(tokenizer_path: str | Path) -> Any:
