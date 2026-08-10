@@ -336,7 +336,6 @@ defmodule Orchard.ModelsTest do
       File.write!(Path.join(source, "tokenizer.json"), "{}")
       File.write!(Path.join(source, "chat_template.jinja"), "{{ messages }}")
 
-
       # First import
       assert {:ok, model} = Importer.import_bundle(source, artifacts_root: root)
 
