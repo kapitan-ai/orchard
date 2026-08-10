@@ -70,28 +70,33 @@ defmodule OrchardCLI.Commands.Models do
       {:ok, model} ->
         {:ok, "Imported #{model.model_id}@#{model.version} (state: #{model.state})"}
 
-      {:error, {:duplicate, message}} ->
-        {:error, "Error: #{message}", 1}
-
-      {:error, {:source_not_found, path}} ->
-        {:error, "Error: source path not found: #{path}", 1}
-
-      {:error, {:source_not_directory, message}} ->
-        {:error, "Error: #{message}", 1}
-
-      {:error, {:manifest_not_found, path}} ->
-        {:error, "Error: manifest.json not found at #{path}", 1}
-
-      {:error, {:validation, message}} ->
-        {:error, "Error: invalid manifest: #{message}", 1}
-
-      {:error, {:json_decode, message}} ->
-        {:error, "Error: failed to parse manifest.json: #{message}", 1}
-
       {:error, reason} ->
-        {:error, "Error: import failed: #{inspect(reason)}", 1}
+        format_import_error(reason)
     end
   end
+
+  defp format_import_error({:duplicate, message}), do: {:error, "Error: #{message}", 1}
+
+  defp format_import_error({:source_not_found, path}),
+    do: {:error, "Error: source path not found: #{path}", 1}
+
+  defp format_import_error({:source_not_directory, message}),
+    do: {:error, "Error: #{message}", 1}
+
+  defp format_import_error({:manifest_not_found, path}),
+    do: {:error, "Error: manifest.json not found at #{path}", 1}
+
+  defp format_import_error({:validation, message}),
+    do: {:error, "Error: invalid manifest: #{message}", 1}
+
+  defp format_import_error({:json_decode, message}),
+    do: {:error, "Error: failed to parse manifest.json: #{message}", 1}
+
+  defp format_import_error({:missing_chat_template, message}),
+    do: {:error, "Error: #{message}", 1}
+
+  defp format_import_error(reason),
+    do: {:error, "Error: import failed: #{inspect(reason)}", 1}
 
   defp run_delete([]) do
     {:error, "Error: missing model identity\n#{delete_usage()}", 1}

@@ -77,19 +77,35 @@ defmodule Orchard.Models.Importer do
          {:ok, source_manifest} <- ManifestParser.parse_from_bundle(source_path),
          :ok <- validate_identity_safe(source_manifest),
          :ok <- check_no_duplicate(source_manifest),
-         {:ok, staged_path} <- stage_bundle(source_path, artifacts_root),
-         {:ok, manifest} <- maybe_top_up_resident_memory(staged_path, source_manifest),
-         {:ok, manifest} <- maybe_run_eager_preflight(staged_path, manifest),
-         {:ok, sha256} <- compute_sha256(staged_path),
-         {:ok, dest_path} <- finalize_staged(staged_path, manifest, artifacts_root) do
-      case insert_catalog_record(manifest, dest_path, sha256, activate?) do
-        {:ok, model} ->
-          {:ok, model}
+         {:ok, staged_path} <- stage_bundle(source_path, artifacts_root) do
+      import_staged_bundle(staged_path, source_manifest, artifacts_root, activate?)
+    end
+  end
 
-        {:error, _} = err ->
-          File.rm_rf(dest_path)
-          err
+  defp import_staged_bundle(staged_path, source_manifest, artifacts_root, activate?) do
+    result =
+      with {:ok, manifest} <- maybe_top_up_resident_memory(staged_path, source_manifest),
+           {:ok, manifest} <- ensure_chat_template(staged_path, manifest),
+           {:ok, manifest} <- maybe_run_eager_preflight(staged_path, manifest),
+           {:ok, sha256} <- compute_sha256(staged_path),
+           {:ok, dest_path} <- finalize_staged(staged_path, manifest, artifacts_root) do
+        case insert_catalog_record(manifest, dest_path, sha256, activate?) do
+          {:ok, model} ->
+            {:ok, model}
+
+          {:error, _} = err ->
+            File.rm_rf(dest_path)
+            err
+        end
       end
+
+    case result do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, _} = err ->
+        if File.dir?(staged_path), do: File.rm_rf(staged_path)
+        err
     end
   end
 
@@ -153,6 +169,194 @@ defmodule Orchard.Models.Importer do
       {:error, reason} ->
         {:error, {:mkdir_failed, "failed to create staging dir: #{inspect(reason)}"}}
     end
+  end
+
+  # -- Chat template top-up -------------------------------------------------
+
+  @template_candidates ["chat_template.jinja", "chat_template.jinja2"]
+  @generated_template_name "chat_template.jinja"
+  @tokenizer_config_name "tokenizer_config.json"
+
+  defp ensure_chat_template(staged_path, %ModelManifest{} = manifest) do
+    cond do
+      chat_template_present?(manifest.chat_template) ->
+        {:ok, manifest}
+
+      chat_capability?(manifest.capabilities) ->
+        fill_or_reject_chat_template(staged_path)
+
+      true ->
+        {:ok, manifest}
+    end
+  end
+
+  defp chat_template_present?(%{path: path, sha256: sha256})
+       when is_binary(path) and path != "" and is_binary(sha256) and sha256 != "",
+       do: true
+
+  defp chat_template_present?(_), do: false
+
+  defp chat_capability?(capabilities) when is_list(capabilities), do: "chat" in capabilities
+
+  defp fill_or_reject_chat_template(staged_path) do
+    case resolve_chat_template_asset(staged_path) do
+      {:ok, %{path: path, sha256: sha256}} ->
+        write_chat_template_manifest(staged_path, path, sha256)
+
+      {:ok, nil} ->
+        {:error,
+         {:missing_chat_template,
+          "chat-capable bundle is missing chat_template; add chat_template.jinja or tokenizer_config.json chat_template"}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp write_chat_template_manifest(staged_path, path, sha256) do
+    with {:ok, manifest_map} <- read_manifest_map(staged_path),
+         :ok <-
+           write_manifest_map(
+             staged_path,
+             Map.put(manifest_map, "chat_template", %{"path" => path, "sha256" => sha256})
+           ),
+         {:ok, reparsed} <- ManifestParser.parse_from_bundle(staged_path) do
+      {:ok, reparsed}
+    else
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp resolve_chat_template_asset(staged_path) do
+    case find_existing_template(staged_path) do
+      {:ok, _} = result ->
+        result
+
+      {:error, _} = err ->
+        err
+
+      :none ->
+        extract_template_from_tokenizer_config(staged_path)
+    end
+  end
+
+  defp find_existing_template(staged_path) do
+    Enum.find_value(@template_candidates, :none, fn filename ->
+      read_existing_template_candidate(Path.join(staged_path, filename), filename)
+    end)
+  end
+
+  defp read_existing_template_candidate(path, filename) do
+    if File.regular?(path) do
+      read_existing_template_file(path, filename)
+    end
+  end
+
+  defp read_existing_template_file(path, filename) do
+    case File.read(path) do
+      {:ok, content} when byte_size(content) > 0 ->
+        {:ok, %{path: filename, sha256: sha256_hex(content)}}
+
+      {:ok, _empty} ->
+        nil
+
+      {:error, reason} ->
+        {:error, {:chat_template_read, "Failed to read #{path}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp extract_template_from_tokenizer_config(staged_path) do
+    config_path = Path.join(staged_path, @tokenizer_config_name)
+
+    if File.regular?(config_path) do
+      read_tokenizer_config_template(staged_path, config_path)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp read_tokenizer_config_template(staged_path, config_path) do
+    case File.read(config_path) do
+      {:ok, json} ->
+        decode_tokenizer_config_template(staged_path, json)
+
+      {:error, reason} ->
+        {:error,
+         {:invalid_tokenizer_config, "Failed to read tokenizer_config.json: #{inspect(reason)}"}}
+    end
+  end
+
+  defp decode_tokenizer_config_template(staged_path, json) do
+    case Jason.decode(json) do
+      {:ok, config} when is_map(config) ->
+        template_from_tokenizer_config(staged_path, Map.get(config, "chat_template"))
+
+      {:ok, _other} ->
+        {:error, {:invalid_tokenizer_config, "tokenizer_config.json must decode to an object"}}
+
+      {:error, %Jason.DecodeError{} = err} ->
+        {:error, {:invalid_tokenizer_config, Exception.message(err)}}
+    end
+  end
+
+  defp template_from_tokenizer_config(_staged_path, nil), do: {:ok, nil}
+
+  defp template_from_tokenizer_config(staged_path, template)
+       when is_binary(template) and template != "" do
+    write_generated_template(staged_path, template)
+  end
+
+  defp template_from_tokenizer_config(_staged_path, template) when is_binary(template) do
+    {:error, {:invalid_tokenizer_config, "chat_template in tokenizer_config.json is blank."}}
+  end
+
+  defp template_from_tokenizer_config(staged_path, templates) when is_list(templates) do
+    selected =
+      Enum.find(templates, fn
+        %{"name" => "default"} -> true
+        _ -> false
+      end) || List.first(templates)
+
+    case selected do
+      %{"template" => template} when is_binary(template) and template != "" ->
+        write_generated_template(staged_path, template)
+
+      %{"template" => ""} ->
+        {:error, {:invalid_tokenizer_config, "chat_template list entry has blank template."}}
+
+      %{} ->
+        {:error,
+         {:invalid_tokenizer_config,
+          "chat_template list entry missing or invalid template field."}}
+
+      nil ->
+        {:ok, nil}
+
+      _other ->
+        {:error, {:invalid_tokenizer_config, "chat_template list contains non-object entries."}}
+    end
+  end
+
+  defp template_from_tokenizer_config(_staged_path, _other) do
+    {:error,
+     {:invalid_tokenizer_config, "chat_template in tokenizer_config.json has unsupported type."}}
+  end
+
+  defp write_generated_template(staged_path, content) do
+    path = Path.join(staged_path, @generated_template_name)
+
+    case File.write(path, content) do
+      :ok ->
+        {:ok, %{path: @generated_template_name, sha256: sha256_hex(content)}}
+
+      {:error, reason} ->
+        {:error, {:chat_template_write, "Failed to write #{path}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp sha256_hex(content) when is_binary(content) do
+    :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
   end
 
   # -- Manifest top-up ------------------------------------------------------
