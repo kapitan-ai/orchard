@@ -57,8 +57,8 @@ large spec sections.
 
 ### I want to run a pilot
 
-- [`pilots/README.md`](pilots/README.md) — pilot artifact pin ownership,
-  producer commit and configuration digest contract, update and rollback.
+- [`pilots/README.md`](pilots/README.md) — slim source-dev API pilot runbook
+  for issue #118 Revision 6, plus optional synthetic-check pin notes.
 - [`local-dev.md`](local-dev.md) — Phase 0 observability probe invocation and
   exit semantics.
 
