@@ -122,7 +122,7 @@ A refusal that happens after the configuration validated keeps the configured
 `probe_id` in its `invalid_config` result; a null `probe_id` means no
 configuration validated.
 
-Pilot #118 pin ownership and digest instructions are in
+Pilot #118 runbook and optional synthetic-check pin notes are in
 [`pilots/README.md`](pilots/README.md).
 
 ## Transport Modes
