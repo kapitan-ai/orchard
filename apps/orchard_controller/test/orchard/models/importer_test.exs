@@ -331,6 +331,41 @@ defmodule Orchard.Models.ImporterTest do
       assert imported["chat_template"]["sha256"] == expected_sha
     end
 
+    test "auto-fills missing chat_template from tokenizer_config.json for chat bundles", %{
+      artifacts_root: artifacts_root
+    } do
+      template = "{{ messages[0].content }}"
+      expected_sha = hash_string(template)
+
+      source_dir = Path.join(artifacts_root, "chat_template_from_tokenizer_config")
+      File.mkdir_p!(source_dir)
+
+      File.write!(
+        Path.join(source_dir, "manifest.json"),
+        Jason.encode!(
+          base_manifest_without_resident()
+          |> Map.put("version", "chat-template-from-config")
+          |> Map.put("entrypoint", ".")
+        )
+      )
+
+      File.write!(Path.join(source_dir, "tokenizer.json"), ~s({"version":"1.0"}))
+
+      File.write!(
+        Path.join(source_dir, "tokenizer_config.json"),
+        Jason.encode!(%{"chat_template" => template})
+      )
+
+      File.write!(Path.join(source_dir, "model.safetensors"), "fake-weights")
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+      imported = read_imported_manifest!(model)
+      assert imported["chat_template"]["path"] == "chat_template.jinja"
+      assert imported["chat_template"]["sha256"] == expected_sha
+      assert File.exists?(Path.join(artifact_path(model), "chat_template.jinja"))
+    end
+
     test "fails closed when chat bundle has no resolvable chat_template", %{
       artifacts_root: artifacts_root
     } do

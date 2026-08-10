@@ -949,10 +949,22 @@ done
 # bundles must resolve a template at import time.
 
 # 3. Create manifest.json
-# chat_template may be omitted when chat_template.jinja is present in the
-# bundle directory; models import auto-fills path + sha256. Prefer declaring
-# it explicitly for pinned smoke fixtures.
-CHAT_TEMPLATE_SHA=$(shasum -a 256 "$BUNDLE_DIR/chat_template.jinja" | awk '{print $1}')
+# If chat_template.jinja is present, models import can auto-fill path + sha256.
+# You may still declare chat_template explicitly for pinned smoke fixtures.
+# If the file is absent, import derives from tokenizer_config.json when possible.
+if [ -f "$BUNDLE_DIR/chat_template.jinja" ]; then
+  CHAT_TEMPLATE_SHA=$(shasum -a 256 "$BUNDLE_DIR/chat_template.jinja" | awk '{print $1}')
+  CHAT_TEMPLATE_JSON=$(cat <<EOF
+  "chat_template": {
+    "path": "chat_template.jinja",
+    "sha256": "$CHAT_TEMPLATE_SHA"
+  },
+EOF
+)
+else
+  CHAT_TEMPLATE_JSON=""
+fi
+
 cat > "$BUNDLE_DIR/manifest.json" << EOF
 {
   "model_id": "mlx-community/Llama-3.2-1B-Instruct-4bit",
@@ -968,10 +980,7 @@ cat > "$BUNDLE_DIR/manifest.json" << EOF
     "kind": "huggingface_tokenizer_json",
     "path": "tokenizer.json"
   },
-  "chat_template": {
-    "path": "chat_template.jinja",
-    "sha256": "$CHAT_TEMPLATE_SHA"
-  },
+$CHAT_TEMPLATE_JSON
   "runtime_requirements": {
     "adapter": "mlx_lm",
     "min_agent_capability": "mlx"

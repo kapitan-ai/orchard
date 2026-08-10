@@ -234,6 +234,9 @@ defmodule Orchard.Models.Importer do
       {:ok, _} = result ->
         result
 
+      {:error, _} = err ->
+        err
+
       :none ->
         extract_template_from_tokenizer_config(staged_path)
     end
