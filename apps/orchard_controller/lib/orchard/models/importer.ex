@@ -244,47 +244,60 @@ defmodule Orchard.Models.Importer do
 
   defp find_existing_template(staged_path) do
     Enum.find_value(@template_candidates, :none, fn filename ->
-      path = Path.join(staged_path, filename)
-
-      if File.regular?(path) do
-        case File.read(path) do
-          {:ok, content} when byte_size(content) > 0 ->
-            {:ok, %{path: filename, sha256: sha256_hex(content)}}
-
-          {:ok, _empty} ->
-            nil
-
-          {:error, reason} ->
-            {:error, {:chat_template_read, "Failed to read #{path}: #{inspect(reason)}"}}
-        end
-      end
+      read_existing_template_candidate(Path.join(staged_path, filename), filename)
     end)
+  end
+
+  defp read_existing_template_candidate(path, filename) do
+    if File.regular?(path) do
+      read_existing_template_file(path, filename)
+    end
+  end
+
+  defp read_existing_template_file(path, filename) do
+    case File.read(path) do
+      {:ok, content} when byte_size(content) > 0 ->
+        {:ok, %{path: filename, sha256: sha256_hex(content)}}
+
+      {:ok, _empty} ->
+        nil
+
+      {:error, reason} ->
+        {:error, {:chat_template_read, "Failed to read #{path}: #{inspect(reason)}"}}
+    end
   end
 
   defp extract_template_from_tokenizer_config(staged_path) do
     config_path = Path.join(staged_path, @tokenizer_config_name)
 
-    if not File.regular?(config_path) do
-      {:ok, nil}
+    if File.regular?(config_path) do
+      read_tokenizer_config_template(staged_path, config_path)
     else
-      case File.read(config_path) do
-        {:ok, json} ->
-          case Jason.decode(json) do
-            {:ok, config} when is_map(config) ->
-              template_from_tokenizer_config(staged_path, Map.get(config, "chat_template"))
+      {:ok, nil}
+    end
+  end
 
-            {:ok, _other} ->
-              {:error,
-               {:invalid_tokenizer_config, "tokenizer_config.json must decode to an object"}}
+  defp read_tokenizer_config_template(staged_path, config_path) do
+    case File.read(config_path) do
+      {:ok, json} ->
+        decode_tokenizer_config_template(staged_path, json)
 
-            {:error, %Jason.DecodeError{} = err} ->
-              {:error, {:invalid_tokenizer_config, Exception.message(err)}}
-          end
+      {:error, reason} ->
+        {:error,
+         {:invalid_tokenizer_config, "Failed to read tokenizer_config.json: #{inspect(reason)}"}}
+    end
+  end
 
-        {:error, reason} ->
-          {:error,
-           {:invalid_tokenizer_config, "Failed to read tokenizer_config.json: #{inspect(reason)}"}}
-      end
+  defp decode_tokenizer_config_template(staged_path, json) do
+    case Jason.decode(json) do
+      {:ok, config} when is_map(config) ->
+        template_from_tokenizer_config(staged_path, Map.get(config, "chat_template"))
+
+      {:ok, _other} ->
+        {:error, {:invalid_tokenizer_config, "tokenizer_config.json must decode to an object"}}
+
+      {:error, %Jason.DecodeError{} = err} ->
+        {:error, {:invalid_tokenizer_config, Exception.message(err)}}
     end
   end
 
