@@ -88,6 +88,9 @@ defmodule OrchardCLI.Commands.Models do
       {:error, {:json_decode, message}} ->
         {:error, "Error: failed to parse manifest.json: #{message}", 1}
 
+      {:error, {:missing_chat_template, message}} ->
+        {:error, "Error: #{message}", 1}
+
       {:error, reason} ->
         {:error, "Error: import failed: #{inspect(reason)}", 1}
     end

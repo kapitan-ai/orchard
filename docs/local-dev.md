@@ -937,12 +937,23 @@ mkdir -p "$BUNDLE_DIR"
 
 HF_SNAPSHOT="$HOME/.cache/huggingface/hub/models--mlx-community--Llama-3.2-1B-Instruct-4bit/snapshots/<commit-hash>"
 for f in config.json model.safetensors model.safetensors.index.json \
-         tokenizer.json tokenizer_config.json special_tokens_map.json; do
+         tokenizer.json tokenizer_config.json special_tokens_map.json \
+         chat_template.jinja; do
+  if [ -e "$HF_SNAPSHOT/$f" ]; then
     cp -L "$HF_SNAPSHOT/$f" "$BUNDLE_DIR/$f"
+  fi
 done
 
+# If the snapshot has no chat_template.jinja, import can still derive one from
+# tokenizer_config.json when that file embeds chat_template. Chat-capable
+# bundles must resolve a template at import time.
+
 # 3. Create manifest.json
-cat > "$BUNDLE_DIR/manifest.json" << 'EOF'
+# chat_template may be omitted when chat_template.jinja is present in the
+# bundle directory; models import auto-fills path + sha256. Prefer declaring
+# it explicitly for pinned smoke fixtures.
+CHAT_TEMPLATE_SHA=$(shasum -a 256 "$BUNDLE_DIR/chat_template.jinja" | awk '{print $1}')
+cat > "$BUNDLE_DIR/manifest.json" << EOF
 {
   "model_id": "mlx-community/Llama-3.2-1B-Instruct-4bit",
   "version": "08231374eeacb049a0eade7922910865b8fce912",
@@ -956,6 +967,10 @@ cat > "$BUNDLE_DIR/manifest.json" << 'EOF'
   "tokenizer": {
     "kind": "huggingface_tokenizer_json",
     "path": "tokenizer.json"
+  },
+  "chat_template": {
+    "path": "chat_template.jinja",
+    "sha256": "$CHAT_TEMPLATE_SHA"
   },
   "runtime_requirements": {
     "adapter": "mlx_lm",
@@ -981,6 +996,8 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 | `max_context_tokens` | From `config.json` `max_position_embeddings` | |
 | `tokenizer.kind` | `"huggingface_tokenizer_json"` | Required |
 | `tokenizer.path` | `"tokenizer.json"` | Relative to bundle root |
+| `chat_template.path` | `"chat_template.jinja"` | Required for chat capability unless import can derive it |
+| `chat_template.sha256` | SHA-256 of template bytes | Auto-filled on import when the template file exists |
 | `runtime_requirements.adapter` | `"mlx_lm"` | Required |
 | `runtime_requirements.min_agent_capability` | `"mlx"` | Required |
 

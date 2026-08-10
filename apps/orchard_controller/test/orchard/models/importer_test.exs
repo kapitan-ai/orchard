@@ -306,6 +306,56 @@ defmodule Orchard.Models.ImporterTest do
       assert persisted_model.resident_memory_bytes == 0
     end
 
+    test "auto-fills missing chat_template from chat_template.jinja for chat bundles", %{
+      artifacts_root: artifacts_root
+    } do
+      template = "{{ messages[0].content }}"
+      expected_sha = hash_string(template)
+
+      source_dir =
+        create_bundle_with_manifest(
+          artifacts_root,
+          base_manifest_without_resident()
+          |> Map.put("version", "chat-template-autofill")
+          |> Map.put("entrypoint", ".")
+        )
+
+      File.write!(Path.join(source_dir, "tokenizer.json"), ~s({"version":"1.0"}))
+      File.write!(Path.join(source_dir, "chat_template.jinja"), template)
+      File.write!(Path.join(source_dir, "model.safetensors"), "fake-weights")
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+      imported = read_imported_manifest!(model)
+      assert imported["chat_template"]["path"] == "chat_template.jinja"
+      assert imported["chat_template"]["sha256"] == expected_sha
+    end
+
+    test "fails closed when chat bundle has no resolvable chat_template", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = Path.join(artifacts_root, "chat_template_missing_bundle")
+      File.mkdir_p!(source_dir)
+
+      File.write!(
+        Path.join(source_dir, "manifest.json"),
+        Jason.encode!(
+          base_manifest_without_resident()
+          |> Map.put("version", "chat-template-missing")
+          |> Map.put("entrypoint", ".")
+        )
+      )
+
+      File.write!(Path.join(source_dir, "tokenizer.json"), ~s({"version":"1.0"}))
+      File.write!(Path.join(source_dir, "model.safetensors"), "fake-weights")
+
+      assert {:error, {:missing_chat_template, message}} =
+               Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+      assert message =~ "chat_template"
+      assert staging_dirs_under(artifacts_root) == []
+    end
+
     test "eager preflight writes compatibility fields on import", %{
       artifacts_root: artifacts_root
     } do
@@ -897,6 +947,7 @@ defmodule Orchard.Models.ImporterTest do
   defp write_bundle_builder_input(source_dir, config_map) do
     File.write!(Path.join(source_dir, "config.json"), Jason.encode!(config_map))
     File.write!(Path.join(source_dir, "tokenizer.json"), ~s({"version": "1.0"}))
+    File.write!(Path.join(source_dir, "chat_template.jinja"), "{{ messages[0].content }}")
     File.write!(Path.join(source_dir, "model.safetensors"), "fake-weights")
   end
 
@@ -912,6 +963,7 @@ defmodule Orchard.Models.ImporterTest do
     bundle_dir = Path.join(root, "test_bundle_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(bundle_dir)
     write_manifest(bundle_dir, manifest_overrides)
+    ensure_default_chat_template_file!(bundle_dir)
     bundle_dir
   end
 
@@ -919,7 +971,16 @@ defmodule Orchard.Models.ImporterTest do
     bundle_dir = Path.join(root, "test_bundle_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(bundle_dir)
     File.write!(Path.join(bundle_dir, "manifest.json"), Jason.encode!(manifest_map))
+    ensure_default_chat_template_file!(bundle_dir)
     bundle_dir
+  end
+
+  defp ensure_default_chat_template_file!(bundle_dir) do
+    path = Path.join(bundle_dir, "chat_template.jinja")
+
+    unless File.exists?(path) do
+      File.write!(path, "{{ messages[0].content }}")
+    end
   end
 
   defp create_safe_bundle(root, manifest_overrides \\ %{}) do
