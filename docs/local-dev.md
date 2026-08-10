@@ -320,7 +320,7 @@ All-in-one `bin/dev` intentionally rejects explicit BEAM mode and remains the si
 
 The BEAM source-dev env surface is separate from the legacy gRPC compatibility target surface.
 `ORCHARD_RUNTIME_CLIENT_TARGETS` remains gRPC compatibility-only and accepts only `host:port` targets.
-`ORCHARD_RUNTIME_ENDPOINT_TARGETS` is BEAM target-only when BEAM mode is selected and accepts BEAM node names such as `orchard_node_agent@100.x.y.z`.
+`ORCHARD_RUNTIME_ENDPOINT_TARGETS` is BEAM target-only when BEAM mode is selected and accepts BEAM node names such as `orchard_node_agent@192.168.1.20`.
 `ORCHARD_RUNTIME_ENDPOINT_TARGETS` does not configure gRPC targets.
 `ORCHARD_RUNTIME_CLIENT_TARGETS` does not configure BEAM targets.
 When BEAM mode is selected, BEAM configuration, guardrail, connection, identity, and Runtime Endpoint RPC failures fail visibly.
@@ -372,7 +372,9 @@ Both roles use `ERL_EPMD_PORT=4369` unless `ORCHARD_BEAM_EPMD_PORT` is set.
 
 Two-Mac BEAM source-dev mode requires explicit IPv4-literal node names and the same cookie material on every participating Mac.
 Do not use hostnames such as `worker.local` for BEAM target hosts in this slice.
-Use Tailscale IPv4 addresses or another trusted private IPv4-literal address.
+BEAM membership and target hosts must currently be RFC1918 private IPv4 literals (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or loopback for same-host smokes.
+Tailscale CGNAT addresses in `100.64.0.0/10` are rejected by `Orchard.RuntimeEndpoint.BeamNodeName` today, even though Tailscale is fine for SSH and file copy.
+Use LAN RFC1918 addresses for `ORCHARD_BEAM_NODE_NAME` and `ORCHARD_RUNTIME_ENDPOINT_TARGETS` until that validator is intentionally expanded.
 Provision the cookie out of band without pasting the cookie value into docs, tickets, chat, shell history, or evidence files.
 
 From one Mac, create the cookie file if you are not using an existing secret manager output:
@@ -426,7 +428,7 @@ config :orchard_controller, :inference,
   runtime_endpoint_targets: [
     %{
       transport: :beam,
-      address: "orchard_node_agent@100.64.1.10",
+      address: "orchard_node_agent@192.168.1.20",
       metadata: %{source_dev: true}
     }
   ]
@@ -628,7 +630,7 @@ ORCHARD_RUNTIME_CLIENT_TARGETS="127.0.0.1:50071,<remote-tailscale-ip>:50071" \
 The local node-agent still binds to `127.0.0.1:50071`.
 The controller targets both local and remote gRPC nodes.
 The scheduler auto-selects `MultiNode` whenever at least one target is configured.
-Use a Tailscale IPv4 address such as `100.x.y.z` in the target list.
+Use an RFC1918 IPv4 literal such as `192.168.1.20` in the BEAM target list.
 IPv6 addresses are not supported in the gRPC compatibility target list.
 
 #### Remote node-agent host
@@ -713,9 +715,51 @@ It does not prove the gRPC compatibility path.
 It should fail visibly if EPMD, distribution ports, cookies, target identity, or guardrails are wrong.
 It should not fall back to gRPC.
 
+### Multi-Mac BEAM preflight checklist
+
+Run this before the first Topology B / two-Mac BEAM smoke on macOS.
+
+1. **Address plane**
+   - Pick RFC1918 LAN IPv4 literals for every BEAM node name and target.
+   - Do not put Tailscale `100.x` addresses in `ORCHARD_BEAM_NODE_NAME` or `ORCHARD_RUNTIME_ENDPOINT_TARGETS` with the current validator.
+   - Tailscale remains useful for `ssh` / `scp` only.
+
+2. **Launch context (macOS Local Network Privacy)**
+   - Start `bin/dev-controller` and `bin/dev-node-agent` from a GUI terminal session that already has Local Network permission (Terminal.app is the proven path).
+   - Launches from non-GUI ancestors (`screen`/`tmux` detached from SSH-only contexts, some agent runners, `nohup` without a permitted GUI parent) can fail BEAM connect with `ehostunreach` / Erlang `:ehostunreach` while `ping` and Python `socket.connect` to the same host still succeed.
+   - If controller-side `:gen_tcp.connect({worker, port})` returns `:ehostunreach` but shell reachability works, fix Local Network permission / launch context before debugging cookies.
+
+3. **Packaged Orchard coexistence**
+   - Packaged node-agent may already own EPMD/dist ports (commonly EPMD `43690` and dist `52172` on worker hosts).
+   - Give source-dev a shared free set on every terminal, for example `ORCHARD_BEAM_EPMD_PORT=43691` with distinct `ORCHARD_BEAM_DIST_PORT_MIN/MAX` per role.
+   - If bootstrap says EPMD is wildcard-bound (`*:port`), stop the extra EPMD (`ERL_EPMD_PORT=<port> epmd -kill`) and keep only the address-constrained listener created by the source-dev helper.
+
+4. **Cookie**
+   - Same `tmp/dev/beam.cookie` bytes on every Mac, mode `0600`, matching SHA-256 digests.
+   - Never print or commit cookie contents.
+
+5. **Worker set**
+   - Only list real inference workers in `ORCHARD_RUNTIME_ENDPOINT_TARGETS`.
+   - If the controller Mac runs a local stub node-agent for mechanics only, omit it from targets when you want remote MLX placement.
+   - Advertising both stub and remote cold candidates can prefer the local stub.
+
+6. **Model artifacts**
+   - Import/activate the model on the controller host first.
+   - Ensure the worker can read the same artifact path the controller recorded (copy/rsync the complete bundle, including `tokenizer.json` and weight shards).
+   - Incomplete copies show up as tokenizer failures or `artifact_hash_mismatch` during model load.
+
+7. **Console compile footgun**
+   - If every `/console` LiveView returns 500 with `Sentry.LiveViewHook` undefined, recompile LiveView then Sentry (`mix deps.compile phoenix_live_view` and `mix deps.compile sentry --force`) and restart the controller.
+   - Tracked by issue #191.
+
+8. **Admission inventory gap**
+   - Configured BEAM targets can serve inference before durable `nodes` rows exist.
+   - Console may show Live Cluster health while Registered Nodes inventory stays empty and candidates remain `pending_observed`.
+   - Tracked by issue #192.
+
 ### Verification
 
-1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status.
+1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status with distinct display names and reachable status.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
 3. `GET /v1/models` should return `200`.
 4. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request.
@@ -734,6 +778,12 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 |---------|-------|-----|
 | gRPC controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format. |
 | BEAM controller exits before Mix starts | `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is empty, malformed, or uses a hostname or IPv6 address | Use comma-separated `orchard_node_agent@<ipv4-literal>` targets. |
+| BEAM boot rejects `100.x` / Tailscale node names | Host is Tailscale CGNAT; validator accepts RFC1918 only today | Use LAN RFC1918 BEAM names. Keep Tailscale for SSH/scp. See issue #193. |
+| BEAM `connect` / `:gen_tcp` returns `:ehostunreach` while `ping` works | macOS Local Network Privacy blocked the BEAM launch context | Relaunch controller/node-agent from Terminal.app (or another GUI app with Local Network allowed). |
+| Source-dev BEAM bootstrap reports wildcard-bound EPMD | Another `epmd` is listening on `0.0.0.0`/`*` for that port | `ERL_EPMD_PORT=<port> epmd -kill`, confirm only the address-constrained listener remains, rerun. |
+| Console every route 500 with `Sentry.LiveViewHook` undefined | Sentry was compiled without LiveView on the compile path | `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
+| Live Cluster healthy but Registered Nodes inventory is zero / candidates stuck `pending_observed` | Configured-target observation is not bootstrapping durable admission inventory yet | Inference may still work via configured targets. See issue #192. |
+| Model load fails with missing `tokenizer.json` or `artifact_hash_mismatch` | Incomplete artifact copy on controller or worker | Re-import a complete bundle and sync the full artifact directory to the worker path. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
 | BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ipv4` or uses the wrong role service | Use `orchard_controller@<controller-ipv4>` for the controller and exactly `orchard_node_agent@<node-ipv4>` for node-agents. |
 | BEAM cookie validation fails | Cookie file is missing, empty, or group/world-readable | Create or copy the cookie file, then run `chmod 600 tmp/dev/beam.cookie`. |
