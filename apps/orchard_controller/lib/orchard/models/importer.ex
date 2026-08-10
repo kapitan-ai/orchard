@@ -197,7 +197,6 @@ defmodule Orchard.Models.Importer do
   defp chat_template_present?(_), do: false
 
   defp chat_capability?(capabilities) when is_list(capabilities), do: "chat" in capabilities
-  defp chat_capability?(_), do: false
 
   defp fill_or_reject_chat_template(staged_path) do
     case resolve_chat_template_asset(staged_path) do
