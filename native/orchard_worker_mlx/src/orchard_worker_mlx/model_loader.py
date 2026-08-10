@@ -598,18 +598,39 @@ def _default_mlx_deps() -> MLXDeps:
 
     def _load_model(model_path: str | Path, **kwargs: Any) -> tuple[Any, Any]:
         """Wrap mlx_lm.utils.load_model; returns (model, config)."""
+        import inspect
+
         _reject_model_file_config(model_path)
-        # Forced, not defaulted: no caller may re-enable model-side remote code.
-        kwargs["trust_remote_code"] = False
+        # Prefer disabling model-side remote code when the installed mlx_lm
+        # accepts the kwarg. Newer mlx_lm loaders reject unknown kwargs.
+        try:
+            params = inspect.signature(mlx_lm_load).parameters
+            if "trust_remote_code" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                kwargs.setdefault("trust_remote_code", False)
+        except (TypeError, ValueError):
+            pass
         return mlx_lm_load(Path(model_path), **kwargs)
 
     def _load_tokenizer(tokenizer_path: str | Path) -> Any:
         # mlx_lm.tokenizer_utils.load expects the bundle directory containing
         # tokenizer assets, not the tokenizer.json file path itself.
-        return mlx_lm_load_tokenizer(
-            Path(tokenizer_path).parent,
-            tokenizer_config_extra={"trust_remote_code": False},
-        )
+        import inspect
+
+        tokenizer_dir = Path(tokenizer_path).parent
+        try:
+            params = inspect.signature(mlx_lm_load_tokenizer).parameters
+            if "tokenizer_config_extra" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                return mlx_lm_load_tokenizer(
+                    tokenizer_dir,
+                    tokenizer_config_extra={"trust_remote_code": False},
+                )
+        except (TypeError, ValueError):
+            pass
+        return mlx_lm_load_tokenizer(tokenizer_dir)
 
     return MLXDeps(
         load_model=_load_model,
