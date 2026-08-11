@@ -10,8 +10,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   alias Orchard.ClusterManagement.SchedulerExplanation
   alias Orchard.DispatchCapacity
   alias Orchard.DispatchCapacity.{AllocationAuthority, Authorization, Evaluator, Policy}
+  alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
+  alias Orchard.Models
+  alias Orchard.Models.Importer
   alias Orchard.NodeHeartbeats.CandidateSnapshot
   alias Orchard.NodeHeartbeats.CandidateSnapshot.{Candidate, Rejection}
   alias Orchard.Nodes.{AdmissionDecision, Node}
@@ -212,14 +215,28 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   # -- Helpers --
 
   defp canonical_request(model_id \\ "test-model", version \\ "v1", overrides \\ []) do
-    CanonicalRequest.new(%{
+    attrs = %{
       internal_id: "int_#{System.unique_integer([:positive])}",
       public_id: "pub_#{System.unique_integer([:positive])}",
       endpoint: :chat_completions,
       tenant_id: Keyword.get(overrides, :tenant_id, Ecto.UUID.generate()),
       model_ref: %ModelRef{model_id: model_id, version: version},
       rendered_prompt: Keyword.get(overrides, :rendered_prompt, "shared system prefix\nhello")
-    })
+    }
+
+    attrs =
+      case Keyword.fetch(overrides, :admission) do
+        {:ok, admission} -> Map.put(attrs, :admission, admission)
+        :error -> attrs
+      end
+
+    attrs =
+      case Keyword.fetch(overrides, :resolved_policy) do
+        {:ok, policy} -> Map.put(attrs, :resolved_policy, policy)
+        :error -> attrs
+      end
+
+    CanonicalRequest.new(attrs)
   end
 
   defp queue_admission_request(public_id, model_id \\ "test-model", version \\ "v1") do
@@ -748,6 +765,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     previous_probe_runner =
       Application.fetch_env(:orchard_controller, :multi_node_compatibility_probe_runner)
 
+    previous_artifact_provider =
+      Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
     stub_state =
       start_supervised!(
         {Agent,
@@ -764,12 +784,30 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       Orchard.TestSupport.InProcessCompatibilityProbeRunner
     )
 
+    # Scheduler tests exercise capacity/ranking seams, not Model Hub artifact layout.
+    # Individual #128 cases override this provider when they need missing-artifact paths.
+    Application.put_env(
+      :orchard_controller,
+      :scheduler_artifact_acquirable_provider,
+      fn _request -> true end
+    )
+
     Process.delete(:stub_score_calls)
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
       restore_application_env(StubClient, previous_stub_client)
       restore_application_env(:multi_node_compatibility_probe_runner, previous_probe_runner)
+
+      if is_nil(previous_artifact_provider) do
+        Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+      else
+        Application.put_env(
+          :orchard_controller,
+          :scheduler_artifact_acquirable_provider,
+          previous_artifact_provider
+        )
+      end
     end)
 
     :ok
@@ -1094,7 +1132,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
       put_inference(runtime_endpoint_targets: [target], runtime_client_targets: [])
 
-      assert {:error, :cluster_busy} =
+      assert {:error, :cluster_busy, decision} =
                MultiNode.schedule(canonical_request(),
                  status_client: StubClient,
                  active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
@@ -1102,6 +1140,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                    {:error, :candidate_snapshot_unavailable}
                  end
                )
+
+      assert decision.candidate_count == 0
+      assert hd(decision.rejected_candidates).reason_codes == ["queue_lane_capacity_unavailable"]
 
       assert status_calls() == []
 
@@ -5746,6 +5787,278 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp wait_until(fun, attempts \\ 50)
   defp wait_until(_fun, 0), do: false
+
+  describe "issue #128 admission policy and actionable reasons" do
+    test "default controller artifact path admits cold candidate when local dir exists" do
+      # Real default_artifact_acquirable?/1 path: provider seam unset.
+      # Controller catalog artifact_uri is under Inference.artifacts_root, not
+      # the node-agent models_root cache used by stage_test_bundle! fixtures.
+      previous_provider =
+        Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      on_exit(fn ->
+        if is_nil(previous_provider) do
+          Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+        else
+          Application.put_env(
+            :orchard_controller,
+            :scheduler_artifact_acquirable_provider,
+            previous_provider
+          )
+        end
+      end)
+
+      artifacts_root = Inference.artifacts_root()
+      model_id = "cold-default-artifact-present"
+      version = "v1"
+
+      dest =
+        Importer.artifact_destination_path(artifacts_root, model_id, version)
+
+      model =
+        create_model!(%{
+          model_id: model_id,
+          version: version,
+          state: :active,
+          display_name: model_id,
+          artifact_uri: "file://" <> dest,
+          artifact_source_uri: "file://" <> dest,
+          backend: "mlx"
+        })
+
+      dir = materialize_artifact_dir!(model, artifacts_root)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      node = insert_node!(%{advertise_addr: "10.0.0.54", rpc_port: 50_084})
+      target = Target.grpc_compat(host: "10.0.0.54", port: 50_084, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:ok, path} = Models.artifact_local_path(model)
+      assert path == Path.expand(dir)
+      assert File.dir?(path)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(
+                 canonical_request(model_id, version,
+                   admission: %{
+                     timeout_ms: 30_000,
+                     queue_wait_ms: 3_000,
+                     max_cold_start_ms: 15_000
+                   },
+                   resolved_policy: %{residency_preference: :allow_cold_load}
+                 ),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o -> {:ok, snapshot} end
+               )
+
+      assert schedule.selected_tier == "cold"
+      assert schedule.node_id == node.id
+    end
+
+    test "default controller artifact path rejects cold candidate when local dir is absent" do
+      previous_provider =
+        Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      on_exit(fn ->
+        if is_nil(previous_provider) do
+          Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+        else
+          Application.put_env(
+            :orchard_controller,
+            :scheduler_artifact_acquirable_provider,
+            previous_provider
+          )
+        end
+      end)
+
+      artifacts_root = Inference.artifacts_root()
+      model_id = "cold-default-artifact-absent"
+      version = "v1"
+
+      dest =
+        Importer.artifact_destination_path(artifacts_root, model_id, version)
+
+      model =
+        create_model!(%{
+          model_id: model_id,
+          version: version,
+          state: :active,
+          display_name: model_id,
+          artifact_uri: "file://" <> dest,
+          artifact_source_uri: "file://" <> dest,
+          backend: "mlx"
+        })
+
+      assert {:ok, path} = Models.artifact_local_path(model)
+      refute File.dir?(path)
+
+      node = insert_node!(%{advertise_addr: "10.0.0.55", rpc_port: 50_085})
+      target = Target.grpc_compat(host: "10.0.0.55", port: 50_085, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(
+                 canonical_request(model_id, version,
+                   admission: %{
+                     timeout_ms: 30_000,
+                     queue_wait_ms: 3_000,
+                     max_cold_start_ms: 15_000
+                   },
+                   resolved_policy: %{residency_preference: :allow_cold_load}
+                 ),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o -> {:ok, snapshot} end
+               )
+
+      assert Enum.any?(decision.rejected_candidates, fn rejected ->
+               "model_not_available_on_node" in rejected.reason_codes
+             end)
+
+      assert :ok = SchedulerExplanation.validate_map(decision)
+    end
+
+    test "idle cold candidate without acquirable artifact rejects with model_not_available_on_node" do
+      node = insert_node!(%{advertise_addr: "10.0.0.50", rpc_port: 50_080})
+      target = Target.grpc_compat(host: "10.0.0.50", port: 50_080, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(
+                 canonical_request("cold-missing-artifact", "v1",
+                   admission: %{
+                     timeout_ms: 30_000,
+                     queue_wait_ms: 3_000,
+                     max_cold_start_ms: 15_000
+                   },
+                   resolved_policy: %{residency_preference: :allow_cold_load}
+                 ),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o -> {:ok, snapshot} end,
+                 artifact_acquirable_provider: fn _request -> false end
+               )
+
+      assert Enum.any?(decision.rejected_candidates, fn rejected ->
+               "model_not_available_on_node" in rejected.reason_codes
+             end)
+
+      assert :ok = SchedulerExplanation.validate_map(decision)
+    end
+
+    test "required_loaded rejects cold candidates without becoming model_busy" do
+      node = insert_node!(%{advertise_addr: "10.0.0.51", rpc_port: 50_081})
+      target = Target.grpc_compat(host: "10.0.0.51", port: 50_081, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(
+                 canonical_request("cold-required-loaded", "v1",
+                   admission: %{
+                     timeout_ms: 30_000,
+                     queue_wait_ms: 3_000,
+                     max_cold_start_ms: 15_000
+                   },
+                   resolved_policy: %{residency_preference: :required_loaded}
+                 ),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o -> {:ok, snapshot} end,
+                 artifact_acquirable_provider: fn _request -> true end
+               )
+
+      assert Enum.any?(decision.rejected_candidates, fn rejected ->
+               "model_not_available_on_node" in rejected.reason_codes
+             end)
+    end
+
+    test "successful cold load uses canonical max_cold_start_ms for model_load_timeout_ms" do
+      node = insert_node!(%{advertise_addr: "10.0.0.52", rpc_port: 50_082})
+      target = Target.grpc_compat(host: "10.0.0.52", port: 50_082, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(
+                 canonical_request("cold-success", "v1",
+                   admission: %{
+                     timeout_ms: 30_000,
+                     queue_wait_ms: 3_000,
+                     max_cold_start_ms: 4_000
+                   },
+                   resolved_policy: %{residency_preference: :allow_cold_load}
+                 ),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o -> {:ok, snapshot} end,
+                 artifact_acquirable_provider: fn _request -> true end
+               )
+
+      assert schedule.selected_tier == "cold"
+      assert schedule.model_load_timeout_ms == 4_000
+      assert schedule.node_id == node.id
+    end
+
+    test "snapshot provider failure returns explained cluster_busy" do
+      node = insert_node!(%{advertise_addr: "10.0.0.53", rpc_port: 50_083})
+      target = Target.grpc_compat(host: "10.0.0.53", port: 50_083, node_id: node.id)
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o ->
+                   {:error, :snapshot_unavailable}
+                 end
+               )
+
+      assert decision.candidate_count == 0
+      assert hd(decision.rejected_candidates).reason_codes == ["queue_lane_capacity_unavailable"]
+    end
+  end
 
   defp wait_until(fun, attempts) do
     if fun.() do

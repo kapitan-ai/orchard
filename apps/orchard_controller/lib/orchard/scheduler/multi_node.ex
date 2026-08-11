@@ -43,6 +43,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.DomainMetrics
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
+  alias Orchard.Models
   alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
   alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
@@ -197,11 +198,13 @@ defmodule Orchard.Scheduler.MultiNode do
           snapshot.candidates
           |> Enum.map(&snapshot_candidate(&1, request))
           |> Enum.map(fn candidate ->
-            annotate_dispatch_capacity(candidate, opts, candidate.observation.observed_at)
+            candidate
+            |> annotate_dispatch_capacity(opts, candidate.observation.observed_at)
+            |> annotate_residency_policy(request, opts)
           end)
 
         source_rejections = Enum.map(snapshot.rejections, &snapshot_rejection/1)
-        available_candidates = Enum.filter(candidates, &dispatch_capacity_eligible?/1)
+        available_candidates = Enum.filter(candidates, &schedule_eligible?/1)
 
         if available_candidates == [] do
           all_rejected_result(request, candidates, source_rejections)
@@ -217,7 +220,12 @@ defmodule Orchard.Scheduler.MultiNode do
         end
 
       {:error, _reason} ->
-        {:error, :cluster_busy}
+        empty_decision_result(
+          request,
+          :cluster_busy,
+          "queue_lane_capacity_unavailable",
+          %{fact: "production_candidate_snapshot_unavailable"}
+        )
     end
   end
 
@@ -248,7 +256,12 @@ defmodule Orchard.Scheduler.MultiNode do
       |> Enum.reduce({[], []}, fn {target, result}, {candidates, rejections} ->
         case result do
           {:ok, {:candidate, candidate}} ->
-            {[annotate_dispatch_capacity(candidate, opts, observed_at) | candidates], rejections}
+            annotated =
+              candidate
+              |> annotate_dispatch_capacity(opts, observed_at)
+              |> annotate_residency_policy(request, opts)
+
+            {[annotated | candidates], rejections}
 
           {:ok, {:rejected, rejection}} ->
             {candidates, [rejection | rejections]}
@@ -274,7 +287,7 @@ defmodule Orchard.Scheduler.MultiNode do
 
     candidates = Enum.reverse(candidates)
     source_rejections = Enum.reverse(source_rejections)
-    available_candidates = Enum.filter(candidates, &dispatch_capacity_eligible?/1)
+    available_candidates = Enum.filter(candidates, &schedule_eligible?/1)
 
     if available_candidates == [] do
       all_rejected_result(request, candidates, source_rejections)
@@ -349,7 +362,7 @@ defmodule Orchard.Scheduler.MultiNode do
         request_id: request.public_id,
         runtime_endpoint_target: selected.target,
         request_timeout_ms: Inference.request_timeout_ms(),
-        model_load_timeout_ms: Inference.model_load_timeout_ms(),
+        model_load_timeout_ms: model_load_timeout_ms(request),
         node_id: selected.node_id,
         candidate_count: length(ranked),
         queue_lane_capacity: queue_lane_capacity(available_candidates),
@@ -456,7 +469,12 @@ defmodule Orchard.Scheduler.MultiNode do
     coherent_subject_count = length(candidates) + length(source_rejections)
 
     if coherent_subject_count == 0 do
-      {:error, :cluster_busy}
+      empty_decision_result(
+        request,
+        :cluster_busy,
+        "inventory_missing",
+        %{fact: "no_coherent_candidates"}
+      )
     else
       decision = %{
         strategy: :multi_node,
@@ -471,6 +489,29 @@ defmodule Orchard.Scheduler.MultiNode do
 
       {:error, :cluster_busy, decision}
     end
+  end
+
+  defp empty_decision_result(%CanonicalRequest{} = request, terminal, reason_code, diagnostics) do
+    decision = %{
+      strategy: :multi_node,
+      request_id: request.public_id,
+      selected_node_id: nil,
+      selection_tier: nil,
+      scored_candidates: [],
+      rejected_candidates: [
+        %{
+          node_id: nil,
+          target_ref: nil,
+          eligible: false,
+          reason_codes: [reason_code],
+          diagnostics: diagnostics
+        }
+      ],
+      skipped_candidates: [],
+      candidate_count: 0
+    }
+
+    {:error, terminal, decision}
   end
 
   defp scored_candidates(ranked, "loaded") do
@@ -624,6 +665,12 @@ defmodule Orchard.Scheduler.MultiNode do
   defp explanation_candidate_source(%{candidate_source: "monitor_snapshot"}),
     do: "monitor_snapshot"
 
+  defp explanation_candidate_source(%{candidate_source: "bounded_compatibility_probe"}),
+    do: "bounded_compatibility_probe"
+
+  defp explanation_candidate_source(%{candidate_source: source}) when is_binary(source),
+    do: source
+
   defp explanation_candidate_source(_subject), do: "bounded_compatibility_probe"
 
   defp maybe_put_diagnostic_fact(diagnostics, fact) when is_binary(fact),
@@ -677,7 +724,7 @@ defmodule Orchard.Scheduler.MultiNode do
   defp candidate_key(candidate), do: {candidate.node_id, explanation_target_ref(candidate)}
 
   defp rejection_reason_codes(candidate) do
-    if dispatch_capacity_eligible?(candidate) do
+    if dispatch_capacity_eligible?(candidate) and residency_eligible?(candidate) do
       []
     else
       ineligible_reason_codes(candidate)
@@ -692,6 +739,8 @@ defmodule Orchard.Scheduler.MultiNode do
         _missing -> ["dispatch_capacity_facts_unavailable"]
       end
 
+    residency_reason_codes = Map.get(candidate, :residency_reason_codes, [])
+
     legacy_reason_codes =
       [
         rejection_reason(candidate, &runtime_endpoint_unavailable?/1, "runtime_not_ready"),
@@ -705,11 +754,116 @@ defmodule Orchard.Scheduler.MultiNode do
       ]
       |> Enum.reject(&is_nil/1)
 
-    Enum.uniq(capacity_reason_codes ++ legacy_reason_codes)
+    Enum.uniq(capacity_reason_codes ++ residency_reason_codes ++ legacy_reason_codes)
   end
 
   defp rejection_reason(candidate, predicate, code) do
     if predicate.(candidate), do: code
+  end
+
+  defp schedule_eligible?(candidate) do
+    dispatch_capacity_eligible?(candidate) and residency_eligible?(candidate)
+  end
+
+  defp residency_eligible?(candidate) do
+    Map.get(candidate, :residency_reason_codes, []) == []
+  end
+
+  defp annotate_residency_policy(candidate, %CanonicalRequest{} = request, opts) do
+    {reason_codes, fact} = residency_decision(candidate, request, opts)
+
+    candidate
+    |> Map.put(:residency_reason_codes, reason_codes)
+    |> maybe_put_residency_fact(fact)
+  end
+
+  defp maybe_put_residency_fact(candidate, nil), do: candidate
+
+  defp maybe_put_residency_fact(candidate, fact) do
+    diagnostics = Map.get(candidate, :diagnostics, %{}) |> Map.put(:residency, fact)
+    Map.put(candidate, :diagnostics, diagnostics)
+  end
+
+  defp residency_decision(%{loaded_model?: true}, _request, _opts), do: {[], nil}
+
+  defp residency_decision(_candidate, %CanonicalRequest{} = request, opts) do
+    preference = residency_preference(request)
+    max_cold_start_ms = max_cold_start_ms(request)
+
+    cond do
+      preference == :required_loaded ->
+        {["model_not_available_on_node"], "required_loaded"}
+
+      max_cold_start_ms == 0 ->
+        {["model_not_available_on_node"], "cold_budget_zero"}
+
+      not artifact_acquirable?(request, opts) ->
+        {["model_not_available_on_node"], "artifact_unavailable"}
+
+      true ->
+        {[], nil}
+    end
+  end
+
+  defp residency_preference(%CanonicalRequest{resolved_policy: %{residency_preference: pref}})
+       when pref in [:required_loaded, :prefer_loaded, :allow_cold_load],
+       do: pref
+
+  defp residency_preference(_request), do: :allow_cold_load
+
+  defp max_cold_start_ms(%CanonicalRequest{admission: %{max_cold_start_ms: value}})
+       when is_integer(value) and value >= 0,
+       do: value
+
+  defp max_cold_start_ms(_request), do: 0
+
+  defp model_load_timeout_ms(%CanonicalRequest{} = request) do
+    cold = max_cold_start_ms(request)
+    global = Inference.model_load_timeout_ms()
+
+    if cold > 0 do
+      min(cold, global)
+    else
+      global
+    end
+  end
+
+  # Controller-side, time-sensitive acquirability. Not a heartbeat boolean.
+  defp artifact_acquirable?(%CanonicalRequest{} = request, opts) do
+    case Keyword.get(opts, :artifact_acquirable_provider) ||
+           Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider) do
+      provider when is_function(provider, 1) ->
+        provider.(request) == true
+
+      provider when is_function(provider, 0) ->
+        provider.() == true
+
+      true ->
+        true
+
+      false ->
+        false
+
+      _default ->
+        default_artifact_acquirable?(request)
+    end
+  end
+
+  defp default_artifact_acquirable?(%CanonicalRequest{model_ref: model_ref}) do
+    case Models.get_model_by_identity(model_ref.model_id, model_ref.version) do
+      nil ->
+        false
+
+      model ->
+        case Models.artifact_local_path(model) do
+          {:ok, path} -> File.dir?(path)
+          {:error, _reason} -> false
+        end
+    end
+  rescue
+    _error -> false
+  catch
+    _kind, _reason -> false
   end
 
   defp candidate_tier(%{loaded_model?: true}), do: "loaded"

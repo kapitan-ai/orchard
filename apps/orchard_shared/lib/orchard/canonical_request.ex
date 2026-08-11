@@ -64,7 +64,7 @@ defmodule Orchard.CanonicalRequest do
   defmodule Admission do
     @moduledoc false
 
-    defstruct timeout_ms: 30_000, queue_wait_ms: 0, max_cold_start_ms: 0
+    defstruct timeout_ms: 30_000, queue_wait_ms: 3_000, max_cold_start_ms: 15_000
 
     @type t :: %__MODULE__{
             timeout_ms: pos_integer(),

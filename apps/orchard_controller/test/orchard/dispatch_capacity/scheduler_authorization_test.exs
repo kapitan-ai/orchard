@@ -24,13 +24,34 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
   setup do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
+    previous_artifact_provider =
+      Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
     Process.put(:capacity_status, %{
       active_request_count: 0,
       max_concurrency: 2,
       runtime_model_placements: []
     })
 
-    on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous_inference) end)
+    Application.put_env(
+      :orchard_controller,
+      :scheduler_artifact_acquirable_provider,
+      fn _request -> true end
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :inference, previous_inference)
+
+      if is_nil(previous_artifact_provider) do
+        Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+      else
+        Application.put_env(
+          :orchard_controller,
+          :scheduler_artifact_acquirable_provider,
+          previous_artifact_provider
+        )
+      end
+    end)
 
     :ok
   end
@@ -59,7 +80,7 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node = insert_node!()
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(canonical_request(), target(node),
                status_client: StatusClient,
                dispatch_capacity_authority: authority,
@@ -154,7 +175,7 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
     node = insert_node!(evidence_observed_at: evidence_at)
     put_status(node)
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(canonical_request(), target(node),
                status_client: StatusClient,
                dispatch_capacity_authority: authority,

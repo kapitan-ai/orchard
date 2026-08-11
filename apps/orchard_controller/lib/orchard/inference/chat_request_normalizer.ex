@@ -15,6 +15,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.{ModelRef, ResponseFormat, Sampling, Tooling}
   alias Orchard.Governance
+  alias Orchard.Inference.AdmissionPolicy
 
   @doc """
   Normalizes validated params into a `CanonicalRequest`.
@@ -42,6 +43,8 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
     service_account_id = Keyword.get(opts, :service_account_id)
     api_key_id = Keyword.get(opts, :api_key_id)
 
+    policy_opts = Keyword.take(opts, AdmissionPolicy.resolve_option_keys())
+
     canonical =
       CanonicalRequest.new(
         internal_id: internal_id,
@@ -61,6 +64,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
         tooling: build_tooling(params),
         metadata: normalize_metadata(Map.get(params, "metadata"))
       )
+      |> AdmissionPolicy.resolve(policy_opts)
 
     {:ok, canonical}
   end

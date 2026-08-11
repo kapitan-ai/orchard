@@ -1538,16 +1538,33 @@ defmodule Orchard.Inference.QueueManager do
       caller_pid: Map.get(attrs, :caller_pid, self()),
       max_active_per_tenant:
         normalize_max_active_per_tenant(Map.get(attrs, :max_active_per_tenant)),
+      max_wait_ms: normalize_max_wait_ms(Map.get(attrs, :max_wait_ms)),
       queue_key: queue_key(model_id, version)
     }
   end
 
-  defp queue_config_for_request(config, %{max_active_per_tenant: limit})
+  defp queue_config_for_request(config, request) do
+    config
+    |> maybe_put_max_active_per_tenant(request)
+    |> maybe_put_max_wait_ms(request)
+  end
+
+  defp maybe_put_max_active_per_tenant(config, %{max_active_per_tenant: limit})
        when is_integer(limit) and limit > 0 do
     %{config | max_active_per_tenant: limit}
   end
 
-  defp queue_config_for_request(config, _request), do: config
+  defp maybe_put_max_active_per_tenant(config, _request), do: config
+
+  defp maybe_put_max_wait_ms(config, %{max_wait_ms: wait})
+       when is_integer(wait) and wait >= 0 do
+    %{config | max_wait_ms: wait}
+  end
+
+  defp maybe_put_max_wait_ms(config, _request), do: config
+
+  defp normalize_max_wait_ms(wait) when is_integer(wait) and wait >= 0, do: wait
+  defp normalize_max_wait_ms(_wait), do: nil
 
   defp normalize_config(config) do
     config = Keyword.merge(Orchard.Inference.queue_admission_config(), config)

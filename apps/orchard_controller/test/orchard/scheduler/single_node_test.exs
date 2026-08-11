@@ -112,7 +112,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-node-busy-model"),
                SingleNode.target(),
@@ -132,7 +132,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-node-unrelated-busy-model"),
                SingleNode.target(),
@@ -147,7 +147,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       runtime_model_placements: []
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-node-cold-busy-model"),
                SingleNode.target(),
@@ -167,7 +167,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-node-same-model-busy-model"),
                SingleNode.target(),
@@ -182,7 +182,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-busy-model"),
                SingleNode.target(),
@@ -202,7 +202,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-invalid-capacity-model"),
                SingleNode.target(),
@@ -223,7 +223,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       runtime_model_placements: [duplicate, duplicate]
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-duplicate-capacity-model"),
                SingleNode.target(),
@@ -240,7 +240,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-malformed-capacity-model"),
                SingleNode.target(),
@@ -256,7 +256,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       runtime_model_placements: []
     })
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-loaded-missing-capacity"),
                SingleNode.target(),
@@ -329,7 +329,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   test "SPEC.md §4.6.2 fails closed when authority is down after a successful unmanaged probe" do
     Process.put(:single_node_status, %{runtime_model_placements: []})
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-authority-down-after-probe"),
                SingleNode.target(),
@@ -339,7 +339,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   end
 
   test "SPEC.md §4.6.2 fails closed when authority is down after a failed unmanaged probe" do
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-authority-down-after-probe-failure"),
                SingleNode.target(),
@@ -351,7 +351,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   test "SPEC.md §4.6.2 inventory failure cannot downgrade a target to unmanaged" do
     Process.put(:single_node_status, %{active_request_count: 0, max_concurrency: 2})
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(
                canonical_request("single-inventory-failure-model"),
                SingleNode.target(),
@@ -463,10 +463,31 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       address: :"orchard_node_agent@127.0.0.1"
     }
 
-    assert {:error, :model_busy} =
+    assert {:error, :model_busy, _decision} =
              SingleNode.default_schedule(canonical_request("beam-fallback-model"), target)
 
     assert_received {:runtime_endpoint_connect, ^target}
+  end
+
+  test "issue #128 probe failure returns model_busy with stable explanation" do
+    node_id = Ecto.UUID.generate()
+
+    assert {:error, :model_busy, decision} =
+             SingleNode.default_schedule(
+               canonical_request("single-explained-probe-failure"),
+               SingleNode.target(),
+               status_client: StubClient,
+               node_resolver: fn _target ->
+                 {:ok, %Orchard.Nodes.Node{id: node_id, health: :healthy, state: :active}}
+               end
+             )
+
+    assert decision.strategy == :single_node
+    assert length(decision.rejected_candidates) == 1
+
+    codes = hd(decision.rejected_candidates).reason_codes
+    assert "transport_unreachable" in codes
+    assert hd(decision.rejected_candidates).node_id == node_id
   end
 
   defp canonical_request(model_id) do

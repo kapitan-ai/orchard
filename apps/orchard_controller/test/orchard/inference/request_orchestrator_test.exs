@@ -805,7 +805,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager do
   def await(ticket), do: QueueManager.await(ticket)
   def abandon(ticket), do: QueueManager.abandon(ticket)
   def release(grant), do: QueueManager.release(grant)
-  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def requeue(grant, request, opts \\ []), do: QueueManager.requeue(grant, request, opts)
   def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
 
   def mark_grant_node(grant, node_id, opts \\ []) do
@@ -826,7 +826,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManag
   def await(ticket), do: QueueManager.await(ticket)
   def abandon(ticket), do: QueueManager.abandon(ticket)
   def release(grant), do: QueueManager.release(grant)
-  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def requeue(grant, request, opts \\ []), do: QueueManager.requeue(grant, request, opts)
 
   def mark_grant_node(grant, node_id, opts \\ []),
     do: QueueManager.mark_grant_node(grant, node_id, opts)
@@ -848,7 +848,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.ExitingGrantNodeQueueManager
   def await(ticket), do: QueueManager.await(ticket)
   def abandon(ticket), do: QueueManager.abandon(ticket)
   def release(grant), do: QueueManager.release(grant)
-  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def requeue(grant, request, opts \\ []), do: QueueManager.requeue(grant, request, opts)
   def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
 
   def mark_grant_node(_grant, _node_id, _opts \\ []) do
@@ -1782,7 +1782,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_queue_admission_config(enabled: true, max_wait_ms: 1_000)
 
     model = create_active_model!(bundle, "request-orchestrator-queue-wait")
-    canonical = canonical_request("request-orchestrator-queue-wait", stream?: false)
+
+    canonical =
+      canonical_request("request-orchestrator-queue-wait",
+        stream?: false,
+        admission: %{queue_wait_ms: 1_000}
+      )
 
     assert {:ok, held_grant} = hold_queue_lane(canonical)
 
@@ -1810,7 +1815,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_queue_admission_config(enabled: true, capacity: 2, max_wait_ms: 1_000)
 
     model = create_active_model!(bundle, "request-orchestrator-queue-capacity-two")
-    canonical = canonical_request("request-orchestrator-queue-capacity-two", stream?: false)
+
+    canonical =
+      canonical_request("request-orchestrator-queue-capacity-two",
+        stream?: false,
+        admission: %{queue_wait_ms: 1_000}
+      )
 
     assert {:ok, first_grant} = hold_queue_lane(canonical)
     assert {:ok, second_grant} = hold_queue_lane(canonical)
@@ -1851,7 +1861,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     )
 
     model = create_active_model!(bundle, "request-orchestrator-tenant-active-cap")
-    canonical = canonical_request("request-orchestrator-tenant-active-cap", stream?: false)
+
+    canonical =
+      canonical_request("request-orchestrator-tenant-active-cap",
+        stream?: false,
+        admission: %{queue_wait_ms: 1_000}
+      )
 
     assert {:ok, held_grant} = hold_queue_lane(canonical)
 
@@ -1889,6 +1904,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical =
       canonical_request("request-orchestrator-policy-tenant-active-cap",
         stream?: false,
+        admission: %{queue_wait_ms: 1_000},
         resolved_policy: %{max_active_requests: 1}
       )
 
@@ -1944,7 +1960,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_queue_admission_config(enabled: true, max_wait_ms: 10)
 
     model = create_active_model!(bundle, "request-orchestrator-queue-timeout")
-    canonical = canonical_request("request-orchestrator-queue-timeout", stream?: false)
+
+    canonical =
+      canonical_request("request-orchestrator-queue-timeout",
+        stream?: false,
+        admission: %{queue_wait_ms: 10}
+      )
 
     assert {:ok, held_grant} = hold_queue_lane(canonical)
     assert {:error, :queue_timeout} = RequestOrchestrator.execute(canonical, model)
@@ -2031,7 +2052,13 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_capturing_runtime_adapter_config()
 
     model = create_active_model!(bundle, "request-orchestrator-live-capacity-requeue")
-    canonical = canonical_request("request-orchestrator-live-capacity-requeue", stream?: false)
+
+    canonical =
+      canonical_request("request-orchestrator-live-capacity-requeue",
+        stream?: false,
+        admission: %{queue_wait_ms: 2_000}
+      )
+
     public_id = canonical.public_id
 
     task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
@@ -2080,7 +2107,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     model = create_active_model!(bundle, "request-orchestrator-single-node-capacity-requeue")
 
     canonical =
-      canonical_request("request-orchestrator-single-node-capacity-requeue", stream?: false)
+      canonical_request("request-orchestrator-single-node-capacity-requeue",
+        stream?: false,
+        admission: %{queue_wait_ms: 2_000}
+      )
 
     public_id = canonical.public_id
 
@@ -2130,7 +2160,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_capturing_runtime_adapter_config()
 
     model = create_active_model!(bundle, "request-orchestrator-live-capacity-timeout")
-    canonical = canonical_request("request-orchestrator-live-capacity-timeout", stream?: false)
+
+    canonical =
+      canonical_request("request-orchestrator-live-capacity-timeout",
+        stream?: false,
+        admission: %{queue_wait_ms: 60}
+      )
 
     task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
     assert {:error, :queue_timeout} = reply_cluster_busy_until_done(task, canonical.public_id)
@@ -3808,7 +3843,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   end
 
   defp reply_cluster_busy_until_done(task, public_id) do
-    deadline_ms = System.monotonic_time(:millisecond) + 1_000
+    deadline_ms = System.monotonic_time(:millisecond) + 2_000
     reply_cluster_busy_until_done(task, public_id, deadline_ms)
   end
 
@@ -3863,6 +3898,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     max_output_tokens = Keyword.get(overrides, :max_output_tokens)
     tooling = Keyword.get(overrides, :tooling, %{})
     resolved_policy = Keyword.get(overrides, :resolved_policy, %{})
+    admission = Keyword.get(overrides, :admission, %{})
 
     CanonicalRequest.new(%{
       internal_id: Ecto.UUID.generate(),
@@ -3879,6 +3915,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       response_format: %{type: :text},
       tooling: tooling,
       metadata: metadata,
+      admission: admission,
       resolved_policy: resolved_policy
     })
   end
