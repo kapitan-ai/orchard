@@ -1782,6 +1782,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_queue_admission_config(enabled: true, max_wait_ms: 1_000)
 
     model = create_active_model!(bundle, "request-orchestrator-queue-wait")
+
     canonical =
       canonical_request("request-orchestrator-queue-wait",
         stream?: false,
@@ -1814,6 +1815,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_queue_admission_config(enabled: true, capacity: 2, max_wait_ms: 1_000)
 
     model = create_active_model!(bundle, "request-orchestrator-queue-capacity-two")
+
     canonical =
       canonical_request("request-orchestrator-queue-capacity-two",
         stream?: false,
@@ -1859,6 +1861,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     )
 
     model = create_active_model!(bundle, "request-orchestrator-tenant-active-cap")
+
     canonical =
       canonical_request("request-orchestrator-tenant-active-cap",
         stream?: false,
@@ -1957,6 +1960,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_queue_admission_config(enabled: true, max_wait_ms: 10)
 
     model = create_active_model!(bundle, "request-orchestrator-queue-timeout")
+
     canonical =
       canonical_request("request-orchestrator-queue-timeout",
         stream?: false,
@@ -2048,11 +2052,13 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_capturing_runtime_adapter_config()
 
     model = create_active_model!(bundle, "request-orchestrator-live-capacity-requeue")
+
     canonical =
       canonical_request("request-orchestrator-live-capacity-requeue",
         stream?: false,
         admission: %{queue_wait_ms: 2_000}
       )
+
     public_id = canonical.public_id
 
     task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
@@ -2154,6 +2160,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_capturing_runtime_adapter_config()
 
     model = create_active_model!(bundle, "request-orchestrator-live-capacity-timeout")
+
     canonical =
       canonical_request("request-orchestrator-live-capacity-timeout",
         stream?: false,
