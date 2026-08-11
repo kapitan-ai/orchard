@@ -1220,7 +1220,7 @@ defmodule Orchard.InferenceTest do
       assert Inference.scheduler() == MultiNode
       assert SingleNode.target() == [host: "127.0.0.1", port: 50_071]
 
-      assert {:error, :model_busy} =
+      assert {:error, :model_busy, _decision} =
                SingleNode.default_schedule(
                  request,
                  [host: "127.0.0.1", port: 50_071],
@@ -1234,7 +1234,7 @@ defmodule Orchard.InferenceTest do
       request = canonical_request()
 
       with_repo_unregistered(fn ->
-        assert {:error, :model_busy} = SingleNode.schedule(request)
+        assert {:error, :model_busy, _decision} = SingleNode.schedule(request)
       end)
     end
   end
