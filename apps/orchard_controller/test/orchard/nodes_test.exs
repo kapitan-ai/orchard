@@ -1050,7 +1050,7 @@ defmodule Orchard.NodesTest do
 
     test "SPEC.md §4.2 first BEAM observation creates a BEAM admission candidate" do
       node_id = Ecto.UUID.generate()
-      target = Target.beam(node_id, address: :orchard_node_agent@localhost)
+      target = Target.beam(node_id, address: :"orchard_node_agent@192.168.88.9")
       observed_at = DateTime.utc_now()
 
       observation =
@@ -1064,8 +1064,8 @@ defmodule Orchard.NodesTest do
             node_id: node_id,
             display_name: "beam-candidate",
             hostname: "beam-candidate.local",
-            listen_host: "10.0.0.16",
-            listen_port: 9444
+            listen_host: "127.0.0.1",
+            listen_port: 50_071
           },
           health: %{ready: true},
           placements: []
@@ -1078,8 +1078,114 @@ defmodule Orchard.NodesTest do
       assert candidate.source == :runtime_endpoint_observation
       assert candidate.admission_category == :pending_observed
       assert candidate.endpoint_transport == :beam
-      assert candidate.endpoint_target == "10.0.0.16:9444"
+      assert candidate.endpoint_target == "orchard_node_agent@192.168.88.9"
+      assert candidate.target_ref == "orchard_node_agent@192.168.88.9"
       assert candidate.observed_identity["claimed_node_id"] == node_id
+    end
+
+    test "issue #192 candidate-only observation never mutates an existing placeholder node" do
+      node_id = Ecto.UUID.generate()
+
+      node =
+        insert_node!(%{
+          id: node_id,
+          state: :registered,
+          display_name: "placeholder-node",
+          hostname: "placeholder.local",
+          advertise_addr: "10.0.0.50",
+          rpc_port: 9444,
+          health: :unreachable,
+          agent_version: "0.1.0"
+        })
+
+      target = Target.beam(node_id, address: :"orchard_node_agent@192.168.88.9")
+      observed_at = DateTime.utc_now()
+
+      observation =
+        Observation.new(%{
+          endpoint_id: target.id,
+          target: target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 1,
+          metadata: %{
+            node_id: node_id,
+            display_name: "discovered-spoof",
+            hostname: "discovered.local",
+            listen_host: "127.0.0.1",
+            listen_port: 50_071,
+            agent_version: "9.9.9"
+          },
+          health: %{ready: true},
+          placements: []
+        })
+
+      assert :ok = Nodes.observe_admission_candidate(target, observation, observed_at)
+
+      reloaded = Repo.get!(Node, node.id)
+      assert reloaded.display_name == "placeholder-node"
+      assert reloaded.hostname == "placeholder.local"
+      assert reloaded.advertise_addr == "10.0.0.50"
+      assert reloaded.rpc_port == 9444
+      assert reloaded.agent_version == "0.1.0"
+      assert reloaded.health == :unreachable
+      assert reloaded.state == :registered
+
+      assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+      assert candidate.admission_category == :pending_observed
+      assert candidate.endpoint_target == "orchard_node_agent@192.168.88.9"
+      assert candidate.observed_identity["display_name"] == "discovered-spoof"
+    end
+
+    test "issue #192 legacy BEAM host:port candidates reconcile onto service@host" do
+      node_id = Ecto.UUID.generate()
+      now = DateTime.utc_now()
+
+      {:ok, legacy} =
+        %AdmissionCandidate{}
+        |> AdmissionCandidate.changeset(%{
+          source: :runtime_endpoint_observation,
+          admission_category: :pending_observed,
+          observed_identity: %{
+            "claimed_node_id" => node_id,
+            "display_name" => "legacy-beam"
+          },
+          target_ref: "127.0.0.1:50071",
+          endpoint_transport: :beam,
+          endpoint_target: "127.0.0.1:50071",
+          inventory: %{},
+          compatibility_evidence: %{},
+          last_observed_at: DateTime.add(now, -5, :second)
+        })
+        |> Repo.insert()
+
+      target = Target.beam(node_id, address: :"orchard_node_agent@192.168.88.9")
+
+      observation =
+        Observation.new(%{
+          endpoint_id: target.id,
+          target: target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 1,
+          metadata: %{
+            node_id: node_id,
+            display_name: "legacy-beam",
+            hostname: "legacy-beam.local",
+            listen_host: "127.0.0.1",
+            listen_port: 50_071
+          },
+          health: %{ready: true},
+          placements: []
+        })
+
+      assert :ok = Nodes.observe_admission_candidate(target, observation, now)
+
+      assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+      assert candidate.id == legacy.id
+      assert candidate.endpoint_target == "orchard_node_agent@192.168.88.9"
+      assert candidate.target_ref == "orchard_node_agent@192.168.88.9"
+      assert Repo.get(Node, node_id) == nil
     end
 
     test "SPEC.md §4.3 rejection clear appends history before registered node admission" do

@@ -3,9 +3,9 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
 
   alias Orchard.Inference
   alias Orchard.Nodes
-  alias Orchard.Nodes.{Node, NodeHeartbeat}
+  alias Orchard.Nodes.{AdmissionCandidate, Node, NodeHeartbeat}
   alias Orchard.RuntimeEndpoint.ActivationProbe
-  alias Orchard.RuntimeEndpoint.Target
+  alias Orchard.RuntimeEndpoint.{Observation, Target}
 
   defmodule FailingClient do
     def connect(_target), do: {:error, :authenticated_transport_failed}
@@ -26,6 +26,33 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
     def status(_connection, _opts), do: {:ok, %{}}
   end
 
+  defmodule DiscoveryClient do
+    def connect(target), do: {:ok, %{target: target}}
+    def disconnect(_connection), do: :ok
+
+    def status(%{target: target}, _opts) do
+      node_id = Process.get(:activation_probe_discovery_node_id)
+
+      {:ok,
+       Observation.new(%{
+         endpoint_id: target.id,
+         target: target,
+         availability: :available,
+         aggregate_active_request_count: 0,
+         aggregate_max_concurrency: 1,
+         metadata: %{
+           node_id: node_id,
+           display_name: "discovered-beam",
+           hostname: "discovered-beam.local",
+           listen_host: "127.0.0.1",
+           listen_port: 50_071
+         },
+         health: %{ready: true},
+         placements: []
+       })}
+    end
+  end
+
   defmodule RaisingHeartbeatContext do
     def prune_expired(_observed_at), do: raise("retention unavailable")
   end
@@ -37,7 +64,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
       :orchard_controller,
       :activation_probe,
       Keyword.merge(previous,
-        allowed_clients: [FailingClient, RejectingClient, IdleClient],
+        allowed_clients: [FailingClient, RejectingClient, IdleClient, DiscoveryClient],
         interval_ms: 5_000
       )
     )
@@ -216,6 +243,174 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbeTest do
              ActivationProbe.run_once(client: IdleClient, timeout: 50)
 
     assert Nodes.sweep_stale_node_heartbeats() == :noop
+  end
+
+  test "issue #192 configured discovery bootstrap creates pending_observed candidate" do
+    node_id = Ecto.UUID.generate()
+    Process.put(:activation_probe_discovery_node_id, node_id)
+
+    target =
+      Target.normalize(%{
+        transport: :beam,
+        address: :"orchard_node_agent@192.168.88.9",
+        metadata: %{source_dev: true}
+      })
+
+    assert Repo.aggregate(Node, :count) == 0
+    assert Nodes.list_admission_candidates() == []
+
+    assert {:ok, [%{target_id: target_id, status: :observed}]} =
+             ActivationProbe.run_once(
+               client: DiscoveryClient,
+               timeout: 50,
+               targets: [],
+               discovery_targets: [target]
+             )
+
+    assert target_id == target.id
+    assert Repo.get(Node, node_id) == nil
+
+    assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+    assert candidate.admission_category == :pending_observed
+    assert candidate.endpoint_transport == :beam
+    assert candidate.endpoint_target == "orchard_node_agent@192.168.88.9"
+    assert candidate.target_ref == "orchard_node_agent@192.168.88.9"
+    assert candidate.observed_identity["claimed_node_id"] == node_id
+  end
+
+  test "issue #192 discovery failures do not invent node demotion rows" do
+    target =
+      Target.normalize(%{
+        transport: :beam,
+        address: :"orchard_node_agent@192.168.88.10",
+        metadata: %{source_dev: true}
+      })
+
+    assert {:ok, []} =
+             ActivationProbe.run_once(
+               client: FailingClient,
+               timeout: 50,
+               targets: [],
+               discovery_targets: [target]
+             )
+
+    assert Repo.aggregate(Node, :count) == 0
+    assert Nodes.list_admission_candidates() == []
+  end
+
+  test "issue #192 gRPC compatibility discovery stays ephemeral" do
+    node_id = Ecto.UUID.generate()
+    Process.put(:activation_probe_discovery_node_id, node_id)
+
+    target =
+      Target.grpc_compat(
+        host: "10.0.0.42",
+        port: 50_071,
+        metadata: %{source_dev: true}
+      )
+
+    assert {:ok, [%{target_id: target_id, status: :observed}]} =
+             ActivationProbe.run_once(
+               client: DiscoveryClient,
+               timeout: 50,
+               targets: [],
+               discovery_targets: [target]
+             )
+
+    assert target_id == target.id
+    assert Repo.get(Node, node_id) == nil
+    assert Nodes.list_admission_candidates() == []
+  end
+
+  test "issue #192 binary and atom BEAM addresses normalize to one candidate identity" do
+    node_id = Ecto.UUID.generate()
+    Process.put(:activation_probe_discovery_node_id, node_id)
+
+    atom_target =
+      Target.normalize(%{
+        transport: :beam,
+        address: :"orchard_node_agent@10.0.0.9",
+        metadata: %{source_dev: true}
+      })
+
+    binary_target =
+      Target.normalize(%{
+        transport: :beam,
+        address: "orchard_node_agent@10.0.0.9",
+        metadata: %{source_dev: true}
+      })
+
+    assert {:ok, [%{status: :observed}]} =
+             ActivationProbe.run_once(
+               client: DiscoveryClient,
+               timeout: 50,
+               targets: [],
+               discovery_targets: [atom_target]
+             )
+
+    assert {:ok, [%{status: :observed}]} =
+             ActivationProbe.run_once(
+               client: DiscoveryClient,
+               timeout: 50,
+               targets: [],
+               discovery_targets: [binary_target],
+               observed_at: DateTime.add(DateTime.utc_now(), 1, :second)
+             )
+
+    assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+    assert candidate.endpoint_target == "orchard_node_agent@10.0.0.9"
+    assert candidate.target_ref == "orchard_node_agent@10.0.0.9"
+    assert Repo.get(Node, node_id) == nil
+  end
+
+  test "issue #192 discovery does not mutate existing registered placeholder nodes" do
+    node_id = Ecto.UUID.generate()
+    Process.put(:activation_probe_discovery_node_id, node_id)
+
+    node =
+      insert_active_node!(%{
+        id: node_id,
+        state: :registered,
+        display_name: "registered-placeholder",
+        hostname: "registered-placeholder.local",
+        advertise_addr: "10.0.1.20",
+        rpc_port: 9444,
+        connect_host: "10.0.1.20",
+        connect_port: 9444,
+        health: :unreachable,
+        last_heartbeat_at: nil
+      })
+
+    # insert_active_node! forces active; rewrite to registered placeholder shape.
+    node =
+      node
+      |> Ecto.Changeset.change(%{state: :registered, health: :unreachable})
+      |> Repo.update!()
+
+    target =
+      Target.normalize(%{
+        transport: :beam,
+        address: :"orchard_node_agent@192.168.88.9",
+        metadata: %{source_dev: true}
+      })
+
+    assert {:ok, [%{status: :observed}]} =
+             ActivationProbe.run_once(
+               client: DiscoveryClient,
+               timeout: 50,
+               targets: [],
+               discovery_targets: [target]
+             )
+
+    reloaded = Repo.get!(Node, node.id)
+    assert reloaded.state == :registered
+    assert reloaded.display_name == "registered-placeholder"
+    assert reloaded.advertise_addr == "10.0.1.20"
+    assert reloaded.health == :unreachable
+
+    assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+    assert candidate.endpoint_target == "orchard_node_agent@192.168.88.9"
+    assert candidate.observed_identity["claimed_node_id"] == node_id
   end
 
   defp put_unreachable_threshold!(previous, threshold_ms) do
