@@ -25,8 +25,21 @@ defmodule OrchardConsole.Playground do
   alias Orchard.Inference.{ChatError, ChatOrchestrator}
   alias Orchard.InferenceEvent
   alias Orchard.Models
+  alias OrchardConsole.Runtime
 
-  @type model_option :: %{model_id: String.t(), version: String.t()}
+  @type readiness_fact :: :unknown | :present | :missing
+  @type placement_state :: :loaded | :none | :unknown
+
+  @type model_option :: %{
+          model_id: String.t(),
+          version: String.t(),
+          catalog_state: :active,
+          remote_availability: readiness_fact(),
+          placement_state: placement_state(),
+          loaded: boolean(),
+          inference_ready: boolean(),
+          not_ready_reason: String.t() | nil
+        }
 
   @type stream_error :: %{
           phase: :prepare | :execute | :stream,
@@ -41,20 +54,24 @@ defmodule OrchardConsole.Playground do
   # ===========================================================================
 
   @doc """
-  Returns active models for the playground model picker.
+  Returns active models for the playground model picker with readiness facts.
 
-  Models are projected to plain maps and sorted by `{model_id, version}`
-  for deterministic display order.
+  Catalog-active models are always listed. Inference readiness is projected
+  from authoritative Runtime Endpoint loaded placements only. Missing or
+  unknown readiness facts fail closed as non-ready.
   """
   @spec list_models() :: {:ok, [model_option()]} | {:error, map()}
   def list_models do
+    readiness_index = runtime_readiness_index()
+
     models =
       models_impl().list_active_models()
       |> Enum.map(fn model ->
-        %{
-          model_id: safe_string(model.model_id),
-          version: safe_string(model.version)
-        }
+        project_model_option(
+          safe_string(model.model_id),
+          safe_string(model.version),
+          readiness_index
+        )
       end)
       |> Enum.sort_by(&{&1.model_id, &1.version})
 
@@ -68,6 +85,33 @@ defmodule OrchardConsole.Playground do
          message: "Active model list unavailable."
        }}
   end
+
+  @doc """
+  Returns true when a model option is authoritative inference-ready.
+  """
+  @spec inference_ready?(term()) :: boolean()
+  def inference_ready?(%{inference_ready: true}), do: true
+  def inference_ready?(_), do: false
+
+  @doc """
+  Finds a projected model option by picker value (`model_id@version`).
+  """
+  @spec find_model_option([model_option()], String.t()) :: model_option() | nil
+  def find_model_option(models, value) when is_list(models) and is_binary(value) do
+    Enum.find(models, fn model -> model_value(model) == value end)
+  end
+
+  def find_model_option(_models, _value), do: nil
+
+  @doc """
+  Canonical picker value for a model option.
+  """
+  @spec model_value(model_option() | map()) :: String.t()
+  def model_value(%{model_id: model_id, version: version})
+      when is_binary(model_id) and is_binary(version),
+      do: "#{model_id}@#{version}"
+
+  def model_value(_), do: ""
 
   @doc """
   Starts an async streaming chat run.
@@ -95,6 +139,27 @@ defmodule OrchardConsole.Playground do
   # ===========================================================================
 
   defp run_stream(orchestrator, owner, run_ref, params, caller_context) do
+    case ensure_model_inference_ready(params) do
+      :ok ->
+        do_run_stream(orchestrator, owner, run_ref, params, caller_context)
+
+      {:error, error} ->
+        send(owner, {:playground, run_ref, :finished, {:error, error}})
+    end
+  rescue
+    exception ->
+      error = %{
+        phase: :execute,
+        type: "server_error",
+        code: "internal_error",
+        message: "Unexpected error: #{Exception.message(exception)}",
+        param: nil
+      }
+
+      send(owner, {:playground, run_ref, :finished, {:error, error}})
+  end
+
+  defp do_run_stream(orchestrator, owner, run_ref, params, caller_context) do
     case orchestrator.prepare(params, caller_context) do
       {:ok, canonical, model} ->
         send(owner, {:playground, run_ref, :started, %{request_id: canonical.public_id}})
@@ -123,17 +188,48 @@ defmodule OrchardConsole.Playground do
         error = normalize_error(:prepare, reason)
         send(owner, {:playground, run_ref, :finished, {:error, error}})
     end
-  rescue
-    exception ->
-      error = %{
-        phase: :execute,
-        type: "server_error",
-        code: "internal_error",
-        message: "Unexpected error: #{Exception.message(exception)}",
-        param: nil
-      }
+  end
 
-      send(owner, {:playground, run_ref, :finished, {:error, error}})
+  defp ensure_model_inference_ready(params) when is_map(params) do
+    model_value = params |> Map.get("model", "") |> to_string() |> String.trim()
+
+    case list_models() do
+      {:ok, models} ->
+        case find_model_option(models, model_value) do
+          %{inference_ready: true} ->
+            :ok
+
+          %{not_ready_reason: reason} = _option
+          when is_binary(reason) and reason != "" ->
+            {:error, unready_stream_error(reason)}
+
+          %{} ->
+            {:error,
+             unready_stream_error(
+               "Selected model is not inference-ready. Catalog-active is not enough to send."
+             )}
+
+          nil ->
+            {:error, unready_stream_error("Selected model is not available in the catalog.")}
+        end
+
+      {:error, _error} ->
+        {:error, unready_stream_error("Active model list unavailable.")}
+    end
+  end
+
+  defp ensure_model_inference_ready(_params) do
+    {:error, unready_stream_error("Selected model is not inference-ready.")}
+  end
+
+  defp unready_stream_error(message) do
+    %{
+      phase: :prepare,
+      type: "invalid_request_error",
+      code: "model_not_ready",
+      message: message,
+      param: "model"
+    }
   end
 
   # ===========================================================================
@@ -178,6 +274,124 @@ defmodule OrchardConsole.Playground do
   end
 
   # ===========================================================================
+  # Readiness projection
+  # ===========================================================================
+
+  defp project_model_option(model_id, version, readiness_index) do
+    key = {model_id, version}
+
+    case readiness_index do
+      %{status: status, loaded: loaded_set} when status in [:observed, :partial] ->
+        cond do
+          MapSet.member?(loaded_set, key) ->
+            %{
+              model_id: model_id,
+              version: version,
+              catalog_state: :active,
+              remote_availability: :present,
+              placement_state: :loaded,
+              loaded: true,
+              inference_ready: true,
+              not_ready_reason: nil
+            }
+
+          status == :partial ->
+            %{
+              model_id: model_id,
+              version: version,
+              catalog_state: :active,
+              remote_availability: :unknown,
+              placement_state: :unknown,
+              loaded: false,
+              inference_ready: false,
+              not_ready_reason:
+                "Readiness partially observed. Playground cannot confirm a loaded placement for this model."
+            }
+
+          true ->
+            %{
+              model_id: model_id,
+              version: version,
+              catalog_state: :active,
+              remote_availability: :unknown,
+              placement_state: :none,
+              loaded: false,
+              inference_ready: false,
+              not_ready_reason:
+                "Catalog-active, but no loaded placement on any ready node. Catalog activation is not runtime readiness."
+            }
+        end
+
+      %{status: :unknown} ->
+        %{
+          model_id: model_id,
+          version: version,
+          catalog_state: :active,
+          remote_availability: :unknown,
+          placement_state: :unknown,
+          loaded: false,
+          inference_ready: false,
+          not_ready_reason:
+            "Readiness unknown. Playground cannot confirm a loaded placement for this model."
+        }
+    end
+  end
+
+  defp runtime_readiness_index do
+    snapshots = runtime_snapshots()
+    successful = Enum.filter(snapshots, &successful_snapshot?/1)
+
+    cond do
+      successful == [] ->
+        %{status: :unknown}
+
+      length(successful) == length(snapshots) ->
+        %{status: :observed, loaded: loaded_identity_set(successful)}
+
+      true ->
+        %{status: :partial, loaded: loaded_identity_set(successful)}
+    end
+  end
+
+  defp runtime_snapshots do
+    case runtime_impl().cluster_snapshot() do
+      snapshots when is_list(snapshots) -> snapshots
+      _other -> []
+    end
+  rescue
+    _ -> []
+  catch
+    _kind, _reason -> []
+  end
+
+  defp successful_snapshot?(snapshot) do
+    value(snapshot, :status) in [:ok, "ok"]
+  end
+
+  defp loaded_identity_set(snapshots) do
+    snapshots
+    |> Enum.flat_map(&List.wrap(value(&1, :loaded_models)))
+    |> Enum.reduce(MapSet.new(), &put_loaded_identity/2)
+  end
+
+  defp put_loaded_identity(model, identities) do
+    model_id = safe_string(value(model, :model_id))
+    version = safe_string(value(model, :version))
+
+    if model_id == "" or version == "" do
+      identities
+    else
+      MapSet.put(identities, {model_id, version})
+    end
+  end
+
+  defp value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp value(_other, _key), do: nil
+
+  # ===========================================================================
   # Config seam
   # ===========================================================================
 
@@ -187,6 +401,12 @@ defmodule OrchardConsole.Playground do
 
   defp orchestrator_impl do
     console_config()[:playground_orchestrator_impl] || ChatOrchestrator
+  end
+
+  defp runtime_impl do
+    console_config()[:playground_runtime_impl] ||
+      console_config()[:runtime_impl] ||
+      Runtime
   end
 
   defp console_config do

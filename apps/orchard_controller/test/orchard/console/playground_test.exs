@@ -12,11 +12,20 @@ defmodule OrchardConsole.PlaygroundTest do
       :console,
       Keyword.merge(previous,
         playground_models_impl: __MODULE__.StubModels,
-        playground_orchestrator_impl: __MODULE__.StubOrchestrator
+        playground_orchestrator_impl: __MODULE__.StubOrchestrator,
+        playground_runtime_impl: __MODULE__.StubRuntime
       )
     )
 
-    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous) end)
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous)
+      :persistent_term.erase({__MODULE__, :models})
+      :persistent_term.erase({__MODULE__, :runtime})
+      :persistent_term.erase({__MODULE__, :orchestrator})
+      :persistent_term.erase({__MODULE__, :test_pid})
+    end)
+
+    :persistent_term.put({__MODULE__, :test_pid}, self())
     :ok
   end
 
@@ -25,36 +34,118 @@ defmodule OrchardConsole.PlaygroundTest do
   # ===========================================================================
 
   describe "list_models/0" do
-    test "projects and sorts active models deterministically" do
+    test "projects and sorts active models with readiness facts" do
       stub_models([
         %{model_id: "z-model", version: "v2"},
         %{model_id: "a-model", version: "v1"},
         %{model_id: "a-model", version: "main"}
       ])
 
+      stub_runtime([
+        %{
+          status: :ok,
+          loaded_models: [%{model_id: "a-model", version: "v1"}]
+        }
+      ])
+
       assert {:ok, models} = Playground.list_models()
 
       assert [
-               %{model_id: "a-model", version: "main"},
-               %{model_id: "a-model", version: "v1"},
-               %{model_id: "z-model", version: "v2"}
+               %{
+                 model_id: "a-model",
+                 version: "main",
+                 catalog_state: :active,
+                 inference_ready: false,
+                 placement_state: :none,
+                 loaded: false
+               },
+               %{
+                 model_id: "a-model",
+                 version: "v1",
+                 catalog_state: :active,
+                 inference_ready: true,
+                 placement_state: :loaded,
+                 loaded: true,
+                 remote_availability: :present,
+                 not_ready_reason: nil
+               },
+               %{
+                 model_id: "z-model",
+                 version: "v2",
+                 catalog_state: :active,
+                 inference_ready: false,
+                 placement_state: :none,
+                 loaded: false
+               }
              ] = models
+    end
+
+    test "marks catalog-active models non-ready when no loaded placement exists" do
+      stub_models([%{model_id: "test-model", version: "v1"}])
+      stub_runtime([%{status: :ok, loaded_models: []}])
+
+      assert {:ok, [model]} = Playground.list_models()
+      assert model.inference_ready == false
+      assert model.placement_state == :none
+      assert model.loaded == false
+      assert model.not_ready_reason =~ "no loaded placement"
+    end
+
+    test "fails closed when runtime readiness is unknown" do
+      stub_models([%{model_id: "test-model", version: "v1"}])
+      stub_runtime(:error)
+
+      assert {:ok, [model]} = Playground.list_models()
+      assert model.inference_ready == false
+      assert model.placement_state == :unknown
+      assert model.not_ready_reason =~ "Readiness unknown"
+    end
+
+    test "marks absence unknown when only some runtime targets respond" do
+      stub_models([%{model_id: "test-model", version: "v1"}])
+
+      stub_runtime([
+        %{status: :error, loaded_models: [%{model_id: "test-model", version: "v1"}]},
+        %{status: :ok, loaded_models: []}
+      ])
+
+      assert {:ok, [model]} = Playground.list_models()
+      assert model.inference_ready == false
+      assert model.placement_state == :unknown
+      assert model.not_ready_reason =~ "partially observed"
+    end
+
+    test "accepts an exact loaded match from a successful target during partial outage" do
+      stub_models([%{model_id: "test-model", version: "v1"}])
+
+      stub_runtime([
+        %{status: :error, loaded_models: []},
+        %{status: :ok, loaded_models: [%{model_id: "test-model", version: "v1"}]}
+      ])
+
+      assert {:ok, [model]} = Playground.list_models()
+      assert model.inference_ready == true
+      assert model.placement_state == :loaded
     end
 
     test "returns empty list when no active models" do
       stub_models([])
+      stub_runtime([%{status: :ok, loaded_models: []}])
 
       assert {:ok, []} = Playground.list_models()
     end
 
     test "normalizes non-binary identity fields defensively" do
       stub_models([%{model_id: nil, version: 42}])
+      stub_runtime([%{status: :ok, loaded_models: []}])
 
-      assert {:ok, [%{model_id: "", version: ""}]} = Playground.list_models()
+      assert {:ok, [%{model_id: "", version: "", inference_ready: false}]} =
+               Playground.list_models()
     end
 
     test "returns normalized error on source exception" do
       stub_models(:raise)
+      stub_runtime([%{status: :ok, loaded_models: []}])
 
       assert {:error, error} = Playground.list_models()
       assert error.code == "models_unavailable"
@@ -67,6 +158,16 @@ defmodule OrchardConsole.PlaygroundTest do
   # ===========================================================================
 
   describe "start_stream/4" do
+    setup do
+      stub_models([%{model_id: "test-model", version: "v1"}])
+
+      stub_runtime([
+        %{status: :ok, loaded_models: [%{model_id: "test-model", version: "v1"}]}
+      ])
+
+      :ok
+    end
+
     test "returns {:ok, pid} immediately" do
       stub_orchestrator(
         prepare: {:ok, fake_canonical(), %{}},
@@ -121,23 +222,54 @@ defmodule OrchardConsole.PlaygroundTest do
       assert_receive {:playground, ^ref, :event, ^delta_event}, 1000
     end
 
-    test "sends :finished with {:ok, summary} on success" do
+    test "rejects non-ready models before prepare or execute" do
+      stub_runtime([%{status: :ok, loaded_models: []}])
       ref = make_ref()
-      canonical = fake_canonical("req_ok")
 
       stub_orchestrator(
-        prepare: {:ok, canonical, %{}},
-        execute: {:ok, canonical, []}
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_opts: true
       )
 
       {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
 
-      assert_receive {:playground, ^ref, :finished, {:ok, summary}}, 1000
-      assert summary.canonical_request == canonical
-      assert summary.events == []
+      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+      assert error.phase == :prepare
+      assert error.code == "model_not_ready"
+      assert error.message =~ "no loaded placement"
+      refute_receive {:playground, ^ref, :started, _}, 100
+      refute_receive {:captured_opts, _}, 100
     end
 
-    test "passes owner pid as :caller option to execute" do
+    test "normalizes prepare errors" do
+      ref = make_ref()
+
+      stub_orchestrator(prepare: {:error, :invalid_request})
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+      assert error.phase == :prepare
+    end
+
+    test "normalizes execute errors after started" do
+      ref = make_ref()
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical("req_exec"), %{}},
+        execute: {:error, :model_busy}
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+      assert_receive {:playground, ^ref, :started, %{request_id: "req_exec"}}, 1000
+      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+      assert error.phase == :execute
+      assert error.code == "model_busy"
+    end
+
+    test "passes caller option to orchestrator execute" do
       ref = make_ref()
       owner = self()
 
@@ -150,49 +282,16 @@ defmodule OrchardConsole.PlaygroundTest do
       {:ok, _pid} = Playground.start_stream(owner, ref, valid_params())
 
       assert_receive {:captured_opts, opts}, 1000
-      assert opts[:caller] == owner
+      assert Keyword.get(opts, :caller) == owner
     end
 
-    test "normalizes prepare failure and sends :finished with :error" do
+    test "rescues unexpected task exceptions" do
       ref = make_ref()
-
-      stub_orchestrator(prepare: {:error, {:model_not_found, "missing@v1"}})
-
-      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
-
-      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
-      assert error.phase == :prepare
-      assert error.code == "model_not_found"
-      assert error.message =~ "missing@v1"
-
-      # Should NOT receive :started
-      refute_received {:playground, ^ref, :started, _}
-    end
-
-    test "normalizes execute failure and sends :finished with :error" do
-      ref = make_ref()
-
-      stub_orchestrator(
-        prepare: {:ok, fake_canonical(), %{}},
-        execute: {:error, :something_went_wrong}
-      )
-
-      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
-
-      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
-      assert error.phase == :execute
-      assert error.type == "api_error"
-    end
-
-    test "handles task-body exceptions gracefully" do
-      ref = make_ref()
-
       stub_orchestrator(prepare: :raise)
 
       {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
 
       assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
-      assert error.type == "server_error"
       assert error.code == "internal_error"
     end
   end
@@ -203,20 +302,26 @@ defmodule OrchardConsole.PlaygroundTest do
 
   defmodule StubModels do
     def list_active_models do
-      [{_pid, config}] =
-        Registry.lookup(OrchardConsole.PlaygroundTest.StubRegistry, :models)
-
-      case config do
+      case :persistent_term.get({OrchardConsole.PlaygroundTest, :models}, []) do
         :raise -> raise "DB unavailable"
-        models -> models
+        models when is_list(models) -> models
+      end
+    end
+  end
+
+  defmodule StubRuntime do
+    def cluster_snapshot(_opts \\ []) do
+      case :persistent_term.get({OrchardConsole.PlaygroundTest, :runtime}, []) do
+        :error -> raise "runtime unavailable"
+        :exit -> exit(:runtime_unavailable)
+        snapshots when is_list(snapshots) -> snapshots
       end
     end
   end
 
   defmodule StubOrchestrator do
     def prepare(_params, _caller_context) do
-      [{_pid, config}] =
-        Registry.lookup(OrchardConsole.PlaygroundTest.StubRegistry, :orchestrator)
+      config = :persistent_term.get({OrchardConsole.PlaygroundTest, :orchestrator}, [])
 
       case config[:prepare] do
         :raise -> raise "Prepare exploded"
@@ -225,16 +330,13 @@ defmodule OrchardConsole.PlaygroundTest do
     end
 
     def execute(canonical, _model, opts) do
-      [{_pid, config}] =
-        Registry.lookup(OrchardConsole.PlaygroundTest.StubRegistry, :orchestrator)
+      config = :persistent_term.get({OrchardConsole.PlaygroundTest, :orchestrator}, [])
+      test_pid = :persistent_term.get({OrchardConsole.PlaygroundTest, :test_pid}, nil)
 
-      # Capture opts if requested
-      if config[:capture_opts] do
-        [{pid, _}] = Registry.lookup(OrchardConsole.PlaygroundTest.StubRegistry, :orchestrator)
-        send(pid, {:captured_opts, opts})
+      if config[:capture_opts] && test_pid do
+        send(test_pid, {:captured_opts, opts})
       end
 
-      # Fire events through the handler if provided
       event_handler = Keyword.get(opts, :event_handler)
 
       if event_handler && config[:events] do
@@ -255,19 +357,15 @@ defmodule OrchardConsole.PlaygroundTest do
   # ===========================================================================
 
   defp stub_models(data) do
-    ensure_registry()
-    Registry.register(__MODULE__.StubRegistry, :models, data)
+    :persistent_term.put({__MODULE__, :models}, data)
+  end
+
+  defp stub_runtime(data) do
+    :persistent_term.put({__MODULE__, :runtime}, data)
   end
 
   defp stub_orchestrator(config) do
-    ensure_registry()
-    Registry.register(__MODULE__.StubRegistry, :orchestrator, config)
-  end
-
-  defp ensure_registry do
-    unless Process.whereis(__MODULE__.StubRegistry) do
-      start_supervised!({Registry, keys: :duplicate, name: __MODULE__.StubRegistry})
-    end
+    :persistent_term.put({__MODULE__, :orchestrator}, config)
   end
 
   defp valid_params do

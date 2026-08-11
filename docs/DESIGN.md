@@ -660,6 +660,12 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
   multi-line.
 - [ ] `<.input type="textarea">` main message - well treatment scales to
   large height; the `SubmitOnModEnter` hook still fires.
+- [ ] The selected model shows catalog, remote observation, placement, loaded,
+  and inference-ready facts separately.
+- [ ] Missing or unknown Runtime Endpoint readiness is visibly non-ready and
+  disables Send; catalog activation alone never reads as inference-ready.
+- [ ] The rendered disabled state and the LiveView submit handler enforce the
+  same exact-model-version loaded-placement requirement.
 - [ ] Send remains a submit control for `#playground-form`; click submission
   routes through `PlaygroundSubmitClick` and respects disabled state.
 - [ ] Cmd/Ctrl + Enter uses the same browser submit path as Send and respects

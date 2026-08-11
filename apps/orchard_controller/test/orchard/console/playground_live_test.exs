@@ -33,8 +33,8 @@ defmodule OrchardConsole.PlaygroundLiveTest do
     :persistent_term.put({__MODULE__, :test_pid}, self())
 
     stub_models([
-      %{model_id: "test-model", version: "v1"},
-      %{model_id: "test-model", version: "v2"}
+      ready_model("test-model", "v1"),
+      ready_model("test-model", "v2")
     ])
 
     :ok
@@ -85,6 +85,78 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       {:ok, _view, html} = live(conn, "/console/playground")
 
       assert html =~ "Playground \u2014 Orchard Console"
+    end
+  end
+
+  describe "model readiness gate" do
+    test "shows readiness facts and disables Send for catalog-active unloadable model", %{
+      conn: conn
+    } do
+      stub_models([unready_model("test-model", "v1")])
+
+      {:ok, view, html} = live(conn, "/console/playground")
+
+      assert html =~ "playground-model-readiness"
+      assert html =~ "Catalog: active"
+      assert html =~ "Placement: none"
+      assert html =~ "Loaded: no"
+      assert html =~ "Ready: no"
+      assert html =~ "no loaded placement"
+
+      send_button = view |> element("#playground-send") |> render()
+      assert send_button =~ "disabled"
+    end
+
+    test "server rejects submit for non-ready model without starting a stream", %{conn: conn} do
+      stub_models([unready_model("test-model", "v1")])
+
+      {:ok, view, _html} = live(conn, "/console/playground")
+
+      html =
+        view
+        |> form("#playground-form",
+          playground: %{model: "test-model@v1", prompt: "Should not start"}
+        )
+        |> render_submit()
+
+      assert html =~ "no loaded placement"
+      refute_receive {:stub_run_ref, _}, 200
+      refute_receive {:stub_start_stream, _, _}, 200
+      refute html =~ "playground-message-msg-0"
+    end
+
+    test "ready loaded model remains submittable", %{conn: conn} do
+      stub_models([ready_model("test-model", "v1")])
+
+      {:ok, view, html} = live(conn, "/console/playground")
+
+      assert html =~ "Ready: yes"
+      refute has_element?(view, "#playground-send[disabled]")
+
+      {_ref, params} = submit_prompt_and_capture(view)
+      assert params["model"] == "test-model@v1"
+    end
+
+    test "submit fails closed when readiness refresh becomes unavailable", %{conn: conn} do
+      stub_models([ready_model("test-model", "v1")])
+
+      {:ok, view, html} = live(conn, "/console/playground")
+      refute html =~ "Model readiness unavailable"
+
+      stub_models(:error)
+
+      html =
+        view
+        |> form("#playground-form",
+          playground: %{model: "test-model@v1", prompt: "Should not start"}
+        )
+        |> render_submit()
+
+      assert html =~ "Model readiness unavailable. Send remains disabled."
+      assert has_element?(view, "#playground-send[disabled]")
+      refute_receive {:stub_run_ref, _}, 200
+      refute_receive {:stub_start_stream, _, _}, 200
+      refute html =~ "playground-message-msg-0"
     end
   end
 
@@ -678,7 +750,7 @@ defmodule OrchardConsole.PlaygroundLiveTest do
            }}
 
         models when is_list(models) ->
-          {:ok, models}
+          {:ok, Enum.map(models, &normalize_stub_model/1)}
       end
     end
 
@@ -692,6 +764,34 @@ defmodule OrchardConsole.PlaygroundLiveTest do
 
       # Return a dummy task pid — the test will drive messages manually
       {:ok, spawn(fn -> :timer.sleep(:infinity) end)}
+    end
+
+    defp normalize_stub_model(model) do
+      model_id = Map.get(model, :model_id) || ""
+      version = Map.get(model, :version) || ""
+      inference_ready = Map.get(model, :inference_ready, true) == true
+
+      %{
+        model_id: model_id,
+        version: version,
+        catalog_state: Map.get(model, :catalog_state, :active),
+        remote_availability:
+          Map.get(model, :remote_availability, if(inference_ready, do: :present, else: :unknown)),
+        placement_state:
+          Map.get(model, :placement_state, if(inference_ready, do: :loaded, else: :none)),
+        loaded: Map.get(model, :loaded, inference_ready),
+        inference_ready: inference_ready,
+        not_ready_reason:
+          Map.get(
+            model,
+            :not_ready_reason,
+            if(inference_ready,
+              do: nil,
+              else:
+                "Catalog-active, but no loaded placement on any ready node. Catalog activation is not runtime readiness."
+            )
+          )
+      }
     end
   end
 
@@ -775,6 +875,33 @@ defmodule OrchardConsole.PlaygroundLiveTest do
 
   defp stub_models(data) do
     :persistent_term.put({__MODULE__, :models}, data)
+  end
+
+  defp ready_model(model_id, version) do
+    %{
+      model_id: model_id,
+      version: version,
+      catalog_state: :active,
+      remote_availability: :present,
+      placement_state: :loaded,
+      loaded: true,
+      inference_ready: true,
+      not_ready_reason: nil
+    }
+  end
+
+  defp unready_model(model_id, version) do
+    %{
+      model_id: model_id,
+      version: version,
+      catalog_state: :active,
+      remote_availability: :unknown,
+      placement_state: :none,
+      loaded: false,
+      inference_ready: false,
+      not_ready_reason:
+        "Catalog-active, but no loaded placement on any ready node. Catalog activation is not runtime readiness."
+    }
   end
 
   defp submit_prompt(view, prompt \\ "Test prompt") do

@@ -1094,10 +1094,12 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       html = render(view)
       assert html =~ "model-hub-download-complete"
-      assert html =~ "Model is now active."
+      assert html =~ "Model is now catalog-active."
+      assert html =~ "Catalog activation is not runtime readiness"
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
       assert html =~ "abc123def456"
       assert has_element?(view, "#model-hub-download-models-link")
+      assert has_element?(view, "#model-hub-download-readiness-note")
 
       assert has_element?(
                view,
@@ -1515,7 +1517,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       # Success panel visible immediately from rehydration
       assert html =~ "model-hub-download-complete"
-      assert html =~ "Model is now active."
+      assert html =~ "Model is now catalog-active."
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
       assert html =~ "abc123def456"
       assert has_element?(remounted_view, "#model-hub-download-playground-link")
