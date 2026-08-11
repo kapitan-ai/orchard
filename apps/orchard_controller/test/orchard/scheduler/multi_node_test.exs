@@ -10,8 +10,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   alias Orchard.ClusterManagement.SchedulerExplanation
   alias Orchard.DispatchCapacity
   alias Orchard.DispatchCapacity.{AllocationAuthority, Authorization, Evaluator, Policy}
+  alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
+  alias Orchard.Models
+  alias Orchard.Models.Importer
   alias Orchard.NodeHeartbeats.CandidateSnapshot
   alias Orchard.NodeHeartbeats.CandidateSnapshot.{Candidate, Rejection}
   alias Orchard.Nodes.{AdmissionDecision, Node}
@@ -5807,12 +5810,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         end
       end)
 
-      artifacts_root = Orchard.Inference.artifacts_root()
+      artifacts_root = Inference.artifacts_root()
       model_id = "cold-default-artifact-present"
       version = "v1"
 
       dest =
-        Orchard.Models.Importer.artifact_destination_path(artifacts_root, model_id, version)
+        Importer.artifact_destination_path(artifacts_root, model_id, version)
 
       model =
         create_model!(%{
@@ -5840,7 +5843,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       persist_snapshot_capacity_evidence!(snapshot)
 
-      assert {:ok, path} = Orchard.Models.artifact_local_path(model)
+      assert {:ok, path} = Models.artifact_local_path(model)
       assert path == Path.expand(dir)
       assert File.dir?(path)
 
@@ -5881,12 +5884,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         end
       end)
 
-      artifacts_root = Orchard.Inference.artifacts_root()
+      artifacts_root = Inference.artifacts_root()
       model_id = "cold-default-artifact-absent"
       version = "v1"
 
       dest =
-        Orchard.Models.Importer.artifact_destination_path(artifacts_root, model_id, version)
+        Importer.artifact_destination_path(artifacts_root, model_id, version)
 
       model =
         create_model!(%{
@@ -5899,7 +5902,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           backend: "mlx"
         })
 
-      assert {:ok, path} = Orchard.Models.artifact_local_path(model)
+      assert {:ok, path} = Models.artifact_local_path(model)
       refute File.dir?(path)
 
       node = insert_node!(%{advertise_addr: "10.0.0.55", rpc_port: 50_085})
