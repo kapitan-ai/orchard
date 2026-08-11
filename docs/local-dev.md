@@ -748,9 +748,9 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
    - Ensure the worker can read the same artifact path the controller recorded (copy/rsync the complete bundle, including `tokenizer.json` and weight shards).
    - Incomplete copies show up as tokenizer failures or `artifact_hash_mismatch` during model load.
 
-7. **Console compile footgun**
-   - If every `/console` LiveView returns 500 with `Sentry.LiveViewHook` undefined, recompile LiveView then Sentry (`mix deps.compile phoenix_live_view` and `mix deps.compile sentry --force`) and restart the controller.
-   - Tracked by issue #191.
+7. **Console Sentry LiveView context**
+   - Console LiveViews mount even when `Sentry.LiveViewHook` is missing (issue #191).
+   - If controller boot logs that the hook is unavailable, or Console crashes lack LiveView Sentry context, recompile LiveView then Sentry (`mix deps.compile phoenix_live_view` and `mix deps.compile sentry --force`) and restart the controller so Sentry sees LiveView on its compile path.
 
 8. **Admission inventory gap**
    - Configured BEAM targets can serve inference before durable `nodes` rows exist.
@@ -781,7 +781,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | BEAM boot rejects `100.x` / Tailscale node names | Host is Tailscale CGNAT; validator accepts RFC1918 only today | Use LAN RFC1918 BEAM names. Keep Tailscale for SSH/scp. See issue #193. |
 | BEAM `connect` / `:gen_tcp` returns `:ehostunreach` while `ping` works | macOS Local Network Privacy blocked the BEAM launch context | Relaunch controller/node-agent from Terminal.app (or another GUI app with Local Network allowed). |
 | Source-dev BEAM bootstrap reports wildcard-bound EPMD | Another `epmd` is listening on `0.0.0.0`/`*` for that port | `ERL_EPMD_PORT=<port> epmd -kill`, confirm only the address-constrained listener remains, rerun. |
-| Console every route 500 with `Sentry.LiveViewHook` undefined | Sentry was compiled without LiveView on the compile path | `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
+| Console boot warns `Sentry.LiveViewHook` unavailable / LiveView crashes lack Sentry context | Sentry was compiled without LiveView on the compile path | Console still mounts. To restore LiveView Sentry context: `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
 | Live Cluster healthy but Registered Nodes inventory is zero / candidates stuck `pending_observed` | Configured-target observation is not bootstrapping durable admission inventory yet | Inference may still work via configured targets. See issue #192. |
 | Model load fails with missing `tokenizer.json` or `artifact_hash_mismatch` | Incomplete artifact copy on controller or worker | Re-import a complete bundle and sync the full artifact directory to the worker path. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |

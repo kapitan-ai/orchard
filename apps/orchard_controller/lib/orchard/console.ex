@@ -51,12 +51,20 @@ defmodule OrchardConsole do
   end
 
   @doc """
-  LiveView `on_mount` hook that gates console access on mount/reconnect.
+  LiveView `on_mount` hooks shared by Console LiveViews.
 
-  Checks both the feature flag (`console_enabled`) and the session auth
-  marker (for `:basic` auth mode). Redirects to `/console` on denial,
-  which re-enters the HTTP plug for proper 404 or 401 handling.
+  - `:ensure_console_access` gates console access on mount/reconnect. Checks the
+    feature flag (`console_enabled`) and the session auth marker (for `:basic`
+    auth mode). Redirects to `/console` on denial, which re-enters the HTTP plug
+    for proper 404 or 401 handling.
+  - `:maybe_sentry_live_view_hook` optionally attaches Sentry LiveView context.
+    Sentry compiles `Sentry.LiveViewHook` only when `Phoenix.LiveView` is already
+    loaded on Sentry's compile path (`phoenix_live_view` is optional there). A
+    hard `on_mount(Sentry.LiveViewHook)` turns that compile-order footgun into a
+    Console-wide mount 500. Delegate only when the hook module is available.
   """
+  @spec on_mount(atom(), map() | :not_mounted_at_router, map(), Phoenix.LiveView.Socket.t()) ::
+          {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
   def on_mount(:ensure_console_access, _params, session, socket) do
     config = OrchardConsole.Auth.console_config()
 
@@ -69,6 +77,41 @@ defmodule OrchardConsole do
         {:halt, Phoenix.LiveView.redirect(socket, to: "/console")}
     end
   end
+
+  def on_mount(:maybe_sentry_live_view_hook, params, session, socket) do
+    maybe_attach_sentry_live_view_hook(params, session, socket)
+  end
+
+  @doc """
+  Returns true when Sentry's optional LiveView hook module is loaded.
+
+  Used by Console mount and controller boot diagnostics.
+  """
+  @spec sentry_live_view_hook_available?(module()) :: boolean()
+  def sentry_live_view_hook_available?(hook_module \\ sentry_live_view_hook_module())
+      when is_atom(hook_module) do
+    Code.ensure_loaded?(hook_module) and function_exported?(hook_module, :on_mount, 4)
+  end
+
+  @doc false
+  @spec maybe_attach_sentry_live_view_hook(
+          map() | :not_mounted_at_router,
+          map(),
+          Phoenix.LiveView.Socket.t(),
+          keyword()
+        ) :: {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
+  def maybe_attach_sentry_live_view_hook(params, session, socket, opts \\ []) do
+    hook_module = Keyword.get(opts, :hook_module, sentry_live_view_hook_module())
+
+    if sentry_live_view_hook_available?(hook_module) do
+      hook_module.on_mount(:default, params, session, socket)
+    else
+      {:cont, socket}
+    end
+  end
+
+  @spec sentry_live_view_hook_module() :: module()
+  def sentry_live_view_hook_module, do: Module.concat([Sentry, LiveViewHook])
 
   @doc """
   Shared helpers for console LiveViews and components.
@@ -84,7 +127,9 @@ defmodule OrchardConsole do
       use Phoenix.LiveView,
         layout: {OrchardConsole.Layouts, :app}
 
-      on_mount(Sentry.LiveViewHook)
+      # Runtime-gated: Sentry.LiveViewHook is omitted when Sentry compiled without
+      # Phoenix.LiveView on its path. See issue #191.
+      on_mount({OrchardConsole, :maybe_sentry_live_view_hook})
 
       unquote(html_helpers())
     end

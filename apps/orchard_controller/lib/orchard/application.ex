@@ -46,6 +46,7 @@ defmodule Orchard.Application do
         Logger.warning("Sentry handler install failed, continuing without: #{inspect(reason)}")
     end
 
+    warn_if_sentry_live_view_hook_unavailable()
     attach_startup_license_context()
 
     Supervisor.start_link(child_specs(),
@@ -74,6 +75,19 @@ defmodule Orchard.Application do
   def config_change(changed, _new, removed) do
     Endpoint.config_change(changed, removed)
     :ok
+  end
+
+  defp warn_if_sentry_live_view_hook_unavailable do
+    if OrchardConsole.sentry_live_view_hook_available?() do
+      :ok
+    else
+      Logger.warning(
+        "Sentry.LiveViewHook is unavailable; Console mounts without Sentry LiveView context. " <>
+          "If this is unexpected, recompile LiveView then Sentry " <>
+          "(`mix deps.compile phoenix_live_view` and `mix deps.compile sentry --force`) " <>
+          "and restart the controller. See issue #191."
+      )
+    end
   end
 
   defp attach_startup_license_context do
