@@ -1,9 +1,27 @@
 defmodule Orchard.RuntimeEndpoint.BeamClientTest do
   use Orchard.DataCase, async: false
 
+  alias Orchard.BeamPeerGrants
+  alias Orchard.ControllerInstances
+  alias Orchard.DispatchCapacity
   alias Orchard.Inference
   alias Orchard.InferenceEvent
-  alias Orchard.RuntimeEndpoint.{BeamClient, ModelRef, Observation, Operation, Target}
+  alias Orchard.NodeEnrollment.PKI
+  alias Orchard.NodeEnrollments
+  alias Orchard.Nodes
+  alias Orchard.Nodes.{Enrollment, Node}
+  alias Orchard.NodeTrust
+
+  alias Orchard.RuntimeEndpoint.{
+    AuthenticatedPeer,
+    BeamClient,
+    ModelRef,
+    Observation,
+    Operation,
+    Target
+  }
+
+  alias Orchard.TransportTLS.CertificateIdentity
 
   @node_id "550e8400-e29b-41d4-a716-446655440000"
 
@@ -51,6 +69,50 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
     def score_prefix_cache(%Operation.PrefixCacheScoreRequest{}, _opts) do
       {:ok, %Operation.PrefixCacheScoreResult{status_code: "ok", score_tier: "resident"}}
+    end
+  end
+
+  defmodule FutureObservationServer do
+    alias Orchard.Nodes.Node
+    alias Orchard.Repo
+    alias Orchard.RuntimeEndpoint.Observation
+
+    def status(target, _opts) do
+      remote_observed_at = Process.get({__MODULE__, :remote_observed_at})
+
+      attrs =
+        case Repo.get(Node, target.node_id) do
+          nil ->
+            %{
+              endpoint_id: target.id,
+              target: target,
+              observed_at: remote_observed_at,
+              availability: :available,
+              aggregate_active_request_count: 0,
+              aggregate_max_concurrency: 2
+            }
+
+          node ->
+            %{
+              endpoint_id: target.id,
+              target: target,
+              observed_at: remote_observed_at,
+              availability: :available,
+              aggregate_active_request_count: 0,
+              aggregate_max_concurrency: 2,
+              metadata: %{
+                node_id: node.id,
+                display_name: node.display_name,
+                hostname: node.hostname,
+                listen_host: node.connect_host,
+                listen_port: node.connect_port,
+                agent_version: "0.5.0-dev"
+              },
+              health: %{ready: true, health_code: "", health_message: ""}
+            }
+        end
+
+      {:ok, Observation.new(attrs)}
     end
   end
 
@@ -243,6 +305,52 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     assert :ok = BeamClient.disconnect(connection)
   end
 
+  test "issue #201 SPEC §4.6.1 source-dev BEAM status uses Controller receive time" do
+    target =
+      Target.beam(@node_id,
+        address: node(),
+        metadata: %{server_module: FutureObservationServer, source_dev: true}
+      )
+
+    remote_observed_at = DateTime.add(DateTime.utc_now(), 5, :minute)
+    Process.put({FutureObservationServer, :remote_observed_at}, remote_observed_at)
+    on_exit(fn -> Process.delete({FutureObservationServer, :remote_observed_at}) end)
+
+    assert {:ok, connection} = BeamClient.connect(target)
+    before_status = DateTime.utc_now()
+    assert {:ok, observation} = BeamClient.status(connection, [])
+    after_status = DateTime.utc_now()
+
+    assert DateTime.compare(observation.observed_at, before_status) in [:eq, :gt]
+    assert DateTime.compare(observation.observed_at, after_status) in [:eq, :lt]
+    refute observation.observed_at == remote_observed_at
+  end
+
+  test "issue #201 SPEC §4.6.2 authenticated BEAM status shares Controller receive time with evidence" do
+    {target, peer} = authenticated_beam_fixture!()
+    target = put_in(target.metadata[:server_module], FutureObservationServer)
+    remote_observed_at = DateTime.add(DateTime.utc_now(), 5, :minute)
+    Process.put({FutureObservationServer, :remote_observed_at}, remote_observed_at)
+    on_exit(fn -> Process.delete({FutureObservationServer, :remote_observed_at}) end)
+
+    connection = %BeamClient{
+      authenticated_peer: peer,
+      node: node(),
+      server_module: FutureObservationServer,
+      target: target
+    }
+
+    before_status = DateTime.utc_now()
+    assert {:ok, observation} = BeamClient.status(connection, [])
+    after_status = DateTime.utc_now()
+    evidence = DispatchCapacity.get_capacity_evidence(target.node_id)
+
+    assert DateTime.compare(observation.observed_at, before_status) in [:eq, :gt]
+    assert DateTime.compare(observation.observed_at, after_status) in [:eq, :lt]
+    refute observation.observed_at == remote_observed_at
+    assert evidence.observed_at == observation.observed_at
+  end
+
   test "prefix-cache scoring fails open when a BEAM target is unavailable" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
     target = Target.beam(@node_id, address: :definitely_missing@localhost)
@@ -304,6 +412,135 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     assert {:ok, %Operation.PrefixCacheScoreResult{status_code: "error"}} =
              BeamClient.score_prefix_cache(connection, request, [])
   end
+
+  defp authenticated_beam_fixture! do
+    previous_control_plane = Application.get_env(:orchard_controller, :control_plane)
+    previous_node_trust = Application.get_env(:orchard_controller, :node_trust)
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-beam-client-issue-201-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    trust_root = Path.join(root, "node-trust")
+    authorization_root = Path.join(root, "beam-authorization-root")
+    File.mkdir_p!(root)
+    Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
+    Application.put_env(:orchard_controller, :node_trust, root: trust_root)
+
+    Application.put_env(:orchard_controller, :beam_peer_grants,
+      enabled: true,
+      authorization_root_path: authorization_root
+    )
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+      restore_application_env(:control_plane, previous_control_plane)
+      restore_application_env(:node_trust, previous_node_trust)
+    end)
+
+    now = DateTime.utc_now()
+    assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
+
+    assert {:ok, _controller} =
+             ControllerInstances.ensure_local(
+               private_ipv4: "10.0.0.10",
+               membership_scope: :remote_beam,
+               node_trust_root: trust_root,
+               authorization_root_path: authorization_root,
+               now: now
+             )
+
+    node = register_authenticated_node!(trust, now)
+
+    admission_attrs = %{
+      trust_evidence_ref: "registration-audit:#{Ecto.UUID.generate()}",
+      pool_id: Ecto.UUID.generate(),
+      routing_policy_id: Ecto.UUID.generate(),
+      capacity_policy_reason: "approved for issue #201 regression"
+    }
+
+    assert {:ok, %{grants: [grant]}} =
+             Nodes.admit_node(node.id, admission_attrs, now: now)
+
+    peer = authenticated_peer!(node.id)
+
+    assert {:ok, _delivery} =
+             BeamPeerGrants.deliver(
+               %{
+                 grant_id: grant.id,
+                 generation: grant.generation,
+                 controller_id: grant.controller_id
+               },
+               peer,
+               now: now
+             )
+
+    assert {:ok, [target]} = Nodes.activation_probe_runtime_endpoint_targets()
+    {target, peer}
+  end
+
+  defp register_authenticated_node!(trust, now) do
+    assert {:ok, created} =
+             NodeEnrollments.create(
+               %{
+                 cluster_id: trust.cluster_id,
+                 expected_controller_id: trust.controller_id,
+                 trust_authority_id: trust.trust_authority_id,
+                 creator_type: "operator",
+                 expires_at: DateTime.add(now, 1, :hour),
+                 node: %{display_name: "beam-client-issue-201"}
+               },
+               now: now
+             )
+
+    assert {:ok, _enrollment} = NodeEnrollments.mark_issued(created.enrollment.id, now: now)
+    assert {:ok, csr} = PKI.generate_csr(trust.cluster_id, created.enrollment.node_id)
+    Process.put({:node_private_key, created.enrollment.node_id}, csr.private_key_pem)
+
+    assert {:ok, _response} =
+             NodeEnrollments.redeem(
+               created.enrollment.id,
+               %{
+                 cluster_id: trust.cluster_id,
+                 controller_id: trust.controller_id,
+                 csr_pem: csr.csr_pem,
+                 node_id: created.enrollment.node_id,
+                 runtime_endpoint: %{
+                   host: "10.0.0.20",
+                   hostname: "beam-client-issue-201.orchard.test",
+                   port: 50_071
+                 },
+                 token: created.bootstrap_token
+               },
+               now: now
+             )
+
+    Repo.get!(Node, created.enrollment.node_id)
+  end
+
+  defp authenticated_peer!(node_id) do
+    enrollment = Repo.one!(from(enrollment in Enrollment, where: enrollment.node_id == ^node_id))
+    result = enrollment.certificate_result
+    assert {:ok, certificate} = CertificateIdentity.from_pem(result["node_certificate_pem"])
+
+    %AuthenticatedPeer{
+      node_id: node_id,
+      node_uri_san: result["node_uri_san"],
+      enrollment_id: enrollment.id,
+      certificate_identifier: enrollment.certificate_identifier,
+      certificate_serial: certificate.serial,
+      certificate_fingerprint: certificate.fingerprint,
+      runtime_trust_spki_sha256: result["runtime_trust_spki_sha256"]
+    }
+  end
+
+  defp restore_application_env(key, nil),
+    do: Application.delete_env(:orchard_controller, key)
+
+  defp restore_application_env(key, value),
+    do: Application.put_env(:orchard_controller, key, value)
 
   defp put_beam_config(config) do
     Application.put_env(:orchard_controller, :runtime_endpoint, beam: config)

@@ -105,6 +105,44 @@ defmodule Orchard.DispatchCapacity.AuthorizationTest do
     assert :runtime_capacity_observation_stale in result.reason_codes
   end
 
+  test "issue #201 SPEC 4.6.2 keeps strict future evidence and exact freshness boundaries" do
+    node = active_node()
+
+    cases = [
+      {:materially_future, DateTime.add(@now, 53, :millisecond), false},
+      {:equal_to_now, @now, true},
+      {:exact_threshold, DateTime.add(@now, -30_000, :millisecond), true},
+      {:older_than_threshold, DateTime.add(@now, -30_001, :millisecond), false}
+    ]
+
+    for {boundary, observed_at, expected_fresh?} <- cases do
+      capacity_evidence = %{evidence(node.id) | observed_at: observed_at}
+
+      assert {:ok, input} =
+               Authorization.input(node,
+                 authority: %Authority{enforcement_phase: :enforcing},
+                 policy: %Policy{policy_state: :enforcing, controller_dispatch_ceiling: 2},
+                 evidence: capacity_evidence,
+                 placement_capacity: {:valid, 0, 2},
+                 now: @now,
+                 freshness_threshold_ms: 30_000
+               )
+
+      assert input.capacity_observation_fresh? == expected_fresh?,
+             "#{boundary} freshness mismatch"
+
+      evaluation = Evaluator.evaluate(input)
+
+      if expected_fresh? do
+        assert evaluation.eligible?, "#{boundary} should remain eligible"
+        refute :runtime_capacity_observation_stale in evaluation.reason_codes
+      else
+        refute evaluation.eligible?, "#{boundary} should fail closed"
+        assert :runtime_capacity_observation_stale in evaluation.reason_codes
+      end
+    end
+  end
+
   test "SPEC 4.6.2 rejects live production evidence for a different Node identity" do
     node = active_node()
     other_node_id = Ecto.UUID.generate()

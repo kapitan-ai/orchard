@@ -89,20 +89,28 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
   def status(connection, opts \\ [])
 
   def status(%__MODULE__{authenticated_peer: nil, target: target} = connection, opts) do
-    rpc(connection, :status, [target, opts], opts)
+    receive_status_observation(connection, target, opts)
   end
 
   def status(
         %__MODULE__{authenticated_peer: peer, target: target} = connection,
         opts
       ) do
-    with {:ok, response} <- rpc(connection, :status, [target, opts], opts),
+    with {:ok, response} <- receive_status_observation(connection, target, opts),
          {:ok, _node} <-
-           Nodes.observe_authenticated_status(target, response, DateTime.utc_now(), peer) do
+           Nodes.observe_authenticated_status(target, response, response.observed_at, peer) do
       {:ok, response}
     else
       :noop -> {:error, :beam_peer_observation_rejected}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp receive_status_observation(connection, target, opts) do
+    with {:ok, response} when is_map(response) <-
+           rpc(connection, :status, [target, opts], opts) do
+      observed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      {:ok, Map.put(response, :observed_at, observed_at)}
     end
   end
 

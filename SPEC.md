@@ -940,6 +940,9 @@ Rules:
 
 * the durable implementation seam for runtime status SHALL be a Runtime Endpoint Observation produced through the Runtime Endpoint Interface
 * the current gRPC Compatibility Adapter SHALL derive Runtime Endpoint Observations from `NodeRuntimeService.GetStatus` returning `StatusResponse`
+* Controller-facing Runtime Endpoint adapters SHALL assign scheduling-authoritative observation time when a successful status response is received and normalized.
+* Endpoint-provided wall-clock timestamps SHALL NOT be freshness authority.
+* For authenticated observations, the adapter SHALL reuse the exact Controller-assigned timestamp in both the returned Runtime Endpoint Observation and authenticated persistence.
 * controller-owned active-Node liveness and inventory freshness SHALL be refreshed by a leader-owned background status probe on a bounded interval independent of request traffic, consuming authenticated observations through the same seam
 * heartbeat payloads MAY carry equivalent hosted-tool data in a later slice, but controller-owned hosted-tool observation SHALL currently be derived from Runtime Endpoint status-probe ingestion
 * this contract defines future hosted routing inputs only; it SHALL NOT by itself enable controller-owned hosted `/v1/responses` execution or any other hosted execution behavior

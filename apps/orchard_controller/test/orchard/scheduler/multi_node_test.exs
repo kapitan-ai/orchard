@@ -32,6 +32,42 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   # -- Stub Status Client --
 
+  defmodule FutureBeamStatusServer do
+    @moduledoc false
+
+    alias Orchard.RuntimeEndpoint.{Observation, Placement}
+
+    def status(target, _opts) do
+      placement =
+        Placement.new(%{
+          model_ref: %{model_id: "test-model", version: "v1"},
+          state: :loaded,
+          capacity: %{active_request_count: 0, max_concurrency: 2, status: :available}
+        })
+
+      {:ok,
+       Observation.new(%{
+         endpoint_id: target.id,
+         target: target,
+         observed_at: DateTime.add(DateTime.utc_now(), 5, :minute),
+         availability: :available,
+         worker_state: :idle,
+         aggregate_active_request_count: 0,
+         aggregate_max_concurrency: 2,
+         metadata: %{
+           node_id: "00000000-0000-4000-a000-000000000201",
+           display_name: "issue-201-source-dev",
+           hostname: "issue-201-source-dev.local",
+           listen_host: "127.0.0.1",
+           listen_port: 50_071,
+           agent_version: "0.5.0-dev"
+         },
+         health: %{ready: true, health_code: "", health_message: ""},
+         placements: [placement]
+       })}
+    end
+  end
+
   defmodule StubClient do
     @moduledoc false
 
@@ -1192,6 +1228,36 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         Process.delete({ProcessLocalCompatibilityProbeClient, :owner})
         Process.delete({ProcessLocalCompatibilityProbeClient, :response})
       end
+    end
+
+    test "issue #201 SPEC §4.6.1 selects future-skewed source-dev BEAM status by Controller receive time" do
+      target =
+        Target.normalize(
+          transport: :beam,
+          address: node(),
+          metadata: %{server_module: FutureBeamStatusServer, source_dev: true}
+        )
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [target],
+        runtime_client_targets: []
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: Orchard.RuntimeEndpoint.BeamClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> [target] end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   flunk("production snapshot must not run for empty trusted inventory")
+                 end
+               )
+
+      assert schedule.runtime_endpoint_target.id == target.id
+
+      reason_codes = schedule.dispatch_capacity_evaluation.reason_codes
+      refute :runtime_capacity_observation_stale in reason_codes
     end
 
     test "ADR 0017 bounds, deduplicates, filters, and concurrently probes static targets once" do
