@@ -52,6 +52,8 @@ defmodule OrchardConsole.PlaygroundLive do
       models: [],
       models_status: :idle,
       models_error: nil,
+      selected_model: nil,
+      can_submit: false,
       inference_defaults: %{},
       form: to_form(%{"model" => "", "system" => "", "prompt" => ""}, as: :playground),
       form_errors: %{},
@@ -82,41 +84,70 @@ defmodule OrchardConsole.PlaygroundLive do
   defp load_models(socket) do
     case playground_impl().list_models() do
       {:ok, []} ->
-        assign(socket,
+        socket
+        |> assign(
           models: [],
           models_status: :empty,
-          models_error: "No active models available."
+          models_error: "No active models available.",
+          selected_model: nil,
+          can_submit: false
         )
 
       {:ok, models} ->
         options = Enum.map(models, &model_option/1)
-        selected = selected_model_value(options, socket.assigns.inference_defaults)
-        form_data = current_form_data(socket) |> Map.put("model", selected)
+        selected_value = selected_model_value(options, socket.assigns.inference_defaults)
+        form_data = current_form_data(socket) |> Map.put("model", selected_value)
 
         socket
         |> assign(models: options, models_status: :ok, models_error: nil)
         |> assign(form: to_form(form_data, as: :playground))
+        |> assign_selected_model(selected_value)
 
       {:error, error} ->
-        assign(socket,
+        socket
+        |> assign(
           models: [],
           models_status: :error,
-          models_error: error.message || "Active model list unavailable."
+          models_error: error.message || "Active model list unavailable.",
+          selected_model: nil,
+          can_submit: false
         )
     end
   rescue
     _ ->
-      assign(socket,
+      socket
+      |> assign(
         models: [],
         models_status: :error,
-        models_error: "Active model list unavailable."
+        models_error: "Active model list unavailable.",
+        selected_model: nil,
+        can_submit: false
       )
   end
 
-  defp model_option(%{model_id: model_id, version: version}) do
-    label = "#{model_id}@#{version}"
-    %{label: label, value: label, model_id: model_id}
+  defp model_option(model) do
+    value = model_value(model)
+
+    %{
+      label: value,
+      value: value,
+      model_id: Map.get(model, :model_id) || "",
+      version: Map.get(model, :version) || "",
+      catalog_state: Map.get(model, :catalog_state, :active),
+      remote_availability: Map.get(model, :remote_availability, :unknown),
+      placement_state: Map.get(model, :placement_state, :unknown),
+      loaded: Map.get(model, :loaded, false) == true,
+      inference_ready: Map.get(model, :inference_ready, false) == true,
+      not_ready_reason: Map.get(model, :not_ready_reason)
+    }
   end
+
+  defp model_value(%{model_id: model_id, version: version})
+       when is_binary(model_id) and is_binary(version),
+       do: "#{model_id}@#{version}"
+
+  defp model_value(%{value: value}) when is_binary(value), do: value
+  defp model_value(_), do: ""
 
   defp selected_model_value(options, defaults) do
     saved_model = Map.get(defaults, :default_model)
@@ -124,14 +155,49 @@ defmodule OrchardConsole.PlaygroundLive do
     selected =
       if is_binary(saved_model) and String.trim(saved_model) != "" do
         # list_models/0 sorts ascending by {model_id, version}, so the last
-        # match is the newest active version of the saved model.
+        # ready match is the newest ready version of the saved model.
         matches = Enum.filter(options, &(&1.model_id == saved_model))
-        List.last(matches) || List.first(options)
+        ready_matches = Enum.filter(matches, & &1.inference_ready)
+
+        List.last(ready_matches) || List.last(matches) || List.first(options)
       else
         List.first(options)
       end
 
     if selected, do: selected.value, else: ""
+  end
+
+  defp refresh_models(socket) do
+    case playground_impl().list_models() do
+      {:ok, models} ->
+        options = Enum.map(models, &model_option/1)
+        selected_value = current_form_data(socket)["model"]
+
+        refreshed =
+          socket
+          |> assign(models: options, models_status: :ok, models_error: nil)
+          |> assign_selected_model(selected_value)
+
+        {:ok, refreshed}
+
+      {:error, _error} ->
+        :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp assign_selected_model(socket, model_value) do
+    selected =
+      Enum.find(socket.assigns.models, &(&1.value == model_value)) ||
+        List.first(socket.assigns.models)
+
+    can_submit =
+      socket.assigns.active_run == nil and
+        is_map(selected) and
+        selected.inference_ready == true
+
+    assign(socket, selected_model: selected, can_submit: can_submit)
   end
 
   # ===========================================================================
@@ -140,7 +206,12 @@ defmodule OrchardConsole.PlaygroundLive do
 
   @impl true
   def handle_event("validate", %{"playground" => params}, socket) do
-    {:noreply, assign(socket, form: to_form(params, as: :playground), form_errors: %{})}
+    socket =
+      socket
+      |> assign(form: to_form(params, as: :playground), form_errors: %{})
+      |> assign_selected_model(String.trim(params["model"] || ""))
+
+    {:noreply, socket}
   end
 
   def handle_event("submit", %{"playground" => params}, socket) do
@@ -151,6 +222,9 @@ defmodule OrchardConsole.PlaygroundLive do
 
         socket.assigns.models == [] ->
           {:noreply, socket}
+
+        not socket.assigns.can_submit ->
+          reject_unready_submit(socket, params)
 
         true ->
           handle_submit(socket, params)
@@ -207,25 +281,72 @@ defmodule OrchardConsole.PlaygroundLive do
   end
 
   defp handle_submit(socket, params) do
+    case refresh_models(socket) do
+      {:ok, refreshed} -> submit_with_refreshed_models(refreshed, params)
+      :error -> reject_model_refresh_failure(socket, params)
+    end
+  end
+
+  defp submit_with_refreshed_models(socket, params) do
     model = String.trim(params["model"] || "")
     prompt = String.trim(params["prompt"] || "")
     system = String.trim(params["system"] || "")
+    selected = Enum.find(socket.assigns.models, &(&1.value == model))
 
     errors =
       %{}
       |> maybe_error(model == "", :model, "Please select a model")
       |> maybe_error(prompt == "", :prompt, "Please enter a prompt")
+      |> maybe_error(
+        model != "" and (selected == nil or selected.inference_ready != true),
+        :model,
+        unready_model_error(selected)
+      )
 
     if errors != %{} do
       {:noreply,
-       assign(socket,
-         form: to_form(params, as: :playground),
-         form_errors: errors
-       )}
+       socket
+       |> assign(form: to_form(params, as: :playground), form_errors: errors)
+       |> assign_selected_model(model)}
     else
       do_submit(socket, model, system, prompt, params)
     end
   end
+
+  defp reject_model_refresh_failure(socket, params) do
+    message = "Model readiness unavailable. Send remains disabled."
+
+    {:noreply,
+     assign(socket,
+       models: [],
+       models_status: :error,
+       models_error: message,
+       selected_model: nil,
+       can_submit: false,
+       form: to_form(params, as: :playground),
+       form_errors: %{model: message}
+     )}
+  end
+
+  defp reject_unready_submit(socket, params) do
+    model = String.trim(params["model"] || "")
+    selected = Enum.find(socket.assigns.models, &(&1.value == model))
+
+    {:noreply,
+     socket
+     |> assign(
+       form: to_form(params, as: :playground),
+       form_errors: %{model: unready_model_error(selected)}
+     )
+     |> assign_selected_model(model)}
+  end
+
+  defp unready_model_error(%{not_ready_reason: reason})
+       when is_binary(reason) and reason != "",
+       do: reason
+
+  defp unready_model_error(_),
+    do: "Selected model is not inference-ready. Catalog-active is not enough to send."
 
   defp do_submit(socket, model, system, prompt, params) do
     seq = socket.assigns.msg_seq
@@ -266,7 +387,8 @@ defmodule OrchardConsole.PlaygroundLive do
         form: to_form(Map.put(params, "prompt", ""), as: :playground),
         form_errors: %{},
         msg_seq: seq + 2,
-        run_metrics: new_run_metrics()
+        run_metrics: new_run_metrics(),
+        can_submit: false
       )
 
     case playground_impl().start_stream(self(), run_ref, chat_params) do
@@ -286,6 +408,7 @@ defmodule OrchardConsole.PlaygroundLive do
               |> remove_entry(assistant_id)
               |> remove_entry(user_id)
           )
+          |> refresh_can_submit()
 
         {:noreply, socket}
     end
@@ -365,7 +488,7 @@ defmodule OrchardConsole.PlaygroundLive do
         |> mark_assistant(:complete)
       end
 
-    {:noreply, assign(socket, active_run: nil)}
+    {:noreply, refresh_can_submit(assign(socket, active_run: nil))}
   end
 
   defp handle_stream(:finished, {:error, error}, socket) do
@@ -380,7 +503,7 @@ defmodule OrchardConsole.PlaygroundLive do
         |> maybe_remove_unaccepted_user()
       end
 
-    {:noreply, assign(socket, active_run: nil)}
+    {:noreply, refresh_can_submit(assign(socket, active_run: nil))}
   end
 
   # ===========================================================================
@@ -735,6 +858,55 @@ defmodule OrchardConsole.PlaygroundLive do
                 >
                   Selected: {@form[:model].value}
                 </p>
+                <div
+                  :if={@selected_model}
+                  id="playground-model-readiness"
+                  class="-mt-2 space-y-2"
+                  aria-live="polite"
+                >
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span id="playground-readiness-catalog">
+                      <.badge tone={:info}>
+                        Catalog: {catalog_state_label(@selected_model.catalog_state)}
+                      </.badge>
+                    </span>
+                    <span id="playground-readiness-remote">
+                      <.badge tone={fact_tone(@selected_model.remote_availability)}>
+                        Remote: {fact_label(@selected_model.remote_availability)}
+                      </.badge>
+                    </span>
+                    <span id="playground-readiness-placement">
+                      <.badge tone={placement_tone(@selected_model.placement_state)}>
+                        Placement: {placement_label(@selected_model.placement_state)}
+                      </.badge>
+                    </span>
+                    <span id="playground-readiness-loaded">
+                      <.badge tone={if(@selected_model.loaded, do: :success, else: :warning)}>
+                        Loaded: {if(@selected_model.loaded, do: "yes", else: "no")}
+                      </.badge>
+                    </span>
+                    <span id="playground-readiness-ready">
+                      <.badge tone={if(@selected_model.inference_ready, do: :success, else: :warning)}>
+                        Ready: {if(@selected_model.inference_ready, do: "yes", else: "no")}
+                      </.badge>
+                    </span>
+                  </div>
+                  <p
+                    :if={not @selected_model.inference_ready}
+                    id="playground-model-not-ready"
+                    class="text-xs text-amber-700 dark:text-amber-300"
+                  >
+                    {@selected_model.not_ready_reason ||
+                      "Selected model is not inference-ready. Catalog-active is not enough to send."}
+                  </p>
+                  <p
+                    :if={@selected_model.inference_ready}
+                    id="playground-model-ready"
+                    class="text-xs text-slate-500 dark:text-slate-400"
+                  >
+                    Loaded placement confirmed. Send is enabled for this model.
+                  </p>
+                </div>
                 <.input
                   id="playground-system"
                   field={@form[:system]}
@@ -768,6 +940,7 @@ defmodule OrchardConsole.PlaygroundLive do
                   rows={3}
                   errors={List.wrap(@form_errors[:prompt])}
                   phx-hook="SubmitOnModEnter"
+                  disabled={@active_run != nil}
                 />
                 <p id="playground-submit-hint" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
                   Press Cmd/Ctrl + Enter to send.
@@ -777,7 +950,8 @@ defmodule OrchardConsole.PlaygroundLive do
                     id="playground-send"
                     type="submit"
                     form="playground-form"
-                    disabled={@active_run != nil || @models == []}
+                    disabled={not @can_submit}
+                    title={send_button_title(@can_submit, @selected_model)}
                   >
                     Send
                   </.button>
@@ -919,4 +1093,46 @@ defmodule OrchardConsole.PlaygroundLive do
 
   defp present_text?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_text?(_value), do: false
+
+  defp catalog_state_label(:active), do: "active"
+  defp catalog_state_label(other) when is_atom(other), do: Atom.to_string(other)
+  defp catalog_state_label(_), do: "unknown"
+
+  defp fact_label(:present), do: "present"
+  defp fact_label(:missing), do: "missing"
+  defp fact_label(:unknown), do: "unknown"
+  defp fact_label(_), do: "unknown"
+
+  defp fact_tone(:present), do: :success
+  defp fact_tone(:missing), do: :warning
+  defp fact_tone(_), do: :neutral
+
+  defp placement_label(:loaded), do: "loaded"
+  defp placement_label(:none), do: "none"
+  defp placement_label(:unknown), do: "unknown"
+  defp placement_label(_), do: "unknown"
+
+  defp placement_tone(:loaded), do: :success
+  defp placement_tone(:none), do: :warning
+  defp placement_tone(_), do: :neutral
+
+  defp send_button_title(true, _selected), do: "Send message"
+
+  defp send_button_title(false, %{not_ready_reason: reason})
+       when is_binary(reason) and reason != "",
+       do: reason
+
+  defp send_button_title(false, _selected),
+    do: "Model not ready to run"
+
+  defp refresh_can_submit(socket) do
+    selected = socket.assigns.selected_model
+
+    can_submit =
+      socket.assigns.active_run == nil and
+        is_map(selected) and
+        selected.inference_ready == true
+
+    assign(socket, can_submit: can_submit)
+  end
 end

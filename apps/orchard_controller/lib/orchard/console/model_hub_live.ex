@@ -444,10 +444,17 @@ defmodule OrchardConsole.ModelHubLive do
             <div class="space-y-2">
               <p class="text-sm font-medium text-emerald-800 dark:text-emerald-200">
                 <%= if @download_result[:state] == :active do %>
-                  Model is now active.
+                  Model is now catalog-active.
                 <% else %>
                   Model imported successfully.
                 <% end %>
+              </p>
+              <p
+                :if={@download_result[:state] == :active}
+                id="model-hub-download-readiness-note"
+                class="text-sm text-slate-600 dark:text-slate-300"
+              >
+                Catalog activation is not runtime readiness. Playground enables Send only when a node reports a loaded placement for this model.
               </p>
               <p :if={@download_result} class="text-sm text-slate-600 dark:text-slate-300">
                 <span id="model-hub-download-model-id" class="font-mono text-xs">
