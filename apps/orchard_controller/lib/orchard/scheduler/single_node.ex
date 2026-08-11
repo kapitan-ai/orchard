@@ -4,15 +4,19 @@ defmodule Orchard.Scheduler.SingleNode do
 
   When status probing succeeds, the scheduler uses live node and placement
   capacity to advertise `:queue_lane_capacity` or return `{:error, :model_busy}`
-  for proven saturation.
+  only for proven requested-model path saturation.
 
-  Managed targets fail closed: when the target resolves to a known Node and no
-  live authorized capacity input can be built — probe failure, skipped probing,
-  or missing Controller-owned facts — the scheduler returns
-  `{:error, :model_busy}` instead of a legacy direct schedule. Explicitly
-  classified unmanaged targets stay dispatchable: they carry an unmanaged
-  capacity input, its evaluation, and refresh providers so the dispatcher
-  authorizes them through the same shared contract.
+  Managed targets fail closed with stable reason-coded explanations when the
+  target resolves to a known Node and no live authorized capacity input can be
+  built — probe failure, skipped probing, missing Controller-owned facts, or
+  authorization denial. Explicitly classified unmanaged targets stay
+  dispatchable: they carry an unmanaged capacity input, its evaluation, and
+  refresh providers so the dispatcher authorizes them through the same shared
+  contract.
+
+  `model_busy` is reserved for proven requested-model capacity exhaustion.
+  Configured-target non-saturation failures return `cluster_busy` with a
+  scheduler explanation so operators are not left with a bare 503.
   """
 
   use Orchard.DispatchCapacity.Consumer, wiring: :single_node_authorization
@@ -84,7 +88,7 @@ defmodule Orchard.Scheduler.SingleNode do
             strategy: :single_node,
             request_id: request.public_id,
             request_timeout_ms: Inference.request_timeout_ms(),
-            model_load_timeout_ms: Inference.model_load_timeout_ms(),
+            model_load_timeout_ms: model_load_timeout_ms(request),
             node_id: node && node.id,
             selected_tier: "cold"
           }
@@ -93,7 +97,14 @@ defmodule Orchard.Scheduler.SingleNode do
         authorize_schedule(schedule, request, target, node, opts)
 
       {:error, :node_inventory_unavailable} ->
-        {:error, :model_busy}
+        schedule_failure(
+          request,
+          target,
+          nil,
+          :model_busy,
+          ["inventory_missing"],
+          %{fact: "node_inventory_unavailable"}
+        )
     end
   end
 
@@ -121,6 +132,8 @@ defmodule Orchard.Scheduler.SingleNode do
   end
 
   defp authorize_schedule(schedule, request, target, node, opts) do
+    opts = Keyword.put(opts, :canonical_request, request)
+
     if Keyword.get(opts, :probe_status?, true) do
       client = status_client(target, opts)
       timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
@@ -170,7 +183,14 @@ defmodule Orchard.Scheduler.SingleNode do
         )
 
       {:error, _reason} ->
-        {:error, :model_busy}
+        schedule_failure(
+          request,
+          target,
+          node,
+          :model_busy,
+          ["dispatch_capacity_facts_unavailable"],
+          %{fact: "capacity_input_unavailable"}
+        )
     end
   end
 
@@ -221,7 +241,26 @@ defmodule Orchard.Scheduler.SingleNode do
 
       {:ok, authorized_schedule}
     else
-      {:error, :model_busy}
+      reason_codes =
+        case result do
+          %{reason_codes: codes} when is_list(codes) and codes != [] ->
+            Enum.map(codes, &to_string/1)
+
+          _other ->
+            ["dispatch_capacity_facts_unavailable"]
+        end
+
+      schedule_failure(
+        request,
+        target,
+        node,
+        :model_busy,
+        reason_codes,
+        %{
+          fact: "dispatch_capacity_unauthorized",
+          selected_tier: Map.get(schedule, :selected_tier)
+        }
+      )
     end
   end
 
@@ -359,19 +398,40 @@ defmodule Orchard.Scheduler.SingleNode do
   defp normalize_observation(target, response),
     do: GrpcCompatibilityMapper.observation_from_status(Target.normalize(target), response)
 
-  defp unavailable_schedule(_schedule, _target, node, _opts) when not is_nil(node),
-    do: {:error, :model_busy}
+  defp unavailable_schedule(schedule, target, node, opts) when not is_nil(node) do
+    request = Keyword.get(opts, :canonical_request) || synthetic_request(schedule)
+
+    schedule_failure(
+      request,
+      target,
+      node,
+      :model_busy,
+      ["transport_unreachable"],
+      %{fact: "status_probe_unavailable", selected_tier: Map.get(schedule, :selected_tier)}
+    )
+  end
 
   defp unavailable_schedule(schedule, target, nil, opts) do
     capacity_target = capacity_target(target)
+    request = Keyword.get(opts, :canonical_request) || synthetic_request(schedule)
 
     case unprobed_unmanaged_input(capacity_target, opts) do
-      {:ok, input} -> authorize_unprobed_unmanaged(schedule, capacity_target, input, opts)
-      {:error, _reason} -> {:error, :model_busy}
+      {:ok, input} ->
+        authorize_unprobed_unmanaged(schedule, request, capacity_target, input, opts)
+
+      {:error, _reason} ->
+        schedule_failure(
+          request,
+          target,
+          nil,
+          :model_busy,
+          ["dispatch_capacity_facts_unavailable"],
+          %{fact: "unmanaged_capacity_input_unavailable"}
+        )
     end
   end
 
-  defp authorize_unprobed_unmanaged(schedule, capacity_target, input, opts) do
+  defp authorize_unprobed_unmanaged(schedule, request, capacity_target, input, opts) do
     authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
     result = safe_unmanaged_evaluation(authority, input)
 
@@ -389,7 +449,23 @@ defmodule Orchard.Scheduler.SingleNode do
 
       {:ok, authorized_schedule}
     else
-      {:error, :model_busy}
+      reason_codes =
+        case result do
+          %{reason_codes: codes} when is_list(codes) and codes != [] ->
+            Enum.map(codes, &to_string/1)
+
+          _other ->
+            ["dispatch_capacity_facts_unavailable"]
+        end
+
+      schedule_failure(
+        request,
+        capacity_target,
+        nil,
+        :model_busy,
+        reason_codes,
+        %{fact: "unmanaged_dispatch_capacity_unauthorized"}
+      )
     end
   end
 
@@ -541,5 +617,89 @@ defmodule Orchard.Scheduler.SingleNode do
 
   defp placement_value(placement, key) do
     Map.get(placement, key, Map.get(placement, to_string(key)))
+  end
+
+  defp model_load_timeout_ms(%CanonicalRequest{admission: %{max_cold_start_ms: cold}})
+       when is_integer(cold) and cold > 0 do
+    min(cold, Inference.model_load_timeout_ms())
+  end
+
+  defp model_load_timeout_ms(_request), do: Inference.model_load_timeout_ms()
+
+  defp schedule_failure(request, target, node, :model_busy, reason_codes, diagnostics)
+       when is_list(reason_codes) do
+    node_id =
+      cond do
+        match?(%Orchard.Nodes.Node{}, node) -> node.id
+        is_map(node) -> Map.get(node, :id) || Map.get(node, "id")
+        true -> nil
+      end
+
+    decision = %{
+      strategy: :single_node,
+      request_id: request && request.public_id,
+      selected_node_id: nil,
+      selection_tier: Map.get(diagnostics, :selected_tier),
+      scored_candidates: [],
+      rejected_candidates: [
+        %{
+          node_id: node_id,
+          target_ref: explanation_target_ref(target),
+          eligible: false,
+          reason_codes: Enum.map(reason_codes, &to_string/1),
+          diagnostics:
+            diagnostics
+            |> Map.drop([:selected_tier])
+            |> Map.put(:candidate_source, "single_node")
+        }
+      ],
+      skipped_candidates: [],
+      candidate_count: 1
+    }
+
+    {:error, :model_busy, decision}
+  end
+
+  defp explanation_target_ref(%Target{id: id}) when is_binary(id), do: id
+
+  defp explanation_target_ref(%Target{address: address}) when not is_nil(address),
+    do: to_string(address)
+
+  defp explanation_target_ref(target) when is_binary(target), do: target
+  defp explanation_target_ref(target) when is_atom(target), do: Atom.to_string(target)
+
+  defp explanation_target_ref(target) when is_list(target) do
+    host = Keyword.get(target, :host)
+    port = Keyword.get(target, :port)
+
+    if is_binary(host) and is_integer(port) do
+      "#{host}:#{port}"
+    else
+      inspect(target)
+    end
+  end
+
+  defp explanation_target_ref(target), do: inspect(target)
+
+  defp synthetic_request(%{request_id: request_id}) when is_binary(request_id) do
+    %CanonicalRequest{
+      internal_id: request_id,
+      public_id: request_id,
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %CanonicalRequest.ModelRef{model_id: "unknown", version: "unknown"}
+    }
+  end
+
+  defp synthetic_request(_schedule) do
+    id = Ecto.UUID.generate()
+
+    %CanonicalRequest{
+      internal_id: id,
+      public_id: id,
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %CanonicalRequest.ModelRef{model_id: "unknown", version: "unknown"}
+    }
   end
 end

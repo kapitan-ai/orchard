@@ -22,9 +22,13 @@ Make explanation coverage uniform: select MultiNode whenever any runtime target 
 
 ## Consequences
 
-Single-target gRPC deployments gain persisted explanations and runtime observations at a small per-request DB cost. Saturation on that path reports `cluster_busy` rather than `model_busy`; a target whose node is not yet admitted still yields no explanation via fallback, which is correct — there are no lifecycle-managed candidates to explain. Scheduler-selection tests need updating for the new predicate, and must cover both a single configured legacy gRPC target and duplicate legacy targets that deduplicate to one, because the predicate is "any normalized runtime client target exists", not "more than one distinct target exists".
+Single-target gRPC deployments gain persisted explanations and runtime observations at a small per-request DB cost.
+Configured-target saturation reports `cluster_busy` rather than `model_busy`.
+The SingleNode no-target fallback still returns `model_busy` for terminal failures on that path, but each terminal outcome now carries a stable reason-coded scheduler decision so probe, inventory, authorization, and capacity failures are no longer silent bare atoms.
+Scheduler-selection tests need updating for the new predicate, and must cover both a single configured legacy gRPC target and duplicate legacy targets that deduplicate to one, because the predicate is "any normalized runtime client target exists", not "more than one distinct target exists".
 
-The glossary entry for Model Busy currently reads "runtime or single-node scheduler outcome"; when the implementation lands, that entry must be sharpened to reflect that Model Busy remains reachable only via the no-target fallback path, while configured-target saturation reports Cluster Busy uniformly.
+The glossary entry for Model Busy is reserved for proven requested-model path capacity exhaustion on the no-target fallback path.
+Configured-target saturation and coherent multi-candidate rejection report Cluster Busy uniformly, with rejected-candidate reason codes explaining non-saturation failures such as missing artifacts or identity mismatch.
 
 ## SPEC.md impact
 

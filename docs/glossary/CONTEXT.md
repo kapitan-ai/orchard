@@ -665,13 +665,15 @@ Stale, unavailable, ineligible, or transport-failed observations clear endpoint-
 _Avoid_: Global backlog, Request lifecycle state
 
 **Cluster Busy**:
-A scheduler outcome meaning joined live Runtime Endpoint candidates exist, but none can currently accept the request because aggregate endpoint or placement capacity is exhausted, or because placement capacity is unknown for already-active candidates.
-With queue admission enabled, this can return the request to the same Queue deadline; otherwise it is a tenant-facing `503` capacity failure.
+A scheduler outcome meaning joined live Runtime Endpoint candidates were evaluated, but none can currently accept the request.
+That includes aggregate endpoint or placement capacity exhaustion, unknown placement capacity for already-active candidates, and coherent all-rejected outcomes whose rejected candidates carry stable reason codes (for example missing artifact, identity mismatch, or authorization denial).
+With queue admission enabled, capacity exhaustion can return the request to the same Queue deadline; otherwise it is a tenant-facing `503` capacity failure.
 _Avoid_: Transport failure, model not found, queue full
 
 **Model Busy**:
-A no-target fallback scheduling outcome meaning the requested model path cannot accept the request because live node or placement request capacity is exhausted.
-Configured-target saturation reports Cluster Busy uniformly.
+A no-target fallback scheduling outcome meaning the requested model path cannot accept the request.
+It is reserved for the SingleNode fallback path and proven requested-model capacity exhaustion there.
+Configured-target saturation and multi-candidate rejection report Cluster Busy uniformly, with scheduler explanations carrying the specific reason codes.
 It maps to a tenant-facing `503` capacity failure and is separate from tenant quota or queue-full admission failures.
 _Avoid_: Cluster Busy, quota exceeded, model not found
 

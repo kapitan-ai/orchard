@@ -114,6 +114,14 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
       assert req.metadata == %{}
     end
 
+    test "resolves authoritative admission and routing policy budgets" do
+      assert {:ok, req} = ChatRequestNormalizer.normalize(@valid_params)
+
+      assert req.admission.queue_wait_ms == 3_000
+      assert req.admission.max_cold_start_ms == 15_000
+      assert req.resolved_policy.residency_preference == :allow_cold_load
+    end
+
     test "accepts overridden IDs" do
       {:ok, req} =
         ChatRequestNormalizer.normalize(@valid_params,

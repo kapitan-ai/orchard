@@ -23,6 +23,7 @@ defmodule Orchard.Inference.ChatError do
           | :model_load_failed
           | :model_busy
           | :cluster_busy
+          | :no_active_nodes
           | :queue_full
           | :queue_timeout
           | :request_timed_out
@@ -107,16 +108,16 @@ defmodule Orchard.Inference.ChatError do
     do: build(:model_load_failed, model_load_failure: failure)
 
   def from_execute_error(reason)
-      when reason in [:model_busy, :cluster_busy, :queue_full, :queue_timeout],
+      when reason in [:model_busy, :cluster_busy, :no_active_nodes, :queue_full, :queue_timeout],
       do: build_admission_error(reason, nil)
 
   def from_execute_error({kind, message})
-      when kind in [:model_busy, :cluster_busy, :queue_full, :queue_timeout] and
+      when kind in [:model_busy, :cluster_busy, :no_active_nodes, :queue_full, :queue_timeout] and
              is_binary(message),
       do: build_admission_error(kind, message)
 
   def from_execute_error({kind, detail})
-      when kind in [:model_busy, :cluster_busy, :queue_full, :queue_timeout],
+      when kind in [:model_busy, :cluster_busy, :no_active_nodes, :queue_full, :queue_timeout],
       do: build_admission_error(kind, nil, detail)
 
   def from_execute_error({:orchestration_crash, metadata}),
@@ -256,6 +257,16 @@ defmodule Orchard.Inference.ChatError do
       type: "server_error",
       code: "cluster_busy",
       message: "Cluster is busy",
+      param: nil
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :no_active_nodes}) do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: "no_active_nodes",
+      message: "No active nodes are available",
       param: nil
     }
   end
@@ -420,6 +431,15 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def terminal_attrs(%__MODULE__{kind: :no_active_nodes} = error) do
+    %{
+      state: :failed,
+      http_status: 503,
+      error_code: error.source_code || "no_active_nodes",
+      error_message: error.source_message || "No active nodes are available"
+    }
+  end
+
   def terminal_attrs(%__MODULE__{kind: :queue_full} = error) do
     %{
       state: :failed,
@@ -518,6 +538,7 @@ defmodule Orchard.Inference.ChatError do
 
   defp failed_event_kind("model_busy"), do: :model_busy
   defp failed_event_kind("cluster_busy"), do: :cluster_busy
+  defp failed_event_kind("no_active_nodes"), do: :no_active_nodes
   defp failed_event_kind("queue_full"), do: :queue_full
   defp failed_event_kind("queue_timeout"), do: :queue_timeout
 

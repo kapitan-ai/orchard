@@ -345,9 +345,16 @@ defmodule Orchard.Inference.RequestOrchestrator do
       model_id: canonical.model_ref.model_id,
       version: canonical.model_ref.version,
       max_active_per_tenant: tenant_active_limit(canonical),
+      max_wait_ms: queue_wait_budget_ms(canonical),
       caller_pid: caller
     }
   end
+
+  defp queue_wait_budget_ms(%{admission: %{queue_wait_ms: wait}})
+       when is_integer(wait) and wait >= 0,
+       do: wait
+
+  defp queue_wait_budget_ms(_canonical), do: nil
 
   defp tenant_active_limit(canonical) do
     case canonical.resolved_policy.max_active_requests do
