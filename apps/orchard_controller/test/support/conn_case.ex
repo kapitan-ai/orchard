@@ -16,6 +16,29 @@ defmodule Orchard.ConnCase do
   end
 
   setup tags do
+    previous_artifact_provider =
+      Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+    # Healthy-path API tests exercise admission/dispatch, not Model Hub layout.
+    # Suites that need missing-artifact paths override this provider locally.
+    Application.put_env(
+      :orchard_controller,
+      :scheduler_artifact_acquirable_provider,
+      fn _request -> true end
+    )
+
+    on_exit(fn ->
+      if is_nil(previous_artifact_provider) do
+        Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+      else
+        Application.put_env(
+          :orchard_controller,
+          :scheduler_artifact_acquirable_provider,
+          previous_artifact_provider
+        )
+      end
+    end)
+
     if tags[:db] do
       Orchard.DataCase.setup_sandbox(tags)
     end
