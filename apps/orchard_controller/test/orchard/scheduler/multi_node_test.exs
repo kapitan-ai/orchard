@@ -5786,6 +5786,156 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   defp wait_until(_fun, 0), do: false
 
   describe "issue #128 admission policy and actionable reasons" do
+    test "default controller artifact path admits cold candidate when local dir exists" do
+      # Real default_artifact_acquirable?/1 path: provider seam unset.
+      # Controller catalog artifact_uri is under Inference.artifacts_root, not
+      # the node-agent models_root cache used by stage_test_bundle! fixtures.
+      previous_provider =
+        Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      on_exit(fn ->
+        if is_nil(previous_provider) do
+          Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+        else
+          Application.put_env(
+            :orchard_controller,
+            :scheduler_artifact_acquirable_provider,
+            previous_provider
+          )
+        end
+      end)
+
+      artifacts_root = Orchard.Inference.artifacts_root()
+      model_id = "cold-default-artifact-present"
+      version = "v1"
+
+      dest =
+        Orchard.Models.Importer.artifact_destination_path(artifacts_root, model_id, version)
+
+      model =
+        create_model!(%{
+          model_id: model_id,
+          version: version,
+          state: :active,
+          display_name: model_id,
+          artifact_uri: "file://" <> dest,
+          artifact_source_uri: "file://" <> dest,
+          backend: "mlx"
+        })
+
+      dir = materialize_artifact_dir!(model, artifacts_root)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      node = insert_node!(%{advertise_addr: "10.0.0.54", rpc_port: 50_084})
+      target = Target.grpc_compat(host: "10.0.0.54", port: 50_084, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:ok, path} = Orchard.Models.artifact_local_path(model)
+      assert path == Path.expand(dir)
+      assert File.dir?(path)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(
+                 canonical_request(model_id, version,
+                   admission: %{
+                     timeout_ms: 30_000,
+                     queue_wait_ms: 3_000,
+                     max_cold_start_ms: 15_000
+                   },
+                   resolved_policy: %{residency_preference: :allow_cold_load}
+                 ),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o -> {:ok, snapshot} end
+               )
+
+      assert schedule.selected_tier == "cold"
+      assert schedule.node_id == node.id
+    end
+
+    test "default controller artifact path rejects cold candidate when local dir is absent" do
+      previous_provider =
+        Application.get_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+
+      on_exit(fn ->
+        if is_nil(previous_provider) do
+          Application.delete_env(:orchard_controller, :scheduler_artifact_acquirable_provider)
+        else
+          Application.put_env(
+            :orchard_controller,
+            :scheduler_artifact_acquirable_provider,
+            previous_provider
+          )
+        end
+      end)
+
+      artifacts_root = Orchard.Inference.artifacts_root()
+      model_id = "cold-default-artifact-absent"
+      version = "v1"
+
+      dest =
+        Orchard.Models.Importer.artifact_destination_path(artifacts_root, model_id, version)
+
+      model =
+        create_model!(%{
+          model_id: model_id,
+          version: version,
+          state: :active,
+          display_name: model_id,
+          artifact_uri: "file://" <> dest,
+          artifact_source_uri: "file://" <> dest,
+          backend: "mlx"
+        })
+
+      assert {:ok, path} = Orchard.Models.artifact_local_path(model)
+      refute File.dir?(path)
+
+      node = insert_node!(%{advertise_addr: "10.0.0.55", rpc_port: 50_085})
+      target = Target.grpc_compat(host: "10.0.0.55", port: 50_085, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(
+                 canonical_request(model_id, version,
+                   admission: %{
+                     timeout_ms: 30_000,
+                     queue_wait_ms: 3_000,
+                     max_cold_start_ms: 15_000
+                   },
+                   resolved_policy: %{residency_preference: :allow_cold_load}
+                 ),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _e, _a, _o -> {:ok, snapshot} end
+               )
+
+      assert Enum.any?(decision.rejected_candidates, fn rejected ->
+               "model_not_available_on_node" in rejected.reason_codes
+             end)
+
+      assert :ok = SchedulerExplanation.validate_map(decision)
+    end
+
     test "idle cold candidate without acquirable artifact rejects with model_not_available_on_node" do
       node = insert_node!(%{advertise_addr: "10.0.0.50", rpc_port: 50_080})
       target = Target.grpc_compat(host: "10.0.0.50", port: 50_080, node_id: node.id)
