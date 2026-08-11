@@ -432,7 +432,7 @@ defmodule Orchard.Nodes do
   """
   @spec observe_status(keyword() | Target.t(), map() | struct(), DateTime.t()) ::
           {:ok, Node.t()} | :noop
-  @spec observe_status(keyword(), map() | struct(), DateTime.t(), keyword()) ::
+  @spec observe_status(keyword() | Target.t(), map() | struct(), DateTime.t(), keyword()) ::
           {:ok, Node.t()} | :noop
   def observe_status(target, status_response, observed_at, opts \\ []) do
     if repo_available?() do
@@ -452,6 +452,27 @@ defmodule Orchard.Nodes do
       end
     else
       :noop
+    end
+  rescue
+    _ -> :noop
+  end
+
+  @doc """
+  Persists unauthenticated Runtime Endpoint observation evidence as an admission candidate only.
+
+  Used by controller discovery bootstrap for configured BEAM targets. This path never
+  updates Node rows, never refreshes queue capacity sources, and never clears capacity
+  sources. Invalid or conflicting evidence returns `:noop`.
+  """
+  @spec observe_admission_candidate(keyword() | Target.t(), map() | struct(), DateTime.t()) ::
+          :ok | :noop
+  def observe_admission_candidate(target, status_response, observed_at) do
+    with true <- repo_available?(),
+         {:ok, observation} <- normalize_observation(target, status_response, observed_at),
+         {:ok, :candidate_persisted} <- execute_candidate_only_observe(observation) do
+      :ok
+    else
+      _other -> :noop
     end
   rescue
     _ -> :noop
@@ -1052,7 +1073,7 @@ defmodule Orchard.Nodes do
 
   defp normalize_observation(target, status_response, observed_at) do
     endpoint_transport = target_transport(target)
-    target = target_address(target)
+    target_address = target_address(target)
     metadata = extract_metadata(status_response)
 
     with {:metadata, %{} = meta} <- {:metadata, metadata},
@@ -1060,7 +1081,7 @@ defmodule Orchard.Nodes do
          {:display_name, display_name} when display_name != nil <-
            {:display_name, resolve_display_name(meta)},
          {:port, port} when is_integer(port) and port in 1..65_535 <-
-           {:port, resolve_port(meta, target)} do
+           {:port, resolve_port(meta, target_address)} do
       hostname = map_get(meta, :hostname)
       listen_host = map_get(meta, :listen_host)
 
@@ -1068,12 +1089,13 @@ defmodule Orchard.Nodes do
        %{
          id: node_id,
          display_name: display_name,
-         hostname: non_empty_or(hostname, target_host(target)),
-         advertise_addr: non_empty_or(listen_host, target_host(target)),
+         hostname: non_empty_or(hostname, target_host(target_address)),
+         advertise_addr: non_empty_or(listen_host, target_host(target_address)),
          rpc_port: port,
-         connect_host: connect_host(target),
-         connect_port: connect_port(target),
+         connect_host: connect_host(target_address),
+         connect_port: connect_port(target_address),
          endpoint_transport: endpoint_transport,
+         beam_address: beam_target_address(target),
          health: derive_health(extract_runtime_health(status_response)),
          agent_version: non_empty_or(map_get(meta, :agent_version), nil),
          capabilities: build_capabilities(meta, status_response),
@@ -1538,6 +1560,35 @@ defmodule Orchard.Nodes do
       {:noop, :constraint_conflict}
   end
 
+  defp execute_candidate_only_observe(observation) do
+    Repo.transaction(fn ->
+      conflicting = load_conflicting_nodes(observation)
+      existing = classify_conflicting_nodes(conflicting, observation)
+
+      case ensure_no_identity_conflict(existing, observation) do
+        :ok ->
+          # Candidate-only path never mutates Node rows, even when a provisioned
+          # or registered placeholder already owns the claimed identity.
+          upsert_observed_admission_candidate(observation)
+          :candidate_persisted
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, :candidate_persisted} -> {:ok, :candidate_persisted}
+      {:error, :identity_conflict} -> {:noop, :identity_conflict}
+    end
+  rescue
+    error in Ecto.ConstraintError ->
+      Logger.debug(
+        "Candidate-only observation lost concurrent insert race: #{inspect(error.constraint)}"
+      )
+
+      {:noop, :constraint_conflict}
+  end
+
   defp execute_authenticated_observe(
          %Target{transport: :beam} = target,
          observation,
@@ -1743,13 +1794,17 @@ defmodule Orchard.Nodes do
   defp ensure_fresh_observation(_existing, _observation), do: :ok
 
   defp upsert_observation(%{existing_by_id: %Node{} = existing}, observation) do
-    existing
-    |> Node.changeset(
+    attrs =
       observation
       |> Map.delete(:id)
       |> Map.delete(:last_heartbeat_at)
+      |> Map.delete(:endpoint_transport)
+      |> Map.delete(:beam_address)
       |> Map.put(:state, existing.state)
-    )
+      |> preserve_beam_connection_inventory(existing, observation)
+
+    existing
+    |> Node.changeset(attrs)
     |> Repo.update!()
   end
 
@@ -1898,6 +1953,14 @@ defmodule Orchard.Nodes do
     end
   end
 
+  defp preserve_beam_connection_inventory(attrs, node, %{endpoint_transport: :beam}) do
+    attrs
+    |> Map.put(:connect_host, node.connect_host)
+    |> Map.put(:connect_port, node.connect_port)
+  end
+
+  defp preserve_beam_connection_inventory(attrs, _node, _observation), do: attrs
+
   defp preserve_beam_connection_inventory(node, %{endpoint_transport: :beam} = observation) do
     Map.merge(observation, %{
       connect_host: node.connect_host,
@@ -1975,6 +2038,18 @@ defmodule Orchard.Nodes do
     claimed_node_id = observation.id
     endpoint_target = endpoint_target(observation)
 
+    case lock_open_observed_candidate_by_endpoint(observation, claimed_node_id, endpoint_target) do
+      %AdmissionCandidate{} = candidate ->
+        candidate
+
+      nil ->
+        # Pre-#192 BEAM candidates may still use advertise_addr:rpc_port keys.
+        # Reconcile those open rows onto the configured service@host identity.
+        lock_legacy_beam_observed_candidate(observation, claimed_node_id)
+    end
+  end
+
+  defp lock_open_observed_candidate_by_endpoint(observation, claimed_node_id, endpoint_target) do
     AdmissionCandidate
     |> where([candidate], candidate.source == :runtime_endpoint_observation)
     |> where([candidate], candidate.admission_category in [:pending_observed, :rejected])
@@ -1990,6 +2065,29 @@ defmodule Orchard.Nodes do
     |> Repo.one()
   end
 
+  defp lock_legacy_beam_observed_candidate(
+         %{endpoint_transport: :beam} = observation,
+         claimed_node_id
+       ) do
+    endpoint_target = endpoint_target(observation)
+
+    AdmissionCandidate
+    |> where([candidate], candidate.source == :runtime_endpoint_observation)
+    |> where([candidate], candidate.admission_category in [:pending_observed, :rejected])
+    |> where([candidate], candidate.endpoint_transport == :beam)
+    |> where([candidate], candidate.endpoint_target != ^endpoint_target)
+    |> where(
+      [candidate],
+      fragment("?->>'claimed_node_id' = ?", candidate.observed_identity, ^claimed_node_id)
+    )
+    |> order_by([candidate], desc: candidate.updated_at)
+    |> limit(1)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp lock_legacy_beam_observed_candidate(_observation, _claimed_node_id), do: nil
+
   defp observed_candidate_attrs(observation) do
     %{
       source: :runtime_endpoint_observation,
@@ -2003,6 +2101,10 @@ defmodule Orchard.Nodes do
       last_observed_at: observation.last_heartbeat_at
     }
   end
+
+  defp endpoint_target(%{endpoint_transport: :beam, beam_address: address})
+       when is_binary(address) and address != "",
+       do: address
 
   defp endpoint_target(observation) do
     case {observation.connect_host, observation.connect_port} do
@@ -3038,6 +3140,15 @@ defmodule Orchard.Nodes do
     end
   end
 
+  defp beam_target_address(%Target{transport: :beam, address: address}) when is_atom(address),
+    do: Atom.to_string(address)
+
+  defp beam_target_address(%Target{transport: :beam, address: address})
+       when is_binary(address) and address != "",
+       do: address
+
+  defp beam_target_address(_target), do: nil
+
   defp map_get(map, key) when is_map(map) and is_atom(key) do
     case Map.fetch(map, key) do
       {:ok, value} -> value
@@ -3136,7 +3247,8 @@ defmodule Orchard.Nodes do
 
   defp target_address(%Target{transport: :grpc_compat, address: address}), do: address
   defp target_address(%Target{transport: :beam}), do: []
-  defp target_address(target), do: target
+  defp target_address(target) when is_list(target), do: target
+  defp target_address(_target), do: []
 
   defp valid_connect_target?(host, port), do: non_empty?(host) and is_integer(port)
 

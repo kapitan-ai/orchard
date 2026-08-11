@@ -307,6 +307,33 @@ defmodule Orchard.Inference do
     end
   end
 
+  @doc """
+  Returns configured static-fallback BEAM Runtime Endpoint targets for discovery.
+
+  Used only when trusted admitted/active inventory is empty and static fallback is
+  enabled. Successful observations create or refresh admission candidates; they do
+  not auto-admit Nodes. gRPC compatibility configured targets stay out of this path
+  so MultiNode compatibility probes remain ephemeral.
+  """
+  @spec discovery_runtime_endpoint_targets() :: [Target.t()]
+  def discovery_runtime_endpoint_targets do
+    if static_runtime_target_fallback_enabled?() do
+      case Nodes.activation_probe_runtime_endpoint_targets() do
+        {:ok, []} ->
+          configured_runtime_endpoint_targets()
+          |> Enum.filter(&(&1.transport == :beam))
+
+        {:ok, [_target | _rest]} ->
+          []
+
+        {:error, :node_inventory_unavailable} ->
+          []
+      end
+    else
+      []
+    end
+  end
+
   @spec request_timeout_ms() :: pos_integer() | nil
   def request_timeout_ms, do: config()[:request_timeout_ms]
 

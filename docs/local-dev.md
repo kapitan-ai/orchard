@@ -752,10 +752,11 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
    - If every `/console` LiveView returns 500 with `Sentry.LiveViewHook` undefined, recompile LiveView then Sentry (`mix deps.compile phoenix_live_view` and `mix deps.compile sentry --force`) and restart the controller.
    - Tracked by issue #191.
 
-8. **Admission inventory gap**
-   - Configured BEAM targets can serve inference before durable `nodes` rows exist.
-   - Console may show Live Cluster health while Registered Nodes inventory stays empty and candidates remain `pending_observed`.
-   - Tracked by issue #192.
+8. **Admission inventory bootstrap**
+   - With static runtime target fallback enabled, the controller ActivationProbe probes configured Runtime Endpoint targets when trusted admitted/active inventory is empty.
+   - Successful observations create or refresh durable `pending_observed` admission candidates without auto-admit.
+   - BEAM candidate `endpoint_target` / `target_ref` keep the configured `service@host` identity instead of collapsing to loopback gRPC listen metadata.
+   - Operators still review and admit through the normal admission path (#128 covers policy/decision detail).
 
 ### Verification
 

@@ -1,10 +1,16 @@
 defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   @moduledoc """
-  Leader-side status-only probes for admitted and active Runtime Endpoint Nodes.
+  Leader-side status probes for Runtime Endpoint Nodes and configured discovery targets.
 
-  Refreshes authenticated heartbeats and capacity evidence on a bounded interval
-  independent of request traffic, and demotes idle Node loss through transport
-  failure recording plus a heartbeat-age sweep (ADR 0015 / issue #148).
+  For admitted and active inventory, refreshes authenticated heartbeats and capacity
+  evidence on a bounded interval independent of request traffic, and demotes idle Node
+  loss through transport failure recording plus a heartbeat-age sweep (ADR 0015 /
+  issue #148).
+
+  When trusted admitted/active inventory is empty and static runtime target fallback is
+  enabled, also probes configured Runtime Endpoint targets and persists successful
+  unauthenticated observations as `pending_observed` admission candidates (issue #192).
+  Discovery never auto-admits a Node.
   """
 
   use GenServer
@@ -15,7 +21,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   alias Orchard.Inference
   alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
-  alias Orchard.RuntimeEndpoint.{BeamClient, GrpcCompatibilityClient}
+  alias Orchard.RuntimeEndpoint.{BeamClient, GrpcCompatibilityClient, Target}
 
   @default_interval_ms 5_000
   @default_timeout_ms 5_000
@@ -71,19 +77,33 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
     with :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
          true <- allowed_client?(client) do
-      targets =
+      trusted_targets =
         Keyword.get_lazy(opts, :targets, fn ->
           Inference.activation_probe_runtime_endpoint_targets()
         end)
 
-      results =
-        targets
-        |> Enum.flat_map(&probe_target(&1, client, timeout, observed_at))
+      discovery_targets =
+        if Keyword.has_key?(opts, :targets) do
+          Keyword.get(opts, :discovery_targets, [])
+        else
+          Keyword.get_lazy(opts, :discovery_targets, fn ->
+            Inference.discovery_runtime_endpoint_targets()
+          end)
+        end
+
+      trusted_results =
+        Enum.flat_map(trusted_targets, &probe_target(&1, client, timeout, observed_at, :trusted))
+
+      discovery_results =
+        Enum.flat_map(
+          discovery_targets,
+          &probe_target(&1, client, timeout, observed_at, :discovery)
+        )
 
       _ = Nodes.sweep_stale_node_heartbeats(observed_at)
       safe_prune_heartbeats(heartbeat_context, observed_at)
 
-      {:ok, results}
+      {:ok, trusted_results ++ discovery_results}
     else
       false -> {:error, :activation_probe_transport_disabled}
       {:error, reason} -> {:error, reason}
@@ -136,30 +156,60 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
       :ok
   end
 
-  defp probe_target(target, client, timeout, observed_at) do
+  defp probe_target(target, client, timeout, observed_at, mode) do
     case client.connect(target) do
       {:ok, connection} ->
         try do
           case client.status(connection, timeout: timeout) do
-            {:ok, _observation} ->
+            {:ok, observation} ->
+              maybe_persist_discovery_observation(mode, target, observation, observed_at)
               [%{target_id: target.id, status: :observed}]
 
             {:error, reason} ->
-              record_probe_failure(target, reason, observed_at)
+              record_probe_failure(mode, target, reason, observed_at)
           end
         after
           disconnect(client, connection)
         end
 
       {:error, reason} ->
-        record_probe_failure(target, reason, observed_at)
+        record_probe_failure(mode, target, reason, observed_at)
     end
   end
 
-  defp record_probe_failure(target, reason, observed_at) do
+  defp maybe_persist_discovery_observation(
+         :discovery,
+         %Target{transport: :beam} = target,
+         observation,
+         observed_at
+       ) do
+    case Nodes.observe_admission_candidate(target, observation, observed_at) do
+      :ok ->
+        :ok
+
+      :noop ->
+        Logger.info("Discovery observation did not persist a candidate for #{target.id}")
+
+        :ok
+    end
+  end
+
+  # gRPC compatibility discovery stays ephemeral even if a caller injects it.
+  defp maybe_persist_discovery_observation(:discovery, _target, _observation, _observed_at),
+    do: :ok
+
+  defp maybe_persist_discovery_observation(:trusted, _target, _observation, _observed_at), do: :ok
+
+  defp record_probe_failure(:trusted, target, reason, observed_at) do
     # Pass the raw reason so transport_failure_reason?/1 classifies correctly.
     # Seam rejections are ignored by Nodes.record_transport_failure/3.
     _ = Nodes.record_transport_failure(target, reason, observed_at)
+    log_probe_failure(target.id, reason)
+  end
+
+  defp record_probe_failure(:discovery, target, reason, _observed_at) do
+    # Discovery targets are not yet trusted inventory. Failures stay ephemeral so
+    # a missing configured peer does not invent Node demotion rows.
     log_probe_failure(target.id, reason)
   end
 

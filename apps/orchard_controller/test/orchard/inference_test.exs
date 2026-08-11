@@ -303,6 +303,42 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "discovery_runtime_endpoint_targets/0" do
+    @tag :db
+    test "issue #192 returns only BEAM configured targets when inventory empty and fallback on" do
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [
+          %{
+            transport: :beam,
+            address: "orchard_node_agent@10.0.0.9",
+            metadata: %{source_dev: true}
+          },
+          [host: "10.0.0.9", port: 50_071]
+        ]
+      )
+
+      assert [
+               %Target{
+                 transport: :beam,
+                 address: "orchard_node_agent@10.0.0.9"
+               }
+             ] = Inference.discovery_runtime_endpoint_targets()
+    end
+
+    @tag :db
+    test "issue #192 returns empty when static fallback is disabled" do
+      put_inference(
+        allow_static_runtime_target_fallback: false,
+        runtime_endpoint_targets: [
+          %{transport: :beam, address: "orchard_node_agent@10.0.0.9"}
+        ]
+      )
+
+      assert Inference.discovery_runtime_endpoint_targets() == []
+    end
+  end
+
   describe "source-dev runtime endpoint transport config" do
     test "SPEC.md §7.5.0 peer-grant mode selects BEAM without legacy targets" do
       inference =
