@@ -206,6 +206,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
 
     request = canonical_request()
     assert {:ok, schedule} = MultiNode.schedule(request, status_client: @stub_client)
+    schedule = Map.put(schedule, :timeout_at, DateTime.add(DateTime.utc_now(), 30, :second))
     assert schedule.node_id in [id_a, id_b]
     selected_target = target_key(schedule.runtime_client_target)
     assert selected_target in [capable_a, capable_b]
@@ -269,6 +270,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
 
     request = canonical_request()
     assert {:ok, schedule} = MultiNode.schedule(request, status_client: @stub_client)
+    schedule = Map.put(schedule, :timeout_at, DateTime.add(DateTime.utc_now(), 30, :second))
     assert schedule.node_id == id_capable
     assert target_key(schedule.runtime_client_target) == capable_target
 

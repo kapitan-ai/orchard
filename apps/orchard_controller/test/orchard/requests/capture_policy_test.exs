@@ -695,6 +695,99 @@ defmodule Orchard.Requests.CapturePolicyTest do
     }
   end
 
+  test "restricted capture retains closed attempt evidence and hashes targets" do
+    raw_target = "grpc://10.0.0.8:50071/private"
+    node_id = "00000000-0000-4000-a000-000000000001"
+    attrs = enriched_attempt_event(raw_target, node_id)
+    expected_target = "sha256:" <> Base.encode16(:crypto.hash(:sha256, raw_target), case: :lower)
+
+    for mode <- [:none, :metadata] do
+      sanitized = CapturePolicy.event_attrs(mode, attrs)
+      result = sanitized.payload["result"]
+
+      assert result["attempt_outcome"] == "failed"
+      assert result["failure_class"] == "runtime_failure"
+      assert result["failure_code"] == "runtime_unavailable"
+      assert result["node_id"] == node_id
+      assert result["target_ref"] == expected_target
+      refute Map.has_key?(result, "raw_source_code")
+      refute Map.has_key?(result, "error_message")
+      refute inspect(sanitized) =~ @prompt
+      refute inspect(sanitized) =~ @arguments
+    end
+  end
+
+  test "full capture permits only strict enriched fields and approved target identifiers" do
+    attrs =
+      enriched_attempt_event(
+        "grpc://10.0.0.8:50071/private",
+        "00000000-0000-4000-a000-000000000001"
+      )
+
+    sanitized = CapturePolicy.event_attrs(:full, attrs)
+    assert sanitized.payload["result"] == %{"result_invalid" => true}
+
+    stable_target = "sha256:" <> String.duplicate("a", 64)
+    stable = put_in(attrs, [:payload, "result", "target_ref"], stable_target)
+
+    assert CapturePolicy.event_attrs(:full, stable).payload["result"]["target_ref"] ==
+             stable_target
+
+    invalid = put_in(stable, [:payload, "result", "content"], @prompt)
+    sanitized = CapturePolicy.event_attrs(:full, invalid)
+    assert sanitized.payload["result"] == %{"result_invalid" => true}
+  end
+
+  test "restricted tool-call parent identity follows the payload attempt" do
+    attrs = %{
+      event_type: "request_step.proposed",
+      payload: %{
+        "step_type" => "tool_call",
+        "turn_index" => 1,
+        "attempt" => 2,
+        "call_id" => "call-private",
+        "boundary" => "post_observation",
+        "result" => %{}
+      }
+    }
+
+    sanitized = CapturePolicy.event_attrs(:metadata, attrs)
+    assert sanitized.payload["parent_step_id"] == "inference_turn:t1:a2"
+  end
+
+  defp enriched_attempt_event(raw_target, node_id) do
+    %{
+      event_type: "request_step.failed",
+      payload: %{
+        "step_id" => "inference_turn:t1:a1",
+        "step_type" => "inference_turn",
+        "turn_index" => 1,
+        "attempt" => 1,
+        "boundary" => "post_observation",
+        "result" => %{
+          "attempt_outcome" => "failed",
+          "started_at" => ~U[2026-08-12 10:00:00.000000Z],
+          "ended_at" => ~U[2026-08-12 10:00:01.000000Z],
+          "accepted" => true,
+          "output_committed" => false,
+          "execution_resolution" => "terminated",
+          "capacity_release_outcome" => "released",
+          "excluded_node_ids" => [],
+          "node_id" => node_id,
+          "target_ref" => raw_target,
+          "failure_class" => "runtime_failure",
+          "failure_code" => "runtime_unavailable",
+          "runtime_retryable" => true,
+          "retry_decision" => "not_retryable",
+          "raw_source_code" => "private-runtime-code",
+          "error_message" => "runtime echoed #{@prompt}"
+        },
+        "arguments_json" => @arguments,
+        "content" => @prompt
+      }
+    }
+  end
+
   defp event_attrs do
     %{
       event_type: "request_step.proposed",

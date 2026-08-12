@@ -287,6 +287,33 @@ defmodule Orchard.RequestsTest do
     assert Requests.get_request!(request.id).state == :received
   end
 
+  test "append_request_step_events/2 round-trips closed evidence for both attempt identities" do
+    request =
+      create_request!(%{
+        public_id: "req_attempt_evidence_round_trip",
+        state: :running,
+        payload_capture_mode: :metadata
+      })
+
+    node_1 = "00000000-0000-4000-a000-000000000001"
+    node_2 = "00000000-0000-4000-a000-000000000002"
+
+    events = [
+      enriched_attempt_step(1, node_1, [], "retried"),
+      enriched_attempt_step(2, node_2, [node_1], "retry_exhausted")
+    ]
+
+    assert {:ok, [_attempt_1, _attempt_2]} =
+             Requests.append_request_step_events(request, events)
+
+    assert [attempt_1, attempt_2] = Requests.list_request_step_events(request)
+    assert attempt_1.step_id == "inference_turn:t1:a1"
+    assert attempt_1.result["retry_decision"] == "retried"
+    assert attempt_2.step_id == "inference_turn:t1:a2"
+    assert attempt_2.result["excluded_node_ids"] == [node_1]
+    assert attempt_2.result["retry_decision"] == "retry_exhausted"
+  end
+
   test "append_request_step_events/2 rejects invalid batches atomically" do
     request = create_request!(%{public_id: "req_step_batch_invalid_test", state: :received})
 
@@ -465,9 +492,9 @@ defmodule Orchard.RequestsTest do
                  %{state: :completed},
                  [
                    inference_turn_completed_step_attrs(%{
-                     step_id: RequestStepEvent.inference_turn_step_id(2, 3),
-                     turn_index: 2,
-                     attempt: 3,
+                     step_id: RequestStepEvent.inference_turn_step_id(1, 2),
+                     turn_index: 1,
+                     attempt: 2,
                      result: %{}
                    })
                  ]
@@ -475,8 +502,8 @@ defmodule Orchard.RequestsTest do
 
       assert {:ok, :missing_finish_reason_candidate} =
                Requests.classify_missing_terminal_candidate(request,
-                 turn_index: 2,
-                 attempt: 3
+                 turn_index: 1,
+                 attempt: 2
                )
 
       assert {:error, {:inconclusive, :terminal_step_not_found}} =
@@ -1375,6 +1402,32 @@ defmodule Orchard.RequestsTest do
       },
       overrides
     )
+  end
+
+  defp enriched_attempt_step(attempt, node_id, exclusions, retry_decision) do
+    %{
+      event_type: "request_step.failed",
+      step_id: RequestStepEvent.inference_turn_step_id(1, attempt),
+      step_type: "inference_turn",
+      turn_index: 1,
+      attempt: attempt,
+      parent_step_id: nil,
+      boundary: "post_observation",
+      result: %{
+        "attempt_outcome" => "failed",
+        "started_at" => ~U[2026-08-12 10:00:00.000000Z],
+        "ended_at" => ~U[2026-08-12 10:00:01.000000Z],
+        "accepted" => false,
+        "output_committed" => false,
+        "execution_resolution" => "not_started",
+        "capacity_release_outcome" => "not_applicable",
+        "excluded_node_ids" => exclusions,
+        "node_id" => node_id,
+        "failure_class" => "runtime_failure",
+        "failure_code" => "runtime_unavailable",
+        "retry_decision" => retry_decision
+      }
+    }
   end
 
   defp inference_turn_completed_step_attrs(overrides \\ %{}) do

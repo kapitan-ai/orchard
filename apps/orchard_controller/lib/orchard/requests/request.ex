@@ -153,7 +153,8 @@ defmodule Orchard.Requests.Request do
       :requested_model,
       :state,
       :stream,
-      :payload_capture_mode
+      :payload_capture_mode,
+      :timeout_at
     ])
     |> validate_number(:input_tokens, greater_than_or_equal_to: 0)
     |> validate_number(:output_tokens, greater_than_or_equal_to: 0)

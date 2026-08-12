@@ -3539,7 +3539,8 @@ defmodule Orchard.Inference.QueueManagerTest do
         requested_model: "queue-model@v1",
         state: :received,
         stream: false,
-        payload_capture_mode: :metadata
+        payload_capture_mode: :metadata,
+        timeout_at: DateTime.utc_now() |> DateTime.add(120_000, :millisecond)
       ],
       overrides
     )

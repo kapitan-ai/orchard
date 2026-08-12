@@ -18,6 +18,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     CanonicalRequestSerializer,
     ChatError,
     QueueManager,
+    RequestDeadline,
     ToolCallAccumulator,
     ToolExecutionSemantics,
     ToolingValidation
@@ -325,6 +326,14 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp acquire_queue_grant(db_request, canonical, caller) do
     request = queue_admission_request(db_request, canonical, caller)
 
+    if RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) <= 0 do
+      {:error, {:dispatch_failed, :request_timeout}}
+    else
+      acquire_queue_grant(request, db_request)
+    end
+  end
+
+  defp acquire_queue_grant(request, db_request) do
     case Inference.queue_manager().acquire(request) do
       {:ok, %QueueManager.Grant{} = grant} ->
         {:ok, grant}
@@ -345,16 +354,23 @@ defmodule Orchard.Inference.RequestOrchestrator do
       model_id: canonical.model_ref.model_id,
       version: canonical.model_ref.version,
       max_active_per_tenant: tenant_active_limit(canonical),
-      max_wait_ms: queue_wait_budget_ms(canonical),
+      max_wait_ms: queue_wait_budget_ms(db_request, canonical),
       caller_pid: caller
     }
   end
 
-  defp queue_wait_budget_ms(%{admission: %{queue_wait_ms: wait}})
-       when is_integer(wait) and wait >= 0,
-       do: wait
+  defp queue_wait_budget_ms(db_request, canonical) do
+    now = DateTime.utc_now()
+    remaining_ms = RequestDeadline.remaining_ms(db_request.timeout_at, now)
 
-  defp queue_wait_budget_ms(_canonical), do: nil
+    case canonical do
+      %{admission: %{queue_wait_ms: wait}} when is_integer(wait) and wait >= 0 ->
+        min(wait, remaining_ms)
+
+      _canonical ->
+        remaining_ms
+    end
+  end
 
   defp tenant_active_limit(canonical) do
     case canonical.resolved_policy.max_active_requests do
@@ -560,25 +576,29 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp execute_inference_turn(db_request, canonical, model, schedule, execution_opts) do
-    step_context = inference_turn_step_context(canonical)
+    if RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) <= 0 do
+      {:error, {:dispatch_failed, :request_timeout}}
+    else
+      step_context = inference_turn_step_context(canonical)
 
-    case persist_inference_turn_started(
-           db_request,
-           step_context,
-           execution_opts.step_event_appender
-         ) do
-      {:ok, persisted_step_context} ->
-        dispatch_started_inference_turn(
-          db_request,
-          canonical,
-          model,
-          schedule,
-          execution_opts,
-          persisted_step_context
-        )
+      case persist_inference_turn_started(
+             db_request,
+             step_context,
+             execution_opts.step_event_appender
+           ) do
+        {:ok, persisted_step_context} ->
+          dispatch_started_inference_turn(
+            db_request,
+            canonical,
+            model,
+            schedule,
+            execution_opts,
+            persisted_step_context
+          )
 
-      {:error, reason} ->
-        {:error, {:request_step_start_failed, reason}}
+        {:error, reason} ->
+          {:error, {:request_step_start_failed, reason}}
+      end
     end
   end
 
@@ -669,7 +689,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
       request_payload: %{"prompt" => canonical.rendered_prompt},
       sampling_params: CanonicalRequestSerializer.sampling_params(canonical.sampling),
       response_format: %{"type" => Atom.to_string(canonical.response_format.type)},
-      input_tokens: canonical.input_token_count
+      input_tokens: canonical.input_token_count,
+      timeout_at:
+        RequestDeadline.timeout_at(
+          canonical.admission.timeout_ms,
+          DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        )
     }
   end
 
@@ -732,9 +757,19 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp schedule_request(db_request, canonical) do
+    if RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) <= 0 do
+      {:error, {:dispatch_failed, :request_timeout}}
+    else
+      schedule_live_request(db_request, canonical)
+    end
+  end
+
+  defp schedule_live_request(db_request, canonical) do
     case call_scheduler(canonical) do
       {:ok, schedule} when is_map(schedule) ->
-        {:ok, schedule}
+        if RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) > 0,
+          do: {:ok, Map.put(schedule, :timeout_at, db_request.timeout_at)},
+          else: {:error, {:dispatch_failed, :request_timeout}}
 
       {:error, reason, decision} when is_map(decision) ->
         persist_rejected_scheduler_decision(db_request, decision)
@@ -885,6 +920,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp strip_scheduler_runtime_metadata(schedule) do
     schedule
+    |> Map.drop([:timeout_at, "timeout_at"])
     |> strip_runtime_endpoint_metadata()
     |> strip_dispatch_capacity_metadata()
     |> strip_prefix_cache_metadata()
@@ -1044,6 +1080,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp normalize_dispatch_result({:ok, _events} = success), do: success
+
+  defp normalize_dispatch_result({:error, {:dispatch_failed, :dispatch_timeout}}),
+    do: {:error, {:dispatch_failed, :request_timeout}}
+
   defp normalize_dispatch_result({:error, _reason} = error), do: error
 
   defp normalize_dispatch_result(_other),
@@ -1549,8 +1589,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp build_execute_request(canonical, schedule) do
     deadline_ms =
-      System.system_time(:millisecond) +
-        Map.get(schedule, :request_timeout_ms, Inference.request_timeout_ms())
+      schedule
+      |> Map.fetch!(:timeout_at)
+      |> DateTime.to_unix(:millisecond)
 
     %ExecuteInferenceRequest{
       request_id: canonical.public_id,
@@ -1586,8 +1627,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp build_model_load_request(model, schedule) do
     deadline_ms =
-      System.system_time(:millisecond) +
-        Map.get(schedule, :model_load_timeout_ms, Inference.model_load_timeout_ms())
+      schedule
+      |> Map.fetch!(:timeout_at)
+      |> DateTime.to_unix(:millisecond)
 
     node_id =
       case Map.get(schedule, :node_id) do

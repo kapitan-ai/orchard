@@ -17,12 +17,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   dispatcher takes that Node's acceptance gate, revalidates the recognized
   claim without counting it twice, and holds the gate until the node accepts or
   the attempt fails pre-acceptance. Gate acquisition is bounded by the time left
-  on the request deadline, which the schedule's required `:request_timeout_ms`
-  opens at dispatch entry, and fails the dispatch with
-  `:dispatch_capacity_acceptance_gate_busy` rather than waiting behind another
-  in-flight dispatch to the same Node indefinitely. An already-elapsed deadline
-  fails as `:dispatch_timeout` without taking the gate. Unavailable capacity fails
-  the dispatch rather than proceeding, and reports the authority's own reason —
+  on the persisted Request deadline carried as `:timeout_at`, and fails the
+  dispatch with `:dispatch_capacity_acceptance_gate_busy` rather than waiting
+  behind another in-flight dispatch to the same Node indefinitely. An
+  already-elapsed deadline fails as `:dispatch_timeout` without taking the gate.
+  Unavailable capacity fails the dispatch rather than proceeding, and reports
   `:dispatch_capacity_unavailable`, `:dispatch_capacity_request_already_claimed`
   for a request whose prior claim was never released, or
   `:dispatch_capacity_facts_unavailable` when the schedule carries no
@@ -48,8 +47,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   alias Orchard.DomainMetrics
   alias Orchard.Inference
-  alias Orchard.Inference.ModelLoadFailure
-  alias Orchard.Inference.QueueManager
+  alias Orchard.Inference.{ModelLoadFailure, QueueManager, RequestDeadline}
   alias Orchard.InferenceEvent
 
   alias Orchard.RuntimeEndpoint.{
@@ -191,10 +189,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:runtime_endpoint_target` - typed Runtime Endpoint target for new schedulers
   - `:runtime_client_target` - legacy `[host: ..., port: ...]` gRPC compatibility target
   - `:request_id` - the canonical request ID
-  - `:request_timeout_ms` - maximum wall-clock time for the dispatch excluding
-    model load, which is bounded separately by `:model_load_timeout_ms`. The
-    deadline runs from dispatch entry and covers connect, probe, acceptance-gate
-    acquisition, and streaming, so a slow cold start cannot starve the stream.
+  - `:timeout_at` - the persisted absolute logical Request deadline. It covers
+    queueing, scheduling, model loading, connect, probe, acceptance-gate
+    acquisition, and streaming.
 
   BEAM schedules may omit `:runtime_client_target`.
   If a configured BEAM target node ID conflicts with observed endpoint metadata,
@@ -239,9 +236,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       ) do
     target = runtime_endpoint_target(schedule)
     request_id = Map.fetch!(schedule, :request_id)
-    timeout_ms = Map.fetch!(schedule, :request_timeout_ms)
-    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
-    model_load_timeout = Map.get(schedule, :model_load_timeout_ms, 120_000)
+    timeout_at = Map.fetch!(schedule, :timeout_at)
+    now = DateTime.utc_now()
+    system_ms = DateTime.to_unix(now, :millisecond)
+    monotonic_ms = System.monotonic_time(:millisecond)
+    timeout_ms = RequestDeadline.remaining_ms(timeout_at, now)
+    deadline_ms = RequestDeadline.to_monotonic_ms(timeout_at, system_ms, monotonic_ms)
+
+    model_load_timeout_cap_ms = Map.get(schedule, :model_load_timeout_ms, 120_000)
     caller = Keyword.get(opts, :caller, self())
     caller_ref = Process.monitor(caller)
     event_handler = Keyword.get(opts, :event_handler)
@@ -270,7 +272,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       execute_request: execute_request,
       model_load_request: model_load_request,
       metrics: metrics,
-      model_load_timeout: model_load_timeout,
+      model_load_timeout_cap_ms: model_load_timeout_cap_ms,
       timeout_ms: timeout_ms,
       deadline_ms: deadline_ms,
       caller: caller,
@@ -281,15 +283,19 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     }
 
     try do
-      case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
-        :ok ->
-          dispatch_with_capacity_claim(context)
+      if timeout_ms <= 0 do
+        {:error, {:dispatch_failed, :dispatch_timeout}}
+      else
+        case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
+          :ok ->
+            dispatch_with_capacity_claim(context)
 
-        {:error, reason} ->
-          error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
-          put_dispatch_terminal_context(error_metrics, target)
-          emit_timing_log(error_metrics, {:error, {:dispatch_failed, reason}})
-          {:error, {:dispatch_failed, reason}}
+          {:error, reason} ->
+            error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
+            put_dispatch_terminal_context(error_metrics, target)
+            emit_timing_log(error_metrics, {:error, {:dispatch_failed, reason}})
+            {:error, {:dispatch_failed, reason}}
+        end
       end
     after
       Process.demonitor(caller_ref, [:flush])
@@ -299,6 +305,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   # -- Private ---------------------------------------------------------------
 
   defp dispatch_with_capacity_claim(%{schedule: schedule} = context) do
+    if deadline_expired?(context) do
+      dispatch_timeout_result(context)
+    else
+      dispatch_with_live_capacity_claim(context, schedule)
+    end
+  end
+
+  defp dispatch_with_live_capacity_claim(context, schedule) do
     case acquire_capacity_claim(schedule) do
       {:ok, nil} ->
         dispatch_after_preensure_gate(context)
@@ -416,29 +430,37 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     do: Map.get(schedule, :dispatch_capacity_authority, AllocationAuthority)
 
   defp dispatch_after_preensure_gate(%{client: client, target: target} = context) do
-    case authorize_dispatch_target(target) do
-      :ok ->
-        case client.connect(target) do
-          {:ok, channel} ->
-            dispatch_with_channel(Map.put(context, :channel, channel))
+    if deadline_expired?(context) do
+      dispatch_timeout_result(context)
+    else
+      case authorize_dispatch_target(target) do
+        :ok ->
+          connect_for_dispatch(client, target, context)
 
-          {:error, reason} ->
-            handle_dispatch_connect_failure(target, reason, context.metrics)
-        end
+        {:error, :runtime_target_not_active} ->
+          handle_dispatch_result(
+            {:error, {:dispatch_failed, :node_not_active}},
+            context.metrics,
+            target
+          )
 
-      {:error, :runtime_target_not_active} ->
-        handle_dispatch_result(
-          {:error, {:dispatch_failed, :node_not_active}},
-          context.metrics,
-          target
-        )
+        {:error, :node_inventory_unavailable} ->
+          handle_dispatch_result(
+            {:error, {:dispatch_failed, :node_inventory_unavailable}},
+            context.metrics,
+            target
+          )
+      end
+    end
+  end
 
-      {:error, :node_inventory_unavailable} ->
-        handle_dispatch_result(
-          {:error, {:dispatch_failed, :node_inventory_unavailable}},
-          context.metrics,
-          target
-        )
+  defp connect_for_dispatch(client, target, context) do
+    case client.connect(target) do
+      {:ok, channel} ->
+        dispatch_with_channel(Map.put(context, :channel, channel))
+
+      {:error, reason} ->
+        handle_dispatch_connect_failure(target, reason, context.metrics)
     end
   end
 
@@ -487,23 +509,45 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp do_dispatch_with_channel(%{} = context) do
+    if deadline_expired?(context) do
+      dispatch_timeout_result(context)
+    else
+      dispatch_after_live_channel(context)
+    end
+  end
+
+  defp dispatch_after_live_channel(context) do
     case prepare_dispatch_identity(context) do
       {:ok, model_load_request, metrics} ->
         context = %{context | model_load_request: model_load_request, metrics: metrics}
-        ensure_start = System.monotonic_time(:millisecond)
-        put_ensure_model_load_started_context(metrics)
-
-        context.client
-        |> ensure_loaded_for_dispatch(
-          context.channel,
-          context.target,
-          model_load_request,
-          context.model_load_timeout
-        )
-        |> handle_ensure_result(context, ensure_start)
+        ensure_loaded_before_deadline(context, model_load_request, metrics)
 
       {:error, reason, metrics} ->
         handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
+    end
+  end
+
+  defp ensure_loaded_before_deadline(context, model_load_request, metrics) do
+    model_load_timeout =
+      min(
+        context.model_load_timeout_cap_ms,
+        remaining_request_timeout_ms(context.deadline_ms)
+      )
+
+    if model_load_timeout <= 0 do
+      dispatch_timeout_result(%{context | metrics: metrics})
+    else
+      ensure_start = System.monotonic_time(:millisecond)
+      put_ensure_model_load_started_context(metrics)
+
+      context.client
+      |> ensure_loaded_for_dispatch(
+        context.channel,
+        context.target,
+        model_load_request,
+        model_load_timeout
+      )
+      |> handle_ensure_result(context, ensure_start)
     end
   end
 
@@ -622,14 +666,15 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       DomainMetrics.model_load(metrics.node_id, metrics.model_id, metrics.ensure_model_loaded_ms)
     end
 
-    context =
+    context = Map.put(context, :ensure_model_loaded_result, ensure_load_meta)
+
+    if deadline_expired?(context) do
+      dispatch_timeout_result(%{context | metrics: metrics})
+    else
       context
-      |> Map.put(:ensure_model_loaded_result, ensure_load_meta)
-      |> Map.update!(:deadline_ms, &(&1 + ensure_end - ensure_start))
-
-    result = execute_loaded_request(context, ensure_load_meta, metrics)
-
-    handle_dispatch_result(result, metrics, context.target)
+      |> execute_loaded_request(ensure_load_meta, metrics)
+      |> handle_dispatch_result(metrics, context.target)
+    end
   end
 
   defp handle_ensure_result({:error, reason}, context, ensure_start) do
@@ -641,11 +686,15 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         model_already_loaded: false
     }
 
-    error_metrics = finalize_metrics(metrics, {:error, {:model_load_failed, reason}})
-    DomainMetrics.model_load(metrics.node_id, metrics.model_id, metrics.ensure_model_loaded_ms)
-    put_dispatch_terminal_context(error_metrics, context.target)
-    emit_timing_log(error_metrics, {:error, {:model_load_failed, reason}})
-    {:error, {:model_load_failed, reason}}
+    if deadline_expired?(context) do
+      dispatch_timeout_result(%{context | metrics: metrics})
+    else
+      error_metrics = finalize_metrics(metrics, {:error, {:model_load_failed, reason}})
+      DomainMetrics.model_load(metrics.node_id, metrics.model_id, metrics.ensure_model_loaded_ms)
+      put_dispatch_terminal_context(error_metrics, context.target)
+      emit_timing_log(error_metrics, {:error, {:model_load_failed, reason}})
+      {:error, {:model_load_failed, reason}}
+    end
   end
 
   defp execute_loaded_request(context, ensure_load_meta, metrics) do
@@ -676,20 +725,26 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp stream_under_acceptance_gate(context, gated_execute_request, metrics, acceptance_gate) do
     case revalidate_capacity_claim(context) do
       :ok ->
-        stream_context = %{
-          acceptance_gate: acceptance_gate,
-          caller_ref: context.caller_ref,
-          cancel_drain_timeout_ms: context.cancel_drain_timeout_ms,
-          capacity_authority: capacity_authority(context.schedule),
-          capacity_node_id: Map.get(context.schedule, :node_id),
-          channel: context.channel,
-          client: context.client,
-          event_handler: context.event_handler,
-          target: context.target,
-          timeout_ms: remaining_request_timeout_ms(context.deadline_ms)
-        }
+        timeout_ms = remaining_request_timeout_ms(context.deadline_ms)
 
-        do_execute_and_stream(stream_context, gated_execute_request, metrics)
+        if timeout_ms <= 0 do
+          {:error, {:dispatch_failed, :dispatch_timeout}}
+        else
+          stream_context = %{
+            acceptance_gate: acceptance_gate,
+            caller_ref: context.caller_ref,
+            cancel_drain_timeout_ms: context.cancel_drain_timeout_ms,
+            capacity_authority: capacity_authority(context.schedule),
+            capacity_node_id: Map.get(context.schedule, :node_id),
+            channel: context.channel,
+            client: context.client,
+            event_handler: context.event_handler,
+            target: context.target,
+            timeout_ms: timeout_ms
+          }
+
+          do_execute_and_stream(stream_context, gated_execute_request, metrics)
+        end
 
       {:error, :dispatch_capacity_revalidation_failed, _result} ->
         {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}}
@@ -767,10 +822,24 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
-  defp acquire_dispatch_acceptance_gate(_context), do: {:ok, nil}
+  defp acquire_dispatch_acceptance_gate(context) do
+    if remaining_request_timeout_ms(context.deadline_ms) <= 0,
+      do: {:error, :dispatch_timeout},
+      else: {:ok, nil}
+  end
 
   defp remaining_request_timeout_ms(deadline_ms) do
     max(deadline_ms - System.monotonic_time(:millisecond), 0)
+  end
+
+  defp deadline_expired?(context), do: remaining_request_timeout_ms(context.deadline_ms) <= 0
+
+  defp dispatch_timeout_result(context) do
+    handle_dispatch_result(
+      {:error, {:dispatch_failed, :dispatch_timeout}},
+      context.metrics,
+      context.target
+    )
   end
 
   defp release_dispatch_acceptance_gate(nil), do: :ok

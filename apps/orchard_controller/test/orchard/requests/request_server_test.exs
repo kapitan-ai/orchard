@@ -13,7 +13,8 @@ defmodule Orchard.Requests.RequestServerTest do
     requested_model: "test-model@v1",
     state: :received,
     stream: false,
-    payload_capture_mode: :metadata
+    payload_capture_mode: :metadata,
+    timeout_at: ~U[2100-01-01 00:00:00.000000Z]
   }
 
   defp create_request! do

@@ -24,55 +24,7 @@ defmodule Orchard.Requests.CapturePolicy do
     result_not_observed
     timeout_after_start
   )
-  @stable_error_codes ~w(
-    acquisition_failed
-    artifact_not_found
-    cancelled
-    checksum_mismatch
-    cluster_busy
-    deadline_exceeded
-    insufficient_memory
-    internal_error
-    load_timeout
-    manifest_not_found
-    mlx_backend_unavailable
-    model_busy
-    model_invalid
-    node_timeout
-    node_unavailable
-    orchestration_error
-    queue_full
-    queue_timeout
-    request_cancelled
-    request_caller_disconnect
-    request_client_disconnect
-    request_controller_restarted
-    request_interrupted
-    request_timeout
-    resource_exhausted
-    rpc_error
-    rpc_resource_exhausted
-    rpc_unavailable
-    runtime_incompatible
-    runtime_unavailable
-    timed_out
-    timeout
-    tool_execution_cancelled
-    tool_execution_failed
-    tool_execution_indeterminate_cancel_ack_missing
-    tool_execution_indeterminate_controller_restarted
-    tool_execution_indeterminate_executor_unreachable
-    tool_execution_indeterminate_result_not_observed
-    tool_execution_indeterminate_timeout_after_start
-    tool_execution_timed_out
-    tool_failed
-    tool_timeout
-    tooling_not_supported
-    unexpected_placement_state
-    worker_down
-    worker_unavailable
-    worker_unloaded
-  )
+  @stable_error_codes Orchard.Requests.InferenceAttemptFailure.stable_error_codes()
   @scheduler_candidate_facts ~w(
     active_target_node_id_missing
     aggregate_capacity_facts_unavailable
@@ -168,7 +120,7 @@ defmodule Orchard.Requests.CapturePolicy do
 
   alias Orchard.ClusterManagement.ReasonCodes
   alias Orchard.Inference.ToolExecutionOutcome
-  alias Orchard.Requests.RequestStepEvent
+  alias Orchard.Requests.{InferenceAttemptResult, RequestStepEvent}
 
   @spec resolve(mode(), boolean()) :: mode()
   def resolve(mode, true) when mode in @capture_modes, do: mode
@@ -240,22 +192,10 @@ defmodule Orchard.Requests.CapturePolicy do
   end
 
   @spec event_attrs(mode(), map()) :: map()
-  def event_attrs(:full, attrs), do: attrs
+  def event_attrs(:full, attrs), do: update_event_payload(attrs, &strict_full_event_payload/2)
 
-  def event_attrs(mode, attrs) when mode in [:none, :metadata] do
-    event_type = fetch_value(attrs, :event_type)
-
-    cond do
-      Map.has_key?(attrs, :payload) ->
-        Map.update!(attrs, :payload, &sanitize_event_payload(&1, event_type))
-
-      Map.has_key?(attrs, "payload") ->
-        Map.update!(attrs, "payload", &sanitize_event_payload(&1, event_type))
-
-      true ->
-        attrs
-    end
-  end
+  def event_attrs(mode, attrs) when mode in [:none, :metadata],
+    do: update_event_payload(attrs, &sanitize_event_payload/2)
 
   @spec schedule_attrs(mode(), map()) :: map()
   def schedule_attrs(:full, attrs), do: attrs
@@ -502,6 +442,35 @@ defmodule Orchard.Requests.CapturePolicy do
 
   defp codepoint_length(value), do: value |> String.codepoints() |> length()
 
+  defp update_event_payload(attrs, sanitizer) do
+    event_type = fetch_value(attrs, :event_type)
+
+    cond do
+      Map.has_key?(attrs, :payload) ->
+        Map.update!(attrs, :payload, &sanitizer.(&1, event_type))
+
+      Map.has_key?(attrs, "payload") ->
+        Map.update!(attrs, "payload", &sanitizer.(&1, event_type))
+
+      true ->
+        attrs
+    end
+  end
+
+  defp strict_full_event_payload(payload, event_type) when is_map(payload) do
+    result = fetch_value(payload, :result)
+    attempt = fetch_value(payload, :attempt)
+
+    if fetch_value(payload, :step_type) == "inference_turn" and
+         InferenceAttemptResult.enriched?(result) do
+      put_key(payload, :result, inference_step_result(result, event_type, attempt, :full))
+    else
+      payload
+    end
+  end
+
+  defp strict_full_event_payload(payload, _event_type), do: payload
+
   defp sanitize_event_payload(payload, event_type) when is_map(payload) do
     if RequestStepEvent.request_step_event_type?(event_type) do
       sanitize_step_event_payload(payload, event_type)
@@ -530,10 +499,78 @@ defmodule Orchard.Requests.CapturePolicy do
 
   defp step_result(sanitized, payload, event_type) do
     result = fetch_value(payload, :result)
+    attempt = fetch_value(payload, :attempt)
 
     case Map.get(sanitized, "step_type") do
-      "tool_execution" -> tool_execution_result(result, event_type)
-      _step_type -> inference_step_result(result)
+      "tool_execution" ->
+        tool_execution_result(result, event_type)
+
+      "inference_turn" ->
+        if InferenceAttemptResult.enriched?(result),
+          do: inference_step_result(result, event_type, attempt, :restricted),
+          else: inference_step_result(result)
+
+      _step_type ->
+        inference_step_result(result)
+    end
+  end
+
+  defp inference_step_result(result, event_type, attempt, mode)
+       when is_map(result) and mode in [:restricted, :full] do
+    case InferenceAttemptResult.new(event_type, attempt, result) do
+      {:ok, validated} ->
+        validated
+        |> sanitize_attempt_result(mode)
+        |> revalidate_attempt_result(event_type, attempt)
+
+      {:error, _reason} ->
+        %{"result_invalid" => true}
+    end
+  end
+
+  defp inference_step_result(_result, _event_type, _attempt, _mode),
+    do: %{"result_invalid" => true}
+
+  defp sanitize_attempt_result(result, :full) do
+    case Map.get(result, "target_ref") do
+      nil ->
+        result
+
+      target_ref when is_binary(target_ref) ->
+        if stable_target_ref?(target_ref), do: result, else: %{"result_invalid" => true}
+    end
+  end
+
+  defp sanitize_attempt_result(result, :restricted) do
+    result
+    |> Map.drop(["raw_source_code", "error_message"])
+    |> hash_attempt_target()
+  end
+
+  defp stable_target_ref?("sha256:" <> digest),
+    do: byte_size(digest) == 64 and String.match?(digest, ~r/\A[0-9a-f]{64}\z/)
+
+  defp stable_target_ref?(target_ref), do: match?({:ok, _uuid}, Ecto.UUID.cast(target_ref))
+
+  defp hash_attempt_target(result) do
+    case Map.get(result, "target_ref") do
+      "sha256:" <> digest = target_ref when byte_size(digest) == 64 ->
+        if String.match?(digest, ~r/\A[0-9a-f]{64}\z/),
+          do: result,
+          else: Map.put(result, "target_ref", "sha256:" <> sha256_hex(target_ref))
+
+      target_ref when is_binary(target_ref) ->
+        Map.put(result, "target_ref", "sha256:" <> sha256_hex(target_ref))
+
+      _target_ref ->
+        result
+    end
+  end
+
+  defp revalidate_attempt_result(result, event_type, attempt) do
+    case InferenceAttemptResult.new(event_type, attempt, result) do
+      {:ok, validated} -> validated
+      {:error, _reason} -> %{"result_invalid" => true}
     end
   end
 
@@ -694,10 +731,11 @@ defmodule Orchard.Requests.CapturePolicy do
 
   defp put_tool_call_identity(sanitized, payload) do
     turn_index = fetch_value(payload, :turn_index)
+    attempt = fetch_value(payload, :attempt)
     call_id = fetch_value(payload, :call_id)
 
-    if positive_integer?(turn_index) and is_binary(call_id) do
-      put_tool_identity(sanitized, "tool_call", turn_index, call_id, nil)
+    if positive_integer?(turn_index) and positive_integer?(attempt) and is_binary(call_id) do
+      put_tool_identity(sanitized, "tool_call", turn_index, call_id, attempt)
     else
       sanitized
     end
@@ -731,13 +769,7 @@ defmodule Orchard.Requests.CapturePolicy do
     sanitized
     |> Map.put("call_id", safe_call_id)
     |> Map.put("step_id", step_id)
-    |> Map.put(
-      "parent_step_id",
-      if(step_type == "tool_call",
-        do: RequestStepEvent.inference_turn_step_id(turn_index, 1),
-        else: parent_step_id
-      )
-    )
+    |> Map.put("parent_step_id", RequestStepEvent.inference_turn_step_id(turn_index, attempt))
   end
 
   defp maybe_put_score_components(sanitized, candidate) do

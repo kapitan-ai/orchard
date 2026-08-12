@@ -231,7 +231,8 @@ defmodule Orchard.Metrics.GaugePollerTest do
       requested_model: requested_model,
       state: :dispatching,
       stream: false,
-      payload_capture_mode: :none
+      payload_capture_mode: :none,
+      timeout_at: DateTime.add(DateTime.utc_now(), 30, :second)
     })
     |> Repo.insert!()
   end

@@ -87,7 +87,7 @@ defmodule Orchard.TestSupport.ModelRequestFixtures do
         input_tokens: 0,
         output_tokens: 0,
         reserved_output_tokens: 128,
-        timeout_at: ~U[2026-03-10 00:00:00.000000Z]
+        timeout_at: DateTime.utc_now() |> DateTime.add(120_000, :millisecond)
       },
       overrides
     )

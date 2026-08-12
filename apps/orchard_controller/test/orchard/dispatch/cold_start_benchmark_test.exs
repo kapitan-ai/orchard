@@ -260,6 +260,7 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 30_000,
+      timeout_at: DateTime.add(DateTime.utc_now(), 30, :second),
       model_load_timeout_ms: 120_000
     }
   end
