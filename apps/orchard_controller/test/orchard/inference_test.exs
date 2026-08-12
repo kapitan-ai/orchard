@@ -494,6 +494,51 @@ defmodule Orchard.InferenceTest do
              ]
     end
 
+    test "dev.exs configures Tailscale CGNAT identities and exact target guardrails" do
+      controller_config =
+        read_dev_controller_config!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@100.64.1.11",
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@100.64.1.10",
+          "ORCHARD_BEAM_COOKIE_FILE" => "/tmp/orchard-dev-cookie"
+        })
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam][:listen_host] ==
+               "100.64.1.10"
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam][:allowed_cidrs] ==
+               ["100.64.1.11/32"]
+    end
+
+    test "dev.exs requires an operator CIDR for public identities and targets" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_RUNTIME_ENDPOINT_TARGETS.*ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS/,
+                   fn ->
+                     read_dev_controller_config!(%{
+                       "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+                       "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                       "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@203.0.113.11",
+                       "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@203.0.113.10"
+                     })
+                   end
+
+      controller_config =
+        read_dev_controller_config!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@203.0.113.11",
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@203.0.113.10",
+          "ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS" => "203.0.113.0/24"
+        })
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam][:listen_host] ==
+               "203.0.113.10"
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam][:allowed_cidrs] ==
+               ["203.0.113.11/32"]
+    end
+
     test "dev.exs beam controller mode rejects local controller node names with wrong services" do
       assert_raise RuntimeError,
                    ~r/local controller BEAM node service must start with orchard_controller/,
@@ -508,7 +553,7 @@ defmodule Orchard.InferenceTest do
     end
 
     test "dev.exs beam controller mode rejects local controller node names with hostnames" do
-      assert_raise RuntimeError, ~r/requires IPv4-literal local controller host/, fn ->
+      assert_raise RuntimeError, ~r/host must be an IPv4 literal/, fn ->
         read_dev_controller_config!(%{
           "ORCHARD_SOURCE_DEV_ROLE" => "controller",
           "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",

@@ -189,7 +189,8 @@ defmodule Orchard.Application do
       private_ipv4: Keyword.get(membership, :private_ipv4),
       membership_scope: Keyword.get(membership, :scope),
       node_trust_root: Keyword.get(trust, :root),
-      authorization_root_path: Keyword.get(membership, :authorization_root_path)
+      authorization_root_path: Keyword.get(membership, :authorization_root_path),
+      source_dev_address_policy: Keyword.get(membership, :source_dev_address_policy)
     ]
   end
 

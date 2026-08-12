@@ -334,9 +334,10 @@ For a default BEAM controller launch, `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is effe
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` | `beam` for split-role scripts | Runtime Endpoint transport selector. Leave unset for split-role BEAM source dev, or set `grpc` for compatibility opt-out. |
-| `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | _(empty)_ | Controller-only comma-separated BEAM target list. Each target must be `orchard_node_agent@<ipv4-literal>`. |
-| `ORCHARD_BEAM_NODE_NAME` | `orchard_controller@127.0.0.1` or `orchard_node_agent@127.0.0.1` | Long BEAM node name for the current split-role VM. The host part must be an IPv4 literal. |
-| `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` | the `ORCHARD_BEAM_NODE_NAME` host, or `127.0.0.1` under `grpc`; **required when `ORCHARD_BEAM_PEER_GRANTS_ENABLED=true`** | Controller-only override for the private IPv4 address that names the Controller's durable membership identity. It must be a private IPv4 literal and must match the `ORCHARD_BEAM_NODE_NAME` host under `beam`. When BEAM Peer Grants are enabled there is no default and it must be set explicitly. Only controller and all-in-one roles resolve it; a node-agent-only host ignores it. |
+| `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | _(empty)_ | Controller-only comma-separated BEAM target list. Each target must be `orchard_node_agent@<ipv4-literal>` and pass the shared-cookie Source-dev address policy. |
+| `ORCHARD_BEAM_NODE_NAME` | `orchard_controller@127.0.0.1` or `orchard_node_agent@127.0.0.1` | Long BEAM node name for the current split-role VM. The host must be an IPv4 literal accepted by the active shared-cookie or Peer Grant policy. Hostnames, including Tailscale MagicDNS names, are not supported. |
+| `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` | the `ORCHARD_BEAM_NODE_NAME` host, or `127.0.0.1` under `grpc`; **required when `ORCHARD_BEAM_PEER_GRANTS_ENABLED=true`** | Controller-only override for the durable membership identity. In shared-cookie Source-dev mode it uses the same address policy as the Controller node name and must match that node-name host under `beam`. In Peer Grant mode it must be an RFC1918 non-loopback IPv4 literal. Only controller and all-in-one roles resolve it; a node-agent-only host ignores it. |
+| `ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS` | _(empty)_ | Shared-cookie Source-dev-only comma-separated IPv4 CIDRs added to the built-in RFC1918 and Tailscale CGNAT policy. `/0` is rejected. Enrolled production and Peer Grant identity validation ignore this setting. |
 | `ORCHARD_BEAM_COOKIE_FILE` | `tmp/dev/beam.cookie` | Cookie file path. Same-host source dev generates it when absent. Two-Mac source dev must provision the same cookie material on each Mac. |
 | `ORCHARD_BEAM_DIST_PORT_MIN` | `52171` for controller, `52172` for node-agent | Lower bound for the BEAM distribution listener port range. Set both min and max together when overriding. |
 | `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` for controller, `52172` for node-agent | Upper bound for the BEAM distribution listener port range. Set both min and max together when overriding. |
@@ -371,10 +372,13 @@ The node-agent defaults to `orchard_node_agent@127.0.0.1` and distribution port 
 Both roles use `ERL_EPMD_PORT=4369` unless `ORCHARD_BEAM_EPMD_PORT` is set.
 
 Two-Mac BEAM source-dev mode requires explicit IPv4-literal node names and the same cookie material on every participating Mac.
-Do not use hostnames such as `worker.local` for BEAM target hosts in this slice.
-BEAM membership and target hosts must currently be RFC1918 private IPv4 literals (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or loopback for same-host smokes.
-Tailscale CGNAT addresses in `100.64.0.0/10` are rejected by `Orchard.RuntimeEndpoint.BeamNodeName` today, even though Tailscale is fine for SSH and file copy.
-Use LAN RFC1918 addresses for `ORCHARD_BEAM_NODE_NAME` and `ORCHARD_RUNTIME_ENDPOINT_TARGETS` until that validator is intentionally expanded.
+Shared-cookie Source-dev accepts RFC1918 private-use addresses and Tailscale CGNAT `100.64.0.0/10` without extra configuration.
+Loopback remains for same-host development.
+Do not use hostnames such as `worker.local` or Tailscale MagicDNS names; use the device's IPv4 literal.
+For other trusted internal networks, set `ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS` to the required comma-separated IPv4 CIDRs on each launch that must validate an identity or target from those networks.
+The Controller validates its own identity and every configured target; each Node Agent validates its own identity, so their additive CIDR lists need not be identical.
+Globally routable additions trigger a startup warning.
+Shared-cookie BEAM grants remote code execution to holders of the cookie, so host firewalls or network ACLs must restrict EPMD and BEAM Distribution ports to the configured peers.
 Provision the cookie out of band without pasting the cookie value into docs, tickets, chat, shell history, or evidence files.
 
 From one Mac, create the cookie file if you are not using an existing secret manager output:
@@ -663,6 +667,18 @@ Keep the cookie mode at `0600` or stricter.
 Verify matching cookie files by comparing SHA-256 digests, not by printing cookie contents.
 Do not commit cookie material, raw local evidence logs, or machine-specific paths.
 
+The placeholders in the commands below may be RFC1918 or Tailscale CGNAT IPv4 literals.
+A Tailscale-only smoke needs no `ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS`; substitute each device's `100.64.0.0/10` address directly.
+For an operator-routed network outside the built-in ranges, export the same additive setting on each terminal that must validate one of those addresses:
+
+```bash
+export ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS="<trusted-ipv4-cidr>[,<trusted-ipv4-cidr>...]"
+```
+
+This setting authorizes configuration values only.
+The Controller still derives an exact `/32` live guardrail for every configured Runtime Endpoint target.
+Never use a broad additive CIDR as a substitute for host firewall or network ACL rules.
+
 #### Controller Mac local node-agent terminal
 
 ```bash
@@ -696,7 +712,7 @@ mise exec -- bin/dev-controller
 The default controller distribution port is TCP `52171`.
 The default node-agent distribution port is TCP `52172`.
 The default EPMD port is TCP `4369`.
-Those ports must be reachable between the participating private IPs.
+Those ports must be reachable between the participating IPv4 addresses and unreachable from untrusted hosts.
 If another EPMD already owns `4369`, set the same nonstandard `ORCHARD_BEAM_EPMD_PORT` on every participating terminal.
 The validated two-Mac smokes used `ORCHARD_BEAM_EPMD_PORT=43690` on hosts with EPMD conflicts.
 If you override the EPMD or distribution port variables, use the same values in your firewall rules and smoke notes.
@@ -720,9 +736,10 @@ It should not fall back to gRPC.
 Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 
 1. **Address plane**
-   - Pick RFC1918 LAN IPv4 literals for every BEAM node name and target.
-   - Do not put Tailscale `100.x` addresses in `ORCHARD_BEAM_NODE_NAME` or `ORCHARD_RUNTIME_ENDPOINT_TARGETS` with the current validator.
-   - Tailscale remains useful for `ssh` / `scp` only.
+   - Pick explicit RFC1918 or Tailscale CGNAT IPv4 literals for every shared-cookie BEAM node name and target.
+   - For another trusted internal network, set `ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS` on each affected launch.
+   - Do not use hostnames or Tailscale MagicDNS names.
+   - Peer Grant identities remain RFC1918 non-loopback and ignore the Source-dev additive setting.
 
 2. **Launch context (macOS Local Network Privacy)**
    - Start `bin/dev-controller` and `bin/dev-node-agent` from a GUI terminal session that already has Local Network permission (Terminal.app is the proven path).
@@ -779,7 +796,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 |---------|-------|-----|
 | gRPC controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format. |
 | BEAM controller exits before Mix starts | `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is empty, malformed, or uses a hostname or IPv6 address | Use comma-separated `orchard_node_agent@<ipv4-literal>` targets. |
-| BEAM boot rejects `100.x` / Tailscale node names | Host is Tailscale CGNAT; validator accepts RFC1918 only today | Use LAN RFC1918 BEAM names. Keep Tailscale for SSH/scp. See issue #193. |
+| BEAM boot rejects a public or operator-routed IPv4 literal | The host is outside RFC1918 and Tailscale CGNAT, and its network is not explicitly authorized | Add the narrow trusted network to `ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS` for shared-cookie Source-dev only. Do not use this setting for Peer Grant or enrolled production identity. |
 | BEAM `connect` / `:gen_tcp` returns `:ehostunreach` while `ping` works | macOS Local Network Privacy blocked the BEAM launch context | Relaunch controller/node-agent from Terminal.app (or another GUI app with Local Network allowed). |
 | Source-dev BEAM bootstrap reports wildcard-bound EPMD | Another `epmd` is listening on `0.0.0.0`/`*` for that port | `ERL_EPMD_PORT=<port> epmd -kill`, confirm only the address-constrained listener remains, rerun. |
 | Console boot warns `Sentry.LiveViewHook` unavailable / LiveView crashes lack Sentry context | Sentry was compiled without LiveView on the compile path | Console still mounts. To restore LiveView Sentry context: `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
@@ -836,14 +853,14 @@ Env surface:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_BEAM_PEER_GRANT_STATE_ROOT` | `tmp/dev/beam-peer-grant` | Owner-only (`0700`) root for per-role launch manifests, `ssl-dist` optfiles, and grant state. |
-| `ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST` | _(required, controller)_ | Private, non-loopback IPv4 address the grant-delivery control listener binds. |
+| `ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST` | _(required, controller)_ | RFC1918 non-loopback IPv4 address the grant-delivery control listener binds. |
 | `ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT` | _(required, controller)_ | Port for the grant-delivery control listener. |
 | `ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH` | _(required, controller)_ | Path to the Controller-local BEAM Authorization Root that derives pair-secret material. |
-| `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` | _(required, controller)_ | Private, non-loopback IPv4 address that fixes the Controller's durable canonical BEAM name across both tracer phases. It is independent of the control listener host and must match the `ORCHARD_BEAM_NODE_NAME` host in `distributed` mode. |
+| `ORCHARD_CONTROLLER_MEMBERSHIP_HOST` | _(required, controller)_ | RFC1918 non-loopback IPv4 address that fixes the Controller's durable canonical BEAM name across both tracer phases. It is independent of the control listener host and must match the `ORCHARD_BEAM_NODE_NAME` host in `distributed` mode. |
 | `ORCHARD_NODE_TRUST_ROOT` | _(required, controller preflight/run)_ | Controller node-trust root used by the distributed controller preflight and run; conventionally `tmp/dev/node-trust` in source dev. |
 | `ORCHARD_NODE_IDENTITY_ROOT` | _(required, node)_ | Owner-only node identity root holding the Node key, Node Certificate, and stored grant; conventionally `tmp/dev/config/node-identity` in source dev. |
 | `ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR` | _(required, node; controller preflight)_ | Path to the grant descriptor that binds the exact Controller-to-Node pair. |
-| `ORCHARD_BEAM_NODE_NAME` | _(required)_ | Long BEAM node name for the current role. In grant mode the node-agent service must be `orchard_node_agent_<32-hex>@<ipv4-literal>` and the distributed controller service must be `orchard_controller_<32-hex>@<ipv4-literal>`. |
+| `ORCHARD_BEAM_NODE_NAME` | _(required)_ | Long BEAM node name for the current role. In grant mode the node-agent service must be `orchard_node_agent_<32-hex>@<rfc1918-ipv4-literal>` and the distributed controller service must be `orchard_controller_<32-hex>@<rfc1918-ipv4-literal>`. |
 
 `ORCHARD_BEAM_PEER_GRANTS_ENABLED`, `ORCHARD_BEAM_PEER_GRANT_MODE`
 (`grant_control` or `distributed`), `ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST`,

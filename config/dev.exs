@@ -171,11 +171,26 @@ Orchard.Config.SourceDevBeam.validate_transport_role!(
   source_dev_role
 )
 
+source_dev_address_policy =
+  if runtime_endpoint_transport == :beam and not beam_peer_grants_enabled? do
+    policy =
+      Orchard.Config.SourceDevBeam.address_policy!(
+        System.get_env("ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS")
+      )
+
+    Orchard.Config.SourceDevBeam.warn_expanded_network(policy)
+    policy
+  else
+    Orchard.Config.SourceDevBeam.address_policy!(nil)
+  end
+
 beam_runtime_endpoint_targets =
   if runtime_endpoint_transport == :beam and source_dev_role == :controller and
        not beam_peer_grants_enabled? do
     Orchard.Config.SourceDevBeam.controller_beam_targets!(
-      System.get_env("ORCHARD_RUNTIME_ENDPOINT_TARGETS")
+      System.get_env("ORCHARD_RUNTIME_ENDPOINT_TARGETS"),
+      "ORCHARD_RUNTIME_ENDPOINT_TARGETS",
+      source_dev_address_policy
     )
   else
     []
@@ -518,7 +533,8 @@ cond do
         Orchard.Config.SourceDevBeam.beam_guardrail_config!(
           beam_controller_node_name,
           beam_cookie_file,
-          beam_runtime_endpoint_targets
+          beam_runtime_endpoint_targets,
+          source_dev_address_policy
         )
 
   true ->

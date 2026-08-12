@@ -544,6 +544,23 @@ defmodule OrchardApplicationTest do
     assert initializer_opts[:authorization_root_path] == "/protected/authorization-root"
   end
 
+  test "Source-dev membership owner receives the resolved address policy" do
+    Application.put_env(:orchard_controller, :start_repo, true)
+    policy = %{additional_cidrs: [{{203, 0, 113, 0}, 24}]}
+
+    Application.put_env(:orchard_controller, :controller_membership,
+      private_ipv4: "203.0.113.10",
+      scope: :remote_beam,
+      authorization_root_path: "/protected/authorization-root",
+      source_dev_address_policy: policy
+    )
+
+    assert [{Orchard.ControllerInstances.MembershipOwner, opts}] =
+             membership_owner_specs(Orchard.Application.child_specs())
+
+    assert opts[:source_dev_address_policy] == policy
+  end
+
   test "SPEC.md §8.3 membership identity is never defaulted when config resolved no scope" do
     Application.put_env(:orchard_controller, :start_repo, true)
     Application.delete_env(:orchard_controller, :controller_membership)

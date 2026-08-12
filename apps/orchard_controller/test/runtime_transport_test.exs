@@ -258,7 +258,7 @@ defmodule Orchard.RuntimeTransportTest do
                  fn -> read_controller_config!(support_root, grant_env) end
 
     assert_raise RuntimeError,
-                 ~r/ORCHARD_CONTROLLER_MEMBERSHIP_HOST must be a private non-loopback IPv4 address/,
+                 ~r/ORCHARD_CONTROLLER_MEMBERSHIP_HOST must be a private non-loopback RFC1918 IPv4 address/,
                  fn ->
                    read_controller_config!(
                      support_root,
@@ -797,6 +797,53 @@ defmodule Orchard.RuntimeTransportTest do
 
     assert config[:controller_membership][:private_ipv4] == "10.0.0.10"
     assert config[:controller_membership][:scope] == :remote_beam
+  end
+
+  test "Source-dev shared-cookie roles accept Tailscale CGNAT IPv4 identities", %{
+    support_root: support_root
+  } do
+    node_agent =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "node_agent",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_node_agent@100.64.1.11"
+      })
+
+    controller =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@100.64.1.10"
+      })
+
+    assert node_agent[:controller_membership][:private_ipv4] == nil
+    assert controller[:controller_membership][:private_ipv4] == "100.64.1.10"
+    assert controller[:controller_membership][:scope] == :remote_beam
+  end
+
+  test "Source-dev shared-cookie roles require public identities to use operator CIDRs", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_BEAM_NODE_NAME.*ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS/,
+                 fn ->
+                   read_dev_config!(support_root, %{
+                     "ORCHARD_SOURCE_DEV_ROLE" => "node_agent",
+                     "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                     "ORCHARD_BEAM_NODE_NAME" => "orchard_node_agent@203.0.113.11"
+                   })
+                 end
+
+    controller =
+      read_dev_config!(support_root, %{
+        "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+        "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@203.0.113.10",
+        "ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS" => "203.0.113.0/24"
+      })
+
+    assert controller[:controller_membership][:private_ipv4] == "203.0.113.10"
+    assert controller[:controller_membership][:scope] == :remote_beam
   end
 
   test "packaged Controller database configuration ignores PGPORT", %{
