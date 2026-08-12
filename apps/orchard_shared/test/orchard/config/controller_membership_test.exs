@@ -1,7 +1,9 @@
+Code.require_file(Path.expand("../../../../../config/source_dev_beam.exs", __DIR__))
+
 defmodule Orchard.Config.ControllerMembershipTest do
   use ExUnit.Case, async: true
 
-  alias Orchard.Config.ControllerMembership
+  alias Orchard.Config.{ControllerMembership, SourceDevBeam}
 
   describe "identity!/3" do
     test "SPEC.md §8.3 every resolved identity carries an explicit membership scope" do
@@ -38,7 +40,7 @@ defmodule Orchard.Config.ControllerMembershipTest do
 
     test "rejects a loopback membership host when peer grants are enabled" do
       assert_raise RuntimeError,
-                   ~r/must be a private non-loopback IPv4 address when BEAM Peer Grants are enabled/,
+                   ~r/must be a private non-loopback RFC1918 IPv4 address when BEAM Peer Grants are enabled/,
                    fn ->
                      ControllerMembership.identity!(:beam, nil,
                        membership_host: "127.0.0.1",
@@ -75,6 +77,38 @@ defmodule Orchard.Config.ControllerMembershipTest do
                    fn ->
                      ControllerMembership.identity!(:beam, nil, membership_host: "203.0.113.10")
                    end
+    end
+
+    test "accepts Source-dev CGNAT and operator-authorized membership hosts" do
+      default_policy = SourceDevBeam.address_policy!(nil)
+      custom_policy = SourceDevBeam.address_policy!("203.0.113.0/24")
+
+      assert ControllerMembership.identity!(
+               :beam,
+               "orchard_controller@100.64.1.10",
+               source_dev_address_policy: default_policy
+             ) == {"100.64.1.10", :remote_beam}
+
+      assert ControllerMembership.identity!(
+               :beam,
+               "orchard_controller@203.0.113.10",
+               membership_host: "203.0.113.10",
+               source_dev_address_policy: custom_policy
+             ) == {"203.0.113.10", :remote_beam}
+    end
+
+    test "does not apply the Source-dev policy when peer grants are enabled" do
+      policy = SourceDevBeam.address_policy!("203.0.113.0/24")
+
+      assert_raise RuntimeError, ~r/private non-loopback RFC1918 IPv4 address/, fn ->
+        ControllerMembership.identity!(
+          :beam,
+          "orchard_controller_00112233445566778899aabbccddeeff@203.0.113.10",
+          membership_host: "203.0.113.10",
+          peer_grants_enabled?: true,
+          source_dev_address_policy: policy
+        )
+      end
     end
 
     test "classifies a BEAM controller without a node name as local-only" do

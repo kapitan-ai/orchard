@@ -254,13 +254,30 @@ defmodule Orchard.ControllerInstances do
   end
 
   defp validated_private_ipv4(opts, allow_loopback) do
-    with value when is_binary(value) <- Keyword.get(opts, :private_ipv4),
-         {:ok, _address} <- BeamNodeName.private_ipv4(value, allow_loopback: allow_loopback) do
+    value = Keyword.get(opts, :private_ipv4)
+    source_dev_policy = Keyword.get(opts, :source_dev_address_policy)
+
+    if valid_membership_ipv4?(value, source_dev_policy, allow_loopback) do
       {:ok, value}
     else
-      _other -> {:error, :beam_controller_private_ipv4_invalid}
+      {:error, :beam_controller_private_ipv4_invalid}
     end
   end
+
+  defp valid_membership_ipv4?(value, nil, allow_loopback) when is_binary(value) do
+    match?(
+      {:ok, _address},
+      BeamNodeName.private_ipv4(value, allow_loopback: allow_loopback)
+    )
+  end
+
+  defp valid_membership_ipv4?(value, source_dev_policy, allow_loopback)
+       when is_binary(value) and is_map(source_dev_policy) do
+    (allow_loopback or value != "127.0.0.1") and
+      BeamNodeName.allowed_ipv4?(value, source_dev_policy)
+  end
+
+  defp valid_membership_ipv4?(_value, _source_dev_policy, _allow_loopback), do: false
 
   defp membership_scope(opts) do
     case Keyword.get(opts, :membership_scope) do

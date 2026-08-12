@@ -1612,19 +1612,49 @@ if config_env() == :dev do
   source_dev_role =
     Orchard.Config.SourceDevBeam.source_dev_role(env_optional_string.("ORCHARD_SOURCE_DEV_ROLE"))
 
+  runtime_endpoint_transport =
+    Orchard.Config.SourceDevBeam.transport!(
+      env_optional_string.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT")
+    )
+
+  peer_grants_enabled? = env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+
+  source_dev_node_name =
+    env_optional_string.("ORCHARD_BEAM_NODE_NAME") ||
+      case source_dev_role do
+        :node_agent -> "orchard_node_agent@127.0.0.1"
+        _other -> "orchard_controller@127.0.0.1"
+      end
+
+  source_dev_address_policy =
+    if runtime_endpoint_transport == :beam and not peer_grants_enabled? do
+      Orchard.Config.SourceDevBeam.address_policy!(
+        env_optional_string.("ORCHARD_SOURCE_DEV_BEAM_ALLOWED_CIDRS")
+      )
+    end
+
+  if runtime_endpoint_transport == :beam and not peer_grants_enabled? and
+       source_dev_role in [:controller, :node_agent] do
+    Orchard.Config.SourceDevBeam.validate_node_name!(
+      source_dev_role,
+      source_dev_node_name,
+      source_dev_address_policy
+    )
+  end
+
   if source_dev_role in [:controller, :all_in_one] do
     {membership_private_ipv4, membership_scope} =
       Orchard.Config.ControllerMembership.identity!(
-        Orchard.Config.SourceDevBeam.transport!(
-          env_optional_string.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT")
-        ),
-        env_optional_string.("ORCHARD_BEAM_NODE_NAME"),
+        runtime_endpoint_transport,
+        source_dev_node_name,
         membership_host: env_optional_string.("ORCHARD_CONTROLLER_MEMBERSHIP_HOST"),
-        peer_grants_enabled?: env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+        peer_grants_enabled?: peer_grants_enabled?,
+        source_dev_address_policy: source_dev_address_policy
       )
 
     config :orchard_controller, :controller_membership,
       private_ipv4: membership_private_ipv4,
-      scope: membership_scope
+      scope: membership_scope,
+      source_dev_address_policy: source_dev_address_policy
   end
 end

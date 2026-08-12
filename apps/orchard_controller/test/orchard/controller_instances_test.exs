@@ -1,6 +1,8 @@
 defmodule Orchard.ControllerInstancesTest do
   use Orchard.DataCase, async: false
+  Code.require_file(Path.expand("../../../../config/source_dev_beam.exs", __DIR__))
 
+  alias Orchard.Config.SourceDevBeam
   alias Orchard.ControllerInstances
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.NodeTrust
@@ -60,6 +62,39 @@ defmodule Orchard.ControllerInstancesTest do
     refute inspect(instance) =~ authorization_root
     refute inspect(instance) =~ "authorization-root.bin"
     refute inspect(instance) =~ "key:"
+  end
+
+  test "Source-dev shared-cookie policy admits a Tailscale Controller identity", %{root: root} do
+    trust_root = Path.join(root, "node-trust")
+    authorization_root = Path.join(root, "beam-authorization-root")
+    now = ~U[2026-07-13 08:00:00.000000Z]
+
+    assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
+
+    opts = [
+      private_ipv4: "100.70.81.109",
+      membership_scope: :remote_beam,
+      node_trust_root: trust_root,
+      authorization_root_path: authorization_root,
+      now: now
+    ]
+
+    assert {:error, :beam_controller_private_ipv4_invalid} =
+             ControllerInstances.ensure_local(opts)
+
+    assert {:ok, instance} =
+             ControllerInstances.ensure_local(
+               Keyword.put(
+                 opts,
+                 :source_dev_address_policy,
+                 SourceDevBeam.address_policy!(nil)
+               )
+             )
+
+    assert instance.id == trust.controller_id
+
+    assert instance.canonical_beam_name ==
+             "orchard_controller_#{String.replace(trust.controller_id, "-", "")}@100.70.81.109"
   end
 
   test "SPEC.md §8.3 local-only membership persists a complete loopback identity", %{root: root} do
