@@ -3153,7 +3153,7 @@ defmodule Orchard.Inference.QueueManagerTest do
                  public_id: db_request.public_id,
                  caller_pid: caller
                ),
-               config: queue_config(max_wait_ms: 200)
+               config: queue_config(max_wait_ms: 60_000)
              )
 
     awaiter = spawn(fn -> QueueManager.await(ticket) end)
@@ -3162,11 +3162,16 @@ defmodule Orchard.Inference.QueueManagerTest do
     :ok = :sys.suspend(QueueManager)
 
     try do
-      Process.sleep(250)
+      send(QueueManager, {:queue_timeout, ticket.ticket_ref})
       Process.exit(awaiter, :kill)
       resume_manager(QueueManager)
 
-      assert wait_until(fn -> Requests.get_request!(db_request.id).state == :cancelled end)
+      assert wait_until(fn ->
+               request = Requests.get_request!(db_request.id)
+
+               request.state == :cancelled and
+                 request.error_code == "request_caller_disconnect"
+             end)
 
       request = Requests.get_request!(db_request.id)
       assert request.error_code == "request_caller_disconnect"
