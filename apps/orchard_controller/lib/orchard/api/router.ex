@@ -118,4 +118,31 @@ defmodule Orchard.API.Router do
       live("/tenants/:id", OrchardConsole.TenantDetailLive, :show)
     end
   end
+
+  pipeline :portal do
+    plug(:accepts, ["html"])
+    plug(:fetch_session)
+    plug(:fetch_live_flash)
+    plug(Orchard.Portal.TransportGuard)
+    plug(:put_root_layout, html: {Orchard.Portal.Layouts, :root})
+    plug(:protect_from_forgery)
+    plug(:put_secure_browser_headers)
+  end
+
+  scope "/portal" do
+    pipe_through(:portal)
+
+    get("/:organization_slug", Orchard.Portal.SessionController, :new)
+    post("/:organization_slug/session", Orchard.Portal.SessionController, :create)
+    post("/:organization_slug/logout", Orchard.Portal.SessionController, :delete)
+    get("/:organization_slug/invite/:token", Orchard.Portal.SessionController, :invite)
+    post("/:organization_slug/invite/:token", Orchard.Portal.SessionController, :redeem)
+
+    live_session :developer_portal,
+      on_mount: [{Orchard.Portal, :ensure_portal_session}],
+      layout: {Orchard.Portal.Layouts, :app},
+      root_layout: {Orchard.Portal.Layouts, :root} do
+      live("/:organization_slug/keys", Orchard.Portal.KeysLive, :index)
+    end
+  end
 end

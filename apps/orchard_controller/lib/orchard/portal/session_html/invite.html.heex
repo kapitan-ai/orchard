@@ -1,0 +1,20 @@
+<div class="mx-auto max-w-md">
+  <section class="rounded-lg border border-slate-700 bg-slate-800 p-6">
+    <h1 class="text-lg font-semibold text-slate-50">Set your password</h1>
+    <p class="mt-1 text-sm text-slate-300">Activate your named Portal User for {@organization_slug}.</p>
+
+    <form action={"/portal/#{@organization_slug}/invite/#{@invite_token}"} method="post" class="mt-6 space-y-4">
+      <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+      <div>
+        <label for="invite-password" class="block text-sm font-medium text-slate-200">Password</label>
+        <input id="invite-password" type="password" name="invite[password]" minlength="16" required autocomplete="new-password" class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-50" />
+      </div>
+      <div>
+        <label for="invite-password-confirmation" class="block text-sm font-medium text-slate-200">Confirm password</label>
+        <input id="invite-password-confirmation" type="password" name="invite[password_confirmation]" minlength="16" required autocomplete="new-password" class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-50" />
+      </div>
+      <p :if={@invite_error} class="text-sm text-red-400">This invite is invalid, expired, or already used.</p>
+      <button type="submit" class="w-full rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950">Set password</button>
+    </form>
+  </section>
+</div>

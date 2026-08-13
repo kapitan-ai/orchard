@@ -64,6 +64,21 @@ defmodule Orchard.Governance do
     end)
     |> unwrap_transaction_result()
   end
+  alias Orchard.Governance.PortalGovernance
+
+  defdelegate create_portal_invite(tenant, attrs), to: PortalGovernance, as: :create_invite
+  defdelegate copy_portal_invite(tenant, user), to: PortalGovernance, as: :copy_invite
+  defdelegate redeem_portal_invite(token, password), to: PortalGovernance, as: :redeem_invite
+  defdelegate disable_portal_user(tenant, user), to: PortalGovernance, as: :disable_user
+  defdelegate list_portal_users(tenant), to: PortalGovernance, as: :list_users
+  defdelegate create_portal_session(slug, email, password, source), to: PortalGovernance, as: :login
+  defdelegate validate_portal_session(token, slug), to: PortalGovernance, as: :validate
+  defdelegate validate_portal_session(token, slug, opts), to: PortalGovernance, as: :validate
+  defdelegate logout_portal_session(token), to: PortalGovernance, as: :logout
+  defdelegate create_portal_api_key(token, slug, attrs), to: PortalGovernance, as: :mint_key
+  defdelegate list_portal_api_keys(token, slug), to: PortalGovernance, as: :list_keys
+  defdelegate revoke_portal_api_key(token, slug, key), to: PortalGovernance, as: :revoke_key
+  defdelegate prune_portal_persistence(), to: PortalGovernance, as: :prune
 
   @spec create_api_key(Tenant.t() | Ecto.UUID.t(), map() | keyword()) ::
           {:ok, api_key_creation_result()}
