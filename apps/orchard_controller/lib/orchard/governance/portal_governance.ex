@@ -408,7 +408,6 @@ defmodule Orchard.Governance.PortalGovernance do
     |> Map.new()
   end
 
-
   defp delete_sessions(user_id) do
     from(row in PortalSession, where: row.portal_user_id == ^user_id) |> Repo.delete_all()
   end
