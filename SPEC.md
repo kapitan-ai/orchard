@@ -174,6 +174,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | Tray/menu bar app       | `.app` + LaunchAgent         | local status, onboarding, logs, support bundle entry point |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
 | Orchard Console         | controller LiveView          | local/operator UI for runtime status, node inventory and admission review, action previews, requests, Organizations, API Tokens, and API Clients |
+| Developer Portal        | controller LiveView          | Organization-scoped self-service mint, list, and revoke of tenant-direct API Keys after an operator-set portal password |
 | Managed Postgres helper | LaunchDaemon in managed mode | local DB lifecycle only                                    |
 
 ### 2.4 Repository structure
@@ -2007,7 +2008,7 @@ If memory is insufficient for all pinned models:
 
 ## 7.1 API surfaces
 
-The platform SHALL expose four API surfaces:
+The platform SHALL expose five API surfaces:
 
 1. **Public Inference API**
 
@@ -2030,7 +2031,14 @@ The platform SHALL expose four API surfaces:
    * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
    * admin/tenant-admin auth
 
-4. **Runtime Endpoint and Worker Interfaces**
+4. **Developer Portal**
+
+   * Organization-scoped browser surface at `/portal/:organization_slug`
+   * TLS-only in `reverse_proxy` and `direct_https` transport modes
+   * unavailable in degraded `plain_http_localhost` mode
+   * operator-set Organization portal password, not Console Basic Auth and not a Public Inference Bearer
+
+5. **Runtime Endpoint and Worker Interfaces**
 
    * controller↔Runtime Endpoint Interface for model readiness, inference execution, cancellation, status, runtime telemetry, and Placement Capacity
    * admitted first-party production Controller and Node Agent services use the BEAM Runtime Endpoint adapter under the production identity and authorization contract in §7.5 and §10.6
@@ -2678,6 +2686,48 @@ PATCH /admin/v1/observability
 
 Metrics exposure is not configurable through this endpoint; §9.1 fixes the
 shared HTTP listener and the operator-or-admin bearer boundary for `/metrics`.
+
+---
+
+### 7.4a Developer Portal
+
+Base path: `/portal/:organization_slug`
+
+The Developer Portal SHALL be a distinct browser surface from Orchard Console.
+It SHALL NOT render operator Console chrome, other Organizations, nodes, license state, or cluster administration.
+Portal sessions SHALL NOT authorize Public Inference, Operator API, Admin API, or Console access.
+
+Routes:
+
+```text
+GET  /portal/:organization_slug
+POST /portal/:organization_slug/session
+POST /portal/:organization_slug/logout
+LIVE /portal/:organization_slug/keys
+```
+
+The portal SHALL identify the Organization by slug first, then verify that Organization's portal password.
+An Organization with no portal password SHALL have no open portal.
+`GET /portal/:organization_slug` SHALL be response-indistinguishable for open, closed, and unknown slugs.
+
+The operator SHALL set, rotate, or clear the portal password from the existing Console Organization detail surface.
+Clearing or rotating the password SHALL increment `portal_session_epoch` and end standing portal sessions for that Organization.
+Password rotation and clear SHALL NOT revoke minted API Keys.
+
+The portal SHALL mint tenant-direct API Keys with `issuance_surface = 'developer_portal'`.
+An Organization MAY have at most 10 active portal-minted tenant-direct keys.
+Operator-minted tenant-direct keys SHALL NOT count toward that ceiling and SHALL NOT be revocable from the portal.
+The portal MAY list operator-minted tenant-direct keys read-only.
+Portal revoke SHALL take effect on the next Public Inference authentication.
+
+Key secrets SHALL be shown once at creation and SHALL NOT be recoverable later.
+After mint, the portal SHALL show one `POST /v1/chat/completions` curl using a deterministic callable model already authorized for the Organization, or state that no test curl is available.
+
+Failed portal logins SHALL be limited per Organization fingerprint and source fingerprint.
+They SHALL NOT use an Organization-wide lockout.
+
+The portal SHALL be served only when public API HTTPS is enabled and the effective request scheme is HTTPS.
+Degraded `plain_http_localhost` SHALL return `404` for every portal route and SHALL reject operator portal-password mutations.
 
 ---
 
@@ -3664,8 +3714,12 @@ create table tenants (
   default_pool_id uuid references node_pools(id),
   request_body_capture_mode payload_capture_mode not null default 'metadata',
   settings jsonb not null default '{}'::jsonb,
+  portal_password_hash text,
+  portal_session_epoch bigint not null default 0,
   inserted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  check (portal_session_epoch >= 0),
+  check (portal_password_hash is null or length(portal_password_hash) > 0)
 );
 
 create table service_accounts (
@@ -3693,6 +3747,7 @@ create table api_keys (
   name text not null,
   token_prefix text not null unique,
   secret_hash bytea not null,
+  issuance_surface text not null default 'governance',
   expires_at timestamptz,
   last_used_at timestamptz,
   revoked_at timestamptz,
@@ -3702,7 +3757,41 @@ create table api_keys (
     (tenant_id is not null and service_account_id is null)
     or
     (tenant_id is null and service_account_id is not null)
+  ),
+  check (issuance_surface in ('governance', 'developer_portal')),
+  check (
+    issuance_surface <> 'developer_portal'
+    or (tenant_id is not null and service_account_id is null)
   )
+);
+
+create table portal_sessions (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references tenants(id) on delete cascade,
+  token_hash bytea not null unique,
+  password_epoch bigint not null,
+  issued_at timestamptz not null,
+  last_seen_at timestamptz not null,
+  absolute_expires_at timestamptz not null,
+  inserted_at timestamptz not null default now(),
+  check (octet_length(token_hash) = 32),
+  check (password_epoch >= 0),
+  check (last_seen_at >= issued_at),
+  check (absolute_expires_at > issued_at)
+);
+
+create table portal_login_throttles (
+  organization_fingerprint bytea not null,
+  source_fingerprint bytea not null,
+  failure_count integer not null default 0,
+  blocked_until timestamptz,
+  last_failed_at timestamptz,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (organization_fingerprint, source_fingerprint),
+  check (octet_length(organization_fingerprint) = 32),
+  check (octet_length(source_fingerprint) = 32),
+  check (failure_count >= 0)
 );
 
 create table quotas (
@@ -4325,7 +4414,8 @@ Requirements:
 Previously issued `orch_<public>.<secret>` API Tokens SHALL remain valid compatibility credentials.
 Compatibility authentication SHALL preserve their existing `orch_<public>` lookup prefix and complete-token SHA-256 semantics without rewriting persisted credentials.
 
-Tenant-direct API Keys SHALL remain supported for manual, bootstrap, and compatibility paths.
+Tenant-direct API Keys SHALL remain supported for manual, bootstrap, compatibility, and Developer Portal paths.
+Developer Portal minting SHALL persist `issuance_surface = 'developer_portal'` and SHALL count only those active tenant-direct keys toward the portal cap of 10.
 Bulk provisioning SHALL create service-account-owned API Tokens by default.
 API Tokens owned by the same Service Account SHALL NOT have duplicate active names unless explicit Key Rotation mode creates a replacement and revokes the previous active token or tokens.
 
@@ -4445,6 +4535,11 @@ Secrets SHALL be stored:
 * in Postgres only as hashes, never plaintext
 * private keys SHOULD be stored in macOS Keychain or protected filesystem paths
 * bootstrap tokens stored only as hash
+* Developer Portal passwords stored only as a password hash, never plaintext
+* Developer Portal session tokens stored only as a hash
+
+Portal password hashing SHALL use a slow password KDF.
+It SHALL NOT reuse API key SHA-256 hashing.
 
 ### 10.9 Audit requirements
 
@@ -4452,6 +4547,7 @@ Audit logs SHALL capture:
 
 * tenant creation/update/suspend
 * API key create/revoke
+* Developer Portal password set, rotate, and clear
 * service account changes
 * API Client Disablement
 * provisioning batch start/completion/failure
@@ -4470,7 +4566,7 @@ Audit logs SHALL capture:
 * support bundle generation
 * upgrade actions
 
-Audit payloads SHALL exclude plaintext API Token secrets.
+Audit payloads SHALL exclude plaintext API Token secrets and plaintext portal passwords.
 Provisioning Batch records SHALL include non-secret counts, status, input hash, timestamps, and sanitized error summaries only.
 Observed target references and admission-candidate metadata in audit payloads SHALL be sanitized and MUST NOT include secrets.
 
