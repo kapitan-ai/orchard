@@ -217,8 +217,10 @@ A Portal User is not a Public Inference principal, Operator, Service Account, or
 _Avoid_: User account, Portal Developer, Tenant Admin, Owner Contact, Service Account
 
 **Portal Invite**:
-A one-time expiring token the operator copies from Console and delivers out of band so a Portal User can set a portal password.
-_Avoid_: Magic link email, SMTP invite, Owner Contact
+A single-use expiring token the operator can recopy from Console while the Portal User is invited.
+Each copy replaces the unused token.
+Orchard stores only the hash.
+_Avoid_: Persisted plaintext invite URL, magic link email, SMTP invite, Owner Contact
 
 **API Key**:
 A bearer credential scoped directly to a Tenant or Service Account.

@@ -19,8 +19,12 @@ Public Inference authentication stays `principal_type = tenant`.
 `portal_user_id` is not consulted on the Bearer path.
 A Portal User is not an Operator, Service Account, Owner Contact, or Tenant Admin.
 Accounts are operator-invite only.
-Invite URLs are shown once in Console and delivered out of band.
+Console keeps a Copy invite action while the Portal User is invited.
+Each copy mints a fresh hashed token and extends expiry.
+The previous unused token dies.
+The operator delivers the URL out of band.
 SMTP is not required.
+Orchard never stores the plaintext invite URL.
 Disable ends that Portal User's sessions.
 It does not automatically revoke owned keys.
 Operator Console remains the surface that can list and revoke those keys.
