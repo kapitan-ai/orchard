@@ -136,6 +136,7 @@ defmodule Orchard.Governance.NamedPortalUserTest do
 
     assert {:ok, second_key} =
              Governance.create_portal_api_key(second_login.token, tenant.slug, %{name: "second"})
+
     create_request!(%{
       tenant_id: tenant.id,
       api_key_id: second_key.api_key.id,

@@ -396,6 +396,7 @@ defmodule Orchard.Governance.PortalGovernance do
     |> where([k], is_nil(k.expires_at) or k.expires_at > ^current)
     |> Repo.aggregate(:count)
   end
+
   defp portal_request_counts(_tenant_id, []), do: %{}
 
   defp portal_request_counts(tenant_id, api_key_ids) do
