@@ -197,6 +197,24 @@ defmodule Orchard.API.RouterTest do
     end
   end
 
+  describe "developer portal routes" do
+    @describetag :live
+
+    test "degraded transport hides the portal", %{conn: conn} do
+      previous = Application.get_env(:orchard_controller, :transport_mode)
+      Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :transport_mode, previous)
+      end)
+
+      conn = get(conn, "/portal/any-org")
+
+      assert conn.status == 404
+      refute conn.resp_body =~ "Developer portal"
+    end
+  end
+
   defp default_api_token! do
     slug = "router-auth-#{System.unique_integer([:positive])}"
     {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})

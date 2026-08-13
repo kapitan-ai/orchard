@@ -32,6 +32,7 @@ defmodule OrchardController.MixProject do
 
   defp deps do
     [
+      {:argon2_elixir, "~> 4.1"},
       {:orchard_shared, in_umbrella: true},
       {:bandit, "~> 1.5"},
       {:cors_plug, "~> 3.0"},

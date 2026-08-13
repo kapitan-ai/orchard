@@ -394,6 +394,70 @@ defmodule OrchardConsole.TenantDetailLiveTest do
     end
   end
 
+  describe "Portal Users" do
+    setup do
+      previous_mode = Application.get_env(:orchard_controller, :transport_mode, :__missing__)
+      Application.put_env(:orchard_controller, :transport_mode, :direct_https)
+
+      on_exit(fn ->
+        case previous_mode do
+          :__missing__ -> Application.delete_env(:orchard_controller, :transport_mode)
+          mode -> Application.put_env(:orchard_controller, :transport_mode, mode)
+        end
+      end)
+
+      :ok
+    end
+
+    test "renders three stacked portal cards and creates an invited Portal User", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
+      assert html =~ "tenant-portal-invite-card"
+      assert html =~ "tenant-portal-users-card"
+      assert html =~ "tenant-portal-access-card"
+      assert html =~ "bg-navy"
+
+      html =
+        view
+        |> form("#tenant-portal-invite-form", portal_invite: %{email: "Dev@Example.com"})
+        |> render_submit()
+
+      assert html =~ "dev@example.com"
+      assert html =~ "Invited"
+      assert {:ok, [user]} = Governance.list_portal_users(tenant)
+      assert user.email == "dev@example.com"
+    end
+
+    test "Copy invite reissues a transient URL and disable leaves owned keys alone", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      first = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+      assert first =~ "tenant-portal-invite-url-card"
+      assert first =~ "/portal/detail-t/invites/orchard_pi_"
+      assert first =~ ~s(phx-hook="CopyGeneratedSecret")
+      assert first =~ ~s(data-secret-source="tenant-portal-invite-url-value")
+
+      second = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+      refute first == second
+
+      html = render_click(view, "disable_portal_user", %{"portal_user_id" => user.id})
+      assert html =~ "Disabled"
+    end
+
+    test "degraded mode hides invite form", %{conn: conn, tenant: tenant} do
+      Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+      {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
+      assert html =~ "tenant-portal-tls-required"
+      refute html =~ "tenant-portal-invite-form"
+    end
+  end
+
   defp create_api_client_with_token!(tenant, name, token_attrs \\ %{}) do
     {:ok, api_client} =
       Governance.upsert_api_client(tenant, %{
