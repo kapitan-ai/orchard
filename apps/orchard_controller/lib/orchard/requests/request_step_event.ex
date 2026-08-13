@@ -4,8 +4,7 @@ defmodule Orchard.Requests.RequestStepEvent do
   """
 
   alias Orchard.Inference.ToolExecutionOutcome
-  alias Orchard.Requests.Request
-  alias Orchard.Requests.RequestEvent
+  alias Orchard.Requests.{InferenceAttemptResult, Request, RequestEvent}
 
   @step_event_types [
     "request_step.started",
@@ -161,7 +160,11 @@ defmodule Orchard.Requests.RequestStepEvent do
   @spec new(t() | map()) :: {:ok, t()} | {:error, String.t()}
   def new(%__MODULE__{} = step_event), do: step_event |> Map.from_struct() |> new()
 
-  def new(attrs) when is_map(attrs) do
+  def new(attrs) when is_map(attrs), do: build(attrs, :new_write)
+
+  def new(_attrs), do: {:error, "request step event attrs must be a map"}
+
+  defp build(attrs, identity_mode) when is_map(attrs) do
     with {:ok, normalized} <- normalize_top_level_attrs(attrs),
          {:ok, event_type} <- fetch_required_string(normalized, :event_type),
          :ok <- validate_event_type(event_type),
@@ -184,15 +187,18 @@ defmodule Orchard.Requests.RequestStepEvent do
          {:ok, model_id} <- fetch_optional_string(normalized, :model_id),
          {:ok, model_version} <- fetch_optional_string(normalized, :model_version),
          :ok <-
-           validate_step_identity(%{
-             step_id: step_id,
-             step_type: step_type,
-             turn_index: turn_index,
-             attempt: attempt,
-             call_id: call_id
-           }),
+           validate_step_identity(
+             %{
+               step_id: step_id,
+               step_type: step_type,
+               turn_index: turn_index,
+               attempt: attempt,
+               call_id: call_id
+             },
+             identity_mode
+           ),
          :ok <- validate_parent_step_id(step_type, parent_step_id),
-         :ok <- validate_step_payload(step_type, event_type, result) do
+         {:ok, result} <- normalize_step_payload(step_type, event_type, attempt, result) do
       {:ok,
        %__MODULE__{
          request_id: request_id,
@@ -214,8 +220,6 @@ defmodule Orchard.Requests.RequestStepEvent do
        }}
     end
   end
-
-  def new(_attrs), do: {:error, "request step event attrs must be a map"}
 
   @spec new!(t() | map()) :: t()
   def new!(attrs) do
@@ -269,7 +273,7 @@ defmodule Orchard.Requests.RequestStepEvent do
               state: request_event.state
             })
 
-          new(attrs)
+          build(attrs, :historical_read)
 
         payload ->
           {:error, "request step payload must be a map, got: #{inspect(payload)}"}
@@ -319,33 +323,44 @@ defmodule Orchard.Requests.RequestStepEvent do
      "boundary #{inspect(boundary)} is invalid for the given event_type; started uses pre_side_effect and all other request_step.* events use post_observation"}
   end
 
-  defp validate_step_identity(%{
-         step_id: step_id,
-         step_type: "inference_turn",
-         turn_index: turn_index,
-         attempt: attempt,
-         call_id: nil
-       }) do
-    expected = inference_turn_step_id(turn_index, attempt)
-
-    if step_id == expected do
+  defp validate_step_identity(
+         %{
+           step_id: step_id,
+           step_type: "inference_turn",
+           turn_index: turn_index,
+           attempt: attempt,
+           call_id: nil
+         },
+         identity_mode
+       ) do
+    with :ok <- validate_inference_identity_mode(identity_mode, turn_index, attempt),
+         expected = inference_turn_step_id(turn_index, attempt),
+         true <- step_id == expected do
       :ok
     else
-      {:error, "step_id must equal #{inspect(expected)} for inference_turn steps"}
+      {:error, reason} ->
+        {:error, reason}
+
+      false ->
+        {:error,
+         "step_id must equal #{inspect(inference_turn_step_id(turn_index, attempt))} for inference_turn steps"}
     end
   end
 
-  defp validate_step_identity(%{step_type: "inference_turn", call_id: call_id})
+  defp validate_step_identity(%{step_type: "inference_turn", call_id: call_id}, _identity_mode)
        when is_binary(call_id) and call_id != "" do
     {:error, "inference_turn steps must not include call_id"}
   end
 
-  defp validate_step_identity(%{
-         step_id: step_id,
-         step_type: "tool_call",
-         turn_index: turn_index,
-         call_id: call_id
-       })
+  defp validate_step_identity(
+         %{
+           step_id: step_id,
+           step_type: "tool_call",
+           turn_index: turn_index,
+           call_id: call_id
+         },
+         _identity_mode
+       )
        when is_binary(call_id) and call_id != "" do
     expected = tool_call_step_id(turn_index, call_id)
 
@@ -356,13 +371,16 @@ defmodule Orchard.Requests.RequestStepEvent do
     end
   end
 
-  defp validate_step_identity(%{
-         step_id: step_id,
-         step_type: "tool_execution",
-         turn_index: turn_index,
-         attempt: attempt,
-         call_id: call_id
-       })
+  defp validate_step_identity(
+         %{
+           step_id: step_id,
+           step_type: "tool_execution",
+           turn_index: turn_index,
+           attempt: attempt,
+           call_id: call_id
+         },
+         _identity_mode
+       )
        when is_binary(call_id) and call_id != "" do
     expected = tool_execution_step_id(turn_index, call_id, attempt)
 
@@ -373,10 +391,17 @@ defmodule Orchard.Requests.RequestStepEvent do
     end
   end
 
-  defp validate_step_identity(%{step_type: step_type})
+  defp validate_step_identity(%{step_type: step_type}, _identity_mode)
        when step_type in ["tool_call", "tool_execution"] do
     {:error, "#{step_type} steps require a non-empty call_id"}
   end
+
+  defp validate_inference_identity_mode(:new_write, 1, attempt) when attempt in [1, 2], do: :ok
+
+  defp validate_inference_identity_mode(:new_write, _turn_index, _attempt),
+    do: {:error, "only turn 1 attempts 1 and 2 are supported"}
+
+  defp validate_inference_identity_mode(:historical_read, _turn_index, _attempt), do: :ok
 
   defp validate_parent_step_id("inference_turn", nil), do: :ok
 
@@ -390,15 +415,35 @@ defmodule Orchard.Requests.RequestStepEvent do
     {:error, "#{step_type} steps require a parent_step_id"}
   end
 
-  defp validate_step_payload("tool_execution", "request_step.started", result) do
+  defp normalize_step_payload(
+         "inference_turn",
+         event_type,
+         attempt,
+         result
+       )
+       when event_type in [
+              "request_step.completed",
+              "request_step.failed",
+              "request_step.cancelled",
+              "request_step.timed_out",
+              "request_step.interrupted"
+            ] do
+    if InferenceAttemptResult.enriched?(result) do
+      InferenceAttemptResult.new(event_type, attempt, result)
+    else
+      {:ok, result}
+    end
+  end
+
+  defp normalize_step_payload("tool_execution", "request_step.started", _attempt, result) do
     if result == %{} do
-      :ok
+      {:ok, result}
     else
       {:error, "tool_execution request_step.started result must be an empty map"}
     end
   end
 
-  defp validate_step_payload("tool_execution", event_type, result)
+  defp normalize_step_payload("tool_execution", event_type, _attempt, result)
        when event_type in [
               "request_step.completed",
               "request_step.failed",
@@ -407,17 +452,17 @@ defmodule Orchard.Requests.RequestStepEvent do
               "request_step.indeterminate"
             ] do
     case ToolExecutionOutcome.from_request_step_result(event_type, result) do
-      {:ok, _outcome} -> :ok
+      {:ok, _outcome} -> {:ok, result}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp validate_step_payload("tool_execution", event_type, _result) do
+  defp normalize_step_payload("tool_execution", event_type, _attempt, _result) do
     {:error,
      "tool_execution steps only support request_step.started, request_step.completed, request_step.failed, request_step.cancelled, request_step.timed_out, or request_step.indeterminate; got: #{inspect(event_type)}"}
   end
 
-  defp validate_step_payload(_step_type, _event_type, _result), do: :ok
+  defp normalize_step_payload(_step_type, _event_type, _attempt, result), do: {:ok, result}
 
   defp normalize_top_level_attrs(attrs) do
     Enum.reduce_while(attrs, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
@@ -455,6 +500,8 @@ defmodule Orchard.Requests.RequestStepEvent do
       {key, value} -> {key, normalize_payload_value(value)}
     end)
   end
+
+  defp normalize_payload_value(%DateTime{} = value), do: value
 
   defp normalize_payload_value(value) when is_map(value) do
     Map.new(value, fn

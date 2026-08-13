@@ -9,13 +9,13 @@
 
 ## 2. Absolute deadline and durable attempt evidence
 
-- [ ] 2.1 Persist one `requests.timeout_at` at Request creation and derive every later budget from it
-- [ ] 2.2 Add an immutable attempt context with closed attempt, commitment, retry, release, and execution-resolution vocabularies
-- [ ] 2.3 Enrich inference-turn terminal result maps without introducing an attempt table
-- [ ] 2.4 Validate enriched attempt results while preserving readability of existing request events
-- [ ] 2.5 Normalize runtime, model-load, capacity, cancellation, deadline, terminal-conformance, and unknown source failures to the stable §8.2 durable vocabulary
-- [ ] 2.6 Extend restricted-capture sanitization so closed attempt evidence remains durable under `none` and `metadata`
-- [ ] 2.7 Prove capture policy does not retain raw targets, messages, content, or arguments outside the allowed mode
+- [x] 2.1 Persist one `requests.timeout_at` at Request creation and derive every later budget from it
+- [x] 2.2 Add an immutable attempt context with closed attempt, commitment, retry, release, and execution-resolution vocabularies
+- [x] 2.3 Enrich inference-turn terminal result maps without introducing an attempt table
+- [x] 2.4 Validate enriched attempt results while preserving readability of existing request events
+- [x] 2.5 Normalize runtime, model-load, capacity, cancellation, deadline, terminal-conformance, and unknown source failures to the stable §8.2 durable vocabulary
+- [x] 2.6 Extend restricted-capture sanitization so closed attempt evidence remains durable under `none` and `metadata`
+- [x] 2.7 Prove capture policy does not retain raw targets, messages, content, or arguments outside the allowed mode
 
 ## 3. Typed single-attempt dispatcher outcome and release acknowledgement
 

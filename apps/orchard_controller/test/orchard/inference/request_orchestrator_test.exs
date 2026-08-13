@@ -30,6 +30,19 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.DelayedScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  @impl true
+  def schedule(%CanonicalRequest{} = request) do
+    Process.sleep(50)
+    StubMultiNodeScheduler.schedule(request)
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubMalformedExplanationScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -948,6 +961,76 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end)
 
     %{bundle: bundle}
+  end
+
+  test "SPEC.md §12.4 execute/3 persists the admission timeout as one absolute deadline", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-absolute-deadline")
+
+    canonical =
+      canonical_request("request-orchestrator-absolute-deadline",
+        stream?: false,
+        admission: %{timeout_ms: 120_000}
+      )
+
+    before_execute = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+    after_execute = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    assert DateTime.compare(
+             request.timeout_at,
+             DateTime.add(before_execute, 120_000, :millisecond)
+           ) in [
+             :eq,
+             :gt
+           ]
+
+    assert DateTime.compare(
+             request.timeout_at,
+             DateTime.add(after_execute, 120_000, :millisecond)
+           ) in [:eq, :lt]
+
+    assert_receive {:captured_execute_request, execute_request}
+    assert execute_request.deadline_unix_ms == DateTime.to_unix(request.timeout_at, :millisecond)
+    refute Map.has_key?(request.scheduler_decision, "timeout_at")
+  end
+
+  test "SPEC.md §12.4 scheduler time consumes the Request deadline before dispatch", %{
+    bundle: bundle
+  } do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :scheduler_impl,
+        Orchard.Inference.RequestOrchestratorTest.DelayedScheduler
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-scheduler-deadline")
+
+    canonical =
+      canonical_request("request-orchestrator-scheduler-deadline",
+        stream?: false,
+        admission: %{timeout_ms: 20}
+      )
+
+    assert {:error, {:dispatch_failed, :request_timeout}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    refute_receive {:captured_execute_request, _request}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.error_code == "request_timeout"
+    assert request.completed_at != nil
+    assert Requests.list_request_step_events(request) == []
   end
 
   test "execute/3 persists canonical endpoint instead of hardcoding chat", %{bundle: bundle} do
@@ -1982,6 +2065,30 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
              Map.keys(request.scheduler_decision || %{}),
              &String.starts_with?(&1, "selected_prefix_cache_score_")
            )
+  end
+
+  test "SPEC.md §12.4 queue waiting cannot outlive the Request deadline", %{bundle: bundle} do
+    put_queue_admission_config(enabled: true, max_wait_ms: 5_000)
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-request-deadline")
+
+    canonical =
+      canonical_request("request-orchestrator-queue-request-deadline",
+        stream?: false,
+        admission: %{queue_wait_ms: 5_000, timeout_ms: 250}
+      )
+
+    assert {:ok, held_grant} = hold_queue_lane(canonical)
+    started_at = System.monotonic_time(:millisecond)
+    assert {:error, :queue_timeout} = RequestOrchestrator.execute(canonical, model)
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    assert :ok = QueueManager.release(held_grant)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.error_code == "queue_timeout"
+    assert elapsed_ms < 2_000
+    refute :scheduled in request_event_states(request)
   end
 
   test "pre-await queue terminalization surfaces original queue outcome", %{bundle: bundle} do

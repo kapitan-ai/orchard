@@ -348,6 +348,133 @@ defmodule Orchard.Requests.RequestStepEventTest do
     )
   end
 
+  test "new/1 accepts only the supported inference-turn identities" do
+    assert {:ok, _step_event} =
+             RequestStepEvent.new(
+               inference_turn_step_attrs(%{
+                 event_type: "request_step.started",
+                 boundary: "pre_side_effect",
+                 result: %{}
+               })
+             )
+
+    assert {:ok, _step_event} =
+             RequestStepEvent.new(
+               inference_turn_step_attrs(%{
+                 event_type: "request_step.started",
+                 step_id: RequestStepEvent.inference_turn_step_id(1, 2),
+                 attempt: 2,
+                 boundary: "pre_side_effect",
+                 result: %{}
+               })
+             )
+
+    for {turn_index, attempt} <- [{2, 1}, {1, 3}] do
+      assert {:error, "only turn 1 attempts 1 and 2 are supported"} =
+               RequestStepEvent.new(
+                 inference_turn_step_attrs(%{
+                   event_type: "request_step.started",
+                   step_id: RequestStepEvent.inference_turn_step_id(turn_index, attempt),
+                   turn_index: turn_index,
+                   attempt: attempt,
+                   boundary: "pre_side_effect",
+                   result: %{}
+                 })
+               )
+    end
+  end
+
+  test "enriched terminal attempts validate while sparse historical rows remain readable" do
+    node_1 = "00000000-0000-4000-a000-000000000001"
+    node_2 = "00000000-0000-4000-a000-000000000002"
+
+    for {attempt, node_id, exclusions, decision} <- [
+          {1, node_1, [], "retried"},
+          {2, node_2, [node_1], "retry_exhausted"}
+        ] do
+      attrs =
+        inference_terminal_attrs(attempt, %{
+          "node_id" => node_id,
+          "excluded_node_ids" => exclusions,
+          "retry_decision" => decision
+        })
+
+      assert {:ok, step_event} = RequestStepEvent.new(attrs)
+      assert step_event.result["excluded_node_ids"] == exclusions
+    end
+
+    assert {:ok, _step_event} =
+             RequestStepEvent.new(%{
+               event_type: "request_step.failed",
+               step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+               step_type: "inference_turn",
+               turn_index: 1,
+               attempt: 1,
+               boundary: "post_observation",
+               result: %{"error_code" => "internal_error"}
+             })
+
+    assert {:error, _reason} =
+             RequestStepEvent.new(%{
+               event_type: "request_step.failed",
+               step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+               step_type: "inference_turn",
+               turn_index: 1,
+               attempt: 1,
+               boundary: "post_observation",
+               result: %{"accepted" => false}
+             })
+  end
+
+  test "from_request_event/1 preserves historical inference identities rejected for new writes" do
+    request_event = %RequestEvent{
+      request_id: Ecto.UUID.generate(),
+      seq: 1,
+      event_type: "request_step.failed",
+      state: nil,
+      occurred_at: ~U[2026-04-11 09:15:00.000000Z],
+      payload: %{
+        "step_id" => RequestStepEvent.inference_turn_step_id(2, 3),
+        "step_type" => "inference_turn",
+        "turn_index" => 2,
+        "attempt" => 3,
+        "parent_step_id" => nil,
+        "boundary" => "post_observation",
+        "result" => %{"error_code" => "internal_error"}
+      }
+    }
+
+    assert {:ok, step_event} = RequestStepEvent.from_request_event(request_event)
+    assert step_event.step_id == "inference_turn:t2:a3"
+    assert step_event.attempt == 3
+  end
+
+  defp inference_terminal_attrs(attempt, overrides) do
+    %{
+      event_type: "request_step.failed",
+      step_id: RequestStepEvent.inference_turn_step_id(1, attempt),
+      step_type: "inference_turn",
+      turn_index: 1,
+      attempt: attempt,
+      boundary: "post_observation",
+      result:
+        Map.merge(
+          %{
+            "attempt_outcome" => "failed",
+            "started_at" => ~U[2026-08-12 10:00:00.000000Z],
+            "ended_at" => ~U[2026-08-12 10:00:01.000000Z],
+            "accepted" => false,
+            "output_committed" => false,
+            "execution_resolution" => "not_started",
+            "capacity_release_outcome" => "not_applicable",
+            "failure_class" => "runtime_failure",
+            "failure_code" => "runtime_unavailable"
+          },
+          overrides
+        )
+    }
+  end
+
   defp tool_execution_step_attrs(overrides) do
     Map.merge(
       %{

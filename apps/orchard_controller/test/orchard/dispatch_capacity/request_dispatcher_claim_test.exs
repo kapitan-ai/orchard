@@ -137,6 +137,24 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.SlowLoadClient do
   end
 end
 
+defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.TimedOutLoadClient do
+  @moduledoc false
+
+  alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: GateClient
+  defdelegate disconnect(channel), to: GateClient
+  defdelegate status(channel, opts), to: GateClient
+  defdelegate execute_inference(channel, request, opts), to: GateClient
+  defdelegate cancel_inference(channel, request, opts), to: GateClient
+
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, opts) do
+    Process.sleep(Keyword.fetch!(opts, :timeout))
+    {:error, :timeout}
+  end
+end
+
 defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.ExecuteErrorClient do
   @moduledoc false
 
@@ -761,6 +779,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     PreAcceptanceCancelClient,
     ProductionFreshStatusClient,
     SlowLoadClient,
+    TimedOutLoadClient,
     TerminalDefectClient,
     TerminalBeforeAcceptedClient,
     UnprobeableClient
@@ -780,6 +799,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   @unprobeable_client UnprobeableClient
   @production_fresh_status_client ProductionFreshStatusClient
   @slow_load_client SlowLoadClient
+  @timed_out_load_client TimedOutLoadClient
   @terminal_defect_client TerminalDefectClient
 
   # The request timeout now bounds connect, probe, and acceptance-gate waiting
@@ -825,6 +845,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
+      timeout_at: DateTime.add(DateTime.utc_now(), 5_000, :millisecond),
       model_load_timeout_ms: 5_000,
       node_id: node_id,
       dispatch_capacity_input: input,
@@ -835,10 +856,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch_task =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @client
         )
       end)
@@ -885,6 +903,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
+      timeout_at: DateTime.add(DateTime.utc_now(), 5_000, :millisecond),
       model_load_timeout_ms: 5_000,
       node_id: node_id,
       dispatch_capacity_input: input,
@@ -895,10 +914,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     {dispatcher_pid, monitor_ref} =
       spawn_monitor(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @client
         )
       end)
@@ -955,6 +971,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
+      timeout_at: DateTime.add(DateTime.utc_now(), 5_000, :millisecond),
       model_load_timeout_ms: 5_000,
       node_id: node_id,
       dispatch_capacity_input: enforcing_input(),
@@ -965,10 +982,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @gate_client
         )
       end)
@@ -990,7 +1004,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     request_id = "request-execute-error"
 
     assert {:error, {:dispatch_failed, :execution_refused}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
                model_load_request(node_id),
@@ -1016,7 +1030,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     request_id = "request-missing-acceptance"
 
     assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
                model_load_request(node_id),
@@ -1034,7 +1048,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       request_id = "request-terminal-defect-#{defect}"
 
       assert {:ok, events} =
-               RequestDispatcher.dispatch(
+               dispatch_with_deadline(
                  capacity_schedule(authority, node_id, request_id),
                  execute_request(request_id),
                  model_load_request(node_id),
@@ -1066,7 +1080,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       ])
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_facts_unavailable}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(node_id),
@@ -1092,7 +1106,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       |> Map.put(:dispatch_capacity_acquisition_input_provider, fn -> unavailable_input end)
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_unavailable}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(node_id),
@@ -1122,7 +1136,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     }
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(Ecto.UUID.generate()),
@@ -1133,7 +1147,60 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     refute_receive :execute_called
   end
 
-  test "SPEC 5.9 a cold model load does not consume the stream's request budget" do
+  test "SPEC.md §12.4 logical deadline wins when model loading times out at the Request boundary" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-model-load-deadline"
+
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: 50,
+        timeout_at: DateTime.add(DateTime.utc_now(), 50, :millisecond),
+        model_load_timeout_ms: 5_000
+    }
+
+    assert {:error, {:dispatch_failed, :dispatch_timeout}} =
+             dispatch_with_deadline(
+               schedule,
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @timed_out_load_client
+             )
+
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC.md §12.4 expiry during capacity revalidation prevents ExecuteInference" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-post-load-revalidation-deadline"
+    input = enforcing_input()
+
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: 50,
+        timeout_at: DateTime.add(DateTime.utc_now(), 50, :millisecond),
+        dispatch_capacity_input_provider: fn ->
+          Process.sleep(75)
+          input
+        end
+    }
+
+    assert {:error, {:dispatch_failed, :dispatch_timeout}} =
+             dispatch_with_deadline(
+               schedule,
+               execute_request(request_id),
+               model_load_request(node_id),
+               client_impl: @gate_client
+             )
+
+    assert_receive :model_loaded
+    refute_receive :execute_called
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC.md §12.4 a cold model load consumes the original Request budget" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-cold-load-budget"
@@ -1141,18 +1208,23 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
       | request_timeout_ms: div(@slow_load_client.load_duration_ms(), 2),
+        timeout_at:
+          DateTime.add(
+            DateTime.utc_now(),
+            div(@slow_load_client.load_duration_ms(), 2),
+            :millisecond
+          ),
         model_load_timeout_ms: 5_000
     }
 
-    assert {:ok, events} =
-             RequestDispatcher.dispatch(
+    assert {:error, {:dispatch_failed, :dispatch_timeout}} =
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(node_id),
                client_impl: @slow_load_client
              )
 
-    assert Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Accepted{}}, &1))
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1166,7 +1238,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     )
 
     assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
                model_load_request(node_id),
@@ -1186,7 +1258,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     )
 
     assert {:error, {:dispatch_failed, :node_acceptance_missing}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
                model_load_request(node_id),
@@ -1202,7 +1274,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     request_id = "request-delta-before-acceptance-error"
 
     assert {:error, {:dispatch_failed, :stream_failed}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
                model_load_request(node_id),
@@ -1219,7 +1291,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1249,7 +1321,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1279,7 +1351,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1317,7 +1389,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1350,7 +1422,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1385,15 +1457,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
     }
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @pre_acceptance_cancel_client
         )
       end)
@@ -1413,7 +1483,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1439,12 +1509,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
       schedule = %{
         capacity_schedule(authority, node_id, request_id)
-        | request_timeout_ms: @expiring_request_timeout_ms
+        | request_timeout_ms: @expiring_request_timeout_ms,
+          timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
       }
 
       dispatch =
         Task.async(fn ->
-          RequestDispatcher.dispatch(
+          dispatch_with_deadline(
             schedule,
             execute_request(request_id),
             model_load_request(node_id),
@@ -1472,15 +1543,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
     }
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @pre_acceptance_cancel_client,
           cancel_drain_timeout_ms: 20
         )
@@ -1513,15 +1582,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
     }
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @pre_acceptance_cancel_client,
           cancel_drain_timeout_ms: 20
         )
@@ -1553,15 +1620,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
     }
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @pre_acceptance_cancel_client,
           cancel_drain_timeout_ms: 20
         )
@@ -1600,15 +1665,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node.id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
     }
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node.id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node.id),
           client_impl: @pre_acceptance_cancel_client,
           cancel_drain_timeout_ms: 20
         )
@@ -1639,15 +1702,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
     }
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @noisy_cancel_client,
           cancel_drain_timeout_ms: 20
         )
@@ -1671,12 +1732,13 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, claimed_node_id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
     }
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           schedule,
           execute_request(request_id),
           model_load_request(claimed_node_id),
@@ -1707,7 +1769,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1732,7 +1794,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -1772,7 +1834,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
              )
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -1854,7 +1916,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     )
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_facts_unavailable}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(scheduled_node.id),
@@ -1877,7 +1939,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert schedule.node_id == schedule.runtime_endpoint_target.node_id
 
     assert {:ok, _events} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -1903,7 +1965,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         compatibility_single_wave_schedule(authority, unquote(management_class))
 
       assert {:ok, _events} =
-               RequestDispatcher.dispatch(
+               dispatch_with_deadline(
                  schedule,
                  execute_request(schedule.request_id),
                  model_load_request(node_id),
@@ -1932,7 +1994,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
           )
 
         assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-                 RequestDispatcher.dispatch(
+                 dispatch_with_deadline(
                    schedule,
                    execute_request(schedule.request_id),
                    model_load_request(node_id),
@@ -1959,7 +2021,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         )
 
       assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-               RequestDispatcher.dispatch(
+               dispatch_with_deadline(
                  schedule,
                  execute_request(schedule.request_id),
                  model_load_request(node_id),
@@ -1986,7 +2048,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         )
 
       assert {:ok, _events} =
-               RequestDispatcher.dispatch(
+               dispatch_with_deadline(
                  schedule,
                  execute_request(schedule.request_id),
                  model_load_request(node_id),
@@ -2013,7 +2075,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         )
 
       assert {:ok, _events} =
-               RequestDispatcher.dispatch(
+               dispatch_with_deadline(
                  schedule,
                  execute_request(schedule.request_id),
                  model_load_request(node_id),
@@ -2041,7 +2103,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
           )
 
         assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-                 RequestDispatcher.dispatch(
+                 dispatch_with_deadline(
                    schedule,
                    execute_request(schedule.request_id),
                    model_load_request(node_id),
@@ -2076,7 +2138,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       }
 
       assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
-               RequestDispatcher.dispatch(
+               dispatch_with_deadline(
                  schedule,
                  execute_request(schedule.request_id),
                  model_load_request(node_id),
@@ -2099,7 +2161,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       monitor_snapshot_schedule(authority, :degraded_acquisition)
 
     assert {:ok, _events} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -2130,7 +2192,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         monitor_snapshot_schedule(authority, unquote(scenario))
 
       assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-               RequestDispatcher.dispatch(
+               dispatch_with_deadline(
                  schedule,
                  execute_request(schedule.request_id),
                  model_load_request(node.id),
@@ -2153,7 +2215,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       monitor_snapshot_schedule(authority, :degraded)
 
     assert {:ok, _events} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -2181,7 +2243,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       |> Map.put(:dispatch_capacity_acquisition_input_provider, fn -> degraded end)
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_unavailable}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(node_id),
@@ -2206,7 +2268,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       |> Map.put(:dispatch_capacity_input_provider, fn -> degraded end)
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(node_id),
@@ -2226,7 +2288,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       monitor_snapshot_schedule(authority, :target_removed_before_acquisition)
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_facts_unavailable}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -2248,7 +2310,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       monitor_snapshot_schedule(authority, :target_removed_before_final)
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -2273,7 +2335,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     schedule = %{schedule | runtime_endpoint_target: mismatched_target}
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -2297,7 +2359,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     @production_fresh_status_client.configure(self(), status, status)
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, claimed_node_id, request_id),
                execute_request(request_id),
                model_load_request(claimed_node_id),
@@ -2316,7 +2378,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     request_id = "request-probe-identity-missing"
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
                model_load_request(node_id),
@@ -2333,7 +2395,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     request_id = "request-probe-identity-unverified"
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_node_identity_mismatch}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                capacity_schedule(authority, node_id, request_id),
                execute_request(request_id),
                model_load_request(node_id),
@@ -2374,7 +2436,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert schedule.strategy == :multi_node
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_revalidation_failed}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(schedule.request_id),
                model_load_request(node.id),
@@ -2402,7 +2464,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert %Evaluator.Result{eligible?: true} = schedule.dispatch_capacity_evaluation
 
     assert {:ok, _events} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                Map.put(schedule, :request_id, request_id),
                execute_request(request_id),
                model_load_request("unmanaged"),
@@ -2417,10 +2479,14 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     {:ok, lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
 
-    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 60}
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: 60,
+        timeout_at: DateTime.add(DateTime.utc_now(), 60, :millisecond)
+    }
 
     assert {:error, {:dispatch_failed, :dispatch_capacity_acceptance_gate_busy}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(node_id),
@@ -2437,10 +2503,14 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     node_id = claim_node_id()
     request_id = "request-deadline-exhausted-before-acceptance-gate"
 
-    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 0}
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: 0,
+        timeout_at: DateTime.utc_now()
+    }
 
     assert {:error, {:dispatch_failed, :dispatch_timeout}} =
-             RequestDispatcher.dispatch(
+             dispatch_with_deadline(
                schedule,
                execute_request(request_id),
                model_load_request(node_id),
@@ -2469,7 +2539,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
+        dispatch_with_deadline(
           capacity_schedule(authority, node_id, request_id),
           execute_request(request_id),
           model_load_request(node_id),
@@ -2506,17 +2576,19 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-shared-acceptance-deadline"
-    schedule = %{capacity_schedule(authority, node_id, request_id) | request_timeout_ms: 1_000}
+
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: 1_000,
+        timeout_at: DateTime.add(DateTime.utc_now(), 1_000, :millisecond)
+    }
 
     {:ok, held_lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
     started_at = System.monotonic_time(:millisecond)
 
     dispatch =
       Task.async(fn ->
-        RequestDispatcher.dispatch(
-          schedule,
-          execute_request(request_id),
-          model_load_request(node_id),
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
           client_impl: @cancellable_stream_client
         )
       end)
@@ -2550,6 +2622,14 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     node_id = Ecto.UUID.generate()
     DispatchCapacityFixtures.put_probe_node_id(node_id)
     node_id
+  end
+
+  defp dispatch_with_deadline(schedule, execute_request, model_load_request, opts) do
+    timeout_ms = Map.get(schedule, :request_timeout_ms, 5_000)
+
+    schedule
+    |> Map.put_new(:timeout_at, DateTime.add(DateTime.utc_now(), timeout_ms, :millisecond))
+    |> RequestDispatcher.dispatch(execute_request, model_load_request, opts)
   end
 
   defp execute_request(request_id) do
@@ -2975,6 +3055,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
+      timeout_at: DateTime.add(DateTime.utc_now(), 5_000, :millisecond),
       model_load_timeout_ms: 5_000,
       node_id: node_id,
       dispatch_capacity_input: input,

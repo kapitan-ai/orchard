@@ -704,11 +704,14 @@ defmodule Orchard.Dispatch.DispatchTest do
   end
 
   defp build_schedule(request_id, opts \\ []) do
+    timeout_ms = Keyword.get(opts, :request_timeout_ms, 5_000)
+
     %{
       strategy: :single_node,
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
-      request_timeout_ms: Keyword.get(opts, :request_timeout_ms, 5_000),
+      request_timeout_ms: timeout_ms,
+      timeout_at: DateTime.add(DateTime.utc_now(), timeout_ms, :millisecond),
       model_load_timeout_ms: Keyword.get(opts, :model_load_timeout_ms, 5_000),
       dispatch_capacity_authority: Process.get({__MODULE__, :capacity_authority})
     }

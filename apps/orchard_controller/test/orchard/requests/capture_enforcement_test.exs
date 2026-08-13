@@ -91,6 +91,46 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
 
     refute inspect(event.payload) =~ @private_prompt
 
+    node_id = Ecto.UUID.generate()
+    raw_target = "grpc://10.0.0.8:50071/#{@private_prompt}"
+
+    assert {:ok, [attempt_event]} =
+             Requests.append_request_step_events(request, [
+               %{
+                 event_type: "request_step.failed",
+                 step_id: "inference_turn:t1:a1",
+                 step_type: "inference_turn",
+                 turn_index: 1,
+                 attempt: 1,
+                 parent_step_id: nil,
+                 boundary: "post_observation",
+                 result: %{
+                   "attempt_outcome" => "failed",
+                   "started_at" => ~U[2026-08-12 10:00:00.000000Z],
+                   "ended_at" => ~U[2026-08-12 10:00:01.000000Z],
+                   "accepted" => true,
+                   "output_committed" => false,
+                   "execution_resolution" => "terminated",
+                   "capacity_release_outcome" => "released",
+                   "excluded_node_ids" => [],
+                   "node_id" => node_id,
+                   "target_ref" => raw_target,
+                   "failure_class" => "runtime_failure",
+                   "failure_code" => "runtime_unavailable",
+                   "retry_decision" => "not_retryable",
+                   "raw_source_code" => "private_runtime_code",
+                   "error_message" => @private_prompt
+                 }
+               }
+             ])
+
+    assert attempt_event.result["failure_class"] == "runtime_failure"
+    assert attempt_event.result["node_id"] == node_id
+    assert attempt_event.result["target_ref"] =~ ~r/\Asha256:[0-9a-f]{64}\z/
+    refute inspect(attempt_event.result) =~ @private_prompt
+    refute Map.has_key?(attempt_event.result, "raw_source_code")
+    refute Map.has_key?(attempt_event.result, "error_message")
+
     assert {:ok, terminal} =
              Requests.mark_terminal(request, %{
                state: :failed,
@@ -275,7 +315,8 @@ defmodule Orchard.Requests.CaptureEnforcementTest do
       },
       request_payload: %{"prompt" => @private_prompt},
       sampling_params: %{"temperature" => 0.5, "stop" => ["private stop"]},
-      response_format: %{"type" => "text"}
+      response_format: %{"type" => "text"},
+      timeout_at: DateTime.utc_now() |> DateTime.add(120_000, :millisecond)
     }
   end
 end

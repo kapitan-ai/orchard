@@ -302,12 +302,7 @@ defmodule Orchard.Requests do
 
       case %RequestEvent{} |> RequestEvent.changeset(event_attrs) |> Repo.insert() do
         {:ok, request_event} ->
-          persisted_step_event = %{
-            step_event
-            | request_id: request_event.request_id,
-              seq: request_event.seq,
-              occurred_at: request_event.occurred_at
-          }
+          persisted_step_event = RequestStepEvent.from_request_event!(request_event)
 
           {:cont, [persisted_step_event | acc]}
 

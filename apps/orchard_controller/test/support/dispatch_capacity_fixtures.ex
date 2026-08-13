@@ -63,7 +63,12 @@ defmodule Orchard.TestSupport.DispatchCapacityFixtures do
   def authorize_unmanaged_schedule(schedule, opts \\ []) do
     input = unmanaged_input(opts)
 
-    Map.merge(schedule, %{
+    schedule
+    |> Map.put_new(
+      :timeout_at,
+      DateTime.add(DateTime.utc_now(), Map.fetch!(schedule, :request_timeout_ms), :millisecond)
+    )
+    |> Map.merge(%{
       dispatch_capacity_input: input,
       dispatch_capacity_evaluation: Evaluator.evaluate(input),
       dispatch_capacity_acquisition_input_provider: fn -> input end,
