@@ -174,7 +174,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | Tray/menu bar app       | `.app` + LaunchAgent         | local status, onboarding, logs, support bundle entry point |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
 | Orchard Console         | controller LiveView          | local/operator UI for runtime status, node inventory and admission review, action previews, requests, Organizations, API Tokens, and API Clients |
-| Developer Portal        | controller LiveView          | Organization-scoped self-service mint, list, and revoke of tenant-direct API Keys after an operator-set portal password |
+| Developer Portal        | controller LiveView          | Invite-only, Organization-scoped self-service mint, list, and revoke of a Portal User's tenant-direct API Keys |
 | Managed Postgres helper | LaunchDaemon in managed mode | local DB lifecycle only                                    |
 
 ### 2.4 Repository structure
@@ -2036,7 +2036,7 @@ The platform SHALL expose five API surfaces:
    * Organization-scoped browser surface at `/portal/:organization_slug`
    * TLS-only in `reverse_proxy` and `direct_https` transport modes
    * unavailable in degraded `plain_http_localhost` mode
-   * operator-set Organization portal password, not Console Basic Auth and not a Public Inference Bearer
+   * invite-only Portal User email-and-password authentication, not Console Basic Auth and not a Public Inference Bearer
 
 5. **Runtime Endpoint and Worker Interfaces**
 
@@ -2695,39 +2695,61 @@ Base path: `/portal/:organization_slug`
 
 The Developer Portal SHALL be a distinct browser surface from Orchard Console.
 It SHALL NOT render operator Console chrome, other Organizations, nodes, license state, or cluster administration.
+A Portal User SHALL be an interactive identity scoped to one Organization and SHALL authorize only Developer Portal access.
+A Portal User SHALL NOT be treated as an Operator, Service Account, Owner Contact, Tenant Admin, Public Inference principal, or authority for Console, Operator API, or Admin API access.
 Portal sessions SHALL NOT authorize Public Inference, Operator API, Admin API, or Console access.
 
 Routes:
 
 ```text
 GET  /portal/:organization_slug
+GET  /portal/:organization_slug/invites/:token
+POST /portal/:organization_slug/invites/:token/redeem
 POST /portal/:organization_slug/session
 POST /portal/:organization_slug/logout
 LIVE /portal/:organization_slug/keys
 ```
 
-The portal SHALL identify the Organization by slug first, then verify that Organization's portal password.
-An Organization with no portal password SHALL have no open portal.
-`GET /portal/:organization_slug` SHALL be response-indistinguishable for open, closed, and unknown slugs.
+Portal User accounts SHALL be operator-invite only, with no public signup or self-registration.
+Email SHALL be the Portal User identifier and SHALL be unique by normalized value within one Organization.
+SMTP SHALL NOT be required.
+For a Portal User in `invited` status, the Console SHALL provide Copy invite.
+Each Copy invite action SHALL mint a fresh single-use token, persist only its hash, extend the invite expiry, and invalidate every prior unused invite token for that Portal User.
+Orchard SHALL NOT persist the plaintext invite token or URL.
+The operator SHALL deliver the copied invite URL out of band.
+Redeeming a valid unexpired invite SHALL set the Portal User's password, mark the invite redeemed, activate the Portal User, and end that Portal User's standing portal sessions.
+A replacement invite SHALL use the same reissue flow for password reset and SHALL end that Portal User's standing portal sessions.
 
-The operator SHALL set, rotate, or clear the portal password from the existing Console Organization detail surface.
-Clearing or rotating the password SHALL increment `portal_session_epoch` and end standing portal sessions for that Organization.
-Password rotation and clear SHALL NOT revoke minted API Keys.
+The portal SHALL identify the Organization by slug, then authenticate one active Portal User by normalized email and password.
+Unknown Organization, unknown email, disabled Portal User, and wrong-password submissions SHALL have indistinguishable status, body shape, headers, and generic credential failure.
+`GET /portal/:organization_slug` SHALL be response-indistinguishable for Organizations with or without invited or active Portal Users and for unknown slugs.
+Failed portal logins SHALL be limited per Organization fingerprint, Portal User or email fingerprint, and source fingerprint.
+They SHALL NOT use an Organization-wide lockout.
 
-The portal SHALL mint tenant-direct API Keys with `issuance_surface = 'developer_portal'`.
-An Organization MAY have at most 10 active portal-minted tenant-direct keys.
-Operator-minted tenant-direct keys SHALL NOT count toward that ceiling and SHALL NOT be revocable from the portal.
-The portal MAY list operator-minted tenant-direct keys read-only.
+The operator SHALL invite and disable Portal Users from the existing Console Organization detail surface.
+Disabling a Portal User SHALL end only that Portal User's portal sessions.
+Disabling a Portal User SHALL NOT revoke that Portal User's API Keys.
+Invite reissue, invite redemption, password replacement, and Portal User disablement SHALL NOT revoke minted API Keys.
+
+The portal SHALL mint tenant-direct API Keys with `issuance_surface = 'developer_portal'` and `portal_user_id` equal to the signed-in Portal User.
+A Portal User MAY have at most 10 active portal-minted tenant-direct keys.
+Revoked and expired keys SHALL NOT count toward that ceiling.
+The mint transaction SHALL serialize on the Portal User, not the Organization.
+Operator-minted tenant-direct keys SHALL NOT count toward that ceiling, SHALL remain operator-only, and SHALL NOT be visible or revocable from the portal.
+The portal SHALL list and revoke only portal-minted keys owned by the signed-in Portal User.
+Keys owned by another Portal User SHALL be indistinguishable from missing keys on portal list and revoke paths.
 Portal revoke SHALL take effect on the next Public Inference authentication.
+
+Legacy portal-minted keys with `portal_user_id IS NULL` SHALL remain valid `orchard_sk_*` Bearer credentials until explicitly revoked.
+Legacy unowned portal-minted keys SHALL remain operator-visible only, SHALL NOT be claimable by a Portal User, and SHALL NOT be listed or revoked from the portal.
+The portal SHALL NOT mint a new key without `portal_user_id`.
+Public Inference Bearer authentication SHALL continue to resolve every tenant-direct key as `principal_type = tenant` and SHALL NOT consult `portal_user_id`.
 
 Key secrets SHALL be shown once at creation and SHALL NOT be recoverable later.
 After mint, the portal SHALL show one `POST /v1/chat/completions` curl using a deterministic callable model already authorized for the Organization, or state that no test curl is available.
 
-Failed portal logins SHALL be limited per Organization fingerprint and source fingerprint.
-They SHALL NOT use an Organization-wide lockout.
-
 The portal SHALL be served only when public API HTTPS is enabled and the effective request scheme is HTTPS.
-Degraded `plain_http_localhost` SHALL return `404` for every portal route and SHALL reject operator portal-password mutations.
+Degraded `plain_http_localhost` SHALL return `404` for every portal route.
 
 ---
 
@@ -3433,6 +3455,7 @@ create type request_state as enum (
 );
 
 create type tenant_status as enum ('active', 'suspended', 'deleted');
+create type portal_user_status as enum ('invited', 'active', 'disabled');
 create type api_key_status as enum ('active', 'revoked', 'expired');
 create type actor_type as enum ('user', 'operator', 'service_account', 'api_key', 'node', 'system');
 create type payload_capture_mode as enum ('none', 'metadata', 'full');
@@ -3714,12 +3737,41 @@ create table tenants (
   default_pool_id uuid references node_pools(id),
   request_body_capture_mode payload_capture_mode not null default 'metadata',
   settings jsonb not null default '{}'::jsonb,
-  portal_password_hash text,
-  portal_session_epoch bigint not null default 0,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table portal_users (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references tenants(id) on delete cascade,
+  email text not null,
+  normalized_email text not null,
+  password_hash text,
+  status portal_user_status not null default 'invited',
+  session_epoch bigint not null default 0,
+  disabled_at timestamptz,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check (portal_session_epoch >= 0),
-  check (portal_password_hash is null or length(portal_password_hash) > 0)
+  unique(tenant_id, normalized_email),
+  check (length(normalized_email) > 0),
+  check (password_hash is null or length(password_hash) > 0),
+  check (session_epoch >= 0),
+  check ((status = 'active' and password_hash is not null and disabled_at is null)
+    or (status = 'invited' and disabled_at is null)
+    or (status = 'disabled' and disabled_at is not null))
+);
+
+create table portal_invite_tokens (
+  id uuid primary key default gen_random_uuid(),
+  portal_user_id uuid not null references portal_users(id) on delete cascade,
+  token_hash bytea not null unique,
+  expires_at timestamptz not null,
+  redeemed_at timestamptz,
+  invalidated_at timestamptz,
+  inserted_at timestamptz not null default now(),
+  check (octet_length(token_hash) = 32),
+  check (expires_at > inserted_at),
+  check (redeemed_at is null or invalidated_at is null)
 );
 
 create table service_accounts (
@@ -3744,6 +3796,7 @@ create table api_keys (
   id uuid primary key default gen_random_uuid(),
   tenant_id uuid references tenants(id),
   service_account_id uuid references service_accounts(id),
+  portal_user_id uuid references portal_users(id) on delete set null,
   name text not null,
   token_prefix text not null unique,
   secret_hash bytea not null,
@@ -3760,36 +3813,40 @@ create table api_keys (
   ),
   check (issuance_surface in ('governance', 'developer_portal')),
   check (
-    issuance_surface <> 'developer_portal'
-    or (tenant_id is not null and service_account_id is null)
+    (issuance_surface = 'governance' and portal_user_id is null)
+    or
+    (issuance_surface = 'developer_portal' and tenant_id is not null and service_account_id is null)
   )
 );
 
 create table portal_sessions (
   id uuid primary key default gen_random_uuid(),
   tenant_id uuid not null references tenants(id) on delete cascade,
+  portal_user_id uuid not null references portal_users(id) on delete cascade,
   token_hash bytea not null unique,
-  password_epoch bigint not null,
+  session_epoch bigint not null,
   issued_at timestamptz not null,
   last_seen_at timestamptz not null,
   absolute_expires_at timestamptz not null,
   inserted_at timestamptz not null default now(),
   check (octet_length(token_hash) = 32),
-  check (password_epoch >= 0),
+  check (session_epoch >= 0),
   check (last_seen_at >= issued_at),
   check (absolute_expires_at > issued_at)
 );
 
 create table portal_login_throttles (
   organization_fingerprint bytea not null,
+  user_fingerprint bytea not null,
   source_fingerprint bytea not null,
   failure_count integer not null default 0,
   blocked_until timestamptz,
   last_failed_at timestamptz,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  primary key (organization_fingerprint, source_fingerprint),
+  primary key (organization_fingerprint, user_fingerprint, source_fingerprint),
   check (octet_length(organization_fingerprint) = 32),
+  check (octet_length(user_fingerprint) = 32),
   check (octet_length(source_fingerprint) = 32),
   check (failure_count >= 0)
 );
@@ -4164,6 +4221,16 @@ create index idx_service_accounts_tenant_team
 create index idx_api_keys_service_account_inserted_at
   on api_keys(service_account_id, inserted_at);
 
+create index idx_api_keys_portal_user_inserted_at
+  on api_keys(portal_user_id, inserted_at)
+  where portal_user_id is not null;
+
+create index idx_portal_sessions_user_expiry
+  on portal_sessions(portal_user_id, absolute_expires_at);
+
+create index idx_portal_invite_tokens_user_expiry
+  on portal_invite_tokens(portal_user_id, expires_at desc);
+
 create extension if not exists btree_gist;
 
 alter table api_keys
@@ -4415,7 +4482,11 @@ Previously issued `orch_<public>.<secret>` API Tokens SHALL remain valid compati
 Compatibility authentication SHALL preserve their existing `orch_<public>` lookup prefix and complete-token SHA-256 semantics without rewriting persisted credentials.
 
 Tenant-direct API Keys SHALL remain supported for manual, bootstrap, compatibility, and Developer Portal paths.
-Developer Portal minting SHALL persist `issuance_surface = 'developer_portal'` and SHALL count only those active tenant-direct keys toward the portal cap of 10.
+Developer Portal minting SHALL persist `issuance_surface = 'developer_portal'` and the signed-in Portal User's `portal_user_id`.
+The portal SHALL enforce at most 10 active portal-minted tenant-direct keys per Portal User, excluding revoked and expired keys.
+Portal User ownership SHALL remain minting-gate provenance only.
+Public Inference Bearer authentication SHALL continue to resolve `orchard_sk_*` tenant-direct keys as `principal_type = tenant` without consulting `portal_user_id`.
+Legacy portal-minted keys with null `portal_user_id` SHALL remain valid Bearer credentials until explicitly revoked and SHALL remain operator-visible only.
 Bulk provisioning SHALL create service-account-owned API Tokens by default.
 API Tokens owned by the same Service Account SHALL NOT have duplicate active names unless explicit Key Rotation mode creates a replacement and revokes the previous active token or tokens.
 
@@ -4535,11 +4606,13 @@ Secrets SHALL be stored:
 * in Postgres only as hashes, never plaintext
 * private keys SHOULD be stored in macOS Keychain or protected filesystem paths
 * bootstrap tokens stored only as hash
-* Developer Portal passwords stored only as a password hash, never plaintext
+* Portal User passwords stored only as a password hash, never plaintext
+* Portal Invite tokens stored only as a hash, with plaintext shown only in the newly issued URL
 * Developer Portal session tokens stored only as a hash
 
-Portal password hashing SHALL use a slow password KDF.
+Portal User password hashing SHALL use a slow password KDF.
 It SHALL NOT reuse API key SHA-256 hashing.
+Copy invite SHALL mint a fresh token, invalidate prior unused tokens, extend expiry, and SHALL NOT persist the plaintext token or invite URL.
 
 ### 10.9 Audit requirements
 
@@ -4547,7 +4620,7 @@ Audit logs SHALL capture:
 
 * tenant creation/update/suspend
 * API key create/revoke
-* Developer Portal password set, rotate, and clear
+* Portal User invite, invite reissue, invite redemption, disable, and password replacement
 * service account changes
 * API Client Disablement
 * provisioning batch start/completion/failure
@@ -4566,7 +4639,7 @@ Audit logs SHALL capture:
 * support bundle generation
 * upgrade actions
 
-Audit payloads SHALL exclude plaintext API Token secrets and plaintext portal passwords.
+Audit payloads SHALL exclude plaintext API Token secrets, Portal User passwords, Portal Invite tokens and URLs, and Developer Portal session tokens.
 Provisioning Batch records SHALL include non-secret counts, status, input hash, timestamps, and sanitized error summaries only.
 Observed target references and admission-candidate metadata in audit payloads SHALL be sanitized and MUST NOT include secrets.
 

@@ -5,6 +5,7 @@ Accepted.
 Bulk API access provisioning will create service-account-owned API Tokens by default, using the canonical API Key schema and the product labels API Clients and API Tokens in operator-facing surfaces.
 Owner Contact and Team are descriptive API Client metadata only; they do not authenticate, authorize, own quota, or define routing policy.
 Tenant-direct API Keys remain supported for manual, bootstrap, and compatibility paths, but bulk provisioning uses API Clients so Orchard can audit, disable, and rotate non-interactive client access without introducing first-class human users.
+A Portal User is a portal-scoped interactive identity, not a bulk-provisioning identity, and does not weaken this decision for API Clients, Owner Contacts, or non-interactive access.
 Each bulk-provisioned API Client receives an explicit tenant-scoped `inference_client` Access Level by default.
 The first provisioning surface is CLI-first so One-time Secret Output can be written to an operator-chosen local file.
 Console may show and manage Organizations, Teams, API Clients, Owner Contacts, API Token prefixes, revocation, and API Client Disablement, but bulk secret export does not require an Admin API endpoint in the first slice.

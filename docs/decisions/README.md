@@ -23,4 +23,4 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence ends with [ADR 0019: Automatic inference retry is one fail-closed alternate-node attempt within the original Request](0019-one-request-bounded-alternate-node-retry.md).
+The current sequence ends with [ADR 0020: Portal User is a portal-scoped minting-gate identity](0020-portal-user-is-not-a-platform-principal.md).

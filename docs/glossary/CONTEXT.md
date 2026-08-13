@@ -182,6 +182,10 @@ _Avoid_: Runtime Endpoint Interface, Worker Runtime Interface, scheduler ranking
 The product-facing LiveView console for local and operator UI.
 _Avoid_: Kapitan Orchard UI, admin panel
 
+**Developer Portal**:
+The Organization-scoped browser surface where an invited Portal User mints, lists, and revokes their own tenant-direct API Keys.
+_Avoid_: Orchard Console, Admin API, public signup
+
 **Orchard CLI**:
 The `orchardctl` command-line interface for operator and admin automation.
 _Avoid_: Shell scripts as product interface
@@ -190,8 +194,8 @@ _Avoid_: Shell scripts as product interface
 
 **Operator**:
 A human or local administrative actor who configures, governs, or operates Orchard through Console, CLI, Operator API, or Admin API surfaces.
-An Operator is not a Service Account, API Client, API Key, or Tenant.
-_Avoid_: Service Account, API Client, API Key, Tenant
+An Operator is not a Service Account, API Client, API Key, Tenant, or Portal User.
+_Avoid_: Service Account, API Client, API Key, Tenant, Portal User
 
 **Tenant**:
 A governance boundary for model access, quotas, keys, retention, and usage accounting.
@@ -205,7 +209,18 @@ _Avoid_: Tenant, Quota boundary, Routing Policy, RBAC Role
 **Service Account**:
 A non-interactive principal that may own API Tokens and tenant-scoped or cluster-scoped RBAC Roles.
 Product-facing label: API Client.
-_Avoid_: User account, Tenant, API Key, Team
+_Avoid_: User account, Tenant, API Key, Team, Portal User
+
+**Portal User**:
+An interactive, Organization-scoped identity that may sign in only to the Developer Portal and own portal-minted tenant-direct API Keys.
+A Portal User is not a Public Inference principal, Operator, Service Account, or Owner Contact.
+_Avoid_: User account, Portal Developer, Tenant Admin, Owner Contact, Service Account
+
+**Portal Invite**:
+A single-use expiring token the operator can recopy from Console while the Portal User is invited.
+Each copy replaces the unused token.
+Orchard stores only the hash.
+_Avoid_: Persisted plaintext invite URL, magic link email, SMTP invite, Owner Contact
 
 **API Key**:
 A bearer credential scoped directly to a Tenant or Service Account.
@@ -226,7 +241,8 @@ _Avoid_: database id, API Token, Owner Contact
 
 **Tenant-direct API Key**:
 An API Key scoped directly to a Tenant without a Service Account owner.
-_Avoid_: Service-account-owned API Key, Service Account, Owner Contact
+It may record a Portal User as minting-gate owner without changing the Public Inference principal.
+_Avoid_: Service-account-owned API Key, Service Account, Owner Contact, Portal User as principal
 
 **Service-account-owned API Key**:
 An API Key whose effective principal is the Service Account that owns it.

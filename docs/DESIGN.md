@@ -523,6 +523,26 @@ Use the existing card surface vocabulary and keep grouped candidate or evidence 
 Render stable machine-readable codes as compact mono badges that stay visible or inspectable.
 When raw decision debug JSON is shown, apply the same key-based unsafe-key deny-list used for diagnostics and components, and render only a safe error category rather than echoing an offending raw token.
 
+### 6.7 Portal User Management and Portal Isolation
+
+The Organization detail surface manages Portal Users through three stacked Console cards.
+The first card is the Portal User invite form, with an email field and a navy primary **Invite** action.
+The second card is a transient sibling that appears only after an invite is issued or reissued and shows the Portal Invite URL once with its expiry and a navy **Copy invite** action.
+The show-once card is not a flash, modal, or recoverable secret store.
+After it disappears, **Copy invite** reissues a fresh hashed token, invalidates the previous unused token, extends expiry, and opens a new show-once card.
+The operator delivers the copied URL out of band.
+The third card contains the Portal Users table with email, status, invite state, and contextual actions.
+Use a forest badge for active users, an amber badge for invited users, and a neutral badge for disabled users.
+Invited rows expose **Copy invite**.
+Active rows expose **Disable**, and disabling a Portal User ends that user's portal sessions without automatically revoking minted API Keys.
+Do not expose set, rotate, clear, reveal, or copy password actions as an operator seam.
+The operator manages developer access through Portal Invites and Portal User disablement instead.
+
+The Developer Portal remains a separate, dark-pinned surface and does not inherit the Console theme preference.
+It must not render Console chrome or operator controls.
+It remains isolated to the Organization named by the route and to the portal-minted keys owned by the signed-in Portal User.
+The three operator cards remain Console surfaces and use the existing Console card, tactile-well, table, focus, and navy primary-action tokens in both Console theme modes.
+
 ---
 
 ## 7. Motion
