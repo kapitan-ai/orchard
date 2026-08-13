@@ -2,6 +2,7 @@ defmodule Orchard.Governance.NamedPortalUserTest do
   use Orchard.DataCase, async: false
 
   import Ecto.Query
+  import Orchard.TestSupport.ModelRequestFixtures, only: [create_request!: 1]
 
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, ApiKeySecret, PortalInviteToken, PortalSession, PortalUser}
@@ -135,9 +136,15 @@ defmodule Orchard.Governance.NamedPortalUserTest do
 
     assert {:ok, second_key} =
              Governance.create_portal_api_key(second_login.token, tenant.slug, %{name: "second"})
+    create_request!(%{
+      tenant_id: tenant.id,
+      api_key_id: second_key.api_key.id,
+      state: :completed
+    })
 
     assert {:ok, listing} = Governance.list_portal_api_keys(second_login.token, tenant.slug)
     assert Enum.map(listing.keys, & &1.id) == [second_key.api_key.id]
+    assert hd(listing.keys).request_count == 1
 
     first_key = Repo.one!(from(key in ApiKey, where: key.portal_user_id == ^first.id, limit: 1))
 
