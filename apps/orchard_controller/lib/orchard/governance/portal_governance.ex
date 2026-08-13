@@ -20,6 +20,7 @@ defmodule Orchard.Governance.PortalGovernance do
   }
 
   alias Orchard.Repo
+  alias Orchard.Requests.Request
 
   @active_key_limit 10
   @invite_seconds 604_800
@@ -149,8 +150,8 @@ defmodule Orchard.Governance.PortalGovernance do
   end
 
   def list_keys(session_token, slug) do
-    with {:ok, %{portal_user: user}} <- validate(session_token, slug) do
-      keys =
+    with {:ok, %{tenant: tenant, portal_user: user}} <- validate(session_token, slug) do
+      api_keys =
         ApiKey
         |> where(
           [key],
@@ -158,14 +159,18 @@ defmodule Orchard.Governance.PortalGovernance do
         )
         |> order_by([key], desc: key.inserted_at, desc: key.id)
         |> Repo.all()
-        |> Enum.map(fn key ->
+
+      request_counts = portal_request_counts(tenant.id, Enum.map(api_keys, & &1.id))
+
+      keys =
+        Enum.map(api_keys, fn key ->
           %PortalApiKeySummary{
             id: key.id,
             name: key.name,
             token_prefix: key.token_prefix,
             issuance_surface: key.issuance_surface,
             status: ApiKey.status(key, now()),
-            request_count: 0,
+            request_count: Map.get(request_counts, key.id, 0),
             revocable?: is_nil(key.revoked_at),
             inserted_at: key.inserted_at,
             last_used_at: key.last_used_at,
@@ -391,6 +396,18 @@ defmodule Orchard.Governance.PortalGovernance do
     |> where([k], is_nil(k.expires_at) or k.expires_at > ^current)
     |> Repo.aggregate(:count)
   end
+  defp portal_request_counts(_tenant_id, []), do: %{}
+
+  defp portal_request_counts(tenant_id, api_key_ids) do
+    Request
+    |> where([request], request.tenant_id == ^tenant_id)
+    |> where([request], request.api_key_id in ^api_key_ids)
+    |> group_by([request], request.api_key_id)
+    |> select([request], {request.api_key_id, count(request.id)})
+    |> Repo.all()
+    |> Map.new()
+  end
+
 
   defp delete_sessions(user_id) do
     from(row in PortalSession, where: row.portal_user_id == ^user_id) |> Repo.delete_all()

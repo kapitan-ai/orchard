@@ -440,6 +440,8 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       first = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
       assert first =~ "tenant-portal-invite-url-card"
       assert first =~ "/portal/detail-t/invites/orchard_pi_"
+      assert first =~ ~s(phx-hook="CopyGeneratedSecret")
+      assert first =~ ~s(data-secret-source="tenant-portal-invite-url-value")
 
       second = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
       refute first == second

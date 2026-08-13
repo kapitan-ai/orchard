@@ -243,6 +243,16 @@ defmodule OrchardConsole.TenantDetailLive do
           <code id="tenant-portal-invite-url-value" class="block break-all rounded bg-slate-100 p-3 font-mono text-sm">
             {@portal_invite_url}
           </code>
+          <button
+            id="tenant-portal-invite-url-copy"
+            type="button"
+            phx-hook="CopyGeneratedSecret"
+            data-secret-source="tenant-portal-invite-url-value"
+            data-api-key-id="portal-invite"
+            class="mt-3 rounded-md bg-navy-900 px-3 py-1.5 text-sm font-medium text-white"
+          >
+            Copy invite URL
+          </button>
         </.card>
       </div>
 
