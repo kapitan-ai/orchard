@@ -817,5 +817,7 @@ Visual rules:
 Organization detail is the only operator password seam in this cut.
 The card shows closed or open from password presence, never the hash.
 It shows the portal URL only when public HTTPS is enabled.
-Set, rotate, and clear require password plus confirmation.
+Set and rotate require the new password plus confirmation.
+Clear requires typed-identifier confirmation of the Organization slug.
+It does not ask for the previous portal password.
 Degraded transport is noninteractive and explains that TLS is required.

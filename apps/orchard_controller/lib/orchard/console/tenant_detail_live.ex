@@ -29,6 +29,7 @@ defmodule OrchardConsole.TenantDetailLive do
         portal_url: nil,
         portal_https?: false,
         portal_active_key_count: 0,
+        portal_clear_confirmation: "",
         portal_form: to_form(%{"password" => "", "password_confirmation" => ""}, as: :portal)
       )
       |> assign_blank_form()
@@ -75,9 +76,14 @@ defmodule OrchardConsole.TenantDetailLive do
     end)
   end
 
-  def handle_event("clear_portal_password", _params, socket) do
+  def handle_event("update_portal_clear_confirmation", params, socket) do
+    confirmation = Map.get(params, "confirmation", "")
+    {:noreply, assign(socket, :portal_clear_confirmation, confirmation)}
+  end
+
+  def handle_event("clear_portal_password", params, socket) do
     OrchardConsole.LicenseGate.guard(socket, fn ->
-      clear_portal_password(socket)
+      clear_portal_password(socket, Map.get(params, "confirmation", ""))
     end)
   end
 
@@ -246,18 +252,43 @@ defmodule OrchardConsole.TenantDetailLive do
                 <.button type="submit" phx-disable-with="Saving…">
                   {if @portal_enabled, do: "Rotate password", else: "Set password"}
                 </.button>
-                <.button
-                  :if={@portal_enabled}
-                  id="tenant-portal-clear"
-                  type="button"
-                  variant={:danger}
-                  phx-click="clear_portal_password"
-                  phx-disable-with="Clearing…"
-                >
-                  Clear password
-                </.button>
               </:actions>
             </.simple_form>
+
+            <form
+              :if={@portal_https? and @portal_enabled}
+              id="tenant-portal-clear-form"
+              phx-change="update_portal_clear_confirmation"
+              phx-submit="clear_portal_password"
+              class="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700"
+            >
+              <p class="text-sm text-slate-600 dark:text-slate-300">
+                Clearing the password closes the portal and ends standing sessions.
+                Minted keys stay valid. Type
+                <span class="font-mono font-medium text-slate-900 dark:text-slate-100">{@tenant.slug}</span>
+                to confirm.
+              </p>
+              <label for="tenant-portal-clear-confirmation" class="block text-sm font-medium">
+                Confirm Organization slug
+              </label>
+              <input
+                id="tenant-portal-clear-confirmation"
+                type="text"
+                name="confirmation"
+                autocomplete="off"
+                value={@portal_clear_confirmation}
+                class="block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 font-mono text-sm shadow-inner dark:border-slate-600 dark:bg-slate-900/60"
+              />
+              <.button
+                id="tenant-portal-clear"
+                type="submit"
+                variant={:danger}
+                disabled={@portal_clear_confirmation != @tenant.slug}
+                phx-disable-with="Clearing…"
+              >
+                Clear password
+              </.button>
+            </form>
           </div>
         </.card>
       </div>
@@ -710,6 +741,7 @@ defmodule OrchardConsole.TenantDetailLive do
         portal_https?: Transport.public_api_https_enabled?(),
         portal_url: portal_url(tenant),
         portal_active_key_count: portal.active_portal_count,
+        portal_clear_confirmation: "",
         portal_form: to_form(%{"password" => "", "password_confirmation" => ""}, as: :portal),
         page_title: "Organization #{tenant.slug}",
         load_error: nil
@@ -757,7 +789,17 @@ defmodule OrchardConsole.TenantDetailLive do
     end
   end
 
-  defp clear_portal_password(socket) do
+  defp clear_portal_password(socket, confirmation) do
+    slug = socket.assigns.tenant.slug
+
+    if confirmation != slug do
+      {:noreply, put_flash(socket, :error, "Type the Organization slug to close the portal.")}
+    else
+      persist_clear_portal_password(socket)
+    end
+  end
+
+  defp persist_clear_portal_password(socket) do
     case Governance.clear_tenant_portal_password(socket.assigns.tenant) do
       {:ok, _tenant} ->
         {:noreply,

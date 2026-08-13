@@ -471,12 +471,27 @@ defmodule OrchardConsole.TenantDetailLiveTest do
                Governance.validate_portal_session(session.token, "detail-t")
     end
 
-    test "clear closes the portal and ends sessions", %{conn: conn, tenant: tenant} do
+    test "clear requires the Organization slug and then ends sessions", %{
+      conn: conn,
+      tenant: tenant
+    } do
       {:ok, _} = Governance.set_tenant_portal_password(tenant, @password)
       {:ok, session} = Governance.create_portal_session("detail-t", @password, "203.0.113.61")
       {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
 
-      html = view |> element("#tenant-portal-clear") |> render_click()
+      view
+      |> form("#tenant-portal-clear-form", confirmation: "wrong-slug")
+      |> render_change()
+
+      html = view |> form("#tenant-portal-clear-form") |> render_submit()
+      assert html =~ "Type the Organization slug"
+      assert Repo.get!(Orchard.Governance.Tenant, tenant.id).portal_password_hash
+
+      view
+      |> form("#tenant-portal-clear-form", confirmation: "detail-t")
+      |> render_change()
+
+      html = view |> form("#tenant-portal-clear-form") |> render_submit()
       assert html =~ "Closed"
       assert Repo.get!(Orchard.Governance.Tenant, tenant.id).portal_password_hash == nil
 
