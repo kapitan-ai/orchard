@@ -3,7 +3,7 @@
     <h1 class="text-lg font-semibold text-slate-50">Set your password</h1>
     <p class="mt-1 text-sm text-slate-300">Activate your named Portal User for {@organization_slug}.</p>
 
-    <form action={"/portal/#{@organization_slug}/invite/#{@invite_token}"} method="post" class="mt-6 space-y-4">
+    <form action={"/portal/#{@organization_slug}/invites/#{@invite_token}"} method="post" class="mt-6 space-y-4">
       <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
       <div>
         <label for="invite-password" class="block text-sm font-medium text-slate-200">Password</label>

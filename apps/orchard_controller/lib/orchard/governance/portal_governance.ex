@@ -9,8 +9,8 @@ defmodule Orchard.Governance.PortalGovernance do
   alias Orchard.Governance.{
     ApiKey,
     ApiKeySecret,
-    PortalInviteToken,
     PortalApiKeySummary,
+    PortalInviteToken,
     PortalLoginThrottle,
     PortalPassword,
     PortalPasswordVerifier,
@@ -32,7 +32,10 @@ defmodule Orchard.Governance.PortalGovernance do
 
     with :ok <- require_https(), {:ok, tenant} <- tenant(tenant_or_id) do
       %PortalUser{}
-      |> PortalUser.invite_changeset(%{tenant_id: tenant.id, email: attrs[:email] || attrs["email"]})
+      |> PortalUser.invite_changeset(%{
+        tenant_id: tenant.id,
+        email: attrs[:email] || attrs["email"]
+      })
       |> Repo.insert()
     end
   end
@@ -57,7 +60,7 @@ defmodule Orchard.Governance.PortalGovernance do
         |> Repo.insert!()
 
         delete_sessions(user.id)
-        %{token: token, url: "/portal/#{tenant.slug}/invite/#{token}", expires_at: expires_at}
+        %{token: token, url: "/portal/#{tenant.slug}/invites/#{token}", expires_at: expires_at}
       end)
       |> unwrap()
     else
@@ -68,29 +71,7 @@ defmodule Orchard.Governance.PortalGovernance do
 
   def redeem_invite(token, password) do
     with :ok <- require_https(), {:ok, password_hash} <- PortalPassword.hash(password) do
-      Repo.transaction(fn ->
-        current = now()
-
-        invite =
-          PortalInviteToken
-          |> where([row], row.token_hash == ^digest(token))
-          |> where([row], is_nil(row.redeemed_at) and row.expires_at > ^current)
-          |> lock("FOR UPDATE")
-          |> Repo.one()
-
-        if is_nil(invite), do: Repo.rollback(:invalid_invite)
-        user = Repo.get!(PortalUser, invite.portal_user_id)
-
-        case user |> PortalUser.activation_changeset(password_hash) |> Repo.update() do
-          {:ok, active} ->
-            invite |> Changeset.change(redeemed_at: current) |> Repo.update!()
-            delete_sessions(user.id)
-            active
-
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
-      end)
+      Repo.transaction(fn -> redeem_invite_transaction(token, password_hash) end)
       |> unwrap()
     end
   end
@@ -98,19 +79,18 @@ defmodule Orchard.Governance.PortalGovernance do
   def disable_user(tenant_or_id, user_or_id) do
     with {:ok, tenant} <- tenant(tenant_or_id),
          {:ok, user} <- user_for_tenant(tenant.id, id(user_or_id)) do
-      Repo.transaction(fn ->
-        case user |> PortalUser.disable_changeset(now()) |> Repo.update() do
-          {:ok, disabled} -> delete_sessions(user.id); disabled
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      Repo.transaction(fn -> disable_user_transaction(user) end)
       |> unwrap()
     end
   end
 
   def list_users(tenant_or_id) do
     with {:ok, tenant} <- tenant(tenant_or_id) do
-      {:ok, PortalUser |> where([u], u.tenant_id == ^tenant.id) |> order_by([u], asc: u.email) |> Repo.all()}
+      {:ok,
+       PortalUser
+       |> where([u], u.tenant_id == ^tenant.id)
+       |> order_by([u], asc: u.email)
+       |> Repo.all()}
     end
   end
 
@@ -138,7 +118,9 @@ defmodule Orchard.Governance.PortalGovernance do
          true <- session.tenant_id == tenant.id and user.tenant_id == tenant.id,
          true <- user.status == "active" and session.password_epoch == user.session_epoch,
          true <- DateTime.compare(session.absolute_expires_at, current) == :gt,
-         true <- DateTime.compare(DateTime.add(session.last_seen_at, @idle_seconds, :second), current) == :gt do
+         true <-
+           DateTime.compare(DateTime.add(session.last_seen_at, @idle_seconds, :second), current) ==
+             :gt do
       session =
         if Keyword.get(opts, :touch, false),
           do: session |> Changeset.change(last_seen_at: current) |> Repo.update!(),
@@ -161,24 +143,7 @@ defmodule Orchard.Governance.PortalGovernance do
     with :ok <- require_https(),
          {:ok, %{tenant: tenant, portal_user: user}} <- validate(session_token, slug),
          generated <- ApiKeySecret.generate() do
-      Repo.transaction(fn ->
-        PortalUser |> where([u], u.id == ^user.id) |> lock("FOR UPDATE") |> Repo.one!()
-        if active_key_count(user.id) >= @active_key_limit, do: Repo.rollback(:portal_key_limit_reached)
-
-        case %ApiKey{}
-             |> ApiKey.tenant_direct_changeset(%{
-               tenant_id: tenant.id,
-               portal_user_id: user.id,
-               name: attrs[:name] || attrs["name"],
-               token_prefix: generated.token_prefix,
-               secret_hash: generated.secret_hash,
-               issuance_surface: "developer_portal"
-             })
-             |> Repo.insert() do
-          {:ok, key} -> %{api_key: %{key | secret_hash: nil}, token: generated.token, curl: nil}
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      Repo.transaction(fn -> mint_key_transaction(tenant, user, attrs, generated) end)
       |> unwrap()
     end
   end
@@ -187,7 +152,10 @@ defmodule Orchard.Governance.PortalGovernance do
     with {:ok, %{portal_user: user}} <- validate(session_token, slug) do
       keys =
         ApiKey
-        |> where([key], key.portal_user_id == ^user.id and key.issuance_surface == "developer_portal")
+        |> where(
+          [key],
+          key.portal_user_id == ^user.id and key.issuance_surface == "developer_portal"
+        )
         |> order_by([key], desc: key.inserted_at, desc: key.id)
         |> Repo.all()
         |> Enum.map(fn key ->
@@ -213,21 +181,7 @@ defmodule Orchard.Governance.PortalGovernance do
   def revoke_key(session_token, slug, key_or_id) do
     with :ok <- require_https(),
          {:ok, %{tenant: tenant, portal_user: user}} <- validate(session_token, slug) do
-      Repo.transaction(fn ->
-        key =
-          ApiKey
-          |> where([key], key.id == ^id(key_or_id) and key.tenant_id == ^tenant.id)
-          |> where([key], key.portal_user_id == ^user.id and key.issuance_surface == "developer_portal")
-          |> lock("FOR UPDATE")
-          |> Repo.one()
-
-        if is_nil(key), do: Repo.rollback(:api_key_not_found)
-
-        case key |> ApiKey.revoke_changeset(%{revoked_at: now()}) |> Repo.update() do
-          {:ok, revoked} -> %{revoked | secret_hash: nil}
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      Repo.transaction(fn -> revoke_key_transaction(tenant, user, key_or_id) end)
       |> unwrap()
     end
   end
@@ -238,6 +192,81 @@ defmodule Orchard.Governance.PortalGovernance do
     :ok
   rescue
     _ -> :ok
+  end
+
+  defp redeem_invite_transaction(token, password_hash) do
+    current = now()
+
+    invite =
+      PortalInviteToken
+      |> where([row], row.token_hash == ^digest(token))
+      |> where([row], is_nil(row.redeemed_at) and row.expires_at > ^current)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(invite), do: Repo.rollback(:invalid_invite)
+    user = Repo.get!(PortalUser, invite.portal_user_id)
+
+    case user |> PortalUser.activation_changeset(password_hash) |> Repo.update() do
+      {:ok, active} ->
+        invite |> Changeset.change(redeemed_at: current) |> Repo.update!()
+        delete_sessions(user.id)
+        active
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp disable_user_transaction(user) do
+    case user |> PortalUser.disable_changeset(now()) |> Repo.update() do
+      {:ok, disabled} ->
+        delete_sessions(user.id)
+        disabled
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp mint_key_transaction(tenant, user, attrs, generated) do
+    PortalUser |> where([u], u.id == ^user.id) |> lock("FOR UPDATE") |> Repo.one!()
+
+    if active_key_count(user.id) >= @active_key_limit,
+      do: Repo.rollback(:portal_key_limit_reached)
+
+    case %ApiKey{}
+         |> ApiKey.tenant_direct_changeset(%{
+           tenant_id: tenant.id,
+           portal_user_id: user.id,
+           name: attrs[:name] || attrs["name"],
+           token_prefix: generated.token_prefix,
+           secret_hash: generated.secret_hash,
+           issuance_surface: "developer_portal"
+         })
+         |> Repo.insert() do
+      {:ok, key} -> %{api_key: %{key | secret_hash: nil}, token: generated.token, curl: nil}
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp revoke_key_transaction(tenant, user, key_or_id) do
+    key =
+      ApiKey
+      |> where([key], key.id == ^id(key_or_id) and key.tenant_id == ^tenant.id)
+      |> where(
+        [key],
+        key.portal_user_id == ^user.id and key.issuance_surface == "developer_portal"
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(key), do: Repo.rollback(:api_key_not_found)
+
+    case key |> ApiKey.revoke_changeset(%{revoked_at: now()}) |> Repo.update() do
+      {:ok, revoked} -> %{revoked | secret_hash: nil}
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   defp authenticate(slug, email, password) do
@@ -259,7 +288,10 @@ defmodule Orchard.Governance.PortalGovernance do
   defp finalize_login(tenant, user, password_hash, fingerprints) do
     Repo.transaction(fn ->
       locked = PortalUser |> where([u], u.id == ^user.id) |> lock("FOR UPDATE") |> Repo.one!()
-      if locked.status != "active" or locked.password_hash != password_hash, do: Repo.rollback(:invalid_credentials)
+
+      if locked.status != "active" or locked.password_hash != password_hash,
+        do: Repo.rollback(:invalid_credentials)
+
       token = "orchard_ps_" <> random_secret()
       current = now()
 
@@ -289,15 +321,46 @@ defmodule Orchard.Governance.PortalGovernance do
       row =
         PortalLoginThrottle
         |> where([r], r.organization_fingerprint == ^fingerprints.organization)
-        |> where([r], r.identity_fingerprint == ^fingerprints.identity and r.source_fingerprint == ^fingerprints.source)
+        |> where(
+          [r],
+          r.identity_fingerprint == ^fingerprints.identity and
+            r.source_fingerprint == ^fingerprints.source
+        )
         |> lock("FOR UPDATE")
         |> Repo.one()
 
-      row = row || (%PortalLoginThrottle{} |> PortalLoginThrottle.changeset(Map.merge(fingerprints, %{organization_fingerprint: fingerprints.organization, identity_fingerprint: fingerprints.identity, source_fingerprint: fingerprints.source, failure_count: 0, last_failed_at: current})) |> Repo.insert!())
-      if row.blocked_until && DateTime.compare(row.blocked_until, current) == :gt, do: Repo.rollback(:throttled)
+      row =
+        row ||
+          %PortalLoginThrottle{}
+          |> PortalLoginThrottle.changeset(
+            Map.merge(fingerprints, %{
+              organization_fingerprint: fingerprints.organization,
+              identity_fingerprint: fingerprints.identity,
+              source_fingerprint: fingerprints.source,
+              failure_count: 0,
+              last_failed_at: current
+            })
+          )
+          |> Repo.insert!()
+
+      if row.blocked_until && DateTime.compare(row.blocked_until, current) == :gt,
+        do: Repo.rollback(:throttled)
+
       count = row.failure_count + 1
-      blocked_until = if count < 5, do: nil, else: DateTime.add(current, Map.get(@backoffs, count, 900), :second)
-      row |> PortalLoginThrottle.changeset(%{failure_count: count, last_failed_at: current, blocked_until: blocked_until}) |> Repo.update!()
+
+      blocked_until =
+        if count < 5,
+          do: nil,
+          else: DateTime.add(current, Map.get(@backoffs, count, 900), :second)
+
+      row
+      |> PortalLoginThrottle.changeset(%{
+        failure_count: count,
+        last_failed_at: current,
+        blocked_until: blocked_until
+      })
+      |> Repo.update!()
+
       :ok
     end)
     |> case do
@@ -307,12 +370,26 @@ defmodule Orchard.Governance.PortalGovernance do
   end
 
   defp delete_throttle(fp) do
-    from(r in PortalLoginThrottle, where: r.organization_fingerprint == ^fp.organization and r.identity_fingerprint == ^fp.identity and r.source_fingerprint == ^fp.source) |> Repo.delete_all()
+    from(r in PortalLoginThrottle,
+      where:
+        r.organization_fingerprint == ^fp.organization and
+          r.identity_fingerprint == ^fp.identity and
+          r.source_fingerprint == ^fp.source
+    )
+    |> Repo.delete_all()
   end
 
   defp active_key_count(user_id) do
     current = now()
-    ApiKey |> where([k], k.portal_user_id == ^user_id and k.issuance_surface == "developer_portal" and is_nil(k.revoked_at)) |> where([k], is_nil(k.expires_at) or k.expires_at > ^current) |> Repo.aggregate(:count)
+
+    ApiKey
+    |> where(
+      [k],
+      k.portal_user_id == ^user_id and k.issuance_surface == "developer_portal" and
+        is_nil(k.revoked_at)
+    )
+    |> where([k], is_nil(k.expires_at) or k.expires_at > ^current)
+    |> Repo.aggregate(:count)
   end
 
   defp delete_sessions(user_id) do
@@ -334,12 +411,27 @@ defmodule Orchard.Governance.PortalGovernance do
       tenant -> {:ok, tenant}
     end
   end
+
   defp id(%{id: id}), do: id
   defp id(id) when is_binary(id), do: id
-  defp require_https, do: if(Transport.public_api_https_enabled?(), do: :ok, else: {:error, :https_required})
-  defp fingerprints(slug, email, source), do: %{organization: hmac("org:" <> normalize_slug(slug)), identity: hmac("id:" <> email), source: hmac("src:" <> source)}
+
+  defp require_https,
+    do: if(Transport.public_api_https_enabled?(), do: :ok, else: {:error, :https_required})
+
+  defp fingerprints(slug, email, source),
+    do: %{
+      organization: hmac("org:" <> normalize_slug(slug)),
+      identity: hmac("id:" <> email),
+      source: hmac("src:" <> source)
+    }
+
   defp hmac(value), do: :crypto.mac(:hmac, :sha256, secret(), value)
-  defp secret, do: Application.get_env(:orchard_controller, Orchard.API.Endpoint, []) |> Keyword.fetch!(:secret_key_base)
+
+  defp secret,
+    do:
+      Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+      |> Keyword.fetch!(:secret_key_base)
+
   defp normalize_slug(slug), do: slug |> String.trim() |> String.downcase()
   defp random_secret, do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
   defp digest(token), do: :crypto.hash(:sha256, token)

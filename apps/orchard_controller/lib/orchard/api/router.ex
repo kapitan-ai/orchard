@@ -135,8 +135,8 @@ defmodule Orchard.API.Router do
     get("/:organization_slug", Orchard.Portal.SessionController, :new)
     post("/:organization_slug/session", Orchard.Portal.SessionController, :create)
     post("/:organization_slug/logout", Orchard.Portal.SessionController, :delete)
-    get("/:organization_slug/invite/:token", Orchard.Portal.SessionController, :invite)
-    post("/:organization_slug/invite/:token", Orchard.Portal.SessionController, :redeem)
+    get("/:organization_slug/invites/:token", Orchard.Portal.SessionController, :invite)
+    post("/:organization_slug/invites/:token", Orchard.Portal.SessionController, :redeem)
 
     live_session :developer_portal,
       on_mount: [{Orchard.Portal, :ensure_portal_session}],

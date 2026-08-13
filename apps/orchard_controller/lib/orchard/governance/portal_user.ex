@@ -36,7 +36,12 @@ defmodule Orchard.Governance.PortalUser do
 
   @spec activation_changeset(t(), String.t()) :: Ecto.Changeset.t()
   def activation_changeset(user, password_hash) do
-    change(user, password_hash: password_hash, status: "active", disabled_at: nil, session_epoch: user.session_epoch + 1)
+    change(user,
+      password_hash: password_hash,
+      status: "active",
+      disabled_at: nil,
+      session_epoch: user.session_epoch + 1
+    )
   end
 
   @spec disable_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
@@ -45,6 +50,8 @@ defmodule Orchard.Governance.PortalUser do
   end
 
   @spec normalize_email(term()) :: String.t()
-  def normalize_email(email) when is_binary(email), do: email |> String.trim() |> String.downcase()
+  def normalize_email(email) when is_binary(email),
+    do: email |> String.trim() |> String.downcase()
+
   def normalize_email(_email), do: ""
 end

@@ -5,6 +5,7 @@ defmodule OrchardConsole.TenantDetailLive do
 
   use OrchardConsole, :live_view
 
+  alias Orchard.API.Transport
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, RoleBinding}
 
@@ -24,7 +25,7 @@ defmodule OrchardConsole.TenantDetailLive do
         api_clients: [],
         portal_users: [],
         portal_invite_url: nil,
-        portal_https?: Orchard.API.Transport.public_api_https_enabled?(),
+        portal_https?: Transport.public_api_https_enabled?(),
         load_error: nil,
         generated_secret: nil
       )
@@ -79,6 +80,7 @@ defmodule OrchardConsole.TenantDetailLive do
         {:noreply, socket}
     end
   end
+
   def handle_event("create_portal_invite", %{"portal_invite" => params}, socket) do
     case Governance.create_portal_invite(socket.assigns.tenant, params) do
       {:ok, _user} ->
@@ -90,8 +92,7 @@ defmodule OrchardConsole.TenantDetailLive do
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
          assign(socket,
-           portal_invite_form:
-             changeset_to_form(changeset, :portal_invite, %{"email" => ""})
+           portal_invite_form: changeset_to_form(changeset, :portal_invite, %{"email" => ""})
          )}
 
       {:error, _reason} ->

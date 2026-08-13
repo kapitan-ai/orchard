@@ -64,6 +64,7 @@ defmodule Orchard.Governance do
     end)
     |> unwrap_transaction_result()
   end
+
   alias Orchard.Governance.PortalGovernance
 
   defdelegate create_portal_invite(tenant, attrs), to: PortalGovernance, as: :create_invite
@@ -71,7 +72,11 @@ defmodule Orchard.Governance do
   defdelegate redeem_portal_invite(token, password), to: PortalGovernance, as: :redeem_invite
   defdelegate disable_portal_user(tenant, user), to: PortalGovernance, as: :disable_user
   defdelegate list_portal_users(tenant), to: PortalGovernance, as: :list_users
-  defdelegate create_portal_session(slug, email, password, source), to: PortalGovernance, as: :login
+
+  defdelegate create_portal_session(slug, email, password, source),
+    to: PortalGovernance,
+    as: :login
+
   defdelegate validate_portal_session(token, slug), to: PortalGovernance, as: :validate
   defdelegate validate_portal_session(token, slug, opts), to: PortalGovernance, as: :validate
   defdelegate logout_portal_session(token), to: PortalGovernance, as: :logout

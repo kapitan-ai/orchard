@@ -4,7 +4,7 @@ defmodule Orchard.Governance.NamedPortalUserTest do
   import Ecto.Query
 
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, PortalInviteToken, PortalSession, PortalUser}
+  alias Orchard.Governance.{ApiKey, ApiKeySecret, PortalInviteToken, PortalSession, PortalUser}
 
   @password "sixteen-chars-ok"
 
@@ -35,10 +35,12 @@ defmodule Orchard.Governance.NamedPortalUserTest do
 
     assert {:ok, first} = Governance.copy_portal_invite(tenant, user)
     assert {:ok, second} = Governance.copy_portal_invite(tenant, user)
+    assert first.url == "/portal/#{tenant.slug}/invites/#{first.token}"
+    assert second.url == "/portal/#{tenant.slug}/invites/#{second.token}"
     refute first.token == second.token
     refute first.url == second.url
 
-    rows = Repo.all(from token in PortalInviteToken, where: token.portal_user_id == ^user.id)
+    rows = Repo.all(from(token in PortalInviteToken, where: token.portal_user_id == ^user.id))
     assert length(rows) == 1
     assert hd(rows).token_hash == :crypto.hash(:sha256, second.token)
     refute inspect(rows) =~ second.token
@@ -51,15 +53,26 @@ defmodule Orchard.Governance.NamedPortalUserTest do
 
   test "named login creates a user-owned session and disable ends sessions only" do
     {tenant, user} = active_user!("named-login", "dev@example.com")
-    assert {:ok, login} = Governance.create_portal_session(tenant.slug, user.email, @password, "203.0.113.1")
+
+    assert {:ok, login} =
+             Governance.create_portal_session(tenant.slug, user.email, @password, "203.0.113.1")
+
     persisted = Repo.get!(PortalSession, login.session.id)
     assert persisted.portal_user_id == user.id
-    assert {:ok, %{portal_user: validated}} = Governance.validate_portal_session(login.token, tenant.slug)
+
+    assert {:ok, %{portal_user: validated}} =
+             Governance.validate_portal_session(login.token, tenant.slug)
+
     assert validated.id == user.id
 
-    assert {:ok, minted} = Governance.create_portal_api_key(login.token, tenant.slug, %{name: "keep"})
+    assert {:ok, minted} =
+             Governance.create_portal_api_key(login.token, tenant.slug, %{name: "keep"})
+
     assert {:ok, _} = Governance.disable_portal_user(tenant, user)
-    assert {:error, :invalid_session} = Governance.validate_portal_session(login.token, tenant.slug)
+
+    assert {:error, :invalid_session} =
+             Governance.validate_portal_session(login.token, tenant.slug)
+
     assert {:ok, auth} = Governance.authenticate_api_key(minted.token)
     assert auth.principal_type == :tenant
   end
@@ -69,48 +82,81 @@ defmodule Orchard.Governance.NamedPortalUserTest do
     {_tenant, other} = active_user!(tenant, "two@example.com")
 
     assert {:error, :invalid_credentials} =
-             Governance.create_portal_session(tenant.slug, "missing@example.com", @password, "203.0.113.2")
+             Governance.create_portal_session(
+               tenant.slug,
+               "missing@example.com",
+               @password,
+               "203.0.113.2"
+             )
 
     assert {:error, :invalid_credentials} =
-             Governance.create_portal_session(tenant.slug, user.email, "sixteen-chars-bad", "203.0.113.2")
+             Governance.create_portal_session(
+               tenant.slug,
+               user.email,
+               "sixteen-chars-bad",
+               "203.0.113.2"
+             )
 
     for _ <- 1..5 do
-      Governance.create_portal_session(tenant.slug, user.email, "sixteen-chars-bad", "203.0.113.3")
+      Governance.create_portal_session(
+        tenant.slug,
+        user.email,
+        "sixteen-chars-bad",
+        "203.0.113.3"
+      )
     end
 
     assert {:error, :throttled} =
              Governance.create_portal_session(tenant.slug, user.email, @password, "203.0.113.3")
 
-    assert {:ok, _} = Governance.create_portal_session(tenant.slug, other.email, @password, "203.0.113.3")
+    assert {:ok, _} =
+             Governance.create_portal_session(tenant.slug, other.email, @password, "203.0.113.3")
   end
 
   test "portal users list and revoke only their own keys and cap is per user" do
     {tenant, first} = active_user!("named-keys", "first@example.com")
     {_tenant, second} = active_user!(tenant, "second@example.com")
-    {:ok, first_login} = Governance.create_portal_session(tenant.slug, first.email, @password, "203.0.113.4")
-    {:ok, second_login} = Governance.create_portal_session(tenant.slug, second.email, @password, "203.0.113.5")
+
+    {:ok, first_login} =
+      Governance.create_portal_session(tenant.slug, first.email, @password, "203.0.113.4")
+
+    {:ok, second_login} =
+      Governance.create_portal_session(tenant.slug, second.email, @password, "203.0.113.5")
 
     for index <- 1..10 do
-      assert {:ok, _} = Governance.create_portal_api_key(first_login.token, tenant.slug, %{name: "first-#{index}"})
+      assert {:ok, _} =
+               Governance.create_portal_api_key(first_login.token, tenant.slug, %{
+                 name: "first-#{index}"
+               })
     end
 
     assert {:error, :portal_key_limit_reached} =
              Governance.create_portal_api_key(first_login.token, tenant.slug, %{name: "eleventh"})
 
-    assert {:ok, second_key} = Governance.create_portal_api_key(second_login.token, tenant.slug, %{name: "second"})
+    assert {:ok, second_key} =
+             Governance.create_portal_api_key(second_login.token, tenant.slug, %{name: "second"})
+
     assert {:ok, listing} = Governance.list_portal_api_keys(second_login.token, tenant.slug)
     assert Enum.map(listing.keys, & &1.id) == [second_key.api_key.id]
 
-    first_key = Repo.one!(from key in ApiKey, where: key.portal_user_id == ^first.id, limit: 1)
-    assert {:error, :api_key_not_found} = Governance.revoke_portal_api_key(second_login.token, tenant.slug, first_key)
-    assert {:ok, revoked} = Governance.revoke_portal_api_key(second_login.token, tenant.slug, second_key.api_key)
+    first_key = Repo.one!(from(key in ApiKey, where: key.portal_user_id == ^first.id, limit: 1))
+
+    assert {:error, :api_key_not_found} =
+             Governance.revoke_portal_api_key(second_login.token, tenant.slug, first_key)
+
+    assert {:ok, revoked} =
+             Governance.revoke_portal_api_key(second_login.token, tenant.slug, second_key.api_key)
+
     assert revoked.revoked_at
   end
 
   test "legacy unowned developer portal keys remain tenant bearers but are absent from portal" do
     {tenant, user} = active_user!("named-legacy", "dev@example.com")
-    {:ok, login} = Governance.create_portal_session(tenant.slug, user.email, @password, "203.0.113.6")
-    generated = Orchard.Governance.ApiKeySecret.generate()
+
+    {:ok, login} =
+      Governance.create_portal_session(tenant.slug, user.email, @password, "203.0.113.6")
+
+    generated = ApiKeySecret.generate()
 
     {:ok, legacy} =
       %ApiKey{}
@@ -126,7 +172,9 @@ defmodule Orchard.Governance.NamedPortalUserTest do
     assert is_nil(legacy.portal_user_id)
     assert {:ok, %{principal_type: :tenant}} = Governance.authenticate_api_key(generated.token)
     assert {:ok, %{keys: []}} = Governance.list_portal_api_keys(login.token, tenant.slug)
-    assert {:error, :api_key_not_found} = Governance.revoke_portal_api_key(login.token, tenant.slug, legacy)
+
+    assert {:error, :api_key_not_found} =
+             Governance.revoke_portal_api_key(login.token, tenant.slug, legacy)
   end
 
   defp active_user!(slug, email) when is_binary(slug) do

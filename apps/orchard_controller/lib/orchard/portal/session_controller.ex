@@ -79,6 +79,7 @@ defmodule Orchard.Portal.SessionController do
     |> Auth.clear_session_token()
     |> redirect(to: "/portal/#{slug}")
   end
+
   @spec invite(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def invite(conn, %{"organization_slug" => slug, "token" => token}) do
     conn
@@ -117,7 +118,6 @@ defmodule Orchard.Portal.SessionController do
         |> render(:invite)
     end
   end
-
 
   defp maybe_redirect_authenticated(conn, slug) do
     case Auth.session_token(conn) do
