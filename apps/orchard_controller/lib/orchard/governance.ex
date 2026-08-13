@@ -15,7 +15,12 @@ defmodule Orchard.Governance do
     ApiKeySecret,
     AuditLog,
     AuditWriter,
+    PortalActivationCurl,
+    PortalApiKeySummary,
+    PortalLoginThrottle,
     PortalPassword,
+    PortalPasswordVerifier,
+    PortalSession,
     ProvisioningBatch,
     RoleBinding,
     ServiceAccount,
@@ -23,8 +28,8 @@ defmodule Orchard.Governance do
   }
 
   alias Orchard.API.Transport
-
   alias Orchard.Repo
+  alias Orchard.Requests.Request
 
   @legacy_tenant_id "00000000-0000-0000-0000-000000000000"
   @legacy_tenant_slug "legacy"
@@ -154,6 +159,564 @@ defmodule Orchard.Governance do
       :ok
     else
       {:error, :https_required}
+    end
+  end
+
+  @login_backoff_seconds %{5 => 30, 6 => 60, 7 => 120, 8 => 240, 9 => 480}
+  @login_backoff_cap_seconds 900
+  @session_absolute_seconds 28_800
+  @session_idle_seconds 1_800
+  @throttle_stale_seconds 86_400
+  @portal_active_key_limit 10
+
+  @type portal_login_error ::
+          :invalid_credentials | :throttled | :https_required | :tenant_not_found
+  @type portal_session_result :: %{
+          session: PortalSession.t(),
+          token: String.t(),
+          tenant: Tenant.t()
+        }
+
+  @spec create_portal_session(String.t(), String.t(), String.t()) ::
+          {:ok, portal_session_result()} | {:error, portal_login_error()}
+  def create_portal_session(slug, password, source_ip)
+      when is_binary(slug) and is_binary(password) and is_binary(source_ip) do
+    with :ok <- require_public_https() do
+      slug
+      |> verify_portal_login_in_pool(password, source_ip)
+      |> finish_verified_portal_login(source_ip)
+    end
+  end
+
+  @spec validate_portal_session(String.t(), String.t(), keyword()) ::
+          {:ok, %{session: PortalSession.t(), tenant: Tenant.t()}}
+          | {:error, :invalid_session}
+  def validate_portal_session(token, slug, opts \\ [])
+      when is_binary(token) and is_binary(slug) do
+    now = utc_now()
+    touch? = Keyword.get(opts, :touch, false)
+
+    with {:ok, session} <- fetch_session_by_token(token),
+         {:ok, tenant} <- fetch_tenant_by_slug(slug),
+         :ok <- match_session_tenant(session, tenant),
+         :ok <- session_current?(session, tenant, now) do
+      session = maybe_touch_session(session, now, touch?)
+      {:ok, %{session: session, tenant: redact_tenant(tenant)}}
+    else
+      _ -> {:error, :invalid_session}
+    end
+  end
+
+  @spec logout_portal_session(String.t()) :: :ok
+  def logout_portal_session(token) when is_binary(token) do
+    from(session in PortalSession, where: session.token_hash == ^hash_portal_token(token))
+    |> Repo.delete_all()
+
+    :ok
+  end
+
+  @spec prune_portal_persistence() :: :ok
+  def prune_portal_persistence do
+    now = utc_now()
+    stale_before = DateTime.add(now, -throttle_stale_seconds(), :second)
+
+    from(session in PortalSession, where: session.absolute_expires_at < ^now)
+    |> Repo.delete_all()
+
+    from(throttle in PortalLoginThrottle,
+      where: throttle.last_failed_at < ^stale_before or throttle.inserted_at < ^stale_before
+    )
+    |> Repo.delete_all()
+
+    :ok
+  rescue
+    _exception -> :ok
+  end
+
+  @type portal_api_key_creation_result :: %{
+          api_key: ApiKey.t(),
+          token: String.t(),
+          curl: String.t() | nil
+        }
+
+  @spec create_portal_api_key(String.t(), String.t(), map() | keyword()) ::
+          {:ok, portal_api_key_creation_result()}
+          | {:error,
+             Changeset.t()
+             | :invalid_session
+             | :https_required
+             | :portal_key_limit_reached
+             | :invalid_api_key_secret}
+  def create_portal_api_key(session_token, slug, attrs)
+      when is_binary(session_token) and is_binary(slug) do
+    attrs = normalize_attrs(attrs)
+
+    with :ok <- require_public_https(),
+         {:ok, %{tenant: tenant}} <- validate_portal_session(session_token, slug),
+         {:ok, generated} <- normalize_generated_secret(api_key_secret_impl().generate()) do
+      tenant.id
+      |> create_portal_api_key_transaction(attrs, generated)
+      |> unwrap_transaction_result()
+      |> attach_portal_activation_curl(generated.token)
+    end
+  end
+
+  @spec list_portal_api_keys(Tenant.t() | Ecto.UUID.t()) ::
+          {:ok, %{keys: [PortalApiKeySummary.t()], active_portal_count: non_neg_integer()}}
+          | {:error, :tenant_not_found}
+  def list_portal_api_keys(%Tenant{id: tenant_id}), do: list_portal_api_keys(tenant_id)
+
+  def list_portal_api_keys(tenant_id) do
+    with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
+         {:ok, _tenant} <- fetch_tenant(tenant_id) do
+      now = utc_now()
+
+      api_keys =
+        ApiKey
+        |> where([api_key], api_key.tenant_id == ^tenant_id)
+        |> where([api_key], is_nil(api_key.service_account_id))
+        |> order_by([api_key], desc: api_key.inserted_at, desc: api_key.id)
+        |> Repo.all()
+
+      counts = portal_request_counts(tenant_id, Enum.map(api_keys, & &1.id))
+
+      summaries =
+        Enum.map(api_keys, fn api_key ->
+          %PortalApiKeySummary{
+            id: api_key.id,
+            name: api_key.name,
+            token_prefix: api_key.token_prefix,
+            issuance_surface: api_key.issuance_surface,
+            status: ApiKey.status(api_key, now),
+            request_count: Map.get(counts, api_key.id, 0),
+            revocable?: portal_revocable?(api_key),
+            inserted_at: api_key.inserted_at,
+            last_used_at: api_key.last_used_at,
+            expires_at: api_key.expires_at,
+            revoked_at: api_key.revoked_at
+          }
+        end)
+
+      {:ok,
+       %{
+         keys: summaries,
+         active_portal_count: count_active_portal_keys(api_keys, now)
+       }}
+    end
+  end
+
+  @spec revoke_portal_api_key(String.t(), String.t(), ApiKey.t() | Ecto.UUID.t()) ::
+          {:ok, ApiKey.t()}
+          | {:error,
+             Changeset.t()
+             | :invalid_session
+             | :https_required
+             | :api_key_not_found
+             | :tenant_not_found}
+  def revoke_portal_api_key(session_token, slug, api_key_or_id)
+      when is_binary(session_token) and is_binary(slug) do
+    with :ok <- require_public_https(),
+         {:ok, %{tenant: tenant}} <- validate_portal_session(session_token, slug) do
+      revoke_portal_api_key_transaction(tenant.id, api_key_id!(api_key_or_id))
+    end
+  end
+
+  defp api_key_id!(%ApiKey{id: api_key_id}), do: api_key_id
+  defp api_key_id!(api_key_id) when is_binary(api_key_id), do: api_key_id
+
+  defp create_portal_api_key_transaction(tenant_id, attrs, generated) do
+    AuditWriter.transaction(fn ->
+      with {:ok, tenant} <- lock_tenant(tenant_id),
+           :ok <- ensure_portal_key_capacity(tenant.id),
+           {:ok, api_key} <- insert_portal_api_key(tenant, attrs, generated),
+           {:ok, _audit_log} <-
+             insert_api_key_audit_log(api_key, "api_key.created", utc_now(),
+               actor_type: "developer",
+               surface: "developer_portal"
+             ) do
+        {:ok, %{api_key: redact_api_key(api_key), token: generated.token, curl: nil}}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp attach_portal_activation_curl({:ok, result}, token) do
+    {:ok, %{result | curl: maybe_activation_curl(token, result.api_key.tenant_id)}}
+  end
+
+  defp attach_portal_activation_curl(other, _token), do: other
+
+  defp maybe_activation_curl(token, tenant_id) do
+    PortalActivationCurl.build(
+      token,
+      PortalActivationCurl.select_callable_model(tenant_id),
+      PortalActivationCurl.public_base_url()
+    )
+  end
+
+  defp insert_portal_api_key(%Tenant{} = tenant, attrs, generated) do
+    %ApiKey{}
+    |> ApiKey.tenant_direct_changeset(%{
+      tenant_id: tenant.id,
+      name: Map.get(attrs, "name"),
+      token_prefix: generated.token_prefix,
+      secret_hash: generated.secret_hash,
+      issuance_surface: "developer_portal"
+    })
+    |> Repo.insert()
+  end
+
+  defp ensure_portal_key_capacity(tenant_id) do
+    now = utc_now()
+
+    count =
+      ApiKey
+      |> where([api_key], api_key.tenant_id == ^tenant_id)
+      |> where([api_key], is_nil(api_key.service_account_id))
+      |> where([api_key], api_key.issuance_surface == "developer_portal")
+      |> where([api_key], is_nil(api_key.revoked_at))
+      |> where([api_key], is_nil(api_key.expires_at) or api_key.expires_at > ^now)
+      |> Repo.aggregate(:count)
+
+    if count >= @portal_active_key_limit do
+      {:error, :portal_key_limit_reached}
+    else
+      :ok
+    end
+  end
+
+  defp lock_portal_api_key(api_key_id, tenant_id) do
+    api_key =
+      ApiKey
+      |> where([api_key], api_key.id == ^api_key_id)
+      |> where([api_key], api_key.tenant_id == ^tenant_id)
+      |> where([api_key], is_nil(api_key.service_account_id))
+      |> where([api_key], api_key.issuance_surface == "developer_portal")
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    case api_key do
+      %ApiKey{} = api_key -> {:ok, api_key}
+      nil -> {:error, :api_key_not_found}
+    end
+  end
+
+  defp portal_revocable?(%ApiKey{
+         issuance_surface: "developer_portal",
+         service_account_id: nil,
+         revoked_at: nil
+       }),
+       do: true
+
+  defp portal_revocable?(_api_key), do: false
+
+  defp count_active_portal_keys(api_keys, now) do
+    Enum.count(api_keys, fn api_key ->
+      api_key.issuance_surface == "developer_portal" and
+        is_nil(api_key.service_account_id) and
+        ApiKey.active_for_auth?(api_key, now)
+    end)
+  end
+
+  defp portal_request_counts(_tenant_id, []), do: %{}
+
+  defp portal_request_counts(tenant_id, api_key_ids) do
+    Request
+    |> where([request], request.tenant_id == ^tenant_id)
+    |> where([request], request.api_key_id in ^api_key_ids)
+    |> group_by([request], request.api_key_id)
+    |> select([request], {request.api_key_id, count(request.id)})
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp verify_portal_login(slug, password, source_ip) do
+    fingerprints = login_fingerprints(slug, source_ip)
+
+    case reserve_login_attempt(fingerprints) do
+      {:error, :throttled} -> {:error, :throttled}
+      :ok -> authenticate_open_portal(slug, password)
+    end
+  end
+
+  defp verify_portal_login_in_pool(slug, password, source_ip) do
+    PortalPasswordVerifier.run(fn ->
+      verify_portal_login(slug, password, source_ip)
+    end)
+  end
+
+  defp finish_verified_portal_login({:ok, tenant, encoded_hash}, source_ip) do
+    maybe_login_intercept()
+    finalize_portal_login(tenant.id, encoded_hash, source_ip)
+  end
+
+  defp finish_verified_portal_login({:error, reason}, _source_ip), do: {:error, reason}
+
+  defp authenticate_open_portal(slug, password) do
+    case fetch_open_tenant_by_slug(slug) do
+      {:ok, tenant} -> verify_open_portal_password(tenant, password)
+      {:error, _reason} -> dummy_portal_failure(password)
+    end
+  end
+
+  defp verify_open_portal_password(tenant, password) do
+    case PortalPassword.verify(password, tenant.portal_password_hash) do
+      :ok -> {:ok, tenant, tenant.portal_password_hash}
+      {:error, :invalid_password} -> {:error, :invalid_credentials}
+    end
+  end
+
+  defp dummy_portal_failure(password) do
+    PortalPassword.dummy_verify(password)
+    {:error, :invalid_credentials}
+  end
+
+  defp revoke_portal_api_key_transaction(tenant_id, api_key_id) do
+    AuditWriter.transaction(fn ->
+      with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
+           {:ok, tenant} <- lock_tenant(tenant_id),
+           {:ok, api_key_id} <- normalize_api_key_id(api_key_id),
+           {:ok, api_key} <- lock_portal_api_key(api_key_id, tenant.id),
+           {:ok, api_key} <-
+             revoke_locked_api_key(api_key,
+               actor_type: "developer",
+               surface: "developer_portal"
+             ) do
+        {:ok, redact_api_key(api_key)}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  defp finalize_portal_login(tenant_id, encoded_hash, source_ip) do
+    AuditWriter.transaction(fn ->
+      with {:ok, locked} <- lock_tenant(tenant_id),
+           :ok <- same_portal_secret?(locked, encoded_hash),
+           {:ok, session, token} <- insert_portal_session(locked) do
+        delete_login_throttle(locked.slug, source_ip)
+        {:ok, %{session: session, token: token, tenant: redact_tenant(locked)}}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  defp same_portal_secret?(%Tenant{portal_password_hash: hash}, hash) when is_binary(hash),
+    do: :ok
+
+  defp same_portal_secret?(_tenant, _hash), do: {:error, :invalid_credentials}
+
+  defp insert_portal_session(%Tenant{} = tenant) do
+    now = utc_now()
+    token = generate_portal_token()
+
+    attrs = %{
+      tenant_id: tenant.id,
+      token_hash: hash_portal_token(token),
+      password_epoch: tenant.portal_session_epoch,
+      issued_at: now,
+      last_seen_at: now,
+      absolute_expires_at: DateTime.add(now, session_absolute_seconds(), :second)
+    }
+
+    case %PortalSession{} |> PortalSession.changeset(attrs) |> Repo.insert() do
+      {:ok, session} -> {:ok, session, token}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  defp fetch_session_by_token(token) do
+    case Repo.get_by(PortalSession, token_hash: hash_portal_token(token)) do
+      %PortalSession{} = session -> {:ok, session}
+      nil -> {:error, :invalid_session}
+    end
+  end
+
+  defp fetch_tenant_by_slug(slug) do
+    case Repo.get_by(Tenant, slug: normalize_portal_slug(slug)) do
+      %Tenant{} = tenant -> {:ok, tenant}
+      nil -> {:error, :tenant_not_found}
+    end
+  end
+
+  defp fetch_open_tenant_by_slug(slug) do
+    case fetch_tenant_by_slug(slug) do
+      {:ok, %Tenant{portal_password_hash: hash} = tenant} when is_binary(hash) ->
+        {:ok, tenant}
+
+      _other ->
+        {:error, :invalid_credentials}
+    end
+  end
+
+  defp match_session_tenant(%PortalSession{tenant_id: tenant_id}, %Tenant{id: tenant_id}),
+    do: :ok
+
+  defp match_session_tenant(_session, _tenant), do: {:error, :invalid_session}
+
+  defp session_current?(%PortalSession{} = session, %Tenant{} = tenant, now) do
+    idle_deadline = DateTime.add(session.last_seen_at, session_idle_seconds(), :second)
+
+    cond do
+      not is_binary(tenant.portal_password_hash) ->
+        {:error, :invalid_session}
+
+      session.password_epoch != tenant.portal_session_epoch ->
+        {:error, :invalid_session}
+
+      DateTime.compare(session.absolute_expires_at, now) != :gt ->
+        {:error, :invalid_session}
+
+      DateTime.compare(idle_deadline, now) != :gt ->
+        {:error, :invalid_session}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp maybe_touch_session(session, _now, false), do: session
+
+  defp maybe_touch_session(%PortalSession{} = session, now, true) do
+    from(row in PortalSession,
+      where: row.id == ^session.id and row.last_seen_at < ^now,
+      update: [set: [last_seen_at: ^now]]
+    )
+    |> Repo.update_all([])
+
+    %{session | last_seen_at: max_datetime(session.last_seen_at, now)}
+  end
+
+  defp max_datetime(left, right) do
+    if DateTime.compare(left, right) == :gt, do: left, else: right
+  end
+
+  defp reserve_login_attempt(fingerprints) do
+    now = utc_now()
+
+    Repo.transaction(fn ->
+      throttle = lock_or_insert_throttle(fingerprints, now)
+
+      if blocked?(throttle, now) do
+        Repo.rollback(:throttled)
+      else
+        next_count = throttle.failure_count + 1
+        blocked_until = backoff_until(next_count, now)
+
+        throttle
+        |> PortalLoginThrottle.changeset(%{
+          failure_count: next_count,
+          last_failed_at: now,
+          blocked_until: blocked_until
+        })
+        |> Repo.update!()
+
+        :ok
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:error, :throttled} -> {:error, :throttled}
+    end
+  end
+
+  defp lock_or_insert_throttle(fingerprints, now) do
+    existing =
+      from(throttle in PortalLoginThrottle,
+        where:
+          throttle.organization_fingerprint == ^fingerprints.organization and
+            throttle.source_fingerprint == ^fingerprints.source,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    case existing do
+      %PortalLoginThrottle{} = throttle ->
+        throttle
+
+      nil ->
+        %PortalLoginThrottle{}
+        |> PortalLoginThrottle.changeset(%{
+          organization_fingerprint: fingerprints.organization,
+          source_fingerprint: fingerprints.source,
+          failure_count: 0,
+          last_failed_at: now
+        })
+        |> Repo.insert!()
+    end
+  end
+
+  defp blocked?(%PortalLoginThrottle{blocked_until: nil}, _now), do: false
+
+  defp blocked?(%PortalLoginThrottle{blocked_until: blocked_until}, now) do
+    DateTime.compare(blocked_until, now) == :gt
+  end
+
+  defp backoff_until(count, _now) when count < 5, do: nil
+
+  defp backoff_until(count, now) do
+    seconds = Map.get(@login_backoff_seconds, count, @login_backoff_cap_seconds)
+    DateTime.add(now, seconds, :second)
+  end
+
+  defp delete_login_throttle(slug, source_ip) do
+    fingerprints = login_fingerprints(slug, source_ip)
+
+    from(throttle in PortalLoginThrottle,
+      where:
+        throttle.organization_fingerprint == ^fingerprints.organization and
+          throttle.source_fingerprint == ^fingerprints.source
+    )
+    |> Repo.delete_all()
+  end
+
+  defp login_fingerprints(slug, source_ip) do
+    secret = portal_hmac_secret()
+    slug = normalize_portal_slug(slug)
+
+    %{
+      organization: :crypto.mac(:hmac, :sha256, secret, "portal-org:" <> slug),
+      source: :crypto.mac(:hmac, :sha256, secret, "portal-src:" <> source_ip)
+    }
+  end
+
+  defp normalize_portal_slug(slug), do: slug |> String.trim() |> String.downcase()
+
+  defp generate_portal_token do
+    "orchard_ps_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+  end
+
+  defp hash_portal_token(token), do: :crypto.hash(:sha256, token)
+
+  defp portal_hmac_secret do
+    Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+    |> Keyword.fetch!(:secret_key_base)
+  end
+
+  defp session_absolute_seconds do
+    portal_config() |> Keyword.get(:session_absolute_seconds, @session_absolute_seconds)
+  end
+
+  defp session_idle_seconds do
+    portal_config() |> Keyword.get(:session_idle_seconds, @session_idle_seconds)
+  end
+
+  defp throttle_stale_seconds do
+    portal_config() |> Keyword.get(:throttle_stale_seconds, @throttle_stale_seconds)
+  end
+
+  defp portal_config do
+    Application.get_env(:orchard_controller, :portal, [])
+  end
+
+  defp maybe_login_intercept do
+    case Application.get_env(:orchard_controller, :portal_login_intercept) do
+      fun when is_function(fun, 0) -> fun.()
+      _other -> :ok
     end
   end
 
@@ -1562,7 +2125,13 @@ defmodule Orchard.Governance do
 
   defp redact_api_key(%ApiKey{} = api_key), do: %ApiKey{api_key | secret_hash: nil}
 
-  defp redact_tenant(%Tenant{} = tenant), do: %Tenant{tenant | portal_password_hash: nil}
+  defp redact_tenant(%Tenant{} = tenant) do
+    %Tenant{
+      tenant
+      | portal_password_hash: nil,
+        portal_enabled: is_binary(tenant.portal_password_hash)
+    }
+  end
 
   defp utc_now, do: SchemaSupport.utc_now()
 

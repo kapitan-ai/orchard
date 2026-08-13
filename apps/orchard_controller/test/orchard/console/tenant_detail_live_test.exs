@@ -6,7 +6,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
-  alias Orchard.Governance.AuditLog
+  alias Orchard.Governance.{AuditLog, PortalPasswordVerifier}
   alias Orchard.Repo
 
   @moduletag :live
@@ -391,6 +391,106 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
       html = render_click(view, "generated_secret_copy_failed", %{"api_key_id" => api_key_id})
       assert html =~ "Copy failed"
+    end
+  end
+
+  describe "developer portal card" do
+    @password "sixteen-chars-ok"
+    @rotated "sixteen-chars-two"
+
+    setup do
+      previous_mode = Application.get_env(:orchard_controller, :transport_mode, :__missing__)
+      Application.put_env(:orchard_controller, :transport_mode, :direct_https)
+
+      case Process.whereis(PortalPasswordVerifier) do
+        nil -> start_supervised!(PortalPasswordVerifier)
+        _pid -> :ok
+      end
+
+      on_exit(fn ->
+        case previous_mode do
+          :__missing__ -> Application.delete_env(:orchard_controller, :transport_mode)
+          mode -> Application.put_env(:orchard_controller, :transport_mode, mode)
+        end
+      end)
+
+      :ok
+    end
+
+    test "set opens the portal and shows the portal path", %{conn: conn, tenant: tenant} do
+      {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
+      assert html =~ "tenant-developer-portal-card"
+      assert html =~ "Closed"
+
+      html =
+        view
+        |> form("#tenant-portal-password-form",
+          portal: %{password: @password, password_confirmation: @password}
+        )
+        |> render_submit()
+
+      assert html =~ "Open"
+      assert html =~ "/portal/detail-t"
+      assert Repo.get!(Orchard.Governance.Tenant, tenant.id).portal_session_epoch == 1
+    end
+
+    test "confirmation mismatch does not change hash or epoch", %{conn: conn, tenant: tenant} do
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      html =
+        view
+        |> form("#tenant-portal-password-form",
+          portal: %{password: @password, password_confirmation: @rotated}
+        )
+        |> render_submit()
+
+      assert html =~ "does not match"
+      persisted = Repo.get!(Orchard.Governance.Tenant, tenant.id)
+      assert persisted.portal_password_hash == nil
+      assert persisted.portal_session_epoch == 0
+    end
+
+    test "rotate increments epoch and ends standing portal sessions", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, _} = Governance.set_tenant_portal_password(tenant, @password)
+      {:ok, session} = Governance.create_portal_session("detail-t", @password, "203.0.113.60")
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      view
+      |> form("#tenant-portal-password-form",
+        portal: %{password: @rotated, password_confirmation: @rotated}
+      )
+      |> render_submit()
+
+      assert Repo.get!(Orchard.Governance.Tenant, tenant.id).portal_session_epoch == 2
+
+      assert {:error, :invalid_session} =
+               Governance.validate_portal_session(session.token, "detail-t")
+    end
+
+    test "clear closes the portal and ends sessions", %{conn: conn, tenant: tenant} do
+      {:ok, _} = Governance.set_tenant_portal_password(tenant, @password)
+      {:ok, session} = Governance.create_portal_session("detail-t", @password, "203.0.113.61")
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      html = view |> element("#tenant-portal-clear") |> render_click()
+      assert html =~ "Closed"
+      assert Repo.get!(Orchard.Governance.Tenant, tenant.id).portal_password_hash == nil
+
+      assert {:error, :invalid_session} =
+               Governance.validate_portal_session(session.token, "detail-t")
+    end
+
+    test "degraded mode disables submit and does not persist", %{conn: conn, tenant: tenant} do
+      Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+      {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      assert html =~ "tenant-portal-tls-required"
+      refute html =~ "tenant-portal-password-form"
+      assert Repo.get!(Orchard.Governance.Tenant, tenant.id).portal_password_hash == nil
     end
   end
 

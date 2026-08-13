@@ -789,3 +789,33 @@ fits inside the clipped sidebar without adding a second control style.
 This state-model addition satisfies §12 Change Discipline. It does not relax
 §11: no new Tailwind color tokens, font extensions, palette values, or `@theme`
 changes are part of theme mode control.
+
+## 14. Developer Portal Surface
+
+The developer portal is a separate browser surface at `/portal/:organization_slug`.
+It reuses Orchard brand tokens and form wells.
+It does not inherit Console chrome.
+
+Isolation rules:
+
+- Dedicated portal layouts, pipeline, and `live_session`.
+- Dark-pinned `data-theme="dark"`. No theme toggle and no Console theme cookie.
+- No `#console-sidebar`, license badge, version string, nodes, requests, models admin, or other Organizations.
+- Login identifies the Organization from the URL slug.
+  The login form does not include an Organization-name field.
+- Portal sessions must never authorize Console, Operator, or Admin routes.
+
+Visual rules:
+
+- Single centered column, `max-w-3xl`, slate-900 canvas, slate-800 cards, slate-700 borders.
+- Sky-400 is the only interactive accent.
+- Mono for prefixes, timestamps, counts, and curl.
+- Recessed `shadow-inner` wells for the one-time secret and curl only.
+
+## 15. Operator Developer Portal Card
+
+Organization detail is the only operator password seam in this cut.
+The card shows closed or open from password presence, never the hash.
+It shows the portal URL only when public HTTPS is enabled.
+Set, rotate, and clear require password plus confirmation.
+Degraded transport is noninteractive and explains that TLS is required.

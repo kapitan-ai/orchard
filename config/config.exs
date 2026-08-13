@@ -17,9 +17,17 @@ config :orchard_controller,
   trust_manifest_compatibility_declarations: true,
   node_heartbeat_payload_max_bytes: 262_144
 
+config :orchard_controller, :portal,
+  session_absolute_seconds: 28_800,
+  session_idle_seconds: 1_800,
+  verifier_workers: 2,
+  verifier_queue: 32,
+  verifier_timeout_ms: 5_000,
+  prune_interval_ms: 3_600_000,
+  throttle_stale_seconds: 86_400
+
 # Console feature flag and auth defaults.
 # Dev/test: enabled with no auth for frictionless local development.
-# Prod: overridden in runtime.exs with Basic Auth and env var credentials.
 config :orchard_controller, :console,
   enabled: true,
   auth: :none,

@@ -136,6 +136,14 @@ After Console is reachable, the operator currently:
 6. Confirms `/v1/models` lists the active model.
 7. Runs a small request through Playground or the Public Inference API.
 
+After first inference works, the operator may open the Organization developer portal from Organization detail.
+Set a portal password only over public HTTPS.
+Share the `/portal/:organization_slug` URL and that password with human developers who need to mint tenant-direct keys.
+Rotating or clearing the password ends portal sessions only.
+It does not revoke minted keys.
+If a portal password leaks, rotate it immediately, then revoke portal-minted keys by prefix.
+The key name is advisory attribution only.
+The shared password plus the 10-key portal cap can starve other developers of mint slots until a key is revoked.
 The current local-file import path is not controller-hosted model distribution.
 For a remote worker, the operator must pre-stage the same model at a usable path or use another worker-reachable source supported by the lower-level acquisition path.
 Console and docs must not claim that one local import distributes the model across the cluster today.

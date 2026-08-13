@@ -27,6 +27,7 @@ defmodule Orchard.Governance.Tenant do
 
     field(:portal_password_hash, :string)
     field(:portal_session_epoch, :integer, default: 0)
+    field(:portal_enabled, :boolean, virtual: true)
 
     has_many(:api_keys, ApiKey)
     has_many(:audit_logs, AuditLog)

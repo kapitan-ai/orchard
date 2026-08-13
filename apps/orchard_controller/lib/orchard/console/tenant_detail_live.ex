@@ -5,6 +5,7 @@ defmodule OrchardConsole.TenantDetailLive do
 
   use OrchardConsole, :live_view
 
+  alias Orchard.API.{Endpoint, Transport}
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, RoleBinding}
 
@@ -23,7 +24,12 @@ defmodule OrchardConsole.TenantDetailLive do
         api_keys: [],
         api_clients: [],
         load_error: nil,
-        generated_secret: nil
+        generated_secret: nil,
+        portal_enabled: false,
+        portal_url: nil,
+        portal_https?: false,
+        portal_active_key_count: 0,
+        portal_form: to_form(%{"password" => "", "password_confirmation" => ""}, as: :portal)
       )
       |> assign_blank_form()
 
@@ -55,6 +61,24 @@ defmodule OrchardConsole.TenantDetailLive do
 
   def handle_event("dismiss_generated_secret", _params, socket) do
     {:noreply, assign(socket, generated_secret: nil)}
+  end
+
+  def handle_event("set_portal_password", %{"portal" => params}, socket) do
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      mutate_portal_password(socket, :set, params)
+    end)
+  end
+
+  def handle_event("rotate_portal_password", %{"portal" => params}, socket) do
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      mutate_portal_password(socket, :rotate, params)
+    end)
+  end
+
+  def handle_event("clear_portal_password", _params, socket) do
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      clear_portal_password(socket)
+    end)
   end
 
   def handle_event("generated_secret_copied", %{"api_key_id" => id}, socket) do
@@ -171,6 +195,74 @@ defmodule OrchardConsole.TenantDetailLive do
         </.card>
       </div>
 
+      <div id="tenant-developer-portal-card">
+        <.card>
+          <:title>Developer Portal</:title>
+          <:subtitle>
+            One Organization password lets developers mint tenant-direct API keys.
+          </:subtitle>
+
+          <div class="space-y-4">
+            <div class="flex items-center gap-3 text-sm">
+              <.badge :if={@portal_enabled} tone={:success}>Open</.badge>
+              <.badge :if={!@portal_enabled} tone={:neutral}>Closed</.badge>
+              <span class="font-mono text-slate-500 dark:text-slate-400">
+                {@portal_active_key_count} active portal keys
+              </span>
+            </div>
+
+            <p :if={@portal_https? and @portal_url} id="tenant-portal-url" class="font-mono text-sm break-all">
+              {@portal_url}
+            </p>
+
+            <p
+              :if={!@portal_https?}
+              id="tenant-portal-tls-required"
+              class="text-sm text-amber-700 dark:text-amber-300"
+            >
+              Public HTTPS is required before the portal can be opened.
+            </p>
+
+            <.simple_form
+              :if={@portal_https?}
+              for={@portal_form}
+              as={:portal}
+              id="tenant-portal-password-form"
+              phx-submit={if @portal_enabled, do: "rotate_portal_password", else: "set_portal_password"}
+            >
+              <.input
+                field={@portal_form[:password]}
+                type="password"
+                label="Portal password"
+                autocomplete="new-password"
+              />
+              <.input
+                field={@portal_form[:password_confirmation]}
+                type="password"
+                label="Confirm portal password"
+                autocomplete="new-password"
+              />
+              <:actions>
+                <.button type="submit" phx-disable-with="Saving…">
+                  {if @portal_enabled, do: "Rotate password", else: "Set password"}
+                </.button>
+                <.button
+                  :if={@portal_enabled}
+                  id="tenant-portal-clear"
+                  type="button"
+                  variant={:danger}
+                  phx-click="clear_portal_password"
+                  phx-disable-with="Clearing…"
+                >
+                  Clear password
+                </.button>
+              </:actions>
+            </.simple_form>
+          </div>
+        </.card>
+      </div>
+
+      <%!-- One-Time Secret Card --%>
       <%!-- One-Time Secret Card --%>
       <div :if={@generated_secret} id="tenant-api-key-secret-card">
         <.card>
@@ -605,12 +697,20 @@ defmodule OrchardConsole.TenantDetailLive do
 
     with {:ok, tenant} <- Governance.get_tenant(tenant_id),
          {:ok, api_keys} <- Governance.list_api_keys_for_tenant(tenant),
-         {:ok, api_clients} <- Governance.list_api_clients_for_tenant(tenant) do
+         {:ok, api_clients} <- Governance.list_api_clients_for_tenant(tenant),
+         {:ok, portal} <- Governance.list_portal_api_keys(tenant) do
+      portal_enabled = is_binary(tenant.portal_password_hash)
+
       assign(socket,
         detail_status: :ok,
-        tenant: tenant,
+        tenant: %{tenant | portal_password_hash: nil, portal_enabled: portal_enabled},
         api_keys: api_keys,
         api_clients: api_clients,
+        portal_enabled: portal_enabled,
+        portal_https?: Transport.public_api_https_enabled?(),
+        portal_url: portal_url(tenant),
+        portal_active_key_count: portal.active_portal_count,
+        portal_form: to_form(%{"password" => "", "password_confirmation" => ""}, as: :portal),
         page_title: "Organization #{tenant.slug}",
         load_error: nil
       )
@@ -624,6 +724,66 @@ defmodule OrchardConsole.TenantDetailLive do
         detail_status: :error,
         load_error: "Organization details unavailable."
       )
+  end
+
+  defp mutate_portal_password(socket, _action, params) do
+    password = Map.get(params, "password", "")
+    confirmation = Map.get(params, "password_confirmation", "")
+
+    if password != confirmation do
+      {:noreply, put_flash(socket, :error, "Portal password confirmation does not match.")}
+    else
+      persist_portal_password(socket, password)
+    end
+  end
+
+  defp persist_portal_password(socket, password) do
+    case Governance.set_tenant_portal_password(socket.assigns.tenant, password) do
+      {:ok, _tenant} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Developer portal password saved.")
+         |> load_tenant_detail()}
+
+      {:error, :https_required} ->
+        {:noreply,
+         put_flash(socket, :error, "Public HTTPS is required to change the portal password.")}
+
+      {:error, :password_too_short} ->
+        {:noreply, put_flash(socket, :error, "Portal password must be at least 16 characters.")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Unable to save the portal password.")}
+    end
+  end
+
+  defp clear_portal_password(socket) do
+    case Governance.clear_tenant_portal_password(socket.assigns.tenant) do
+      {:ok, _tenant} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Developer portal is closed.")
+         |> load_tenant_detail()}
+
+      {:error, :https_required} ->
+        {:noreply,
+         put_flash(socket, :error, "Public HTTPS is required to change the portal password.")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Unable to close the developer portal.")}
+    end
+  end
+
+  defp portal_url(%{slug: slug}) do
+    if Transport.public_api_https_enabled?() do
+      base = Endpoint.url()
+
+      if is_binary(base) and String.starts_with?(base, "https://") do
+        String.trim_trailing(base, "/") <> "/portal/" <> slug
+      else
+        "/portal/" <> slug
+      end
+    end
   end
 
   defp inference_client_access?(api_client) do
