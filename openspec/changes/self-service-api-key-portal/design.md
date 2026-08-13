@@ -1,72 +1,106 @@
 ## Context
 
 Orchard already has hashed show-once tenant-direct API Keys, tenant quotas, and an operator Console Organization page that can mint and revoke keys.
-There is no Organization-scoped login, no portal password field, no issuance provenance, and no password hasher in `orchard_controller`.
-Console auth is cluster-wide Basic Auth. Reusing that shell for a weaker session would leak operator chrome.
+The first Developer Portal contract used one shared Organization password and one Organization-wide pool of portal-minted keys.
+That login cannot prevent one developer from listing or revoking another developer's keys.
+ADR 0020 defines Portal User as a portal-scoped minting-gate identity rather than a platform principal.
 
-Origin: `docs/brainstorms/2026-08-13-self-service-api-key-portal-requirements.md`.
-Implementation plan: `docs/plans/2026-08-13-001-feat-self-service-api-key-portal-plan.md`.
-UI note: `docs/designs/2026-08-13-self-service-api-key-portal.md`.
+Origin: `docs/brainstorms/2026-08-13-named-developer-portal-identity-requirements.md`.
+Implementation plan: `docs/plans/2026-08-13-002-feat-named-portal-user-identity-plan.md`.
+Decision record: `docs/decisions/0020-portal-user-is-not-a-platform-principal.md`.
 
 ## Goals
 
-- Give a human developer a working key and one curl without operator help, when the Organization already has a callable model.
-- Keep operator Console as the only cluster surface.
-- Fail closed on TLS, enumeration, and secret retention.
+- Give each operator-invited Portal User an isolated Developer Portal login and an own-keys-only self-service surface.
+- Let an operator copy an invite URL without SMTP and without storing a plaintext invite token.
+- Keep the Public Inference Bearer key and tenant-principal contracts unchanged.
+- Fail closed on transport, enumeration, cross-user key access, and secret retention.
+- Preserve legacy unowned portal-minted keys as operator-visible Bearer credentials until explicit revocation.
 
 ## Non-Goals
 
-- Named portal users, SSO, agent mint APIs, and API Client tokens from the portal remain later cuts.
-- This change does not invent a second key format.
+- Public signup, SMTP, magic-link email, SSO, OAuth, and Tenant Admin login remain out of scope.
+- A Portal User does not authorize Console, Operator API, Admin API, or Public Inference access.
+- This change does not invent a second key format or a new Public Inference principal.
+- Disable does not automatically revoke API Keys.
 
-## Decision 1: Separate Portal, Shared Phoenix Session Cookie
+## Decision 1: Separate Portal And Portal-Only Session
 
 The portal is a distinct `/portal/:organization_slug` namespace with its own layouts and `live_session`.
-CSRF and LiveView still ride the existing Phoenix session cookie `_orchard_console_key` because a second cookie is invisible to LiveView `connect_info`.
-Isolation is enforced above that layer: never read `_orchard_console_authenticated`, never render Console chrome.
+CSRF and LiveView may use the existing Phoenix cookie transport, but Portal User authentication state is a separate opaque hash-backed session.
+Portal code never reads Console authentication as Portal User authority and never renders Console chrome.
+A valid Portal User session authorizes only Developer Portal routes for that session's Portal User and Organization.
 
-Rejected: org-scoped slice of Console. Operator Basic Auth is cluster-wide.
+Rejected: an Organization-scoped slice of Console.
+Operator Basic Auth is cluster-wide.
+Rejected: allowing a Portal User session to authorize Console, Operator API, Admin API, or Public Inference.
 
-## Decision 2: Shared Organization Password Plus Epoch
+## Decision 2: Invite-Only Named Portal User
 
-One operator-set password per Organization. No user table.
-Password hash plus monotonic `portal_session_epoch`.
-Rotate or clear increments the epoch and deletes `portal_sessions`.
-It does not revoke minted keys.
+A Portal User belongs to one Organization and is identified by email unique on `(tenant_id, normalized_email)`.
+Accounts are created only by an operator.
+There is no public signup and no shared Organization portal password fallback.
+An active Portal User signs in with email plus password.
+Unknown Organization, unknown email, disabled Portal User, and wrong password use the same generic response shape and the same password-verification cost.
 
-Login identifies the Organization by slug first, then verifies that password.
-Unknown, closed, and wrong-password cases share one generic failure and the same hasher cost through the same verifier pool.
+`portal_users` stores Organization ownership, original and normalized email, password hash, status, session epoch, disable timestamp, and timestamps.
+A Portal User password uses a slow password KDF and never API key SHA-256.
 
-## Decision 3: Portal-Mint Provenance And Cap
+## Decision 3: Hash-Only Invite Reissue
 
-`api_keys.issuance_surface` is `governance` or `developer_portal`.
-Existing keys backfill to `governance`.
-The 10-key cap counts only active portal-minted tenant-direct keys.
-Operator mint is exempt.
-Portal revoke requires `issuance_surface = 'developer_portal'` so a leaked portal password cannot kill operator recovery keys.
-The portal may list operator-minted tenant-direct keys read-only.
+`portal_invite_tokens` belongs to one Portal User and stores only a token hash, expiry, redemption or invalidation state, and timestamps.
+The plaintext token exists only in the newly generated Copy invite URL.
+Orchard never stores the plaintext token or URL in Postgres, logs, audit payloads, or support artifacts.
 
-## Decision 4: Slow Password KDF With Packaging Gate
+Each Copy invite action mints a fresh token, invalidates every prior unused token for that Portal User, and extends expiry from the reissue time.
+The operator delivers the copied URL out of band.
+Redeeming a valid unexpired token sets the Portal User password, marks the token redeemed, activates the Portal User, and ends that Portal User's existing sessions.
+Password reset uses the same invite reissue and redemption flow.
+SMTP and magic-link email are not required.
 
-Prefer Argon2id via `argon2_elixir` (64 MiB, 3 iterations, parallelism 1).
-That would be the first compiled NIF in `orchard_controller`.
-If it cannot load in the controller release, use documented `:crypto` PBKDF2-HMAC-SHA512 before any password row exists.
-Do not hash portal passwords with API-key SHA-256.
+## Decision 4: Portal User-Owned Sessions And Disable
 
-## Decision 5: TLS-Only And Per-Source Backoff
-
-Portal routes and operator password mutations require `public_api_https_enabled?` and effective HTTPS scheme.
-`plain_http_localhost` returns 404 and rejects password mutations.
-
-Failed logins are limited per Organization fingerprint plus source fingerprint:
-1-4 free, then 30s / 60s / 120s / 240s / 480s / 900s.
-No Organization-wide lockout.
+Each `portal_sessions` row belongs to one `portal_user_id` and one `tenant_id` and stores only an opaque token hash.
+Session validation checks that the Portal User is active, belongs to the route Organization, and has the current session epoch.
+Invite reissue, invite redemption, password replacement, and disable end only that Portal User's sessions.
+Disable does not revoke owned API Keys.
+The operator can inspect and deliberately revoke those keys through Console.
 
 Sessions last 8 hours absolute and 30 minutes idle.
 Auth ticks do not refresh idle.
 
-## Decision 6: Deterministic Activation Curl
+## Decision 5: Own-Key Provenance And Per-User Cap
 
-After mint, choose the first tenant-authorized active model from the exact `GET /v1/models` visibility query, sorted by public identifier then UUID.
+`api_keys.portal_user_id` is nullable minting-gate provenance.
+Every new Developer Portal mint stores `issuance_surface = 'developer_portal'` and the signed-in Portal User's ID.
+The portal list and revoke queries require both the signed-in `portal_user_id` and its `tenant_id`.
+A key owned by another Portal User, an operator-minted key, and a missing key have the same portal-facing not-found behavior.
+
+The cap is 10 active portal-minted tenant-direct keys per Portal User.
+Revoked and expired keys do not count.
+The mint transaction locks the Portal User row before counting and inserting.
+Operator mint remains uncapped and operator-only.
+
+Public Inference authentication continues to accept `orchard_sk_*` and resolve the API Key to `principal_type = tenant`.
+It does not consult `portal_user_id`.
+A Portal User is not an API Key principal.
+
+Legacy Developer Portal keys with null `portal_user_id` remain valid Bearer credentials until explicitly revoked.
+They remain visible only to operators, cannot be claimed, and cannot be listed or revoked by a Portal User.
+No new Developer Portal mint may create an unowned key.
+
+## Decision 6: TLS-Only And Per-Identity Backoff
+
+Portal routes require `public_api_https_enabled?` and an effective HTTPS request scheme.
+`plain_http_localhost` returns `404` for every portal route.
+
+Failed logins are limited per Organization fingerprint, Portal User or normalized-email fingerprint, and source fingerprint.
+This prevents one source from causing an Organization-wide lockout.
+Unknown email uses a derived email fingerprint so the throttle does not disclose whether a Portal User exists.
+
+## Decision 7: Show-Once Key And Deterministic Activation Curl
+
+After mint, the portal chooses the first tenant-authorized active model from the exact `GET /v1/models` visibility query, sorted by public identifier then UUID.
 If authorization cannot be proven, mint still succeeds and the portal states that no curl is available.
+The key secret appears only at creation and is never recoverable later.
 The model identifier is untrusted interpolation in the shell snippet.
