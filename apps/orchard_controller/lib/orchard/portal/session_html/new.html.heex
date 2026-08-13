@@ -1,0 +1,70 @@
+<div class="mx-auto max-w-md">
+  <div class="mb-8 flex justify-center">
+    <.logo variant={:voltage} size={:lg} />
+  </div>
+
+  <div
+    :if={@flash["notice"]}
+    class="mb-4 rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-200"
+    role="status"
+  >
+    {@flash["notice"]}
+  </div>
+
+  <section class="rounded-lg border border-slate-700 bg-slate-800 p-6">
+    <h1 class="text-lg font-semibold text-slate-50">Developer portal</h1>
+    <p class="mt-1 font-mono text-sm text-slate-300">{@organization_slug}</p>
+
+    <form action={"/portal/#{@organization_slug}/session"} method="post" class="mt-6 space-y-4">
+      <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+
+      <div>
+        <label for="portal-email" class="block text-sm font-medium text-slate-200">Email</label>
+        <input
+          id="portal-email"
+          type="email"
+          name="session[email]"
+          autocomplete="email"
+          required
+          disabled={@throttled}
+          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-50"
+        />
+      </div>
+      <div>
+        <label for="portal-password" class="block text-sm font-medium text-slate-200">Password</label>
+        <input
+          id="portal-password"
+          type="password"
+          name="session[password]"
+          autocomplete="current-password"
+          required
+          disabled={@throttled}
+          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-50"
+        />
+        <p :if={@login_error} class="mt-2 text-sm text-red-400">
+          Sign-in failed. Check your email and password.
+        </p>
+      </div>
+
+      <div
+        :if={@throttled}
+        class="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-300"
+        role="status"
+      >
+        Too many sign-in attempts. Try again in <span class="font-mono">{@retry_after}</span>.
+      </div>
+
+      <button
+        type="submit"
+        disabled={@throttled}
+        class="w-full rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
+      >
+        Sign in
+      </button>
+    </form>
+  </section>
+
+  <p class="mt-4 text-center text-sm text-slate-400">
+    Use the named Portal User credentials supplied by your Orchard operator.
+  </p>
+</div>

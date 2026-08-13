@@ -5,6 +5,7 @@ defmodule OrchardConsole.TenantDetailLive do
 
   use OrchardConsole, :live_view
 
+  alias Orchard.API.Transport
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, RoleBinding}
 
@@ -22,6 +23,9 @@ defmodule OrchardConsole.TenantDetailLive do
         tenant: nil,
         api_keys: [],
         api_clients: [],
+        portal_users: [],
+        portal_invite_url: nil,
+        portal_https?: Transport.public_api_https_enabled?(),
         load_error: nil,
         generated_secret: nil
       )
@@ -74,6 +78,39 @@ defmodule OrchardConsole.TenantDetailLive do
 
       _ ->
         {:noreply, socket}
+    end
+  end
+
+  def handle_event("create_portal_invite", %{"portal_invite" => params}, socket) do
+    case Governance.create_portal_invite(socket.assigns.tenant, params) do
+      {:ok, _user} ->
+        {:noreply,
+         socket
+         |> assign(portal_invite_form: to_form(%{"email" => ""}, as: :portal_invite))
+         |> load_tenant_detail()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         assign(socket,
+           portal_invite_form: changeset_to_form(changeset, :portal_invite, %{"email" => ""})
+         )}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Unable to invite Portal User.")}
+    end
+  end
+
+  def handle_event("copy_portal_invite", %{"portal_user_id" => user_id}, socket) do
+    case Governance.copy_portal_invite(socket.assigns.tenant, user_id) do
+      {:ok, invite} -> {:noreply, assign(socket, portal_invite_url: invite.url)}
+      {:error, _reason} -> {:noreply, put_flash(socket, :error, "Unable to copy invite.")}
+    end
+  end
+
+  def handle_event("disable_portal_user", %{"portal_user_id" => user_id}, socket) do
+    case Governance.disable_portal_user(socket.assigns.tenant, user_id) do
+      {:ok, _user} -> {:noreply, load_tenant_detail(socket)}
+      {:error, _reason} -> {:noreply, put_flash(socket, :error, "Unable to disable Portal User.")}
     end
   end
 
@@ -168,6 +205,96 @@ defmodule OrchardConsole.TenantDetailLive do
               <.local_time value={@tenant.inserted_at} format={:datetime_minute} />
             </.detail_field>
           </.detail_grid>
+        </.card>
+      </div>
+      <div id="tenant-portal-invite-card">
+        <.card>
+          <:title>Invite Portal User</:title>
+          <:subtitle>Create a named Developer Portal identity. Orchard does not send email.</:subtitle>
+          <div
+            :if={!@portal_https?}
+            id="tenant-portal-tls-required"
+            class="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+          >
+            Developer Portal requires public API HTTPS.
+          </div>
+          <.form
+            :if={@portal_https?}
+            for={@portal_invite_form}
+            id="tenant-portal-invite-form"
+            phx-submit="create_portal_invite"
+            class="flex gap-3"
+          >
+            <.input field={@portal_invite_form[:email]} type="email" label="Email" required />
+            <button
+              type="submit"
+              class="bg-navy-900 mt-7 rounded-md px-4 py-2 text-sm font-semibold text-white"
+            >
+              Invite
+            </button>
+          </.form>
+        </.card>
+      </div>
+
+      <div :if={@portal_invite_url} id="tenant-portal-invite-url-card">
+        <.card>
+          <:title>Invite URL - copy now</:title>
+          <:subtitle>This URL is shown only for this Copy invite action.</:subtitle>
+          <code id="tenant-portal-invite-url-value" class="block break-all rounded bg-slate-100 p-3 font-mono text-sm">
+            {@portal_invite_url}
+          </code>
+          <button
+            id="tenant-portal-invite-url-copy"
+            type="button"
+            phx-hook="CopyGeneratedSecret"
+            data-secret-source="tenant-portal-invite-url-value"
+            data-api-key-id="portal-invite"
+            class="mt-3 rounded-md bg-navy-900 px-3 py-1.5 text-sm font-medium text-white"
+          >
+            Copy invite URL
+          </button>
+        </.card>
+      </div>
+
+      <div id="tenant-portal-users-card">
+        <.card>
+          <:title>Portal Users</:title>
+          <:subtitle>Named identities for this Organization.</:subtitle>
+          <p :if={@portal_users == []} class="text-sm text-slate-500">No Portal Users invited yet.</p>
+          <div :for={user <- @portal_users} id={"portal-user-#{user.id}"} class="flex items-center justify-between border-t py-3">
+            <div>
+              <p class="font-medium">{user.email}</p>
+              <p class="text-sm text-slate-500">{String.capitalize(user.status)}</p>
+            </div>
+            <div class="flex gap-2">
+              <button
+                :if={user.status == "invited"}
+                type="button"
+                phx-click="copy_portal_invite"
+                phx-value-portal_user_id={user.id}
+                class="rounded border px-3 py-1.5 text-sm"
+              >
+                Copy invite
+              </button>
+              <button
+                :if={user.status != "disabled"}
+                type="button"
+                phx-click="disable_portal_user"
+                phx-value-portal_user_id={user.id}
+                class="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700"
+              >
+                Disable
+              </button>
+            </div>
+          </div>
+        </.card>
+      </div>
+
+      <div id="tenant-portal-access-card">
+        <.card>
+          <:title>Portal access</:title>
+          <:subtitle>TLS-only isolated surface without Console chrome.</:subtitle>
+          <code class="font-mono text-sm">/portal/{@tenant.slug}</code>
         </.card>
       </div>
 
@@ -582,7 +709,10 @@ defmodule OrchardConsole.TenantDetailLive do
   end
 
   defp assign_blank_form(socket) do
-    assign(socket, api_key_form: to_form(%{"name" => ""}, as: :api_key))
+    assign(socket,
+      api_key_form: to_form(%{"name" => ""}, as: :api_key),
+      portal_invite_form: to_form(%{"email" => ""}, as: :portal_invite)
+    )
   end
 
   defp changeset_to_form(%Ecto.Changeset{} = changeset, as, defaults) do
@@ -605,12 +735,14 @@ defmodule OrchardConsole.TenantDetailLive do
 
     with {:ok, tenant} <- Governance.get_tenant(tenant_id),
          {:ok, api_keys} <- Governance.list_api_keys_for_tenant(tenant),
-         {:ok, api_clients} <- Governance.list_api_clients_for_tenant(tenant) do
+         {:ok, api_clients} <- Governance.list_api_clients_for_tenant(tenant),
+         {:ok, portal_users} <- Governance.list_portal_users(tenant) do
       assign(socket,
         detail_status: :ok,
         tenant: tenant,
         api_keys: api_keys,
         api_clients: api_clients,
+        portal_users: portal_users,
         page_title: "Organization #{tenant.slug}",
         load_error: nil
       )

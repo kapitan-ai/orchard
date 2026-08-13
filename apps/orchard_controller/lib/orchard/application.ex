@@ -62,6 +62,7 @@ defmodule Orchard.Application do
   def child_specs do
     [{Task.Supervisor, name: Orchard.API.HealthTaskSupervisor}]
     |> maybe_add_repo()
+    |> maybe_add_portal_workers()
     |> maybe_add_peer_grant_stack()
     |> maybe_add_membership_owner()
     |> maybe_add_activation_probe()
@@ -136,6 +137,18 @@ defmodule Orchard.Application do
         [
           Orchard.Repo,
           Orchard.NodeEnrollments.PendingPublicationReconciler
+        ]
+    else
+      children
+    end
+  end
+
+  defp maybe_add_portal_workers(children) do
+    if Application.get_env(:orchard_controller, :start_repo, true) do
+      children ++
+        [
+          Orchard.Governance.PortalPasswordVerifier,
+          Orchard.Governance.PortalPersistencePruner
         ]
     else
       children

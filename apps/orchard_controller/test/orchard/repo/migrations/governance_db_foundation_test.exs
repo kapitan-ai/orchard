@@ -142,6 +142,8 @@ defmodule Orchard.Repo.Migrations.GovernanceDbFoundationTest do
     Repo.query!("DROP TABLE IF EXISTS node_admission_candidates")
     Repo.query!("DROP TABLE IF EXISTS provisioning_batches")
     Repo.query!("DROP TABLE IF EXISTS role_bindings")
+    Repo.query!("DROP TABLE IF EXISTS portal_invite_tokens")
+    Repo.query!("DROP TABLE IF EXISTS portal_sessions")
 
     Repo.query!(
       "ALTER TABLE IF EXISTS requests DROP CONSTRAINT IF EXISTS requests_service_account_id_fkey"
@@ -151,6 +153,8 @@ defmodule Orchard.Repo.Migrations.GovernanceDbFoundationTest do
     Repo.query!("DROP FUNCTION IF EXISTS orchard_reject_audit_log_mutation()")
     Repo.query!("DROP TABLE IF EXISTS audit_logs")
     Repo.query!("DROP TABLE IF EXISTS api_keys")
+    Repo.query!("DROP TABLE IF EXISTS portal_users")
+
     Repo.query!("DROP TABLE IF EXISTS service_accounts")
     Repo.query!("DROP TABLE IF EXISTS tenants")
   end
