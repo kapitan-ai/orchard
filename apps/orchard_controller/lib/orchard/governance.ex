@@ -15,11 +15,14 @@ defmodule Orchard.Governance do
     ApiKeySecret,
     AuditLog,
     AuditWriter,
+    PortalPassword,
     ProvisioningBatch,
     RoleBinding,
     ServiceAccount,
     Tenant
   }
+
+  alias Orchard.API.Transport
 
   alias Orchard.Repo
 
@@ -63,6 +66,95 @@ defmodule Orchard.Governance do
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  @spec lock_tenant(Tenant.t() | Ecto.UUID.t()) ::
+          {:ok, Tenant.t()} | {:error, :tenant_not_found}
+  def lock_tenant(%Tenant{id: tenant_id}), do: lock_tenant(tenant_id)
+
+  def lock_tenant(tenant_id) do
+    with {:ok, tenant_id} <- normalize_tenant_id(tenant_id) do
+      tenant =
+        Tenant
+        |> where([tenant], tenant.id == ^tenant_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one()
+
+      case tenant do
+        %Tenant{} = tenant -> {:ok, tenant}
+        nil -> {:error, :tenant_not_found}
+      end
+    end
+  end
+
+  @spec set_tenant_portal_password(Tenant.t() | Ecto.UUID.t(), String.t(), keyword()) ::
+          {:ok, Tenant.t()}
+          | {:error,
+             Changeset.t()
+             | :tenant_not_found
+             | :https_required
+             | PortalPassword.hash_error()}
+  def set_tenant_portal_password(tenant_or_id, password, opts \\ [])
+
+  def set_tenant_portal_password(tenant_or_id, password, opts)
+      when is_binary(password) and is_list(opts) do
+    with :ok <- require_public_https(),
+         {:ok, encoded_hash} <- PortalPassword.hash(password) do
+      tenant_or_id
+      |> mutate_portal_password(encoded_hash, opts)
+      |> unwrap_transaction_result()
+    end
+  end
+
+  @spec clear_tenant_portal_password(Tenant.t() | Ecto.UUID.t(), keyword()) ::
+          {:ok, Tenant.t()} | {:error, Changeset.t() | :tenant_not_found | :https_required}
+  def clear_tenant_portal_password(tenant_or_id, opts \\ []) do
+    with :ok <- require_public_https() do
+      tenant_or_id
+      |> mutate_portal_password(nil, opts)
+      |> unwrap_transaction_result()
+    end
+  end
+
+  defp mutate_portal_password(tenant_or_id, encoded_hash, opts) do
+    AuditWriter.transaction(fn ->
+      with {:ok, tenant} <- resolve_tenant(tenant_or_id),
+           {:ok, locked} <- lock_tenant(tenant.id),
+           {:ok, updated} <- persist_portal_password(locked, encoded_hash),
+           :ok <- delete_portal_sessions(updated.id),
+           {:ok, _audit_log} <-
+             insert_portal_password_audit_log(updated, encoded_hash, locked, utc_now(), opts) do
+        {:ok, redact_tenant(updated)}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp persist_portal_password(%Tenant{} = tenant, encoded_hash) do
+    tenant
+    |> Tenant.portal_access_changeset(%{
+      portal_password_hash: encoded_hash,
+      portal_session_epoch: tenant.portal_session_epoch + 1
+    })
+    |> Repo.update()
+  end
+
+  defp delete_portal_sessions(tenant_id) do
+    from(session in "portal_sessions",
+      where: session.tenant_id == type(^tenant_id, Ecto.UUID)
+    )
+    |> Repo.delete_all()
+
+    :ok
+  end
+
+  defp require_public_https do
+    if Transport.public_api_https_enabled?() do
+      :ok
+    else
+      {:error, :https_required}
+    end
   end
 
   @spec create_api_key(Tenant.t() | Ecto.UUID.t(), map() | keyword()) ::
@@ -1330,6 +1422,41 @@ defmodule Orchard.Governance do
     |> AuditWriter.insert()
   end
 
+  defp insert_portal_password_audit_log(
+         %Tenant{} = tenant,
+         encoded_hash,
+         %Tenant{} = previous,
+         occurred_at,
+         opts
+       ) do
+    %AuditLog{}
+    |> audit_log_impl().changeset(%{
+      tenant_id: tenant.id,
+      api_key_id: nil,
+      actor_type: Keyword.get(opts, :actor_type, "operator"),
+      actor_id: Keyword.get(opts, :actor_id),
+      action: portal_password_audit_action(encoded_hash, previous),
+      target_type: "tenant",
+      target_id: tenant.id,
+      occurred_at: occurred_at,
+      payload:
+        %{
+          "portal_enabled" => is_binary(encoded_hash),
+          "portal_session_epoch" => tenant.portal_session_epoch
+        }
+        |> put_audit_context_payload(Keyword.put_new(opts, :surface, "console"))
+    })
+    |> AuditWriter.insert()
+  end
+
+  defp portal_password_audit_action(nil, _previous), do: "tenant.portal_password_cleared"
+
+  defp portal_password_audit_action(_encoded_hash, %Tenant{portal_password_hash: previous})
+       when is_binary(previous),
+       do: "tenant.portal_password_rotated"
+
+  defp portal_password_audit_action(_encoded_hash, _previous), do: "tenant.portal_password_set"
+
   defp api_key_effective_tenant_id(%ApiKey{tenant_id: tenant_id}) when is_binary(tenant_id),
     do: tenant_id
 
@@ -1410,7 +1537,10 @@ defmodule Orchard.Governance do
   defp sanitize_changeset(%Changeset{} = changeset) do
     %Changeset{
       changeset
-      | changes: Map.delete(changeset.changes, :secret_hash),
+      | changes:
+          changeset.changes
+          |> Map.delete(:secret_hash)
+          |> Map.delete(:portal_password_hash),
         params: sanitize_changeset_params(changeset.params),
         data: sanitize_changeset_data(changeset.data)
     }
@@ -1420,14 +1550,19 @@ defmodule Orchard.Governance do
     params
     |> Map.delete(:secret_hash)
     |> Map.delete("secret_hash")
+    |> Map.delete(:portal_password_hash)
+    |> Map.delete("portal_password_hash")
   end
 
   defp sanitize_changeset_params(params), do: params
 
   defp sanitize_changeset_data(%ApiKey{} = api_key), do: redact_api_key(api_key)
+  defp sanitize_changeset_data(%Tenant{} = tenant), do: redact_tenant(tenant)
   defp sanitize_changeset_data(data), do: data
 
   defp redact_api_key(%ApiKey{} = api_key), do: %ApiKey{api_key | secret_hash: nil}
+
+  defp redact_tenant(%Tenant{} = tenant), do: %Tenant{tenant | portal_password_hash: nil}
 
   defp utc_now, do: SchemaSupport.utc_now()
 

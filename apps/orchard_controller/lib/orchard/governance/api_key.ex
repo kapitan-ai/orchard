@@ -29,6 +29,7 @@ defmodule Orchard.Governance.ApiKey do
     field(:name, :string)
     field(:token_prefix, :string)
     field(:secret_hash, :string)
+    field(:issuance_surface, :string, default: "governance")
     field(:expires_at, :utc_datetime_usec)
     field(:last_used_at, :utc_datetime_usec)
     field(:revoked_at, :utc_datetime_usec)
@@ -51,11 +52,13 @@ defmodule Orchard.Governance.ApiKey do
       :name,
       :token_prefix,
       :secret_hash,
+      :issuance_surface,
       :expires_at,
       :last_used_at,
       :revoked_at
     ])
     |> validate_required([:name, :token_prefix, :secret_hash])
+    |> validate_inclusion(:issuance_surface, ["governance", "developer_portal"])
     |> validate_owner()
     |> validate_no_plaintext_attrs(attrs)
     |> unique_constraint(:token_prefix)
@@ -64,6 +67,8 @@ defmodule Orchard.Governance.ApiKey do
       message: "has already been taken"
     )
     |> check_constraint(:tenant_id, name: :api_keys_exactly_one_owner)
+    |> check_constraint(:issuance_surface, name: :api_keys_issuance_surface_closed)
+    |> check_constraint(:issuance_surface, name: :api_keys_developer_portal_tenant_direct)
     |> foreign_key_constraint(:tenant_id)
     |> foreign_key_constraint(:service_account_id)
   end
