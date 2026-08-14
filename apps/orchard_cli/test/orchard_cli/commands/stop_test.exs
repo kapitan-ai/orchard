@@ -1,7 +1,7 @@
 defmodule OrchardCLI.Commands.StopTest do
   use ExUnit.Case, async: true
 
-  alias OrchardCLI.Commands.Stop
+  alias OrchardCLI.Commands.{LifecycleSupport, Stop}
 
   # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -29,6 +29,7 @@ defmodule OrchardCLI.Commands.StopTest do
         services: test_services(),
         read_install_role: fn -> {:ok, "all"} end,
         file_regular?: fn _path -> true end,
+        managed_node_agent_stop: &LifecycleSupport.ensure_stopped/2,
         cmd: fn _prog, _args, _opts -> {"\n", 0} end
       },
       overrides
@@ -138,6 +139,29 @@ defmodule OrchardCLI.Commands.StopTest do
     bootout_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootout" | _], args) end)
     assert [{_, ["bootout", target]}] = bootout_calls
     assert target =~ "controller"
+  end
+
+  test "SPEC 11.4 routes Node Agent stop through the managed process fence" do
+    parent = self()
+
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:ok, "node-agent"} end,
+        managed_node_agent_stop: fn service, _runtime ->
+          send(parent, {:managed_stop, service.id})
+          {:stopped, service}
+        end,
+        cmd: fn prog, args, _opts ->
+          send(parent, {:cmd, prog, args})
+          {"\n", 0}
+        end
+      })
+
+    assert {:ok, msg} = Stop.run([], runtime)
+    assert msg =~ "Stopped Orchard services."
+    assert_receive {:managed_stop, :node_agent}
+
+    refute Enum.any?(collect_cmds(), fn {_program, args} -> match?(["bootout" | _], args) end)
   end
 
   test "node-agent role stops node-agent only" do

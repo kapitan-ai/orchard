@@ -439,6 +439,20 @@ final class LifecycleServiceTests: XCTestCase {
     }
   }
 
+  func testLifecycleLockDescriptorIsCloseOnExec() throws {
+    let fixture = try makeFixture()
+    let service = LifecycleService(
+      contract: fixture.contract,
+      payloadRoot: fixture.payload
+    )
+    let lock = try service.acquireLifecycleLock(
+      at: LifecyclePaths(root: fixture.root, contract: fixture.contract)
+    )
+    defer { lock.release() }
+
+    XCTAssertNotEqual(fcntl(lock.descriptor, F_GETFD) & FD_CLOEXEC, 0)
+  }
+
   func testInstallNormalizesModesAndRecordsSystemOwnershipIntent() throws {
     let fixture = try makeFixture()
     _ = try LifecycleService(

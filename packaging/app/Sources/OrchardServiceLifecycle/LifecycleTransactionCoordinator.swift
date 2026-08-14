@@ -309,7 +309,11 @@ extension LifecycleService {
       at: paths.lifecycleLock.deletingLastPathComponent(),
       withIntermediateDirectories: true
     )
-    let descriptor = open(paths.lifecycleLock.path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+    let descriptor = open(
+      paths.lifecycleLock.path,
+      O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+      0o600
+    )
     guard descriptor >= 0 else {
       throw LifecycleServiceError.invalidLifecycleLock(paths.lifecycleLock.path)
     }
