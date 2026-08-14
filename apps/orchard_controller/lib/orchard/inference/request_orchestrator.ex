@@ -42,7 +42,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.SentryContext
 
   @type event_handler ::
-          (Ecto.UUID.t(), InferenceEvent.t() -> :ok | :cancel)
+          (Ecto.UUID.t(), InferenceEvent.t() ->
+             :ok | :cancel | {:error, :serializer_failed})
   @type success_persistence ::
           (CanonicalRequest.t(), [InferenceEvent.t()] -> map())
   @type step_event_appender ::
@@ -266,6 +267,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp fail_and_return_error(db_request, reason, step_context, terminal_persister) do
+    advance_attempt_fsm_best_effort(db_request.id, step_context)
+
     case fail_request(db_request, reason, step_context, terminal_persister) do
       :ok -> {:error, reason}
       {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
@@ -625,18 +628,31 @@ defmodule Orchard.Inference.RequestOrchestrator do
            execution_opts.event_handler,
            Map.get(execution_opts, :queue_grant)
          ) do
-      %AttemptOutcome{events: events} = outcome ->
-        if Enum.any?(events, &InferenceEvent.terminal?/1) do
-          finalize_started_inference_turn(
-            db_request,
-            canonical,
-            outcome,
-            execution_opts,
-            step_context
+      %AttemptOutcome{} = pending_outcome ->
+        outcome =
+          AttemptOutcome.select(
+            pending_outcome,
+            canonical.public_id,
+            execution_opts.event_handler
           )
-        else
-          {:error, public_dispatch_reason(outcome),
-           Map.put(step_context, :attempt_outcome, outcome)}
+
+        cond do
+          outcome.delivery_state == :failed ->
+            {:error, public_dispatch_reason(outcome),
+             Map.put(step_context, :attempt_outcome, outcome)}
+
+          Enum.any?(outcome.events, &InferenceEvent.terminal?/1) ->
+            finalize_started_inference_turn(
+              db_request,
+              canonical,
+              outcome,
+              execution_opts,
+              step_context
+            )
+
+          true ->
+            {:error, public_dispatch_reason(outcome),
+             Map.put(step_context, :attempt_outcome, outcome)}
         end
 
       {:error, reason} ->
@@ -652,8 +668,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
          step_context
        ) do
     case finalize(db_request, canonical, outcome, execution_opts, step_context) do
-      {:ok, _, _} = success -> success
-      {:error, reason} -> {:error, reason, step_context}
+      {:ok, _, _} = success ->
+        success
+
+      {:error, reason} ->
+        failed_outcome = AttemptOutcome.fail_attempt(outcome)
+        {:error, reason, Map.put(step_context, :attempt_outcome, failed_outcome)}
     end
   end
 
@@ -1023,7 +1043,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp dispatch(db_request, canonical, model, schedule, caller, event_handler, queue_grant) do
     execute_request = build_execute_request(canonical, schedule)
     model_load_request = build_model_load_request(model, schedule)
-    wrapped_handler = wrap_event_handler(event_handler, queue_grant)
+    on_accepted = build_accepted_callback(queue_grant)
 
     maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
 
@@ -1032,7 +1052,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
       execute_request,
       model_load_request,
       caller,
-      wrapped_handler,
+      event_handler,
+      on_accepted,
       db_request.id,
       queue_grant
     )
@@ -1043,13 +1064,15 @@ defmodule Orchard.Inference.RequestOrchestrator do
          execute_request,
          model_load_request,
          caller,
-         wrapped_handler,
+         event_handler,
+         on_accepted,
          request_id,
          queue_grant
        ) do
     opts = [
       caller: caller,
-      event_handler: wrapped_handler,
+      event_handler: event_handler,
+      on_accepted: on_accepted,
       on_node_resolved: build_node_resolved_callback(request_id, queue_grant)
     ]
 
@@ -1094,16 +1117,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp public_dispatch_reason(%AttemptOutcome{failure: %{"failure_code" => failure_code}}),
     do: {:dispatch_failed, failure_code}
 
-  defp wrap_event_handler(downstream_handler, queue_grant) do
-    fn request_id, event ->
-      maybe_mark_capacity_source_observed(queue_grant, event)
-
-      if downstream_handler do
-        downstream_handler.(request_id, event)
-      else
-        :ok
-      end
-    end
+  defp build_accepted_callback(queue_grant) do
+    fn _request_id, event -> maybe_mark_capacity_source_observed(queue_grant, event) end
   end
 
   defp maybe_mark_capacity_source_observed(
@@ -1289,7 +1304,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
       other -> {:error, {:invalid_success_persistence, other}}
     end
   rescue
-    error -> {:error, {:success_persistence_failed, error}}
+    error -> {:error, {:success_persistence_failed, {:exception, error}}}
+  catch
+    :exit, reason -> {:error, {:success_persistence_failed, {:exit, reason}}}
+    kind, reason -> {:error, {:success_persistence_failed, {kind, reason}}}
   end
 
   defp merge_success_attrs({:ok, success_attrs}, terminal_attrs),
@@ -1307,7 +1325,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          _step_event_appender,
          terminal_persister
        ) do
-    advance_fsm_best_effort(db_request.id, events)
+    advance_fsm_best_effort(db_request.id, events, step_context[:attempt_outcome])
 
     case terminal_persister.(
            db_request,
@@ -1351,12 +1369,29 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp advance_fsm_best_effort(request_id, events) do
-    has_delta? = Enum.any?(events, &(InferenceEvent.kind(&1) == :output_text_delta))
+  defp advance_attempt_fsm_best_effort(
+         request_id,
+         %{attempt_outcome: %AttemptOutcome{} = outcome}
+       ) do
+    advance_fsm_best_effort(request_id, outcome.events, outcome)
+  end
 
+  defp advance_attempt_fsm_best_effort(_request_id, _step_context), do: :ok
+
+  defp advance_fsm_best_effort(request_id, _events, %AttemptOutcome{} = outcome) do
+    if outcome.accepted do
+      try_advance(request_id, :running)
+
+      if outcome.output_committed do
+        try_advance(request_id, :streaming)
+      end
+    end
+  end
+
+  defp advance_fsm_best_effort(request_id, events, nil) do
     try_advance(request_id, :running)
 
-    if has_delta? do
+    if Enum.any?(events, &(InferenceEvent.kind(&1) == :output_text_delta)) do
       try_advance(request_id, :streaming)
     end
   end
@@ -1579,13 +1614,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
       "started_at" => outcome.started_at,
       "ended_at" => outcome.ended_at,
       "accepted" => outcome.accepted,
-      "output_committed" => false,
+      "output_committed" => outcome.output_committed,
       "execution_resolution" => Atom.to_string(outcome.execution_resolution),
       "capacity_release_outcome" => Atom.to_string(outcome.capacity_release_outcome),
       "excluded_node_ids" => []
     }
 
     base
+    |> maybe_put_result(
+      "output_commitment_kind",
+      commitment_kind_string(outcome.output_commitment_kind)
+    )
     |> maybe_put_result("node_id", outcome.node_id)
     |> put_attempt_failure(outcome)
   end
@@ -1598,6 +1637,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
     |> Map.put("retry_decision", attempt_retry_decision(outcome))
   end
 
+  defp commitment_kind_string(nil), do: nil
+  defp commitment_kind_string(kind), do: Atom.to_string(kind)
+
+  defp attempt_retry_decision(%AttemptOutcome{output_committed: true}), do: "output_committed"
   defp attempt_retry_decision(%AttemptOutcome{attempt_outcome: :cancelled}), do: "cancelled"
 
   defp attempt_retry_decision(%AttemptOutcome{

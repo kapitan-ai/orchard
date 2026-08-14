@@ -19,7 +19,7 @@
 
 ## 3. Typed single-attempt dispatcher outcome and release acknowledgement
 
-- [ ] 3.1 Return a typed dispatcher outcome with identity, acceptance, events, failure, execution resolution, release outcome, and timing
+- [x] 3.1 Return a typed dispatcher outcome with identity, acceptance, events, failure, execution resolution, release outcome, and timing
 - [ ] 3.2 Make allocation release distinguish released, already released, not applicable, and unresolved
 - [ ] 3.3 Preserve idempotent defensive cleanup without converting authority failure into confirmed release
 - [ ] 3.4 Preserve quarantine for unresolved accepted execution
@@ -27,12 +27,14 @@
 
 ## 4. Output Commitment and event isolation
 
-- [ ] 4.1 Add a pure monotonic Output Commitment classifier
-- [ ] 4.2 Commit on non-empty text, stable tool-call identity, and future content-bearing structured output
-- [ ] 4.3 Keep accepted, progress, usage, model-load, empty text, and terminal events uncommitted
-- [ ] 4.4 Record commitment before public handler or serializer delivery
-- [ ] 4.5 Buffer pre-commit attempt events, flush earlier events before a committing event, discard attempt 1 events on retry, and flush the final uncommitted attempt in order
-- [ ] 4.6 Preserve text-specific `first_token_at`
+- [x] 4.1 Add a pure monotonic Output Commitment classifier
+- [x] 4.2 Commit on non-empty text and stable tool-call identity
+- [ ] 4.2a Commit on future content-bearing structured output
+- [x] 4.3 Keep accepted, progress, usage, model-load, empty text, and terminal events uncommitted
+- [x] 4.4 Record commitment before public handler or serializer delivery
+- [x] 4.5 Buffer pre-commit attempt events, flush earlier events before a committing event, expose a safe discard seam, and flush the final uncommitted attempt in order
+- [ ] 4.5a Discard attempt 1 events when attempt 2 is integrated
+- [x] 4.6 Preserve text-specific `first_token_at`
 
 ## 5. Closed failure taxonomy and cancellation
 
@@ -84,17 +86,17 @@
 - [ ] 10.3 Cover no alternative, deadline exhaustion, cancellation races, unresolved release, and same-Node defense
 - [ ] 10.4 Cover one quota reservation, idempotent duplicate observation, unchanged capture policy, and attempt-event ordering
 - [ ] 10.5 Cover breaker attribution and logical-versus-attempt metrics
-- [ ] 10.6 Cover Chat Completions and Responses in streaming and non-streaming modes
+- [x] 10.6 Cover Chat Completions and Responses in streaming and non-streaming modes
 - [ ] 10.7 Cover terminal-conformance failures as non-retryable
 
 ## 11. Quality and completion
 
-- [ ] 11.1 Run focused tests for each changed seam
-- [ ] 11.2 Run `mise exec -- mix format`
-- [ ] 11.3 Run `mise exec -- mix compile --warnings-as-errors`
-- [ ] 11.4 Run `mise exec -- mix credo --strict`
-- [ ] 11.5 Run `mise exec -- mix dialyzer`
-- [ ] 11.6 Run `mise exec -- mix test`
-- [ ] 11.7 Run `mise exec -- mix test --cover`
-- [ ] 11.8 Rerun strict OpenSpec change validation after implementation updates
+- [x] 11.1 Run focused tests for each changed seam
+- [x] 11.2 Run `mise exec -- mix format`
+- [x] 11.3 Run `mise exec -- mix compile --warnings-as-errors`
+- [x] 11.4 Run `mise exec -- mix credo --strict`
+- [x] 11.5 Run `mise exec -- mix dialyzer`
+- [x] 11.6 Run `mise exec -- mix test`
+- [x] 11.7 Run `mise exec -- mix test --cover`
+- [x] 11.8 Rerun strict OpenSpec change validation after implementation updates
 - [ ] 11.9 After all tickets land, validate all OpenSpec specs strictly and review synchronized main specs for placeholders

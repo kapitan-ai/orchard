@@ -1441,16 +1441,23 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     node_id = claim_node_id()
     request_id = "request-delta-before-acceptance-error"
 
+    test_pid = self()
+
     assert_dispatch_failure(
       dispatch_with_deadline(
         capacity_schedule(authority, node_id, request_id),
         execute_request(request_id),
         model_load_request(node_id),
-        client_impl: @nonterminal_then_error_client
+        client_impl: @nonterminal_then_error_client,
+        event_handler: fn _request_id, event ->
+          send(test_pid, {:pre_accepted_public_event, event})
+          :ok
+        end
       ),
       :stream_failed
     )
 
+    refute_receive {:pre_accepted_public_event, _event}
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1480,7 +1487,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     send(emitter, :finish_cancel)
 
-    assert_dispatch_failure(Task.await(dispatch), :event_handler_failed)
+    assert_dispatch_failure(Task.await(dispatch), :orchestration_error)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1510,7 +1517,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     send(emitter, :finish_cancel)
 
-    assert_dispatch_failure(Task.await(dispatch), :event_handler_failed)
+    assert_dispatch_failure(Task.await(dispatch), :orchestration_error)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -1702,27 +1709,22 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
-  test "SPEC 5.9 handler exception before Accepted remains failed after late Accepted" do
+  test "SPEC 5.9 raising handler is not invoked before Accepted" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
-    request_id = "request-handler-failure-before-late-acceptance"
+    request_id = "request-handler-failure-before-acceptance"
 
-    dispatch =
-      Task.async(fn ->
-        dispatch_with_deadline(
-          capacity_schedule(authority, node_id, request_id),
-          execute_request(request_id),
-          model_load_request(node_id),
-          client_impl: @pre_acceptance_cancel_client,
-          event_handler: fn _request_id, _event -> raise "handler failed before acceptance" end
-        )
-      end)
+    assert_dispatch_failure(
+      dispatch_with_deadline(
+        capacity_schedule(authority, node_id, request_id),
+        execute_request(request_id),
+        model_load_request(node_id),
+        client_impl: @nonterminal_then_error_client,
+        event_handler: fn _request_id, _event -> raise "handler failed before acceptance" end
+      ),
+      :stream_failed
+    )
 
-    assert_receive {:pre_acceptance_cancel_received, emitter}, 1_000
-    assert AllocationAuthority.claim_count(authority, node_id) == 1
-    send(emitter, :finish_cancel_after_acceptance)
-
-    assert_dispatch_failure(Task.await(dispatch), :node_acceptance_missing)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 
@@ -2048,27 +2050,22 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert :node_health_unhealthy in quarantined.reason_codes
   end
 
-  test "SPEC 5.9 handler cancellation before Accepted remains a pre-acceptance failure" do
+  test "SPEC 5.9 cancelling handler is not invoked before Accepted" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     request_id = "request-handler-cancel-before-accepted"
 
-    dispatch =
-      Task.async(fn ->
-        dispatch_with_deadline(
-          capacity_schedule(authority, node_id, request_id),
-          execute_request(request_id),
-          model_load_request(node_id),
-          client_impl: @pre_acceptance_cancel_client,
-          event_handler: fn _request_id, _event -> :cancel end
-        )
-      end)
+    assert_dispatch_failure(
+      dispatch_with_deadline(
+        capacity_schedule(authority, node_id, request_id),
+        execute_request(request_id),
+        model_load_request(node_id),
+        client_impl: @nonterminal_then_error_client,
+        event_handler: fn _request_id, _event -> :cancel end
+      ),
+      :stream_failed
+    )
 
-    assert_receive {:pre_acceptance_cancel_received, emitter}, 1_000
-    assert AllocationAuthority.claim_count(authority, node_id) == 1
-    send(emitter, :finish_cancel_after_acceptance)
-
-    assert_dispatch_failure(Task.await(dispatch), :request_caller_disconnect)
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 

@@ -2429,6 +2429,149 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert length(Orchard.Repo.all(Orchard.Requests.Request)) == 1
   end
 
+  test "SPEC 5.8 selects and flushes the sole final uncommitted attempt before persistence", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.progress("prefill", "working"),
+      InferenceEvent.output_text_delta(""),
+      InferenceEvent.completed(:finish_reason_stop, nil)
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-final-uncommitted")
+    canonical = canonical_request("request-orchestrator-final-uncommitted", stream?: false)
+    owner = self()
+
+    handler = fn request_id, event ->
+      send(owner, {:delivered, request_id, event})
+      :ok
+    end
+
+    assert {:ok, ^canonical, events} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    delivered =
+      Enum.map(events, fn expected ->
+        assert_receive {:delivered, request_id, event}
+        assert request_id == canonical.public_id
+        assert event == expected
+        event
+      end)
+
+    assert delivered == events
+    refute_receive {:delivered, _, _}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["output_committed"] == false
+    refute Map.has_key?(terminal_result, "output_commitment_kind")
+    refute Enum.any?(Requests.list_request_step_events(request), &(&1.attempt == 2))
+  end
+
+  test "SPEC 5.8 persists text and tool commitment and advances tool output through streaming", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    cases = [
+      {:text, InferenceEvent.output_text_delta("hello"), :finish_reason_stop},
+      {:tool_call, InferenceEvent.tool_call_delta("call-stable", ""), :finish_reason_tool_calls}
+    ]
+
+    for {kind, output_event, finish_reason} <- cases do
+      put_runtime_events([
+        output_event,
+        InferenceEvent.completed(finish_reason, nil)
+      ])
+
+      model =
+        create_active_model!(bundle, "request-orchestrator-commitment-#{kind}",
+          capabilities: ["chat", "tool_calling"]
+        )
+
+      canonical =
+        canonical_request("request-orchestrator-commitment-#{kind}", stream?: false)
+
+      owner = self()
+
+      assert {:ok, ^canonical, events} =
+               RequestOrchestrator.execute(canonical, model,
+                 event_handler: fn request_id, event ->
+                   send(owner, {:committed_delivery, request_id, event})
+                   :ok
+                 end
+               )
+
+      Enum.each(events, fn expected ->
+        assert_receive {:committed_delivery, request_id, ^expected}
+        assert request_id == canonical.public_id
+      end)
+
+      refute_receive {:committed_delivery, _, _}
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+
+      terminal_result =
+        Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+      assert terminal_result["output_committed"]
+      assert terminal_result["output_commitment_kind"] == Atom.to_string(kind)
+      refute Map.has_key?(terminal_result, "retry_decision")
+      assert :streaming in request_event_states(request)
+
+      if kind == :text do
+        assert %DateTime{} = request.first_token_at
+      else
+        assert request.first_token_at == nil
+      end
+    end
+  end
+
+  test "SPEC 5.8 persists committed handler failure as non-retryable attempt evidence", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.output_text_delta("committed"),
+      InferenceEvent.completed(:finish_reason_stop, nil)
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-handler-failure")
+    canonical = canonical_request("request-orchestrator-handler-failure", stream?: true)
+
+    handler = fn _request_id, event ->
+      if InferenceEvent.kind(event) == :output_text_delta,
+        do: {:error, :serializer_failed},
+        else: :ok
+    end
+
+    assert {:error, {:dispatch_failed, "orchestration_error"}} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :failed
+
+    states = request_event_states(request)
+    assert state_before?(states, :running, :streaming)
+    assert state_before?(states, :streaming, :failed)
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["attempt_outcome"] == "failed"
+    assert terminal_result["output_committed"]
+    assert terminal_result["output_commitment_kind"] == "text"
+    assert terminal_result["failure_class"] == "controller_failure"
+    assert terminal_result["retry_decision"] == "output_committed"
+    refute Enum.any?(Requests.list_request_step_events(request), &(&1.attempt == 2))
+  end
+
   test "execute/3 persists first_token_at for successful requests with output", %{bundle: bundle} do
     model = create_active_model!(bundle, "request-orchestrator-success")
     canonical = canonical_request("request-orchestrator-success", stream?: false)
@@ -2828,6 +2971,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
        %{bundle: bundle} do
     put_capturing_runtime_adapter_config()
 
+    put_runtime_events([
+      InferenceEvent.output_text_delta("committed"),
+      InferenceEvent.completed(:finish_reason_stop, nil)
+    ])
+
     model = create_active_model!(bundle, "request-orchestrator-success-persistence-failure")
 
     canonical =
@@ -2846,10 +2994,52 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :failed
 
-    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+    step_events = Requests.list_request_step_events(request)
+
+    assert Enum.map(step_events, & &1.event_type) == [
              "request_step.started",
              "request_step.failed"
            ]
+
+    terminal_result = List.last(step_events).result
+    assert terminal_result["output_committed"]
+    assert terminal_result["output_commitment_kind"] == "text"
+    assert terminal_result["retry_decision"] == "output_committed"
+  end
+
+  test "execute/3 catches success_persistence exception, exit, and throw after commitment",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.output_text_delta("committed"),
+      InferenceEvent.completed(:finish_reason_stop, nil)
+    ])
+
+    cases = [
+      {:exception, fn _canonical_request, _events -> raise "persistence exception" end},
+      {:exit, fn _canonical_request, _events -> exit(:persistence_exit) end},
+      {:throw, fn _canonical_request, _events -> throw(:persistence_throw) end}
+    ]
+
+    Enum.each(cases, fn {kind, success_persistence} ->
+      id = "request-orchestrator-success-persistence-#{kind}"
+      model = create_active_model!(bundle, id)
+      canonical = canonical_request(id, stream?: false)
+
+      assert {:error, {:success_persistence_failed, {^kind, _reason}}} =
+               RequestOrchestrator.execute(canonical, model,
+                 success_persistence: success_persistence
+               )
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      assert request.state == :failed
+
+      terminal_result = request |> Requests.list_request_step_events() |> List.last()
+      assert terminal_result.result["output_committed"]
+      assert terminal_result.result["output_commitment_kind"] == "text"
+      assert terminal_result.result["retry_decision"] == "output_committed"
+    end)
   end
 
   test "execute/3 surfaces terminal persistence failures on dispatch-error failure paths and leaves FSM non-terminal",

@@ -86,6 +86,31 @@ defmodule Orchard.Dispatch.DispatchTest.TerminalContractClient do
     ]
   end
 
+  defp events_for(request_id)
+       when request_id in [
+              "req-dispatch-tool",
+              "req-dispatch-handler-commit-failure",
+              "req-dispatch-handler-post-commit-failure"
+            ] do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.tool_call_delta("call-stable", ""),
+      InferenceEvent.output_text_delta("later text"),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
+    ]
+  end
+
+  defp events_for(request_id)
+       when request_id in ["req-dispatch-uncommitted", "req-dispatch-final-flush-failure"] do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.progress("prefill", "working"),
+      InferenceEvent.usage_update(%Usage{input_tokens: 1, output_tokens: 0, total_tokens: 1}),
+      InferenceEvent.output_text_delta(""),
+      InferenceEvent.completed(:finish_reason_stop, nil)
+    ]
+  end
+
   defp events_for("req-dispatch-post-terminal-error") do
     [
       InferenceEvent.accepted(0),
@@ -354,6 +379,7 @@ defmodule Orchard.Dispatch.DispatchTest do
 
       handler = fn received_request_id, event ->
         send(self(), {:handler_event, received_request_id, event})
+        :ok
       end
 
       assert %AttemptOutcome{
@@ -366,6 +392,7 @@ defmodule Orchard.Dispatch.DispatchTest do
                  "raw_source_code" => "runtime_endpoint_missing_terminal"
                }
              } =
+               outcome =
                RequestDispatcher.dispatch(
                  build_schedule(request_id),
                  execute_request(request_id),
@@ -377,6 +404,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert InferenceEvent.kind(accepted) == :accepted
       assert %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = failed
       assert code == "runtime_endpoint_missing_terminal"
+      assert outcome.delivery_state == :pending
+      refute_received {:handler_event, ^request_id, _event}
+      selected = AttemptOutcome.select(outcome, request_id, handler)
+      assert selected.delivery_state == :selected
       assert_received {:handler_event, ^request_id, ^accepted}
       assert_received {:handler_event, ^request_id, ^failed}
       refute_received {:handler_event, ^request_id, _event}
@@ -389,6 +420,7 @@ defmodule Orchard.Dispatch.DispatchTest do
 
       handler = fn received_request_id, event ->
         send(self(), {:handler_event, received_request_id, event})
+        :ok
       end
 
       assert %AttemptOutcome{
@@ -401,6 +433,7 @@ defmodule Orchard.Dispatch.DispatchTest do
                  "raw_source_code" => "runtime_endpoint_duplicate_terminal"
                }
              } =
+               outcome =
                RequestDispatcher.dispatch(
                  build_schedule(request_id),
                  execute_request(request_id),
@@ -412,6 +445,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert InferenceEvent.kind(accepted) == :accepted
       assert %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = failed
       assert code == "runtime_endpoint_duplicate_terminal"
+      assert outcome.delivery_state == :pending
+      refute_received {:handler_event, ^request_id, _event}
+      selected = AttemptOutcome.select(outcome, request_id, handler)
+      assert selected.delivery_state == :selected
       assert_received {:handler_event, ^request_id, ^accepted}
       assert_received {:handler_event, ^request_id, ^failed}
       refute_received {:handler_event, ^request_id, _event}
@@ -425,6 +462,7 @@ defmodule Orchard.Dispatch.DispatchTest do
 
         handler = fn received_request_id, event ->
           send(self(), {:handler_event, received_request_id, event})
+          :ok
         end
 
         assert %AttemptOutcome{
@@ -437,6 +475,7 @@ defmodule Orchard.Dispatch.DispatchTest do
                    "raw_source_code" => "runtime_endpoint_post_terminal_event"
                  }
                } =
+                 outcome =
                  RequestDispatcher.dispatch(
                    build_schedule(request_id),
                    execute_request(request_id),
@@ -448,6 +487,10 @@ defmodule Orchard.Dispatch.DispatchTest do
         assert InferenceEvent.kind(accepted) == :accepted
         assert %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = failed
         assert code == "runtime_endpoint_post_terminal_event"
+        assert outcome.delivery_state == :pending
+        refute_received {:handler_event, ^request_id, _event}
+        selected = AttemptOutcome.select(outcome, request_id, handler)
+        assert selected.delivery_state == :selected
         assert_received {:handler_event, ^request_id, ^accepted}
         assert_received {:handler_event, ^request_id, ^failed}
         refute_received {:handler_event, ^request_id, _event}
@@ -570,6 +613,117 @@ defmodule Orchard.Dispatch.DispatchTest do
       refute inspect(context) =~ "127.0.0.1"
     end
 
+    test "SPEC 5.8 coordinates uncommitted, tool, and handler-failed dispatch delivery", %{
+      bundle: bundle
+    } do
+      owner = self()
+
+      handler = fn request_id, event ->
+        send(owner, {:handler_event, request_id, event})
+        :ok
+      end
+
+      uncommitted =
+        RequestDispatcher.dispatch(
+          build_schedule("req-dispatch-uncommitted"),
+          execute_request("req-dispatch-uncommitted"),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+          event_handler: handler,
+          on_accepted: fn request_id, _event ->
+            send(owner, {:accepted, request_id})
+            :ok
+          end
+        )
+
+      assert_received {:accepted, "req-dispatch-uncommitted"}
+      refute uncommitted.output_committed
+      assert uncommitted.delivery_state == :pending
+      assert uncommitted.first_token_at == nil
+      refute_received {:handler_event, "req-dispatch-uncommitted", _event}
+
+      selected = AttemptOutcome.select(uncommitted, "req-dispatch-uncommitted", handler)
+      assert selected.delivery_state == :selected
+      assert selected.delivered_event_count == length(selected.events)
+
+      tool =
+        RequestDispatcher.dispatch(
+          build_schedule("req-dispatch-tool"),
+          execute_request("req-dispatch-tool"),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+          event_handler: handler
+        )
+
+      assert tool.output_committed
+      assert tool.output_commitment_kind == :tool_call
+      assert %DateTime{} = tool.first_token_at
+      assert tool.delivery_state == :selected
+
+      commit_failure_handler = fn _request_id, event ->
+        if InferenceEvent.kind(event) == :accepted, do: raise("flush failed"), else: :ok
+      end
+
+      commit_failure =
+        RequestDispatcher.dispatch(
+          build_schedule("req-dispatch-handler-commit-failure"),
+          execute_request("req-dispatch-handler-commit-failure"),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+          event_handler: commit_failure_handler
+        )
+
+      assert commit_failure.attempt_outcome == :failed
+      assert commit_failure.output_committed
+      assert commit_failure.delivery_state == :failed
+      assert commit_failure.delivered_event_count == 0
+      assert commit_failure.failure["failure_class"] == "controller_failure"
+
+      post_commit_handler = fn _request_id, event ->
+        if InferenceEvent.kind(event) == :output_text_delta,
+          do: {:error, :serializer_failed},
+          else: :ok
+      end
+
+      post_commit_failure =
+        RequestDispatcher.dispatch(
+          build_schedule("req-dispatch-handler-post-commit-failure"),
+          execute_request("req-dispatch-handler-post-commit-failure"),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+          event_handler: post_commit_handler
+        )
+
+      assert post_commit_failure.attempt_outcome == :failed
+      assert post_commit_failure.output_commitment_kind == :tool_call
+      assert post_commit_failure.delivery_state == :failed
+      assert post_commit_failure.delivered_event_count == 2
+
+      pending_flush =
+        RequestDispatcher.dispatch(
+          build_schedule("req-dispatch-final-flush-failure"),
+          execute_request("req-dispatch-final-flush-failure"),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+        )
+
+      final_flush_handler = fn _request_id, event ->
+        if InferenceEvent.terminal?(event), do: {:error, :serializer_failed}, else: :ok
+      end
+
+      final_flush_failure =
+        AttemptOutcome.select(
+          pending_flush,
+          "req-dispatch-final-flush-failure",
+          final_flush_handler
+        )
+
+      refute final_flush_failure.output_committed
+      assert final_flush_failure.attempt_outcome == :failed
+      assert final_flush_failure.delivery_state == :failed
+      assert final_flush_failure.delivered_event_count == 4
+    end
+
     test "dispatches with event_handler callback", %{bundle: bundle} do
       schedule = build_schedule("req-dispatch-handler")
       execute = execute_request("req-dispatch-handler")
@@ -579,12 +733,21 @@ defmodule Orchard.Dispatch.DispatchTest do
 
       handler = fn request_id, event ->
         send(test_pid, {:handler_event, request_id, event})
+        :ok
       end
 
-      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true, events: events} =
-               RequestDispatcher.dispatch(schedule, execute, model_load, event_handler: handler)
+      assert %AttemptOutcome{
+               attempt_outcome: :completed,
+               accepted: true,
+               events: events,
+               output_committed: true,
+               output_commitment_kind: :text,
+               delivery_state: :selected,
+               delivered_event_count: delivered_event_count
+             } = RequestDispatcher.dispatch(schedule, execute, model_load, event_handler: handler)
 
       assert length(events) >= 3
+      assert delivered_event_count == length(events)
 
       # Verify handler received all events
       Enum.each(events, fn event ->
@@ -632,18 +795,15 @@ defmodule Orchard.Dispatch.DispatchTest do
       # Dispatch in a separate process, monitoring the caller
       dispatch_pid =
         spawn(fn ->
-          event_handler = fn
-            _request_id, %InferenceEvent{event: %InferenceEvent.Accepted{}} ->
-              send(test_pid, :dispatch_accepted)
-
-            _request_id, _event ->
-              :ok
+          on_accepted = fn _request_id, _event ->
+            send(test_pid, :dispatch_accepted)
+            :ok
           end
 
           result =
             RequestDispatcher.dispatch(schedule, execute, model_load,
               caller: caller,
-              event_handler: event_handler
+              on_accepted: on_accepted
             )
 
           send(test_pid, {:dispatch_result, result})
@@ -700,6 +860,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert %AttemptOutcome{
                attempt_outcome: :failed,
                accepted: false,
+               output_committed: false,
+               output_commitment_kind: nil,
+               delivery_state: :pending,
+               delivered_event_count: 0,
                failure: %{
                  "failure_class" => "model_load_failure",
                  "failure_code" => "runtime_unavailable",
@@ -732,6 +896,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert %AttemptOutcome{
                attempt_outcome: :failed,
                accepted: false,
+               output_committed: false,
+               output_commitment_kind: nil,
+               delivery_state: :pending,
+               delivered_event_count: 0,
                failure: %{
                  "failure_class" => "model_load_failure",
                  "failure_code" => "model_invalid",

@@ -174,6 +174,67 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
              )
   end
 
+  test "SPEC 5.8 gives attempt 1 commitment precedence while preserving closed attempt 2 rules" do
+    committed_failure =
+      failed_result(%{
+        "accepted" => true,
+        "output_committed" => true,
+        "output_commitment_kind" => "tool_call",
+        "execution_resolution" => "terminated",
+        "capacity_release_outcome" => "released",
+        "node_id" => @node_1,
+        "retry_decision" => "output_committed"
+      })
+
+    assert {:ok, _result} =
+             InferenceAttemptResult.new("request_step.failed", 1, committed_failure)
+
+    assert {:ok, _result} =
+             InferenceAttemptResult.new(
+               "request_step.cancelled",
+               1,
+               Map.merge(committed_failure, %{
+                 "attempt_outcome" => "cancelled",
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               })
+             )
+
+    assert {:error, "cancelled attempts require cancellation failure evidence"} =
+             InferenceAttemptResult.new(
+               "request_step.cancelled",
+               1,
+               Map.merge(committed_failure, %{
+                 "attempt_outcome" => "cancelled",
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "runtime_unavailable"
+               })
+             )
+
+    assert {:ok, _result} =
+             InferenceAttemptResult.new(
+               "request_step.cancelled",
+               1,
+               failed_result(%{
+                 "attempt_outcome" => "cancelled",
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect",
+                 "retry_decision" => "cancelled"
+               })
+             )
+
+    assert {:ok, _result} =
+             InferenceAttemptResult.new(
+               "request_step.failed",
+               2,
+               failed_result(%{
+                 "node_id" => @node_2,
+                 "excluded_node_ids" => [@node_1],
+                 "retry_decision" => "retry_exhausted"
+               })
+             )
+  end
+
   test "event outcome and attempt 2 exclusions fail closed" do
     failed = failed_result(%{"retry_decision" => "not_retryable"})
 

@@ -129,6 +129,7 @@ defmodule Orchard.API.ChatCompletionsController do
       conn: conn,
       closed: false,
       errored: false,
+      serializer_failed: false,
       role_sent: false,
       usage: nil
     })
@@ -157,7 +158,12 @@ defmodule Orchard.API.ChatCompletionsController do
     else
       new_state = handle_stream_event(state, event, public_id, model_display, created)
       Process.put(state_key, new_state)
-      if new_state.closed, do: :cancel, else: :ok
+
+      cond do
+        new_state.closed -> :cancel
+        new_state.serializer_failed -> {:error, :serializer_failed}
+        true -> :ok
+      end
     end
   end
 
@@ -250,8 +256,8 @@ defmodule Orchard.API.ChatCompletionsController do
 
   defp emit_internal_stream_error(state, message) do
     case SSE.send_error(state.conn, message, "server_error", code: "internal_error") do
-      {:ok, conn} -> %{state | conn: conn, errored: true}
-      {:error, :closed} -> %{state | closed: true, errored: true}
+      {:ok, conn} -> %{state | conn: conn, errored: true, serializer_failed: true}
+      {:error, :closed} -> %{state | closed: true, errored: true, serializer_failed: true}
     end
   end
 
