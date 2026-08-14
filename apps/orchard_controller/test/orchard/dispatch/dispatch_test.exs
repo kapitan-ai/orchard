@@ -165,12 +165,12 @@ defmodule Orchard.Dispatch.DispatchTest do
     StatusResponse
   }
 
+  alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: Client
-  alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Evaluator}
   alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.Inference
-  alias Orchard.Inference.ModelLoadFailure
+
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
@@ -309,7 +309,15 @@ defmodule Orchard.Dispatch.DispatchTest do
         |> Map.put(:node_id, target.node_id)
         |> put_capacity_input(ConformanceFixture.input())
 
-      assert {:error, {:dispatch_failed, :node_not_active}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "internal_error",
+                 "raw_source_code" => "node_not_active"
+               }
+             } =
                RequestDispatcher.dispatch(
                  schedule,
                  execute_request("req-admitted-dispatch-rejected"),
@@ -323,7 +331,8 @@ defmodule Orchard.Dispatch.DispatchTest do
       execute = execute_request("req-dispatch-e2e")
       model_load = model_load_request(bundle)
 
-      assert {:ok, events} = RequestDispatcher.dispatch(schedule, execute, model_load)
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true, events: events} =
+               RequestDispatcher.dispatch(schedule, execute, model_load)
 
       assert length(events) >= 3
       assert InferenceEvent.kind(hd(events)) == :accepted
@@ -347,7 +356,16 @@ defmodule Orchard.Dispatch.DispatchTest do
         send(self(), {:handler_event, received_request_id, event})
       end
 
-      assert {:ok, [accepted, failed]} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: true,
+               events: [accepted, failed],
+               failure: %{
+                 "failure_class" => "terminal_conformance",
+                 "failure_code" => "orchestration_error",
+                 "raw_source_code" => "runtime_endpoint_missing_terminal"
+               }
+             } =
                RequestDispatcher.dispatch(
                  build_schedule(request_id),
                  execute_request(request_id),
@@ -373,7 +391,16 @@ defmodule Orchard.Dispatch.DispatchTest do
         send(self(), {:handler_event, received_request_id, event})
       end
 
-      assert {:ok, [accepted, failed]} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: true,
+               events: [accepted, failed],
+               failure: %{
+                 "failure_class" => "terminal_conformance",
+                 "failure_code" => "orchestration_error",
+                 "raw_source_code" => "runtime_endpoint_duplicate_terminal"
+               }
+             } =
                RequestDispatcher.dispatch(
                  build_schedule(request_id),
                  execute_request(request_id),
@@ -400,7 +427,16 @@ defmodule Orchard.Dispatch.DispatchTest do
           send(self(), {:handler_event, received_request_id, event})
         end
 
-        assert {:ok, [accepted, failed]} =
+        assert %AttemptOutcome{
+                 attempt_outcome: :failed,
+                 accepted: true,
+                 events: [accepted, failed],
+                 failure: %{
+                   "failure_class" => "terminal_conformance",
+                   "failure_code" => "orchestration_error",
+                   "raw_source_code" => "runtime_endpoint_post_terminal_event"
+                 }
+               } =
                  RequestDispatcher.dispatch(
                    build_schedule(request_id),
                    execute_request(request_id),
@@ -423,7 +459,16 @@ defmodule Orchard.Dispatch.DispatchTest do
     } do
       request_id = "req-dispatch-post-terminal-error"
 
-      assert {:ok, [accepted, failed]} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: true,
+               events: [accepted, failed],
+               failure: %{
+                 "failure_class" => "terminal_conformance",
+                 "failure_code" => "orchestration_error",
+                 "raw_source_code" => "runtime_endpoint_post_terminal_event"
+               }
+             } =
                RequestDispatcher.dispatch(
                  build_schedule(request_id),
                  execute_request(request_id),
@@ -451,7 +496,15 @@ defmodule Orchard.Dispatch.DispatchTest do
       for {request_id, defect} <- defects do
         log =
           capture_log([level: :info], fn ->
-            assert {:ok, [_accepted, %InferenceEvent{event: %InferenceEvent.Failed{}}]} =
+            assert %AttemptOutcome{
+                     attempt_outcome: :failed,
+                     accepted: true,
+                     events: [_accepted, %InferenceEvent{event: %InferenceEvent.Failed{}}],
+                     failure: %{
+                       "failure_class" => "terminal_conformance",
+                       "failure_code" => "orchestration_error"
+                     }
+                   } =
                      RequestDispatcher.dispatch(
                        build_schedule(request_id),
                        execute_request(request_id),
@@ -474,7 +527,7 @@ defmodule Orchard.Dispatch.DispatchTest do
       execute = execute_request("req-dispatch-cleanup-raises")
       model_load = model_load_request(bundle)
 
-      assert {:ok, events} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true, events: events} =
                RequestDispatcher.dispatch(schedule, execute, model_load,
                  client_impl: Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
                )
@@ -489,7 +542,9 @@ defmodule Orchard.Dispatch.DispatchTest do
       execute = execute_request("req-dispatch-sentry")
       model_load = model_load_request(bundle)
 
-      assert {:ok, events} = RequestDispatcher.dispatch(schedule, execute, model_load)
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true, events: events} =
+               RequestDispatcher.dispatch(schedule, execute, model_load)
+
       assert Enum.any?(events, &InferenceEvent.terminal?/1)
 
       context = sentry_context()
@@ -526,7 +581,7 @@ defmodule Orchard.Dispatch.DispatchTest do
         send(test_pid, {:handler_event, request_id, event})
       end
 
-      assert {:ok, events} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true, events: events} =
                RequestDispatcher.dispatch(schedule, execute, model_load, event_handler: handler)
 
       assert length(events) >= 3
@@ -545,7 +600,15 @@ defmodule Orchard.Dispatch.DispatchTest do
       execute = execute_request("req-dispatch-timeout")
       model_load = model_load_request(bundle)
 
-      assert {:error, {:dispatch_failed, :request_timeout}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :timed_out,
+               accepted: false,
+               events: [],
+               failure: %{
+                 "failure_class" => "deadline",
+                 "failure_code" => "request_timeout"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, execute, model_load,
                  client_impl: Orchard.Dispatch.DispatchTest.NeverAcceptClient
                )
@@ -592,7 +655,7 @@ defmodule Orchard.Dispatch.DispatchTest do
       Process.exit(caller, :kill)
 
       # Dispatch should complete with events
-      assert_receive {:dispatch_result, {:ok, events}}, 10_000
+      assert_receive {:dispatch_result, %AttemptOutcome{events: events}}, 10_000
       assert events != []
       terminal = List.last(events)
       assert InferenceEvent.terminal?(terminal)
@@ -634,12 +697,16 @@ defmodule Orchard.Dispatch.DispatchTest do
           version: "v1"
         }
 
-      assert {:error, {:model_load_failed, %ModelLoadFailure{} = failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "runtime_unavailable",
+                 "raw_source_code" => "node_unavailable"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, execute, model_load)
-
-      assert failure.category == :runtime_unavailable
-      assert failure.code == "node_unavailable"
-      assert failure.message == "node runtime is unavailable"
     end
 
     test "dispatch returns error when ensure-load placement state is not LOADED" do
@@ -662,20 +729,16 @@ defmodule Orchard.Dispatch.DispatchTest do
           version: "v1"
         }
 
-      assert {:error, {:model_load_failed, %ModelLoadFailure{} = failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "model_invalid",
+                 "raw_source_code" => "missing_artifact_sha256"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, execute, model_load)
-
-      assert failure.category in [
-               :model_invalid,
-               :acquisition_failed,
-               :runtime_unavailable,
-               :timeout,
-               :resource_exhausted,
-               :internal
-             ]
-
-      assert is_binary(failure.code) and failure.code != ""
-      assert is_binary(failure.message) and failure.message != ""
     end
   end
 

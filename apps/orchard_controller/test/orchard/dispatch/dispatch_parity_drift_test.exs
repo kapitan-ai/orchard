@@ -73,7 +73,7 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
   use Orchard.DataCase, async: false
 
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
-  alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.Inference
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
@@ -101,7 +101,16 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
     attach_ref = attach_telemetry(@event)
 
     with_tokenizer_safe_mode(:on, fn ->
-      assert {:ok, events} = dispatch("req-parity-drift-stream")
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: true,
+               events: events,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "internal_error",
+                 "raw_source_code" => "prompt_token_ids_length_mismatch"
+               }
+             } = dispatch("req-parity-drift-stream")
 
       assert Enum.any?(events, fn
                %InferenceEvent{

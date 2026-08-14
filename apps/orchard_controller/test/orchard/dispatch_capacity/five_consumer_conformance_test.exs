@@ -100,6 +100,6 @@ defmodule Orchard.DispatchCapacity.FiveConsumerConformanceTest do
     assert hd(results).legacy_pre_cutover_claim_count == 1
     assert hd(results).available_slots == 1
     assert hd(results).eligible?
-    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 end

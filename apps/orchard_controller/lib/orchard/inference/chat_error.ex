@@ -127,7 +127,7 @@ defmodule Orchard.Inference.ChatError do
     do: build(:request_timed_out, source_code: "request_timeout")
 
   def from_execute_error({:dispatch_failed, :request_caller_disconnect}),
-    do: build(:request_interrupted, source_code: "request_caller_disconnect")
+    do: build(:request_cancelled, source_code: "request_caller_disconnect")
 
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
@@ -301,6 +301,21 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def api_mapping(%__MODULE__{
+        kind: :request_cancelled,
+        source_code: source_code,
+        source_message: message
+      })
+      when source_code in ["request_client_disconnect", "request_caller_disconnect"] do
+    %{
+      status: :internal_server_error,
+      type: "server_error",
+      code: "internal_error",
+      message: "Inference failed: #{message}",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: :request_cancelled}) do
     %{
       status: :internal_server_error,
@@ -467,6 +482,21 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def terminal_attrs(
+        %__MODULE__{
+          kind: :request_cancelled,
+          source_code: source_code
+        } = error
+      )
+      when source_code in ["request_client_disconnect", "request_caller_disconnect"] do
+    %{
+      state: :cancelled,
+      http_status: 499,
+      error_code: "request_caller_disconnect",
+      error_message: error.source_message || "Caller disconnected"
+    }
+  end
+
   def terminal_attrs(%__MODULE__{kind: :request_cancelled} = error) do
     %{
       state: :cancelled,
@@ -549,7 +579,7 @@ defmodule Orchard.Inference.ChatError do
 
   defp failed_event_kind(code)
        when code in ["request_client_disconnect", "request_caller_disconnect"],
-       do: :request_interrupted
+       do: :request_cancelled
 
   defp failed_event_kind(code)
        when code in [

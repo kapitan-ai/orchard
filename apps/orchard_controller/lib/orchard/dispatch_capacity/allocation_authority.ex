@@ -21,12 +21,21 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   defmodule Claim do
     @moduledoc "Opaque ownership proof for one live Node capacity claim."
 
-    @enforce_keys [:token, :node_id, :request_id, :kind, :owner, :monitor_ref]
+    @enforce_keys [
+      :token,
+      :authority_incarnation,
+      :node_id,
+      :request_id,
+      :kind,
+      :owner,
+      :monitor_ref
+    ]
     defstruct @enforce_keys
 
     @type kind :: :f11 | :legacy
     @type t :: %__MODULE__{
             token: reference(),
+            authority_incarnation: reference(),
             node_id: Ecto.UUID.t(),
             request_id: String.t(),
             kind: kind(),
@@ -64,6 +73,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
           | {:error, :dispatch_capacity_request_already_claimed, Evaluator.Result.t()}
 
   @type quarantine_error :: :dispatch_capacity_quarantine_store_unavailable
+  @type release_outcome :: :released | :already_released | :unresolved
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -86,15 +96,15 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     GenServer.call(server, {:acquire, node_id, request_id, input})
   end
 
-  @doc "Releases a claim idempotently."
-  @spec release(Claim.t()) :: :ok
+  @doc "Releases a claim idempotently and reports whether ownership was resolved."
+  @spec release(Claim.t()) :: release_outcome()
   def release(%Claim{} = claim), do: release(__MODULE__, claim)
 
-  @spec release(GenServer.server(), Claim.t()) :: :ok
+  @spec release(GenServer.server(), Claim.t()) :: release_outcome()
   def release(server, %Claim{} = claim) do
-    GenServer.call(server, {:release, claim.token})
+    GenServer.call(server, {:release, claim})
   catch
-    :exit, _reason -> :ok
+    :exit, _reason -> :unresolved
   end
 
   @doc """
@@ -399,6 +409,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   @impl true
   def init(%{quarantine_store: quarantine_store}) do
     base = %{
+      authority_incarnation: make_ref(),
       claims: %{},
       claim_counts: %{},
       request_claims: %{},
@@ -441,6 +452,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
           claim = %Claim{
             token: make_ref(),
+            authority_incarnation: state.authority_incarnation,
             node_id: node_id,
             request_id: request_id,
             kind: kind,
@@ -468,8 +480,9 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
     end
   end
 
-  def handle_call({:release, token}, _from, state) do
-    {:reply, :ok, remove_claim(state, token)}
+  def handle_call({:release, %Claim{} = claim}, _from, state) do
+    {outcome, state} = release_claim(state, claim)
+    {:reply, outcome, state}
   end
 
   def handle_call({:quarantine_node, node_id}, _from, state) when is_binary(node_id) do
@@ -722,6 +735,23 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
   defp apply_claim_delta({f11, legacy}, :f11, delta), do: {f11 + delta, legacy}
   defp apply_claim_delta({f11, legacy}, :legacy, delta), do: {f11, legacy + delta}
+
+  defp release_claim(%{quarantine_store_available?: false} = state, %Claim{}) do
+    {:unresolved, state}
+  end
+
+  defp release_claim(state, %Claim{authority_incarnation: incarnation})
+       when incarnation != state.authority_incarnation do
+    {:unresolved, state}
+  end
+
+  defp release_claim(state, %Claim{} = claim) do
+    case Map.get(state.claims, claim.token) do
+      ^claim -> {:released, remove_claim(state, claim.token)}
+      nil -> {:already_released, state}
+      _conflicting_claim -> {:unresolved, state}
+    end
+  end
 
   defp remove_claim(state, token) do
     case Map.pop(state.claims, token) do

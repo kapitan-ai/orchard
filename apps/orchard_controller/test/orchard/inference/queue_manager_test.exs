@@ -4,6 +4,7 @@ defmodule Orchard.Inference.QueueManagerTest do
   import Orchard.TestSupport.QueueAdmissionAPI,
     only: [assert_queue_metadata: 2, assert_queue_metadata: 3]
 
+  alias Orchard.DispatchCapacity.AllocationAuthority
   alias Orchard.Inference.QueueManager
   alias Orchard.Requests
   alias Orchard.Requests.{Request, RequestServer}
@@ -11,6 +12,27 @@ defmodule Orchard.Inference.QueueManagerTest do
   setup do
     QueueManager.reset()
     :ok
+  end
+
+  test "SPEC 4.6.2 dispatch-capacity release maps nil and preserves authority outcomes" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+
+    assert :not_applicable =
+             QueueManager.release_dispatch_capacity(nil, authority: authority)
+
+    stale_claim = %AllocationAuthority.Claim{
+      token: make_ref(),
+      authority_incarnation: make_ref(),
+      node_id: node_id,
+      request_id: "request-queue-release",
+      kind: :f11,
+      owner: self(),
+      monitor_ref: make_ref()
+    }
+
+    assert :unresolved =
+             QueueManager.release_dispatch_capacity(stale_claim, authority: authority)
   end
 
   test "grants one active request per model lane and releases idempotently" do
