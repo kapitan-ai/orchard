@@ -497,6 +497,21 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.PreAcceptanceCance
                 )
 
                 send(owner, {:runtime_endpoint_done, task_ref, :ok})
+
+              :finish_cancel_with_output ->
+                send(
+                  owner,
+                  {:runtime_endpoint_event, task_ref, request.request_id,
+                   InferenceEvent.output_text_delta("drained output")}
+                )
+
+                send(
+                  owner,
+                  {:runtime_endpoint_event, task_ref, request.request_id,
+                   InferenceEvent.failed("cancelled", "cancelled", false)}
+                )
+
+                send(owner, {:runtime_endpoint_done, task_ref, :ok})
             end
         end
       end)
@@ -1706,6 +1721,45 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
              capacity_release_outcome: :released
            } = Task.await(dispatch)
 
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC 5.9 output drained after pre-acceptance cancel is never delivered publicly" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = claim_node_id()
+    request_id = "request-drain-output-before-accepted"
+    test_pid = self()
+
+    schedule = %{
+      capacity_schedule(authority, node_id, request_id)
+      | request_timeout_ms: @expiring_request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
+    }
+
+    dispatch =
+      Task.async(fn ->
+        dispatch_with_deadline(schedule, execute_request(request_id), model_load_request(node_id),
+          client_impl: @pre_acceptance_cancel_client,
+          event_handler: fn _request_id, event ->
+            send(test_pid, {:drained_public_event, event})
+            :ok
+          end
+        )
+      end)
+
+    assert_receive {:pre_acceptance_cancel_received, emitter}, 1_000
+    send(emitter, :finish_cancel_with_output)
+
+    assert %AttemptOutcome{
+             attempt_outcome: :timed_out,
+             accepted: false,
+             output_committed: false,
+             output_commitment_kind: nil,
+             delivery_state: :pending,
+             delivered_event_count: 0
+           } = Task.await(dispatch)
+
+    refute_receive {:drained_public_event, _event}
     assert AllocationAuthority.claim_count(authority, node_id) == 0
   end
 

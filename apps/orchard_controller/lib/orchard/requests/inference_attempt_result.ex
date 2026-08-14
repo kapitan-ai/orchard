@@ -92,7 +92,7 @@ defmodule Orchard.Requests.InferenceAttemptResult do
          :ok <- validate_acceptance_resolution(normalized),
          :ok <- validate_outcome_fields(attempt, normalized),
          :ok <- validate_outcome_failure_consistency(normalized),
-         :ok <- validate_retry_consistency(attempt, normalized) do
+         :ok <- validate_retry_consistency(normalized) do
       validate_node_evidence(attempt, normalized)
     end
   end
@@ -281,8 +281,6 @@ defmodule Orchard.Requests.InferenceAttemptResult do
     do: {:error, "cancelled attempts require cancellation failure evidence"}
 
   defp validate_outcome_failure_consistency(_result), do: :ok
-
-  defp validate_retry_consistency(_attempt, result), do: validate_retry_consistency(result)
 
   defp validate_retry_consistency(%{
          "output_committed" => true,

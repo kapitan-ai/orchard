@@ -318,14 +318,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     accepted = Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Accepted{}}, &1))
     terminal = List.last(events)
     delivery = result_delivery(result)
-    attempt_outcome = delivery_attempt_outcome(delivery, attempt_outcome(result, terminal))
+    attempt_outcome = attempt_outcome(result, terminal)
 
     attrs = %{
       attempt_outcome: attempt_outcome,
       node_id: trusted_node_id(schedule),
       accepted: accepted,
       events: events,
-      failure: delivery_failure(delivery) || attempt_failure(result, terminal, attempt_outcome),
+      failure: attempt_failure(result, terminal, attempt_outcome),
       execution_resolution: execution_evidence || execution_resolution(result, terminal),
       capacity_release_outcome:
         effective_release_outcome(release_outcome, execution_evidence, safety_state),
@@ -339,7 +339,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     }
 
     {:ok, outcome} = AttemptOutcome.new(attrs)
-    outcome
+    apply_delivery_failure(outcome, delivery)
   end
 
   defp attempt_evidence(
@@ -370,36 +370,20 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp result_delivery({:ok, _events, %AttemptEventDelivery{} = delivery}), do: delivery
   defp result_delivery(_result), do: nil
 
-  defp delivery_attempt_outcome(%AttemptEventDelivery{} = delivery, attempt_outcome) do
-    case AttemptEventDelivery.failure_reason(delivery) do
-      :cancel -> :cancelled
-      reason when reason in [:serializer_failed, :event_handler_failed] -> :failed
-      nil -> attempt_outcome
-    end
-  end
-
-  defp delivery_attempt_outcome(nil, attempt_outcome), do: attempt_outcome
-
-  defp delivery_failure(%AttemptEventDelivery{} = delivery) do
+  defp apply_delivery_failure(outcome, %AttemptEventDelivery{} = delivery) do
     case AttemptEventDelivery.failure_reason(delivery) do
       :cancel ->
-        InferenceAttemptFailure.normalize(%{
-          category: :cancellation,
-          code: :request_client_disconnect
-        })
+        AttemptOutcome.cancel_delivery(outcome, outcome.delivered_event_count)
 
       reason when reason in [:serializer_failed, :event_handler_failed] ->
-        InferenceAttemptFailure.normalize(%{
-          category: :controller,
-          code: :orchestration_error
-        })
+        AttemptOutcome.fail_delivery(outcome, outcome.delivered_event_count)
 
       nil ->
-        nil
+        outcome
     end
   end
 
-  defp delivery_failure(nil), do: nil
+  defp apply_delivery_failure(outcome, nil), do: outcome
 
   defp delivery_output_committed?(%AttemptEventDelivery{} = delivery),
     do: AttemptEventDelivery.output_committed?(delivery)
@@ -1531,7 +1515,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp handle_stream_event(%{terminal_event: nil} = loop_ctx, events, event) do
     cond do
-      pre_acceptance_nonterminal_event?(loop_ctx, event) ->
+      isolated_nonterminal_event?(loop_ctx, event) ->
         metrics = increment_event_count(loop_ctx.metrics)
         receive_loop(%{loop_ctx | metrics: metrics}, events)
 
@@ -1571,11 +1555,16 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     receive_loop(loop_ctx, events)
   end
 
-  defp pre_acceptance_nonterminal_event?(%{accepted?: false}, event) do
-    not InferenceEvent.terminal?(event) and InferenceEvent.kind(event) != :accepted
+  defp isolated_nonterminal_event?(loop_ctx, event) do
+    isolated_attempt?(loop_ctx) and not InferenceEvent.terminal?(event) and
+      InferenceEvent.kind(event) != :accepted
   end
 
-  defp pre_acceptance_nonterminal_event?(_loop_ctx, _event), do: false
+  defp isolated_attempt?(%{
+         accepted?: accepted?,
+         cancellation_started_before_acceptance?: cancellation_started_before_acceptance?
+       }),
+       do: not accepted? or cancellation_started_before_acceptance?
 
   defp first_conformance_defect(:none, defect), do: defect
   defp first_conformance_defect(defect, _later_defect), do: defect
@@ -1735,23 +1724,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     cancel_deadline =
       System.monotonic_time(:millisecond) + loop_ctx.cancel_drain_timeout_ms
 
-    result = drain_until_terminal_or_done(loop_ctx, events, cancel_reason, cancel_deadline)
-
-    if cancel_reason == :event_handler_failed do
-      case result do
-        {:ok, _events, %Metrics{conformance_defect: defect}, _delivery}
-        when defect != :none ->
-          result
-
-        {:ok, _events, _metrics, _delivery} ->
-          result
-
-        {:error, _reason} = error ->
-          error
-      end
-    else
-      result
-    end
+    drain_until_terminal_or_done(loop_ctx, events, cancel_reason, cancel_deadline)
   end
 
   defp cancel_inference_safely(client, channel, request_id, controller_session_id) do
@@ -1790,25 +1763,32 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp handle_drain_event(%{terminal_event: nil} = loop_ctx, events, event, reason, deadline) do
-    metrics = update_metrics_for_event(loop_ctx.metrics, event)
+    cond do
+      isolated_nonterminal_event?(loop_ctx, event) ->
+        metrics = increment_event_count(loop_ctx.metrics)
+        drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, reason, deadline)
 
-    if InferenceEvent.terminal?(event) do
-      drain_until_terminal_or_done(
-        %{loop_ctx | metrics: metrics, terminal_event: event},
-        events,
-        reason,
-        deadline
-      )
-    else
-      loop_ctx = maybe_record_acceptance(loop_ctx, event)
-      loop_ctx = loop_ctx |> record_delivery(event) |> Map.put(:metrics, metrics)
+      InferenceEvent.terminal?(event) ->
+        metrics = update_metrics_for_event(loop_ctx.metrics, event)
 
-      drain_until_terminal_or_done(
-        loop_ctx,
-        [event | events],
-        reason,
-        deadline
-      )
+        drain_until_terminal_or_done(
+          %{loop_ctx | metrics: metrics, terminal_event: event},
+          events,
+          reason,
+          deadline
+        )
+
+      true ->
+        metrics = update_metrics_for_event(loop_ctx.metrics, event)
+        loop_ctx = maybe_record_acceptance(loop_ctx, event)
+        loop_ctx = loop_ctx |> record_delivery(event) |> Map.put(:metrics, metrics)
+
+        drain_until_terminal_or_done(
+          loop_ctx,
+          [event | events],
+          reason,
+          deadline
+        )
     end
   end
 
