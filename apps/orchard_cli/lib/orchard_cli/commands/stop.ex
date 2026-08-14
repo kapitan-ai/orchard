@@ -6,7 +6,7 @@ defmodule OrchardCLI.Commands.Stop do
   Boots out the controller and node agent in reverse dependency order.
   """
 
-  alias OrchardCLI.Commands.LifecycleSupport
+  alias OrchardCLI.Commands.{LifecycleSupport, ManagedNodeAgentStop}
 
   # ── Public API ──────────────────────────────────────────────────────
 
@@ -45,6 +45,14 @@ defmodule OrchardCLI.Commands.Stop do
     end
   end
 
+  defp stop_service(%{id: :node_agent} = service, runtime) do
+    runtime
+    |> Map.get(:managed_node_agent_stop, &ManagedNodeAgentStop.stop/2)
+    |> then(& &1.(service, runtime))
+  end
+
+  defp stop_service(service, runtime), do: LifecycleSupport.ensure_stopped(service, runtime)
+
   defp stop_services(runtime, role) do
     services = LifecycleSupport.services(:stop, runtime)
 
@@ -60,7 +68,7 @@ defmodule OrchardCLI.Commands.Stop do
   defp bootout_all([], _runtime, acc), do: {:ok, Enum.reverse(acc)}
 
   defp bootout_all([svc | rest], runtime, acc) do
-    case LifecycleSupport.ensure_stopped(svc, runtime) do
+    case stop_service(svc, runtime) do
       {:stopped, _} = result ->
         bootout_all(rest, runtime, [result | acc])
 
