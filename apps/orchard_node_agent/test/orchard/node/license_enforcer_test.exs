@@ -122,7 +122,10 @@ defmodule Orchard.Node.LicenseEnforcerTest do
       end)
 
     assert_received :licensing_inspected
-    assert log == ""
+    # `capture_log/2` captures every process in the umbrella test VM, so
+    # unrelated background warnings (metrics degradation, for one) land in this
+    # window. Assert the enforcer stayed silent instead of the whole VM.
+    refute log =~ "Node-agent startup license"
   end
 
   test "invalid enforcement values fail fast before license inspection", %{
