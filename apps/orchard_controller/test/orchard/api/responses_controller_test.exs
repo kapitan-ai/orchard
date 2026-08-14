@@ -206,7 +206,7 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     # first_token_at must be persisted for successful requests with output
     request = Requests.get_request_by_public_id(body["id"])
-    assert request.first_token_at != nil
+    assert_text_commitment!(request)
 
     full_conn =
       post_responses(
@@ -224,6 +224,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert full_request.payload_capture_mode == :full
     assert full_request.canonical_request["endpoint"] == "responses"
     assert full_request.response_payload == full_body
+    assert_text_commitment!(full_request)
 
     for params <- [
           %{"model" => "responses-success-model@v1", "input" => "store omitted"},
@@ -275,6 +276,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert none_request.canonical_request == nil
     assert none_request.request_shape == nil
     assert none_request.response_payload == nil
+    assert_text_commitment!(none_request)
   end
 
   test "successful non-stream request can return function_call output items" do
@@ -895,7 +897,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     # first_token_at must be persisted for successful streaming requests
     response_id = terminal.data["response"]["id"]
     request = Requests.get_request_by_public_id(response_id)
-    assert request.first_token_at != nil
+    assert_text_commitment!(request)
     assert request.payload_capture_mode == :full
     assert request.canonical_request["stream"] == true
     assert request.response_payload == terminal.data["response"]
@@ -1196,8 +1198,10 @@ defmodule Orchard.API.ResponsesControllerTest do
       prepare: {:ok, stub_responses_canonical(true), %{}},
       events: [
         InferenceEvent.accepted(1_710_000_123_000),
-        InferenceEvent.tool_call_delta("call_0", "not-json")
+        InferenceEvent.tool_call_delta("call_0", "not-json"),
+        InferenceEvent.completed(:finish_reason_tool_calls, nil)
       ],
+      capture_handler_pid: self(),
       execute: {:ok, stub_responses_canonical(true), []}
     )
 
@@ -1234,6 +1238,54 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     body = collect_chunked_body(conn)
     refute String.contains?(body, "[DONE]")
+
+    assert_receive {:handler_result, :accepted, :ok}
+    assert_receive {:handler_result, :tool_call_delta, {:error, :serializer_failed}}
+    refute_receive {:handler_result, :completed, _result}
+  end
+
+  test "post-commit serializer failure keeps typed SSE shape and durable commitment",
+       %{bundle: bundle} do
+    put_queue_admission_config!()
+
+    put_blocking_runtime_adapter!(self(),
+      events: [
+        InferenceEvent.tool_call_delta("call-stable", "not-json"),
+        InferenceEvent.completed(:finish_reason_tool_calls, nil)
+      ]
+    )
+
+    create_queue_model!(bundle, "responses-queue-overlap-model")
+    %{token: token} = create_api_key_with_token!("responses-tool-serializer-failure")
+
+    task =
+      Task.async(fn ->
+        post_responses(
+          %{
+            "model" => "responses-queue-overlap-model@v1",
+            "input" => "call a tool",
+            "stream" => true
+          },
+          token
+        )
+      end)
+
+    assert_receive {:queue_admission_runtime_started, runtime_pid, request_id,
+                    "responses-queue-overlap-model"},
+                   2_000
+
+    send(runtime_pid, :queue_admission_runtime_release)
+    conn = Task.await(task, 5_000)
+    events = parse_typed_sse_events(conn)
+
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+    assert hd(events).data["response"]["status"] == "in_progress"
+    assert List.last(events).data["response"]["status"] == "failed"
+    refute String.contains?(collect_chunked_body(conn), "[DONE]")
+
+    request = Requests.get_request_by_public_id(request_id)
+    assert request.state == :failed
+    assert_tool_serializer_failure!(request)
   end
 
   test "SPEC 7.5.5 streaming terminal conformance failure emits response.failed" do
@@ -1552,14 +1604,34 @@ defmodule Orchard.API.ResponsesControllerTest do
       end
 
       if event_handler = Keyword.get(opts, :event_handler) do
-        Enum.each(Keyword.get(config, :events, []), fn event ->
-          event_handler.(canonical.public_id, event)
-        end)
+        _handler_result =
+          Enum.reduce_while(Keyword.get(config, :events, []), :ok, fn event, _acc ->
+            deliver_event(
+              event_handler,
+              canonical.public_id,
+              event,
+              Keyword.get(config, :capture_handler_pid)
+            )
+          end)
       end
 
       case Keyword.get(config, :execute) do
         nil -> {:ok, canonical, Keyword.get(config, :events, [])}
         result -> result
+      end
+    end
+
+    defp deliver_event(event_handler, request_id, event, capture_pid) do
+      result = event_handler.(request_id, event)
+
+      if capture_pid do
+        send(capture_pid, {:handler_result, Orchard.InferenceEvent.kind(event), result})
+      end
+
+      case result do
+        :ok -> {:cont, :ok}
+        :cancel -> {:halt, :cancel}
+        {:error, :serializer_failed} = error -> {:halt, error}
       end
     end
   end

@@ -26,6 +26,12 @@ defmodule Orchard.Inference.ResponsesOrchestrator do
     )
   end
 
+  @doc """
+  Executes the shared request pipeline for a prepared Responses request.
+
+  The optional `:event_handler` receives selected attempt events in order and
+  must return `:ok`, `:cancel`, or `{:error, :serializer_failed}`.
+  """
   @spec execute(CanonicalRequest.t(), map(), keyword()) :: orchestrate_result()
   def execute(canonical, model, opts \\ []) do
     response_created_at = Keyword.get(opts, :response_created_at, System.system_time(:second))

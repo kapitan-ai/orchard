@@ -63,10 +63,12 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
           send(owner, {:runtime_endpoint_event, ref, request.request_id, accepted})
           send(owner, {:runtime_endpoint_done, ref, {:error, reason}})
 
-        :accepted_until_cancel ->
+        mode when mode in [:accepted_until_cancel, :text_until_cancel] ->
           Registry.register(@registry, {:stream, request.request_id}, {owner, ref})
           send(parent, {:stream_registered, ref})
           send(owner, {:runtime_endpoint_event, ref, request.request_id, accepted})
+
+          maybe_emit_committed_text(mode, owner, ref, request.request_id)
 
           receive do
             :finish_after_cancel ->
@@ -78,7 +80,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
       end
     end)
 
-    if execute == :accepted_until_cancel do
+    if execute in [:accepted_until_cancel, :text_until_cancel] do
       receive do
         {:stream_registered, ^ref} -> :ok
       after
@@ -88,6 +90,15 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
 
     {:ok, ref}
   end
+
+  defp maybe_emit_committed_text(:text_until_cancel, owner, ref, request_id) do
+    send(
+      owner,
+      {:runtime_endpoint_event, ref, request_id, InferenceEvent.output_text_delta("committed")}
+    )
+  end
+
+  defp maybe_emit_committed_text(_mode, _owner, _ref, _request_id), do: :ok
 
   def cancel_inference(_channel, %Operation.CancelRequest{} = request, opts) do
     send(config().capture_pid, {:cancel_inference_called, request, opts})
@@ -797,10 +808,10 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
     test "handler cancellation records cancel and synthesized terminal breadcrumbs", ctx do
       enable_controller_sentry()
-      configure_stub(%{execute: {:accepted_then_error, :client_closed}})
+      configure_stub(%{execute: :text_until_cancel})
 
       handler = fn _request_id, event ->
-        if Orchard.InferenceEvent.kind(event) == :accepted, do: :cancel, else: :ok
+        if Orchard.InferenceEvent.kind(event) == :output_text_delta, do: :cancel, else: :ok
       end
 
       assert %AttemptOutcome{

@@ -137,6 +137,7 @@ defmodule Orchard.API.ResponsesController do
       conn: conn,
       closed: false,
       terminal_sent: false,
+      serializer_failed: false,
       output_done_sent: false,
       output_delta_sent: false,
       output_chunks: [],
@@ -168,7 +169,12 @@ defmodule Orchard.API.ResponsesController do
     else
       new_state = handle_stream_event(state, event, canonical, created)
       Process.put(state_key, new_state)
-      if new_state.closed, do: :cancel, else: :ok
+
+      cond do
+        new_state.closed -> :cancel
+        new_state.serializer_failed -> {:error, :serializer_failed}
+        true -> :ok
+      end
     end
   end
 
@@ -331,6 +337,7 @@ defmodule Orchard.API.ResponsesController do
           )
         )
         |> Map.put(:terminal_sent, true)
+        |> Map.put(:serializer_failed, true)
     end
   end
 

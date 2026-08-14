@@ -272,6 +272,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert request.response_payload == nil
       assert request.response_preview == nil
       assert request.response_hash != nil
+      assert_text_commitment!(request)
 
       tenant
       |> Tenant.changeset(%{request_body_capture_mode: :full})
@@ -292,6 +293,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert full_request.payload_capture_mode == :full
       assert full_request.canonical_request["rendered_prompt"] =~ "retain in full mode"
       assert full_request.response_payload == full_body
+      assert_text_commitment!(full_request)
 
       %{token: none_token, tenant: none_tenant} =
         create_api_key_with_token!("non-stream-none")
@@ -315,6 +317,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert none_request.canonical_request == nil
       assert none_request.request_shape == nil
       assert none_request.response_payload == nil
+      assert_text_commitment!(none_request)
     end
 
     @tag :db
@@ -1175,6 +1178,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       error_events = Enum.filter(events, fn {type, _} -> type == :error end)
       assert error_events == []
 
+      request = Requests.get_request_by_public_id(first_chunk["id"])
+      assert_text_commitment!(request)
+
       assert Sentry.Context.get_all().extra == %{}
       assert Sentry.Context.get_all().breadcrumbs == []
     end
@@ -1240,8 +1246,10 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         prepare: {:ok, stub_chat_canonical(), %{}},
         events: [
           InferenceEvent.accepted(1_710_000_123_000),
-          InferenceEvent.tool_call_delta("call_0", "not-json")
+          InferenceEvent.tool_call_delta("call_0", "not-json"),
+          InferenceEvent.completed(:finish_reason_tool_calls, nil)
         ],
+        capture_handler_pid: self(),
         execute: {:ok, stub_chat_canonical(), []}
       )
 
@@ -1261,6 +1269,56 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
              end)
 
       refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+
+      assert_receive {:handler_result, :accepted, :ok}
+      assert_receive {:handler_result, :tool_call_delta, {:error, :serializer_failed}}
+      refute_receive {:handler_result, :completed, _result}
+    end
+
+    test "post-commit serializer failure keeps public SSE shape and durable commitment",
+         %{bundle: bundle} do
+      put_queue_admission_config!()
+
+      put_blocking_runtime_adapter!(self(),
+        events: [
+          InferenceEvent.tool_call_delta("call-stable", "not-json"),
+          InferenceEvent.completed(:finish_reason_tool_calls, nil)
+        ]
+      )
+
+      create_queue_model!(bundle, "chat-queue-overlap-model")
+      %{token: token} = create_api_key_with_token!("chat-tool-serializer-failure")
+
+      task =
+        Task.async(fn ->
+          post_chat(
+            %{
+              "model" => "chat-queue-overlap-model@v1",
+              "messages" => [%{"role" => "user", "content" => "call a tool"}],
+              "stream" => true
+            },
+            token
+          )
+        end)
+
+      assert_receive {:queue_admission_runtime_started, runtime_pid, request_id,
+                      "chat-queue-overlap-model"},
+                     2_000
+
+      send(runtime_pid, :queue_admission_runtime_release)
+      conn = Task.await(task, 5_000)
+      events = parse_sse_body(conn.resp_body)
+
+      assert Enum.any?(events, fn
+               {:error, payload} -> payload["error"]["message"] == "Malformed tool call delta"
+               _other -> false
+             end)
+
+      refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+
+      request = Requests.get_request_by_public_id(request_id)
+      assert request.state == :failed
+      assert_tool_serializer_failure!(request)
     end
 
     test "SPEC 7.5.5 streaming terminal conformance failure emits one generic SSE error" do
@@ -1726,14 +1784,34 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       end
 
       if event_handler = Keyword.get(opts, :event_handler) do
-        Enum.each(Keyword.get(config, :events, []), fn event ->
-          event_handler.(canonical.public_id, event)
-        end)
+        _handler_result =
+          Enum.reduce_while(Keyword.get(config, :events, []), :ok, fn event, _acc ->
+            deliver_event(
+              event_handler,
+              canonical.public_id,
+              event,
+              Keyword.get(config, :capture_handler_pid)
+            )
+          end)
       end
 
       case Keyword.get(config, :execute) do
         nil -> {:ok, canonical, Keyword.get(config, :events, [])}
         result -> result
+      end
+    end
+
+    defp deliver_event(event_handler, request_id, event, capture_pid) do
+      result = event_handler.(request_id, event)
+
+      if capture_pid do
+        send(capture_pid, {:handler_result, Orchard.InferenceEvent.kind(event), result})
+      end
+
+      case result do
+        :ok -> {:cont, :ok}
+        :cancel -> {:halt, :cancel}
+        {:error, :serializer_failed} = error -> {:halt, error}
       end
     end
   end

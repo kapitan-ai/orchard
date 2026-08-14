@@ -71,8 +71,9 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   ## Options
 
-    * `:event_handler` — optional callback `fun(request_id, event)` called
-      with each `InferenceEvent` as it arrives from dispatch
+    * `:event_handler` - optional callback `fun(request_id, event)` called for
+      selected attempt events in order. It must return `:ok`, `:cancel`, or
+      `{:error, :serializer_failed}`.
     * `:caller` — optional pid to monitor for dispatch cancellation semantics
       (defaults to the current process)
     * `:idempotency` — optional tenant-scoped idempotency context built from
@@ -106,9 +107,10 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   ## Options
 
-    * `:event_handler` — optional callback `fun(request_id, event)` for
-      streaming-style event delivery
-    * `:caller` — optional pid forwarded to the dispatcher for cancellation
+    * `:event_handler` - optional callback `fun(request_id, event)` for selected,
+      ordered delivery. It must return `:ok`, `:cancel`, or
+      `{:error, :serializer_failed}`.
+    * `:caller` - optional pid forwarded to the dispatcher for cancellation
       monitoring
   """
   @spec orchestrate(map(), keyword()) :: orchestrate_result()

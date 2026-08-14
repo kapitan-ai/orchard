@@ -91,6 +91,7 @@ defmodule Orchard.Requests.InferenceAttemptResult do
          :ok <- validate_commitment(normalized),
          :ok <- validate_acceptance_resolution(normalized),
          :ok <- validate_outcome_fields(attempt, normalized),
+         :ok <- validate_outcome_failure_consistency(normalized),
          :ok <- validate_retry_consistency(normalized) do
       validate_node_evidence(attempt, normalized)
     end
@@ -270,6 +271,17 @@ defmodule Orchard.Requests.InferenceAttemptResult do
   defp validate_retry_decision(attempt, _decision),
     do: {:error, "retry_decision is invalid for attempt #{attempt}"}
 
+  defp validate_outcome_failure_consistency(%{
+         "attempt_outcome" => "cancelled",
+         "failure_class" => "cancellation"
+       }),
+       do: :ok
+
+  defp validate_outcome_failure_consistency(%{"attempt_outcome" => "cancelled"}),
+    do: {:error, "cancelled attempts require cancellation failure evidence"}
+
+  defp validate_outcome_failure_consistency(_result), do: :ok
+
   defp validate_retry_consistency(%{
          "output_committed" => true,
          "retry_decision" => decision
@@ -279,10 +291,11 @@ defmodule Orchard.Requests.InferenceAttemptResult do
 
   defp validate_retry_consistency(%{
          "attempt_outcome" => "cancelled",
+         "output_committed" => false,
          "retry_decision" => decision
        })
        when decision != "cancelled",
-       do: {:error, "cancelled attempts require cancelled retry decision"}
+       do: {:error, "uncommitted cancelled attempts require cancelled retry decision"}
 
   defp validate_retry_consistency(%{
          "retry_decision" => "retried",

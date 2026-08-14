@@ -50,17 +50,29 @@ defmodule Orchard.TestSupport.QueueAdmissionRuntimeAdapter do
   def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
 
   defp runtime_events(request) do
-    [
-      InferenceEvent.output_text_delta("queued ok"),
-      InferenceEvent.completed(
-        :finish_reason_stop,
-        %InferenceEvent.Usage{
-          input_tokens: request.input_tokens,
-          output_tokens: 2,
-          total_tokens: request.input_tokens + 2
-        }
-      )
-    ]
+    case configured_runtime_events() do
+      nil ->
+        [
+          InferenceEvent.output_text_delta("queued ok"),
+          InferenceEvent.completed(
+            :finish_reason_stop,
+            %InferenceEvent.Usage{
+              input_tokens: request.input_tokens,
+              output_tokens: 2,
+              total_tokens: request.input_tokens + 2
+            }
+          )
+        ]
+
+      events ->
+        events
+    end
+  end
+
+  defp configured_runtime_events do
+    :orchard_node_agent
+    |> Application.fetch_env!(:runtime)
+    |> Keyword.get(:queue_admission_test_events)
   end
 
   defp configured_max_concurrency do
@@ -100,6 +112,7 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
   alias Orchard.Inference
   alias Orchard.Inference.QueueManager
   alias Orchard.Repo
+  alias Orchard.Requests
   alias Orchard.Requests.Request
   alias Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.TestSupport.QueueAdmissionRuntimeAdapter
@@ -131,6 +144,7 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
 
   def put_blocking_runtime_adapter!(test_owner, opts \\ []) do
     max_concurrent_requests = Keyword.get(opts, :max_concurrent_requests, 3)
+    events = Keyword.get(opts, :events)
 
     runtime =
       Application.fetch_env!(:orchard_node_agent, :runtime)
@@ -140,9 +154,37 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
       |> Keyword.put(:worker_generation_mode, "batch")
       |> Keyword.put(:worker_max_concurrent_requests_per_model, max_concurrent_requests)
       |> Keyword.put(:test_only_allow_batch_admission_for_non_worker_adapters?, true)
+      |> Keyword.put(:queue_admission_test_events, events)
 
     Application.put_env(:orchard_node_agent, :runtime, runtime)
     Application.put_env(:orchard_controller, :queue_admission_api_runtime_owner, test_owner)
+  end
+
+  def assert_text_commitment!(request) do
+    attempt_event =
+      request
+      |> Requests.list_request_events()
+      |> Enum.find(&(&1.event_type == "request_step.completed"))
+
+    assert attempt_event.payload["result"]["output_committed"] == true
+    assert attempt_event.payload["result"]["output_commitment_kind"] == "text"
+    assert request.first_token_at != nil
+  end
+
+  def assert_tool_serializer_failure!(request) do
+    attempt_event =
+      request
+      |> Requests.list_request_events()
+      |> Enum.find(&(&1.event_type == "request_step.failed"))
+
+    result = attempt_event.payload["result"]
+    assert result["attempt_outcome"] == "failed"
+    assert result["output_committed"] == true
+    assert result["output_commitment_kind"] == "tool_call"
+    assert result["failure_class"] == "controller_failure"
+    assert result["failure_code"] == "orchestration_error"
+    assert result["retry_decision"] == "output_committed"
+    assert request.first_token_at == nil
   end
 
   def create_queue_model!(bundle, model_id) do

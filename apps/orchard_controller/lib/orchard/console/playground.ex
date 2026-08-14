@@ -18,7 +18,11 @@ defmodule OrchardConsole.Playground do
       {:playground, run_ref, :finished, {:error, error_map}}
 
   The `:started` message is sent after `prepare/2` succeeds and dispatch
-  begins. Events are forwarded as they arrive from the dispatcher.
+  begins. Events stay attempt-local until the dispatched attempt is selected
+  for delivery, so the events preceding Output Commitment arrive together, in
+  original order, with the committing event; later events are forwarded as they
+  arrive. An attempt that never commits output flushes its retained events in
+  original order when it resolves.
   `:finished` is always the last message, sent exactly once.
   """
 
