@@ -10,7 +10,8 @@
 - [x] 2.2 Add `portal_invite_tokens` with hash-only single-use tokens, expiry, redemption, and invalidation state.
 - [x] 2.3 Add Copy invite reissue that invalidates prior unused tokens, extends expiry, and returns plaintext only in the new URL.
 - [x] 2.4 Add invite redemption and password replacement with a slow password KDF and no SMTP dependency.
-- [x] 2.5 Add focused persistence and invite lifecycle tests for expiry, single use, reissue invalidation, and absent plaintext storage.
+- [ ] 2.5 Add focused persistence and invite lifecycle tests for expiry, single use, reissue invalidation, and absent plaintext storage.
+  Deferred because the landed tests cover single use, reissue invalidation, and hash-only storage, but do not exercise invite expiry.
 
 ## 3. Portal User Sessions And Login Throttle
 
@@ -19,7 +20,8 @@
 - [x] 3.3 Add throttle reservation by Organization fingerprint, Portal User or email fingerprint, and source fingerprint.
 - [x] 3.4 Add the bounded verifier pool and dummy-verify path with the same password-hasher cost.
 - [x] 3.5 Store only an opaque portal session token in the Phoenix session so LiveView mount can revalidate.
-- [x] 3.6 Add session, disable, replacement-invite, throttle, and verifier tests.
+- [ ] 3.6 Add session, disable, replacement-invite, throttle, and verifier tests.
+  Deferred because the landed tests do not exercise replacement-invite termination of an existing Portal User session.
 
 ## 4. Portal User-Owned Keys And Activation Curl
 
@@ -30,15 +32,18 @@
 - [x] 4.5 Keep operator-minted and legacy unowned portal keys absent from Developer Portal list and revoke paths.
 - [x] 4.6 Keep legacy unowned portal keys valid on the unchanged Bearer path and visible to operators.
 - [x] 4.7 Add deterministic activation-curl construction with untrusted model-identifier quoting and show-once secret handling.
-- [x] 4.8 Add cross-user isolation, per-user cap, legacy-key, operator-mint, revoke, and Bearer integration tests.
+- [ ] 4.8 Add cross-user isolation, per-user cap, legacy-key, operator-mint, revoke, and Bearer integration tests.
+  Deferred because the landed portal tests do not cover operator mint isolation or prove that portal revoke rejects the next Bearer request.
 
 ## 5. Isolated Developer Portal Surface
 
 - [x] 5.1 Register TLS-guarded invite, login, logout, and key routes with CSRF, secure headers, and no Console auth marker.
 - [x] 5.2 Add invite redemption and email-plus-password login without a shared Organization password fallback.
 - [x] 5.3 Add `OrchardPortal.KeysLive` with own-key list, show-once secret, isolated layouts, and chrome-absence tests.
-- [x] 5.4 Prove Portal User sessions cannot authorize Console, Operator API, Admin API, or Public Inference.
-- [x] 5.5 Prove `plain_http_localhost` returns `404` for every Developer Portal route.
+- [ ] 5.4 Prove Portal User sessions cannot authorize Console, Operator API, Admin API, or Public Inference.
+  Deferred because the landed tests prove isolated portal chrome and token storage, but do not present a Portal User session to each other authority surface.
+- [ ] 5.5 Prove `plain_http_localhost` returns `404` for every Developer Portal route.
+  Deferred because the landed degraded-mode tests cover login and invite GET routes, but not logout, session POST, invite POST, or key routes.
 
 ## 6. Operator Surface And Adjacent Docs
 
