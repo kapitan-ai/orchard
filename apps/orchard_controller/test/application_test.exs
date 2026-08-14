@@ -143,7 +143,7 @@ defmodule OrchardApplicationTest do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
     assert is_pid(Process.whereis(Orchard.Supervisor))
     assert is_pid(Process.whereis(Orchard.Metrics.Bootstrap))
-    assert Process.whereis(Orchard.Metrics.Supervisor) == nil
+    refute_metrics_generation()
   end
 
   test "SPEC.md §9.1 metrics raises and exits cannot exhaust root Controller supervision" do
@@ -164,7 +164,7 @@ defmodule OrchardApplicationTest do
       Process.sleep(20)
       assert Process.alive?(root)
       assert Process.alive?(bootstrap)
-      assert Process.whereis(Orchard.Metrics.Supervisor) == nil
+      refute_metrics_generation()
 
       :ok = Application.stop(:orchard_controller)
     end
@@ -206,7 +206,7 @@ defmodule OrchardApplicationTest do
 
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
     assert is_pid(Process.whereis(Orchard.Metrics.Bootstrap))
-    assert is_pid(wait_for_replacement(Orchard.Metrics.Supervisor, nil))
+    assert is_pid(wait_for_replacement(&metrics_generation/0, nil))
     refute :persistent_term.get({OrchardApplicationTest.FlakyMetricsReporter, :fail?})
   end
 
@@ -708,6 +708,21 @@ defmodule OrchardApplicationTest do
     assert String.ends_with?(licensing[:node_identity_path], "/tmp/test/data/node-id")
   end
 
+  defp refute_metrics_generation do
+    assert metrics_generation() == nil
+    assert Process.whereis(Orchard.Metrics.Supervisor) == nil
+  end
+
+  # The bootstrap starts a generation from `handle_continue/2`, so
+  # `Orchard.Metrics.Supervisor` is registered for the whole start attempt —
+  # including attempts that go on to fail — and that attempt can outlast the
+  # rest of Controller boot. `:sys.get_state/1` is ordered behind the continue,
+  # so it settles the attempt and reports the generation the bootstrap owns.
+  defp metrics_generation do
+    %{supervisor: supervisor} = :sys.get_state(Orchard.Metrics.Bootstrap)
+    supervisor
+  end
+
   defp membership_owner_specs(child_specs) do
     Enum.filter(child_specs, &match?({Orchard.ControllerInstances.MembershipOwner, _opts}, &1))
   end
@@ -742,7 +757,7 @@ defmodule OrchardApplicationTest do
   defp wait_for_replacement(_name, _previous, 0), do: flunk("supervised process was not replaced")
 
   defp wait_for_replacement(name, previous, attempts) do
-    case Process.whereis(name) do
+    case resolve_process(name) do
       replacement when is_pid(replacement) and replacement != previous ->
         replacement
 
@@ -751,6 +766,9 @@ defmodule OrchardApplicationTest do
         wait_for_replacement(name, previous, attempts - 1)
     end
   end
+
+  defp resolve_process(resolver) when is_function(resolver, 0), do: resolver.()
+  defp resolve_process(name), do: Process.whereis(name)
 
   defp test_runtime_client_target do
     [host: "127.0.0.1", port: test_node_agent_port()]
