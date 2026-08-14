@@ -308,7 +308,7 @@ defmodule OrchardApplicationTest do
                ConformanceFixture.input()
              )
 
-    assert :ok =
+    assert :released =
              QueueManager.release_dispatch_capacity(clean_claim,
                authority: replacement_authority
              )

@@ -1783,6 +1783,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert state_before?(states, :validated, :failed)
     assert :scheduled in states
     assert :dispatching in states
+
+    assert [started_step, failed_step] = Requests.list_request_step_events(request)
+    assert started_step.event_type == "request_step.started"
+    assert failed_step.event_type == "request_step.failed"
+    assert failed_step.result["error_code"] == "orchestration_error"
+    refute Map.has_key?(failed_step.result, "attempt_outcome")
   end
 
   test "queue admission enabled records immediate grant metadata before dispatch", %{
@@ -2445,12 +2451,33 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     model = create_active_model!(bundle, "request-orchestrator-start-failure")
     canonical = canonical_request("request-orchestrator-start-failure", stream?: false)
 
-    assert {:error, {:model_load_failed, _}} = RequestOrchestrator.execute(canonical, model)
+    assert {:error,
+            {:model_load_failed,
+             %Orchard.Inference.ModelLoadFailure{
+               category: :runtime_unavailable,
+               code: "runtime_unavailable"
+             }}} = RequestOrchestrator.execute(canonical, model)
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request != nil
     assert request.state == :failed
     assert request.first_token_at == nil
+
+    step_events = Requests.list_request_step_events(request)
+
+    assert Enum.map(step_events, & &1.event_type) == [
+             "request_step.started",
+             "request_step.failed"
+           ]
+
+    terminal_result = List.last(step_events).result
+    assert terminal_result["attempt_outcome"] == "failed"
+    assert terminal_result["accepted"] == false
+    assert terminal_result["execution_resolution"] == "not_started"
+    assert terminal_result["failure_class"] == "model_load_failure"
+    assert terminal_result["failure_code"] == "runtime_unavailable"
+    assert terminal_result["retry_decision"] == "not_retryable"
+    refute Enum.any?(step_events, &(&1.attempt == 2))
   end
 
   test "execute/3 persists inference-turn started and completed request_step events around dispatch",
@@ -2479,15 +2506,18 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
               "inference_turn:t1:a1"}
            ]
 
-    assert Enum.map(step_events, & &1.result) == [
-             %{},
-             %{
-               "finish_reason" => "stop",
-               "http_status" => 200,
-               "input_tokens" => 1,
-               "output_tokens" => 0
-             }
-           ]
+    assert [%{}, terminal_result] = Enum.map(step_events, & &1.result)
+    assert terminal_result["attempt_outcome"] == "completed"
+    assert terminal_result["accepted"]
+    assert terminal_result["execution_resolution"] == "terminated"
+    assert terminal_result["capacity_release_outcome"] in ["released", "not_applicable"]
+    assert terminal_result["excluded_node_ids"] == []
+    assert terminal_result["finish_reason"] == "stop"
+    assert terminal_result["http_status"] == 200
+    assert terminal_result["input_tokens"] == 1
+    assert terminal_result["output_tokens"] == 0
+    assert Enum.count(step_events, &(&1.attempt == 1)) == 2
+    refute Enum.any?(step_events, &(&1.attempt == 2))
 
     assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
   end
@@ -2547,7 +2577,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert started_step.event_type == "request_step.started"
     assert terminal_step.event_type == "request_step.failed"
     refute Map.has_key?(terminal_step.result, "finish_reason")
-    assert terminal_step.result["error_code"] == "runtime_endpoint_missing_terminal"
+    assert terminal_step.result["failure_class"] == "terminal_conformance"
+    assert terminal_step.result["failure_code"] == "orchestration_error"
+    assert terminal_step.result["raw_source_code"] == "runtime_endpoint_missing_terminal"
 
     assert wait_until(fn ->
              RequestServer.get_state(request.id) == {:error, :not_found}
@@ -2583,20 +2615,24 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_capturing_runtime_adapter_config()
 
     cases = [
-      {"tool_choice_not_satisfied", "tool choice not satisfied", :failed, "request_step.failed"},
-      {"request_cancelled", "request was cancelled", :cancelled, "request_step.cancelled"},
-      {"deadline_exceeded", "request timed out", :timed_out, "request_step.timed_out"},
-      {"request_client_disconnect", "caller disconnected", :interrupted,
-       "request_step.interrupted"}
+      {"tool_choice_not_satisfied", "tool choice not satisfied", :failed, "request_step.failed",
+       "runtime_failure", "internal_error"},
+      {"request_cancelled", "request was cancelled", :cancelled, "request_step.cancelled",
+       "cancellation", "request_cancelled"},
+      {"deadline_exceeded", "request timed out", :timed_out, "request_step.timed_out", "deadline",
+       "deadline_exceeded"},
+      {"request_client_disconnect", "caller disconnected", :cancelled, "request_step.cancelled",
+       "cancellation", "request_caller_disconnect"}
     ]
 
-    Enum.each(cases, fn {code, message, expected_state, expected_event_type} ->
+    Enum.each(cases, fn {code, message, expected_state, expected_event_type, failure_class,
+                         failure_code} ->
       put_runtime_events([InferenceEvent.failed(code, message, false)])
 
-      model = create_active_model!(bundle, "request-orchestrator-terminal-#{expected_state}")
+      model = create_active_model!(bundle, "request-orchestrator-terminal-#{code}")
 
       canonical =
-        canonical_request("request-orchestrator-terminal-#{expected_state}", stream?: false)
+        canonical_request("request-orchestrator-terminal-#{code}", stream?: false)
 
       step_event_appender = started_only_step_event_appender(self())
 
@@ -2613,6 +2649,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       assert request.state == expected_state
       assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
 
+      if code == "request_client_disconnect" do
+        assert request.error_code == "request_caller_disconnect"
+        assert request.http_status == 499
+      end
+
       step_events = Requests.list_request_step_events(request)
 
       assert Enum.map(step_events, & &1.event_type) == [
@@ -2621,7 +2662,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
              ]
 
       terminal_step = List.last(step_events)
-      assert terminal_step.result["error_code"] == request.error_code
+      assert terminal_step.result["attempt_outcome"] == Atom.to_string(expected_state)
+      assert terminal_step.result["failure_class"] == failure_class
+      assert terminal_step.result["failure_code"] == failure_code
       assert terminal_step.result["error_message"] == request.error_message
       assert terminal_step.result["http_status"] == request.http_status
     end)

@@ -110,7 +110,7 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
-  test "caller disconnect event persists as interrupted while preserving SSE payload" do
+  test "caller disconnect event persists as cancelled while preserving API and SSE payloads" do
     event = InferenceEvent.failed("request_caller_disconnect", "caller exited", false)
     error = ChatError.from_failed_event(event)
 
@@ -130,8 +130,8 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
 
     assert ChatError.terminal_attrs(error) == %{
-             state: :interrupted,
-             http_status: 500,
+             state: :cancelled,
+             http_status: 499,
              error_code: "request_caller_disconnect",
              error_message: "caller exited"
            }

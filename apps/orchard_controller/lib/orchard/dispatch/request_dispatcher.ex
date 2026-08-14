@@ -45,6 +45,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   use Orchard.DispatchCapacity.Consumer, wiring: :final_dispatch_revalidation
 
+  alias Orchard.Dispatch.AttemptOutcome
   alias Orchard.DomainMetrics
   alias Orchard.Inference
   alias Orchard.Inference.{ModelLoadFailure, QueueManager, RequestDeadline}
@@ -58,13 +59,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     Target
   }
 
+  alias Orchard.Requests.InferenceAttemptFailure
   alias Orchard.SentryContext
   alias Orchard.Tokenizer.Telemetry
 
   require Logger
 
   @maximum_cancel_drain_timeout_ms 5_000
-  @pending_cancel_reconciliation_key {__MODULE__, :pending_cancel_reconciliation}
 
   @doc "Revalidates a recognized dispatch claim through the production QueueManager seam."
   @spec revalidate_dispatch_capacity(
@@ -93,6 +94,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               ensure_model_loaded_ms: :na,
               accepted_monotonic_ms: nil,
               first_delta_monotonic_ms: nil,
+              first_token_at: nil,
               terminal_monotonic_ms: nil,
               accepted_to_first_delta_ms: :na,
               accepted_to_terminal_ms: :na,
@@ -116,6 +118,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             ensure_model_loaded_ms: non_neg_integer() | :na,
             accepted_monotonic_ms: integer() | nil,
             first_delta_monotonic_ms: integer() | nil,
+            first_token_at: DateTime.t() | nil,
             terminal_monotonic_ms: integer() | nil,
             accepted_to_first_delta_ms: non_neg_integer() | :na,
             accepted_to_terminal_ms: non_neg_integer() | :na,
@@ -142,6 +145,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         ensure_model_loaded_ms: :na,
         accepted_monotonic_ms: nil,
         first_delta_monotonic_ms: nil,
+        first_token_at: nil,
         terminal_monotonic_ms: nil,
         accepted_to_first_delta_ms: :na,
         accepted_to_terminal_ms: :na,
@@ -177,10 +181,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
-  @type dispatch_result ::
-          {:ok, [InferenceEvent.t()]}
-          | {:error,
-             {:model_load_failed, ModelLoadFailure.t()} | {:dispatch_failed, term()} | term()}
+  @type dispatch_result :: AttemptOutcome.t()
 
   @doc """
   Dispatch an inference request to a Runtime Endpoint and stream events back to the caller.
@@ -215,12 +216,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:cancel_drain_timeout_ms` - bounded cancellation reconciliation grace period
                                  (default: the lesser of request timeout and 5 seconds)
 
-  Returns `{:ok, events}` with the caller-visible event sequence and exactly one
-  terminal event. Invalid duplicate or post-terminal worker events are withheld
-  and replaced by a stable conformance failure. Returns `{:error, reason}` if
-  dispatch fails before streaming begins.
-  Runtime Endpoint disconnect cleanup failures are logged and ignored after the
-  dispatch outcome is known.
+  Returns one `Orchard.Dispatch.AttemptOutcome` containing the ordered caller-visible
+  events and the evidence needed to persist this attempt. Invalid duplicate or
+  post-terminal worker events are withheld and replaced by a stable conformance
+  failure. Runtime Endpoint disconnect cleanup is reflected in execution and
+  release evidence when termination cannot be proved.
   """
   @spec dispatch(
           schedule :: map(),
@@ -282,21 +282,26 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       on_node_resolved: on_node_resolved
     }
 
-    try do
-      if timeout_ms <= 0 do
-        {:error, {:dispatch_failed, :dispatch_timeout}}
-      else
-        case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
-          :ok ->
-            dispatch_with_capacity_claim(context)
+    started_at = DateTime.truncate(now, :microsecond)
 
-          {:error, reason} ->
-            error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
-            put_dispatch_terminal_context(error_metrics, target)
-            emit_timing_log(error_metrics, {:error, {:dispatch_failed, reason}})
-            {:error, {:dispatch_failed, reason}}
+    try do
+      {result, release_outcome} =
+        if timeout_ms <= 0 do
+          {{:error, {:dispatch_failed, :dispatch_timeout}}, :not_applicable}
+        else
+          case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
+            :ok ->
+              dispatch_with_capacity_claim(context)
+
+            {:error, reason} ->
+              error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
+              put_dispatch_terminal_context(error_metrics, target)
+              emit_timing_log(error_metrics, {:error, {:dispatch_failed, reason}})
+              {{:error, {:dispatch_failed, reason}}, :not_applicable}
+          end
         end
-      end
+
+      build_attempt_outcome(result, release_outcome, started_at, schedule)
     after
       Process.demonitor(caller_ref, [:flush])
     end
@@ -304,9 +309,178 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   # -- Private ---------------------------------------------------------------
 
+  defp build_attempt_outcome(result, release_outcome, started_at, schedule) do
+    {result, execution_evidence, safety_state, first_token_at} = attempt_evidence(result)
+    ended_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    events = result_events(result)
+    accepted = Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Accepted{}}, &1))
+    terminal = List.last(events)
+    attempt_outcome = attempt_outcome(result, terminal)
+
+    attrs = %{
+      attempt_outcome: attempt_outcome,
+      node_id: trusted_node_id(schedule),
+      accepted: accepted,
+      events: events,
+      failure: attempt_failure(result, terminal, attempt_outcome),
+      execution_resolution: execution_evidence || execution_resolution(result, terminal),
+      capacity_release_outcome:
+        effective_release_outcome(release_outcome, execution_evidence, safety_state),
+      started_at: started_at,
+      ended_at: ended_at,
+      first_token_at: first_token_at
+    }
+
+    {:ok, outcome} = AttemptOutcome.new(attrs)
+    outcome
+  end
+
+  defp attempt_evidence(
+         {:attempt_evidence, {:attempt_timing, result, first_token_at}, execution_resolution,
+          safety_state}
+       ),
+       do: {result, execution_resolution, safety_state, first_token_at}
+
+  defp attempt_evidence({:attempt_evidence, result, execution_resolution, safety_state}),
+    do: {result, execution_resolution, safety_state, nil}
+
+  defp attempt_evidence({:attempt_timing, result, first_token_at}),
+    do: {result, nil, :available, first_token_at}
+
+  defp attempt_evidence(result), do: {result, nil, :available, nil}
+
+  defp effective_release_outcome(_release_outcome, :unresolved, _safety_state), do: :unresolved
+
+  defp effective_release_outcome(_release_outcome, _execution_resolution, :unavailable),
+    do: :unresolved
+
+  defp effective_release_outcome(release_outcome, _execution_resolution, _safety_state),
+    do: release_outcome
+
+  defp result_events({:ok, events}) when is_list(events), do: events
+  defp result_events(_result), do: []
+
+  defp attempt_outcome(_result, %InferenceEvent{event: %InferenceEvent.Completed{}}),
+    do: :completed
+
+  defp attempt_outcome(_result, %InferenceEvent{event: %InferenceEvent.Failed{code: code}})
+       when code in ["deadline_exceeded", "request_timeout", "request_timed_out", "timed_out"],
+       do: :timed_out
+
+  defp attempt_outcome(_result, %InferenceEvent{event: %InferenceEvent.Failed{code: code}})
+       when code in [
+              "cancelled",
+              "request_cancelled",
+              "request_caller_disconnect",
+              "request_client_disconnect"
+            ],
+       do: :cancelled
+
+  defp attempt_outcome(_result, %InferenceEvent{event: %InferenceEvent.Failed{}}), do: :failed
+
+  defp attempt_outcome({:error, {:dispatch_failed, reason}}, _terminal)
+       when reason in [:dispatch_timeout, :request_timeout],
+       do: :timed_out
+
+  defp attempt_outcome({:error, {:dispatch_failed, reason}}, _terminal)
+       when reason in [:caller_disconnect, :request_caller_disconnect],
+       do: :cancelled
+
+  defp attempt_outcome(_result, _terminal), do: :failed
+
+  defp attempt_failure(_result, _terminal, :completed), do: nil
+
+  defp attempt_failure(
+         _result,
+         %InferenceEvent{event: %InferenceEvent.Failed{code: code}},
+         _outcome
+       ) do
+    InferenceAttemptFailure.normalize(failure_source(code))
+  end
+
+  defp attempt_failure(
+         {:error, {:model_load_failed, %ModelLoadFailure{} = failure}},
+         _terminal,
+         _outcome
+       ) do
+    evidence =
+      InferenceAttemptFailure.normalize(%{
+        category: :model_load,
+        code: failure.category,
+        phase: :model_load
+      })
+
+    if failure.code == evidence["failure_code"] do
+      evidence
+    else
+      Map.put(evidence, "raw_source_code", failure.code)
+    end
+  end
+
+  defp attempt_failure({:error, {:dispatch_failed, reason}}, _terminal, _outcome) do
+    InferenceAttemptFailure.normalize(failure_source(reason))
+  end
+
+  defp attempt_failure(_result, _terminal, _outcome),
+    do: InferenceAttemptFailure.normalize(%{category: :controller, code: :internal_error})
+
+  defp failure_source(reason) when reason in [:dispatch_timeout, :request_timeout],
+    do: %{category: :deadline, code: :request_timeout}
+
+  defp failure_source(reason) when reason in [:caller_disconnect, :request_caller_disconnect],
+    do: %{category: :cancellation, code: :request_caller_disconnect}
+
+  defp failure_source(code)
+       when code in ["deadline_exceeded", "request_timeout", "request_timed_out", "timed_out"],
+       do: %{category: :deadline, code: code}
+
+  defp failure_source(code)
+       when code in [
+              "cancelled",
+              "request_cancelled",
+              "request_caller_disconnect",
+              "request_client_disconnect"
+            ],
+       do: %{category: :cancellation, code: code}
+
+  defp failure_source(code)
+       when code in [
+              "runtime_endpoint_missing_terminal",
+              "runtime_endpoint_duplicate_terminal",
+              "runtime_endpoint_post_terminal_event"
+            ],
+       do: %{category: :terminal_conformance, code: code}
+
+  defp failure_source(reason)
+       when reason in [
+              :dispatch_capacity_unavailable,
+              :dispatch_capacity_facts_unavailable,
+              :dispatch_capacity_request_already_claimed,
+              :dispatch_capacity_revalidation_failed,
+              :dispatch_capacity_acceptance_gate_busy,
+              :dispatch_capacity_node_identity_mismatch,
+              :dispatch_capacity_quarantine_store_unavailable
+            ],
+       do: %{category: :capacity, code: reason}
+
+  defp failure_source(reason), do: %{category: :runtime, code: reason}
+
+  defp execution_resolution({:ok, _events}, %InferenceEvent{}), do: :terminated
+  defp execution_resolution(_result, _terminal), do: :not_started
+
+  defp trusted_node_id(schedule) do
+    case Map.get(schedule, :node_id) do
+      node_id when is_binary(node_id) ->
+        if match?({:ok, _uuid}, Ecto.UUID.cast(node_id)), do: node_id, else: nil
+
+      _node_id ->
+        nil
+    end
+  end
+
   defp dispatch_with_capacity_claim(%{schedule: schedule} = context) do
     if deadline_expired?(context) do
-      dispatch_timeout_result(context)
+      {dispatch_timeout_result(context), :not_applicable}
     else
       dispatch_with_live_capacity_claim(context, schedule)
     end
@@ -315,23 +489,40 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp dispatch_with_live_capacity_claim(context, schedule) do
     case acquire_capacity_claim(schedule) do
       {:ok, nil} ->
-        dispatch_after_preensure_gate(context)
+        result = dispatch_after_preensure_gate(context)
+        {result, effective_release_from_result(result, :not_applicable)}
 
       {:ok, claim} ->
         try do
-          dispatch_after_preensure_gate(Map.put(context, :capacity_claim, claim))
+          result = dispatch_after_preensure_gate(Map.put(context, :capacity_claim, claim))
+
+          release_outcome =
+            effective_release_from_result(result, release_capacity_claim(schedule, claim))
+
+          {result, release_outcome}
         after
-          release_capacity_claim(schedule, claim)
+          _defensive_release = release_capacity_claim(schedule, claim)
         end
 
       {:error, reason} ->
-        handle_dispatch_result(
-          {:error, {:dispatch_failed, reason}},
-          context.metrics,
-          context.target
-        )
+        result =
+          handle_dispatch_result(
+            {:error, {:dispatch_failed, reason}},
+            context.metrics,
+            context.target
+          )
+
+        {result, :not_applicable}
     end
   end
+
+  defp effective_release_from_result(
+         {:attempt_evidence, _result, execution_resolution, safety_state},
+         release_outcome
+       ),
+       do: effective_release_outcome(release_outcome, execution_resolution, safety_state)
+
+  defp effective_release_from_result(_result, release_outcome), do: release_outcome
 
   defp acquire_capacity_claim(
          %{
@@ -478,14 +669,44 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp dispatch_with_channel(%{client: client, channel: channel} = context) do
-    Process.delete(@pending_cancel_reconciliation_key)
+    dispatch_result =
+      try do
+        {:ok, do_dispatch_with_channel(context)}
+      catch
+        kind, reason -> {:raised, kind, reason, __STACKTRACE__}
+      end
 
-    try do
-      do_dispatch_with_channel(context)
-    after
-      disconnect_result = disconnect_best_effort(client, channel)
-      finalize_pending_cancel_reconciliation(disconnect_result)
+    disconnect_result = disconnect_best_effort(client, channel)
+
+    case dispatch_result do
+      {:ok, result} ->
+        resolve_cancel_reconciliation(result, disconnect_result)
+
+      {:raised, kind, reason, stacktrace} ->
+        :erlang.raise(kind, reason, stacktrace)
     end
+  end
+
+  defp resolve_cancel_reconciliation(
+         {:cancel_reconciliation, result, authority, node_id, failure_result},
+         disconnect_result
+       ) do
+    if disconnect_result == :ok or durable_reconciliation_confirmed?(failure_result, node_id) do
+      {:attempt_evidence, result, :terminated, :available}
+    else
+      {:attempt_evidence, result, :unresolved, quarantine_safety_state(authority, node_id)}
+    end
+  end
+
+  defp resolve_cancel_reconciliation(result, _disconnect_result), do: result
+
+  defp quarantine_safety_state(authority, node_id) do
+    case AllocationAuthority.quarantine_node(authority, node_id) do
+      :ok -> :available
+      {:error, _reason} -> :unavailable
+    end
+  catch
+    :exit, _reason -> :unavailable
   end
 
   defp disconnect_best_effort(client, channel) do
@@ -735,7 +956,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             caller_ref: context.caller_ref,
             cancel_drain_timeout_ms: context.cancel_drain_timeout_ms,
             capacity_authority: capacity_authority(context.schedule),
-            capacity_node_id: Map.get(context.schedule, :node_id),
+            capacity_node_id: metrics.node_id,
             channel: context.channel,
             client: context.client,
             event_handler: context.event_handler,
@@ -848,11 +1069,29 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     QueueManager.release_acceptance_gate(lease, opts)
   end
 
+  defp handle_dispatch_result(
+         {:attempt_evidence, result, execution_resolution, safety_state},
+         metrics,
+         target
+       ) do
+    normalized_result = handle_dispatch_result(result, metrics, target)
+    {:attempt_evidence, normalized_result, execution_resolution, safety_state}
+  end
+
+  defp handle_dispatch_result(
+         {:cancel_reconciliation, result, authority, node_id, failure_result},
+         metrics,
+         target
+       ) do
+    normalized_result = handle_dispatch_result(result, metrics, target)
+    {:cancel_reconciliation, normalized_result, authority, node_id, failure_result}
+  end
+
   defp handle_dispatch_result({:ok, events, final_metrics}, _metrics, target) do
     final_metrics = finalize_metrics(final_metrics, :ok)
     put_dispatch_terminal_context(final_metrics, target)
     emit_timing_log(final_metrics, :ok)
-    {:ok, events}
+    {:attempt_timing, {:ok, events}, final_metrics.first_token_at}
   end
 
   defp handle_dispatch_result({:error, reason}, metrics, target) do
@@ -1142,28 +1381,34 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       else
         case client.execute_inference(channel, execute_request, owner: self()) do
           {:ok, task_ref} ->
-            receive_loop(
-              %{
-                caller_ref: caller_ref,
-                channel: channel,
-                client: client,
-                controller_session_id: execute_request.controller_session_id,
-                event_handler: event_handler,
-                accepted?: false,
-                acceptance_gate: acceptance_gate,
-                cancel_drain_timeout_ms: cancel_drain_timeout_ms,
-                capacity_authority: capacity_authority,
-                capacity_node_id: capacity_node_id,
-                cancellation_started_before_acceptance?: false,
-                conformance_defect: :none,
-                metrics: metrics,
-                target: target,
-                task_ref: task_ref,
-                terminal_event: nil,
-                timer_ref: timer_ref
-              },
-              []
-            )
+            result =
+              receive_loop(
+                %{
+                  caller_ref: caller_ref,
+                  channel: channel,
+                  client: client,
+                  controller_session_id: execute_request.controller_session_id,
+                  event_handler: event_handler,
+                  accepted?: false,
+                  acceptance_gate: acceptance_gate,
+                  cancel_drain_timeout_ms: cancel_drain_timeout_ms,
+                  capacity_authority: capacity_authority,
+                  capacity_node_id: capacity_node_id,
+                  cancellation_started_before_acceptance?: false,
+                  conformance_defect: :none,
+                  metrics: metrics,
+                  target: target,
+                  task_ref: task_ref,
+                  terminal_event: nil,
+                  timer_ref: timer_ref
+                },
+                []
+              )
+
+            case result do
+              {:cancel_reconciliation, _result, _authority, _node_id, _failure_result} -> result
+              _resolved -> {:attempt_evidence, result, :terminated, :available}
+            end
 
           {:error, reason} ->
             {:error, {:dispatch_failed, reason}}
@@ -1485,6 +1730,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
   end
 
+  defp drain_done_result(loop_ctx, events, cancel_reason)
+       when cancel_reason in [:timeout, :caller_disconnect, :client_disconnect] do
+    normalized_reason =
+      if cancel_reason == :timeout, do: :timeout, else: :caller_disconnect
+
+    synthesize_cancel_terminal(loop_ctx, events, normalized_reason, "")
+  end
+
   defp drain_done_result(
          %{terminal_event: %InferenceEvent{} = terminal_event} = loop_ctx,
          events,
@@ -1505,12 +1758,16 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     do: synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
 
   defp cancel_drain_timeout_result(loop_ctx, events, cancel_reason) do
-    reconcile_cancel_drain_timeout(loop_ctx)
+    result =
+      case loop_ctx.conformance_defect do
+        :none ->
+          synthesize_cancel_terminal(loop_ctx, events, cancel_reason, " after drain timeout")
 
-    case loop_ctx.conformance_defect do
-      :none -> synthesize_cancel_terminal(loop_ctx, events, cancel_reason, " after drain timeout")
-      defect -> synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
-    end
+        defect ->
+          synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
+      end
+
+    reconcile_cancel_drain_timeout(loop_ctx, result)
   end
 
   defp synthesize_cancel_terminal(loop_ctx, events, cancel_reason, message_suffix) do
@@ -1535,32 +1792,16 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     stream_terminal_result(loop_ctx, [timeout_event | events], metrics, cancel_reason)
   end
 
-  defp reconcile_cancel_drain_timeout(%{
-         capacity_authority: authority,
-         capacity_node_id: node_id,
-         client: client,
-         channel: channel,
-         target: target
-       }) do
-    disconnect_result = disconnect_best_effort(client, channel)
+  defp reconcile_cancel_drain_timeout(
+         %{
+           capacity_authority: authority,
+           capacity_node_id: node_id,
+           target: target
+         },
+         result
+       ) do
     failure_result = mark_transport_failure(target, :node_timeout)
-
-    unless disconnect_result == :ok or
-             durable_reconciliation_confirmed?(failure_result, node_id) do
-      Process.put(@pending_cancel_reconciliation_key, {authority, node_id})
-    end
-
-    :ok
-  end
-
-  defp finalize_pending_cancel_reconciliation(disconnect_result) do
-    case Process.delete(@pending_cancel_reconciliation_key) do
-      {authority, node_id} when disconnect_result != :ok ->
-        AllocationAuthority.quarantine_node(authority, node_id)
-
-      _reconciled_or_not_pending ->
-        :ok
-    end
+    {:cancel_reconciliation, result, authority, node_id, failure_result}
   end
 
   defp durable_reconciliation_confirmed?(
@@ -1845,7 +2086,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        )
        when delta != "" do
     now_ms = System.monotonic_time(:millisecond)
-    metrics = %{metrics | first_delta_monotonic_ms: now_ms}
+    first_token_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    metrics = %{metrics | first_delta_monotonic_ms: now_ms, first_token_at: first_token_at}
 
     metrics =
       case metrics.accepted_monotonic_ms do

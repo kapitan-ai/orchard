@@ -152,7 +152,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     StatusResponse
   }
 
-  alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.DispatchCapacity.Policy
   alias Orchard.ModelManifest
   alias Orchard.ModelManifest.{ChatTemplate, RuntimeRequirements, SafeTokenization, Tokenizer}
@@ -214,7 +214,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     execute_request = execute_request(schedule.request_id)
     assert execute_request.request_id == schedule.request_id
 
-    assert {:ok, _events} =
+    assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
              RequestDispatcher.dispatch(
                schedule,
                execute_request,
@@ -277,7 +277,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     execute_request = execute_request(schedule.request_id)
     assert execute_request.request_id == schedule.request_id
 
-    assert {:ok, _events} =
+    assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
              RequestDispatcher.dispatch(
                schedule,
                execute_request,
@@ -306,7 +306,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
       status_response(legacy_id, legacy_target, supports_prompt_token_ids: false)
     )
 
-    assert {:ok, _events} =
+    assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
              RequestDispatcher.dispatch(
                single_node_schedule("req-legacy-only", legacy_target),
                execute_request("req-legacy-only"),

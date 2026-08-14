@@ -13,6 +13,90 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert Process.alive?(authority)
   end
 
+  test "SPEC 4.6.2 release reports one live transition and an idempotent duplicate" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+
+    assert {:ok, claim, _result} =
+             AllocationAuthority.acquire(
+               authority,
+               node_id,
+               "request-observable-release",
+               enforcing_input({:valid, 0, 4})
+             )
+
+    assert is_reference(claim.authority_incarnation)
+    assert :released = AllocationAuthority.release(authority, claim)
+    assert :already_released = AllocationAuthority.release(authority, claim)
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
+  test "SPEC 4.6.2 stale incarnation and conflicting same-token evidence are unresolved" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+
+    assert {:ok, claim, _result} =
+             AllocationAuthority.acquire(
+               authority,
+               node_id,
+               "request-opaque-release",
+               enforcing_input({:valid, 0, 4})
+             )
+
+    stale_claim = %{claim | authority_incarnation: make_ref()}
+    conflicting_claim = %{claim | request_id: "conflicting-request"}
+
+    assert :unresolved = AllocationAuthority.release(authority, stale_claim)
+    assert :unresolved = AllocationAuthority.release(authority, conflicting_claim)
+    assert AllocationAuthority.claim_count(authority, node_id) == 1
+    assert :released = AllocationAuthority.release(authority, claim)
+  end
+
+  test "SPEC 4.6.2 a dead authority makes release unresolved" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+
+    assert {:ok, claim, _result} =
+             AllocationAuthority.acquire(
+               authority,
+               node_id,
+               "request-dead-authority",
+               enforcing_input({:valid, 0, 4})
+             )
+
+    Process.unlink(authority)
+    monitor_ref = Process.monitor(authority)
+    Process.exit(authority, :kill)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^authority, :killed}
+    assert :unresolved = AllocationAuthority.release(authority, claim)
+  end
+
+  test "SPEC 4.6.2 owner death makes later release an affirmative duplicate" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    node_id = Ecto.UUID.generate()
+    parent = self()
+
+    {owner, owner_ref} =
+      spawn_monitor(fn ->
+        {:ok, claim, _result} =
+          AllocationAuthority.acquire(
+            authority,
+            node_id,
+            "request-owner-down",
+            enforcing_input({:valid, 0, 4})
+          )
+
+        send(parent, {:owner_claim, claim})
+        receive do: (:stop -> :ok)
+      end)
+
+    assert_receive {:owner_claim, claim}
+    Process.exit(owner, :kill)
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}
+    assert :already_released = AllocationAuthority.release(authority, claim)
+    assert AllocationAuthority.claim_count(authority, node_id) == 0
+  end
+
   test "SPEC 4.5 local Node quarantine blocks replacement acquisition and revalidation" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = Ecto.UUID.generate()
@@ -43,7 +127,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
              QueueManager.revalidate_dispatch_capacity(claim, input, authority: authority)
 
     refute revalidation.eligible?
-    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 
   test "SPEC 4.6.2 QueueManager shares one Node allocation bound across placements and lanes" do
@@ -88,7 +172,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
              :dispatch_headroom_exhausted
            ]
 
-    assert :ok = QueueManager.release_dispatch_capacity(first_claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(first_claim, authority: authority)
 
     assert {:ok, third_claim, available_again} =
              QueueManager.acquire_dispatch_capacity(
@@ -99,8 +183,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
              )
 
     assert available_again.controller_accounted_allocation == 1
-    assert :ok = QueueManager.release_dispatch_capacity(second_claim, authority: authority)
-    assert :ok = QueueManager.release_dispatch_capacity(third_claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(second_claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(third_claim, authority: authority)
   end
 
   test "SPEC 4.6.2 two F11 requests racing for the final unit allow one acquisition" do
@@ -141,7 +225,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
 
     Enum.each(results, fn
       {:ok, claim, _result} ->
-        assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+        assert :released = QueueManager.release_dispatch_capacity(claim, authority: authority)
 
       {:error, :dispatch_capacity_unavailable, result} ->
         assert result.dispatch_headroom == 0
@@ -190,7 +274,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
         assert claim.kind == :legacy
         assert result.authority_decision == :legacy_pre_cutover
         assert result.dispatch_headroom == 0
-        assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+        assert :released = QueueManager.release_dispatch_capacity(claim, authority: authority)
 
       {:error, :dispatch_capacity_unavailable, result} ->
         assert result.legacy_pre_cutover_available_slots == 0
@@ -222,7 +306,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
                authority: authority
              )
 
-    assert :ok = QueueManager.release_dispatch_capacity(first_claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(first_claim, authority: authority)
 
     assert {:ok, retry_claim, _result} =
              QueueManager.acquire_dispatch_capacity(
@@ -232,7 +316,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
                authority: authority
              )
 
-    assert :ok = QueueManager.release_dispatch_capacity(retry_claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(retry_claim, authority: authority)
   end
 
   test "SPEC 5.9 policy mutation linearizes before held-claim dispatch revalidation" do
@@ -297,7 +381,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert result.controller_dispatch_ceiling == 0
     assert result.dispatch_headroom == 0
     assert :controller_dispatch_ceiling_zero in result.reason_codes
-    assert :ok = QueueManager.release_dispatch_capacity(claim, authority: authority)
+    assert :released = QueueManager.release_dispatch_capacity(claim, authority: authority)
   end
 
   test "SPEC 4.5 unresolved execution quarantine cannot expire or be released without reconciliation" do
@@ -385,7 +469,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
                authority: replacement
              )
 
-    assert :ok = QueueManager.release_dispatch_capacity(other_claim, authority: replacement)
+    assert :released = QueueManager.release_dispatch_capacity(other_claim, authority: replacement)
   end
 
   test "SPEC 4.5 quarantine store loss keeps dispatch globally fail-closed" do
@@ -455,6 +539,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
 
     refute revalidation.eligible?
     assert :node_health_unhealthy in revalidation.reason_codes
+    assert :unresolved = QueueManager.release_dispatch_capacity(claim, authority: authority)
 
     assert {:error, :dispatch_capacity_unavailable, blocked} =
              QueueManager.acquire_dispatch_capacity(
@@ -686,7 +771,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     stop_supervised!(AllocationAuthority)
 
     assert :ok = AllocationAuthority.release_acceptance_gate(authority, lease)
-    assert :ok = AllocationAuthority.release(authority, claim)
+    assert :unresolved = AllocationAuthority.release(authority, claim)
   end
 
   test "SPEC 5.9 bounded acceptance-gate waiters are granted in arrival order" do

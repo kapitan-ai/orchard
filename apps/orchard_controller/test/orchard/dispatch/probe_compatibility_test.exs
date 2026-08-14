@@ -128,7 +128,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     ExecuteInferenceRequest
   }
 
-  alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.DispatchCapacity.{ConformanceFixture, Policy}
   alias Orchard.Inference
   alias Orchard.Inference.QueueManager
@@ -348,7 +348,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
            }}
       })
 
-      assert {:ok, _events} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -359,7 +359,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     test "dispatch succeeds and keeps original node_id", ctx do
       configure_stub(%{status: {:ok, old_agent_status()}})
 
-      assert {:ok, _events} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -372,7 +372,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       configure_stub(%{status: {:ok, old_agent_status()}})
       callback = fn node_id -> send(self(), {:node_resolved, node_id}) end
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client,
                  on_node_resolved: callback
@@ -386,7 +386,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     test "dispatch succeeds and keeps original node_id", ctx do
       configure_stub(%{status: {:ok, full_status("not-a-uuid")}})
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -400,7 +400,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     test "model_load receives discovered UUID", ctx do
       configure_stub(%{status: {:ok, full_status(@valid_uuid)}})
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -414,7 +414,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       enable_controller_sentry()
       configure_stub(%{status: {:ok, full_status(@valid_uuid)}})
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -434,7 +434,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       configure_stub(%{status: {:ok, full_status(@other_uuid)}})
       callback = fn node_id -> send(self(), {:node_resolved, node_id}) end
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client,
                  on_node_resolved: callback
@@ -457,7 +457,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         exit({:noproc, {GenServer, :call, [:queue_manager, :mark, 5_000]}})
       end
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client,
                  on_node_resolved: callback
@@ -528,7 +528,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         assert :ok = QueueManager.release(first_grant)
       end
 
-      assert {:ok, _events} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client,
                  on_node_resolved: callback
@@ -565,7 +565,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
            })}
       })
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -587,12 +587,19 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
       configure_stub(%{connect: {:error, {:rpc_exit, :nodedown}}})
 
-      assert {:error, {:model_load_failed, failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "runtime_unavailable",
+                 "raw_source_code" => "node_unavailable"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
 
-      assert failure.code == "node_unavailable"
       assert_received {:connect_called, ^beam_target}
       refute_received {:connect_called, ^legacy_target}
       refute_received {:ensure_model_loaded_called, _request}
@@ -612,12 +619,19 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         ensure_model_loaded: {:error, :node_unavailable}
       })
 
-      assert {:error, {:model_load_failed, failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "runtime_unavailable",
+                 "raw_source_code" => "node_unavailable"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
 
-      assert failure.code == "node_unavailable"
       assert_received {:connect_called, ^beam_target}
       refute_received {:connect_called, ^legacy_target}
       assert_received {:ensure_model_loaded_called, _request}
@@ -637,7 +651,14 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         execute: {:error, :node_timeout}
       })
 
-      assert {:error, {:dispatch_failed, :node_timeout}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "node_timeout"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -657,7 +678,15 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
       configure_stub(%{status: {:ok, full_status(@other_uuid)}})
 
-      assert {:error, {:dispatch_failed, :beam_node_identity_mismatch}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "internal_error",
+                 "raw_source_code" => "beam_node_identity_mismatch"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -672,7 +701,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{status: {:error, :node_timeout}})
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -694,7 +723,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target, last_heartbeat_at: stale_hb)
       configure_stub(%{status: {:error, :node_timeout}})
 
-      assert {:ok, _} =
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -714,7 +743,15 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{status: {:error, :authenticated_observation_rejected}})
 
-      assert {:error, {:dispatch_failed, :authenticated_observation_rejected}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "internal_error",
+                 "raw_source_code" => "authenticated_observation_rejected"
+               }
+             } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -736,7 +773,15 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       configure_stub(%{execute: :accepted_until_cancel})
       schedule = %{ctx.schedule | request_timeout_ms: 100}
 
-      assert {:ok, events} =
+      assert %AttemptOutcome{
+               attempt_outcome: :timed_out,
+               accepted: true,
+               events: events,
+               failure: %{
+                 "failure_class" => "deadline",
+                 "failure_code" => "request_timeout"
+               }
+             } =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -758,7 +803,15 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         if Orchard.InferenceEvent.kind(event) == :accepted, do: :cancel, else: :ok
       end
 
-      assert {:ok, events} =
+      assert %AttemptOutcome{
+               attempt_outcome: :cancelled,
+               accepted: true,
+               events: events,
+               failure: %{
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               }
+             } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client,
                  event_handler: handler
@@ -779,12 +832,18 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{connect: {:error, {:connect_failed, :econnrefused}}})
 
-      assert {:error, {:model_load_failed, failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "runtime_unavailable",
+                 "raw_source_code" => "node_unavailable"
+               }
+             } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
-
-      assert failure.code == "node_unavailable"
 
       marked =
         Repo.get_by!(Node,
@@ -800,12 +859,18 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{connect: {:error, :node_unavailable}})
 
-      assert {:error, {:model_load_failed, failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "runtime_unavailable",
+                 "raw_source_code" => "node_unavailable"
+               }
+             } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
-
-      assert failure.code == "node_unavailable"
 
       marked =
         Repo.get_by!(Node,
@@ -828,12 +893,18 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
       configure_stub(%{connect: {:error, {:connect_failed, :econnrefused}}})
 
-      assert {:error, {:model_load_failed, failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "runtime_unavailable",
+                 "raw_source_code" => "node_unavailable"
+               }
+             } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
-
-      assert failure.code == "node_unavailable"
 
       marked = Repo.get!(Node, node.id)
       assert marked.advertise_addr == "0.0.0.0"
@@ -844,12 +915,18 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{ensure_model_loaded: {:error, :node_unavailable}})
 
-      assert {:error, {:model_load_failed, failure}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "runtime_unavailable",
+                 "raw_source_code" => "node_unavailable"
+               }
+             } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
-
-      assert failure.code == "node_unavailable"
 
       marked =
         Repo.get_by!(Node,
@@ -864,7 +941,14 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{execute: {:error, :node_timeout}})
 
-      assert {:error, {:dispatch_failed, :node_timeout}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "node_timeout"
+               }
+             } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                  client_impl: @stub_client
                )
@@ -911,7 +995,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       Process.unregister(Orchard.Repo)
 
       try do
-        assert {:ok, _} =
+        assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
                  RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
                    client_impl: @stub_client
                  )

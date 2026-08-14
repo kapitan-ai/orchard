@@ -9,7 +9,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   alias Orchard.CanonicalRequest
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
-  alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.DomainMetrics
   alias Orchard.Inference
 
@@ -17,6 +17,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     CacheAffinity,
     CanonicalRequestSerializer,
     ChatError,
+    ModelLoadFailure,
     QueueManager,
     RequestDeadline,
     ToolCallAccumulator,
@@ -27,11 +28,16 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Governance
   alias Orchard.InferenceEvent
   alias Orchard.Requests
-  alias Orchard.Requests.CapturePolicy
-  alias Orchard.Requests.Idempotency
-  alias Orchard.Requests.Request
-  alias Orchard.Requests.RequestServer
-  alias Orchard.Requests.RequestStepEvent
+
+  alias Orchard.Requests.{
+    CapturePolicy,
+    Idempotency,
+    InferenceAttemptResult,
+    Request,
+    RequestServer,
+    RequestStepEvent
+  }
+
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheScore, PrefixCacheStatus}
   alias Orchard.SentryContext
 
@@ -619,15 +625,19 @@ defmodule Orchard.Inference.RequestOrchestrator do
            execution_opts.event_handler,
            Map.get(execution_opts, :queue_grant)
          ) do
-      {:ok, events, first_token_at} ->
-        finalize_started_inference_turn(
-          db_request,
-          canonical,
-          events,
-          first_token_at,
-          execution_opts,
-          step_context
-        )
+      %AttemptOutcome{events: events} = outcome ->
+        if Enum.any?(events, &InferenceEvent.terminal?/1) do
+          finalize_started_inference_turn(
+            db_request,
+            canonical,
+            outcome,
+            execution_opts,
+            step_context
+          )
+        else
+          {:error, public_dispatch_reason(outcome),
+           Map.put(step_context, :attempt_outcome, outcome)}
+        end
 
       {:error, reason} ->
         {:error, reason, step_context}
@@ -637,12 +647,11 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp finalize_started_inference_turn(
          db_request,
          canonical,
-         events,
-         first_token_at,
+         %AttemptOutcome{} = outcome,
          execution_opts,
          step_context
        ) do
-    case finalize(db_request, canonical, events, first_token_at, execution_opts, step_context) do
+    case finalize(db_request, canonical, outcome, execution_opts, step_context) do
       {:ok, _, _} = success -> success
       {:error, reason} -> {:error, reason, step_context}
     end
@@ -1014,36 +1023,19 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp dispatch(db_request, canonical, model, schedule, caller, event_handler, queue_grant) do
     execute_request = build_execute_request(canonical, schedule)
     model_load_request = build_model_load_request(model, schedule)
-    capture_key = make_ref()
+    wrapped_handler = wrap_event_handler(event_handler, queue_grant)
 
-    try do
-      Process.put(capture_key, nil)
+    maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
 
-      wrapped_handler =
-        wrap_event_handler_for_first_token(event_handler, capture_key, queue_grant)
-
-      maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
-
-      result =
-        dispatch_request(
-          schedule,
-          execute_request,
-          model_load_request,
-          caller,
-          wrapped_handler,
-          db_request.id,
-          queue_grant
-        )
-
-      first_token_at = Process.get(capture_key)
-
-      case result do
-        {:ok, events} -> {:ok, events, first_token_at}
-        {:error, _} = error -> error
-      end
-    after
-      Process.delete(capture_key)
-    end
+    dispatch_request(
+      schedule,
+      execute_request,
+      model_load_request,
+      caller,
+      wrapped_handler,
+      db_request.id,
+      queue_grant
+    )
   end
 
   defp dispatch_request(
@@ -1064,7 +1056,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
     dispatch = &RequestDispatcher.dispatch/4
 
     dispatch.(schedule, execute_request, model_load_request, opts)
-    |> normalize_dispatch_result()
   rescue
     error ->
       log_warn("dispatch crashed: #{exception_name(error)}")
@@ -1079,19 +1070,32 @@ defmodule Orchard.Inference.RequestOrchestrator do
       {:error, orchestration_crash(:dispatch, :throw)}
   end
 
-  defp normalize_dispatch_result({:ok, _events} = success), do: success
+  defp public_dispatch_reason(%AttemptOutcome{
+         failure: %{
+           "failure_class" => "model_load_failure",
+           "failure_code" => failure_code
+         }
+       }) do
+    {:model_load_failed, ModelLoadFailure.from_category(failure_code)}
+  end
 
-  defp normalize_dispatch_result({:error, {:dispatch_failed, :dispatch_timeout}}),
-    do: {:error, {:dispatch_failed, :request_timeout}}
+  defp public_dispatch_reason(%AttemptOutcome{
+         attempt_outcome: :timed_out,
+         failure: %{"failure_code" => "request_timeout"}
+       }),
+       do: {:dispatch_failed, :request_timeout}
 
-  defp normalize_dispatch_result({:error, _reason} = error), do: error
+  defp public_dispatch_reason(%AttemptOutcome{
+         attempt_outcome: :cancelled,
+         failure: %{"failure_code" => "request_caller_disconnect"}
+       }),
+       do: {:dispatch_failed, :request_caller_disconnect}
 
-  defp normalize_dispatch_result(_other),
-    do: {:error, orchestration_crash(:dispatch, :invalid_return)}
+  defp public_dispatch_reason(%AttemptOutcome{failure: %{"failure_code" => failure_code}}),
+    do: {:dispatch_failed, failure_code}
 
-  defp wrap_event_handler_for_first_token(downstream_handler, capture_key, queue_grant) do
+  defp wrap_event_handler(downstream_handler, queue_grant) do
     fn request_id, event ->
-      maybe_capture_first_token(event, capture_key)
       maybe_mark_capacity_source_observed(queue_grant, event)
 
       if downstream_handler do
@@ -1118,20 +1122,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp maybe_mark_capacity_source_observed(_grant, _event), do: :ok
-
-  defp maybe_capture_first_token(
-         %InferenceEvent{event: %InferenceEvent.OutputTextDelta{delta: delta}},
-         capture_key
-       )
-       when delta != "" do
-    if Process.get(capture_key) == nil do
-      Process.put(capture_key, DateTime.utc_now() |> DateTime.truncate(:microsecond))
-    end
-
-    :ok
-  end
-
-  defp maybe_capture_first_token(_event, _capture_key), do: :ok
 
   defp put_request_validated_context(canonical) do
     if SentryContext.controller_enabled?() do
@@ -1246,7 +1236,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
       :ok
   end
 
-  defp finalize(db_request, canonical, events, first_token_at, execution_opts, step_context) do
+  defp finalize(
+         db_request,
+         canonical,
+         %AttemptOutcome{events: events, first_token_at: first_token_at} = outcome,
+         execution_opts,
+         step_context
+       ) do
     case build_terminal_attrs(
            canonical,
            events,
@@ -1259,7 +1255,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
           canonical,
           events,
           terminal_attrs,
-          step_context,
+          Map.put(step_context, :attempt_outcome, outcome),
           execution_opts.step_event_appender,
           execution_opts.terminal_persister
         )
@@ -1477,15 +1473,24 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp terminal_inference_turn_step(events, terminal_attrs, step_context) do
+    event_type = RequestStepEvent.terminal_step_event_type!(terminal_attrs.state)
+
     %{
-      event_type: RequestStepEvent.terminal_step_event_type!(terminal_attrs.state),
+      event_type: event_type,
       step_id: step_context.step_id,
       step_type: "inference_turn",
       turn_index: step_context.turn_index,
       attempt: step_context.attempt,
       parent_step_id: nil,
       boundary: "post_observation",
-      result: terminal_step_result(events, terminal_attrs),
+      result:
+        terminal_step_result(
+          events,
+          terminal_attrs,
+          Map.get(step_context, :attempt_outcome),
+          event_type,
+          step_context.attempt
+        ),
       model_id: step_context.model_id,
       model_version: step_context.model_version
     }
@@ -1537,15 +1542,75 @@ defmodule Orchard.Inference.RequestOrchestrator do
     }
   end
 
-  defp terminal_step_result(events, terminal_attrs) do
+  defp terminal_step_result(events, terminal_attrs, nil, _event_type, _attempt) do
+    events
+    |> legacy_terminal_step_result(terminal_attrs)
+    |> maybe_put_result("error_code", Map.get(terminal_attrs, :error_code))
+  end
+
+  defp terminal_step_result(
+         events,
+         terminal_attrs,
+         %AttemptOutcome{} = outcome,
+         event_type,
+         attempt
+       ) do
+    result =
+      outcome
+      |> attempt_result_fields()
+      |> Map.merge(legacy_terminal_step_result(events, terminal_attrs))
+
+    {:ok, normalized} = InferenceAttemptResult.new(event_type, attempt, result)
+    normalized
+  end
+
+  defp legacy_terminal_step_result(events, terminal_attrs) do
     %{}
     |> maybe_put_result("finish_reason", terminal_finish_reason(events))
     |> maybe_put_result("input_tokens", Map.get(terminal_attrs, :input_tokens))
     |> maybe_put_result("output_tokens", Map.get(terminal_attrs, :output_tokens))
-    |> maybe_put_result("error_code", Map.get(terminal_attrs, :error_code))
     |> maybe_put_result("error_message", Map.get(terminal_attrs, :error_message))
     |> maybe_put_result("http_status", Map.get(terminal_attrs, :http_status))
   end
+
+  defp attempt_result_fields(%AttemptOutcome{} = outcome) do
+    base = %{
+      "attempt_outcome" => Atom.to_string(outcome.attempt_outcome),
+      "started_at" => outcome.started_at,
+      "ended_at" => outcome.ended_at,
+      "accepted" => outcome.accepted,
+      "output_committed" => false,
+      "execution_resolution" => Atom.to_string(outcome.execution_resolution),
+      "capacity_release_outcome" => Atom.to_string(outcome.capacity_release_outcome),
+      "excluded_node_ids" => []
+    }
+
+    base
+    |> maybe_put_result("node_id", outcome.node_id)
+    |> put_attempt_failure(outcome)
+  end
+
+  defp put_attempt_failure(result, %AttemptOutcome{attempt_outcome: :completed}), do: result
+
+  defp put_attempt_failure(result, %AttemptOutcome{failure: failure} = outcome) do
+    result
+    |> Map.merge(failure)
+    |> Map.put("retry_decision", attempt_retry_decision(outcome))
+  end
+
+  defp attempt_retry_decision(%AttemptOutcome{attempt_outcome: :cancelled}), do: "cancelled"
+
+  defp attempt_retry_decision(%AttemptOutcome{
+         failure: %{"failure_class" => "identity_unresolved"}
+       }),
+       do: "identity_unresolved"
+
+  defp attempt_retry_decision(%AttemptOutcome{
+         failure: %{"failure_class" => "occupancy_unresolved"}
+       }),
+       do: "occupancy_unresolved"
+
+  defp attempt_retry_decision(%AttemptOutcome{}), do: "not_retryable"
 
   defp terminal_finish_reason(events) do
     case Enum.find(events, &(InferenceEvent.kind(&1) == :completed)) do

@@ -1481,7 +1481,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert conn.status == 503
       body = Jason.decode!(conn.resp_body)
       assert body["error"]["type"] == "server_error"
-      assert body["error"]["code"] != nil
+      assert body["error"]["code"] == "acquisition_failed"
       assert body["error"]["message"] != nil
 
       # Verify persisted request row has mapped terminal fields
@@ -1490,7 +1490,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert length(failed_requests) == 1
       [request] = failed_requests
       assert request.http_status == 503
-      assert request.error_code != nil
+      assert request.error_code == "acquisition_failed"
       assert request.error_message == nil
       assert request.canonical_request == nil
       assert request.request_shape["capture_mode"] == "metadata"
@@ -1542,7 +1542,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert length(error_events) == 1
       {:error, error_payload} = hd(error_events)
       assert error_payload["error"]["type"] == "server_error"
-      assert error_payload["error"]["code"] != nil
+      assert error_payload["error"]["code"] == "acquisition_failed"
       assert error_payload["error"]["message"] != nil
 
       # Must NOT emit [DONE] after error

@@ -67,7 +67,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
   use Orchard.DataCase, async: false
 
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
-  alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.Inference
   alias Orchard.RuntimeEndpoint.Operation
   alias Orchard.TestSupport.DispatchCapacityFixtures
@@ -85,7 +85,8 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: true)
 
     with_tokenizer_safe_mode(:on, fn ->
-      assert {:ok, _events} = dispatch("req-token-ids-on-capable")
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
+               dispatch("req-token-ids-on-capable")
     end)
 
     assert_receive {^attach_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched],
@@ -104,7 +105,8 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: true)
 
     with_tokenizer_safe_mode(:on, fn ->
-      assert {:ok, _events} = dispatch_without_prompt_token_ids("req-token-ids-on-empty-capable")
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
+               dispatch_without_prompt_token_ids("req-token-ids-on-empty-capable")
     end)
 
     refute_receive {^dispatched_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched], _, _}
@@ -117,7 +119,8 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: false)
 
     with_tokenizer_safe_mode(:on, fn ->
-      assert {:ok, _events} = dispatch("req-token-ids-on-legacy")
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
+               dispatch("req-token-ids-on-legacy")
     end)
 
     assert_receive {^attach_ref, [:orchard, :tokenizer, :unsafe_mode_active], %{count: 1},
@@ -134,7 +137,8 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: true)
 
     with_tokenizer_safe_mode(:off, fn ->
-      assert {:ok, _events} = dispatch("req-token-ids-off")
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
+               dispatch("req-token-ids-off")
     end)
 
     refute_receive {^dispatched_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched], _, _}
@@ -146,10 +150,16 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: false)
 
     with_tokenizer_safe_mode(:reject, fn ->
-      assert {:error, {:dispatch_failed, {:legacy_worker_no_capability, metadata}}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               events: [],
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "internal_error"
+               }
+             } =
                dispatch("req-token-ids-reject-legacy")
-
-      assert metadata.model_id == "test/model"
     end)
 
     refute_receive {:captured_execute_request, %Operation.ExecuteRequest{}}
@@ -159,11 +169,16 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: true)
 
     with_tokenizer_safe_mode(:reject, fn ->
-      assert {:error, {:dispatch_failed, {:missing_prompt_token_ids, metadata}}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               events: [],
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "internal_error"
+               }
+             } =
                dispatch_without_prompt_token_ids("req-token-ids-reject-missing")
-
-      assert metadata.reason == :missing_prompt_token_ids
-      assert metadata.model_id == "test/model"
     end)
 
     refute_receive {:captured_ensure_model_loaded_request, %Operation.EnsureModelLoadedRequest{}},
@@ -176,11 +191,16 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: true)
 
     with_tokenizer_safe_mode(:reject, fn ->
-      assert {:error, {:dispatch_failed, {:missing_prompt_token_ids, metadata}}} =
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: false,
+               events: [],
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "internal_error"
+               }
+             } =
                dispatch_without_prompt_token_ids("req-token-ids-reject-short-circuit")
-
-      assert metadata.reason == :missing_prompt_token_ids
-      assert metadata.model_id == "test/model"
     end)
 
     refute_receive :connect_called, 200
@@ -197,7 +217,8 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     configure_stub(worker_supports_prompt_token_ids: true)
 
     with_tokenizer_safe_mode(:reject, fn ->
-      assert {:ok, _events} = dispatch("req-token-ids-reject-capable")
+      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true} =
+               dispatch("req-token-ids-reject-capable")
     end)
 
     assert_receive {^attach_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched],

@@ -149,7 +149,7 @@ defmodule Orchard.Metrics.GaugePollerTest do
              entry(%{node: node.id, model: "model-authoritative"}, 1)
            ]
 
-    assert :ok = AllocationAuthority.release(claim)
+    assert :released = AllocationAuthority.release(claim)
 
     assert GaugeSource.snapshots(now).active_requests == [
              entry(%{node: node.id, model: "model-authoritative"}, 0)

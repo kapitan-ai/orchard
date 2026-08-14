@@ -50,10 +50,14 @@ defmodule Orchard.Inference.QueueManager do
 
   @doc "Releases one live Node capacity claim idempotently."
   @spec release_dispatch_capacity(
-          AllocationAuthority.Claim.t(),
+          AllocationAuthority.Claim.t() | nil,
           keyword()
-        ) :: :ok
-  def release_dispatch_capacity(claim, opts \\ []) do
+        ) :: AllocationAuthority.release_outcome() | :not_applicable
+  def release_dispatch_capacity(claim, opts \\ [])
+
+  def release_dispatch_capacity(nil, _opts), do: :not_applicable
+
+  def release_dispatch_capacity(%AllocationAuthority.Claim{} = claim, opts) do
     authority = Keyword.get(opts, :authority, AllocationAuthority)
     AllocationAuthority.release(authority, claim)
   end

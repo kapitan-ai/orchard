@@ -82,6 +82,36 @@ defmodule Orchard.Inference.ModelLoadFailure do
   end
 
   @doc """
+  Rebuilds the Controller-owned public model-load failure for a normalized
+  attempt failure category.
+
+  Attempt evidence deliberately stores the stable category default rather than
+  trusting a Runtime Endpoint failure code or message to control public output.
+  """
+  @spec from_category(category() | String.t()) :: t()
+  def from_category("model_invalid"), do: from_category(:model_invalid)
+  def from_category("acquisition_failed"), do: from_category(:acquisition_failed)
+  def from_category("runtime_unavailable"), do: from_category(:runtime_unavailable)
+  def from_category("timeout"), do: from_category(:timeout)
+  def from_category("resource_exhausted"), do: from_category(:resource_exhausted)
+  def from_category("internal_error"), do: from_category(:internal)
+
+  def from_category(category)
+      when category in [
+             :model_invalid,
+             :acquisition_failed,
+             :runtime_unavailable,
+             :timeout,
+             :resource_exhausted,
+             :internal
+           ] do
+    {code, message} = defaults_for_category(category)
+    %__MODULE__{category: category, code: code, message: message}
+  end
+
+  def from_category(_category), do: from_category(:internal)
+
+  @doc """
   Converts a transport-level error reason into a failure struct.
 
   Accepts normalized error shapes from Runtime Endpoint clients.
