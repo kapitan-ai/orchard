@@ -353,7 +353,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreSchedule
        |> Map.put(:prefix_cache_score, %{
          status_code: "ok",
          status_message:
-           "request req_123 hmac-sha256:#{String.duplicate("d", 64)} /tmp/orchard tokens: [1,2,3]",
+           "request req_leaked_identifier hmac-sha256:#{String.duplicate("d", 64)} " <>
+             "/tmp/orchard tokens: [1,2,3]",
          resident_fingerprint_match: true,
          score_tier: "no_match",
          session_started_unix_ms: 1_713_726_400_123
@@ -1426,7 +1427,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     refute inspect(decision) =~ "hmac-sha256"
     refute inspect(decision) =~ "/tmp/orchard"
-    refute inspect(decision) =~ "req_123"
+    refute inspect(decision) =~ "req_leaked_identifier"
   end
 
   test "execute/3 strips selected-prefix-cache-score fields when scoring gate is disabled", %{

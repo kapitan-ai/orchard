@@ -255,6 +255,35 @@ defmodule Orchard.MetricsTest do
              ~s(orchard_worker_crashes_total{model="model-a",node="node-a"} 7)
   end
 
+  test "SPEC.md §9.1 a replacement reporter never inherits a killed generation's handlers" do
+    admission = Process.whereis(SeriesAdmission)
+    reporter = Process.whereis(Orchard.Metrics.Reporter)
+    reporter_ref = Process.monitor(reporter)
+
+    Process.exit(reporter, :kill)
+
+    assert_receive {:DOWN, ^reporter_ref, :process, ^reporter, :killed}
+
+    wait_until_replaced(SeriesAdmission, admission)
+
+    assert :ok =
+             SeriesAdmission.emit(:input_tokens, 7, %{tenant: "tenant-a", model: "model-a"})
+
+    assert :ok =
+             SeriesAdmission.emit(:http_request_duration, 0.02, %{
+               endpoint: "health",
+               status: 200
+             })
+
+    exposition = TelemetryMetricsPrometheus.Core.scrape(Orchard.Metrics.Reporter)
+
+    assert exposition =~
+             ~s(orchard_input_tokens_total{model="model-a",tenant="tenant-a"} 7)
+
+    assert exposition =~
+             ~s(orchard_http_request_duration_seconds_count{endpoint="health",status="success"} 1)
+  end
+
   test "SPEC.md §9.1 HTTP duration exposition contains the immutable buckets" do
     assert :ok =
              SeriesAdmission.emit(:http_request_duration, 0.02, %{
@@ -419,6 +448,21 @@ defmodule Orchard.MetricsTest do
     else
       Process.sleep(5)
       wait_until_polled()
+    end
+  end
+
+  defp wait_until_replaced(name, previous, attempts \\ 200)
+
+  defp wait_until_replaced(name, _previous, 0), do: flunk("#{inspect(name)} was never replaced")
+
+  defp wait_until_replaced(name, previous, attempts) do
+    case Process.whereis(name) do
+      pid when is_pid(pid) and pid != previous ->
+        pid
+
+      _pending ->
+        Process.sleep(5)
+        wait_until_replaced(name, previous, attempts - 1)
     end
   end
 
