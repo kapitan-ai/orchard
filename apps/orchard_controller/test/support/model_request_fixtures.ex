@@ -16,7 +16,7 @@ defmodule Orchard.TestSupport.ModelRequestFixtures do
   """
 
   alias Orchard.Models
-  alias Orchard.Models.Importer
+  alias Orchard.Models.{Access, Importer}
   alias Orchard.Requests
 
   @doc """
@@ -61,6 +61,20 @@ defmodule Orchard.TestSupport.ModelRequestFixtures do
     case Models.create_model(attrs) do
       {:ok, model} -> model
       {:error, changeset} -> raise "create_model! failed: #{inspect(changeset.errors)}"
+    end
+  end
+
+  @doc """
+  Explicitly grants a Tenant access to a Model and returns the access row.
+
+  Accepts the same Tenant and Model identifiers as
+  `Orchard.Models.Access.grant_model_access/4`. Repeated calls are safe and
+  return the existing grant.
+  """
+  def grant_model_access!(tenant_or_id, model_or_id, routing_policy_id \\ nil) do
+    case Access.grant_model_access(tenant_or_id, model_or_id, routing_policy_id) do
+      {:ok, %{access: access}} -> access
+      {:error, reason} -> raise "grant_model_access! failed: #{inspect(reason)}"
     end
   end
 

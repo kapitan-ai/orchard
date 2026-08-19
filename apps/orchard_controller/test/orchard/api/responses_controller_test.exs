@@ -13,6 +13,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Governance.Tenant
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
+  alias Orchard.Models.Access, as: ModelAccess
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Repo
@@ -141,6 +142,33 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert body["error"]["param"] == "model"
   end
 
+  test "SPEC.md §5.2 returns exact 403 for an active ungranted Model before persistence" do
+    model = create_model!(%{state: :active})
+    %{token: token} = create_api_key_with_token!("responses-ungranted", grant_active?: false)
+    before_count = Repo.aggregate(Request, :count, :id)
+
+    conn =
+      post_responses(
+        %{
+          "model" => "#{model.model_id}@#{model.version}",
+          "input" => "hello",
+          "max_output_tokens" => 1
+        },
+        token
+      )
+
+    assert conn.status == 403
+
+    assert Jason.decode!(conn.resp_body)["error"] == %{
+             "type" => "invalid_request_error",
+             "code" => "model_not_authorized",
+             "message" => "Model not authorized for tenant",
+             "param" => "model"
+           }
+
+    assert Repo.aggregate(Request, :count, :id) == before_count
+  end
+
   test "successful non-stream request returns response payload and persists responses endpoint",
        %{bundle: bundle} do
     %{token: token, tenant: tenant} = create_api_key_with_token!("responses-success")
@@ -167,6 +195,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         prefill_workspace_bytes_per_token: 64,
         max_context_tokens: 131_072
       })
+
+    grant_active_models!(tenant)
 
     conn =
       post_responses(
@@ -323,7 +353,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   end
 
   test "valid ref-backed request succeeds without API shape changes" do
-    %{token: token} = create_api_key_with_token!("responses-ref-success")
+    %{tenant: tenant, token: token} = create_api_key_with_token!("responses-ref-success")
     create_tool!("lookup_weather", "2026-04-10")
     executable = write_tokenizer_executable!()
     on_exit(fn -> File.rm(executable) end)
@@ -337,6 +367,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         artifact_uri: "file://#{fixture_bundle_path()}",
         artifact_source_uri: "file://#{fixture_bundle_path()}"
       })
+
+    grant_active_models!(tenant)
 
     params = %{
       "model" => "#{model.model_id}@#{model.version}",
@@ -702,6 +734,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         max_context_tokens: 131_072
       })
 
+    grant_active_models!(tenant)
+
     params = %{"model" => "responses-replay-model@v1", "input" => "hello"}
 
     conn_a = post_responses(params, token, [{"idempotency-key", "responses-replay"}])
@@ -788,12 +822,19 @@ defmodule Orchard.API.ResponsesControllerTest do
     token
   end
 
-  defp create_api_key_with_token!(slug) do
+  defp grant_active_models!(tenant) do
+    Enum.each(Orchard.Models.list_active_models(), fn model ->
+      assert {:ok, _result} = ModelAccess.grant_model_access(tenant, model)
+    end)
+  end
+
+  defp create_api_key_with_token!(slug, opts \\ []) do
     {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
 
     {:ok, %{api_key: api_key, token: token}} =
       Governance.create_api_key(tenant.id, %{name: "Primary"})
 
+    if Keyword.get(opts, :grant_active?, true), do: grant_active_models!(tenant)
     %{tenant: tenant, api_key: api_key, token: token}
   end
 
@@ -825,6 +866,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         prefill_workspace_bytes_per_token: 64,
         max_context_tokens: 131_072
       })
+
+    grant_active_models!(tenant)
 
     conn =
       post_responses(
@@ -1322,7 +1365,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   end
 
   test "post-start failure emits response.created then response.failed with no [DONE]" do
-    %{token: token} = create_api_key_with_token!("responses-stream-fail")
+    %{tenant: tenant, token: token} = create_api_key_with_token!("responses-stream-fail")
 
     # Model with a mismatched hash — will fail at dispatch/model-load
     _model =
@@ -1343,6 +1386,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         prefill_workspace_bytes_per_token: 64,
         max_context_tokens: 131_072
       })
+
+    grant_active_models!(tenant)
 
     conn =
       post_responses(

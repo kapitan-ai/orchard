@@ -7,7 +7,9 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
   import Orchard.TestSupport.ToolRegistryTestSupport,
     only: [fixture_bundle_path: 0, with_inference_overrides: 2, write_tokenizer_executable!: 0]
 
+  alias Orchard.Governance
   alias Orchard.Inference.ChatOrchestrator
+  alias Orchard.Models.Access
   alias Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.Tools
 
@@ -58,6 +60,7 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
         "messages" => [%{"role" => "user", "content" => "Hello"}]
       }
 
+      grant_legacy_access!(model)
       assert {:ok, canonical, _model} = ChatOrchestrator.prepare(params, [])
       assert canonical.sampling.max_output_tokens == nil
     end
@@ -77,6 +80,7 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
         "max_tokens" => 50
       }
 
+      grant_legacy_access!(model)
       assert {:ok, canonical, _model} = ChatOrchestrator.prepare(params, [])
       assert canonical.sampling.max_output_tokens == 50
     end
@@ -99,6 +103,7 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
       with_inference_overrides(
         [tokenizer_mode: :fake, tokenizer_client_impl: SegmentedTokenizerClient],
         fn ->
+          grant_legacy_access!(model)
           assert {:ok, canonical, _model} = ChatOrchestrator.prepare(params, [])
           assert canonical.rendered_prompt == "segmented prompt"
           assert canonical.input_token_count == 2
@@ -123,6 +128,7 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
         "messages" => [%{"role" => "user", "content" => content}]
       }
 
+      grant_legacy_access!(model)
       assert {:ok, _canonical, returned_model} = ChatOrchestrator.prepare(params, [])
       assert returned_model.max_context_tokens == nil
     end
@@ -192,6 +198,7 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
         "tool_choice" => "none"
       }
 
+      grant_legacy_access!(model)
       assert {:ok, canonical, prepared_model} = ChatOrchestrator.prepare(params, [])
       assert prepared_model.id == model.id
 
@@ -256,6 +263,7 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
       }
 
       with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: executable], fn ->
+        grant_legacy_access!(model)
         assert {:ok, canonical, _prepared_model} = ChatOrchestrator.prepare(params, [])
 
         assert canonical.tooling.requested_tools == params["tools"]
@@ -308,6 +316,10 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
                 "tool ref tool://lookup_weather@2026-04-10 was not found or is not active"}}} =
                ChatOrchestrator.prepare(params, [])
     end
+  end
+
+  defp grant_legacy_access!(model) do
+    assert {:ok, _result} = Access.grant_model_access(Governance.legacy_tenant_id(), model)
   end
 
   defp create_tool!(name, version, overrides \\ %{}) do

@@ -1,8 +1,13 @@
 defmodule OrchardCLI.Commands.ModelsTest do
   use ExUnit.Case, async: false
 
+  import Ecto.Query
+
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.Governance
+  alias Orchard.Governance.AuditLog
   alias Orchard.Models
+  alias Orchard.Models.{RoutingPolicy, TenantModelAccess}
   alias Orchard.Repo
   alias OrchardCLI.Commands.Models, as: ModelsCmd
 
@@ -109,7 +114,7 @@ defmodule OrchardCLI.Commands.ModelsTest do
   describe "group usage" do
     test "models without subcommand includes delete" do
       assert {:error, msg, 1} = ModelsCmd.run([])
-      assert msg =~ "<import|list|delete>"
+      assert msg =~ "<import|list|delete|access|routing-policy>"
     end
   end
 
@@ -164,5 +169,177 @@ defmodule OrchardCLI.Commands.ModelsTest do
       assert {:error, msg, 1} = ModelsCmd.run(["delete", "org/gone-model@v1"])
       assert msg =~ "model not found"
     end
+  end
+
+  describe "tenant Model access commands" do
+    test "command groups return focused lifecycle usage" do
+      assert {:error, access_usage, 1} = ModelsCmd.run(["access"])
+      assert access_usage =~ "models access grant"
+      assert access_usage =~ "models access inspect"
+
+      assert {:error, policy_usage, 1} = ModelsCmd.run(["routing-policy"])
+      assert policy_usage =~ "models routing-policy create"
+      assert policy_usage =~ "models routing-policy inspect"
+    end
+
+    test "SPEC.md §10.9 grants, inspects, disables, and revokes by Tenant slug" do
+      tenant = create_tenant!("cli-access")
+      model = create_model!(%{model_id: "org/access-model", version: "v1", state: :active})
+      identity = "#{model.model_id}@#{model.version}"
+
+      assert {:ok, message} =
+               ModelsCmd.run(["access", "grant", identity, "--tenant", tenant.slug])
+
+      assert message =~ "Granted #{identity}"
+      assert message =~ "routing=defaults"
+
+      assert {:ok, repeated} =
+               ModelsCmd.run(["access", "grant", identity, "--tenant", tenant.slug])
+
+      assert repeated =~ "Already granted"
+
+      assert {:ok, inspected} =
+               ModelsCmd.run(["access", "inspect", identity, "--tenant", tenant.id])
+
+      assert inspected =~ "state=enabled"
+      assert inspected =~ "routing=defaults"
+
+      assert {:ok, listed} = ModelsCmd.run(["access", "list", "--tenant", tenant.slug])
+      assert listed =~ identity
+
+      assert {:ok, disabled} =
+               ModelsCmd.run(["access", "disable", identity, "--tenant", tenant.slug])
+
+      assert disabled =~ "Disabled"
+
+      assert {:ok, already_disabled} =
+               ModelsCmd.run(["access", "disable", identity, "--tenant", tenant.slug])
+
+      assert already_disabled =~ "Already disabled"
+
+      assert {:ok, revoked} =
+               ModelsCmd.run(["access", "revoke", identity, "--tenant", tenant.slug])
+
+      assert revoked =~ "Revoked"
+
+      assert {:ok, not_granted} =
+               ModelsCmd.run(["access", "revoke", identity, "--tenant", tenant.slug])
+
+      assert not_granted =~ "No grant"
+      refute Repo.get_by(TenantModelAccess, tenant_id: tenant.id, model_id: model.id)
+
+      audits =
+        Repo.all(from(audit in AuditLog, where: audit.target_type == "tenant_model_access"))
+
+      assert length(audits) == 3
+      assert Enum.all?(audits, &(&1.payload["surface"] == "orchardctl"))
+    end
+
+    test "requires exact Tenant and Model identities" do
+      assert {:error, message, 1} =
+               ModelsCmd.run(["access", "grant", "missing@v1", "--tenant", "missing"])
+
+      assert message =~ "tenant not found"
+
+      assert {:error, usage, 1} = ModelsCmd.run(["access", "grant", "missing@v1"])
+      assert usage =~ "--tenant is required"
+    end
+  end
+
+  describe "routing policy commands" do
+    test "SPEC.md §10.9 creates Tenant and global policies and attaches one explicitly" do
+      tenant = create_tenant!("cli-policy")
+      model = create_model!(%{model_id: "org/policy-model", version: "v1", state: :active})
+
+      assert {:ok, created} =
+               ModelsCmd.run([
+                 "routing-policy",
+                 "create",
+                 "--tenant",
+                 tenant.slug,
+                 "--name",
+                 "loaded-only",
+                 "--residency-preference",
+                 "required_loaded",
+                 "--max-cold-start-ms",
+                 "0",
+                 "--max-queue-wait-ms",
+                 "800"
+               ])
+
+      policy = Repo.get_by!(RoutingPolicy, tenant_id: tenant.id, name: "loaded-only")
+      assert created =~ policy.id
+      assert created =~ "residency=required_loaded"
+
+      assert {:ok, grant} =
+               ModelsCmd.run([
+                 "access",
+                 "grant",
+                 "#{model.model_id}@#{model.version}",
+                 "--tenant",
+                 tenant.slug,
+                 "--routing-policy-id",
+                 policy.id
+               ])
+
+      assert grant =~ "routing=#{policy.id}"
+
+      assert {:ok, global_created} =
+               ModelsCmd.run([
+                 "routing-policy",
+                 "create",
+                 "--global",
+                 "--name",
+                 "shared-default",
+                 "--residency-preference",
+                 "allow_cold_load"
+               ])
+
+      assert global_created =~ "global"
+      assert {:ok, global_list} = ModelsCmd.run(["routing-policy", "list", "--global"])
+      assert global_list =~ "shared-default"
+      assert {:ok, inspected} = ModelsCmd.run(["routing-policy", "inspect", "--id", policy.id])
+      assert inspected =~ "loaded-only"
+    end
+
+    test "rejects another Tenant's policy without creating access" do
+      tenant = create_tenant!("cli-policy-target")
+      other = create_tenant!("cli-policy-owner")
+      model = create_model!(%{model_id: "org/scoped-policy-model", version: "v1"})
+
+      {:ok, _created} =
+        ModelsCmd.run([
+          "routing-policy",
+          "create",
+          "--tenant",
+          other.slug,
+          "--name",
+          "private",
+          "--residency-preference",
+          "prefer_loaded"
+        ])
+
+      policy = Repo.get_by!(RoutingPolicy, tenant_id: other.id, name: "private")
+
+      assert {:error, message, 1} =
+               ModelsCmd.run([
+                 "access",
+                 "grant",
+                 "#{model.model_id}@#{model.version}",
+                 "--tenant",
+                 tenant.slug,
+                 "--routing-policy-id",
+                 policy.id
+               ])
+
+      assert message =~ "routing_policy_scope_mismatch"
+      refute Repo.get_by(TenantModelAccess, tenant_id: tenant.id, model_id: model.id)
+    end
+  end
+
+  defp create_tenant!(prefix) do
+    suffix = System.unique_integer([:positive, :monotonic])
+    {:ok, tenant} = Governance.create_tenant(%{slug: "#{prefix}-#{suffix}", name: prefix})
+    tenant
   end
 end

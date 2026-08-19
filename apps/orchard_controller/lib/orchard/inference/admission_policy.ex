@@ -54,6 +54,20 @@ defmodule Orchard.Inference.AdmissionPolicy do
   def default_queue_wait_ms, do: @default_queue_wait_ms
 
   @doc """
+  Returns the canonical routing values used when an access grant has no policy.
+  """
+  @spec default_routing_opts() :: resolve_opts()
+  def default_routing_opts do
+    [
+      routing_policy_id: nil,
+      allowed_pool_ids: [],
+      residency_preference: @default_residency_preference,
+      max_cold_start_ms: @default_max_cold_start_ms,
+      queue_wait_ms: @default_queue_wait_ms
+    ]
+  end
+
+  @doc """
   Returns a CanonicalRequest with authoritative admission and resolved_policy.
 
   Defaults come from SPEC routing_policies (`max_cold_start_ms`, `max_queue_wait_ms`)

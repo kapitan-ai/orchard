@@ -18,6 +18,21 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "SPEC.md §7.2.7 maps model authorization denial to the exact public 403" do
+    mapping =
+      :model_not_authorized
+      |> ChatError.from_prepare_reason()
+      |> ChatError.api_mapping()
+
+    assert mapping == %{
+             status: :forbidden,
+             type: "invalid_request_error",
+             code: "model_not_authorized",
+             message: "Model not authorized for tenant",
+             param: "model"
+           }
+  end
+
   test "prepare model_not_found mapping preserves current status and param" do
     mapping =
       {:model_not_found, "missing@v1"}

@@ -4,6 +4,7 @@ defmodule Orchard.Inference.ChatOrchestratorPortModeTest do
   import Orchard.TestSupport.ToolRegistryTestSupport,
     only: [with_inference_overrides: 2, write_tokenizer_executable!: 0]
 
+  alias Orchard.Governance
   alias Orchard.Inference.ChatOrchestrator
   alias Orchard.TestSupport.ModelRequestFixtures
 
@@ -15,6 +16,8 @@ defmodule Orchard.Inference.ChatOrchestratorPortModeTest do
 
     model =
       create_port_mode_model!("file://#{@fixture_bundle}")
+
+    ModelRequestFixtures.grant_model_access!(Governance.legacy_tenant_id(), model)
 
     params = %{
       "model" => "#{model.model_id}@#{model.version}",

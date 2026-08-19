@@ -39,6 +39,7 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Requests
+  alias Orchard.TestSupport.ModelRequestFixtures
 
   @moduletag :db
   @moduletag :safe_tokenization_smoke
@@ -143,9 +144,12 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
   end
 
   test "streaming lifecycle persists canonical_request without prompt_token_ids and stays term-equivalent across :off/:on" do
-    %{token: token} = create_api_key_with_token!("safe-tok-lifecycle-stream")
+    %{tenant: tenant, token: token} =
+      create_api_key_with_token!("safe-tok-lifecycle-stream")
+
     bundle = stage_safe_lifecycle_bundle!(@stream_model_id)
-    create_active_model!(bundle, @stream_model_id)
+    model = create_active_model!(bundle, @stream_model_id)
+    ModelRequestFixtures.grant_model_access!(tenant, model)
     capture_file = command_capture_file!()
     tokenizer_executable = write_lifecycle_tokenizer_executable!(capture_file)
 
@@ -176,9 +180,12 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
   end
 
   test "non-streaming lifecycle persists canonical_request without prompt_token_ids and stays term-equivalent across :off/:on" do
-    %{token: token} = create_api_key_with_token!("safe-tok-lifecycle-nonstream")
+    %{tenant: tenant, token: token} =
+      create_api_key_with_token!("safe-tok-lifecycle-nonstream")
+
     bundle = stage_safe_lifecycle_bundle!(@nonstream_model_id)
-    create_active_model!(bundle, @nonstream_model_id)
+    model = create_active_model!(bundle, @nonstream_model_id)
+    ModelRequestFixtures.grant_model_access!(tenant, model)
     capture_file = command_capture_file!()
     tokenizer_executable = write_lifecycle_tokenizer_executable!(capture_file)
 

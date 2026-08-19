@@ -2,8 +2,8 @@ defmodule Orchard.API.ModelsController do
   @moduledoc """
   OpenAI-compatible model listing.
 
-  `GET /v1/models` returns all active catalog models in OpenAI list
-  format per SPEC.md §7.2.3.
+  `GET /v1/models` returns active catalog Models authorized for the
+  effective Tenant in OpenAI list format per SPEC.md §7.2.3.
   """
 
   use Phoenix.Controller, formats: [:json]
@@ -12,7 +12,7 @@ defmodule Orchard.API.ModelsController do
 
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _params) do
-    models = Models.list_active_models()
+    models = Models.list_active_models_for_tenant(conn.assigns.tenant_id)
     data = Enum.map(models, &to_openai_model/1)
     json(conn, %{object: "list", data: data})
   end

@@ -8,6 +8,7 @@ defmodule Orchard.Governance.Tenant do
   import Ecto.Changeset
 
   alias Orchard.Governance.{ApiKey, AuditLog, ProvisioningBatch, ServiceAccount}
+  alias Orchard.Models.{RoutingPolicy, TenantModelAccess}
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -29,6 +30,8 @@ defmodule Orchard.Governance.Tenant do
     has_many(:audit_logs, AuditLog)
     has_many(:service_accounts, ServiceAccount)
     has_many(:provisioning_batches, ProvisioningBatch)
+    has_many(:model_access, TenantModelAccess)
+    has_many(:routing_policies, RoutingPolicy)
 
     timestamps(type: :utc_datetime_usec)
   end
