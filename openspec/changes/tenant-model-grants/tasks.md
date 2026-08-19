@@ -3,7 +3,7 @@
 ## 1. Contract and review
 
 - [x] 1.1 Review `proposal.md`, `design.md`, and the tenant-model-access delta against the cited `SPEC.md` clauses.
-- [x] 1.2 Confirm the initial operator surface is local `orchardctl`, with no partial Admin API or Console requirement.
+- [x] 1.2 Confirm the initial operator surface is local `orchardctl`, with no partial Admin API or Console grant-management requirement.
 - [x] 1.3 Confirm deny-by-default rollout with no automatic grant for existing Models, Tenants, or the legacy Tenant.
 - [x] 1.4 Confirm null policy means canonical defaults and never an implicit global lookup.
 - [x] 1.5 Confirm pool arrays remain empty until scheduler enforcement exists.
@@ -32,6 +32,8 @@
 - [x] 4.2 Make `ModelsController` use the effective Tenant assigned by `RequestContext`.
 - [x] 4.3 Update controller documentation to describe active-and-authorized listing.
 - [x] 4.4 Test active granted, ungranted, disabled, revoked, inactive, cross-Tenant, direct-token, and Service Account listing behavior.
+- [x] 4.5 Resolve the Console Playground effective Tenant and filter its Model picker, readiness gate, and preparation caller context to that Tenant's enabled grants.
+- [x] 4.6 Distinguish absent or non-active catalog Models from active ungranted Models in Playground readiness diagnostics, with regression coverage for both.
 
 ## 5. Shared inference authorization
 
@@ -52,6 +54,7 @@
 - [x] 6.4 Render deterministic mutation/no-op outcomes without credentials or artifact paths.
 - [x] 6.5 Test help, parsing, missing identities, scope failures, lifecycle distinctions, default/explicit policy output, and repeat operations.
 - [x] 6.6 Document deny-by-default rollout and command usage in the CLI/operator documentation.
+- [x] 6.7 Document the explicit grant step in local-development and observability-probe instructions, including the Console Playground Tenant.
 
 ## 7. Fixture and regression migration
 

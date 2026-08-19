@@ -99,15 +99,25 @@ orchardctl models routing-policy inspect --id <uuid>
 
 The CLI validates Model and Tenant identities before reporting idempotent outcomes. Policy references are UUID-only to avoid ambiguous lookup.
 
-A partial Admin API or Console surface would expand authorization and compatibility scope without being required to close the public inference defect.
+A partial Admin API or Console grant-management surface would expand authorization and compatibility scope without being required to close the public inference defect.
 
-### 9. State changes and audit evidence are atomic
+### 9. The Console Playground consumes the same effective-Tenant decision
+
+The Console Playground is an inference consumer, not a grant-management surface. Console authentication is an operator gate with no per-Tenant credential, so the Playground resolves one effective Tenant: the seeded legacy Tenant.
+
+The Playground passes that Tenant through its preparation caller context and lists only active Models with an enabled grant for it. Both the picker and the pre-execution readiness gate therefore agree with the decision `RequestPreparation` enforces.
+
+Consequence: a grant created so operators can exercise a Model in the Playground equally authorizes every existing legacy-Tenant API credential for that Model on `/v1`. Separating those audiences requires a later Console identity decision, not a Playground bypass.
+
+The Playground distinguishes an absent or non-active catalog Model from an active but ungranted Model in its operator-facing readiness message. Both remain fail-closed and neither reveals another Tenant's grants.
+
+### 10. State changes and audit evidence are atomic
 
 Grant, re-enable, policy replacement, disable, revoke, and policy creation use `AuditWriter.transaction/1`. Mutation and append-only audit either both commit or both roll back.
 
 No-op operations emit no duplicate audit. Payloads may include Tenant, Model, previous/new policy IDs, transition, and operator surface. They exclude credentials, artifact paths, prompts, responses, and raw model content.
 
-### 10. Public authorization is uncached
+### 11. Public authorization is uncached
 
 Listing and authorization query Postgres for each operation. A committed disable or revoke therefore affects the next listing and new preparation check without an invalidation channel.
 
@@ -157,6 +167,7 @@ The migration inserts no grants or policies. A schema rollback destroys grant/po
 
 - Automatic grants for every existing Tenant and active Model.
 - A legacy-Tenant bypass.
+- A Console Playground exemption from Tenant-model grants.
 - Authorization before mandatory tokenization/context validation.
 - Implicit global/default-policy selection.
 - Treating disable and revoke as aliases.
@@ -172,3 +183,4 @@ The migration inserts no grants or policies. A schema rollback destroys grant/po
 - **Test masking:** model creation fixtures must never grant implicitly.
 - **Partial enforcement:** Chat Completions and Responses must share the same preparation path and failure mapping.
 - **False routing claims:** keep pool arrays empty until scheduler enforcement is implemented.
+- **Console surprise:** the Playground is fail-closed until the legacy Tenant is granted; document the grant step rather than exempting the Console.

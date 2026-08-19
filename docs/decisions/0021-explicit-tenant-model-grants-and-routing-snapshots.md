@@ -32,7 +32,11 @@ Authorization occurs at shared request preparation after Model validation, token
 Denial occurs before Request persistence, quota, queueing, scheduling, Node contact, Model loading, or inference execution.
 
 The first supported operator surface is local `orchardctl models` commands for policy create/list/inspect and access grant/disable/revoke/list/inspect.
-A partial Admin API or Console surface is not required for the first slice.
+A partial Admin API or Console management surface is not required for the first slice.
+
+The Console Playground is an inference consumer, not a management surface.
+It has no per-Tenant operator credential, so its effective Tenant is the seeded legacy Tenant.
+It lists and runs only Models with an enabled grant for that Tenant and receives no bypass and no automatic grant.
 
 Authorized Requests persist the resolved routing snapshot.
 A later disable, revoke, or policy mutation governs new checks and does not retroactively cancel an already authorized Request.
@@ -42,6 +46,9 @@ A later disable, revoke, or policy mutation governs new checks and does not retr
 Upgrading Controllers is intentionally fail-closed until operators create explicit grants.
 The rollout must stop or drain public inference, migrate, grant, verify positive and negative Tenant behavior, and only then expose the upgraded Controller.
 There is no temporary global-access feature flag.
+
+Because the Console Playground shares the seeded legacy Tenant, granting a Model so operators can use the Playground also authorizes every existing legacy-Tenant API credential for that Model on `/v1`.
+Operators who want Playground access separated from legacy API credentials must retire or re-scope those credentials; a Console-only grant scope requires a later Console identity decision.
 
 Application rollback to code that ignores grants reintroduces the access-control defect and is not security-preserving.
 Pool-routing enforcement requires a later contract and scheduler change before non-empty pool arrays can be accepted.

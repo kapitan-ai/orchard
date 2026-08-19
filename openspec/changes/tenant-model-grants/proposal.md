@@ -12,6 +12,7 @@ The effective Tenant is already resolved by public authentication. The missing p
 - Add supported local operator commands to create and inspect constrained routing policies and to grant, disable, revoke, list, and inspect tenant-model access.
 - Keep grant decisions keyed only by effective Tenant and catalog Model, regardless of direct or Service Account credential ownership.
 - Filter `GET /v1/models` to active Models with an enabled grant for the effective Tenant.
+- Resolve the Console Playground's effective Tenant to the seeded legacy Tenant and filter its model picker and runs to that Tenant's enabled grants.
 - Enforce model access in the shared Chat Completions and Responses preparation path after tokenization/context validation and before Request persistence or admission/execution side effects.
 - Return exact `403 model_not_authorized` for an existing active but ungranted or disabled Model.
 - Resolve a null grant policy to the existing canonical routing defaults; attach an explicit same-Tenant or global policy only by UUID.
@@ -25,7 +26,8 @@ The effective Tenant is already resolved by public authentication. The missing p
 - Cancelling already authorized or running Requests after a later revoke.
 - Implicit selection of a global routing policy by name, priority, or creation order.
 - Executing non-empty pool allowlists or preferences before scheduler support exists.
-- A partial Admin API or Console management surface in the first slice.
+- A partial Admin API or Console grant-management surface in the first slice.
+- A Console-only grant scope or per-operator Console Tenant identity.
 - Model import, activation, artifact distribution, placement, or scheduler redesign.
 
 ## SPEC.md impact
@@ -46,6 +48,8 @@ No `SPEC.md` behavior is relaxed. Authorization remains after mandatory tokeniza
 The migration creates no grants and no implicit default policy row. Operators must stop or drain public inference, migrate, explicitly create any desired policies and grants, verify positive and negative Tenant behavior, and only then expose the upgraded Controller.
 
 Rolling application code back to a version that ignores grants reintroduces the access-control defect and is not a security-preserving rollback.
+
+The Console Playground shares the seeded legacy Tenant, so operators must grant a Model to that Tenant before the Playground can list or run it, and that grant equally authorizes existing legacy-Tenant API credentials for the same Model.
 
 ## Delivery state
 

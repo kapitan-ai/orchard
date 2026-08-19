@@ -19,6 +19,13 @@ This implements `SPEC.md` §5.2, §6.6, and §7.2.3.
 - **WHEN** each credential lists Models or requests the same Model
 - **THEN** Orchard makes the same grant decision for both credentials
 
+#### Scenario: Console Playground resolves the seeded legacy Tenant
+- **GIVEN** the Console Playground has no per-Tenant credential
+- **WHEN** an operator loads the Playground Model picker or sends a Playground message
+- **THEN** Orchard resolves the effective Tenant to the seeded legacy Tenant
+- **AND** offers and authorizes only Models with an enabled grant for that Tenant
+- **AND** a Model granted for Playground use is equally authorized for API credentials scoped to that same Tenant
+
 ### Requirement: Tenant-model access has explicit lifecycle states
 An enabled access record SHALL authorize new listing and inference checks.
 A disabled access record SHALL preserve its routing-policy reference and SHALL NOT authorize.
@@ -96,6 +103,13 @@ This implements `SPEC.md` §7.2.3.
 - **GIVEN** an active Model is visible through an enabled grant
 - **WHEN** the grant is revoked and committed
 - **THEN** the next Model listing omits that Model
+
+#### Scenario: Console Playground reports why a Model cannot run
+- **GIVEN** an operator submits a Model that the Playground picker does not offer
+- **WHEN** the Model is active in the catalog but has no enabled grant for the Playground Tenant
+- **THEN** the Playground reports an ungranted-Model reason naming the operator grant command
+- **AND** when the Model is absent or not active in the catalog it reports an unavailable-Model reason instead
+- **AND** neither reason authorizes the run or discloses another Tenant's grants
 
 ### Requirement: Shared inference enforces Model access with exact precedence
 Chat Completions and Responses SHALL enforce Tenant-model access through their shared preparation boundary.

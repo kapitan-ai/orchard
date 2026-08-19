@@ -51,6 +51,19 @@ defmodule OrchardConsole.PlaygroundAccessTest do
     refute_receive {:prepare_called, _caller_context}, 100
   end
 
+  test "reports a non-active catalog Model as unavailable rather than ungranted" do
+    inactive = create_model!(%{state: :registered})
+
+    ref = make_ref()
+    {:ok, _pid} = Playground.start_stream(self(), ref, params_for(inactive))
+
+    assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+    assert error.code == "model_not_ready"
+    assert error.message =~ "not an active catalog model"
+    refute error.message =~ "orchardctl models access grant"
+    refute_receive {:prepare_called, _caller_context}, 100
+  end
+
   test "SPEC.md §5.2 lists and runs a Model granted to the console Tenant", %{model: model} do
     grant_model_access!(Playground.effective_tenant_id(), model)
 

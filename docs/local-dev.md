@@ -86,9 +86,12 @@ calling Tenant is omitted from `GET /v1/models` and rejected by
 No Tenant — including the seeded `legacy` Tenant — receives an automatic grant,
 so step 5 is required before any `/v1` inference call succeeds. The Console
 Playground runs as the `legacy` Tenant and lists only Models granted to it, so
-step 6 is required before it can send a message. See
-`../apps/orchard_cli/README.md` for the full `orchardctl models access` and
-`orchardctl models routing-policy` surface.
+step 6 is required before it can send a message. Because the Console shares the
+`legacy` Tenant, that grant also authorizes any existing `legacy`-Tenant API
+credential for the same Model on `/v1`. See `../apps/orchard_cli/README.md` for
+the full `orchardctl models access` and `orchardctl models routing-policy`
+surface, and `decisions/0021-explicit-tenant-model-grants-and-routing-snapshots.md`
+for the decision record.
 
 ## Phase 0 observability acceptance probe
 

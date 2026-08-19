@@ -20,6 +20,7 @@ defmodule OrchardConsole.PlaygroundTest do
     on_exit(fn ->
       Application.put_env(:orchard_controller, :console, previous)
       :persistent_term.erase({__MODULE__, :models})
+      :persistent_term.erase({__MODULE__, :catalog})
       :persistent_term.erase({__MODULE__, :runtime})
       :persistent_term.erase({__MODULE__, :orchestrator})
       :persistent_term.erase({__MODULE__, :test_pid})
@@ -323,6 +324,27 @@ defmodule OrchardConsole.PlaygroundTest do
       refute_receive {:captured_opts, _}, 100
     end
 
+    test "reports a model missing from the active catalog distinctly" do
+      stub_models(%{})
+      stub_catalog([])
+      ref = make_ref()
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_opts: true
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+      assert error.phase == :prepare
+      assert error.code == "model_not_ready"
+      assert error.message =~ "not an active catalog model"
+      refute error.message =~ "orchardctl models access grant"
+      refute_receive {:captured_opts, _}, 100
+    end
+
     test "passes the effective tenant through the preparation caller context" do
       ref = make_ref()
 
@@ -371,7 +393,7 @@ defmodule OrchardConsole.PlaygroundTest do
 
   defmodule StubModels do
     def list_active_models_for_tenant(tenant_id) do
-      case :persistent_term.get({OrchardConsole.PlaygroundTest, :models}, []) do
+      case stubbed_models() do
         :raise ->
           raise "DB unavailable"
 
@@ -381,6 +403,25 @@ defmodule OrchardConsole.PlaygroundTest do
         grants when is_map(grants) ->
           Map.get(grants, tenant_id, [])
       end
+    end
+
+    def list_active_models do
+      case :persistent_term.get({OrchardConsole.PlaygroundTest, :catalog}, :derive) do
+        :derive -> derived_catalog()
+        models when is_list(models) -> models
+      end
+    end
+
+    defp derived_catalog do
+      case stubbed_models() do
+        models when is_list(models) -> models
+        grants when is_map(grants) -> grants |> Map.values() |> List.flatten()
+        _other -> []
+      end
+    end
+
+    defp stubbed_models do
+      :persistent_term.get({OrchardConsole.PlaygroundTest, :models}, [])
     end
   end
 
@@ -438,6 +479,10 @@ defmodule OrchardConsole.PlaygroundTest do
 
   defp stub_models(data) do
     :persistent_term.put({__MODULE__, :models}, data)
+  end
+
+  defp stub_catalog(data) do
+    :persistent_term.put({__MODULE__, :catalog}, data)
   end
 
   defp stub_runtime(data) do

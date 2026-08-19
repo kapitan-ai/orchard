@@ -65,6 +65,9 @@ defmodule OrchardConsole.Playground do
   playground resolves to the seeded legacy Tenant. Deny-by-default Model access
   still applies: an operator must grant a Model to this Tenant with
   `orchardctl models access grant` before the playground can list or run it.
+
+  See `docs/decisions/0021-explicit-tenant-model-grants-and-routing-snapshots.md`
+  for the decision and its credential-sharing consequence.
   """
   @spec effective_tenant_id() :: Ecto.UUID.t()
   def effective_tenant_id, do: Governance.legacy_tenant_id()
@@ -232,10 +235,7 @@ defmodule OrchardConsole.Playground do
              )}
 
           nil ->
-            {:error,
-             unready_stream_error(
-               "Selected model is not granted to this console tenant. Grant it with orchardctl models access grant."
-             )}
+            {:error, unready_stream_error(unavailable_reason(model_value))}
         end
 
       {:error, _error} ->
@@ -245,6 +245,23 @@ defmodule OrchardConsole.Playground do
 
   defp ensure_model_inference_ready(_params) do
     {:error, unready_stream_error("Selected model is not inference-ready.")}
+  end
+
+  defp unavailable_reason(model_value) do
+    if catalog_active?(model_value) do
+      "Selected model is not granted to this console tenant. Grant it with orchardctl models access grant."
+    else
+      "Selected model is not an active catalog model. It may have been deactivated or deleted."
+    end
+  end
+
+  defp catalog_active?(model_value) do
+    Enum.any?(models_impl().list_active_models(), fn model ->
+      model_value(%{
+        model_id: safe_string(model.model_id),
+        version: safe_string(model.version)
+      }) == model_value
+    end)
   end
 
   defp unready_stream_error(message) do
