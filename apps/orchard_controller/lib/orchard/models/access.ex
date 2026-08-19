@@ -417,7 +417,7 @@ defmodule Orchard.Models.Access do
         action: "routing_policy.created",
         target_type: "routing_policy",
         target_id: policy.id,
-        occurred_at: utc_now(),
+        occurred_at: SchemaSupport.utc_now(),
         payload:
           %{
             "name" => policy.name,
@@ -445,7 +445,7 @@ defmodule Orchard.Models.Access do
       action: action,
       target_type: "tenant_model_access",
       target_id: "#{access.tenant_id}:#{access.model_id}",
-      occurred_at: utc_now(),
+      occurred_at: SchemaSupport.utc_now(),
       payload:
         %{
           "tenant_id" => access.tenant_id,
@@ -475,6 +475,4 @@ defmodule Orchard.Models.Access do
   defp audit_log_impl do
     Application.get_env(:orchard_controller, :governance_audit_log_impl, AuditLog)
   end
-
-  defp utc_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 end

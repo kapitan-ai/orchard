@@ -86,7 +86,6 @@ defmodule Orchard.Inference.ChatError do
   def from_prepare_reason({:model_not_found, model_ref}),
     do: build(:model_not_found, detail: model_ref)
 
-  def from_prepare_reason({:error, :model_not_authorized}), do: build(:model_not_authorized, [])
   def from_prepare_reason(:model_not_authorized), do: build(:model_not_authorized, [])
 
   def from_prepare_reason({:context_overflow, detail}),

@@ -88,7 +88,7 @@ defmodule OrchardConsole.PlaygroundLive do
         |> assign(
           models: [],
           models_status: :empty,
-          models_error: "No active models available.",
+          models_error: "No active models are granted to this console tenant.",
           selected_model: nil,
           can_submit: false
         )
@@ -804,7 +804,7 @@ defmodule OrchardConsole.PlaygroundLive do
               kind={:empty}
               layout={:compact}
               title={@models_error}
-              body="Download and import a model from Model Hub, then return here to send your first test message."
+              body="Import a model from Model Hub, then grant it to this console tenant with orchardctl models access grant, and return here to send your first test message."
             >
               <:action>
                 <.link
