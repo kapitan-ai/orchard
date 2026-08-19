@@ -98,11 +98,10 @@ machine-readable output.
 
 ## Tenant Model access
 
-Public Model discovery and inference are deny-by-default after the
-`tenant-model-grants` migration. The migration creates no grants, including for
-the legacy Tenant. During upgrade, stop or drain public inference, migrate,
-create any non-default routing policies, grant each approved Tenant/Model pair,
-verify positive and negative access, and only then expose the Controller.
+Public Model discovery and inference are deny-by-default, and the
+`tenant-model-grants` migration creates no grants. For the packaged upgrade
+rollout order and its verification steps, see
+[Tenant/Model access grant rollout](../../packaging/pkg/README.md#tenantmodel-access-grant-rollout).
 
 ```text
 orchardctl models access grant <model_id@version> --tenant <uuid-or-slug> [--routing-policy-id <uuid>]

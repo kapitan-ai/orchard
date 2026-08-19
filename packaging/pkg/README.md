@@ -621,11 +621,11 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
    sudo orchardctl migrate
    ```
 
-   The Tenant/Model access migration creates no grants, so an upgraded
-   controller denies every public inference request until an operator grants
-   each approved Organization/model pair. Follow the rollout order in
-   [Tenant Model access](../../apps/orchard_cli/README.md#tenant-model-access)
-   before re-exposing the controller.
+   Releases that carry the Tenant/Model access migration need the extra
+   grant steps in
+   [Tenant/Model access grant rollout](#tenantmodel-access-grant-rollout)
+   between this step and step 6, because the migration leaves the controller
+   denying every public inference request.
 
 6. **Start services:**
    ```bash
@@ -638,6 +638,54 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
    curl --cacert '/Library/Application Support/Orchard/config/tls/ca.crt' \
      https://localhost:8443/health/ready
    ```
+
+### Tenant/Model access grant rollout
+
+Releases carrying the Tenant/Model access migration make public Model discovery
+and inference deny-by-default. The migration inserts no grants and no routing
+policies, and no Organization is exempt — including the seeded `legacy` Tenant
+that the Console Playground runs as. An upgraded controller therefore omits
+every model from `/v1/models` and rejects every `/v1/chat/completions` and
+`/v1/responses` request with `403 model_not_authorized` until an operator grants
+each approved Organization/model pair.
+
+Interleave this order with the upgrade workflow above and do not re-expose the
+controller until the verification step passes:
+
+1. Stop or drain public inference traffic. The packaged install in upgrade-workflow
+   step 4 stops services and does not auto-restart them, so keep the controller
+   unexposed from that point on.
+2. Back up Postgres, as in upgrade-workflow step 2.
+3. Run the migration, as in upgrade-workflow step 5.
+4. Create explicit routing policies only where canonical `AdmissionPolicy`
+   defaults are insufficient:
+   ```bash
+   sudo orchardctl models routing-policy create --tenant <uuid-or-slug> \
+     --name <name> --residency-preference <required_loaded|prefer_loaded|allow_cold_load>
+   ```
+   Omitting `--routing-policy-id` on a grant selects those canonical defaults;
+   Orchard never implicitly selects a global policy.
+5. Grant every approved Organization/model pair:
+   ```bash
+   sudo orchardctl models access grant <model_id>@<version> \
+     --tenant <uuid-or-slug> [--routing-policy-id <uuid>]
+   ```
+6. Verify both directions before exposing the controller. Positive: a
+   credential of a granted Organization sees the model in `GET /v1/models` and
+   completes one chat completion request. Negative: a credential of an
+   Organization without that grant does not see the model in `GET /v1/models`
+   and receives `403 model_not_authorized` from `/v1/chat/completions` and
+   `/v1/responses`.
+7. Start services and expose the upgraded controller, as in upgrade-workflow
+   steps 6 and 7.
+
+Rollback is asymmetric. A schema rollback destroys grant and routing-policy
+data. Rolling the application back to globally authorized behavior is a
+security regression, so public inference must stay stopped on that path.
+
+See [Tenant Model access](../../apps/orchard_cli/README.md#tenant-model-access)
+for the full `orchardctl models access` and `orchardctl models routing-policy`
+command surface.
 
 ## Licensing v0
 
