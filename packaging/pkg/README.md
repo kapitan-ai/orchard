@@ -154,7 +154,7 @@ Verification:
 - On the controller, authenticated `/ops/v1/health` should report PostgreSQL reachable and migrations current; public `/health/ready` reports status only.
 - On the controller, Runtime Endpoint target configuration should match each remote node-agent BEAM node name in `ORCHARD_RUNTIME_ENDPOINT_TARGETS`.
 - Stage the model on every worker before attempting inference; controller import and activation do not distribute the artifact.
-- After admin credentials, tenant/API access, model import, model activation, and worker model staging are configured, use `/v1/models` and a single chat completion request as the external-site API smoke test.
+- After admin credentials, tenant/API access, model import, model activation, the Tenant/Model access grant, and worker model staging are configured, use `/v1/models` and a single chat completion request as the external-site API smoke test.
 
 Worker model staging:
 
@@ -162,7 +162,7 @@ Worker model staging:
 - On the controller, the imported bundle is at `/Library/Application Support/Orchard/bundles/<model_id>/<version>`. `<model_id>` may contain a slash, so the layout is nested.
 - Copy that bundle directory to the identical absolute path on every worker Mac before the first request for the model, preserving directory structure and file contents.
 - On the first request, the node-agent copies the staged bundle into its own cache under `/Library/Application Support/Orchard/models`, verifies it against the recorded artifact digest, and fails closed on mismatch.
-- This repeats per model and per worker. A catalog-active but unstaged model still appears in `/v1/models` and is not blocked before dispatch, so a missed staging step surfaces only on the first request that the scheduler places on the unstaged worker.
+- This repeats per model and per worker. A granted, catalog-active but unstaged model still appears in `/v1/models` and is not blocked before dispatch, so a missed staging step surfaces only on the first request that the scheduler places on the unstaged worker.
 - How that failure is reported depends on whether the request streams, because the streaming response commits its HTTP status before the model load is attempted:
   - Non-streaming: HTTP `503` with error type `server_error` and code `source_not_found`.
   - Streaming: the response has already returned HTTP `200` and opened the event stream, so the failure arrives as an SSE `data: {"error":{...}}` event carrying the same `server_error` type and `source_not_found` code, and the stream then closes without a `[DONE]` line. Check the event payload, not just the HTTP status; a streaming smoke test that only asserts on `200` reads this failure as a success.
@@ -620,6 +620,12 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
    ```bash
    sudo orchardctl migrate
    ```
+
+   The Tenant/Model access migration creates no grants, so an upgraded
+   controller denies every public inference request until an operator grants
+   each approved Organization/model pair. Follow the rollout order in
+   [Tenant Model access](../../apps/orchard_cli/README.md#tenant-model-access)
+   before re-exposing the controller.
 
 6. **Start services:**
    ```bash
@@ -1314,6 +1320,20 @@ Tenant-direct API Tokens remain supported for manual/bootstrap use and the token
 sudo orchardctl tenants create --slug default --name "Default"
 sudo orchardctl api-keys create --tenant-id <tenant-id> --name "Primary"
 ```
+
+Then grant the Organization access to each approved model. Model access is
+deny-by-default, and no Organization — including the seeded `legacy` Tenant that
+the Console Playground runs as — receives an automatic grant, so an imported and
+activated model stays invisible to `/v1/models` and unusable by
+`/v1/chat/completions` and `/v1/responses` until it is granted:
+
+```bash
+sudo orchardctl models access grant <model_id>@<version> --tenant default
+```
+
+See [Tenant Model access](../../apps/orchard_cli/README.md#tenant-model-access)
+for the full `orchardctl models access` and `orchardctl models routing-policy`
+surface.
 
 For internal developers, applications, coding agents, or automation clients, use bulk API Client provisioning instead:
 

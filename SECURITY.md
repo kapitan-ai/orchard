@@ -73,7 +73,8 @@ Loopback origin or ordinary local user access alone must not be treated as autho
 A Tenant is a governance boundary for model access, quotas, credentials, retention, and usage accounting.
 It is not an isolation boundary against an authorized Operator, a controller-host administrator, or control-plane compromise.
 
-Public inference APIs require a bearer API Token and the effective Tenant's inference authorization.
+Public inference APIs require a bearer API Token, the effective Tenant's inference authorization, and an enabled Tenant-to-Model access grant for the requested Model.
+Model access is deny-by-default: no Tenant, including the seeded `legacy` Tenant, receives an automatic grant, and an ungranted Model is neither listed nor usable.
 The current fail-closed Admin API implementation and [ADR 0004](docs/decisions/0004-admin-api-cluster-admin-auth.md) require an enabled service-account-owned API Token with a cluster-scoped `admin` role.
 The broader Admin API summary in `SPEC.md` still refers to `admin` or `tenant-admin` authorization.
 This policy does not resolve that contract conflict, and changing current behavior requires explicit reconciliation with `SPEC.md`.
@@ -126,6 +127,7 @@ Source development permits an unauthenticated Console and is not a production ac
 
 Console Basic Auth is separate from Tenant, Operator API, and Admin API bearer authorization.
 The repository does not promise per-user Console identities or Tenant isolation within one authenticated Console session.
+The Console Playground is an inference consumer that acts as the seeded `legacy` Tenant, so granting a Model for Playground use also authorizes every existing `legacy`-Tenant API credential for that Model on `/v1`; see [ADR 0021](docs/decisions/0021-explicit-tenant-model-grants-and-routing-snapshots.md).
 
 ### Node Agent and Worker Runtime
 

@@ -17,8 +17,8 @@ firewall, with no cloud dependency.
   [MLX](https://github.com/ml-explore/mlx), Apple Silicon's native ML stack.
 - Exposes OpenAI-compatible APIs: `/v1/responses` as the canonical abstraction,
   `/v1/chat/completions` as a compatibility facade, both with SSE streaming.
-- Governs access with multi-tenant RBAC, API Tokens, API Clients, quotas, and
-  audit logs.
+- Governs access with multi-tenant RBAC, deny-by-default Tenant-to-Model
+  access grants, API Tokens, API Clients, quotas, and audit logs.
 - Ships as a native macOS PKG with launchd services — no Kubernetes, no
   containers required.
 - Uses Postgres as the sole persistence and coordination layer (external

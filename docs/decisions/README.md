@@ -23,4 +23,4 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence ends with [ADR 0020: Portal User is a portal-scoped minting-gate identity](0020-portal-user-is-not-a-platform-principal.md).
+The current sequence ends with [ADR 0021: Explicit Tenant-model grants and routing snapshots](0021-explicit-tenant-model-grants-and-routing-snapshots.md).

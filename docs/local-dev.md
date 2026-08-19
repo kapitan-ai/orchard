@@ -523,7 +523,7 @@ Worker Unix domain sockets default to `/tmp/od-<hash>/ws`, outside the repo tree
 | GET | `/health/ready` | Status-only readiness probe (`{"status":"ok"}` or `{"status":"error"}`) |
 | GET | `/ops/v1/health` | Detailed readiness and observations; cluster Operator/admin Bearer token required |
 | GET | `/metrics` | Prometheus exposition on the same listener; cluster Operator/admin Bearer token required; `503` when valid exposition cannot be produced |
-| GET | `/v1/models` | List active models; Bearer token required |
+| GET | `/v1/models` | List active models granted to the calling Tenant; Bearer token required |
 | POST | `/v1/chat/completions` | Chat completion; stream + non-stream; Bearer token required |
 | POST | `/v1/responses` | Bounded Responses API subset; stream + non-stream; Bearer token required |
 
