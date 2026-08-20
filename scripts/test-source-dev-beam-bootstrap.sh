@@ -482,6 +482,7 @@ cp "$REPO_ROOT/bin/dev" "$ENTRYPOINT_REPO/bin/dev"
 cp "$REPO_ROOT/bin/dev-controller" "$ENTRYPOINT_REPO/bin/dev-controller"
 cp "$REPO_ROOT/bin/dev-node-agent" "$ENTRYPOINT_REPO/bin/dev-node-agent"
 cp "$HELPER" "$ENTRYPOINT_REPO/bin/lib/source-dev-beam.sh"
+cp "$REPO_ROOT/bin/lib/source-dev-worker-cleanup.sh" "$ENTRYPOINT_REPO/bin/lib/source-dev-worker-cleanup.sh"
 chmod +x "$ENTRYPOINT_REPO/bin/dev" "$ENTRYPOINT_REPO/bin/dev-controller" "$ENTRYPOINT_REPO/bin/dev-node-agent"
 : > "$ENTRYPOINT_REPO/mix.exs"
 
