@@ -249,6 +249,14 @@ defmodule Orchard.Node.ModelLoadFailure do
         "model runtime is unavailable on this node"
       )
 
+  def from_reason(:reaper_unavailable),
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "reaper_unavailable",
+        "model runtime supervision is unavailable on this node"
+      )
+
   def from_reason({:worker_exited, _status}),
     do:
       new(

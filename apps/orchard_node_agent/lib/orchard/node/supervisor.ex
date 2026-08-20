@@ -9,7 +9,7 @@ defmodule Orchard.Node.Supervisor do
 
   use Supervisor
 
-  alias Orchard.Node.{Endpoint, ModelManager, RuntimeTLS, WorkerSupervisor}
+  alias Orchard.Node.{Endpoint, ModelManager, RuntimeProcessReaper, RuntimeTLS, WorkerSupervisor}
 
   @grpc_server_id Orchard.Node.GRPCServer
 
@@ -23,6 +23,7 @@ defmodule Orchard.Node.Supervisor do
       {GRPC.Client.Supervisor, []},
       ModelManager,
       {Task.Supervisor, name: Orchard.Node.ModelLoadTaskSupervisor},
+      RuntimeProcessReaper,
       WorkerSupervisor,
       {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor},
       Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)
