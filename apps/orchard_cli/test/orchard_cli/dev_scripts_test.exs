@@ -70,4 +70,28 @@ defmodule OrchardCLI.DevScriptsTest do
 
     assert output =~ "source-dev worker cleanup tests passed"
   end
+
+  test "source-dev worker socket directory matches config dev derivation" do
+    repo_root = Path.expand(@repo_root)
+    hash = :crypto.hash(:sha256, repo_root) |> Base.url_encode64(padding: false)
+    expected = Path.join(["/tmp", "od-" <> binary_part(hash, 0, 8), "ws"])
+    helper = Path.join(repo_root, "bin/lib/source-dev-worker-cleanup.sh")
+
+    assert {output, 0} =
+             System.cmd(
+               "bash",
+               [
+                 "-c",
+                 "source \"$1\"; orchard_source_dev_worker_socket_dir \"$2\"",
+                 "bash",
+                 helper,
+                 repo_root
+               ],
+               cd: repo_root,
+               env: [{"ORCHARD_WORKER_SOCKET_DIR", ""}],
+               stderr_to_stdout: true
+             )
+
+    assert String.trim(output) == expected
+  end
 end
