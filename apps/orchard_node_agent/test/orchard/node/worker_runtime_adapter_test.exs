@@ -14,7 +14,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     ScorePrefixCacheResponse
   }
 
+  alias Orchard.Cluster.V1.Completed, as: ProtoCompleted
   alias Orchard.Cluster.V1.OutputTextDelta, as: ProtoOutputTextDelta
+  alias Orchard.Cluster.V1.TokenDelta, as: ProtoTokenDelta
 
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
@@ -26,7 +28,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   }
 
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
-  alias Orchard.InferenceEvent.OutputTextDelta
+  alias Orchard.InferenceEvent.{Completed, OutputTextDelta, TokenDelta}
   alias Orchard.Node.WorkerRuntimeAdapter
 
   defmodule OpenUnavailableWorkerService do
@@ -70,6 +72,37 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     use GRPC.Endpoint
 
     run(MidStreamUnavailableWorkerService)
+  end
+
+  defmodule TokenDeltaWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+
+    def generate(%ExecuteInferenceRequest{}, stream) do
+      GRPC.Server.send_reply(
+        stream,
+        %InferenceEvent{
+          event: {:token_delta, %ProtoTokenDelta{token_ids: [17], logprobs: [-0.25]}}
+        }
+      )
+
+      GRPC.Server.send_reply(
+        stream,
+        %InferenceEvent{
+          event: {:completed, %ProtoCompleted{finish_reason: :FINISH_REASON_STOP, usage: nil}}
+        }
+      )
+    end
+  end
+
+  defmodule TokenDeltaEndpoint do
+    use GRPC.Endpoint
+
+    run(TokenDeltaWorkerService)
   end
 
   defmodule MemoryBudgetWorkerService do
@@ -584,6 +617,39 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
       assert_receive {:runtime_adapter_done, ^generation_ref, :worker_unavailable}, 1_000
       refute_receive {:runtime_adapter_event, ^generation_ref, _event}, 100
+
+      cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
+      refute Map.has_key?(cleaned_state.generations, generation_ref)
+    end)
+  end
+
+  test "start_generation maps token deltas and continues streaming to completed" do
+    with_worker_runtime_server(TokenDeltaEndpoint, fn channel ->
+      state = adapter_stream_state(channel)
+      request = execute_request("req-token-delta")
+
+      {:ok, generation_ref, adapter_state} =
+        WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{
+                         event: %TokenDelta{token_ids: [17], logprobs: [-0.25]}
+                       }
+                     },
+                     1_000
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{
+                         event: %Completed{finish_reason: :finish_reason_stop, usage: nil}
+                       }
+                     },
+                     1_000
+
+      refute_receive {:runtime_adapter_done, ^generation_ref, _reason}, 100
 
       cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
       refute Map.has_key?(cleaned_state.generations, generation_ref)
