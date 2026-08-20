@@ -477,13 +477,23 @@ assert_fails_with 'ORCHARD_RUNTIME_ENDPOINT_TRANSPORT must be grpc|beam' "$TMP_R
   run_helper controller "$TMP_ROOT/repo-g" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=http
 
 ENTRYPOINT_REPO="$TMP_ROOT/entrypoint-repo"
-mkdir -p "$ENTRYPOINT_REPO/bin/lib" "$ENTRYPOINT_REPO/apps/orchard_controller" "$ENTRYPOINT_REPO/apps/orchard_node_agent"
+mkdir -p \
+  "$ENTRYPOINT_REPO/bin/lib" \
+  "$ENTRYPOINT_REPO/apps/orchard_controller" \
+  "$ENTRYPOINT_REPO/apps/orchard_node_agent" \
+  "$ENTRYPOINT_REPO/native/orchard_worker_mlx/bin" \
+  "$ENTRYPOINT_REPO/native/orchard_worker_mlx/.venv/bin"
 cp "$REPO_ROOT/bin/dev" "$ENTRYPOINT_REPO/bin/dev"
 cp "$REPO_ROOT/bin/dev-controller" "$ENTRYPOINT_REPO/bin/dev-controller"
 cp "$REPO_ROOT/bin/dev-node-agent" "$ENTRYPOINT_REPO/bin/dev-node-agent"
 cp "$HELPER" "$ENTRYPOINT_REPO/bin/lib/source-dev-beam.sh"
 cp "$REPO_ROOT/bin/lib/source-dev-worker-cleanup.sh" "$ENTRYPOINT_REPO/bin/lib/source-dev-worker-cleanup.sh"
 chmod +x "$ENTRYPOINT_REPO/bin/dev" "$ENTRYPOINT_REPO/bin/dev-controller" "$ENTRYPOINT_REPO/bin/dev-node-agent"
+: > "$ENTRYPOINT_REPO/native/orchard_worker_mlx/bin/orchard-worker-mlx"
+: > "$ENTRYPOINT_REPO/native/orchard_worker_mlx/.venv/bin/orchard-worker-mlx"
+chmod +x \
+  "$ENTRYPOINT_REPO/native/orchard_worker_mlx/bin/orchard-worker-mlx" \
+  "$ENTRYPOINT_REPO/native/orchard_worker_mlx/.venv/bin/orchard-worker-mlx"
 : > "$ENTRYPOINT_REPO/mix.exs"
 
 # H: all-in-one bin/dev rejects explicit BEAM mode before running Mix.
@@ -568,7 +578,22 @@ assert_grep '-S mix run --no-halt' "$TMP_ROOT/j-node-iex.log"
 assert_no_grep '--name' "$TMP_ROOT/j-node-iex.log"
 assert_no_grep '--erl' "$TMP_ROOT/j-node-iex.log"
 
-# K: peer-grant commands reject every legacy or compatibility authorization input.
+# K: source-dev entrypoints still boot before the optional MLX venv is built.
+rm -rf "$ENTRYPOINT_REPO/native/orchard_worker_mlx/.venv"
+: > "$TMP_ROOT/k-dev-mix.log"
+assert_succeeds "$TMP_ROOT/k-dev.out" \
+  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/k-dev-mix.log" IEX_ARG_LOG="$TMP_ROOT/k-dev-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc "$ENTRYPOINT_REPO/bin/dev"
+assert_grep 'mix called: ecto.create --quiet' "$TMP_ROOT/k-dev-mix.log"
+assert_grep '-S mix phx.server' "$TMP_ROOT/k-dev-iex.log"
+assert_grep 'MLX worker environment is not built; effective-executable cleanup is disabled' "$TMP_ROOT/k-dev.out"
+
+: > "$TMP_ROOT/k-node-mix.log"
+assert_succeeds "$TMP_ROOT/k-node.out" \
+  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/k-node-mix.log" IEX_ARG_LOG="$TMP_ROOT/k-node-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc "$ENTRYPOINT_REPO/bin/dev-node-agent"
+assert_grep '-S mix run --no-halt' "$TMP_ROOT/k-node-iex.log"
+assert_grep 'MLX worker environment is not built; effective-executable cleanup is disabled' "$TMP_ROOT/k-node.out"
+
+# L: peer-grant commands reject every legacy or compatibility authorization input.
 assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE is forbidden for peer-grant Distribution' \
   "$TMP_ROOT/k-cookie.out" \
   env ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE" \

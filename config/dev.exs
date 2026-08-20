@@ -53,6 +53,20 @@ env_optional_string = fn env_name ->
   end
 end
 
+env_source_dev_path = fn env_name ->
+  case env_optional_string.(env_name) do
+    nil ->
+      nil
+
+    value ->
+      if String.match?(value, ~r/[[:space:][:cntrl:]]/u) do
+        raise "environment variable #{env_name} must not contain whitespace or control characters"
+      end
+
+      Path.expand(value, repo_root)
+  end
+end
+
 env_tokenizer_safe_mode = fn env_name, default ->
   case System.get_env(env_name) || default do
     value when value in [:off, "off"] ->
@@ -409,8 +423,10 @@ worker_socket_dir_hash =
 # Python gRPC rejects Unix socket paths above roughly 103 bytes on macOS.
 # Keep source-dev worker sockets under a short, worktree-specific root.
 worker_socket_dir =
-  System.get_env("ORCHARD_WORKER_SOCKET_DIR") ||
-    Path.join(["/tmp", "od-" <> worker_socket_dir_hash, "ws"])
+  case env_source_dev_path.("ORCHARD_WORKER_SOCKET_DIR") do
+    nil -> Path.join(["/tmp", "od-" <> worker_socket_dir_hash, "ws"])
+    path -> path
+  end
 
 worker_backend =
   env_optional_string.("ORCHARD_WORKER_BACKEND") ||
@@ -561,7 +577,7 @@ config :orchard_node_agent,
       node_identity_root: dev_node_identity_root,
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       worker_executable:
-        System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
+        env_source_dev_path.("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
       worker_socket_dir: worker_socket_dir,
       worker_backend: worker_backend,
