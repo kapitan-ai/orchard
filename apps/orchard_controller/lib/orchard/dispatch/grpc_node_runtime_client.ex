@@ -256,6 +256,23 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
     {:halt, {:error, error}}
   end
 
+  # grpc-elixir 0.11.5 may report statuses as atoms or as the integer codes
+  # defined in GRPC.Status. Normalize both shapes before dispatch sees them.
+  @grpc_status_atoms %{
+    1 => :cancelled,
+    4 => :deadline_exceeded,
+    8 => :resource_exhausted,
+    12 => :unimplemented,
+    14 => :unavailable
+  }
+
+  defp normalize_error(%GRPC.RPCError{status: status} = error) when is_integer(status) do
+    case Map.fetch(@grpc_status_atoms, status) do
+      {:ok, atom} -> normalize_error(%GRPC.RPCError{error | status: atom})
+      :error -> {:rpc_error, status, error.message}
+    end
+  end
+
   defp normalize_error(%GRPC.RPCError{status: status})
        when status in [:unavailable, :cancelled] do
     :node_unavailable
@@ -263,6 +280,10 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
 
   defp normalize_error(%GRPC.RPCError{status: :deadline_exceeded}) do
     :node_timeout
+  end
+
+  defp normalize_error(%GRPC.RPCError{status: :resource_exhausted, message: message}) do
+    {:rpc_error, :resource_exhausted, message}
   end
 
   defp normalize_error(%GRPC.RPCError{status: status, message: message}) do

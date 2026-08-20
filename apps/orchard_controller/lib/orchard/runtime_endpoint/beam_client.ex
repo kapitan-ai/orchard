@@ -345,8 +345,9 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
 
   defp server_module(_target), do: @default_server_module
 
-  defp rpc(%__MODULE__{node: node} = connection, function, args, _opts) when node == node() do
-    safe_apply(connection.server_module, function, args)
+  defp rpc(%__MODULE__{node: node} = connection, function, args, opts) when node == node() do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    safe_apply_with_timeout(connection.server_module, function, args, timeout)
   end
 
   defp rpc(%__MODULE__{} = connection, function, args, opts) do
@@ -367,13 +368,53 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
 
   defp normalize_rpc_result(result), do: result
 
-  defp safe_apply(module, function, args) do
-    apply(module, function, args)
-  rescue
-    _error -> {:error, :beam_rpc_failed}
-  catch
-    :exit, _reason -> {:error, :beam_rpc_failed}
-    _kind, _reason -> {:error, :beam_rpc_failed}
+  # Local same-node calls must honor the same explicit timeout as remote :rpc.call.
+  # Spawn a monitored process so a stuck Runtime Endpoint server cannot block the
+  # controller past its own deadline.
+  defp safe_apply_with_timeout(module, function, args, timeout) do
+    caller = self()
+    tag = make_ref()
+
+    {pid, mon_ref} =
+      spawn_monitor(fn ->
+        result =
+          try do
+            apply(module, function, args)
+          rescue
+            _error -> {:error, :beam_rpc_failed}
+          catch
+            :exit, _reason -> {:error, :beam_rpc_failed}
+            _kind, _reason -> {:error, :beam_rpc_failed}
+          end
+
+        send(caller, {:result, tag, result})
+      end)
+
+    await_local_result(tag, mon_ref, pid, timeout)
+  end
+
+  defp await_local_result(tag, mon_ref, pid, timeout) do
+    start_ms = System.monotonic_time(:millisecond)
+
+    receive do
+      {:result, ^tag, result} ->
+        Process.demonitor(mon_ref, [:flush])
+        result
+
+      {:DOWN, ^mon_ref, :process, ^pid, :normal} ->
+        # Result message and DOWN can race; retry briefly for the result.
+        await_local_result(tag, mon_ref, pid, remaining_timeout(timeout, start_ms))
+
+      {:DOWN, ^mon_ref, :process, ^pid, _reason} ->
+        {:error, :beam_rpc_failed}
+    after
+      timeout -> {:error, :beam_node_timeout}
+    end
+  end
+
+  defp remaining_timeout(timeout, start_ms) do
+    elapsed_ms = System.monotonic_time(:millisecond) - start_ms
+    max(timeout - elapsed_ms, 0)
   end
 
   defp failed_prefix_cache_score(reason) do

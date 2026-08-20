@@ -119,12 +119,14 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   defp deadline_code(_code), do: "request_timeout"
 
+  defp model_load_code("timeout"), do: "load_timeout"
+
   defp model_load_code(code)
        when code in [
               "acquisition_failed",
               "runtime_unavailable",
               "resource_exhausted",
-              "timeout",
+              "load_timeout",
               "model_invalid"
             ],
        do: code

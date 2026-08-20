@@ -166,6 +166,32 @@ defmodule Orchard.Dispatch.DispatchTest.NeverAcceptClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts), do: :ok
 end
 
+defmodule Orchard.Dispatch.DispatchTest.DeadlineCapturingClient do
+  @moduledoc false
+
+  alias Orchard.Cluster.V1.StatusResponse
+  alias Orchard.RuntimeEndpoint.Operation
+
+  def connect(_target), do: {:ok, :deadline_channel}
+
+  def status(_channel, _opts), do: {:ok, %StatusResponse{}}
+
+  def disconnect(_channel), do: :ok
+
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{} = request, opts) do
+    Process.put({__MODULE__, :captured}, %{
+      deadline_unix_ms: request.deadline_unix_ms,
+      timeout: Keyword.get(opts, :timeout)
+    })
+
+    {:error, :node_timeout}
+  end
+
+  def execute_inference(_channel, _request, _opts), do: raise("should not be called")
+
+  def cancel_inference(_channel, _request, _opts), do: :ok
+end
+
 defmodule Orchard.Dispatch.DispatchTest do
   @moduledoc """
   Tests for R6: single-node dispatch and cancellation.
@@ -191,6 +217,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   }
 
   alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
+  alias Orchard.Dispatch.DispatchTest.DeadlineCapturingClient
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: Client
   alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Evaluator}
   alias Orchard.DispatchCapacity.Evaluator.Input
@@ -907,6 +934,49 @@ defmodule Orchard.Dispatch.DispatchTest do
                }
              } =
                RequestDispatcher.dispatch(schedule, execute, model_load)
+    end
+
+    test "issue #222 caps EnsureModelLoadedRequest deadline to the stage budget", %{
+      bundle: bundle
+    } do
+      schedule =
+        build_schedule("req-deadline-cap",
+          request_timeout_ms: 5_000,
+          model_load_timeout_ms: 500
+        )
+
+      execute = execute_request("req-dispatch-deadline-cap")
+
+      model_load = %EnsureModelLoadedRequest{
+        node_id: "local",
+        model_id: @model_id,
+        version: @version,
+        artifact_sha256: bundle.hash,
+        artifact_source_uri: bundle.source_uri,
+        deadline_unix_ms: 0
+      }
+
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               failure: %{
+                 "failure_class" => "model_load_failure",
+                 "failure_code" => "load_timeout"
+               }
+             } =
+               RequestDispatcher.dispatch(schedule, execute, model_load,
+                 client_impl: DeadlineCapturingClient
+               )
+
+      captured = Process.get({DeadlineCapturingClient, :captured})
+      assert captured.timeout == 500
+
+      deadline_ms = captured.deadline_unix_ms
+      now_ms = System.system_time(:millisecond)
+      timeout_at_ms = DateTime.to_unix(schedule.timeout_at, :millisecond)
+
+      # The load deadline must be bounded by the stage cap, not the request deadline.
+      assert deadline_ms <= now_ms + 600
+      assert deadline_ms <= timeout_at_ms
     end
   end
 

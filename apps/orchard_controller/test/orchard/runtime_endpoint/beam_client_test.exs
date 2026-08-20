@@ -121,6 +121,15 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     def score_prefix_cache(_request, _opts), do: raise("boom")
   end
 
+  defmodule SlowServer do
+    alias Orchard.RuntimeEndpoint.Operation
+
+    def ensure_model_loaded(%Operation.EnsureModelLoadedRequest{}, _opts) do
+      Process.sleep(5_000)
+      {:ok, %Operation.EnsureModelLoadedResult{already_loaded: true, placement_state: :loaded}}
+    end
+  end
+
   test "connect rejects unsupported target transports" do
     target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
 
@@ -411,6 +420,22 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
     assert {:ok, %Operation.PrefixCacheScoreResult{status_code: "error"}} =
              BeamClient.score_prefix_cache(connection, request, [])
+  end
+
+  test "issue #222 local BEAM ensure_model_loaded honors explicit timeout" do
+    model_ref = ModelRef.new!("mlx-community/phi-3", "main")
+    target = Target.beam(@node_id, address: node(), metadata: %{server_module: SlowServer})
+    assert {:ok, connection} = BeamClient.connect(target)
+
+    request = %Operation.EnsureModelLoadedRequest{model_ref: model_ref}
+
+    start = System.monotonic_time(:millisecond)
+
+    assert {:error, :beam_node_timeout} =
+             BeamClient.ensure_model_loaded(connection, request, timeout: 50)
+
+    elapsed = System.monotonic_time(:millisecond) - start
+    assert elapsed < 200
   end
 
   defp authenticated_beam_fixture! do

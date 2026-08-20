@@ -36,6 +36,8 @@ defmodule Orchard.Requests.InferenceAttemptFailureTest do
       {%{category: :runtime, code: :runtime_unavailable},
        {"runtime_failure", "runtime_unavailable"}},
       {%{category: :model_load, code: :model_invalid}, {"model_load_failure", "model_invalid"}},
+      {%{category: :model_load, code: :timeout}, {"model_load_failure", "load_timeout"}},
+      {%{category: :model_load, code: :load_timeout}, {"model_load_failure", "load_timeout"}},
       {%{category: :capacity, code: :dispatch_capacity_acceptance_gate_busy},
        {"capacity_rejection", "resource_exhausted"}},
       {%{category: :cancellation, code: :request_client_disconnect},
