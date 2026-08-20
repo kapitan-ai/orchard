@@ -177,7 +177,7 @@ Clients (SDKs / curl / apps)
    ├── Auth / RBAC      ── API Tokens, API Clients + tenant admission controls
    ├── Scheduler        ── Runtime Endpoint selection, queueing, fairness
    ├── Dispatch         ── Runtime Endpoint operations + stream relay
-   └── Observability    ── Prometheus, OTel, structured logs
+   └── Observability    ── Prometheus metrics, request-correlated logs
         │
    Runtime Endpoint Interface
         │
