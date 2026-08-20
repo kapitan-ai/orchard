@@ -10,7 +10,9 @@
 #     inside this checkout's source-dev socket directory.
 
 # Compute the source-dev worker socket directory for a repo root.
-# This must stay in sync with config/dev.exs and config/test.exs.
+# This must stay in sync with the default in config/dev.exs.
+# config/test.exs intentionally uses the separate "ot-" prefix and is out of
+# scope for source-dev cleanup.
 orchard_source_dev_worker_socket_dir() {
   local repo_root="$1"
   local hash
@@ -22,8 +24,46 @@ orchard_source_dev_worker_socket_dir() {
     return 0
   fi
 
+  if ! hash="$(orchard_source_dev_worker_socket_hash "$repo_root")"; then
+    echo "warning: cannot resolve the source-dev worker socket directory; skipping cleanup" >&2
+    return 69
+  fi
+
+  printf '%s\n' "/tmp/od-${hash}/ws"
+}
+
+# Compute the first eight URL-safe base64 characters of SHA-256(repo_root).
+orchard_source_dev_worker_socket_hash() {
+  local repo_root="$1"
+  local digest_hex
+
+  if command -v shasum >/dev/null 2>&1 &&
+    command -v xxd >/dev/null 2>&1 &&
+    command -v base64 >/dev/null 2>&1; then
+    digest_hex="$(printf '%s' "$repo_root" | shasum -a 256 | awk '{print $1}')" || return 1
+    printf '%s' "$digest_hex" |
+      xxd -r -p |
+      base64 |
+      tr -d '\n' |
+      tr '+/' '-_' |
+      tr -d '=' |
+      cut -c1-8
+    return 0
+  fi
+
+  if command -v openssl >/dev/null 2>&1 && command -v base64 >/dev/null 2>&1; then
+    printf '%s' "$repo_root" |
+      openssl dgst -binary -sha256 |
+      base64 |
+      tr -d '\n' |
+      tr '+/' '-_' |
+      tr -d '=' |
+      cut -c1-8
+    return 0
+  fi
+
   if command -v python3 >/dev/null 2>&1; then
-    hash="$(python3 - "$repo_root" <<'PY'
+    python3 - "$repo_root" <<'PY'
 import base64
 import hashlib
 import sys
@@ -32,34 +72,35 @@ digest = hashlib.sha256(repo.encode("utf-8")).digest()
 encoded = base64.urlsafe_b64encode(digest).decode("ascii")
 print(encoded.rstrip("=")[:8])
 PY
-    )"
-  else
-    echo "error: python3 is required to resolve the source-dev worker socket directory" >&2
-    return 69
+    return $?
   fi
 
-  printf '%s\n' "/tmp/od-${hash}/ws"
+  return 69
 }
 
 # Terminate source-dev MLX workers owned by this checkout.
 #
 # Arguments:
 #   $1 repo root
-#   $2 worker executable path (optional, reserved for future ownership checks)
+#   $2 worker executable path (optional)
 orchard_source_dev_cleanup_workers() {
   local repo_root="$1"
-  local _worker_executable="${2:-}"
+  local worker_executable="${2:-}"
   local socket_dir
 
-  socket_dir="$(orchard_source_dev_worker_socket_dir "$repo_root")" || return $?
+  if ! socket_dir="$(orchard_source_dev_worker_socket_dir "$repo_root")"; then
+    echo "warning: unable to determine source-dev worker ownership; skipping cleanup" >&2
+    return 0
+  fi
 
   local running_uid
   running_uid="$(id -u)" || {
-    echo "error: unable to determine current user id" >&2
-    return 1
+    echo "warning: unable to determine current user id; skipping cleanup" >&2
+    return 0
   }
 
   local -a pids_to_signal=()
+  local -a socket_paths_to_signal=()
   local -a ambiguous_pids=()
   local line pid args socket_path owner_uid
 
@@ -72,9 +113,15 @@ orchard_source_dev_cleanup_workers() {
     args="${line#* }"
 
     # Require a parseable socket path argument. Anything else is treated as
-    # an ambiguous match and aborts the cleanup rather than risk killing an
-    # unrelated process.
+    # unknown ownership and skipped rather than risking an unrelated kill.
     if ! socket_path="$(orchard_source_dev_extract_socket_path "$args")"; then
+      ambiguous_pids+=("$pid")
+      continue
+    fi
+
+    # When provided, require the command line to identify this checkout's
+    # worker executable as well as its socket directory.
+    if [[ -n "$worker_executable" && "$args" != *"$worker_executable"* ]]; then
       ambiguous_pids+=("$pid")
       continue
     fi
@@ -91,13 +138,12 @@ orchard_source_dev_cleanup_workers() {
     # Do not signal a process that already exited between enumeration and now.
     if kill -0 "$pid" 2>/dev/null; then
       pids_to_signal+=("$pid")
+      socket_paths_to_signal+=("$socket_path")
     fi
-  done < <(pgrep -fl orchard-worker-mlx 2>/dev/null || true)
+  done < <(pgrep -af orchard-worker-mlx 2>/dev/null || true)
 
   if [[ ${#ambiguous_pids[@]} -gt 0 ]]; then
-    echo "error: found orchard-worker-mlx process(es) with no identifiable socket path: ${ambiguous_pids[*]}" >&2
-    echo "error: refusing to kill any worker until ownership is unambiguous" >&2
-    return 1
+    echo "warning: skipping orchard-worker-mlx process(es) with unknown ownership: ${ambiguous_pids[*]}" >&2
   fi
 
   if [[ ${#pids_to_signal[@]} -eq 0 ]]; then
@@ -106,8 +152,9 @@ orchard_source_dev_cleanup_workers() {
 
   echo "==> Sending SIGTERM to owned source-dev MLX workers: ${pids_to_signal[*]}"
 
-  local pid
-  for pid in "${pids_to_signal[@]}"; do
+  local index
+  for index in "${!pids_to_signal[@]}"; do
+    pid="${pids_to_signal[$index]}"
     if ! kill -TERM "$pid" 2>/dev/null; then
       # The process may have exited between the -0 check and the signal. If it
       # is genuinely gone, ignore; otherwise this is a real permission/signal
@@ -125,9 +172,10 @@ orchard_source_dev_cleanup_workers() {
   # Report any survivors so operators can investigate rather than escalate
   # automatically from a startup script.
   local survivors=()
-  for pid in "${pids_to_signal[@]}"; do
+  for index in "${!pids_to_signal[@]}"; do
+    pid="${pids_to_signal[$index]}"
     if kill -0 "$pid" 2>/dev/null; then
-      survivors+=("$pid")
+      survivors+=("$pid (socket: ${socket_paths_to_signal[$index]})")
     fi
   done
 

@@ -2,8 +2,8 @@
 # Focused tests for the source-dev worker cleanup helper.
 #
 # Verifies that the helper kills only workers whose socket path lives in this
-# checkout's source-dev socket directory and leaves foreign / out-of-tree workers
-# alone.
+# checkout's source-dev socket directory, skips ambiguous workers, and leaves
+# foreign / out-of-tree workers alone.
 
 set -euo pipefail
 
@@ -62,6 +62,15 @@ while :; do sleep 0.2; done
 SCRIPT
 chmod +x "$FAKE_WORKER"
 
+FAKE_AMBIGUOUS="$TMP_ROOT/orchard-worker-mlx-ambiguous"
+cat > "$FAKE_AMBIGUOUS" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'exit 0' TERM
+while :; do sleep 0.2; done
+SCRIPT
+chmod +x "$FAKE_AMBIGUOUS"
+
 socket_owned="$SOCKET_DIR/owned.sock"
 socket_foreign="$FOREIGN_SOCKET_DIR/foreign.sock"
 
@@ -73,6 +82,8 @@ socket_foreign="$FOREIGN_SOCKET_DIR/foreign.sock"
 owned_pid=$!
 "$FAKE_WORKER" --socket-path "$socket_foreign" &
 foreign_pid=$!
+"$FAKE_AMBIGUOUS" &
+ambiguous_pid=$!
 
 # Give the background jobs a moment to establish their command lines.
 sleep 0.2
@@ -80,9 +91,15 @@ sleep 0.2
 # Verify both are alive before cleanup.
 kill -0 "$owned_pid" 2>/dev/null || fail "owned worker was not running before cleanup"
 kill -0 "$foreign_pid" 2>/dev/null || fail "foreign worker was not running before cleanup"
+kill -0 "$ambiguous_pid" 2>/dev/null || fail "ambiguous worker was not running before cleanup"
 
 # Run the cleanup helper.
-orchard_source_dev_cleanup_workers "$REPO_ROOT" "$FAKE_WORKER"
+cleanup_output="$(orchard_source_dev_cleanup_workers "$REPO_ROOT" "$FAKE_WORKER" 2>&1)"
+printf '%s\n' "$cleanup_output"
+[[ "$cleanup_output" == *"warning: skipping orchard-worker-mlx process(es) with unknown ownership"* ]] ||
+  fail "ambiguous worker warning was not emitted"
+[[ "$cleanup_output" == *"$ambiguous_pid"* ]] ||
+  fail "ambiguous worker warning did not name its pid"
 
 # Reap the owned worker first: it is a child of this shell, so until wait(2)
 # collects it the zombie still answers kill -0.
@@ -98,8 +115,16 @@ if ! kill -0 "$foreign_pid" 2>/dev/null; then
   fail "foreign worker was incorrectly killed by cleanup"
 fi
 
-# Clean up the foreign worker.
+# The ambiguous worker should still be alive and the helper should have
+# returned success despite not being able to establish ownership.
+if ! kill -0 "$ambiguous_pid" 2>/dev/null; then
+  fail "ambiguous worker was incorrectly killed by cleanup"
+fi
+
+# Clean up the foreign and ambiguous workers.
 kill -TERM "$foreign_pid" 2>/dev/null || true
 wait "$foreign_pid" 2>/dev/null || true
+kill -TERM "$ambiguous_pid" 2>/dev/null || true
+wait "$ambiguous_pid" 2>/dev/null || true
 
 echo "source-dev worker cleanup tests passed"
