@@ -134,12 +134,13 @@ defmodule Orchard.Inference.ModelLoadFailure do
   def from_transport_reason(:node_timeout) do
     %__MODULE__{
       category: :timeout,
-      code: "node_timeout",
-      message: "model load request to node timed out"
+      code: "load_timeout",
+      message: "model load timed out"
     }
   end
 
   def from_transport_reason(:beam_node_timeout), do: from_transport_reason(:node_timeout)
+  def from_transport_reason(:timeout), do: from_transport_reason(:node_timeout)
 
   def from_transport_reason(:beam_rpc_failed),
     do: from_transport_reason({:rpc_error, :beam_rpc_failed})
@@ -158,6 +159,11 @@ defmodule Orchard.Inference.ModelLoadFailure do
       code: "rpc_resource_exhausted",
       message: "model load RPC was rejected due to resource exhaustion"
     }
+  end
+
+  def from_transport_reason({:rpc_error, status, _message})
+      when status in [:deadline_exceeded, 4] do
+    from_transport_reason(:node_timeout)
   end
 
   def from_transport_reason({:rpc_error, status, _message}) when is_atom(status) do
@@ -298,7 +304,7 @@ defmodule Orchard.Inference.ModelLoadFailure do
   defp defaults_for_category(:runtime_unavailable),
     do: {"runtime_unavailable", "model runtime is unavailable"}
 
-  defp defaults_for_category(:timeout), do: {"timeout", "model load timed out"}
+  defp defaults_for_category(:timeout), do: {"load_timeout", "model load timed out"}
 
   defp defaults_for_category(:resource_exhausted),
     do: {"resource_exhausted", "resources exhausted"}

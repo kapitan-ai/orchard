@@ -651,32 +651,7 @@ defmodule Orchard.Node.ModelManager do
 
     case result do
       {:ok, _worker_pid} ->
-        # Clean up inflight tracking
-        state = remove_inflight(state, key, inflight)
-
-        # Mark worker as LOADED and touch LRU timestamp
-        state =
-          if Map.has_key?(state.workers, key) do
-            state
-            |> put_worker_state(key, :PLACEMENT_STATE_LOADED)
-            |> touch_worker_last_used(key)
-          else
-            state
-          end
-
-        all_replied = inflight.replied_waiter_count + length(expired) + length(valid)
-
-        emit_load_stop(key, inflight, %{
-          outcome: :loaded,
-          waiter_count: inflight.total_waiter_count,
-          replied_waiter_count: all_replied,
-          worker_started: inflight.worker_pid != nil
-        })
-
-        # Reply expired waiters with deadline_exceeded, valid ones with success
-        reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
-
-        reply_loaded_waiters_with_prompt_token_support(state, key, valid)
+        finalize_successful_load(state, key, inflight, expired, valid)
 
       {:error, :deadline_exceeded} ->
         if valid == [] do
@@ -726,6 +701,55 @@ defmodule Orchard.Node.ModelManager do
         reply_waiters(valid, ModelLoadFailure.to_response(reason))
         state
     end
+  end
+
+  # No valid waiter remains and this was not a preload: the request that started
+  # the load has already been abandoned by the controller. Do not mark the worker
+  # loaded for a stale completion; clean it up.
+  defp finalize_successful_load(state, key, inflight, expired, [])
+       when not inflight.preload do
+    state = remove_inflight(state, key, inflight)
+    state = cleanup_failed_worker(state, key)
+
+    all_replied = inflight.replied_waiter_count + length(expired)
+
+    emit_load_stop(key, inflight, %{
+      outcome: :abandoned,
+      waiter_count: inflight.total_waiter_count,
+      replied_waiter_count: all_replied,
+      worker_started: inflight.worker_pid != nil
+    })
+
+    reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
+    state
+  end
+
+  defp finalize_successful_load(state, key, inflight, expired, valid) do
+    state = remove_inflight(state, key, inflight)
+
+    # Mark worker as LOADED and touch LRU timestamp
+    state =
+      if Map.has_key?(state.workers, key) do
+        state
+        |> put_worker_state(key, :PLACEMENT_STATE_LOADED)
+        |> touch_worker_last_used(key)
+      else
+        state
+      end
+
+    all_replied = inflight.replied_waiter_count + length(expired) + length(valid)
+
+    emit_load_stop(key, inflight, %{
+      outcome: :loaded,
+      waiter_count: inflight.total_waiter_count,
+      replied_waiter_count: all_replied,
+      worker_started: inflight.worker_pid != nil
+    })
+
+    # Reply expired waiters with deadline_exceeded, valid ones with success
+    reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
+
+    reply_loaded_waiters_with_prompt_token_support(state, key, valid)
   end
 
   defp reply_waiters(waiters, reply) do

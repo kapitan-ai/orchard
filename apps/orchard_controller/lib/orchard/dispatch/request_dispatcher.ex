@@ -796,10 +796,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp ensure_loaded_before_deadline(context, model_load_request, metrics) do
+    remaining_request_ms = remaining_request_timeout_ms(context.deadline_ms)
+
     model_load_timeout =
       min(
         context.model_load_timeout_cap_ms,
-        remaining_request_timeout_ms(context.deadline_ms)
+        remaining_request_ms
       )
 
     if model_load_timeout <= 0 do
@@ -807,6 +809,21 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     else
       ensure_start = System.monotonic_time(:millisecond)
       put_ensure_model_load_started_context(metrics)
+
+      # The Node Agent must load only until the stage cap, not the absolute
+      # Request deadline, so the load stops when the controller has abandoned it.
+      timeout_at_unix_ms =
+        context.schedule
+        |> Map.fetch!(:timeout_at)
+        |> DateTime.to_unix(:millisecond)
+
+      stage_deadline_unix_ms = System.system_time(:millisecond) + model_load_timeout
+      effective_load_deadline_unix_ms = min(timeout_at_unix_ms, stage_deadline_unix_ms)
+
+      model_load_request = %{
+        model_load_request
+        | deadline_unix_ms: effective_load_deadline_unix_ms
+      }
 
       context.client
       |> ensure_loaded_for_dispatch(

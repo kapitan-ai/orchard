@@ -132,7 +132,7 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
 
     failure = ModelLoadFailure.from_response(response)
     assert failure.category == :timeout
-    assert failure.code == "timeout"
+    assert failure.code == "load_timeout"
     assert failure.message == "custom timeout message"
   end
 
@@ -144,10 +144,10 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
     assert failure.code == "node_unavailable"
   end
 
-  test "from_transport_reason node_timeout -> timeout" do
+  test "from_transport_reason node_timeout -> load_timeout" do
     failure = ModelLoadFailure.from_transport_reason(:node_timeout)
     assert failure.category == :timeout
-    assert failure.code == "node_timeout"
+    assert failure.code == "load_timeout"
   end
 
   test "from_transport_reason beam_node_unavailable -> runtime_unavailable" do
@@ -160,9 +160,10 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
     assert failure.category == :runtime_unavailable
   end
 
-  test "from_transport_reason beam_node_timeout -> timeout" do
+  test "from_transport_reason beam_node_timeout -> load_timeout" do
     failure = ModelLoadFailure.from_transport_reason(:beam_node_timeout)
     assert failure.category == :timeout
+    assert failure.code == "load_timeout"
   end
 
   test "from_transport_reason beam_rpc_failed -> internal rpc error" do
@@ -200,6 +201,26 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
     failure = ModelLoadFailure.from_transport_reason({:rpc_error, "some detail"})
     assert failure.category == :internal
     assert failure.code == "rpc_error"
+  end
+
+  test "from_transport_reason bare timeout -> load_timeout" do
+    failure = ModelLoadFailure.from_transport_reason(:timeout)
+    assert failure.category == :timeout
+    assert failure.code == "load_timeout"
+  end
+
+  test "from_transport_reason rpc_error integer deadline_exceeded -> load_timeout" do
+    failure = ModelLoadFailure.from_transport_reason({:rpc_error, 4, "Deadline expired"})
+    assert failure.category == :timeout
+    assert failure.code == "load_timeout"
+  end
+
+  test "from_transport_reason rpc_error atom deadline_exceeded -> load_timeout" do
+    failure =
+      ModelLoadFailure.from_transport_reason({:rpc_error, :deadline_exceeded, "Deadline expired"})
+
+    assert failure.category == :timeout
+    assert failure.code == "load_timeout"
   end
 
   test "from_transport_reason unknown reason -> internal" do

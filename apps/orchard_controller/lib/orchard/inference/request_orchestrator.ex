@@ -1734,11 +1734,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp build_model_load_request(model, schedule) do
-    deadline_ms =
-      schedule
-      |> Map.fetch!(:timeout_at)
-      |> DateTime.to_unix(:millisecond)
-
     node_id =
       case Map.get(schedule, :node_id) do
         uuid when is_binary(uuid) -> uuid
@@ -1751,7 +1746,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
       version: model.version,
       artifact_sha256: model.artifact_sha256,
       preload: false,
-      deadline_unix_ms: deadline_ms,
+      # The effective load-operation deadline is set by RequestDispatcher
+      # from the cold-start stage cap, not the absolute Request deadline.
+      deadline_unix_ms: 0,
       artifact_source_uri: model.artifact_source_uri || ""
     }
   end
