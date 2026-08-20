@@ -14,7 +14,7 @@ defmodule OrchardSharedDomainTypesTest do
 
   alias Orchard.Cluster.V1.{InferenceEventMapper, ModelManifestMapper}
   alias Orchard.InferenceEvent
-  alias Orchard.InferenceEvent.Usage
+  alias Orchard.InferenceEvent.{TokenDelta, Usage}
   alias Orchard.ModelManifest
   alias Orchard.ModelManifest.{ChatTemplate, RuntimeRequirements, Tokenizer}
 
@@ -194,6 +194,56 @@ defmodule OrchardSharedDomainTypesTest do
       InferenceEvent.usage_update(%Usage{input_tokens: 12, output_tokens: 8, total_tokens: 20})
 
     assert InferenceEvent.kind(usage_event) == :usage
+  end
+
+  test "token delta constructors classify and round-trip empty and populated logprobs" do
+    empty_logprobs_event = InferenceEvent.token_delta([0, 4_294_967_295])
+
+    assert %InferenceEvent{event: %TokenDelta{token_ids: [0, 4_294_967_295], logprobs: []}} =
+             empty_logprobs_event
+
+    assert InferenceEvent.kind(empty_logprobs_event) == :token_delta
+    refute InferenceEvent.terminal?(empty_logprobs_event)
+
+    assert {:ok, ^empty_logprobs_event} =
+             empty_logprobs_event
+             |> InferenceEventMapper.to_proto()
+             |> InferenceEventMapper.from_proto()
+
+    populated_logprobs_event = InferenceEvent.token_delta([17, 42], [-0.25, -1.5])
+
+    assert %InferenceEvent{event: %TokenDelta{token_ids: [17, 42], logprobs: [-0.25, -1.5]}} =
+             populated_logprobs_event
+
+    assert {:ok, ^populated_logprobs_event} =
+             populated_logprobs_event
+             |> InferenceEventMapper.to_proto()
+             |> InferenceEventMapper.from_proto()
+  end
+
+  test "token delta constructors and mapper reject malformed values and alignment" do
+    for {token_ids, logprobs} <- [
+          {[], []},
+          {[-1], []},
+          {[4_294_967_296], []},
+          {[1.0], []},
+          {:not_a_list, []},
+          {[1], :not_a_list},
+          {[1], [0]},
+          {[1, 2], [-0.5]}
+        ] do
+      assert_raise ArgumentError, fn -> InferenceEvent.token_delta(token_ids, logprobs) end
+
+      assert {:error, {:invalid_payload, :token_delta, :invalid_scalar_values}} =
+               InferenceEventMapper.from_proto(%Orchard.Cluster.V1.InferenceEvent{
+                 event:
+                   {:token_delta,
+                    %Orchard.Cluster.V1.TokenDelta{
+                      token_ids: token_ids,
+                      logprobs: logprobs
+                    }}
+               })
+    end
   end
 
   test "inference event mapper handles tool-call finish reason bidirectionally" do

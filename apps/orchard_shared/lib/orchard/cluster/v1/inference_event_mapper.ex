@@ -10,6 +10,7 @@ defmodule Orchard.Cluster.V1.InferenceEventMapper do
     Failed,
     OutputTextDelta,
     Progress,
+    TokenDelta,
     ToolCallDelta,
     Usage,
     UsageUpdate
@@ -30,6 +31,12 @@ defmodule Orchard.Cluster.V1.InferenceEventMapper do
 
   def to_proto(%InferenceEvent{event: %OutputTextDelta{delta: delta}}) do
     %V1.InferenceEvent{event: {:output_text_delta, %V1.OutputTextDelta{delta: delta}}}
+  end
+
+  def to_proto(%InferenceEvent{event: %TokenDelta{token_ids: token_ids, logprobs: logprobs}}) do
+    %V1.InferenceEvent{
+      event: {:token_delta, %V1.TokenDelta{token_ids: token_ids, logprobs: logprobs}}
+    }
   end
 
   def to_proto(%InferenceEvent{
@@ -81,6 +88,12 @@ defmodule Orchard.Cluster.V1.InferenceEventMapper do
         event: {:output_text_delta, %V1.OutputTextDelta{delta: delta}}
       }) do
     safe_build(:output_text_delta, fn -> InferenceEvent.output_text_delta(delta) end)
+  end
+
+  def from_proto(%V1.InferenceEvent{
+        event: {:token_delta, %V1.TokenDelta{token_ids: token_ids, logprobs: logprobs}}
+      }) do
+    safe_build(:token_delta, fn -> InferenceEvent.token_delta(token_ids, logprobs) end)
   end
 
   def from_proto(%V1.InferenceEvent{

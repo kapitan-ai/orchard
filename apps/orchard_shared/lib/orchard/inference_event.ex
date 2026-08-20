@@ -33,6 +33,18 @@ defmodule Orchard.InferenceEvent do
     @type t :: %__MODULE__{delta: String.t()}
   end
 
+  defmodule TokenDelta do
+    @moduledoc false
+
+    @enforce_keys [:token_ids]
+    defstruct token_ids: [], logprobs: []
+
+    @type t :: %__MODULE__{
+            token_ids: nonempty_list(non_neg_integer()),
+            logprobs: [float()]
+          }
+  end
+
   defmodule ToolCallDelta do
     @moduledoc false
 
@@ -88,6 +100,7 @@ defmodule Orchard.InferenceEvent do
     Failed,
     OutputTextDelta,
     Progress,
+    TokenDelta,
     ToolCallDelta,
     Usage,
     UsageUpdate
@@ -99,6 +112,7 @@ defmodule Orchard.InferenceEvent do
   @type payload ::
           Accepted.t()
           | OutputTextDelta.t()
+          | TokenDelta.t()
           | ToolCallDelta.t()
           | UsageUpdate.t()
           | Completed.t()
@@ -126,6 +140,19 @@ defmodule Orchard.InferenceEvent do
   def output_text_delta(delta) do
     raise ArgumentError,
           "#{inspect(__MODULE__)} delta must be a binary, got: #{inspect(delta)}"
+  end
+
+  @spec token_delta(nonempty_list(non_neg_integer())) :: t()
+  def token_delta(token_ids), do: token_delta(token_ids, [])
+
+  @spec token_delta(nonempty_list(non_neg_integer()), [float()]) :: t()
+  def token_delta(token_ids, logprobs) do
+    if valid_token_ids?(token_ids) and valid_logprobs?(token_ids, logprobs) do
+      %__MODULE__{event: %TokenDelta{token_ids: token_ids, logprobs: logprobs}}
+    else
+      raise ArgumentError,
+            "#{inspect(__MODULE__)} token_delta expects a non-empty list of uint32 token IDs and an empty or aligned list of float logprobs, got: #{inspect({token_ids, logprobs})}"
+    end
   end
 
   @spec tool_call_delta(String.t(), String.t()) :: t()
@@ -193,6 +220,7 @@ defmodule Orchard.InferenceEvent do
   @spec kind(t()) :: atom()
   def kind(%__MODULE__{event: %Accepted{}}), do: :accepted
   def kind(%__MODULE__{event: %OutputTextDelta{}}), do: :output_text_delta
+  def kind(%__MODULE__{event: %TokenDelta{}}), do: :token_delta
   def kind(%__MODULE__{event: %ToolCallDelta{}}), do: :tool_call_delta
   def kind(%__MODULE__{event: %UsageUpdate{}}), do: :usage
   def kind(%__MODULE__{event: %Completed{}}), do: :completed
@@ -203,6 +231,21 @@ defmodule Orchard.InferenceEvent do
   def terminal?(%__MODULE__{event: %Completed{}}), do: true
   def terminal?(%__MODULE__{event: %Failed{}}), do: true
   def terminal?(%__MODULE__{}), do: false
+
+  defp valid_token_ids?(token_ids) when is_list(token_ids) and token_ids != [] do
+    Enum.all?(token_ids, fn token_id ->
+      is_integer(token_id) and token_id >= 0 and token_id <= 4_294_967_295
+    end)
+  end
+
+  defp valid_token_ids?(_token_ids), do: false
+
+  defp valid_logprobs?(token_ids, logprobs) when is_list(logprobs) do
+    Enum.all?(logprobs, &is_float/1) and
+      (logprobs == [] or length(logprobs) == length(token_ids))
+  end
+
+  defp valid_logprobs?(_token_ids, _logprobs), do: false
 
   defp validate_finish_reason!(finish_reason)
        when finish_reason in [
