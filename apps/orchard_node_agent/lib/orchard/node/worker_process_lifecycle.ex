@@ -37,7 +37,6 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
       case Integer.parse(child_pid) do
         {child_pid_int, _} when child_pid_int > 0 ->
           kill_process_tree(child_pid_int)
-          send_signal(child_pid_int, "-KILL")
 
         _other ->
           :ok

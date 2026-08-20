@@ -162,6 +162,12 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     assert f.code == "worker_unavailable"
   end
 
+  test "reaper_unavailable -> RUNTIME_UNAVAILABLE" do
+    f = ModelLoadFailure.from_reason(:reaper_unavailable)
+    assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
+    assert f.code == "reaper_unavailable"
+  end
+
   test "worker_exited -> RUNTIME_UNAVAILABLE" do
     f = ModelLoadFailure.from_reason({:worker_exited, 1})
     assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE

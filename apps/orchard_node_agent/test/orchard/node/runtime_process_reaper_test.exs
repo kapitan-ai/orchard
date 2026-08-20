@@ -57,7 +57,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
 
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
 
-    {:ok, ref} =
+    {:ok, _ref} =
       RuntimeProcessReaper.watch(owner_pid, os_pid, %{
         shutdown_timeout_ms: @short_timeout_ms,
         model_ref: nil,
@@ -70,8 +70,36 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert wait_until_dead(os_pid, 2_000) == :ok
 
     # The lease should have been removed after escalation.
-    RuntimeProcessReaper.reap(ref, :test_cleanup)
-    RuntimeProcessReaper.release(ref)
+    assert wait_until(
+             fn ->
+               state = :sys.get_state(RuntimeProcessReaper)
+               state.leases == %{} and state.owner_monitors == %{}
+             end,
+             500
+           )
+  end
+
+  test "watch returns an error when the reaper name is unavailable" do
+    reaper_pid = Process.whereis(RuntimeProcessReaper)
+    assert is_pid(reaper_pid)
+    assert Process.unregister(RuntimeProcessReaper)
+
+    on_exit(fn -> Process.register(reaper_pid, RuntimeProcessReaper) end)
+
+    owner_pid = self()
+
+    assert RuntimeProcessReaper.watch(owner_pid, 1, %{
+             shutdown_timeout_ms: @short_timeout_ms,
+             model_ref: nil,
+             phase: :loading
+           }) == {:error, :reaper_unavailable}
+  end
+
+  test "stray messages do not stop the reaper" do
+    reaper_pid = Process.whereis(RuntimeProcessReaper)
+    send(reaper_pid, :unexpected_message)
+    Process.sleep(20)
+    assert Process.alive?(reaper_pid)
   end
 
   test "release prevents the reaper from killing a still-alive owner" do
@@ -100,5 +128,21 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
 
     WorkerProcessLifecycle.kill_process_tree(os_pid)
+  end
+
+  defp wait_until(fun, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    cond do
+      fun.() ->
+        true
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        false
+
+      true ->
+        Process.sleep(10)
+        wait_until(fun, max(0, deadline - System.monotonic_time(:millisecond)))
+    end
   end
 end

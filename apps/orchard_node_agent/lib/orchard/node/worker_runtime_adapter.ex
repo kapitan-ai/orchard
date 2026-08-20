@@ -486,20 +486,28 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
             load_model_or_cleanup(channel, port, os_pid, reaper_ref, runtime_params)
 
           {:error, reason} ->
-            cleanup_failed_runtime(
-              port,
-              os_pid,
-              nil,
-              socket_path,
-              shutdown_timeout_ms,
-              reaper_ref
-            )
+            cleanup_failed_runtime(%{
+              channel: nil,
+              os_pid: os_pid,
+              port: port,
+              reaper_ref: reaper_ref,
+              shutdown_timeout_ms: shutdown_timeout_ms,
+              socket_path: socket_path
+            })
 
             {:error, reason}
         end
 
       {:error, reason} ->
-        cleanup_failed_runtime(port, os_pid, nil, socket_path, shutdown_timeout_ms, nil)
+        cleanup_failed_runtime(%{
+          channel: nil,
+          os_pid: os_pid,
+          port: port,
+          reaper_ref: nil,
+          shutdown_timeout_ms: shutdown_timeout_ms,
+          socket_path: socket_path
+        })
+
         {:error, reason}
     end
   end
@@ -524,14 +532,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          }}
 
       {:error, reason} ->
-        cleanup_failed_runtime(
-          port,
-          os_pid,
-          channel,
-          params.socket_path,
-          params.shutdown_timeout_ms,
-          reaper_ref
-        )
+        cleanup_failed_runtime(%{
+          channel: channel,
+          os_pid: os_pid,
+          port: port,
+          reaper_ref: reaper_ref,
+          shutdown_timeout_ms: params.shutdown_timeout_ms,
+          socket_path: params.socket_path
+        })
 
         {:error, reason}
     end
@@ -1063,7 +1071,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end)
   end
 
-  defp cleanup_failed_runtime(port, os_pid, channel, socket_path, shutdown_timeout_ms, reaper_ref) do
+  defp cleanup_failed_runtime(%{
+         channel: channel,
+         os_pid: os_pid,
+         port: port,
+         reaper_ref: reaper_ref,
+         shutdown_timeout_ms: shutdown_timeout_ms,
+         socket_path: socket_path
+       }) do
     if is_reference(reaper_ref), do: RuntimeProcessReaper.reap(reaper_ref, :cleanup_failed)
     _ = stop_runtime(port, os_pid, shutdown_timeout_ms)
     _ = disconnect_channel(channel)
