@@ -10,6 +10,9 @@ defmodule OrchardCLI.Commands.Models do
 
   alias Orchard.Models
   alias Orchard.Models.Importer
+  alias OrchardCLI.Commands.Models.Access, as: AccessCommand
+  alias OrchardCLI.Commands.Models.Reference
+  alias OrchardCLI.Commands.Models.RoutingPolicy, as: RoutingPolicyCommand
   alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
@@ -33,6 +36,8 @@ defmodule OrchardCLI.Commands.Models do
   end
 
   def run(["delete" | rest]), do: run_delete(rest)
+  def run(["access" | rest]), do: AccessCommand.run(rest)
+  def run(["routing-policy" | rest]), do: RoutingPolicyCommand.run(rest)
 
   def run(_args) do
     {:error, group_usage(), 1}
@@ -103,7 +108,7 @@ defmodule OrchardCLI.Commands.Models do
   end
 
   defp run_delete([identity]) do
-    case parse_model_identity(identity) do
+    case Reference.parse_model_identity(identity) do
       {:ok, %{model_id: model_id, version: version}} ->
         RepoRuntime.run(fn -> do_run_delete(model_id, version, identity) end)
 
@@ -152,27 +157,9 @@ defmodule OrchardCLI.Commands.Models do
     {:error, "Error: delete failed for #{identity}: #{inspect(reason)}", 1}
   end
 
-  defp parse_model_identity(identity) when is_binary(identity) and identity != "" do
-    case :binary.matches(identity, "@") do
-      [] ->
-        :error
+  defp group_usage,
+    do: "Usage: orchardctl models <import|list|delete|access|routing-policy>"
 
-      matches ->
-        {pos, _len} = List.last(matches)
-        model_id = binary_part(identity, 0, pos)
-        version = binary_part(identity, pos + 1, byte_size(identity) - pos - 1)
-
-        if model_id == "" or version == "" do
-          :error
-        else
-          {:ok, %{model_id: model_id, version: version}}
-        end
-    end
-  end
-
-  defp parse_model_identity(_), do: :error
-
-  defp group_usage, do: "Usage: orchardctl models <import|list|delete>"
   defp import_usage, do: "Usage: orchardctl models import <path> [--activate]"
   defp delete_usage, do: "Usage: orchardctl models delete <model_id@version>"
 

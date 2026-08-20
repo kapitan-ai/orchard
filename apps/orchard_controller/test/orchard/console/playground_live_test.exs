@@ -65,9 +65,10 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       stub_models([])
       {:ok, view, html} = live(conn, "/console/playground")
 
-      assert html =~ "No active models available."
+      assert html =~ "No active models are granted to this console tenant."
       assert html =~ "playground-models-empty"
-      assert html =~ "Download and import a model from Model Hub"
+      assert html =~ "Import a model from Model Hub"
+      assert html =~ "orchardctl models access grant"
       assert has_element?(view, ~s|#playground-browse-model-hub[href="/console/model-hub"]|)
       assert html =~ "Browse Model Hub"
     end
@@ -195,7 +196,7 @@ defmodule OrchardConsole.PlaygroundLiveTest do
 
       {:ok, view, html} = live(conn, "/console/playground")
 
-      assert html =~ "No active models available."
+      assert html =~ "No active models are granted to this console tenant."
       refute has_element?(view, "#playground-model-selected")
     end
 

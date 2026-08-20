@@ -2,8 +2,16 @@ defmodule Orchard.Inference.RequestPreparation do
   @moduledoc false
 
   alias Orchard.CanonicalRequest
-  alias Orchard.Inference.{ToolExecutionSemantics, ToolingValidation, ToolRegistryResolver}
+
+  alias Orchard.Inference.{
+    AdmissionPolicy,
+    ToolExecutionSemantics,
+    ToolingValidation,
+    ToolRegistryResolver
+  }
+
   alias Orchard.Models
+  alias Orchard.Models.Access
   alias Orchard.Models.ManifestParser
   alias Orchard.Tokenizer.Client, as: TokenizerClient
 
@@ -23,7 +31,8 @@ defmodule Orchard.Inference.RequestPreparation do
          {:ok, model} <- resolve_model(canonical),
          :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model),
-         :ok <- enforce_context_window(canonical, model) do
+         :ok <- enforce_context_window(canonical, model),
+         {:ok, canonical} <- authorize_model(canonical, model) do
       {:ok, canonical, model}
     end
   end
@@ -158,6 +167,13 @@ defmodule Orchard.Inference.RequestPreparation do
         "request requires #{total} tokens (#{canonical.input_token_count} input + #{max_output} output) but model supports at most #{model.max_context_tokens}"}}
     else
       :ok
+    end
+  end
+
+  defp authorize_model(%CanonicalRequest{} = canonical, model) do
+    case Access.authorize(canonical.tenant_id, model.id) do
+      {:ok, routing_opts} -> {:ok, AdmissionPolicy.resolve(canonical, routing_opts)}
+      {:error, :model_not_authorized} = error -> error
     end
   end
 

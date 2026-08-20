@@ -132,9 +132,10 @@ After Console is reachable, the operator currently:
 2. Creates a tenant-direct API Token for bootstrap or manual use, or provisions an API Client and API Token for a named non-interactive principal.
 3. Stores the one-time API Token output securely.
 4. Imports and activates a Model Bundle.
-5. Verifies that the model source is reachable by the Node Agent that will load it.
-6. Confirms `/v1/models` lists the active model.
-7. Runs a small request through Playground or the Public Inference API.
+5. Grants the Model to each approved Organization with `orchardctl models access grant`; activation alone authorizes nothing, and the Console Playground needs the same grant for the seeded `legacy` Tenant.
+6. Verifies that the model source is reachable by the Node Agent that will load it.
+7. Confirms `/v1/models` lists the granted active model.
+8. Runs a small request through Playground or the Public Inference API.
 
 The current local-file import path is not controller-hosted model distribution.
 For a remote worker, the operator must pre-stage the same model at a usable path or use another worker-reachable source supported by the lower-level acquisition path.
@@ -170,6 +171,7 @@ Future implementation PRs should record sanitized timings against the measuremen
 | Static target missing or wrong | Console diagnostics and scheduler cannot reach the intended Node Agent. | Correct the Controller target list and restart or reconfigure the Controller. |
 | Endpoint observed but not trusted | Admission execution remains blocked and the endpoint is not schedulable. | Complete the future certificate-backed registration flow when implemented; observation alone is insufficient. |
 | Lost first-admin credential | Admin API access is unavailable. | Use local `orchardctl cluster init --force-new-admin --yes` break-glass recovery and audit the new credential. |
+| Model activated but not granted to the calling Organization | `/v1/models` omits the model and inference fails with `403 model_not_authorized`. | Grant the Tenant/Model pair with `orchardctl models access grant`; see [`../apps/orchard_cli/README.md`](../apps/orchard_cli/README.md). |
 | Controller-local model source on a remote worker | Model acquisition fails with an unavailable path or artifact. | Pre-stage the verified bundle on the worker or provide a worker-reachable source. |
 | Worker or Controller upgrade interrupts readiness | Service status, heartbeat, or requests become unavailable. | Follow the packaging runbook's service-level backup, preflight, update, and health checks, and use cordon, drain, and resume only where lifecycle-managed Nodes exist. |
 

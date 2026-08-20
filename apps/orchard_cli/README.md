@@ -96,6 +96,34 @@ with `--output`, read an alternate local state tree with `--support-root`, cap
 per-file log tail bytes with `--max-log-bytes`, and use `--json` for
 machine-readable output.
 
+## Tenant Model access
+
+Public Model discovery and inference are deny-by-default, and the
+`tenant-model-grants` migration creates no grants. For the packaged upgrade
+rollout order and its verification steps, see
+[Tenant/Model access grant rollout](../../packaging/pkg/README.md#tenantmodel-access-grant-rollout).
+
+```text
+orchardctl models access grant <model_id@version> --tenant <uuid-or-slug> [--routing-policy-id <uuid>]
+orchardctl models access disable <model_id@version> --tenant <uuid-or-slug>
+orchardctl models access revoke <model_id@version> --tenant <uuid-or-slug>
+orchardctl models access list --tenant <uuid-or-slug>
+orchardctl models access inspect <model_id@version> --tenant <uuid-or-slug>
+
+orchardctl models routing-policy create (--tenant <uuid-or-slug> | --global) \
+  --name <name> \
+  --residency-preference <required_loaded|prefer_loaded|allow_cold_load> \
+  [--max-cold-start-ms <n>] [--max-queue-wait-ms <n>]
+orchardctl models routing-policy list (--tenant <uuid-or-slug> | --global)
+orchardctl models routing-policy inspect --id <uuid>
+```
+
+Omitting `--routing-policy-id` explicitly selects canonical routing defaults;
+Orchard does not implicitly select a global policy. `disable` preserves an
+attached policy, while `revoke` deletes only the Tenant/Model access row.
+Initial routing policies do not accept pool-routing flags because scheduler pool
+enforcement is not yet implemented.
+
 ## Does not own
 
 - Controller business logic or persistence rules; see `../orchard_controller/`.

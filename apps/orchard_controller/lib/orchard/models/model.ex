@@ -34,6 +34,7 @@ defmodule Orchard.Models.Model do
     field(:runtime_requirements, :map, default: %{})
 
     has_many(:requests, Orchard.Requests.Request)
+    has_many(:tenant_model_access, Orchard.Models.TenantModelAccess)
 
     timestamps(type: :utc_datetime_usec)
   end

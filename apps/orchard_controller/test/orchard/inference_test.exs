@@ -1,5 +1,6 @@
 defmodule Orchard.InferenceTest do
   use ExUnit.Case, async: false
+  import Orchard.TestSupport.ModelRequestFixtures, only: [grant_model_access!: 2]
   import Orchard.TestSupport.RepoHelpers
 
   alias Orchard.CanonicalRequest
@@ -100,7 +101,7 @@ defmodule Orchard.InferenceTest do
 
     put_inference(tokenizer_mode: :port, tokenizer_client_impl: FakeTokenizer)
 
-    assert {:ok, _model} =
+    assert {:ok, model} =
              Models.create_model(%{
                model_id: "cache-authority-model",
                version: "v1",
@@ -118,6 +119,8 @@ defmodule Orchard.InferenceTest do
                tokenizer: %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
                runtime_requirements: %{"adapter" => "mlx_lm"}
              })
+
+    grant_model_access!(Orchard.Governance.legacy_tenant_id(), model)
 
     assert {:ok, canonical, _model} =
              ChatOrchestrator.prepare(%{

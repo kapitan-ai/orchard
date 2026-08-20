@@ -16,6 +16,7 @@ defmodule Orchard.Inference.ChatError do
           | :unsupported_parameter
           | :invalid_value
           | :model_not_found
+          | :model_not_authorized
           | :context_overflow
           | :tooling_not_supported
           | :tokenization_invalid_request
@@ -84,6 +85,8 @@ defmodule Orchard.Inference.ChatError do
 
   def from_prepare_reason({:model_not_found, model_ref}),
     do: build(:model_not_found, detail: model_ref)
+
+  def from_prepare_reason(:model_not_authorized), do: build(:model_not_authorized, [])
 
   def from_prepare_reason({:context_overflow, detail}),
     do: build(:context_overflow, detail: detail)
@@ -180,6 +183,16 @@ defmodule Orchard.Inference.ChatError do
       type: "invalid_request_error",
       code: "model_not_found",
       message: "Model not found: #{model_ref}",
+      param: "model"
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :model_not_authorized}) do
+    %{
+      status: :forbidden,
+      type: "invalid_request_error",
+      code: "model_not_authorized",
+      message: "Model not authorized for tenant",
       param: "model"
     }
   end

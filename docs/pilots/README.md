@@ -19,7 +19,9 @@ Before opening the window:
 1. Controller and at least one healthy worker are up.
 2. End-to-end inference works from outside the box on the APIs offered to clients.
 3. One tenant exists, with per-user API clients/tokens where practical.
-4. At least one operator-chosen model is loaded on a schedulable node.
+4. At least one operator-chosen model is loaded on a schedulable node and
+   granted to the pilot tenant with `orchardctl models access grant`; model
+   access is deny-by-default and nothing is granted automatically.
 5. Operators can inspect requests, restart a node, and revoke a token.
 6. Clients have a short note covering allowed content, support hours, contact path, and stop authority.
 

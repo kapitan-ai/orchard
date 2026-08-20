@@ -277,7 +277,7 @@ defmodule OrchardCLITest do
   test "Models.run/1 returns error tuple for missing subcommand" do
     assert {:error, message, 1} = Models.run([])
     assert message =~ "orchardctl models"
-    assert message =~ "<import|list|delete>"
+    assert message =~ "<import|list|delete|access|routing-policy>"
   end
 
   test "Models.run/1 returns error tuple for missing import path" do

@@ -7,7 +7,7 @@ defmodule Orchard.Models do
 
   alias Ecto.Changeset
   alias Orchard.Models.Importer
-  alias Orchard.Models.Model
+  alias Orchard.Models.{Model, TenantModelAccess}
   alias Orchard.Repo
   alias Orchard.Requests.Request
 
@@ -26,9 +26,27 @@ defmodule Orchard.Models do
     |> Repo.all()
   end
 
-  @spec list_active_models() :: [struct()]
+  @spec list_active_models() :: [Model.t()]
   def list_active_models do
     list_models(state: :active)
+  end
+
+  @doc """
+  Lists active catalog Models authorized for the effective Tenant.
+
+  SPEC.md §7.2.3 requires public discovery to omit disabled, revoked,
+  ungranted, inactive, and other-Tenant-only Models.
+  """
+  @spec list_active_models_for_tenant(Ecto.UUID.t()) :: [Model.t()]
+  def list_active_models_for_tenant(tenant_id) do
+    Model
+    |> join(:inner, [model], access in TenantModelAccess, on: access.model_id == model.id)
+    |> where(
+      [model, access],
+      model.state == :active and access.tenant_id == ^tenant_id and access.enabled
+    )
+    |> order_by([model], asc: model.inserted_at, asc: model.id)
+    |> Repo.all()
   end
 
   @spec get_model!(Ecto.UUID.t()) :: struct()

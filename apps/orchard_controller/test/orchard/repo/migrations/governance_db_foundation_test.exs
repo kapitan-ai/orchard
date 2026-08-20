@@ -20,6 +20,7 @@ defmodule Orchard.Repo.Migrations.GovernanceDbFoundationTest do
   end
 
   test "recreates governance tables and the legacy sentinel tenant across down/up" do
+    remove_later_dependent_schema()
     run_down_sql()
     refute table_exists?("tenants")
     refute table_exists?("api_keys")
@@ -54,6 +55,13 @@ defmodule Orchard.Repo.Migrations.GovernanceDbFoundationTest do
                Governance.legacy_tenant_name()
              ]
            ]
+  end
+
+  defp remove_later_dependent_schema do
+    # This test isolates an older migration. In real rollback order, later
+    # migrations remove these foreign-key dependants before governance tables.
+    Repo.query!("DROP TABLE IF EXISTS tenant_model_access")
+    Repo.query!("DROP TABLE IF EXISTS routing_policies")
   end
 
   defp run_up_sql do

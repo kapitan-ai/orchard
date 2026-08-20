@@ -20,6 +20,7 @@ defmodule OrchardConsole.PlaygroundTest do
     on_exit(fn ->
       Application.put_env(:orchard_controller, :console, previous)
       :persistent_term.erase({__MODULE__, :models})
+      :persistent_term.erase({__MODULE__, :catalog})
       :persistent_term.erase({__MODULE__, :runtime})
       :persistent_term.erase({__MODULE__, :orchestrator})
       :persistent_term.erase({__MODULE__, :test_pid})
@@ -130,6 +131,24 @@ defmodule OrchardConsole.PlaygroundTest do
 
     test "returns empty list when no active models" do
       stub_models([])
+      stub_runtime([%{status: :ok, loaded_models: []}])
+
+      assert {:ok, []} = Playground.list_models()
+    end
+
+    test "lists only models granted to the effective tenant" do
+      stub_models(%{
+        Playground.effective_tenant_id() => [%{model_id: "granted-model", version: "v1"}],
+        Ecto.UUID.generate() => [%{model_id: "other-tenant-model", version: "v1"}]
+      })
+
+      stub_runtime([%{status: :ok, loaded_models: []}])
+
+      assert {:ok, [%{model_id: "granted-model", version: "v1"}]} = Playground.list_models()
+    end
+
+    test "returns no models when the effective tenant has no grants" do
+      stub_models(%{Ecto.UUID.generate() => [%{model_id: "other-tenant-model", version: "v1"}]})
       stub_runtime([%{status: :ok, loaded_models: []}])
 
       assert {:ok, []} = Playground.list_models()
@@ -285,6 +304,78 @@ defmodule OrchardConsole.PlaygroundTest do
       assert Keyword.get(opts, :caller) == owner
     end
 
+    test "refuses to run a model the effective tenant is not granted" do
+      stub_models(%{Ecto.UUID.generate() => [%{model_id: "test-model", version: "v1"}]})
+      ref = make_ref()
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_opts: true
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+      assert error.phase == :prepare
+      assert error.code == "model_not_ready"
+      assert error.message =~ "orchardctl models access grant"
+      refute_receive {:playground, ^ref, :started, _}, 100
+      refute_receive {:captured_opts, _}, 100
+    end
+
+    test "reports a model missing from the active catalog distinctly" do
+      stub_models(%{})
+      stub_catalog([])
+      ref = make_ref()
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_opts: true
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+      assert error.phase == :prepare
+      assert error.code == "model_not_ready"
+      assert error.message =~ "not an active catalog model"
+      refute error.message =~ "orchardctl models access grant"
+      refute_receive {:captured_opts, _}, 100
+    end
+
+    test "passes the effective tenant through the preparation caller context" do
+      ref = make_ref()
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_caller_context: true
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+      assert_receive {:captured_caller_context, caller_context}, 1000
+      assert Keyword.get(caller_context, :tenant_id) == Playground.effective_tenant_id()
+    end
+
+    test "keeps an explicit caller tenant context" do
+      ref = make_ref()
+      tenant_id = Ecto.UUID.generate()
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_caller_context: true
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params(), tenant_id: tenant_id)
+
+      assert_receive {:captured_caller_context, caller_context}, 1000
+      assert Keyword.get(caller_context, :tenant_id) == tenant_id
+    end
+
     test "rescues unexpected task exceptions" do
       ref = make_ref()
       stub_orchestrator(prepare: :raise)
@@ -301,11 +392,36 @@ defmodule OrchardConsole.PlaygroundTest do
   # ===========================================================================
 
   defmodule StubModels do
+    def list_active_models_for_tenant(tenant_id) do
+      case stubbed_models() do
+        :raise ->
+          raise "DB unavailable"
+
+        models when is_list(models) ->
+          models
+
+        grants when is_map(grants) ->
+          Map.get(grants, tenant_id, [])
+      end
+    end
+
     def list_active_models do
-      case :persistent_term.get({OrchardConsole.PlaygroundTest, :models}, []) do
-        :raise -> raise "DB unavailable"
+      case :persistent_term.get({OrchardConsole.PlaygroundTest, :catalog}, :derive) do
+        :derive -> derived_catalog()
         models when is_list(models) -> models
       end
+    end
+
+    defp derived_catalog do
+      case stubbed_models() do
+        models when is_list(models) -> models
+        grants when is_map(grants) -> grants |> Map.values() |> List.flatten()
+        _other -> []
+      end
+    end
+
+    defp stubbed_models do
+      :persistent_term.get({OrchardConsole.PlaygroundTest, :models}, [])
     end
   end
 
@@ -320,8 +436,13 @@ defmodule OrchardConsole.PlaygroundTest do
   end
 
   defmodule StubOrchestrator do
-    def prepare(_params, _caller_context) do
+    def prepare(_params, caller_context) do
       config = :persistent_term.get({OrchardConsole.PlaygroundTest, :orchestrator}, [])
+      test_pid = :persistent_term.get({OrchardConsole.PlaygroundTest, :test_pid}, nil)
+
+      if config[:capture_caller_context] && test_pid do
+        send(test_pid, {:captured_caller_context, caller_context})
+      end
 
       case config[:prepare] do
         :raise -> raise "Prepare exploded"
@@ -358,6 +479,10 @@ defmodule OrchardConsole.PlaygroundTest do
 
   defp stub_models(data) do
     :persistent_term.put({__MODULE__, :models}, data)
+  end
+
+  defp stub_catalog(data) do
+    :persistent_term.put({__MODULE__, :catalog}, data)
   end
 
   defp stub_runtime(data) do

@@ -26,6 +26,7 @@ defmodule OrchardConsole.Playground do
   `:finished` is always the last message, sent exactly once.
   """
 
+  alias Orchard.Governance
   alias Orchard.Inference.{ChatError, ChatOrchestrator}
   alias Orchard.InferenceEvent
   alias Orchard.Models
@@ -58,18 +59,34 @@ defmodule OrchardConsole.Playground do
   # ===========================================================================
 
   @doc """
-  Returns active models for the playground model picker with readiness facts.
+  Returns the Tenant the Console playground acts as.
 
-  Catalog-active models are always listed. Inference readiness is projected
-  from authoritative Runtime Endpoint loaded placements only. Missing or
-  unknown readiness facts fail closed as non-ready.
+  The console is an operator surface without per-Tenant credentials, so the
+  playground resolves to the seeded legacy Tenant. Deny-by-default Model access
+  still applies: an operator must grant a Model to this Tenant with
+  `orchardctl models access grant` before the playground can list or run it.
+
+  See `docs/decisions/0021-explicit-tenant-model-grants-and-routing-snapshots.md`
+  for the decision and its credential-sharing consequence.
+  """
+  @spec effective_tenant_id() :: Ecto.UUID.t()
+  def effective_tenant_id, do: Governance.legacy_tenant_id()
+
+  @doc """
+  Returns the playground Tenant's authorized models with readiness facts.
+
+  Only catalog-active models with an enabled grant for `effective_tenant_id/0`
+  are listed. Inference readiness is projected from authoritative Runtime
+  Endpoint loaded placements only. Missing or unknown readiness facts fail
+  closed as non-ready.
   """
   @spec list_models() :: {:ok, [model_option()]} | {:error, map()}
   def list_models do
     readiness_index = runtime_readiness_index()
 
     models =
-      models_impl().list_active_models()
+      effective_tenant_id()
+      |> models_impl().list_active_models_for_tenant()
       |> Enum.map(fn model ->
         project_model_option(
           safe_string(model.model_id),
@@ -127,11 +144,15 @@ defmodule OrchardConsole.Playground do
   `ChatOrchestrator.execute/3` so the dispatcher cancels the inference
   if the LiveView process exits.
 
+  `caller_context` defaults `:tenant_id` to `effective_tenant_id/0` so
+  preparation enforces the same Tenant-model grants the picker lists.
+
   Returns `{:ok, pid}` immediately.
   """
   @spec start_stream(pid(), term(), map(), keyword()) :: {:ok, pid()}
   def start_stream(owner, run_ref, params, caller_context \\ []) do
     orchestrator = orchestrator_impl()
+    caller_context = Keyword.put_new(caller_context, :tenant_id, effective_tenant_id())
 
     Task.start(fn ->
       run_stream(orchestrator, owner, run_ref, params, caller_context)
@@ -214,7 +235,7 @@ defmodule OrchardConsole.Playground do
              )}
 
           nil ->
-            {:error, unready_stream_error("Selected model is not available in the catalog.")}
+            {:error, unready_stream_error(unavailable_reason(model_value))}
         end
 
       {:error, _error} ->
@@ -224,6 +245,23 @@ defmodule OrchardConsole.Playground do
 
   defp ensure_model_inference_ready(_params) do
     {:error, unready_stream_error("Selected model is not inference-ready.")}
+  end
+
+  defp unavailable_reason(model_value) do
+    if catalog_active?(model_value) do
+      "Selected model is not granted to this console tenant. Grant it with orchardctl models access grant."
+    else
+      "Selected model is not an active catalog model. It may have been deactivated or deleted."
+    end
+  end
+
+  defp catalog_active?(model_value) do
+    Enum.any?(models_impl().list_active_models(), fn model ->
+      model_value(%{
+        model_id: safe_string(model.model_id),
+        version: safe_string(model.version)
+      }) == model_value
+    end)
   end
 
   defp unready_stream_error(message) do

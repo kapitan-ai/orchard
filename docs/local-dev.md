@@ -62,6 +62,12 @@ OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
 # 4. Create an Organization and direct API Token for /v1 API calls (in the running IEx session)
 OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
 OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
+
+# 5. Grant the Tenant explicit access to the Model (nothing is granted automatically)
+OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>", "--tenant", "dev"])
+
+# 6. Grant the Console Playground Tenant as well (the Console runs as the seeded `legacy` Tenant)
+OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>", "--tenant", "legacy"])
 ```
 
 `make dev` wraps `mise exec -- bin/dev`. `bin/dev` is the single low-level
@@ -74,7 +80,25 @@ gRPC server on `127.0.0.1:50071`.
 Copy the API Token printed by `api-keys create` into
 `ORCHARD_API_KEY` for the `curl` examples below.
 
+Model access is deny-by-default. Any Model without an enabled grant for the
+calling Tenant is omitted from `GET /v1/models` and rejected by
+`/v1/chat/completions` and `/v1/responses` with `403 model_not_authorized`.
+No Tenant — including the seeded `legacy` Tenant — receives an automatic grant,
+so step 5 is required before any `/v1` inference call succeeds. The Console
+Playground runs as the `legacy` Tenant and lists only Models granted to it, so
+step 6 is required before it can send a message. Because the Console shares the
+`legacy` Tenant, that grant also authorizes any existing `legacy`-Tenant API
+credential for the same Model on `/v1`. See `../apps/orchard_cli/README.md` for
+the full `orchardctl models access` and `orchardctl models routing-policy`
+surface, and `decisions/0021-explicit-tenant-model-grants-and-routing-snapshots.md`
+for the decision record.
+
 ## Phase 0 observability acceptance probe
+
+The probe posts to `/v1/responses` with a Tenant token, so the probe Model must
+already be granted to that token's Tenant with
+`orchardctl models access grant <model_id@version> --tenant <uuid-or-slug>`.
+An ungranted Model fails the probe with `403 model_not_authorized`.
 
 Copy `scripts/support/observability_probe.example.json` to a non-secret local
 configuration, set the two environment variables named by that file, and run:
@@ -499,7 +523,7 @@ Worker Unix domain sockets default to `/tmp/od-<hash>/ws`, outside the repo tree
 | GET | `/health/ready` | Status-only readiness probe (`{"status":"ok"}` or `{"status":"error"}`) |
 | GET | `/ops/v1/health` | Detailed readiness and observations; cluster Operator/admin Bearer token required |
 | GET | `/metrics` | Prometheus exposition on the same listener; cluster Operator/admin Bearer token required; `503` when valid exposition cannot be produced |
-| GET | `/v1/models` | List active models; Bearer token required |
+| GET | `/v1/models` | List active models granted to the calling Tenant; Bearer token required |
 | POST | `/v1/chat/completions` | Chat completion; stream + non-stream; Bearer token required |
 | POST | `/v1/responses` | Bounded Responses API subset; stream + non-stream; Bearer token required |
 
@@ -779,8 +803,8 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 
 1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status with distinct display names and reachable status.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
-3. `GET /v1/models` should return `200`.
-4. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request.
+3. `GET /v1/models` should return `200` and list the Models granted to the calling Tenant.
+4. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request, after the Model is granted to the calling Tenant (`legacy` for the Console Playground).
 5. Cluster summary should show the configured target count for the selected transport.
 6. Playground inference should attribute requests to specific nodes when the scheduler has multiple eligible targets.
 7. Killing the remote node-agent should transition its health to degraded or unreachable.

@@ -46,10 +46,12 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Inference.ChatRequestNormalizer
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
+  alias Orchard.Models.Access, as: ModelAccess
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Repo
   alias Orchard.Requests
-  alias Orchard.Requests.Idempotency
+  alias Orchard.Requests.{Idempotency, Request}
 
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
@@ -202,6 +204,33 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert body["error"]["param"] == "model"
     end
 
+    test "SPEC.md §5.2 returns exact 403 for an active ungranted Model before persistence" do
+      model = create_model!(%{state: :active})
+      %{token: token} = create_api_key_with_token!("chat-ungranted", grant_active?: false)
+      before_count = Repo.aggregate(Request, :count, :id)
+
+      conn =
+        post_chat(
+          %{
+            "model" => "#{model.model_id}@#{model.version}",
+            "messages" => [%{"role" => "user", "content" => "hello"}],
+            "max_tokens" => 1
+          },
+          token
+        )
+
+      assert conn.status == 403
+
+      assert Jason.decode!(conn.resp_body)["error"] == %{
+               "type" => "invalid_request_error",
+               "code" => "model_not_authorized",
+               "message" => "Model not authorized for tenant",
+               "param" => "model"
+             }
+
+      assert Repo.aggregate(Request, :count, :id) == before_count
+    end
+
     test "rejects unsupported parameter" do
       conn =
         post_chat(%{
@@ -249,6 +278,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           prefill_workspace_bytes_per_token: 64,
           max_context_tokens: 131_072
         })
+
+      grant_active_models!(tenant)
 
       conn =
         post_chat(
@@ -341,7 +372,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         )
       )
 
-      %{token: token} = create_api_key_with_token!("unsupported-version-score")
+      %{token: token, tenant: tenant} =
+        create_api_key_with_token!("unsupported-version-score")
 
       {:ok, _model} =
         Orchard.Models.create_model(%{
@@ -360,6 +392,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           prefill_workspace_bytes_per_token: 64,
           max_context_tokens: 131_072
         })
+
+      grant_active_models!(tenant)
 
       conn =
         post_chat(
@@ -425,6 +459,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           prefill_workspace_bytes_per_token: 64,
           max_context_tokens: 131_072
         })
+
+      grant_active_models!(tenant)
 
       params = %{
         "model" => "persist-non-stream-model@v1",
@@ -520,8 +556,11 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
          %{
            bundle: bundle
          } do
-      %{token: token_a} = create_api_key_with_token!("idempotency-tenant-a")
-      %{token: token_b} = create_api_key_with_token!("idempotency-tenant-b")
+      %{tenant: tenant_a, token: token_a} =
+        create_api_key_with_token!("idempotency-tenant-a")
+
+      %{tenant: tenant_b, token: token_b} =
+        create_api_key_with_token!("idempotency-tenant-b")
 
       {:ok, _model} =
         Orchard.Models.create_model(%{
@@ -540,6 +579,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           prefill_workspace_bytes_per_token: 64,
           max_context_tokens: 131_072
         })
+
+      grant_active_models!(tenant_a)
+      grant_active_models!(tenant_b)
 
       params = %{
         "model" => "tenant-scope-model@v1",
@@ -682,7 +724,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
     @tag :db
     test "valid ref-backed request succeeds without API shape changes" do
-      %{token: token} = create_api_key_with_token!("chat-ref-success")
+      %{tenant: tenant, token: token} = create_api_key_with_token!("chat-ref-success")
       create_tool!("lookup_weather", "2026-04-10")
       executable = write_tokenizer_executable!()
       on_exit(fn -> File.rm(executable) end)
@@ -696,6 +738,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           artifact_uri: "file://#{fixture_bundle_path()}",
           artifact_source_uri: "file://#{fixture_bundle_path()}"
         })
+
+      grant_active_models!(tenant)
 
       params = %{
         "model" => "#{model.model_id}@#{model.version}",
@@ -1117,7 +1161,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   describe "POST /v1/chat/completions (streaming happy path)" do
     @tag :db
-    test "stream=true with valid model emits SSE chunks then [DONE]", %{bundle: bundle} do
+    test "SPEC.md §7.2.5 keeps one public ID across SSE chunks and persistence", %{
+      bundle: bundle
+    } do
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "test-stream-model",
@@ -1155,6 +1201,11 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       # Should have data chunks followed by [DONE]
       data_events = Enum.filter(events, fn {type, _} -> type == :data end)
       done_events = Enum.filter(events, fn {type, _} -> type == :done end)
+
+      chunk_ids = Enum.map(data_events, fn {:data, chunk} -> Map.fetch!(chunk, "id") end)
+      assert [public_id] = Enum.uniq(chunk_ids)
+      assert String.starts_with?(public_id, "chatcmpl-")
+      assert %{public_id: ^public_id} = Requests.get_request_by_public_id(public_id)
 
       # At least: role chunk + content chunk(s) + finish chunk
       assert length(data_events) >= 3
@@ -1410,6 +1461,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           max_context_tokens: 131_072
         })
 
+      grant_active_models!(tenant)
+
       conn =
         post_chat(
           %{
@@ -1477,6 +1530,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           prefill_workspace_bytes_per_token: 64,
           max_context_tokens: 131_072
         })
+
+      grant_active_models!(tenant)
 
       params = %{
         "model" => "persist-model@v1",
@@ -1708,12 +1763,19 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     token
   end
 
-  defp create_api_key_with_token!(slug) do
+  defp grant_active_models!(tenant) do
+    Enum.each(Orchard.Models.list_active_models(), fn model ->
+      assert {:ok, _result} = ModelAccess.grant_model_access(tenant, model)
+    end)
+  end
+
+  defp create_api_key_with_token!(slug, opts \\ []) do
     {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
 
     {:ok, %{api_key: api_key, token: token}} =
       Governance.create_api_key(tenant.id, %{name: "Primary"})
 
+    if Keyword.get(opts, :grant_active?, true), do: grant_active_models!(tenant)
     %{tenant: tenant, api_key: api_key, token: token}
   end
 
