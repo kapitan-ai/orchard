@@ -297,6 +297,28 @@ For multi-host source development, use `make dev-controller` and
 `make dev-node-agent` (or the equivalent `mise exec -- bin/...` commands);
 see [`docs/local-dev.md`](docs/local-dev.md) for the split-role setup.
 
+### Set up with a coding agent
+
+This checkout is agent-friendly: [`AGENTS.md`](AGENTS.md) is the canonical
+automation and agent workflow contract, and [`CLAUDE.md`](CLAUDE.md) imports it
+for Claude Code. Developers have successfully used agentic CLIs such as Codex,
+Claude Code, Pi, and similar tools to drive source-dev setup from the checkout;
+this is workflow guidance, not a project-supported or tested agent integration.
+Point your agent at [`AGENTS.md`](AGENTS.md) and
+[`docs/local-dev.md`](docs/local-dev.md), and ask it to use the documented
+command surface rather than improvise:
+
+```text
+Read AGENTS.md and docs/local-dev.md. Set up Orchard source development from
+this checkout with make setup and make dev, then use the running IEx session
+to import a model, create the dev tenant and API key, and add the required
+dev and legacy model-access grants.
+```
+
+You still need the mise toolchain and local PostgreSQL ready first. `make dev`
+is foreground and blocking, so the agent should expect an interactive IEx
+session rather than backgrounding the server.
+
 Contributors can run `make test` for the test suite or `make check-elixir` for
 the full Elixir quality workflow. See [`AGENTS.md`](AGENTS.md) and
 [`docs/tooling.md`](docs/tooling.md) for the repository workflow.
