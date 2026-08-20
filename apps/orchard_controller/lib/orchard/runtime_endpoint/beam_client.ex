@@ -408,8 +408,43 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
       {:DOWN, ^mon_ref, :process, ^pid, _reason} ->
         {:error, :beam_rpc_failed}
     after
-      timeout -> {:error, :beam_node_timeout}
+      timeout ->
+        await_timeout_cleanup_test_hook(tag, pid)
+        Process.exit(pid, :kill)
+        await_local_termination(tag, mon_ref, pid)
+        {:error, :beam_node_timeout}
     end
+  end
+
+  defp await_local_termination(tag, mon_ref, pid) do
+    receive do
+      {:result, ^tag, _result} -> await_local_termination(tag, mon_ref, pid)
+      {:DOWN, ^mon_ref, :process, ^pid, _reason} -> drain_local_result(tag)
+    end
+  end
+
+  defp drain_local_result(tag) do
+    receive do
+      {:result, ^tag, _result} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  if Mix.env() == :test do
+    defp await_timeout_cleanup_test_hook(tag, pid) do
+      if test_pid = Process.whereis(:beam_client_test_pid) do
+        send(test_pid, {:beam_client_timeout_cleanup, self(), pid, tag})
+
+        receive do
+          {:continue_timeout_cleanup, ^tag} -> :ok
+        after
+          1_000 -> :ok
+        end
+      end
+    end
+  else
+    defp await_timeout_cleanup_test_hook(_tag, _pid), do: :ok
   end
 
   defp remaining_timeout(timeout, start_ms) do

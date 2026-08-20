@@ -657,7 +657,7 @@ defmodule Orchard.Node.ModelManager do
         if valid == [] do
           # All waiters expired — full cleanup
           state = remove_inflight(state, key, inflight)
-          state = cleanup_failed_worker(state, key)
+          state = cleanup_worker_placement(state, key)
 
           all_replied = inflight.replied_waiter_count + length(expired)
 
@@ -686,7 +686,7 @@ defmodule Orchard.Node.ModelManager do
       {:error, reason} ->
         # Non-deadline failure — fail everyone
         state = remove_inflight(state, key, inflight)
-        state = cleanup_failed_worker(state, key)
+        state = cleanup_worker_placement(state, key)
 
         all_replied = inflight.replied_waiter_count + length(inflight.waiters)
 
@@ -709,7 +709,7 @@ defmodule Orchard.Node.ModelManager do
   defp finalize_successful_load(state, key, inflight, expired, [])
        when not inflight.preload do
     state = remove_inflight(state, key, inflight)
-    state = cleanup_failed_worker(state, key)
+    state = cleanup_worker_placement(state, key)
 
     all_replied = inflight.replied_waiter_count + length(expired)
 
@@ -870,7 +870,7 @@ defmodule Orchard.Node.ModelManager do
     }
 
     # Clean up partial worker if one was started
-    cleanup_failed_worker(state, key)
+    cleanup_worker_placement(state, key)
   end
 
   defp restart_inflight_load(state, key, valid_waiters, prev_inflight) do
@@ -970,7 +970,7 @@ defmodule Orchard.Node.ModelManager do
             load_refs: Map.delete(state.load_refs, inflight.task_ref)
         }
 
-        cleanup_failed_worker(state, key)
+        cleanup_worker_placement(state, key)
     end
   end
 
@@ -1046,7 +1046,11 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  defp cleanup_failed_worker(state, key) do
+  # Terminate the worker placement for `key` if one exists. This is used for
+  # failed loads, but also for loads that *succeeded* yet have no remaining
+  # valid waiters — runtime residency requires an active owner, so we free the
+  # in-memory worker rather than keeping a model loaded for an abandoned request.
+  defp cleanup_worker_placement(state, key) do
     case Map.get(state.workers, key) do
       nil ->
         state

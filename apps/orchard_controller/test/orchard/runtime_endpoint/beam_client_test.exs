@@ -30,10 +30,17 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     previous_grants = Application.get_env(:orchard_controller, :beam_peer_grants)
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
+    if Process.whereis(:beam_client_test_pid), do: Process.unregister(:beam_client_test_pid)
+    Process.register(self(), :beam_client_test_pid)
+
     on_exit(fn ->
       restore_runtime_endpoint_config(previous_config)
       restore_peer_grant_config(previous_grants)
       Application.put_env(:orchard_controller, :inference, previous_inference)
+
+      if Process.whereis(:beam_client_test_pid) == self() do
+        Process.unregister(:beam_client_test_pid)
+      end
     end)
 
     :ok
@@ -125,8 +132,19 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     alias Orchard.RuntimeEndpoint.Operation
 
     def ensure_model_loaded(%Operation.EnsureModelLoadedRequest{}, _opts) do
-      Process.sleep(5_000)
-      {:ok, %Operation.EnsureModelLoadedResult{already_loaded: true, placement_state: :loaded}}
+      if test_pid = Process.whereis(:beam_client_test_pid) do
+        send(test_pid, {:slow_server_started, self()})
+      end
+
+      receive do
+        :finish_load ->
+          {:ok,
+           %Operation.EnsureModelLoadedResult{already_loaded: true, placement_state: :loaded}}
+      after
+        5_000 ->
+          {:ok,
+           %Operation.EnsureModelLoadedResult{already_loaded: true, placement_state: :loaded}}
+      end
     end
   end
 
@@ -429,13 +447,45 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
     request = %Operation.EnsureModelLoadedRequest{model_ref: model_ref}
 
-    start = System.monotonic_time(:millisecond)
+    caller = self()
 
-    assert {:error, :beam_node_timeout} =
-             BeamClient.ensure_model_loaded(connection, request, timeout: 50)
+    client_pid =
+      spawn(fn ->
+        result = BeamClient.ensure_model_loaded(connection, request, timeout: 50)
+        send(caller, {:beam_client_returned, self(), result})
 
-    elapsed = System.monotonic_time(:millisecond) - start
-    assert elapsed < 200
+        receive do
+          {:report_messages, recipient} ->
+            send(recipient, {:beam_client_messages, Process.info(self(), :messages)})
+        end
+      end)
+
+    client_monitor = Process.monitor(client_pid)
+
+    on_exit(fn ->
+      if Process.alive?(client_pid), do: Process.exit(client_pid, :kill)
+    end)
+
+    assert_receive {:slow_server_started, wrapper_pid}, 1_000
+    wrapper_monitor = Process.monitor(wrapper_pid)
+
+    assert_receive {:beam_client_timeout_cleanup, ^client_pid, ^wrapper_pid, tag}, 1_000
+    send(client_pid, {:result, tag, :late_result})
+    send(client_pid, {:continue_timeout_cleanup, tag})
+
+    assert_receive {:beam_client_returned, ^client_pid, {:error, :beam_node_timeout}}, 1_000
+    assert_receive {:DOWN, ^wrapper_monitor, :process, ^wrapper_pid, :killed}, 1_000
+
+    send(client_pid, {:report_messages, self()})
+
+    assert_receive {:beam_client_messages, {:messages, messages}}, 1_000
+
+    refute Enum.any?(messages, fn
+             {:result, tag, _result} when is_reference(tag) -> true
+             _message -> false
+           end)
+
+    assert_receive {:DOWN, ^client_monitor, :process, ^client_pid, :normal}, 1_000
   end
 
   defp authenticated_beam_fixture! do
