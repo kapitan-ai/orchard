@@ -8,6 +8,10 @@
 #   - processes owned by another user
 #   - processes whose command line does not declare an exact socket path
 #     inside this checkout's source-dev socket directory.
+#
+# Matching the configured worker executable is intentionally fail-open:
+# wrappers, relative argv, or a changed ORCHARD_WORKER_EXECUTABLE can leave an
+# in-scope worker resident rather than risk terminating the wrong process.
 
 # Compute the source-dev worker socket directory for a repo root.
 # This must stay in sync with the default in config/dev.exs.
@@ -78,6 +82,21 @@ PY
   return 69
 }
 
+# List matching workers as "pid full argv". The ps format is supported by both
+# BSD/macOS and Linux; avoid pgrep flags whose full-argv behavior is not
+# portable across those platforms.
+orchard_source_dev_worker_processes() {
+  local line pid args
+
+  while IFS= read -r line; do
+    read -r pid args <<< "$line"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [[ "$args" == *orchard-worker-mlx* ]] || continue
+    [[ "$pid" != "$$" ]] || continue
+    printf '%s %s\n' "$pid" "$args"
+  done < <(ps -A -o pid= -o args= 2>/dev/null || true)
+}
+
 # Terminate source-dev MLX workers owned by this checkout.
 #
 # Arguments:
@@ -102,10 +121,11 @@ orchard_source_dev_cleanup_workers() {
   local -a pids_to_signal=()
   local -a socket_paths_to_signal=()
   local -a ambiguous_pids=()
+  local -a different_executable_pids=()
   local line pid args socket_path owner_uid
 
   while IFS= read -r line; do
-    # Skip empty lines produced by pgrep when no matches exist.
+    # Skip empty lines produced by ps when no matches exist.
     [[ -z "$line" ]] && continue
 
     # pid is the first whitespace-delimited token; everything else is args.
@@ -119,15 +139,20 @@ orchard_source_dev_cleanup_workers() {
       continue
     fi
 
-    # When provided, require the command line to identify this checkout's
-    # worker executable as well as its socket directory.
-    if [[ -n "$worker_executable" && "$args" != *"$worker_executable"* ]]; then
-      ambiguous_pids+=("$pid")
-      continue
-    fi
-
     # Only consider workers whose socket lives in this checkout's directory.
     [[ "$socket_path" == "$socket_dir/"* ]] || continue
+
+    # When provided, require the command line to identify this checkout's
+    # worker executable as well as its socket directory.
+    if [[ -n "$worker_executable" ]]; then
+      case " $args " in
+        *" $worker_executable "*) ;;
+        *)
+          different_executable_pids+=("$pid")
+          continue
+          ;;
+      esac
+    fi
 
     # Only consider processes owned by the current user. Signals to other
     # users would fail anyway, but this also guards against accidentally
@@ -140,10 +165,14 @@ orchard_source_dev_cleanup_workers() {
       pids_to_signal+=("$pid")
       socket_paths_to_signal+=("$socket_path")
     fi
-  done < <(pgrep -af orchard-worker-mlx 2>/dev/null || true)
+  done < <(orchard_source_dev_worker_processes)
 
   if [[ ${#ambiguous_pids[@]} -gt 0 ]]; then
-    echo "warning: skipping orchard-worker-mlx process(es) with unknown ownership: ${ambiguous_pids[*]}" >&2
+    echo "warning: skipping orchard-worker-mlx process(es) without a parseable --socket-path: ${ambiguous_pids[*]}" >&2
+  fi
+
+  if [[ ${#different_executable_pids[@]} -gt 0 ]]; then
+    echo "warning: skipping in-scope orchard-worker-mlx process(es) with a different executable: ${different_executable_pids[*]}" >&2
   fi
 
   if [[ ${#pids_to_signal[@]} -eq 0 ]]; then
