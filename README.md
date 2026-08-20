@@ -259,6 +259,48 @@ This produces `Orchard-<version>-<date>-<git-sha>.pkg`. Run `make setup`
 first; see [`packaging/pkg/README.md`](packaging/pkg/README.md#building-the-pkg)
 for full build documentation.
 
+## Run from source
+
+This path is for developers and contributors; operators should use the
+packaged DMG/PKG flow above. On Apple Silicon macOS, install the mise-pinned
+toolchain from [`mise.toml`](mise.toml), and have a local PostgreSQL ≥15
+instance accepting TCP connections before starting the dev server. See
+[`docs/local-dev.md`](docs/local-dev.md) and
+[`docs/tooling.md`](docs/tooling.md) for prerequisites and pinned command
+forms.
+
+```bash
+make setup
+make dev
+```
+
+`make dev` wraps `mise exec -- bin/dev`: it creates the dev database, runs
+migrations, and starts `iex -S mix phx.server`. The controller listens on
+`http://localhost:4000`, and the node-agent gRPC server listens on
+`127.0.0.1:50071`.
+
+From the running IEx session, import a model, create a dev tenant and API key,
+then grant the model to both the dev tenant and the seeded `legacy` tenant used
+by the Console Playground:
+
+```elixir
+OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
+OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
+OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
+OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>", "--tenant", "dev"])
+OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>", "--tenant", "legacy"])
+```
+
+Model access is deny-by-default, so both explicit grants are required before
+the corresponding tenant can list the model or make a `/v1` inference call.
+For multi-host source development, use `make dev-controller` and
+`make dev-node-agent` (or the equivalent `mise exec -- bin/...` commands);
+see [`docs/local-dev.md`](docs/local-dev.md) for the split-role setup.
+
+Contributors can run `make test` for the test suite or `make check-elixir` for
+the full Elixir quality workflow. See [`AGENTS.md`](AGENTS.md) and
+[`docs/tooling.md`](docs/tooling.md) for the repository workflow.
+
 ## Documentation
 
 For operators:
