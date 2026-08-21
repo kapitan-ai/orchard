@@ -304,8 +304,9 @@ defmodule OrchardConsole.PlaygroundTest do
       assert Keyword.get(opts, :caller) == owner
     end
 
-    test "refuses to run a model the effective tenant is not granted" do
+    test "refuses to run an active model the effective tenant is not granted" do
       stub_models(%{Ecto.UUID.generate() => [%{model_id: "test-model", version: "v1"}]})
+      stub_catalog([%{model_id: "test-model", version: "v1", state: :active}])
       ref = make_ref()
 
       stub_orchestrator(
@@ -322,9 +323,10 @@ defmodule OrchardConsole.PlaygroundTest do
       assert error.message =~ "orchardctl models access grant"
       refute_receive {:playground, ^ref, :started, _}, 100
       refute_receive {:captured_opts, _}, 100
+      refute_receive :list_active_models_called, 100
     end
 
-    test "reports a model missing from the active catalog distinctly" do
+    test "reports a missing or deleted catalog model distinctly" do
       stub_models(%{})
       stub_catalog([])
       ref = make_ref()
@@ -343,6 +345,55 @@ defmodule OrchardConsole.PlaygroundTest do
       assert error.message =~ "not an active catalog model"
       refute error.message =~ "orchardctl models access grant"
       refute_receive {:captured_opts, _}, 100
+      refute_receive :list_active_models_called, 100
+    end
+
+    test "reports a non-active catalog model distinctly" do
+      stub_models(%{})
+      stub_catalog([%{model_id: "test-model", version: "v1", state: :deprecated}])
+      ref = make_ref()
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_opts: true
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+      assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+      assert error.phase == :prepare
+      assert error.code == "model_not_ready"
+      assert error.message =~ "not an active catalog model"
+      refute error.message =~ "orchardctl models access grant"
+      refute_receive {:captured_opts, _}, 100
+      refute_receive :list_active_models_called, 100
+    end
+
+    test "fails closed when the targeted catalog lookup raises or exits" do
+      stub_models(%{})
+
+      Enum.each([:raise, :exit], fn failure ->
+        stub_catalog(failure)
+        ref = make_ref()
+
+        stub_orchestrator(
+          prepare: {:ok, fake_canonical(), %{}},
+          execute: {:ok, fake_canonical(), []},
+          capture_opts: true
+        )
+
+        {:ok, _pid} = Playground.start_stream(self(), ref, valid_params())
+
+        assert_receive {:playground, ^ref, :finished, {:error, error}}, 1000
+        assert error.phase == :prepare
+        assert error.code == "model_not_ready"
+        refute error.code == "internal_error"
+        assert error.message =~ "not an active catalog model"
+        refute_receive {:captured_opts, _}, 100
+      end)
+
+      refute_receive :list_active_models_called, 100
     end
 
     test "passes the effective tenant through the preparation caller context" do
@@ -405,20 +456,42 @@ defmodule OrchardConsole.PlaygroundTest do
       end
     end
 
-    def list_active_models do
+    def get_model_by_identity(model_id, version) do
       case :persistent_term.get({OrchardConsole.PlaygroundTest, :catalog}, :derive) do
-        :derive -> derived_catalog()
-        models when is_list(models) -> models
+        :raise -> raise "catalog lookup unavailable"
+        :exit -> exit(:catalog_lookup_unavailable)
+        :derive -> find_by_identity(derived_catalog(), model_id, version)
+        models when is_list(models) -> find_by_identity(models, model_id, version)
       end
+    end
+
+    def list_active_models do
+      send(
+        :persistent_term.get({OrchardConsole.PlaygroundTest, :test_pid}),
+        :list_active_models_called
+      )
+
+      raise "full catalog enumeration is forbidden"
+    end
+
+    defp find_by_identity(models, model_id, version) do
+      Enum.find(models, &(&1.model_id == model_id and &1.version == version))
     end
 
     defp derived_catalog do
       case stubbed_models() do
-        models when is_list(models) -> models
-        grants when is_map(grants) -> grants |> Map.values() |> List.flatten()
-        _other -> []
+        models when is_list(models) ->
+          Enum.map(models, &Map.put_new(&1, :state, :active))
+
+        grants when is_map(grants) ->
+          grants |> Map.values() |> List.flatten() |> derived_catalog()
+
+        _other ->
+          []
       end
     end
+
+    defp derived_catalog(models), do: Enum.map(models, &Map.put_new(&1, :state, :active))
 
     defp stubbed_models do
       :persistent_term.get({OrchardConsole.PlaygroundTest, :models}, [])
