@@ -256,12 +256,17 @@ defmodule OrchardConsole.Playground do
   end
 
   defp catalog_active?(model_value) do
-    Enum.any?(models_impl().list_active_models(), fn model ->
-      model_value(%{
-        model_id: safe_string(model.model_id),
-        version: safe_string(model.version)
-      }) == model_value
-    end)
+    with [model_id, version] when model_id != "" and version != "" <-
+           String.split(model_value, "@", parts: 2),
+         %{state: :active} <- models_impl().get_model_by_identity(model_id, version) do
+      true
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  catch
+    _kind, _reason -> false
   end
 
   defp unready_stream_error(message) do
