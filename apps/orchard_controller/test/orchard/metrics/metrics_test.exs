@@ -17,6 +17,7 @@ defmodule Orchard.MetricsTest do
   use ExUnit.Case, async: false
 
   alias Orchard.Metrics.{
+    Bootstrap,
     CardinalityLedger,
     Catalog,
     GaugeSnapshotStore,
@@ -29,9 +30,54 @@ defmodule Orchard.MetricsTest do
   alias Orchard.Metrics.Supervisor, as: MetricsSupervisor
   alias Orchard.MetricsTest.EmptyGaugeSource
 
-  setup do
-    restart_metrics_generation()
+  setup_all do
+    assert is_pid(Process.whereis(Bootstrap))
+
+    metrics_monitor =
+      case Process.whereis(MetricsSupervisor) do
+        nil -> nil
+        metrics -> {metrics, Process.monitor(metrics)}
+      end
+
+    assert :ok = Supervisor.terminate_child(Orchard.Supervisor, Bootstrap)
+
+    case metrics_monitor do
+      nil ->
+        :ok
+
+      {metrics, metrics_ref} ->
+        assert_receive {:DOWN, ^metrics_ref, :process, ^metrics, _reason}, 5_000
+    end
+
+    wait_until_reporter_handlers_detached()
+
+    on_exit(fn ->
+      stop_metrics_generation()
+      wait_until_reporter_handlers_detached()
+
+      assert {:ok, bootstrap} = Supervisor.restart_child(Orchard.Supervisor, Bootstrap)
+      assert is_pid(bootstrap)
+      wait_until_metrics_restored()
+    end)
+
     :ok
+  end
+
+  setup do
+    assert Process.whereis(Bootstrap) == nil
+    start_metrics_generation()
+    :ok
+  end
+
+  test "issue #206 test generation exclusively owns Orchard reporter handlers" do
+    reporter = Process.whereis(Orchard.Metrics.Reporter)
+    handlers = reporter_handlers()
+    owners = handlers |> Enum.map(&reporter_handler_owner/1) |> Enum.uniq()
+
+    assert handlers != []
+
+    assert owners == [reporter],
+           "expected only reporter #{inspect(reporter)} to own handlers, surviving handlers: #{inspect(handlers)}"
   end
 
   test "SPEC.md §9.1 descriptor catalog and immutable histogram buckets are exact" do
@@ -414,19 +460,78 @@ defmodule Orchard.MetricsTest do
     descriptor
   end
 
-  defp restart_metrics_generation do
+  defp start_metrics_generation do
+    start_supervised!({MetricsSupervisor, gauge_source: EmptyGaugeSource})
+    wait_until_polled()
+  end
+
+  defp stop_metrics_generation do
     case Process.whereis(MetricsSupervisor) do
       nil ->
         :ok
 
       pid ->
+        ref = Process.monitor(pid)
         Supervisor.stop(pid)
-        wait_until_stopped(MetricsSupervisor)
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
     end
+  end
 
-    start_supervised!({MetricsSupervisor, gauge_source: EmptyGaugeSource})
+  defp wait_until_reporter_handlers_detached(attempts \\ 200)
 
-    wait_until_polled()
+  defp wait_until_reporter_handlers_detached(0) do
+    flunk("Orchard reporter handlers survived shutdown: #{inspect(reporter_handlers())}")
+  end
+
+  defp wait_until_reporter_handlers_detached(attempts) do
+    case reporter_handlers() do
+      [] ->
+        :ok
+
+      _handlers ->
+        Process.sleep(5)
+        wait_until_reporter_handlers_detached(attempts - 1)
+    end
+  end
+
+  defp reporter_handlers do
+    Catalog.descriptors()
+    |> Enum.flat_map(fn descriptor ->
+      event = Catalog.event_name(descriptor.family)
+
+      for %{id: {_module, owner, _metric_name} = id} <- :telemetry.list_handlers(event),
+          is_pid(owner) do
+        %{event: event, id: id, owner: owner, alive?: Process.alive?(owner)}
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp reporter_handler_owner(%{owner: owner}), do: owner
+
+  defp wait_until_metrics_restored(attempts \\ 1_000)
+
+  defp wait_until_metrics_restored(0) do
+    flunk(
+      "metrics restore did not complete: " <>
+        "supervisor=#{inspect(Process.whereis(MetricsSupervisor))}, " <>
+        "reporter=#{inspect(Process.whereis(Orchard.Metrics.Reporter))}, " <>
+        "handlers=#{inspect(reporter_handlers())}"
+    )
+  end
+
+  defp wait_until_metrics_restored(attempts) do
+    metrics = Process.whereis(MetricsSupervisor)
+    reporter = Process.whereis(Orchard.Metrics.Reporter)
+    handlers = reporter_handlers()
+
+    if is_pid(metrics) and is_pid(reporter) and handlers != [] and
+         Enum.all?(handlers, &(reporter_handler_owner(&1) == reporter)) do
+      :ok
+    else
+      Process.sleep(5)
+      wait_until_metrics_restored(attempts - 1)
+    end
   end
 
   defp wait_until_expired(family, attempts \\ 100)
@@ -463,15 +568,6 @@ defmodule Orchard.MetricsTest do
       _pending ->
         Process.sleep(5)
         wait_until_replaced(name, previous, attempts - 1)
-    end
-  end
-
-  defp wait_until_stopped(name) do
-    if Process.whereis(name) == nil do
-      :ok
-    else
-      Process.sleep(5)
-      wait_until_stopped(name)
     end
   end
 end
