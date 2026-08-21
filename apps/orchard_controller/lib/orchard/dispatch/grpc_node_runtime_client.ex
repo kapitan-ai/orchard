@@ -268,6 +268,10 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
 
   defp normalize_error(%GRPC.RPCError{status: status} = error) when is_integer(status) do
     case Map.fetch(@grpc_status_atoms, status) do
+      # These atom clauses are normalization targets reached by recursing from
+      # the integer branch above; they are not expected to match a raw
+      # GRPC.RPCError produced by grpc-elixir, whose constructor always converts
+      # atom statuses to integers.
       {:ok, atom} -> normalize_error(%GRPC.RPCError{error | status: atom})
       :error -> {:rpc_error, status, error.message}
     end

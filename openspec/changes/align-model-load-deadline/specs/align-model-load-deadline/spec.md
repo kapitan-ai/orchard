@@ -56,6 +56,7 @@ This implements `SPEC.md` §failure normalization and §request-deadline stage-d
 The Node Agent SHALL NOT mark a worker placement as `PLACEMENT_STATE_LOADED` when a load
 task completes after every valid waiter for that load has expired.
 Cached model artifacts MAY remain; runtime residency requires an active owner.
+An explicit preload remains a valid residency owner and is exempt from this cleanup.
 
 This implements the `SPEC.md` invariant that a load exceeding its remaining deadline
 cannot proceed to execution.
@@ -65,3 +66,8 @@ cannot proceed to execution.
 - **AND** the Node Agent load task completes shortly after
 - **THEN** the Node Agent does not mark the worker loaded for that request
 - **AND** a subsequent request still sees a cold load unless another valid load owns it
+
+#### Scenario: Explicit preload completes without inference waiters
+- **GIVEN** an explicit preload owns the load operation
+- **WHEN** the load completes without an inference waiter
+- **THEN** the Node Agent may retain the loaded worker placement

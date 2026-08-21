@@ -1746,8 +1746,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
       version: model.version,
       artifact_sha256: model.artifact_sha256,
       preload: false,
-      # The effective load-operation deadline is set by RequestDispatcher
-      # from the cold-start stage cap, not the absolute Request deadline.
+      # Sentinel: the effective load-operation deadline is set by
+      # RequestDispatcher from the cold-start stage cap, not the absolute
+      # Request deadline. A value of 0 is not a real deadline; the dispatcher
+      # must overwrite it before any transport call is made.
       deadline_unix_ms: 0,
       artifact_source_uri: model.artifact_source_uri || ""
     }
