@@ -243,6 +243,35 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_socket_dir] == "/tmp/orchard-worker-sockets"
   end
 
+  test "dev.exs treats an empty worker socket override as unset" do
+    runtime =
+      read_dev_config!(%{"ORCHARD_WORKER_SOCKET_DIR" => ""})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert String.starts_with?(runtime[:worker_socket_dir], "/tmp/od-")
+  end
+
+  test "dev.exs resolves relative worker paths from the repository root" do
+    runtime =
+      read_dev_config!(%{
+        "ORCHARD_WORKER_SOCKET_DIR" => "tmp/worker-sockets",
+        "ORCHARD_WORKER_EXECUTABLE" => "native/worker"
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    repo_root = Path.expand("../../../../..", __DIR__)
+    assert runtime[:worker_socket_dir] == Path.join(repo_root, "tmp/worker-sockets")
+    assert runtime[:worker_executable] == Path.join(repo_root, "native/worker")
+  end
+
+  test "dev.exs rejects worker paths containing whitespace" do
+    assert_raise RuntimeError, ~r/must not contain whitespace or control characters/, fn ->
+      read_dev_config!(%{"ORCHARD_WORKER_SOCKET_DIR" => "/tmp/worker sockets"})
+    end
+  end
+
   test "dev.exs explicit generation mode overrides stub backend default" do
     runtime =
       read_dev_config!(%{

@@ -42,22 +42,14 @@ fi
 export ORCHARD_NODE_AGENT_LISTEN_PORT="$resolved_port"
 export ORCHARD_RUNTIME_CLIENT_PORT="$resolved_port"
 export ORCHARD_NODE_AGENT_LISTEN_HOST="${ORCHARD_NODE_AGENT_LISTEN_HOST:-127.0.0.1}"
-export ORCHARD_WORKER_EXECUTABLE="${ORCHARD_WORKER_EXECUTABLE:-$REPO_ROOT/native/orchard_worker_mlx/bin/orchard-worker-mlx}"
-
-if [[ ! -x "$ORCHARD_WORKER_EXECUTABLE" ]]; then
-  echo "warning: ORCHARD_WORKER_EXECUTABLE is not executable: $ORCHARD_WORKER_EXECUTABLE" >&2
-fi
-
 source "$REPO_ROOT/bin/lib/source-dev-beam.sh"
+source "$REPO_ROOT/bin/lib/source-dev-worker-cleanup.sh"
+orchard_source_dev_configure_worker_runtime "$REPO_ROOT"
 orchard_source_dev_beam_bootstrap node_agent "$REPO_ROOT"
-
-# Kill orphaned MLX workers from prior sessions.
-orphans=$(pgrep -f orchard-worker-mlx 2>/dev/null || true)
-if [[ -n "$orphans" ]]; then
-  echo "==> Killing orphaned MLX workers: $orphans"
-  echo "$orphans" | xargs kill 2>/dev/null || true
-  sleep 1
-fi
+orchard_source_dev_cleanup_workers \
+  "$REPO_ROOT" \
+  "$ORCHARD_WORKER_EXECUTABLE" \
+  "$ORCHARD_WORKER_EFFECTIVE_EXECUTABLE"
 
 # Start only the source-dev node-agent app. The sub-app mix.exs reuses the
 # umbrella config path, but does not boot the Phoenix/controller application.

@@ -29,7 +29,7 @@ defmodule OrchardCLI.DevScriptsTest do
     refute dev =~ "cd \"$REPO_ROOT/apps/orchard_node_agent\""
   end
 
-  test "dev-controller does not kill MLX workers, while dev and dev-node-agent do" do
+  test "dev-controller does not kill MLX workers, while dev and dev-node-agent use owned cleanup" do
     controller = File.read!(Path.join(@repo_root, "bin/dev-controller"))
     dev = File.read!(Path.join(@repo_root, "bin/dev"))
     node_agent = File.read!(Path.join(@repo_root, "bin/dev-node-agent"))
@@ -37,8 +37,14 @@ defmodule OrchardCLI.DevScriptsTest do
     refute controller =~ "pgrep -f orchard-worker-mlx"
     refute controller =~ "xargs kill"
 
-    assert dev =~ "pgrep -f orchard-worker-mlx"
-    assert node_agent =~ "pgrep -f orchard-worker-mlx"
+    assert dev =~ "source-dev-worker-cleanup.sh"
+    assert node_agent =~ "source-dev-worker-cleanup.sh"
+
+    assert dev =~ "orchard_source_dev_cleanup_workers"
+    assert node_agent =~ "orchard_source_dev_cleanup_workers"
+
+    refute dev =~ "orphans=$(pgrep -f orchard-worker-mlx)"
+    refute node_agent =~ "orphans=$(pgrep -f orchard-worker-mlx)"
   end
 
   test "source-dev BEAM bootstrap shell contract stays wired into Mix tests" do
@@ -51,5 +57,41 @@ defmodule OrchardCLI.DevScriptsTest do
              )
 
     assert output =~ "source-dev BEAM bootstrap tests passed"
+  end
+
+  test "source-dev worker cleanup kills only owned checkout workers" do
+    script = Path.join(@repo_root, "scripts/test-source-dev-worker-cleanup.sh")
+
+    assert {output, 0} =
+             System.cmd("bash", [script],
+               cd: @repo_root,
+               stderr_to_stdout: true
+             )
+
+    assert output =~ "source-dev worker cleanup tests passed"
+  end
+
+  test "source-dev worker socket directory matches config dev derivation" do
+    repo_root = Path.expand(@repo_root)
+    hash = :crypto.hash(:sha256, repo_root) |> Base.url_encode64(padding: false)
+    expected = Path.join(["/tmp", "od-" <> binary_part(hash, 0, 8), "ws"])
+    helper = Path.join(repo_root, "bin/lib/source-dev-worker-cleanup.sh")
+
+    assert {output, 0} =
+             System.cmd(
+               "bash",
+               [
+                 "-c",
+                 "source \"$1\"; orchard_source_dev_worker_socket_dir \"$2\"",
+                 "bash",
+                 helper,
+                 repo_root
+               ],
+               cd: repo_root,
+               env: [{"ORCHARD_WORKER_SOCKET_DIR", ""}],
+               stderr_to_stdout: true
+             )
+
+    assert String.trim(output) == expected
   end
 end
