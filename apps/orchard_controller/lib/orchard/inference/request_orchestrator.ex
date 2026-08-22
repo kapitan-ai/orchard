@@ -65,6 +65,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     try do
       case do_execute(canonical, model, opts) do
+        # Keep the existing execute/3 contract for direct callers; persistence
+        # and scheduling use the resolved value internally.
         {:ok, _resolved_canonical, events} -> {:ok, canonical, events}
         result -> result
       end
