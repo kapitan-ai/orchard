@@ -7,14 +7,35 @@
       <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
       <div>
         <label for="invite-password" class="block text-sm font-medium text-slate-200">Password</label>
-        <input id="invite-password" type="password" name="invite[password]" minlength="16" required autocomplete="new-password" class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-50" />
+        <input
+          id="invite-password"
+          type="password"
+          name="invite[password]"
+          minlength="16"
+          required
+          autocomplete="new-password"
+          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+        />
       </div>
       <div>
         <label for="invite-password-confirmation" class="block text-sm font-medium text-slate-200">Confirm password</label>
-        <input id="invite-password-confirmation" type="password" name="invite[password_confirmation]" minlength="16" required autocomplete="new-password" class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-50" />
+        <input
+          id="invite-password-confirmation"
+          type="password"
+          name="invite[password_confirmation]"
+          minlength="16"
+          required
+          autocomplete="new-password"
+          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+        />
       </div>
       <p :if={@invite_error} class="text-sm text-red-400">This invite is invalid, expired, or already used.</p>
-      <button type="submit" class="w-full rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950">Set password</button>
+      <button
+        type="submit"
+        class="w-full rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+      >
+        Set password
+      </button>
     </form>
   </section>
 </div>

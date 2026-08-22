@@ -46,6 +46,8 @@
 /* Scan HEEx templates for Tailwind class extraction */
 @source "../../lib/orchard/console/**/*.ex";
 @source "../../lib/orchard/console/**/*.heex";
+@source "../../lib/orchard/portal/**/*.ex";
+@source "../../lib/orchard/portal/**/*.heex";
 
 /* ==========================================================================
    Brand Bar — decorative 4-color strip at top of viewport

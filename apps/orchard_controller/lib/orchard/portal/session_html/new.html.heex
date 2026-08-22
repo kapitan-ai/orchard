@@ -27,7 +27,7 @@
           autocomplete="email"
           required
           disabled={@throttled}
-          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-50"
+          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
         />
       </div>
       <div>
@@ -39,7 +39,7 @@
           autocomplete="current-password"
           required
           disabled={@throttled}
-          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-50"
+          class="mt-1 block w-full rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
         />
         <p :if={@login_error} class="mt-2 text-sm text-red-400">
           Sign-in failed. Check your email and password.
@@ -57,7 +57,7 @@
       <button
         type="submit"
         disabled={@throttled}
-        class="w-full rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
+        class="w-full rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
       >
         Sign in
       </button>
