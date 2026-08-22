@@ -64,10 +64,10 @@ defmodule Orchard.CanonicalRequest do
   defmodule Admission do
     @moduledoc false
 
-    defstruct timeout_ms: 30_000, queue_wait_ms: 3_000, max_cold_start_ms: 15_000
+    defstruct timeout_ms: nil, queue_wait_ms: 3_000, max_cold_start_ms: 15_000
 
     @type t :: %__MODULE__{
-            timeout_ms: pos_integer(),
+            timeout_ms: pos_integer() | nil,
             queue_wait_ms: non_neg_integer(),
             max_cold_start_ms: non_neg_integer()
           }
@@ -458,7 +458,8 @@ defmodule Orchard.CanonicalRequest do
            }
          } = struct
        )
-       when is_integer(timeout_ms) and timeout_ms > 0 and is_integer(queue_wait_ms) and
+       when (is_nil(timeout_ms) or (is_integer(timeout_ms) and timeout_ms > 0)) and
+              is_integer(queue_wait_ms) and
               queue_wait_ms >= 0 and
               is_integer(max_cold_start_ms) and max_cold_start_ms >= 0,
        do: struct

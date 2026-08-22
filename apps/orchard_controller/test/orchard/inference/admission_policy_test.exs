@@ -8,6 +8,8 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
   test "SPEC.md routing_policies defaults resolve queue and cold budgets" do
     request = base_request()
 
+    assert request.admission.timeout_ms == nil
+
     resolved = AdmissionPolicy.resolve(request)
 
     assert resolved.admission.queue_wait_ms == 3_000
@@ -28,6 +30,34 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
     assert resolved.admission.queue_wait_ms == 100
     assert resolved.admission.max_cold_start_ms == 0
     assert resolved.resolved_policy.residency_preference == :required_loaded
+  end
+
+  test "allow_cold_load policy adds queue and cold-start headroom to configured timeout" do
+    request = base_request()
+
+    resolved =
+      AdmissionPolicy.resolve(request,
+        timeout_ms: 120_000,
+        queue_wait_ms: 3_000,
+        max_cold_start_ms: 180_000,
+        residency_preference: :allow_cold_load
+      )
+
+    assert resolved.admission.timeout_ms == 303_000
+  end
+
+  test "explicit timeout is used as the cold-path generation budget" do
+    request = base_request()
+
+    resolved =
+      AdmissionPolicy.resolve(request,
+        timeout_ms: 400_000,
+        queue_wait_ms: 3_000,
+        max_cold_start_ms: 180_000,
+        residency_preference: :allow_cold_load
+      )
+
+    assert resolved.admission.timeout_ms == 583_000
   end
 
   test "explicit zero cold budget is preserved for required_loaded style requests" do

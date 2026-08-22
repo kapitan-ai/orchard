@@ -14,6 +14,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Models.Access, as: ModelAccess
+  alias Orchard.Models.RoutingPolicy
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Repo
@@ -848,7 +849,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     |> Tenant.changeset(%{request_body_capture_mode: :full})
     |> Repo.update!()
 
-    _model =
+    model =
       create_model!(%{
         model_id: "responses-stream-model",
         version: "v1",
@@ -868,6 +869,19 @@ defmodule Orchard.API.ResponsesControllerTest do
       })
 
     grant_active_models!(tenant)
+
+    {:ok, policy} =
+      %RoutingPolicy{}
+      |> RoutingPolicy.changeset(%{
+        tenant_id: tenant.id,
+        name: "responses-cold-deadline",
+        residency_preference: :allow_cold_load,
+        max_cold_start_ms: 180_000,
+        max_queue_wait_ms: 3_000
+      })
+      |> Repo.insert()
+
+    assert {:ok, _result} = ModelAccess.grant_model_access(tenant, model, policy.id)
 
     conn =
       post_responses(
@@ -936,6 +950,10 @@ defmodule Orchard.API.ResponsesControllerTest do
     [request] = Repo.all(Request)
     assert request.endpoint == :responses
     assert request.stream == true
+
+    assert_in_delta DateTime.diff(request.timeout_at, request.inserted_at, :millisecond),
+                    Orchard.Inference.request_timeout_ms() + 3_000 + 180_000,
+                    1
 
     # first_token_at must be persisted for successful streaming requests
     response_id = terminal.data["response"]["id"]

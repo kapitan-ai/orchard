@@ -14,6 +14,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Inference
 
   alias Orchard.Inference.{
+    AdmissionPolicy,
     CacheAffinity,
     CanonicalRequestSerializer,
     ChatError,
@@ -678,6 +679,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp persist_request(canonical, model, idempotency) do
+    canonical = AdmissionPolicy.resolve(canonical)
+
     with {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
       capture_mode = effective_capture_mode(canonical)
 

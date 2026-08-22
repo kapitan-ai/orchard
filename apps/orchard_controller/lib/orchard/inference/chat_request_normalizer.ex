@@ -15,6 +15,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.{ModelRef, ResponseFormat, Sampling, Tooling}
   alias Orchard.Governance
+  alias Orchard.Inference
   alias Orchard.Inference.AdmissionPolicy
 
   @doc """
@@ -42,6 +43,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
     principal_id = Keyword.get(opts, :principal_id)
     service_account_id = Keyword.get(opts, :service_account_id)
     api_key_id = Keyword.get(opts, :api_key_id)
+    timeout_ms = Keyword.get(opts, :timeout_ms, Inference.request_timeout_ms())
 
     policy_opts = Keyword.take(opts, AdmissionPolicy.resolve_option_keys())
 
@@ -55,6 +57,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
         principal_id: principal_id,
         service_account_id: service_account_id,
         api_key_id: api_key_id,
+        admission: %{timeout_ms: timeout_ms},
         model_ref: parse_model_ref(params["model"]),
         input_items: params["messages"],
         stream?: Map.get(params, "stream", false),

@@ -18,7 +18,8 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
         :principal_type,
         :principal_id,
         :service_account_id,
-        :api_key_id
+        :api_key_id,
+        :timeout_ms
       ])
       |> Keyword.put(:internal_id, internal_id)
       |> Keyword.put(:public_id, public_id)
