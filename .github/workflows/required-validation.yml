@@ -14,6 +14,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Detect whether the change touches anything beyond documentation. Runs on a
+  # cheap Linux runner so docs-only PRs never spin up the macOS runner. Do NOT
+  # use `paths-ignore` on the workflow trigger instead: a workflow skipped by
+  # path filtering leaves its required checks stuck in "Pending" and blocks
+  # merging (see GitHub docs, "Handling skipped but required checks").
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # Pushes to main always run the full suite; PRs run it unless the diff
+      # is docs-only (docs/** and top-level *.md).
+      run_full: ${{ github.event_name != 'pull_request' || steps.filter.outputs.non_docs == 'true' }}
+    steps:
+      - name: Detect non-docs changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            non_docs:
+              - '**'
+              - '!docs/**'
+              - '!*.md'
+
   required-validation:
     name: Required Orchard validation
     # Orchard is an Apple Silicon macOS-native product: the suite exercises
@@ -22,6 +51,8 @@ jobs:
     # check on a pinned Apple Silicon runner.
     runs-on: nscloud-macos-sequoia-stable-arm64-6x14
     timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
     env:
       ORCHARD_TEST_NODE_AGENT_PORT: "50171"
       PGHOST: localhost
@@ -125,3 +156,38 @@ jobs:
         env:
           OPENSPEC_TELEMETRY: "0"
         run: mise exec -- npm run openspec -- validate --all --strict --no-interactive
+
+  # Aggregating gate: this job name ("Required Orchard validation gate") must
+  # be the required status check in branch protection, replacing
+  # "Required Orchard validation". It always runs (`if: always()`) and reports
+  # success when the heavy macOS job passed, or when it was legitimately
+  # skipped because the change is docs-only. This is the recommended pattern
+  # for keeping a required check green on docs-only PRs without leaving it
+  # stuck in "Pending".
+  required-validation-gate:
+    name: Required Orchard validation gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, required-validation]
+    if: always()
+    steps:
+      - name: Evaluate validation result
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          VALIDATION_RESULT: ${{ needs.required-validation.result }}
+          RUN_FULL: ${{ needs.changes.outputs.run_full }}
+        run: |
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "Path detection job did not succeed: $CHANGES_RESULT"
+            exit 1
+          fi
+          if [ "$VALIDATION_RESULT" = "success" ]; then
+            echo "Full validation passed."
+            exit 0
+          fi
+          if [ "$VALIDATION_RESULT" = "skipped" ] && [ "$RUN_FULL" != "true" ]; then
+            echo "Docs-only change: full validation legitimately skipped."
+            exit 0
+          fi
+          echo "Required validation result: $VALIDATION_RESULT"
+          exit 1
