@@ -3,7 +3,7 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.{Admission, ModelRef, ResolvedPolicy}
-  alias Orchard.Inference.AdmissionPolicy
+  alias Orchard.Inference.{AdmissionPolicy, CanonicalRequestSerializer, RequestDeadline}
 
   test "SPEC.md routing_policies defaults resolve queue and cold budgets" do
     request = base_request()
@@ -71,7 +71,10 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
         residency_preference: :allow_cold_load
       )
 
-    assert AdmissionPolicy.resolve(resolved).admission.timeout_ms == 303_000
+    re_resolved = AdmissionPolicy.resolve(resolved)
+
+    assert re_resolved.admission.timeout_ms == 303_000
+    assert CanonicalRequestSerializer.serialize(re_resolved)["admission"]["timeout_ms"] == 303_000
   end
 
   test "explicit zero cold budget is preserved for required_loaded style requests" do
@@ -85,6 +88,26 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
 
     assert resolved.admission.max_cold_start_ms == 0
     assert resolved.resolved_policy.residency_preference == :required_loaded
+  end
+
+  test "empty-opts re-resolve preserves an already-resolved required_loaded zero budget" do
+    request =
+      base_request(
+        admission: %Admission{timeout_ms: 30_000, queue_wait_ms: 3_000, max_cold_start_ms: 0},
+        resolved_policy: %ResolvedPolicy{residency_preference: :required_loaded}
+      )
+
+    resolved = AdmissionPolicy.resolve(request)
+    serialized = CanonicalRequestSerializer.serialize(resolved)
+    now = ~U[2026-08-12 10:00:00.000000Z]
+
+    assert resolved.admission.timeout_ms == 30_000
+    assert resolved.admission.max_cold_start_ms == 0
+    assert serialized["admission"]["timeout_ms"] == 30_000
+    assert serialized["admission"]["max_cold_start_ms"] == 0
+
+    assert RequestDeadline.timeout_at(serialized["admission"]["timeout_ms"], now) ==
+             ~U[2026-08-12 10:00:30.000000Z]
   end
 
   test "historical allow_cold_load with zero cold budget is upgraded" do

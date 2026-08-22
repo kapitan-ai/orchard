@@ -84,8 +84,8 @@ defmodule Orchard.Inference.AdmissionPolicy do
   """
   @spec resolve(CanonicalRequest.t(), resolve_opts()) :: CanonicalRequest.t()
   def resolve(%CanonicalRequest{} = request, opts \\ []) when is_list(opts) do
-    admission = resolve_admission(request.admission || %Admission{}, opts)
     resolved_policy = resolve_policy(request.resolved_policy || %ResolvedPolicy{}, opts)
+    admission = resolve_admission(request.admission || %Admission{}, resolved_policy, opts)
 
     %CanonicalRequest{request | admission: admission, resolved_policy: resolved_policy}
   end
@@ -98,8 +98,8 @@ defmodule Orchard.Inference.AdmissionPolicy do
           resolved_policy: map()
         }
   def default_attrs(opts \\ []) when is_list(opts) do
-    admission = resolve_admission(%Admission{}, opts)
     resolved_policy = resolve_policy(%ResolvedPolicy{}, opts)
+    admission = resolve_admission(%Admission{}, resolved_policy, opts)
 
     %{
       admission: Map.from_struct(admission),
@@ -107,10 +107,12 @@ defmodule Orchard.Inference.AdmissionPolicy do
     }
   end
 
-  defp resolve_admission(%Admission{} = admission, opts) do
+  defp resolve_admission(%Admission{} = admission, %ResolvedPolicy{} = policy, opts) do
     queue_wait_ms = resolve_queue_wait_ms(admission.queue_wait_ms, opts)
-    max_cold_start_ms = resolve_max_cold_start_ms(admission.max_cold_start_ms, opts)
-    residency_preference = resolve_residency_preference(nil, opts)
+    residency_preference = resolve_residency_preference(policy.residency_preference, opts)
+
+    max_cold_start_ms =
+      resolve_max_cold_start_ms(admission.max_cold_start_ms, residency_preference, opts)
 
     %Admission{
       timeout_ms:
@@ -173,17 +175,7 @@ defmodule Orchard.Inference.AdmissionPolicy do
     end
   end
 
-  defp resolve_max_cold_start_ms(current, opts) do
-    residency =
-      case Keyword.get(opts, :residency_preference) do
-        preference
-        when preference in [:required_loaded, :prefer_loaded, :allow_cold_load] ->
-          preference
-
-        _other ->
-          nil
-      end
-
+  defp resolve_max_cold_start_ms(current, residency, opts) do
     cond do
       keyword_integer?(opts, :max_cold_start_ms) ->
         Keyword.fetch!(opts, :max_cold_start_ms)
