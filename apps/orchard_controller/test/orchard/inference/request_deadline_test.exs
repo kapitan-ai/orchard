@@ -14,6 +14,16 @@ defmodule Orchard.Inference.RequestDeadlineTest do
                ~U[2026-08-12 10:02:00.123456Z]
     end
 
+    test "rejects an unresolved timeout before persistence" do
+      now = ~U[2026-08-12 10:00:00.123456Z]
+
+      assert_raise ArgumentError,
+                   "request timeout must be a positive integer before persistence, got: nil",
+                   fn ->
+                     RequestDeadline.timeout_at(nil, now)
+                   end
+    end
+
     test "SPEC.md §§5.8 and 12.4 clamps remaining and stage budgets at zero" do
       timeout_at = ~U[2026-08-12 10:00:01.000000Z]
 

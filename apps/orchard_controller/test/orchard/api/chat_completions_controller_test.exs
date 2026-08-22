@@ -47,6 +47,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Models.Access, as: ModelAccess
+  alias Orchard.Models.RoutingPolicy
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Repo
@@ -1443,7 +1444,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       |> Tenant.changeset(%{request_body_capture_mode: :full})
       |> Orchard.Repo.update!()
 
-      {:ok, _model} =
+      {:ok, model} =
         Orchard.Models.create_model(%{
           model_id: "persist-model",
           version: "v1",
@@ -1462,6 +1463,19 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         })
 
       grant_active_models!(tenant)
+
+      {:ok, policy} =
+        %RoutingPolicy{}
+        |> RoutingPolicy.changeset(%{
+          tenant_id: tenant.id,
+          name: "cold-deadline",
+          residency_preference: :allow_cold_load,
+          max_cold_start_ms: 180_000,
+          max_queue_wait_ms: 3_000
+        })
+        |> Repo.insert()
+
+      assert {:ok, _result} = ModelAccess.grant_model_access(tenant, model, policy.id)
 
       conn =
         post_chat(
@@ -1489,6 +1503,11 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert request.request_payload["prompt"] =~ "hello"
       assert request.response_payload["object"] == "chat.completion"
       assert is_binary(request.response_preview)
+
+      assert_in_delta DateTime.diff(request.timeout_at, request.inserted_at, :millisecond),
+                      Orchard.Inference.request_timeout_ms() + 3_000 + 180_000,
+                      1
+
       # Terminal state after successful completion
       assert request.state in [:completed, :streaming]
 

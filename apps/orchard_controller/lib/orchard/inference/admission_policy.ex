@@ -4,7 +4,12 @@ defmodule Orchard.Inference.AdmissionPolicy do
 
   SPEC.md routing_policies defaults and §3.4 admission budgets are applied before
   canonical persistence so scheduler and queue owners consume the same values the
-  request row records. Explicit non-default caller values win.
+  request row records.
+
+  Request deadlines use an explicit timeout as the generation budget when one is
+  supplied, otherwise the configured request timeout is the generation budget
+  and floor. When a resolved policy permits cold loading, its cold-start budget
+  is added to that generation budget and the queue-wait budget.
   """
 
   alias Orchard.CanonicalRequest
@@ -71,14 +76,16 @@ defmodule Orchard.Inference.AdmissionPolicy do
   Returns a CanonicalRequest with authoritative admission and resolved_policy.
 
   Defaults come from SPEC routing_policies (`max_cold_start_ms`, `max_queue_wait_ms`)
-  and `allow_cold_load` residency. Explicit opts and already-set non-default
-  struct fields are preserved. `timeout_ms` falls back to the configured request
-  timeout when present, otherwise keeps the Admission struct default.
+  and `allow_cold_load` residency. `timeout_ms` falls back to the configured
+  request timeout when present, otherwise to the legacy 30-second fallback.
+  For a resolved `allow_cold_load` policy, the effective deadline is the
+  configured or explicit generation budget plus queue wait and cold-start
+  budgets.
   """
   @spec resolve(CanonicalRequest.t(), resolve_opts()) :: CanonicalRequest.t()
   def resolve(%CanonicalRequest{} = request, opts \\ []) when is_list(opts) do
-    admission = resolve_admission(request.admission || %Admission{}, opts)
     resolved_policy = resolve_policy(request.resolved_policy || %ResolvedPolicy{}, opts)
+    admission = resolve_admission(request.admission || %Admission{}, resolved_policy, opts)
 
     %CanonicalRequest{request | admission: admission, resolved_policy: resolved_policy}
   end
@@ -91,8 +98,8 @@ defmodule Orchard.Inference.AdmissionPolicy do
           resolved_policy: map()
         }
   def default_attrs(opts \\ []) when is_list(opts) do
-    admission = resolve_admission(%Admission{}, opts)
     resolved_policy = resolve_policy(%ResolvedPolicy{}, opts)
+    admission = resolve_admission(%Admission{}, resolved_policy, opts)
 
     %{
       admission: Map.from_struct(admission),
@@ -100,11 +107,24 @@ defmodule Orchard.Inference.AdmissionPolicy do
     }
   end
 
-  defp resolve_admission(%Admission{} = admission, opts) do
+  defp resolve_admission(%Admission{} = admission, %ResolvedPolicy{} = policy, opts) do
+    queue_wait_ms = resolve_queue_wait_ms(admission.queue_wait_ms, opts)
+    residency_preference = resolve_residency_preference(policy.residency_preference, opts)
+
+    max_cold_start_ms =
+      resolve_max_cold_start_ms(admission.max_cold_start_ms, residency_preference, opts)
+
     %Admission{
-      timeout_ms: resolve_timeout_ms(admission.timeout_ms, opts),
-      queue_wait_ms: resolve_queue_wait_ms(admission.queue_wait_ms, opts),
-      max_cold_start_ms: resolve_max_cold_start_ms(admission.max_cold_start_ms, opts)
+      timeout_ms:
+        resolve_timeout_ms(
+          admission.timeout_ms,
+          queue_wait_ms,
+          max_cold_start_ms,
+          residency_preference,
+          opts
+        ),
+      queue_wait_ms: queue_wait_ms,
+      max_cold_start_ms: max_cold_start_ms
     }
   end
 
@@ -118,21 +138,34 @@ defmodule Orchard.Inference.AdmissionPolicy do
     }
   end
 
-  defp resolve_timeout_ms(current, opts) do
-    cond do
-      keyword_integer?(opts, :timeout_ms) ->
-        Keyword.fetch!(opts, :timeout_ms)
+  defp resolve_timeout_ms(current, queue_wait_ms, max_cold_start_ms, residency_preference, opts) do
+    timeout_ms =
+      cond do
+        keyword_integer?(opts, :timeout_ms) ->
+          Keyword.fetch!(opts, :timeout_ms)
 
-      is_integer(current) and current > 0 ->
-        current
+        is_integer(current) and current > 0 ->
+          current
 
-      true ->
-        case Inference.request_timeout_ms() do
-          timeout when is_integer(timeout) and timeout > 0 -> timeout
-          _other -> 30_000
-        end
+        true ->
+          case Inference.request_timeout_ms() do
+            timeout when is_integer(timeout) and timeout > 0 -> timeout
+            _other -> 30_000
+          end
+      end
+
+    if policy_timeout?(opts, residency_preference) do
+      timeout_ms + queue_wait_ms + max_cold_start_ms
+    else
+      timeout_ms
     end
   end
+
+  defp policy_timeout?(opts, :allow_cold_load) do
+    Keyword.has_key?(opts, :max_cold_start_ms) or Keyword.has_key?(opts, :residency_preference)
+  end
+
+  defp policy_timeout?(_opts, _residency_preference), do: false
 
   defp resolve_queue_wait_ms(current, opts) do
     cond do
@@ -142,24 +175,14 @@ defmodule Orchard.Inference.AdmissionPolicy do
     end
   end
 
-  defp resolve_max_cold_start_ms(current, opts) do
-    residency =
-      case Keyword.get(opts, :residency_preference) do
-        preference
-        when preference in [:required_loaded, :prefer_loaded, :allow_cold_load] ->
-          preference
-
-        _other ->
-          nil
-      end
-
+  defp resolve_max_cold_start_ms(current, residency, opts) do
     cond do
       keyword_integer?(opts, :max_cold_start_ms) ->
         Keyword.fetch!(opts, :max_cold_start_ms)
 
       # Historical constructor default was 0 against allow_cold_load. Upgrade only
       # that contradictory pair so required_loaded + 0 stays intentional.
-      current == 0 and residency in [nil, :allow_cold_load, :prefer_loaded] ->
+      current == 0 and residency in [:allow_cold_load, :prefer_loaded] ->
         @default_max_cold_start_ms
 
       is_integer(current) and current >= 0 ->

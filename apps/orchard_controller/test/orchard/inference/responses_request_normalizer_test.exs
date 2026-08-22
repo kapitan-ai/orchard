@@ -29,6 +29,7 @@ defmodule Orchard.Inference.ResponsesRequestNormalizerTest do
     assert request.api_key_id == "api-key-1"
     assert request.model_ref == %ModelRef{model_id: "test-model", version: "v1"}
     assert request.input_items == [%{"role" => "user", "content" => "Hello"}]
+    assert request.admission.timeout_ms == Orchard.Inference.request_timeout_ms()
     assert request.sampling.max_output_tokens == 128
     assert request.metadata == %{}
   end

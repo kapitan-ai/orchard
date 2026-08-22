@@ -64,12 +64,18 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
     }
   end
 
-  defp serialize_admission(%CanonicalRequest.Admission{} = admission) do
+  defp serialize_admission(%CanonicalRequest.Admission{timeout_ms: timeout_ms} = admission)
+       when is_integer(timeout_ms) and timeout_ms > 0 do
     %{
       "timeout_ms" => admission.timeout_ms,
       "queue_wait_ms" => admission.queue_wait_ms,
       "max_cold_start_ms" => admission.max_cold_start_ms
     }
+  end
+
+  defp serialize_admission(%CanonicalRequest.Admission{timeout_ms: timeout_ms}) do
+    raise ArgumentError,
+          "canonical request admission timeout must be a positive integer before serialization, got: #{inspect(timeout_ms)}"
   end
 
   defp serialize_resolved_policy(%CanonicalRequest.ResolvedPolicy{} = resolved_policy) do
