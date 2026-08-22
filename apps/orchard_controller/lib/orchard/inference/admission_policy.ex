@@ -182,7 +182,7 @@ defmodule Orchard.Inference.AdmissionPolicy do
 
       # Historical constructor default was 0 against allow_cold_load. Upgrade only
       # that contradictory pair so required_loaded + 0 stays intentional.
-      current == 0 and residency in [nil, :allow_cold_load, :prefer_loaded] ->
+      current == 0 and residency in [:allow_cold_load, :prefer_loaded] ->
         @default_max_cold_start_ms
 
       is_integer(current) and current >= 0 ->
