@@ -949,6 +949,8 @@ Without `ORCHARD_TRUSTED_PROXIES`, non-loopback reverse-proxy backend binds fail
 
 ### nginx example
 
+Set reverse-proxy timeouts above the six-minute default ceiling. The proxy timeout must exceed `ORCHARD_MAX_REQUEST_DEADLINE_MS`, or the cold-start budget is fiction.
+
 ```nginx
 server {
     listen 443 ssl http2;
@@ -967,15 +969,24 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_read_timeout 390s;
+        proxy_send_timeout 390s;
     }
 }
 ```
 
 ### Caddy example
 
+The proxy timeout must exceed `ORCHARD_MAX_REQUEST_DEADLINE_MS`, or the cold-start budget is fiction.
+
 ```caddyfile
 orchard.example.com {
     reverse_proxy 127.0.0.1:4000 {
+        transport http {
+            read_timeout 6m30s
+            write_timeout 6m30s
+            response_header_timeout 6m30s
+        }
         header_up Host {host}
         header_up X-Forwarded-Host {host}
         header_up X-Forwarded-Proto https
@@ -987,6 +998,22 @@ orchard.example.com {
 Caddy can manage public ACME certificates or use operator-provided certificates with `tls /path/to/fullchain.pem /path/to/privkey.pem`.
 
 ### Traefik example
+
+The proxy timeout must exceed `ORCHARD_MAX_REQUEST_DEADLINE_MS`, or the cold-start budget is fiction. Configure the entrypoint's response timeouts
+above the six-minute default ceiling:
+
+```yaml
+entryPoints:
+  websecure:
+    address: ":443"
+    transport:
+      respondingTimeouts:
+        readTimeout: 390s
+        writeTimeout: 390s
+        idleTimeout: 390s
+```
+
+The router and service configuration remains:
 
 ```yaml
 http:

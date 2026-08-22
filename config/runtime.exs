@@ -460,6 +460,7 @@ default_controller_inference = fn root ->
     runtime_client_target: [host: "127.0.0.1", port: 50_061],
     runtime_client_targets: [],
     request_timeout_ms: 120_000,
+    max_request_deadline_ms: 360_000,
     model_load_timeout_ms: 120_000,
     node_freshness_threshold_ms: 30_000,
     node_unreachable_threshold_ms: 15_000,
@@ -1160,6 +1161,7 @@ if config_env() == :prod do
             allow_static_runtime_target_fallback:
               env_bool.("ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK", false),
             request_timeout_ms: env_int.("ORCHARD_REQUEST_TIMEOUT_MS", "120000"),
+            max_request_deadline_ms: env_int.("ORCHARD_MAX_REQUEST_DEADLINE_MS", "360000"),
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000"),
             node_freshness_threshold_ms: env_int.("ORCHARD_NODE_FRESHNESS_THRESHOLD_MS", "30000"),
             node_unreachable_threshold_ms:

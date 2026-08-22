@@ -337,6 +337,31 @@ defmodule Orchard.Inference do
   @spec request_timeout_ms() :: pos_integer() | nil
   def request_timeout_ms, do: config()[:request_timeout_ms]
 
+  @doc """
+  Returns the deployment-owned ceiling for an effective request deadline.
+
+  A request timeout above this ceiling is incoherent configuration and raises
+  instead of allowing every request to be silently capped.
+  """
+  @spec max_request_deadline_ms() :: pos_integer()
+  def max_request_deadline_ms do
+    ceiling = config()[:max_request_deadline_ms]
+    request_timeout = request_timeout_ms()
+
+    cond do
+      not (is_integer(ceiling) and ceiling > 0) ->
+        raise ArgumentError,
+              "max request deadline must be a positive integer, got: #{inspect(ceiling)}"
+
+      is_integer(request_timeout) and request_timeout > ceiling ->
+        raise ArgumentError,
+              "configured request timeout (#{request_timeout} ms) exceeds max request deadline (#{ceiling} ms)"
+
+      true ->
+        ceiling
+    end
+  end
+
   @spec model_load_timeout_ms() :: pos_integer()
   def model_load_timeout_ms, do: config()[:model_load_timeout_ms] || 120_000
 

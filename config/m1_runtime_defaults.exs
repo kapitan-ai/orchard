@@ -7,6 +7,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
   @default_runtime_host "127.0.0.1"
   @default_runtime_port 50_061
   @default_request_timeout_ms 120_000
+  @default_max_request_deadline_ms 360_000
   @default_model_load_timeout_ms 120_000
   @default_worker_ready_timeout_ms 5_000
   @default_worker_load_timeout_ms 120_000
@@ -38,6 +39,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       runtime_client_targets: [],
       allow_static_runtime_target_fallback: false,
       request_timeout_ms: @default_request_timeout_ms,
+      max_request_deadline_ms: @default_max_request_deadline_ms,
       model_load_timeout_ms: @default_model_load_timeout_ms,
       node_freshness_threshold_ms: 30_000,
       node_unreachable_threshold_ms: 15_000,
