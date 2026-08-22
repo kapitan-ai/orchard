@@ -92,4 +92,4 @@ updated.
   machine-specific evidence.
 - Promote durable conclusions into standalone docs, decisions, tests, or code.
 
-<!-- CI docs-only skip verification: temporary change, do not merge -->
+<!-- CI docs-only skip verification: temporary change, do not merge; retrigger -->
