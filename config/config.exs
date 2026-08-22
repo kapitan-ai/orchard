@@ -82,7 +82,7 @@ config :esbuild,
 
 # tailwind (CSS compilation with brand palette)
 config :tailwind,
-  version: "4.1.3",
+  version: "4.3.3",
   version_check: false,
   path: Path.expand("../node_modules/.bin/tailwindcss", __DIR__),
   orchard: [

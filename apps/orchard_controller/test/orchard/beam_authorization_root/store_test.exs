@@ -6,13 +6,7 @@ defmodule Orchard.BeamAuthorizationRoot.StoreTest do
   alias Orchard.BeamAuthorizationRoot.Store
 
   test "SPEC.md §7.5.0 creates one owner-only authorization root idempotently" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "orchard-beam-authorization-root-#{System.unique_integer([:positive, :monotonic])}"
-      )
-
-    on_exit(fn -> File.rm_rf!(root) end)
+    root = Path.join(private_parent("orchard-beam-authorization-root"), "authorization-root")
 
     assert {:ok, material} = Store.ensure(root)
     assert {:ok, ^material} = Store.ensure(root)
@@ -26,12 +20,7 @@ defmodule Orchard.BeamAuthorizationRoot.StoreTest do
 
   test "SPEC.md §7.5.0 rejects an authorization root not owned by the Controller account" do
     root =
-      Path.join(
-        System.tmp_dir!(),
-        "orchard-beam-authorization-root-owner-#{System.unique_integer([:positive, :monotonic])}"
-      )
-
-    on_exit(fn -> File.rm_rf!(root) end)
+      Path.join(private_parent("orchard-beam-authorization-root-owner"), "authorization-root")
 
     assert {:ok, _material} = Store.ensure(root)
     foreign_uid = File.stat!(root).uid + 1
@@ -41,13 +30,25 @@ defmodule Orchard.BeamAuthorizationRoot.StoreTest do
   end
 
   test "SPEC.md §7.5.0 loads an existing authorization root from a read-only parent" do
+    parent = private_parent("orchard-beam-authorization-root-read-only")
+    root = Path.join(parent, "authorization-root")
+
+    assert {:ok, material} = Store.ensure(root)
+    File.chmod!(parent, 0o500)
+
+    assert {:ok, ^material} = Store.load(root)
+  end
+
+  # The store rejects a group- or other-writable parent, so the authorization
+  # root needs an owner-only parent the test creates itself. `System.tmp_dir!()`
+  # is world-writable `/tmp` on runners that leave `TMPDIR` unset.
+  defp private_parent(prefix) do
     parent =
       Path.join(
         System.tmp_dir!(),
-        "orchard-beam-authorization-root-read-only-#{System.unique_integer([:positive, :monotonic])}"
+        "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
       )
 
-    root = Path.join(parent, "authorization-root")
     File.mkdir!(parent)
     File.chmod!(parent, 0o700)
 
@@ -56,10 +57,7 @@ defmodule Orchard.BeamAuthorizationRoot.StoreTest do
       File.rm_rf!(parent)
     end)
 
-    assert {:ok, material} = Store.ensure(root)
-    File.chmod!(parent, 0o500)
-
-    assert {:ok, ^material} = Store.load(root)
+    parent
   end
 
   defp private_mode(path) do
