@@ -502,14 +502,14 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
 
   describe "crash handling" do
     test "task crash produces error snapshot" do
+      Coordinator.subscribe()
+      {:ok, _} = Coordinator.start_download("owner/model")
+      assert_receive {:stub_download, _, ref, _, _}, 200
+      assert_receive {:stub_download_pid, pid}, 200
+      assert_receive {:model_hub_download, %{status: :starting}}, 200
+
       log =
         capture_log(fn ->
-          Coordinator.subscribe()
-          {:ok, _} = Coordinator.start_download("owner/model")
-          assert_receive {:stub_download, _, _ref, _, _}, 200
-          assert_receive {:stub_download_pid, pid}, 200
-          assert_receive {:model_hub_download, %{status: :starting}}, 200
-
           Process.exit(pid, :kill)
 
           assert_receive {:model_hub_download, snapshot}, 500
@@ -517,8 +517,15 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
           assert snapshot.error.code == "download_import_failed"
         end)
 
-      assert log =~ "ModelHubDownloadCoordinator: download task"
-      assert log =~ "killed"
+      # A task killed before the coordinator's monitor is established reports
+      # :noproc instead of :killed; both reach the same crash path.
+      crash_log =
+        Regex.compile!(
+          "ModelHubDownloadCoordinator: download task #{Regex.escape(inspect(pid))} " <>
+            "for ref #{Regex.escape(inspect(ref))} crashed: :(killed|noproc)"
+        )
+
+      assert log =~ crash_log
     end
 
     test "crash after terminal completion is ignored" do
