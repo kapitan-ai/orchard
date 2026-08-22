@@ -91,3 +91,5 @@ updated.
   such as `.codex/` or `.claude/`, tool session IDs, credentials, DSNs, or
   machine-specific evidence.
 - Promote durable conclusions into standalone docs, decisions, tests, or code.
+
+<!-- CI docs-only skip verification: temporary change, do not merge -->
