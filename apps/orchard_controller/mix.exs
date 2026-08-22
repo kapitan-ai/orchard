@@ -53,7 +53,7 @@ defmodule OrchardController.MixProject do
       {:phoenix, "~> 1.7.20"},
       {:phoenix_html, "~> 4.2"},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
-      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_live_view, "~> 1.1.28"},
       {:phoenix_pubsub, "~> 2.1"},
       {:postgrex, ">= 0.0.0"},
       {:tailwind, "~> 0.2", runtime: Mix.env() == :dev},
