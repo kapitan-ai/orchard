@@ -118,4 +118,20 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
       CanonicalRequestSerializer.serialize(canonical)
     end
   end
+
+  test "serialize/1 rejects an unresolved admission timeout" do
+    canonical =
+      CanonicalRequest.new(%{
+        internal_id: Ecto.UUID.generate(),
+        public_id: "resp_unresolved_timeout",
+        endpoint: :chat_completions,
+        tenant_id: Ecto.UUID.generate(),
+        model_ref: %{model_id: "test-model", version: "v1"},
+        admission: %{timeout_ms: nil}
+      })
+
+    assert_raise ArgumentError, ~r/admission timeout must be a positive integer/, fn ->
+      CanonicalRequestSerializer.serialize(canonical)
+    end
+  end
 end

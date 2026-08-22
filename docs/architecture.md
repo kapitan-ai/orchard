@@ -173,12 +173,11 @@ That deadline covers connect, pre-dispatch probe, gate acquisition, and streamin
 Public request deadlines are resolved before persistence. An explicit timeout
 supplies the generation budget; otherwise `Inference.request_timeout_ms()` is
 the configured generation budget and floor. For `allow_cold_load` routing
-policies, the effective deadline is the greater of that generation budget and
-its sum with the policy's `max_queue_wait_ms` and `max_cold_start_ms`, so the
-policy-derived total wins when both values are set. This makes the stored
-cold-start budget reachable without extending `requests.timeout_at` after
-creation. `required_loaded` and `prefer_loaded` requests retain the selected
-generation budget.
+policies, the effective deadline is that generation budget plus the policy's
+`max_queue_wait_ms` and `max_cold_start_ms`. This makes the stored cold-start
+budget reachable without extending `requests.timeout_at` after creation.
+`required_loaded` and `prefer_loaded` requests retain the selected generation
+budget.
 When a dispatch cannot resolve whether its runtime execution ended — a cancel drain that times out without a transport-proven clean disconnect and without a durably recorded unreachable or unhealthy Node — the authority quarantines that Node, and every later evaluation for it is treated as unreachable rather than trusted as free capacity.
 The quarantine set lives in `Orchard.DispatchCapacity.QuarantineStore`, a temporary child supervised by the Controller root outside the inference subtree, so an authority restart cannot silently resume dispatch from a clean quarantine set; losing the store itself fails closed for every Node and needs a Controller restart.
 Quarantine has no expiry and no unauthenticated operator-release seam: durable recovery that proves the unresolved execution is absent is a later slice.

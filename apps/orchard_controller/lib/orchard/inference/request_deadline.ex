@@ -3,9 +3,14 @@ defmodule Orchard.Inference.RequestDeadline do
   Converts the persisted logical Request deadline into bounded stage budgets.
   """
 
-  @spec timeout_at(pos_integer(), DateTime.t()) :: DateTime.t()
+  @spec timeout_at(pos_integer() | nil, DateTime.t()) :: DateTime.t()
   def timeout_at(timeout_ms, %DateTime{} = now) when is_integer(timeout_ms) and timeout_ms > 0 do
     DateTime.add(now, timeout_ms, :millisecond)
+  end
+
+  def timeout_at(nil, %DateTime{}) do
+    raise ArgumentError,
+          "request timeout must be a positive integer before persistence, got: nil"
   end
 
   @spec remaining_ms(DateTime.t(), DateTime.t()) :: non_neg_integer()

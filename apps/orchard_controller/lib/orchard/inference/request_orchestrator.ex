@@ -679,9 +679,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp persist_request(canonical, model, idempotency) do
+    # Internal callers may bypass the public normalizers, so resolve admission
+    # again as a fail-safe immediately before serializing and persisting.
     canonical = AdmissionPolicy.resolve(canonical)
 
-    with {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
+    with :ok <- validate_persistable_timeout(canonical),
+         {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
       capture_mode = effective_capture_mode(canonical)
 
       canonical
@@ -691,6 +694,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
       |> handle_create_request_result(idempotency)
     end
   end
+
+  defp validate_persistable_timeout(%CanonicalRequest{admission: %{timeout_ms: timeout_ms}})
+       when is_integer(timeout_ms) and timeout_ms > 0,
+       do: :ok
+
+  defp validate_persistable_timeout(%CanonicalRequest{}),
+    do: {:error, :request_timeout_unresolved}
 
   defp effective_capture_mode(canonical) do
     case Governance.get_tenant(canonical.tenant_id) do

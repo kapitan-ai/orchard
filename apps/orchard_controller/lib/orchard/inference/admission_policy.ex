@@ -9,8 +9,7 @@ defmodule Orchard.Inference.AdmissionPolicy do
   Request deadlines use an explicit timeout as the generation budget when one is
   supplied, otherwise the configured request timeout is the generation budget
   and floor. When a resolved policy permits cold loading, its cold-start budget
-  is added to that generation budget and the queue-wait budget; that policy
-  total wins when it is larger than the generation budget.
+  is added to that generation budget and the queue-wait budget.
   """
 
   alias Orchard.CanonicalRequest
@@ -80,7 +79,8 @@ defmodule Orchard.Inference.AdmissionPolicy do
   and `allow_cold_load` residency. `timeout_ms` falls back to the configured
   request timeout when present, otherwise to the legacy 30-second fallback.
   For a resolved `allow_cold_load` policy, the effective deadline is the
-  configured or explicit timeout plus queue wait and cold-start budgets.
+  configured or explicit generation budget plus queue wait and cold-start
+  budgets.
   """
   @spec resolve(CanonicalRequest.t(), resolve_opts()) :: CanonicalRequest.t()
   def resolve(%CanonicalRequest{} = request, opts \\ []) when is_list(opts) do
@@ -153,7 +153,7 @@ defmodule Orchard.Inference.AdmissionPolicy do
       end
 
     if policy_timeout?(opts, residency_preference) do
-      max(timeout_ms, timeout_ms + queue_wait_ms + max_cold_start_ms)
+      timeout_ms + queue_wait_ms + max_cold_start_ms
     else
       timeout_ms
     end

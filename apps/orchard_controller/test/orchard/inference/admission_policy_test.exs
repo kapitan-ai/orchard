@@ -60,6 +60,20 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
     assert resolved.admission.timeout_ms == 583_000
   end
 
+  test "resolving an already-resolved cold path does not add headroom twice" do
+    request = base_request()
+
+    resolved =
+      AdmissionPolicy.resolve(request,
+        timeout_ms: 120_000,
+        queue_wait_ms: 3_000,
+        max_cold_start_ms: 180_000,
+        residency_preference: :allow_cold_load
+      )
+
+    assert AdmissionPolicy.resolve(resolved).admission.timeout_ms == 303_000
+  end
+
   test "explicit zero cold budget is preserved for required_loaded style requests" do
     request =
       base_request(
