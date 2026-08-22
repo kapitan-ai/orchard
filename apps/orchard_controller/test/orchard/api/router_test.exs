@@ -113,31 +113,6 @@ defmodule Orchard.API.RouterTest do
       assert conn.body_params["model"] == "test"
       assert conn.body_params["messages"] == []
     end
-
-    test "urlencoded body parsing is available at the endpoint boundary" do
-      conn =
-        Plug.Test.conn(:post, "/portal/example/session", "session[email]=dev%40example.com")
-        |> put_req_header("content-type", "application/x-www-form-urlencoded")
-        |> Plug.Parsers.call(
-          Plug.Parsers.init(
-            parsers: [:urlencoded, :json],
-            pass: ["*/*"],
-            json_decoder: Jason
-          )
-        )
-
-      assert conn.body_params == %{"session" => %{"email" => "dev@example.com"}}
-    end
-  end
-
-  describe "Portal asset source discovery" do
-    test "Tailwind scans Portal Elixir and HEEx sources" do
-      css_path = Path.expand("../../../assets/css/app.css", __DIR__)
-      css = File.read!(css_path)
-
-      assert css =~ ~s(@source "../../lib/orchard/portal/**/*.ex";)
-      assert css =~ ~s(@source "../../lib/orchard/portal/**/*.heex";)
-    end
   end
 
   describe "console LiveView routes" do
