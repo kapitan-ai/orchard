@@ -154,18 +154,14 @@ Node-agent status is mapped into Runtime Endpoint Observations for aggregate end
 Aggregate capacity is the conservative limit the node agent enforces across loaded workers, while each loaded placement reports its own active count and capacity.
 The controller scheduler uses that capacity telemetry to avoid dispatching to full endpoints or full same-model placements.
 Controller queue admission also consumes fresh Runtime Endpoint Observations as source-scoped capacity, waking queued loaded-placement or cold/no-placement work only from eligible, non-exhausted endpoints.
-
-Model-load attempt evidence uses stable durable failure codes, while the public
-boundary maps those codes through their corresponding `ModelLoadFailure` category.
-The `load_timeout` code therefore remains a timeout category at the API boundary
-and returns HTTP 504 with error code `load_timeout`; it is not treated as the
-generic HTTP 500 `internal_error` fallback.
 Invalid, ineligible, unavailable, or transport-failed observations clear stale endpoint-owned capacity sources before queued work can be promoted.
 For BEAM Runtime Endpoint observations, queue capacity is published only when the target resolves back to the same persisted node identity.
 Active-Node liveness does not depend on request traffic: one supervised, leader-gated background status observer probes trusted admitted and active Runtime Endpoint targets on a bounded interval and advances heartbeat, health, and aggregate capacity evidence through the same authenticated observation seam, while transport failures and a heartbeat-age sweep demote a Node lost while the cluster is idle.
 That observer leaves the scheduler's inline request-path probe in place; see `SPEC.md` §4.5 and `docs/decisions/0015-thin-active-node-liveness-monitor-before-scheduler-decoupling.md` for the liveness contract and the deferred scheduler-decoupling slice.
 Console Nodes live diagnostics probe the configured Runtime Endpoint targets rather than a separate legacy gRPC-only target list.
 Scheduler and dispatch orchestration crashes after request validation terminalize the durable request as a failed `orchestration_error` with sanitized public error payloads instead of leaving it active.
+Model-load attempt evidence uses stable durable failure codes, and the public boundary maps those codes through their corresponding `ModelLoadFailure` category rather than reading them as categories.
+The `load_timeout` code therefore stays a timeout at the API boundary and returns HTTP 504 with error code `load_timeout` instead of collapsing into the generic HTTP 500 `internal_error` fallback.
 
 Alongside that Node-owned limit, the controller persists its own durable per-Node Controller Dispatch Ceiling and a cluster-wide dispatch-capacity enforcement phase, and evaluates both through one pure shared evaluator.
 The evaluator first normalizes the target's Controller-owned capacity management class — admitted inventory always resolves to `production_managed`, and an unmanaged source-development or compatibility class requires explicit configuration — and then returns one authority decision (`legacy_pre_cutover`, `f11_enforcing`, `unmanaged_source_development`, `unmanaged_compatibility`, or `fail_closed`) with that decision's available slots, Placement Capacity, and stable reason codes.
