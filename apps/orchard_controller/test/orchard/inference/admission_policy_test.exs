@@ -1,8 +1,11 @@
 defmodule Orchard.Inference.AdmissionPolicyTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureLog
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.{Admission, ModelRef, ResolvedPolicy}
+  alias Orchard.Inference
   alias Orchard.Inference.{AdmissionPolicy, CanonicalRequestSerializer, RequestDeadline}
 
   test "SPEC.md routing_policies defaults resolve queue and cold budgets" do
@@ -44,6 +47,37 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
       )
 
     assert resolved.admission.timeout_ms == 303_000
+  end
+
+  test "caps an over-ceiling effective deadline and logs both values" do
+    with_inference_config([max_request_deadline_ms: 360_000], fn ->
+      log =
+        capture_log(fn ->
+          resolved =
+            AdmissionPolicy.resolve(base_request(),
+              timeout_ms: 400_000,
+              queue_wait_ms: 3_000,
+              max_cold_start_ms: 180_000,
+              residency_preference: :allow_cold_load
+            )
+
+          assert resolved.admission.timeout_ms == 360_000
+        end)
+
+      assert log =~ "effective request deadline 583000 ms"
+      assert log =~ "capped at 360000 ms"
+    end)
+  end
+
+  test "rejects incoherent request timeout and deadline ceiling configuration" do
+    with_inference_config(
+      [request_timeout_ms: 400_000, max_request_deadline_ms: 360_000],
+      fn ->
+        assert_raise ArgumentError,
+                     "configured request timeout (400000 ms) exceeds max request deadline (360000 ms)",
+                     fn -> Inference.max_request_deadline_ms() end
+      end
+    )
   end
 
   test "explicit timeout is used as the cold-path generation budget" do
@@ -165,5 +199,16 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
       |> Map.merge(Map.new(overrides))
 
     CanonicalRequest.new(attrs)
+  end
+
+  defp with_inference_config(overrides, fun) do
+    previous = Application.fetch_env!(:orchard_controller, :inference)
+    Application.put_env(:orchard_controller, :inference, Keyword.merge(previous, overrides))
+
+    try do
+      fun.()
+    after
+      Application.put_env(:orchard_controller, :inference, previous)
+    end
   end
 end

@@ -30,6 +30,7 @@ config :orchard_controller,
         Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
       runtime_client_target: [host: "127.0.0.1", port: 50_071],
       request_timeout_ms: 60_000,
+      max_request_deadline_ms: 360_000,
       model_load_timeout_ms: 120_000
     ),
   hf: Orchard.Config.M1RuntimeDefaults.hf()

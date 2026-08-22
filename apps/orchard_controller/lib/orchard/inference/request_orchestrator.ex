@@ -64,7 +64,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
     previous_started_at = Process.put({__MODULE__, :metrics_started_at}, System.monotonic_time())
 
     try do
-      do_execute(canonical, model, opts)
+      case do_execute(canonical, model, opts) do
+        {:ok, _resolved_canonical, events} -> {:ok, canonical, events}
+        result -> result
+      end
     after
       restore_metrics_started_at(previous_started_at)
     end
@@ -84,7 +87,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     with :ok <- validate_resolved_tooling(canonical),
          :ok <- put_request_validated_context(canonical),
-         {:ok, db_request} <- persist_request(canonical, model, idempotency) do
+         {:ok, db_request, canonical} <- persist_request(canonical, model, idempotency) do
       put_request_persisted_context(db_request, canonical)
 
       DomainMetrics.input_accounted(
@@ -691,7 +694,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       |> request_attrs(model, serialized_canonical, capture_mode)
       |> put_idempotency_attrs(idempotency)
       |> Requests.create_request()
-      |> handle_create_request_result(idempotency)
+      |> handle_create_request_result(idempotency, canonical)
     end
   end
 
@@ -751,9 +754,14 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp put_idempotency_attrs(attrs, nil), do: attrs
 
-  defp handle_create_request_result({:ok, request}, _idempotency), do: {:ok, request}
+  defp handle_create_request_result({:ok, request}, _idempotency, canonical),
+    do: {:ok, request, canonical}
 
-  defp handle_create_request_result({:error, changeset}, %Idempotency.Context{} = idempotency) do
+  defp handle_create_request_result(
+         {:error, changeset},
+         %Idempotency.Context{} = idempotency,
+         _canonical
+       ) do
     if idempotency_constraint?(changeset) do
       resolve_duplicate_request(idempotency)
     else
@@ -761,7 +769,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp handle_create_request_result({:error, changeset}, nil), do: {:error, changeset}
+  defp handle_create_request_result({:error, changeset}, nil, _canonical), do: {:error, changeset}
 
   defp idempotency_constraint?(%Ecto.Changeset{errors: errors}) do
     Enum.any?(errors, fn

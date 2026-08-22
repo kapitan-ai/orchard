@@ -179,7 +179,13 @@ policies, the effective deadline is that generation budget plus the policy's
 `max_queue_wait_ms` and `max_cold_start_ms`. This makes the stored cold-start
 budget reachable without extending `requests.timeout_at` after creation.
 `required_loaded` and `prefer_loaded` requests retain the selected generation
-budget.
+budget. `ORCHARD_MAX_REQUEST_DEADLINE_MS` bounds the complete effective
+deadline, including generation, queue wait, and cold start. Its provisional
+default is 360000 ms pending Apple Silicon cold-load measurements under issue
+#255. Policies whose effective deadline exceeds the ceiling are rejected at
+save time; a request resolved against a lower current ceiling is capped and a
+warning names both values. Reverse-proxy response timeouts must exceed this
+ceiling or the cold-start budget is not meaningful.
 When a dispatch cannot resolve whether its runtime execution ended — a cancel drain that times out without a transport-proven clean disconnect and without a durably recorded unreachable or unhealthy Node — the authority quarantines that Node, and every later evaluation for it is treated as unreachable rather than trusted as free capacity.
 The quarantine set lives in `Orchard.DispatchCapacity.QuarantineStore`, a temporary child supervised by the Controller root outside the inference subtree, so an authority restart cannot silently resume dispatch from a clean quarantine set; losing the store itself fails closed for every Node and needs a Controller restart.
 Quarantine has no expiry and no unauthenticated operator-release seam: durable recovery that proves the unresolved execution is absent is a later slice.

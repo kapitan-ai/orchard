@@ -49,6 +49,7 @@ config :orchard_controller,
       runtime_client_target: [host: "127.0.0.1", port: test_node_agent_port],
       allow_static_runtime_target_fallback: true,
       request_timeout_ms: 5_000,
+      max_request_deadline_ms: 1_000_000,
       model_load_timeout_ms: 5_000
     ),
   hf: Orchard.Config.M1RuntimeDefaults.hf()

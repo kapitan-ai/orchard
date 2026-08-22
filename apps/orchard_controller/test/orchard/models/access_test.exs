@@ -35,6 +35,53 @@ defmodule Orchard.Models.AccessTest do
   end
 
   describe "routing policies" do
+    test "rejects a policy whose cold-path deadline exceeds the deployment ceiling" do
+      changeset =
+        RoutingPolicy.changeset(%RoutingPolicy{}, %{
+          name: "too-long",
+          residency_preference: :allow_cold_load,
+          max_cold_start_ms: 998_000,
+          max_queue_wait_ms: 3_000,
+          priority: 10,
+          allowed_pool_ids: [],
+          preferred_pool_ids: []
+        })
+
+      assert "effective request deadline 1006000 ms exceeds deployment ceiling 1000000 ms" in errors_on(
+               changeset
+             ).max_cold_start_ms
+    end
+
+    test "accepts a policy exactly at the deployment ceiling" do
+      changeset =
+        RoutingPolicy.changeset(%RoutingPolicy{}, %{
+          name: "at-ceiling",
+          residency_preference: :allow_cold_load,
+          max_cold_start_ms: 992_000,
+          max_queue_wait_ms: 3_000,
+          priority: 10,
+          allowed_pool_ids: [],
+          preferred_pool_ids: []
+        })
+
+      assert changeset.valid?
+    end
+
+    test "non-cold policies do not count unused queue or cold budgets" do
+      changeset =
+        RoutingPolicy.changeset(%RoutingPolicy{}, %{
+          name: "loaded-only",
+          residency_preference: :required_loaded,
+          max_cold_start_ms: 2_000_000,
+          max_queue_wait_ms: 2_000_000,
+          priority: 10,
+          allowed_pool_ids: [],
+          preferred_pool_ids: []
+        })
+
+      assert changeset.valid?
+    end
+
     test "SPEC.md §10.9 creates and lists Tenant and global policies with atomic audit", %{
       tenant: tenant
     } do

@@ -1,4 +1,6 @@
 defmodule Orchard.Inference.AdmissionPolicy do
+  require Logger
+
   @moduledoc """
   Resolves authoritative admission and routing defaults onto a CanonicalRequest.
 
@@ -107,6 +109,25 @@ defmodule Orchard.Inference.AdmissionPolicy do
     }
   end
 
+  @doc """
+  Computes the effective request deadline from its generation and policy budgets.
+  """
+  @spec effective_timeout_ms(
+          pos_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          ResolvedPolicy.residency_preference()
+        ) :: pos_integer()
+  def effective_timeout_ms(timeout_ms, queue_wait_ms, max_cold_start_ms, residency_preference)
+      when is_integer(timeout_ms) and timeout_ms > 0 and is_integer(queue_wait_ms) and
+             queue_wait_ms >= 0 and is_integer(max_cold_start_ms) and max_cold_start_ms >= 0 do
+    if residency_preference == :allow_cold_load do
+      timeout_ms + queue_wait_ms + max_cold_start_ms
+    else
+      timeout_ms
+    end
+  end
+
   defp resolve_admission(%Admission{} = admission, %ResolvedPolicy{} = policy, opts) do
     queue_wait_ms = resolve_queue_wait_ms(admission.queue_wait_ms, opts)
     residency_preference = resolve_residency_preference(policy.residency_preference, opts)
@@ -154,8 +175,25 @@ defmodule Orchard.Inference.AdmissionPolicy do
           end
       end
 
-    if policy_timeout?(opts, residency_preference) do
-      timeout_ms + queue_wait_ms + max_cold_start_ms
+    effective_timeout_ms =
+      if policy_timeout?(opts, residency_preference) do
+        effective_timeout_ms(timeout_ms, queue_wait_ms, max_cold_start_ms, residency_preference)
+      else
+        timeout_ms
+      end
+
+    cap_timeout_ms(effective_timeout_ms)
+  end
+
+  defp cap_timeout_ms(timeout_ms) do
+    ceiling = Inference.max_request_deadline_ms()
+
+    if timeout_ms > ceiling do
+      Logger.warning(
+        "effective request deadline #{timeout_ms} ms exceeds deployment ceiling; capped at #{ceiling} ms"
+      )
+
+      ceiling
     else
       timeout_ms
     end
