@@ -1,6 +1,8 @@
 defmodule Orchard.Inference.ModelLoadFailureTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
   alias Orchard.Inference.ModelLoadFailure
 
@@ -224,7 +226,36 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
   end
 
   test "from_transport_reason unknown reason -> internal" do
-    failure = ModelLoadFailure.from_transport_reason(:something_unexpected)
+    log =
+      capture_log(fn ->
+        failure = ModelLoadFailure.from_transport_reason(:something_unexpected)
+        assert failure.category == :internal
+        assert failure.code == "internal_error"
+      end)
+
+    assert log =~ "unmapped model-load transport reason: :something_unexpected"
+  end
+
+  test "from_model_load_code maps durable timeout code to timeout category" do
+    failure = ModelLoadFailure.from_model_load_code("load_timeout")
+    assert failure.category == :timeout
+    assert failure.code == "load_timeout"
+    assert failure.message == "model load timed out"
+  end
+
+  test "from_model_load_code warns and falls back for unknown code" do
+    log =
+      capture_log(fn ->
+        failure = ModelLoadFailure.from_model_load_code("future_model_load_code")
+        assert failure.category == :internal
+        assert failure.code == "internal_error"
+      end)
+
+    assert log =~ "unmapped model-load failure code: \"future_model_load_code\""
+  end
+
+  test "from_category remains strict about durable timeout codes" do
+    failure = ModelLoadFailure.from_category("load_timeout")
     assert failure.category == :internal
     assert failure.code == "internal_error"
   end

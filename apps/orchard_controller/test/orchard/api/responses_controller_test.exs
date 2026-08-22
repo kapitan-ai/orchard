@@ -11,6 +11,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
   alias Orchard.Governance.Tenant
+  alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Models.Access, as: ModelAccess
@@ -709,6 +710,26 @@ defmodule Orchard.API.ResponsesControllerTest do
       assert body["error"]["code"] == code
       refute Map.has_key?(body, "response")
     end
+  end
+
+  test "node-agent load deadline returns a gateway timeout with load_timeout" do
+    failure = ModelLoadFailure.from_transport_reason(:node_timeout)
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(false), %{}},
+      execute: {:error, {:model_load_failed, failure}}
+    )
+
+    conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello"})
+
+    assert conn.status == 504
+
+    assert Jason.decode!(conn.resp_body)["error"] == %{
+             "type" => "server_error",
+             "code" => "load_timeout",
+             "message" => "model load timed out",
+             "param" => nil
+           }
   end
 
   test "metadata capture fails closed when idempotency replay content is unavailable", %{

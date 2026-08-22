@@ -1112,7 +1112,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
            "failure_code" => failure_code
          }
        }) do
-    {:model_load_failed, ModelLoadFailure.from_category(failure_code)}
+    {:model_load_failed, ModelLoadFailure.from_model_load_code(failure_code)}
   end
 
   defp public_dispatch_reason(%AttemptOutcome{
