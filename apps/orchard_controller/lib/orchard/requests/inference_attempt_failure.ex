@@ -25,6 +25,9 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
     terminal_conformance capacity_rejection cancellation deadline controller_failure
     occupancy_unresolved identity_unresolved
   )
+  @model_load_codes ~w(
+    load_timeout acquisition_failed runtime_unavailable resource_exhausted model_invalid internal_error
+  )
   @type evidence :: %{required(String.t()) => String.t()}
 
   @spec stable_error_codes() :: [String.t()]
@@ -32,6 +35,9 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   @spec failure_classes() :: [String.t()]
   def failure_classes, do: @failure_classes
+
+  @spec model_load_codes() :: [String.t()]
+  def model_load_codes, do: @model_load_codes
 
   @spec normalize(map()) :: evidence()
   def normalize(source) when is_map(source) do
@@ -122,13 +128,7 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   defp model_load_code("timeout"), do: "load_timeout"
 
   defp model_load_code(code)
-       when code in [
-              "acquisition_failed",
-              "runtime_unavailable",
-              "resource_exhausted",
-              "load_timeout",
-              "model_invalid"
-            ],
+       when code in @model_load_codes,
        do: code
 
   defp model_load_code(_code), do: "internal_error"

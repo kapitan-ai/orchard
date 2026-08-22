@@ -14,6 +14,8 @@ defmodule Orchard.Inference.ModelLoadFailure do
   - Transport errors from Runtime Endpoint clients (`:node_unavailable`, `:node_timeout`, etc.)
   """
 
+  require Logger
+
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
   alias Orchard.RuntimeEndpoint.Operation
 
@@ -112,6 +114,26 @@ defmodule Orchard.Inference.ModelLoadFailure do
   def from_category(_category), do: from_category(:internal)
 
   @doc """
+  Rebuilds a model-load failure from its durable attempt-failure code.
+
+  Durable failure codes and public model-load categories are separate
+  vocabularies, so this conversion is intentionally distinct from
+  `from_category/1`.
+  """
+  @spec from_model_load_code(term()) :: t()
+  def from_model_load_code("model_invalid"), do: from_category(:model_invalid)
+  def from_model_load_code("acquisition_failed"), do: from_category(:acquisition_failed)
+  def from_model_load_code("runtime_unavailable"), do: from_category(:runtime_unavailable)
+  def from_model_load_code("load_timeout"), do: from_category(:timeout)
+  def from_model_load_code("resource_exhausted"), do: from_category(:resource_exhausted)
+  def from_model_load_code("internal_error"), do: from_category(:internal)
+
+  def from_model_load_code(code) do
+    Logger.warning("unmapped model-load failure code: #{inspect(code)}")
+    from_category(:internal)
+  end
+
+  @doc """
   Converts a transport-level error reason into a failure struct.
 
   Accepts normalized error shapes from Runtime Endpoint clients.
@@ -182,7 +204,9 @@ defmodule Orchard.Inference.ModelLoadFailure do
     }
   end
 
-  def from_transport_reason(_reason) do
+  def from_transport_reason(reason) do
+    Logger.warning("unmapped model-load transport reason: #{inspect(reason)}")
+
     %__MODULE__{
       category: :internal,
       code: "internal_error",

@@ -545,6 +545,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
   end
 
   def ensure_model_loaded(channel, %Operation.EnsureModelLoadedRequest{} = request, _opts) do
+    case Process.get({__MODULE__, :ensure_model_loaded_result}) do
+      {:error, _reason} = result ->
+        result
+
+      _ ->
+        ensure_model_loaded_success(channel, request)
+    end
+  end
+
+  defp ensure_model_loaded_success(channel, request) do
     address = channel.address
     key = {Keyword.fetch!(address, :host), Keyword.fetch!(address, :port)}
     response = Process.get({__MODULE__, key})
@@ -897,6 +907,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance
   alias Orchard.Inference.CacheAffinity
+  alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Inference.QueueManager
   alias Orchard.Inference.RequestOrchestrator
   alias Orchard.InferenceEvent
@@ -954,6 +965,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       restore_runtime_events(previous_runtime_events)
       restore_pre_await_queue_result(previous_pre_await_queue_result)
       restore_live_capacity_owner(previous_live_capacity_owner)
+      Process.delete({StubRuntimeEndpointClient, :ensure_model_loaded_result})
       QueueManager.reset()
       ModelManager.reset()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
@@ -2730,6 +2742,33 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
            end)
 
     assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
+  end
+
+  test "execute/3 preserves a node load timeout from durable attempt evidence", %{
+    bundle: bundle
+  } do
+    target = [host: "10.0.0.1", port: 50_061]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+    Process.put({StubRuntimeEndpointClient, :ensure_model_loaded_result}, {:error, :node_timeout})
+
+    model = create_active_model!(bundle, "request-orchestrator-load-timeout")
+    canonical = canonical_request("request-orchestrator-load-timeout", stream?: false)
+
+    assert {:error,
+            {:model_load_failed,
+             %ModelLoadFailure{
+               category: :timeout,
+               code: "load_timeout",
+               message: "model load timed out"
+             }}} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :failed
+    assert request.http_status == 504
+    assert request.error_code == "load_timeout"
   end
 
   test "execute/3 aborts before dispatch side effects when request_step.started persistence fails",

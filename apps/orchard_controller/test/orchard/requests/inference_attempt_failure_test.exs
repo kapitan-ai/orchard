@@ -1,6 +1,7 @@
 defmodule Orchard.Requests.InferenceAttemptFailureTest do
   use ExUnit.Case, async: true
 
+  alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Requests.InferenceAttemptFailure
 
   test "normalizes structured source categories without inspecting messages" do
@@ -74,6 +75,35 @@ defmodule Orchard.Requests.InferenceAttemptFailureTest do
              "failure_code" => "internal_error",
              "raw_source_code" => "private_code"
            }
+  end
+
+  test "exposes the complete durable model-load code vocabulary" do
+    assert MapSet.new(InferenceAttemptFailure.model_load_codes()) ==
+             MapSet.new([
+               "load_timeout",
+               "acquisition_failed",
+               "runtime_unavailable",
+               "resource_exhausted",
+               "model_invalid",
+               "internal_error"
+             ])
+  end
+
+  test "every durable model-load code maps to its intended public category" do
+    expected_categories = %{
+      "load_timeout" => :timeout,
+      "acquisition_failed" => :acquisition_failed,
+      "runtime_unavailable" => :runtime_unavailable,
+      "resource_exhausted" => :resource_exhausted,
+      "model_invalid" => :model_invalid,
+      "internal_error" => :internal
+    }
+
+    for code <- InferenceAttemptFailure.model_load_codes() do
+      failure = ModelLoadFailure.from_model_load_code(code)
+      assert failure.category == Map.fetch!(expected_categories, code)
+      assert failure.code == code
+    end
   end
 
   defp normalized(category, code) do

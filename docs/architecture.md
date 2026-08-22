@@ -154,6 +154,12 @@ Node-agent status is mapped into Runtime Endpoint Observations for aggregate end
 Aggregate capacity is the conservative limit the node agent enforces across loaded workers, while each loaded placement reports its own active count and capacity.
 The controller scheduler uses that capacity telemetry to avoid dispatching to full endpoints or full same-model placements.
 Controller queue admission also consumes fresh Runtime Endpoint Observations as source-scoped capacity, waking queued loaded-placement or cold/no-placement work only from eligible, non-exhausted endpoints.
+
+Model-load attempt evidence uses stable durable failure codes, while the public
+boundary maps those codes through their corresponding `ModelLoadFailure` category.
+The `load_timeout` code therefore remains a timeout category at the API boundary
+and returns HTTP 504 with error code `load_timeout`; it is not treated as the
+generic HTTP 500 `internal_error` fallback.
 Invalid, ineligible, unavailable, or transport-failed observations clear stale endpoint-owned capacity sources before queued work can be promoted.
 For BEAM Runtime Endpoint observations, queue capacity is published only when the target resolves back to the same persisted node identity.
 Active-Node liveness does not depend on request traffic: one supervised, leader-gated background status observer probes trusted admitted and active Runtime Endpoint targets on a bounded interval and advances heartbeat, health, and aggregate capacity evidence through the same authenticated observation seam, while transport failures and a heartbeat-age sweep demote a Node lost while the cluster is idle.

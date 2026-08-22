@@ -44,6 +44,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Governance
   alias Orchard.Governance.Tenant
   alias Orchard.Inference.ChatRequestNormalizer
+  alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Models.Access, as: ModelAccess
@@ -1104,6 +1105,30 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         assert Map.has_key?(body["error"], "param")
         refute Map.has_key?(body, "response")
       end
+    end
+
+    test "node-agent load deadline returns a gateway timeout with load_timeout" do
+      failure = ModelLoadFailure.from_transport_reason(:node_timeout)
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute: {:error, {:model_load_failed, failure}}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 504
+
+      assert Jason.decode!(conn.resp_body)["error"] == %{
+               "type" => "server_error",
+               "code" => "load_timeout",
+               "message" => "model load timed out",
+               "param" => nil
+             }
     end
   end
 
