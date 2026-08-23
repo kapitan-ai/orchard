@@ -94,6 +94,33 @@ defmodule OrchardCLITest do
     refute output =~ "license"
   end
 
+  test "top-level help forms print usage on stdout and do not halt" do
+    for argv <- [["help"], ["--help"], ["-h"]] do
+      parent = self()
+
+      output =
+        capture_io(fn ->
+          OrchardCLI.main(argv, fn code -> send(parent, {:halt, code}) end)
+        end)
+
+      assert output =~ "Available commands:"
+      refute output =~ "license"
+      refute_received {:halt, _code}
+    end
+  end
+
+  test "unknown command exits non-zero with usage on stderr" do
+    parent = self()
+
+    output =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["definitely-not-a-command"], fn code -> send(parent, {:halt, code}) end)
+      end)
+
+    assert output =~ "Available commands:"
+    assert_receive {:halt, 1}
+  end
+
   test "product-license command is absent" do
     parent = self()
 

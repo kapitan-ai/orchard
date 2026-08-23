@@ -59,6 +59,9 @@ defmodule OrchardCLI do
   defp dispatch_command(["transport" | rest]), do: Transport.run(rest)
   defp dispatch_command(["upgrade" | rest]), do: Upgrade.run(rest)
   defp dispatch_command([]), do: print_usage()
+  defp dispatch_command(["help"]), do: print_usage()
+  defp dispatch_command(["--help"]), do: print_usage()
+  defp dispatch_command(["-h"]), do: print_usage()
   defp dispatch_command(_args), do: {:error, usage(), 1}
 
   defp handle_result(:ok, _halt_fn), do: :ok

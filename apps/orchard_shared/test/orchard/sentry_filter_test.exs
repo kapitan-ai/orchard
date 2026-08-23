@@ -463,6 +463,39 @@ defmodule Orchard.SentryFilterTest do
     refute inspect(filtered) =~ "../"
   end
 
+  test "canonicalizes app-relative first-party frames from a real crash stacktrace" do
+    {exception, stacktrace} =
+      try do
+        Orchard.StructCasting.cast_nested(
+          %{nested: "ISSUE114_INVALID_INPUT"},
+          :nested,
+          Orchard.StructCasting
+        )
+      rescue
+        raised -> {raised, __STACKTRACE__}
+      end
+
+    assert {Orchard.StructCasting, _function, _arity, location} = hd(stacktrace)
+    assert to_string(location[:file]) == "lib/orchard/struct_casting.ex"
+
+    payload =
+      [exception: exception, stacktrace: stacktrace]
+      |> Sentry.Event.create_event()
+      |> serialized_filtered_envelope()
+      |> envelope_event_payload()
+
+    frames = get_in(payload, ["exception", Access.at(0), "stacktrace", "frames"])
+
+    assert %{
+             "filename" => "apps/orchard_shared/lib/orchard/struct_casting.ex",
+             "lineno" => lineno
+           } =
+             List.last(frames)
+
+    assert is_integer(lineno)
+    refute payload |> inspect() |> String.contains?("ISSUE114_INVALID_INPUT")
+  end
+
   test "filters app-relative frames whose module is not a loaded first-party module" do
     frames = [
       %{module: Sentry.Event, filename: "lib/sentry/event.ex"},
