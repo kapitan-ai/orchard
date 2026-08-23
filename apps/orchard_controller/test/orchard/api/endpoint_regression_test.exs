@@ -171,6 +171,32 @@ defmodule Orchard.API.EndpointRegressionTest do
       end
     end
 
+    test "streaming inference rejects malformed Accept quality values", %{conn: conn} do
+      token = create_api_token!("malformed-inference-accept-quality")
+
+      for {path, params} <- [
+            {"/v1/chat/completions",
+             %{
+               "model" => "nonexistent@v1",
+               "messages" => [%{"role" => "user", "content" => "hello"}],
+               "stream" => true
+             }},
+            {"/v1/responses",
+             %{"model" => "nonexistent@v1", "input" => "hello", "stream" => true}}
+          ],
+          quality <- ["bogus", "0.5junk"] do
+        response =
+          conn
+          |> put_req_header("accept", "text/event-stream;q=#{quality}")
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> post(path, params)
+
+        assert response.status == 406
+        assert Jason.decode!(response.resp_body)["error"]["code"] == "not_acceptable"
+      end
+    end
+
     test "authenticated form-urlencoded API input remains invalid", %{conn: conn} do
       {:ok, tenant} =
         Orchard.Governance.create_tenant(%{

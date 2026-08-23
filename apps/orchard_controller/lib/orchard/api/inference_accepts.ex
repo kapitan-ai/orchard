@@ -63,8 +63,8 @@ defmodule Orchard.API.InferenceAccepts do
 
   defp positive_quality?(%{"q" => quality}) do
     case Float.parse(quality) do
-      {value, _rest} -> value > 0
-      :error -> true
+      {value, ""} -> value > 0
+      _invalid -> false
     end
   end
 
