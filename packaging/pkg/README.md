@@ -693,127 +693,24 @@ See [Tenant Model access](../../apps/orchard_cli/README.md#tenant-model-access)
 for the full `orchardctl models access` and `orchardctl models routing-policy`
 command surface.
 
-## Licensing v0
+## Node identity environment variables
 
-Orchard licensing v0 stores one Orchard-owned local bundle at:
-
-- `/Library/Application Support/Orchard/config/licensing/current.json`
-
-The bundle persists only the extracted certificate pair:
-
-- `license_certificate`
-- `machine_certificate`
-
-Orchard does **not** persist Keygen JSON envelopes as runtime state, and Orchard
-hosts do **not** require or support a shipped Keygen admin token.
-
-### Activation workflow
-
-Activate a license with the packaged CLI using a non-argv key source:
-
-```bash
-sudo orchardctl license activate --key-file /path/to/orchard-license-key
-```
-
-The key file must be a regular file with `0600` permissions. For an interactive
-handoff, warm sudo first so it cannot consume stdin, then read the key without
-echoing it:
-
-```bash
-sudo -v
-read -rs ORCHARD_TRIAL_LICENSE_KEY
-sudo orchardctl license activate --key-stdin <<<"$ORCHARD_TRIAL_LICENSE_KEY"
-unset ORCHARD_TRIAL_LICENSE_KEY
-```
-
-Activation uses the stable Orchard node ID as the machine fingerprint, performs
-Keygen validation + checkout, extracts the plaintext certificate pair, verifies
-that pair offline, and installs it atomically into `current.json`.
-
-If activation fails after a bundle already exists, Orchard keeps the previous
-local bundle untouched.
-
-Orchard ships the Keygen account ID, public verification key, and default API
-base URL as product config. Operators do **not** need to set
-`ORCHARD_KEYGEN_ACCOUNT_ID` or `ORCHARD_KEYGEN_PUBLIC_KEY` for normal installs.
-Those variables, plus `ORCHARD_KEYGEN_API_BASE_URL`, are optional overrides for
-Orchard-directed alternate environments and debugging only. If you override the
-account ID or public key, keep them as a matching pair or activation/offline
-verification will fail.
-
-### Status and observation workflow
-
-- `orchardctl license status` inspects only local Orchard licensing state.
-- Credential-free `orchardctl status` reports public ready/degraded state and the
-  local installed version; it does not report remote health detail.
-- Authenticated Controller `/ops/v1/health` exposes license state for observation,
-  but it remains **non-gating** — it does not change readiness semantics or HTTP
-  status.
-
-**Exposure posture:** `/health/live` and `/health/ready` are intentionally
-unauthenticated but expose status only. Detailed checks, build, transport, Console,
-runtime, and licensing observations require a cluster-scoped Operator or admin API
-Client token at `/ops/v1/health`. Do not add an unauthenticated diagnostic fallback.
-
-If a license includes optional tracking metadata, `orchardctl license status` and
-authenticated `/ops/v1/health` may display the tracking program and reference. This
-metadata and other license identifiers are intended for operator/support diagnostics
-and do not affect license enforcement.
-
-### Licensing environment variables
+These node-agent overrides are unrelated to product licensing and remain
+supported. Set them only when the Orchard support-root layout is intentionally
+changed; the defaults below are relative to `ORCHARD_SUPPORT_ROOT` (default
+`/Library/Application Support/Orchard`).
 
 | Variable | Default | Intended use |
 |----------|---------|--------------|
-| `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in authenticated `/ops/v1/health`. Distributed package builds must use a non-`dev` channel (`internal`, `trial`, `pilot`, or `release`). |
-| `ORCHARD_BUILD_SHA` | Unset for source builds | Compile-time Git provenance, surfaced in authenticated `/ops/v1/health`. A present value must be a 40-character lowercase hexadecimal commit. When absent, compilation falls back to the validated full `git rev-parse HEAD`, or `unknown` only when Git or repository metadata is unavailable. `build-pkg.sh` exports and bakes the validated full committed `HEAD`; inherited values are ignored. |
-| `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
-| `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
-| `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
-| `ORCHARD_NODE_IDENTITY_ROOT` | `/Library/Application Support/Orchard/config/node-identity` | Owner-only node-agent root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`; rare override when the support-root layout is intentionally changed |
-| `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional Orchard-directed override for alternate provider environments |
-| `ORCHARD_KEYGEN_ACCOUNT_ID` | built-in Orchard Keygen account ID | Optional override; keep paired with matching public key |
-| `ORCHARD_KEYGEN_PUBLIC_KEY` | built-in Orchard Ed25519 verification key | Optional override; keep paired with matching account ID |
+| `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Path to the persisted Node identifier used by the packaged node-agent runtime |
+| `ORCHARD_NODE_IDENTITY_ROOT` | `/Library/Application Support/Orchard/config/node-identity` | Owner-only node-agent root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`; also roots BEAM Peer Grant custody |
 
-No Orchard host runtime requires or supports a shipped
-`ORCHARD_KEYGEN_ADMIN_TOKEN` dependency.
+## Legacy product-license compatibility
 
-### Node-agent enforcement
-
-Licensing enforcement for the packaged node-agent covers both startup checks and runtime useful-work admission. The node-agent reads the same shared licensing enforcement mode as controller and CLI release code.
-
-Mode behavior:
-- `off` — skip startup checks and allow runtime useful-work admission
-- `warn` — log the licensing problem during startup checks and continue; runtime useful-work admission remains non-blocking without per-admission warn logs
-- `hard` — abort node-agent startup or deny new useful work when the local bundle is not valid
-
-### Rollout posture
-
-Distributed PKG builds default to `ORCHARD_BUILD_CHANNEL=trial`, which defaults license enforcement to `hard` unless `ORCHARD_LICENSE_ENFORCEMENT` is explicitly set. Source development and tests keep enforcement `off`.
-
-### Rollback / reset
-
-To remove runtime licensing impact quickly, set:
-
-```bash
-ORCHARD_LICENSE_ENFORCEMENT=off
-```
-
-Then restart the node-agent service through the supported managed lifecycle
-path described in [Env File Overrides](#env-file-overrides).
-
-If you need to intentionally reset Orchard back to `missing_bundle`, remove the
-local bundle file:
-
-```bash
-sudo rm '/Library/Application Support/Orchard/config/licensing/current.json'
-```
-
-Do this only when you explicitly want Orchard to forget the current local
-license state.
-
-### Confidence caveat
-
-Packaged-host lifecycle smoke completed on 2026-04-18 against an actual PKG + launchd install, covering `orchardctl status`, `start`, and `stop`, including non-root status behavior and idempotent start/stop checks. Treat packaged licensing rollout as historically exercised for that release cycle rather than pending a separate active smoke gate.
+Packaged Orchard no longer requires activation, reads no product-license environment variables, and does not expose product-license status.
+`orchardctl license` no longer exists, so remove it from upgrade automation before installing a replacement PKG; see [Current command status](../../apps/orchard_cli/README.md#current-command-status) for how `orchardctl` handles a removed command.
+Install, update, and the default uninstall leave `/Library/Application Support/Orchard/config/licensing/` untouched — contents, permissions, and modification time — so removal does not destroy existing operator data.
+Operators may archive or remove that inert directory separately after confirming rollback is unnecessary.
 
 ## Controller Metrics Scrape
 
@@ -1185,9 +1082,8 @@ persists.
 
 The packaged `orchardctl` wrapper keeps sole custody of the controlling
 terminal for the whole command and hands the CLI only non-terminal standard
-input. Redirected or piped input such as
-`sudo orchardctl license activate --key-stdin <<<"$KEY"` still reaches the CLI;
-input typed at the terminal does not. `sudo orchardctl console enable`,
+input. Redirected or piped input still reaches the CLI; input typed at the
+terminal does not. `sudo orchardctl console enable`,
 `sudo orchardctl console rotate`, and `sudo orchardctl init --console`
 therefore collect credentials through a dedicated terminal helper rather than
 through standard input.
@@ -1376,23 +1272,20 @@ Optionally seed `.install-role.request` before installing the PKG (omit for
 default `all`). After install, use this first-run sequence for
 controller-bearing installs (`all` or `controller`):
 
-1. Provide or verify the Orchard license through the supported licensing path;
-   do not place license keys in shell history, logs, package payloads, or
-   command arguments.
-2. Run `sudo orchardctl env init --service controller` for controller-only hosts, or `sudo orchardctl env init --service all` for all-in-one hosts.
-3. Edit `controller.env` with external `DATABASE_URL`, the generated or deliberately rotated `SECRET_KEY_BASE`, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings.
-4. Run `sudo orchardctl migrate`.
-5. Run `sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json`.
+1. Run `sudo orchardctl env init --service controller` for controller-only hosts, or `sudo orchardctl env init --service all` for all-in-one hosts.
+2. Edit `controller.env` with external `DATABASE_URL`, the generated or deliberately rotated `SECRET_KEY_BASE`, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings.
+3. Run `sudo orchardctl migrate`.
+4. Run `sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json`.
    This mints the first cluster-admin API Client credential as One-time Secret Output.
-6. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
+5. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
    generated-CA direct HTTPS path, or configure an operator-managed direct HTTPS
    certificate/reverse-proxy transport before starting services.
-7. Optional, when browser Console access is desired: run
+6. Optional, when browser Console access is desired: run
    `sudo orchardctl console enable` from a foreground interactive terminal and
    enter credentials only through the interactive prompt. See
    [Credential prompt and terminal custody](#credential-prompt-and-terminal-custody).
-8. Run `sudo orchardctl start`.
-9. Verify with `orchardctl status`.
+7. Run `sudo orchardctl start`.
+8. Verify with `orchardctl status`.
 
 Before making public `/v1` API calls, create an Organization and API Token.
 Tenant-direct API Tokens remain supported for manual/bootstrap use and the token is printed once:
@@ -1514,7 +1407,7 @@ This produces a PKG file following the [naming convention below](#filename-forma
 
 ### Build Options
 
-The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because distributed packages must not ship with source-dev enforcement defaults.
+The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because `dev` marks source-checkout build provenance; a distributed package must carry a distributable channel identity (`internal`, `trial`, `pilot`, or `release`) in the build block reported by authenticated `/ops/v1/health`.
 
 Before its first Mix invocation, the script resolves and validates the full 40-character lowercase `git rev-parse HEAD`, then exports it as `ORCHARD_BUILD_SHA`. This authoritative value replaces any inherited `ORCHARD_BUILD_SHA` and is baked into all packaged releases. The clean-build gate covers tracked modifications, staged changes, and untracked inputs before Mix runs; the script revalidates the exact captured `HEAD` and clean input state during construction and immediately before assembly. `--allow-dirty` is a development-only escape hatch whose provenance identifies committed `HEAD`, not uncommitted bytes.
 
@@ -1712,14 +1605,14 @@ shasum -a 256 Orchard-<version>-<date>-<sha>-signed.pkg
 ```
 
 Keep signing credentials, App Store Connect credentials, notary profile
-secrets, activation keys, and customer identifiers out of package payloads,
-casks, deployment scripts, logs, and documentation examples.
+secrets, and customer identifiers out of package payloads, casks, deployment
+scripts, logs, and documentation examples.
 
 ## Potential Homebrew Cask
 
 Homebrew cask distribution is not a v1 packaging requirement.
 If Orchard later adds a private tap or convenience cask, it should install the same signed and notarized PKG used for direct downloads.
-The cask should pin the exact SHA-256 of the signed PKG and must not embed license keys, customer names, organization identifiers, or other customer-specific material.
+The cask should pin the exact SHA-256 of the signed PKG and must not embed customer names, organization identifiers, or other customer-specific material.
 
 Example future cask shape:
 
@@ -1755,24 +1648,18 @@ cask "orchard" do
 end
 ```
 
-If this channel is added later, install from the tap according to the tap's access policy, then activate out of band:
+If this channel is added later, install from the tap according to the tap's access policy:
 
 ```bash
 brew install --cask <private-tap>/orchard/orchard
-sudo orchardctl license activate --key-file /path/to/orchard-license-key
 ```
-
-Activation remains a separate operator step because evaluator/customer identity
-lives in the license service and local activation bundle, not in the package or
-Homebrew cask.
 
 ## Managed Device Deployment
 
 Jamf and MDM deployment are not v1 packaging requirements.
-If they become real customer requirements later, add a dedicated change with acceptance criteria for managed-device policy ordering, secret handling, activation, and logging.
+If they become real customer requirements later, add a dedicated change with acceptance criteria for managed-device policy ordering, secret handling, and logging.
 
 The distribution artifact remains generic across current and future channels.
-Evaluator/customer attribution and limits are enforced by license activation and Keygen policy/license records.
 
 ## PKG Filename Policy
 

@@ -24,6 +24,7 @@ SPEC.md impact: §3.1 no longer permits licensing observations in Operator healt
 ### Modified Capabilities
 
 - `packaging-deployment`: Removes license activation and activation secrets from the distribution lifecycle while preserving generic artifacts and legal attribution.
+- `developer-api-key-portal`: Drops the Developer Portal prohibition on rendering license state, which no longer describes anything Orchard can render, while keeping every other portal isolation guarantee unchanged.
 
 ## Impact
 

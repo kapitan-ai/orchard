@@ -66,7 +66,6 @@ defmodule Orchard.SentryFilter do
     orchard_model_already_loaded orchard_ensure_model_loaded_ms
     orchard_accepted_to_first_delta_ms orchard_accepted_to_terminal_ms
     orchard_event_count orchard_anomaly orchard_model_backend
-    orchard_build_channel orchard_build_ref
     sentry_filter_failed
   )
 
@@ -197,7 +196,7 @@ defmodule Orchard.SentryFilter do
                                   worker_backend request_id model_backend
                                   orchard_principal_type orchard_request_id orchard_db_request_id
                                   orchard_model_version orchard_scheduler_strategy orchard_anomaly
-                                  orchard_model_backend orchard_build_ref
+                                  orchard_model_backend
                                   auth_mechanism reason endpoint model_version terminal_source backend
                                   adapter outcome source_scheme incoming_version victim_version
                                   cancel_reason rpc_result stop_result
