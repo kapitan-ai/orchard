@@ -9,6 +9,7 @@ defmodule Orchard.API.EndpointRegressionTest do
   use Orchard.ConnCase
 
   @moduletag :live
+  @moduletag :db
 
   describe "API security after LiveView endpoint changes" do
     test "endpoint clears process-local Sentry context after completed requests", %{conn: conn} do
@@ -41,6 +42,52 @@ defmodule Orchard.API.EndpointRegressionTest do
 
       assert conn.status == 401
       assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
+    end
+
+    test "authenticated form-urlencoded API input remains invalid", %{conn: conn} do
+      {:ok, tenant} =
+        Orchard.Governance.create_tenant(%{
+          slug: "form-api-#{System.unique_integer([:positive])}",
+          name: "Form API"
+        })
+
+      {:ok, %{token: token}} =
+        Orchard.Governance.create_api_key(tenant.id, %{name: "Form API key"})
+
+      conn =
+        conn
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/x-www-form-urlencoded")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/v1/responses", "model=nonexistent%40v1&input=hello")
+
+      assert conn.status == 404
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "model_not_found"
+    end
+
+    test "authenticated form-urlencoded chat input remains invalid", %{conn: conn} do
+      {:ok, tenant} =
+        Orchard.Governance.create_tenant(%{
+          slug: "form-chat-#{System.unique_integer([:positive])}",
+          name: "Form Chat"
+        })
+
+      {:ok, %{token: token}} =
+        Orchard.Governance.create_api_key(tenant.id, %{name: "Form chat key"})
+
+      conn =
+        conn
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/x-www-form-urlencoded")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/v1/chat/completions", "model=nonexistent%40v1&messages=hello")
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "invalid_value"
     end
 
     test "health endpoint still responds through modified endpoint", %{conn: conn} do

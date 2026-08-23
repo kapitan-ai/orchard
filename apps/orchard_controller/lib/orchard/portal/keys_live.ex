@@ -201,7 +201,7 @@ defmodule Orchard.Portal.KeysLive do
             id="portal-mint-button"
             phx-click="open_mint"
             disabled={@active_portal_count >= 10}
-            class="rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
+            class="rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 transition-colors hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
           >
             {if @keys == [], do: "Mint your first key", else: "Mint key"}
           </button>
@@ -262,7 +262,7 @@ defmodule Orchard.Portal.KeysLive do
                   id={"portal-revoke-#{key.id}"}
                   phx-click="open_revoke"
                   phx-value-id={key.id}
-                  class="text-sm text-red-400 transition-colors hover:text-red-300"
+                  class="text-sm text-red-400 transition-colors hover:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-800"
                 >
                   Revoke
                 </button>
@@ -276,13 +276,16 @@ defmodule Orchard.Portal.KeysLive do
     <div
       :if={@mint_open?}
       id="portal-mint-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="portal-mint-title"
       class="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/70 px-4"
     >
       <form
         phx-submit="mint_key"
         class="w-full max-w-md rounded-lg border border-slate-600 bg-slate-700 p-6"
       >
-        <h2 class="text-base font-semibold text-slate-50">Mint key</h2>
+        <h2 id="portal-mint-title" class="text-base font-semibold text-slate-50">Mint key</h2>
         <label for="portal-key-name" class="mt-4 block text-sm font-medium text-slate-200">
           Key name
         </label>
@@ -296,10 +299,10 @@ defmodule Orchard.Portal.KeysLive do
         />
         <p class="mt-2 text-sm text-slate-400">Name it after the app or agent that will hold it.</p>
         <div class="mt-6 flex justify-end gap-3">
-          <button type="button" phx-click="close_mint" class="text-sm text-slate-300">Cancel</button>
+          <button type="button" phx-click="close_mint" class="text-sm text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700">Cancel</button>
           <button
             type="submit"
-            class="rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950"
+            class="rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700"
           >
             Mint key
           </button>
@@ -310,10 +313,13 @@ defmodule Orchard.Portal.KeysLive do
     <div
       :if={@generated_secret}
       id="portal-secret-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="portal-secret-title"
       class="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/70 px-4"
     >
       <div class="w-full max-w-xl rounded-lg border border-slate-600 bg-slate-700 p-6">
-        <h2 class="text-base font-semibold text-slate-50">Copy your key now</h2>
+        <h2 id="portal-secret-title" class="text-base font-semibold text-slate-50">Copy your key now</h2>
         <p class="mt-2 text-sm text-slate-300">
           This is the only time Orchard will show this key. It can't be retrieved later — not even by your operator. If you lose it, revoke it and mint a replacement.
         </p>
@@ -334,7 +340,7 @@ defmodule Orchard.Portal.KeysLive do
             phx-hook="CopyGeneratedSecret"
             data-secret-source="portal-secret-value"
             data-api-key-id={@generated_secret.api_key.id}
-            class="rounded-md bg-sky-500 px-3 py-1.5 text-sm font-medium text-slate-950"
+            class="rounded-md bg-sky-500 px-3 py-1.5 text-sm font-medium text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700"
           >
             Copy key
           </button>
@@ -363,7 +369,7 @@ defmodule Orchard.Portal.KeysLive do
 
         <form phx-change="acknowledge_secret" class="mt-6">
           <label class="flex items-start gap-2 text-sm text-slate-200">
-            <input type="checkbox" name="ack" value="true" checked={@stored_ack} />
+            <input type="checkbox" name="ack" value="true" checked={@stored_ack} class="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700" />
             I've stored this key. Orchard will not show it again.
           </label>
         </form>
@@ -373,7 +379,7 @@ defmodule Orchard.Portal.KeysLive do
             id="portal-secret-done"
             phx-click="dismiss_secret"
             disabled={!dismiss_allowed?(assigns)}
-            class="rounded-md bg-slate-500 px-3 py-2 text-sm font-medium text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            class="rounded-md bg-slate-500 px-3 py-2 text-sm font-medium text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Done
           </button>
@@ -384,6 +390,9 @@ defmodule Orchard.Portal.KeysLive do
     <div
       :if={@revoke_key}
       id="portal-revoke-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="portal-revoke-title"
       class="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/70 px-4"
     >
       <form
@@ -391,7 +400,7 @@ defmodule Orchard.Portal.KeysLive do
         phx-submit="revoke_key"
         class="w-full max-w-md rounded-lg border border-slate-600 bg-slate-700 p-6"
       >
-        <h2 class="text-base font-semibold text-slate-50">Revoke key</h2>
+        <h2 id="portal-revoke-title" class="text-base font-semibold text-slate-50">Revoke key</h2>
         <p class="mt-2 text-sm text-slate-300">
           The next request that presents this key will fail. Type
           <span class="font-medium text-slate-100">{@revoke_key.name}</span>
@@ -405,15 +414,15 @@ defmodule Orchard.Portal.KeysLive do
           autocomplete="off"
           phx-change="update_revoke_confirmation"
           value={@revoke_confirmation}
-          class="mt-4 block w-full rounded-md border border-slate-600 bg-slate-900/60 px-3 py-2 text-sm text-slate-50 shadow-inner"
+          class="mt-4 block w-full rounded-md border border-slate-600 bg-slate-900/60 px-3 py-2 text-sm text-slate-50 shadow-inner focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700"
         />
         <div class="mt-6 flex justify-end gap-3">
-          <button type="button" phx-click="close_revoke" class="text-sm text-slate-300">Cancel</button>
+          <button type="button" phx-click="close_revoke" class="text-sm text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700">Cancel</button>
           <button
             type="submit"
             id="portal-revoke-confirm"
             disabled={@revoke_confirmation != @revoke_key.name}
-            class="rounded-md bg-red-500 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-600"
+            class="rounded-md bg-red-500 px-3 py-2 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700 disabled:cursor-not-allowed disabled:bg-slate-600"
           >
             Revoke key
           </button>

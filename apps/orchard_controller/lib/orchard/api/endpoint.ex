@@ -47,7 +47,7 @@ defmodule Orchard.API.Endpoint do
   plug(Orchard.API.SentryContextBoundary)
 
   plug(Plug.Parsers,
-    parsers: [:json],
+    parsers: [:urlencoded, :json],
     pass: ["*/*"],
     json_decoder: Jason
   )

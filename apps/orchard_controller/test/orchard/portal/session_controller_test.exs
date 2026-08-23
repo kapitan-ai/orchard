@@ -3,7 +3,6 @@ defmodule Orchard.Portal.SessionControllerTest do
 
   import Orchard.TestSupport.PortalConn
 
-  alias Orchard.API.Router
   alias Orchard.Governance
   alias Orchard.Governance.PortalPasswordVerifier
   alias Orchard.Portal.Auth
@@ -57,52 +56,66 @@ defmodule Orchard.Portal.SessionControllerTest do
 
     page = conn |> https_conn() |> get("/portal/#{tenant.slug}/invites/#{invite.token}")
     assert html_response(page, 200) =~ "Set your password"
+    csrf_token = csrf_token(page)
 
     redeemed =
-      page
-      |> recycle()
-      |> https_conn()
-      |> post("/portal/#{tenant.slug}/invites/#{invite.token}", %{
-        "invite" => %{"password" => @password, "password_confirmation" => @password}
+      post_form(page, "/portal/#{tenant.slug}/invites/#{invite.token}", %{
+        "_csrf_token" => csrf_token,
+        "invite[password]" => @password,
+        "invite[password_confirmation]" => @password
       })
 
     assert redirected_to(redeemed) == "/portal/#{tenant.slug}"
 
     again =
-      page
-      |> recycle()
-      |> https_conn()
-      |> post("/portal/#{tenant.slug}/invites/#{invite.token}", %{
-        "invite" => %{"password" => @password, "password_confirmation" => @password}
+      post_form(page, "/portal/#{tenant.slug}/invites/#{invite.token}", %{
+        "_csrf_token" => csrf_token,
+        "invite[password]" => @password,
+        "invite[password_confirmation]" => @password
       })
 
     assert again.status == 422
   end
 
-  test "login POST without a CSRF token is rejected" do
-    secret =
-      Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
-      |> Keyword.fetch!(:secret_key_base)
-
-    assert_raise Plug.Conn.WrapperError, fn ->
-      Plug.Test.conn(
-        :post,
-        "/portal/csrf-check/session",
-        "session[email]=a%40b.com&session[password]=x"
-      )
-      |> Map.put(:scheme, :https)
-      |> Map.put(:secret_key_base, secret)
-      |> Plug.Conn.put_req_header("content-type", "application/x-www-form-urlencoded")
-      |> Plug.Session.call(
-        Plug.Session.init(
-          store: :cookie,
-          key: "_orchard_console_key",
-          signing_salt: "orchard_console"
-        )
-      )
-      |> Plug.Conn.fetch_session()
-      |> Router.call(Router.init([]))
+  test "login POST without a CSRF token is rejected", %{conn: conn} do
+    assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn ->
+      post_form(conn, "/portal/csrf-check/session", %{
+        "session[email]" => "a@b.com",
+        "session[password]" => "x"
+      })
     end
+  end
+
+  test "login POST with an invalid CSRF token is rejected", %{conn: conn} do
+    page = conn |> https_conn() |> get("/portal/csrf-check")
+
+    assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn ->
+      post_form(page, "/portal/csrf-check/session", %{
+        "_csrf_token" => "invalid-token",
+        "session[email]" => "a@b.com",
+        "session[password]" => "x"
+      })
+    end
+  end
+
+  test "logout accepts an encoded browser form and clears the portal session", %{conn: conn} do
+    {tenant, user} = active_user!("portal-logout")
+    logged_in = post_login(conn, tenant.slug, user.email, @password)
+    assert get_session(logged_in, Auth.session_token_key())
+
+    page =
+      logged_in
+      |> recycle()
+      |> https_conn()
+      |> get("/portal/#{tenant.slug}/keys")
+
+    logged_out =
+      post_form(page, "/portal/#{tenant.slug}/logout", %{
+        "_csrf_token" => csrf_token(page)
+      })
+
+    assert redirected_to(logged_out) == "/portal/#{tenant.slug}"
+    refute get_session(logged_out, Auth.session_token_key())
   end
 
   test "degraded transport returns 404 for every portal route", %{conn: conn} do
@@ -120,11 +133,29 @@ defmodule Orchard.Portal.SessionControllerTest do
   end
 
   defp post_login(conn, slug, email, password) do
+    page =
+      conn
+      |> https_conn()
+      |> get("/portal/#{slug}")
+
+    post_form(page, "/portal/#{slug}/session", %{
+      "_csrf_token" => csrf_token(page),
+      "session[email]" => email,
+      "session[password]" => password
+    })
+  end
+
+  defp post_form(conn, path, params) do
     conn
-    |> https_conn()
-    |> get("/portal/#{slug}")
     |> recycle()
     |> https_conn()
-    |> post("/portal/#{slug}/session", %{"session" => %{"email" => email, "password" => password}})
+    |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+    |> put_req_header("content-type", "application/x-www-form-urlencoded")
+    |> post(path, URI.encode_query(params))
+  end
+
+  defp csrf_token(conn) do
+    [_, token] = Regex.run(~r/name="_csrf_token" value="([^"]+)"/, conn.resp_body)
+    token
   end
 end
