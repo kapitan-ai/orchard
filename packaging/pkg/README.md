@@ -693,6 +693,18 @@ See [Tenant Model access](../../apps/orchard_cli/README.md#tenant-model-access)
 for the full `orchardctl models access` and `orchardctl models routing-policy`
 command surface.
 
+## Node identity environment variables
+
+These node-agent overrides are unrelated to product licensing and remain
+supported. Set them only when the Orchard support-root layout is intentionally
+changed; the defaults below are relative to `ORCHARD_SUPPORT_ROOT` (default
+`/Library/Application Support/Orchard`).
+
+| Variable | Default | Intended use |
+|----------|---------|--------------|
+| `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Path to the persisted Node identifier used by the packaged node-agent runtime |
+| `ORCHARD_NODE_IDENTITY_ROOT` | `/Library/Application Support/Orchard/config/node-identity` | Owner-only node-agent root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`; also roots BEAM Peer Grant custody |
+
 ## Legacy product-license compatibility
 
 Packaged Orchard no longer requires activation, reads no product-license environment variables, and does not expose product-license status.
@@ -1394,7 +1406,7 @@ This produces a PKG file following the [naming convention below](#filename-forma
 
 ### Build Options
 
-The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because distributed packages must not ship with source-dev enforcement defaults.
+The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because `dev` marks source-checkout build provenance; a distributed package must carry a distributable channel identity (`internal`, `trial`, `pilot`, or `release`) in the build block reported by authenticated `/ops/v1/health`.
 
 Before its first Mix invocation, the script resolves and validates the full 40-character lowercase `git rev-parse HEAD`, then exports it as `ORCHARD_BUILD_SHA`. This authoritative value replaces any inherited `ORCHARD_BUILD_SHA` and is baked into all packaged releases. The clean-build gate covers tracked modifications, staged changes, and untracked inputs before Mix runs; the script revalidates the exact captured `HEAD` and clean input state during construction and immediately before assembly. `--allow-dirty` is a development-only escape hatch whose provenance identifies committed `HEAD`, not uncommitted bytes.
 
