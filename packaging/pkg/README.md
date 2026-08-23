@@ -708,6 +708,7 @@ changed; the defaults below are relative to `ORCHARD_SUPPORT_ROOT` (default
 ## Legacy product-license compatibility
 
 Packaged Orchard no longer requires activation, reads no product-license environment variables, and does not expose product-license status.
+`orchardctl license` no longer exists, so remove it from upgrade automation before installing a replacement PKG; see [Current command status](../../apps/orchard_cli/README.md#current-command-status) for how `orchardctl` handles a removed command.
 Install, update, and the default uninstall leave `/Library/Application Support/Orchard/config/licensing/` untouched — contents, permissions, and modification time — so removal does not destroy existing operator data.
 Operators may archive or remove that inert directory separately after confirming rollback is unnecessary.
 
