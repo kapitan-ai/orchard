@@ -5,6 +5,8 @@ defmodule Orchard.RuntimeTransportTest do
 
   import ExUnit.CaptureIO
 
+  alias Orchard.API.Transport
+
   @runtime_config Path.expand("../../../config/runtime.exs", __DIR__)
 
   setup do
@@ -371,6 +373,22 @@ defmodule Orchard.RuntimeTransportTest do
 
     assert endpoint[:url] == [host: "orchard.example.test", port: 9443, scheme: "https"]
     assert endpoint[:check_origin] == ["https://orchard.example.test:9443"]
+  end
+
+  test "SPEC 10.7: reverse_proxy brackets IPv6 public origins", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_HOST" => "::1",
+        "ORCHARD_PUBLIC_PORT" => "9443"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert endpoint[:url] == [host: "::1", port: 9443, scheme: "https"]
+    assert endpoint[:check_origin] == ["https://[::1]:9443"]
   end
 
   test "SPEC 10.7: reverse_proxy accepts explicit trusted proxy CIDRs", %{
@@ -768,6 +786,108 @@ defmodule Orchard.RuntimeTransportTest do
   test "SPEC 10.7: invalid transport mode fails closed", %{support_root: support_root} do
     assert_raise RuntimeError, ~r/ORCHARD_TRANSPORT_MODE must be/, fn ->
       read_controller_config!(support_root, %{"ORCHARD_TRANSPORT_MODE" => "https"})
+    end
+  end
+
+  test "source-dev transport defaults to degraded plain HTTP", %{support_root: support_root} do
+    config = read_dev_config!(support_root, %{})
+
+    assert config[:transport_mode] == :plain_http_localhost
+    assert config[:transport_cert_source] == :unknown
+    assert config[:transport_degraded] == true
+  end
+
+  test "source-dev reverse proxy configures the shared HTTPS topology", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_HOST" => "orchard.internal",
+        "ORCHARD_PUBLIC_PORT" => "9443",
+        "PORT" => "4100"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert config[:transport_mode] == :reverse_proxy
+    assert config[:transport_cert_source] == :unknown
+    assert config[:transport_degraded] == false
+    assert endpoint[:http] == [ip: {127, 0, 0, 1}, port: 4100]
+    assert endpoint[:url] == [host: "orchard.internal", port: 9443, scheme: "https"]
+    assert endpoint[:check_origin] == ["https://orchard.internal:9443"]
+
+    assert endpoint[:trusted_proxies] == [
+             {{127, 0, 0, 1}, 32},
+             {{0, 0, 0, 0, 0, 0, 0, 1}, 128}
+           ]
+  end
+
+  test "source-dev reverse proxy brackets IPv6 public origins", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_HOST" => "::1"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert endpoint[:url] == [host: "::1", port: 443, scheme: "https"]
+    assert endpoint[:check_origin] == ["https://[::1]"]
+  end
+
+  test "source-dev reverse proxy drives the existing readiness transport authority", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{"ORCHARD_TRANSPORT_MODE" => "reverse_proxy"})
+
+    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
+    end)
+
+    Application.put_env(:orchard_controller, :transport_mode, config[:transport_mode])
+
+    assert Transport.public_api_https_enabled?()
+  end
+
+  test "source-dev reverse proxy requires explicit trust for a non-loopback bind", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_TRUSTED_PROXIES must be set when reverse_proxy binds to a non-loopback address/,
+                 fn ->
+                   read_dev_config!(support_root, %{
+                     "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+                     "ORCHARD_API_BIND_IP" => "0.0.0.0"
+                   })
+                 end
+
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_API_BIND_IP" => "0.0.0.0",
+        "ORCHARD_TRUSTED_PROXIES" => "10.0.0.0/24"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+    assert endpoint[:http] == [ip: {0, 0, 0, 0}, port: 4000]
+    assert endpoint[:trusted_proxies] == [{{10, 0, 0, 0}, 24}]
+  end
+
+  test "source-dev transport rejects direct HTTPS and unknown modes", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError, ~r/direct_https is release-only/, fn ->
+      read_dev_config!(support_root, %{"ORCHARD_TRANSPORT_MODE" => "direct_https"})
+    end
+
+    assert_raise RuntimeError, ~r/must be plain_http_localhost\|reverse_proxy/, fn ->
+      read_dev_config!(support_root, %{"ORCHARD_TRANSPORT_MODE" => "https"})
     end
   end
 

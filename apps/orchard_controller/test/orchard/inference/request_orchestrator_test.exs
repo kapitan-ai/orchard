@@ -2073,6 +2073,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert {:error, :queue_timeout} = RequestOrchestrator.execute(canonical, model)
     assert :ok = QueueManager.release(held_grant)
 
+    assert wait_until(fn ->
+             request = Requests.get_request_by_public_id(canonical.public_id)
+             get_in(request.scheduler_decision, ["queue_result"]) == "queue_timeout"
+           end)
+
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :timed_out
     assert request.http_status == 504

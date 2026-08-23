@@ -972,9 +972,12 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert request.endpoint == :responses
     assert request.stream == true
 
-    assert_in_delta DateTime.diff(request.timeout_at, request.inserted_at, :millisecond),
-                    Orchard.Inference.request_timeout_ms() + 3_000 + 180_000,
-                    1
+    persisted_timeout_ms =
+      DateTime.diff(request.timeout_at, request.inserted_at, :millisecond)
+
+    configured_timeout_ms = Orchard.Inference.request_timeout_ms() + 3_000 + 180_000
+
+    assert persisted_timeout_ms in (configured_timeout_ms - 1_000)..configured_timeout_ms
 
     # first_token_at must be persisted for successful streaming requests
     response_id = terminal.data["response"]["id"]

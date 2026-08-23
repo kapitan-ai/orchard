@@ -248,6 +248,30 @@ defmodule OrchardCLI.ReleaseEvalRepoRuntimeTest do
     }
   end
 
+  test "packaged runtime config is self-contained outside the source config directory" do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-cli-isolated-runtime-config-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    runtime_config_path = Path.join(tmp_dir, "runtime.exs")
+    File.cp!(Path.join(repo_root(), "config/runtime.exs"), runtime_config_path)
+
+    script = """
+    System.put_env("RELEASE_NAME", "orchard_cli")
+    System.delete_env("MIX_RELEASE_NAME")
+    Config.Reader.read!(#{inspect(runtime_config_path)}, env: :prod)
+    """
+
+    result = run_release_eval_script(script, tmp_dir, "isolated_runtime_config")
+
+    assert result.exit_status == 0, result.stderr
+  end
+
   test "packaged release eval starts only the repo runtime for DB-backed cluster init" do
     tmp_dir =
       Path.join(
