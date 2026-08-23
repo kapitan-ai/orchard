@@ -19,8 +19,7 @@ defmodule Orchard.API.OperatorHealth do
           version: Readiness.contract_version(),
           check_order: Readiness.check_order()
         },
-        runtime: probe_runtime(),
-        license: probe_license()
+        runtime: probe_runtime()
       })
       |> add_failure_detail(evaluation.reason)
 
@@ -108,26 +107,8 @@ defmodule Orchard.API.OperatorHealth do
   defp classify_health(%{ready: true}), do: "healthy"
   defp classify_health(_), do: "unknown"
 
-  defp probe_license do
-    licensing_impl().inspect_local()
-    |> Orchard.Licensing.health_summary()
-  rescue
-    _ ->
-      %{
-        status: "invalid",
-        reason: "malformed_bundle",
-        message: "license inspection failed",
-        expires_at: nil
-      }
-  end
-
   defp runtime_impl do
     Application.get_env(:orchard_controller, :console, [])
     |> Keyword.get(:runtime_impl, OrchardConsole.Runtime)
-  end
-
-  defp licensing_impl do
-    Application.get_env(:orchard_controller, :console, [])
-    |> Keyword.get(:licensing_impl, Orchard.Licensing)
   end
 end

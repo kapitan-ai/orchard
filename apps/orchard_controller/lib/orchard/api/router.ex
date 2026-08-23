@@ -11,7 +11,6 @@ defmodule Orchard.API.Router do
 
   pipeline :authenticated_api do
     plug(Orchard.API.RequestContext)
-    plug(Orchard.API.LicensePlug)
   end
 
   pipeline :inference_api do

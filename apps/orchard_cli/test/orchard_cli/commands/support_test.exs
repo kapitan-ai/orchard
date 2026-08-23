@@ -232,8 +232,7 @@ defmodule OrchardCLI.Commands.SupportTest do
     log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
     assert log =~ "booted"
     assert log =~ "ready"
-    assert log =~ "stats=/status?token_count=7&license_mode=offline"
-    assert log =~ "fragment_stats=/status#token_count=7&license_mode=offline"
+    refute log =~ "license_mode=offline"
     assert log =~ "[redacted log line]"
     refute log =~ "db-secret"
     refute log =~ "query-api-secret"
@@ -375,8 +374,8 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert config =~ "REFRESHTOKEN=[redacted]"
     assert config =~ "CLIENTSECRET=[redacted]"
     assert config =~ "LICENSESECRET=[redacted]"
-    assert config =~ "ORCHARD_LICENSE_ENFORCEMENT=strict"
-    assert config =~ "ORCHARD_LICENSE_MODE=offline"
+    assert config =~ "ORCHARD_LICENSE_ENFORCEMENT=[redacted]"
+    assert config =~ "ORCHARD_LICENSE_MODE=[redacted]"
     refute config =~ "env-license-secret"
     refute config =~ "env-secret-key"
     refute config =~ "env-private-key"
@@ -389,7 +388,8 @@ defmodule OrchardCLI.Commands.SupportTest do
 
     log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
     assert log =~ "[redacted log line]"
-    assert log =~ "ORCHARD_LICENSE_ENFORCEMENT=strict license_mode=offline"
+    refute log =~ "ORCHARD_LICENSE_ENFORCEMENT=strict"
+    refute log =~ "license_mode=offline"
     refute log =~ "log-license-secret"
     refute log =~ "log-orchard-license-secret"
     refute log =~ "query-license-secret"
@@ -403,11 +403,12 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "log-license-secret"
   end
 
-  test "redaction preserves tokenizer and license diagnostics while redacting credentials", %{
-    support_root: support_root,
-    output_dir: output_dir,
-    tmp_dir: tmp_dir
-  } do
+  test "redaction preserves tokenizer diagnostics while redacting legacy license state and credentials",
+       %{
+         support_root: support_root,
+         output_dir: output_dir,
+         tmp_dir: tmp_dir
+       } do
     File.write!(
       Path.join([support_root, "config", "controller.env"]),
       """
@@ -448,8 +449,8 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert config =~
              "ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/tokenizer"
 
-    assert config =~ "ORCHARD_LICENSE_ENFORCEMENT=strict"
-    assert config =~ "ORCHARD_LICENSE_MODE=offline"
+    assert config =~ "ORCHARD_LICENSE_ENFORCEMENT=[redacted]"
+    assert config =~ "ORCHARD_LICENSE_MODE=[redacted]"
     assert config =~ "ORCHARD_LICENSE_KEY=[redacted]"
     assert config =~ "ORCHARD_ACCESS_TOKEN=[redacted]"
     assert config =~ "ORCHARD_TOKEN=[redacted]"
@@ -463,7 +464,8 @@ defmodule OrchardCLI.Commands.SupportTest do
              "tokenizer loaded executable=/Library/Application Support/Orchard/native/tokenizer"
 
     assert log =~ "input_tokens=12 output_tokens=4 token_count=16"
-    assert log =~ "ORCHARD_LICENSE_ENFORCEMENT=strict license_mode=offline"
+    refute log =~ "ORCHARD_LICENSE_ENFORCEMENT=strict"
+    refute log =~ "license_mode=offline"
     refute log =~ "lic-secret"
     refute log =~ "api-secret"
     refute log =~ "plain-token-secret"

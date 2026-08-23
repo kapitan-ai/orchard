@@ -7,7 +7,6 @@ defmodule OrchardConsole.SettingsLive do
 
   alias Orchard.API.Transport
   alias Orchard.ConsoleSettings
-  alias OrchardConsole.LicenseStatus
 
   @empty_defaults %{
     default_model: nil,
@@ -574,84 +573,6 @@ defmodule OrchardConsole.SettingsLive do
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
-      <section :if={LicenseStatus.visible?(@license_status)} id="settings-license-card">
-        <.card>
-          <:title>License</:title>
-          <:subtitle>Local license state and operator recovery guidance.</:subtitle>
-
-          <div class="space-y-4">
-            <div class="flex flex-wrap items-center gap-2">
-              <.badge tone={LicenseStatus.badge_tone(@license_status)}>
-                {LicenseStatus.state_label(@license_status)}
-              </.badge>
-              <span
-                :if={@license_status.licensee}
-                id="settings-license-licensee"
-                class="text-sm font-medium text-slate-900 dark:text-slate-100"
-              >
-                {@license_status.licensee}
-              </span>
-            </div>
-
-            <p class="text-sm text-slate-600 dark:text-slate-300">
-              {@license_status.message}
-            </p>
-
-            <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  State
-                </dt>
-                <dd class="mt-1 text-sm font-mono text-slate-900 dark:text-slate-100">
-                  {LicenseStatus.state_label(@license_status)}
-                </dd>
-              </div>
-              <div :if={@license_status.expires_at}>
-                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Expires
-                </dt>
-                <dd
-                  id="settings-license-expiry"
-                  class="mt-1 text-sm font-mono text-slate-900 dark:text-slate-100"
-                >
-                  {@license_status.expires_at}
-                </dd>
-              </div>
-              <div :if={@license_status.licensee}>
-                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Licensee
-                </dt>
-                <dd class="mt-1 text-sm text-slate-900 dark:text-slate-100">
-                  {@license_status.licensee}
-                </dd>
-              </div>
-              <div :if={LicenseStatus.tracking_label(@license_status)}>
-                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Tracking
-                </dt>
-                <dd
-                  id="settings-license-tracking"
-                  class="mt-1 text-sm font-mono text-slate-900 dark:text-slate-100"
-                >
-                  {LicenseStatus.tracking_label(@license_status)}
-                </dd>
-              </div>
-            </dl>
-
-            <div
-              :if={!LicenseStatus.valid?(@license_status)}
-              id="settings-license-activation"
-              class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200"
-            >
-              <p class="font-medium">Activation required for licensed product use.</p>
-              <p :if={@license_status.activation_guidance} class="mt-1">
-                {@license_status.activation_guidance}
-              </p>
-            </div>
-          </div>
-        </.card>
-      </section>
-
       <section id="settings-appearance-card">
         <.card variant={:primary}>
           <:title>Appearance</:title>

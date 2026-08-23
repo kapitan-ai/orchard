@@ -7,7 +7,6 @@ defmodule Orchard.NodeAgent.Application do
     BeamPeerGrantBootstrap,
     BeamPeerGrantStartupVerifier,
     Identity,
-    LicenseEnforcer,
     SentryTelemetryBridge
   }
 
@@ -28,7 +27,6 @@ defmodule Orchard.NodeAgent.Application do
     # Resolve and persist node identity before starting the supervision tree.
     # This ensures GetStatus can report stable metadata from first request.
     Identity.ensure_identity!()
-    LicenseEnforcer.enforce_startup!()
 
     start_result =
       Supervisor.start_link(child_specs(),

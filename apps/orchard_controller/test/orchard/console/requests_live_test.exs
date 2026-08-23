@@ -3,7 +3,6 @@ defmodule OrchardConsole.RequestsLiveTest do
 
   import Phoenix.LiveViewTest
   import Ecto.Query
-  import Orchard.TestSupport.LicenseGateHelpers
 
   @moduletag :live
   @moduletag :db
@@ -38,16 +37,6 @@ defmodule OrchardConsole.RequestsLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "page rendering" do
-    test "hard mode keeps requests diagnostics reachable", %{conn: conn} do
-      set_license_enforcement(:hard)
-
-      {:ok, _view, html} = live(conn, "/console/requests")
-
-      assert html =~ "Requests"
-      assert html =~ "requests-tools-row"
-      assert html =~ "requests-list-card" or html =~ "requests-empty-state"
-    end
-
     test "renders page title", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/requests")
 

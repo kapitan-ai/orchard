@@ -17,18 +17,6 @@ defmodule Orchard.API.Ops.HealthControllerTest.RuntimeStub do
   defp test_pid, do: Application.fetch_env!(:orchard_controller, :operator_health_test_pid)
 end
 
-defmodule Orchard.API.Ops.HealthControllerTest.LicensingStub do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :valid,
-      message: "License bundle is valid.",
-      bundle_path: "/tmp/current.json"
-    }
-  end
-end
-
 defmodule Orchard.API.Ops.HealthControllerTest.PassingReadiness do
   @moduledoc false
 
@@ -97,8 +85,7 @@ defmodule Orchard.API.Ops.HealthControllerTest do
       :orchard_controller,
       :console,
       Keyword.merge(previous_console,
-        runtime_impl: Orchard.API.Ops.HealthControllerTest.RuntimeStub,
-        licensing_impl: Orchard.API.Ops.HealthControllerTest.LicensingStub
+        runtime_impl: Orchard.API.Ops.HealthControllerTest.RuntimeStub
       )
     )
 
@@ -321,7 +308,7 @@ defmodule Orchard.API.Ops.HealthControllerTest do
            }
 
     assert body["runtime"]["display_name"] == "Pilot Node"
-    assert body["license"]["status"] == "valid"
+    refute Map.has_key?(body, "license")
     assert body["version"] == Orchard.version()
   end
 

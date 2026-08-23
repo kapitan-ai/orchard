@@ -13,7 +13,6 @@ defmodule Orchard.API.SentryContextBoundary do
   @impl Plug
   def call(conn, _opts) do
     SentryContext.clear_all()
-    SentryContext.apply_cached_license_status(:controller)
 
     Plug.Conn.register_before_send(conn, fn conn ->
       unless event_stream_response?(conn) do

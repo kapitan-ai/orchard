@@ -42,7 +42,6 @@ defmodule Orchard.Portal.KeysLiveTest do
     assert html =~ "Mint your first key"
     assert html =~ "0 / 10"
     refute html =~ "console-sidebar"
-    refute html =~ "console-license-badge"
     refute html =~ "theme-toggle"
     refute html =~ "href=\"/console"
     assert has_element?(view, "#portal-mint-button")

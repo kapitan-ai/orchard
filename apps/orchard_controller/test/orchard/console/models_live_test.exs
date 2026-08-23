@@ -2,7 +2,6 @@ defmodule OrchardConsole.ModelsLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
-  import Orchard.TestSupport.LicenseGateHelpers
   import Orchard.TestSupport.ModelRequestFixtures
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -244,35 +243,6 @@ defmodule OrchardConsole.ModelsLiveTest do
   end
 
   describe "lifecycle actions" do
-    test "hard mode denies lifecycle actions without changing model state", %{conn: conn} do
-      set_license_enforcement(:hard)
-      model = create_model!(%{model_id: "hard-blocked", state: :registered})
-
-      {:ok, view, _html} = live(conn, "/console/models")
-
-      html =
-        view
-        |> element("#model-#{model.id} button", "Activate")
-        |> render_click()
-
-      assert_license_denial(html)
-      assert has_element?(view, "#models-catalog-card")
-      assert Orchard.Repo.get!(Orchard.Models.Model, model.id).state == :registered
-    end
-
-    test "warn mode permits lifecycle actions", %{conn: conn} do
-      set_license_enforcement(:warn)
-      model = create_model!(%{model_id: "warn-allowed", state: :registered})
-
-      {:ok, view, _html} = live(conn, "/console/models")
-
-      view
-      |> element("#model-#{model.id} button", "Activate")
-      |> render_click()
-
-      assert Orchard.Repo.get!(Orchard.Models.Model, model.id).state == :active
-    end
-
     test "activate transitions model and shows flash", %{conn: conn} do
       model = create_model!(%{model_id: "activatable", state: :registered})
 

@@ -2,7 +2,6 @@ defmodule OrchardConsole.TenantsLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
-  import Orchard.TestSupport.LicenseGateHelpers
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
@@ -47,31 +46,6 @@ defmodule OrchardConsole.TenantsLiveTest do
   end
 
   describe "create tenant" do
-    test "hard mode denies tenant creation", %{conn: conn} do
-      set_license_enforcement(:hard)
-      {:ok, view, _html} = live(conn, "/console/tenants")
-
-      html =
-        view
-        |> form("#tenant-create-form", tenant: %{slug: "blocked-tenant", name: "Blocked"})
-        |> render_submit()
-
-      assert_license_denial(html)
-      assert has_element?(view, "#tenant-create-card")
-      refute Enum.any?(Governance.list_tenants(), &(&1.slug == "blocked-tenant"))
-    end
-
-    test "warn mode permits tenant creation", %{conn: conn} do
-      set_license_enforcement(:warn)
-      {:ok, view, _html} = live(conn, "/console/tenants")
-
-      view
-      |> form("#tenant-create-form", tenant: %{slug: "warn-tenant", name: "Warn Tenant"})
-      |> render_submit()
-
-      assert Enum.any?(Governance.list_tenants(), &(&1.slug == "warn-tenant"))
-    end
-
     test "creates tenant and resets form", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/tenants")
 

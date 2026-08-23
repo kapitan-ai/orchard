@@ -70,8 +70,7 @@ defmodule OrchardConsole do
 
     case OrchardConsole.Auth.authorize_live_session(session, config) do
       :ok ->
-        {:cont,
-         Phoenix.Component.assign(socket, :license_status, OrchardConsole.LicenseStatus.fetch())}
+        {:cont, socket}
 
       {:error, _reason} ->
         {:halt, Phoenix.LiveView.redirect(socket, to: "/console")}

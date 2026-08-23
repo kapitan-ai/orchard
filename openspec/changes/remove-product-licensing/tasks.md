@@ -7,18 +7,18 @@
 
 ## 2. Public behavior tests and implementation
 
-- [ ] 2.1 Prove Controller product routes no longer deny useful work based on license state, then remove the HTTP gate.
-- [ ] 2.2 Prove Console actions and rendering are license-independent, then remove Console gates and status UI.
-- [ ] 2.3 Prove first-run and CLI routing no longer expose activation or status, then remove the license command.
-- [ ] 2.4 Prove Node Agent startup and runtime/model paths are license-independent, then remove enforcement.
+- [x] 2.1 Prove Controller product routes no longer deny useful work based on license state, then remove the HTTP gate.
+- [x] 2.2 Prove Console actions and rendering are license-independent, then remove Console gates and status UI.
+- [x] 2.3 Prove first-run and CLI routing no longer expose activation or status, then remove the license command.
+- [x] 2.4 Prove Node Agent startup and runtime/model paths are license-independent, then remove enforcement.
 
 ## 3. Shared and operational removal
 
-- [ ] 3.1 Remove shared validation, local-store, cache, status, and application wiring.
-- [ ] 3.2 Remove license identity and tracking from health, logs, Sentry, telemetry, and support output while retaining secret redaction where independently useful.
+- [x] 3.1 Remove shared validation, local-store, cache, status, and application wiring.
+- [x] 3.2 Remove license identity and tracking from health, logs, Sentry, telemetry, and support output while retaining secret redaction where independently useful.
 - [ ] 3.3 Remove licensing configuration, packaging defaults/hooks, documentation, fixtures, and licensing-only tests.
-- [ ] 3.4 Verify legacy licensing environment variables are ignored and legacy bundle files are not read, changed, or deleted.
-- [ ] 3.5 Verify unrelated auth, authorization, governance, quotas, accounting, billing, and legal attribution remain intact.
+- [x] 3.4 Verify legacy licensing environment variables are ignored and legacy bundle files are not read, changed, or deleted.
+- [x] 3.5 Verify unrelated auth, authorization, governance, quotas, accounting, billing, and legal attribution remain intact.
 
 ## 4. Validation and review
 
