@@ -878,12 +878,13 @@ final class LifecycleServiceTests: XCTestCase {
     )
     try assertLegacyLicenseUnchanged()
 
-    _ = try service.execute(
+    let updateResult = try service.execute(
       LifecycleInvocation.parse(
-        arguments: ["install", "--role", "all", "--root", fixture.root.path],
+        arguments: ["update", "--root", fixture.root.path],
         effectiveUserID: 501
       )
     )
+    XCTAssertEqual(updateResult.status.role, .all)
     try assertLegacyLicenseUnchanged()
 
     let retainedFiles = [
