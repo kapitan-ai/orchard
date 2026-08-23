@@ -54,7 +54,8 @@ Product-license removal SHALL preserve legal attribution and controls that are n
 #### Scenario: Distribution after removal
 
 - **WHEN** Orchard source or artifacts are distributed
-- **THEN** the repository `LICENSE`, copyright notices, third-party licenses, dependency notices, and required legal attribution remain intact
+- **THEN** the repository License section in `README.md`, copyright notices, third-party dependency license metadata, and required legal attribution remain intact
+- **AND** model-card `license` metadata resolved from model sources remains recorded and surfaced unchanged
 - **AND** macOS code-signing entitlements remain governed by the packaging contract
 
 #### Scenario: Protected operation after removal

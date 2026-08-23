@@ -11,7 +11,7 @@ Product-license activation, entitlement enforcement, and license-derived feature
 - Remove licensing configuration and packaging defaults.
 - Preserve existing on-disk license bundles without reading, modifying, migrating, or deleting them.
 - Tolerate and ignore legacy licensing environment variables during upgrade.
-- Preserve the repository `LICENSE`, copyright notices, third-party licenses, dependency notices, code-signing entitlements, and other legal or open-source attribution.
+- Preserve the repository License section in `README.md`, copyright notices, third-party licenses, dependency notices, code-signing entitlements, and other legal or open-source attribution.
 
 SPEC.md impact: §3.1 no longer permits licensing observations in Operator health, and §7.4a no longer needs a special prohibition on Developer Portal license state because Orchard has no product-license state to render.
 

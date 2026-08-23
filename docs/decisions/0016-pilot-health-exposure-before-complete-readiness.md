@@ -6,6 +6,14 @@ Accepted.
 
 Owner decision recorded 2026-08-03 for pilot issue #118.
 
+### Amendment 2026-08-23
+
+Product licensing was removed from Orchard. The exposure boundary this decision
+established is unchanged, but the licensing fields named below no longer exist,
+so authenticated `GET /ops/v1/health` no longer reports them. The Context and
+Decision sections stay as authored to record the state that motivated the
+decision.
+
 ## Context
 
 `SPEC.md` §3.1 requires Controller readiness to include Postgres reachability,
@@ -16,7 +24,7 @@ implemented honestly in this pilot change.
 
 The current unauthenticated `GET /health/ready` evaluates only the M0-era checks
 for Postgres, migrations, public API HTTPS, and a constant Controller boot flag.
-It also discloses build, transport, Console, runtime, check, failure,
+It also discloses build, transport, Console, runtime, licensing, check, failure,
 and remediation details. Waiting for the complete §3.1 aggregate would preserve
 that unnecessary unauthenticated disclosure through the pilot.
 
@@ -34,7 +42,7 @@ Detailed diagnostics move to authenticated Operator `GET /ops/v1/health` under
 the existing cluster-scoped Operator-or-admin authorization boundary. The response
 is non-cacheable with `Cache-Control: no-store` and includes the readiness contract,
 ordered checks, failure detail and bounded remediation when applicable, plus the
-sanitized observational build, transport, Console, and runtime fields
+sanitized observational build, transport, Console, runtime, and licensing fields
 removed from public readiness.
 
 The staged evaluator is explicitly identified as

@@ -298,6 +298,7 @@ ELIXIR
 | `ORCHARD_NODE_AGENT_ADVERTISE_HOST` | Listen host or `127.0.0.1` | Controller-reachable host persisted during `orchardctl node join`; required when the listen host is wildcard-bound. |
 | `ORCHARD_NODE_AGENT_ADVERTISE_PORT` | Listen port | Controller-reachable gRPC compatibility port persisted during `orchardctl node join`. |
 | `ORCHARD_NODE_HOSTNAME` | Local hostname | Stable Node inventory hostname persisted during `orchardctl node join`. |
+| `ORCHARD_NODE_IDENTITY_ROOT` | `tmp/dev/config/node-identity` | Owner-only root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`. Override only when the support-root layout is intentionally changed. |
 | `ORCHARD_RUNTIME_CLIENT_PORT` | Same as listen port | Controller gRPC client port (must match listen port) |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
 | `ORCHARD_WORKER_SOCKET_DIR` | `/tmp/od-<hash>/ws` | Worker UDS directory |
