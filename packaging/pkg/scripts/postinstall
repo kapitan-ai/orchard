@@ -827,26 +827,25 @@ printf 'Orchard installation complete.\n'
 printf 'Selected install role: %s.\n' "$install_role"
 printf '%s launchd service(s) were installed but not started.\n' "$installed_services"
 printf 'Next steps for first-run setup:\n'
-printf '1. Provide or verify the Orchard license using the supported license activation path.\n'
-printf '2. Run: sudo orchardctl env init --service %s\n' "$install_role"
+printf '1. Run: sudo orchardctl env init --service %s\n' "$install_role"
 if [ "$install_role" = "node-agent" ]; then
-  printf '3. Edit node-agent.env with ORCHARD_BEAM_NODE_NAME, ORCHARD_BEAM_COOKIE_FILE, EPMD/distribution ports, node display name, and worker settings.\n'
+  printf '2. Edit node-agent.env with ORCHARD_BEAM_NODE_NAME, ORCHARD_BEAM_COOKIE_FILE, EPMD/distribution ports, node display name, and worker settings.\n'
   printf '   Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to the controller Mac.\n'
   printf '   Keep gRPC listener settings loopback unless intentionally using ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc compatibility fallback.\n'
-  printf '4. Run: sudo orchardctl start\n'
-  printf '5. Verify: orchardctl status\n'
+  printf '3. Run: sudo orchardctl start\n'
+  printf '4. Verify: orchardctl status\n'
 else
   if [ "$install_role" = "all" ]; then
-    printf '3. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings; review node-agent.env for matching BEAM node/cookie settings.\n'
+    printf '2. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings; review node-agent.env for matching BEAM node/cookie settings.\n'
   else
-    printf '3. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings.\n'
+    printf '2. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings.\n'
   fi
   printf '   Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to every node-agent Mac.\n'
-  printf '4. Run: sudo orchardctl migrate\n'
-  printf '5. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json\n'
-  printf '6. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README.\n'
-  printf '7. Optional Console: sudo orchardctl console enable\n'
-  printf '8. Run: sudo orchardctl start\n'
-  printf '9. Verify: orchardctl status\n'
+  printf '3. Run: sudo orchardctl migrate\n'
+  printf '4. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json\n'
+  printf '5. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README.\n'
+  printf '6. Optional Console: sudo orchardctl console enable\n'
+  printf '7. Run: sudo orchardctl start\n'
+  printf '8. Verify: orchardctl status\n'
 fi
 exit 0

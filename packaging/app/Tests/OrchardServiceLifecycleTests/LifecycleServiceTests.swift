@@ -847,12 +847,44 @@ final class LifecycleServiceTests: XCTestCase {
       contract: fixture.contract,
       payloadRoot: fixture.payload
     )
+
+    let legacyLicensePath =
+      "/Library/Application Support/Orchard/config/licensing/current.json"
+    let legacyLicenseURL = relocated(
+      root: fixture.root,
+      absolutePath: legacyLicensePath
+    )
+    let legacyLicenseContents = "legacy-license-record"
+    let legacyModificationDate = Date(timeIntervalSince1970: 1_700_000_000)
+    try write(legacyLicenseContents, to: legacyLicenseURL)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o600, .modificationDate: legacyModificationDate],
+      ofItemAtPath: legacyLicenseURL.path
+    )
+
+    func assertLegacyLicenseUnchanged() throws {
+      XCTAssertEqual(
+        try String(contentsOf: legacyLicenseURL, encoding: .utf8), legacyLicenseContents)
+      let attributes = try FileManager.default.attributesOfItem(atPath: legacyLicenseURL.path)
+      XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o600))
+      XCTAssertEqual(attributes[.modificationDate] as? Date, legacyModificationDate)
+    }
+
     _ = try service.execute(
       LifecycleInvocation.parse(
         arguments: ["install", "--role", "all", "--root", fixture.root.path],
         effectiveUserID: 501
       )
     )
+    try assertLegacyLicenseUnchanged()
+
+    _ = try service.execute(
+      LifecycleInvocation.parse(
+        arguments: ["install", "--role", "all", "--root", fixture.root.path],
+        effectiveUserID: 501
+      )
+    )
+    try assertLegacyLicenseUnchanged()
 
     let retainedFiles = [
       "/Library/Application Support/Orchard/config/controller.env",
@@ -902,6 +934,7 @@ final class LifecycleServiceTests: XCTestCase {
         path
       )
     }
+    try assertLegacyLicenseUnchanged()
   }
 
   func testPartialTLSStateFailsBeforeInstallMutation() throws {

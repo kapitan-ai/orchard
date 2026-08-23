@@ -54,14 +54,14 @@ defmodule OrchardCLI.PackagingWrapperTest do
                  "sh",
                  [
                    "-c",
-                   ~s(printf 'activation-key\\n' | "$1" license activate --key-stdin),
+                   ~s(printf 'diagnostic-input\\n' | "$1" status),
                    "orchardctl-stdin-regression",
                    wrapper
                  ],
                  stderr_to_stdout: true
                )
 
-      assert output =~ "STDIN=activation-key"
+      assert output =~ "STDIN=diagnostic-input"
     end)
   end
 
@@ -72,7 +72,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
                  "sh",
                  [
                    "-c",
-                   ~s("$1" license activate --key-stdin 0<&-),
+                   ~s("$1" status 0<&-),
                    "orchardctl-closed-stdin-regression",
                    wrapper
                  ],
@@ -143,7 +143,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
       printf 'CWD_MARKER=%s\n' "$_marker"
     fi
     case "$*" in
-      *--key-stdin*)
+      *status*)
         if IFS= read -r _line; then
           printf 'STDIN=%s\n' "$_line"
         else
