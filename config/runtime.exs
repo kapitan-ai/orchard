@@ -2,8 +2,6 @@ import Config
 
 require Logger
 
-Code.require_file("controller_transport.exs", __DIR__)
-
 env_int = fn env_name, default ->
   case System.get_env(env_name) || default do
     value when is_integer(value) ->
@@ -116,6 +114,18 @@ env_tokenizer_safe_mode = fn env_name, default ->
   end
 end
 
+env_ip = fn env_name, default_string ->
+  ip_string = System.get_env(env_name) || default_string
+
+  case :inet.parse_address(String.to_charlist(ip_string)) do
+    {:ok, ip_tuple} ->
+      ip_tuple
+
+    {:error, _reason} ->
+      raise "environment variable #{env_name} must be a valid IP address, got: #{inspect(ip_string)}"
+  end
+end
+
 loopback_ip? = fn
   {127, _b, _c, _d} -> true
   {0, 0, 0, 0, 0, 0, 0, 1} -> true
@@ -134,6 +144,91 @@ loopback_listen_host? = fn host ->
     {:ok, ip_tuple} -> loopback_ip?.(ip_tuple)
     {:error, _reason} -> host == "localhost"
   end
+end
+
+parse_trusted_proxy_cidr! = fn cidr ->
+  with [ip_string, prefix_string] <- String.split(cidr, "/", parts: 2),
+       {:ok, ip_tuple} <- :inet.parse_address(String.to_charlist(ip_string)),
+       {prefix, ""} <- Integer.parse(prefix_string),
+       max_prefix = if(tuple_size(ip_tuple) == 4, do: 32, else: 128),
+       true <- prefix in 0..max_prefix do
+    {ip_tuple, prefix}
+  else
+    _other ->
+      raise "ORCHARD_TRUSTED_PROXIES contains invalid CIDR #{inspect(cidr)}"
+  end
+end
+
+trusted_proxy_cidrs = fn ->
+  case System.get_env("ORCHARD_TRUSTED_PROXIES") do
+    nil ->
+      [{{127, 0, 0, 1}, 32}, {{0, 0, 0, 0, 0, 0, 0, 1}, 128}]
+
+    _raw ->
+      values = env_csv.("ORCHARD_TRUSTED_PROXIES", [])
+
+      if values == [] do
+        raise "ORCHARD_TRUSTED_PROXIES must contain at least one CIDR when set"
+      end
+
+      Enum.map(values, parse_trusted_proxy_cidr!)
+  end
+end
+
+trusted_proxies_set? = fn ->
+  case System.get_env("ORCHARD_TRUSTED_PROXIES") do
+    nil -> false
+    value -> String.trim(value) != ""
+  end
+end
+
+origin_host = fn host ->
+  case :inet.parse_address(String.to_charlist(host)) do
+    {:ok, ip} when tuple_size(ip) == 8 -> "[#{host}]"
+    _other -> host
+  end
+end
+
+reverse_proxy_config = fn public_host ->
+  backend_port = env_port.("PORT", "4000")
+  bind_ip = env_ip.("ORCHARD_API_BIND_IP", "127.0.0.1")
+  trusted_proxies = trusted_proxy_cidrs.()
+
+  if not loopback_ip?.(bind_ip) and not trusted_proxies_set?.() do
+    raise "ORCHARD_TRUSTED_PROXIES must be set when reverse_proxy binds to a non-loopback address"
+  end
+
+  public_port = env_port.("ORCHARD_PUBLIC_PORT", "443")
+  formatted_public_host = origin_host.(public_host)
+
+  public_origin =
+    if public_port == 443,
+      do: "https://#{formatted_public_host}",
+      else: "https://#{formatted_public_host}:#{public_port}"
+
+  %{
+    listener: [http: [ip: bind_ip, port: backend_port]],
+    url: [host: public_host, port: public_port, scheme: "https"],
+    check_origin: [public_origin],
+    trusted_proxies: trusted_proxies
+  }
+end
+
+source_dev_transport_mode! = fn
+  nil ->
+    :plain_http_localhost
+
+  "plain_http_localhost" ->
+    :plain_http_localhost
+
+  "reverse_proxy" ->
+    :reverse_proxy
+
+  "direct_https" ->
+    raise "ORCHARD_TRANSPORT_MODE=direct_https is release-only; source dev supports plain_http_localhost|reverse_proxy"
+
+  value ->
+    raise "ORCHARD_TRANSPORT_MODE must be plain_http_localhost|reverse_proxy in source dev, got: #{inspect(value)}"
 end
 
 validate_cors_origin! = fn origin ->
@@ -1243,26 +1338,13 @@ if config_env() == :prod do
              [host: "localhost", port: http_port, scheme: "http"], true, [], nil}
 
           :reverse_proxy ->
-            proxy =
-              Orchard.Config.ControllerTransport.reverse_proxy!(
-                backend_port: env_port.("PORT", "4000"),
-                bind_ip: System.get_env("ORCHARD_API_BIND_IP"),
-                public_host: public_host,
-                public_port: env_port.("ORCHARD_PUBLIC_PORT", "443"),
-                trusted_proxies: System.get_env("ORCHARD_TRUSTED_PROXIES")
-              )
+            proxy = reverse_proxy_config.(public_host)
 
             {proxy.listener, proxy.url, false, proxy.trusted_proxies, proxy.check_origin}
 
           :direct_https ->
             https_port = env_port.("ORCHARD_API_HTTPS_PORT", "8443")
-
-            bind_ip =
-              Orchard.Config.ControllerTransport.ip!(
-                "ORCHARD_API_BIND_IP",
-                System.get_env("ORCHARD_API_BIND_IP"),
-                "0.0.0.0"
-              )
+            bind_ip = env_ip.("ORCHARD_API_BIND_IP", "0.0.0.0")
 
             validate_tls_material!.(certfile, keyfile, cacertfile_for_validation)
 
@@ -1592,10 +1674,7 @@ if config_env() == :dev do
   end
 
   if source_dev_role in [:controller, :all_in_one] do
-    transport_mode =
-      Orchard.Config.ControllerTransport.source_dev_mode!(
-        System.get_env("ORCHARD_TRANSPORT_MODE")
-      )
+    transport_mode = source_dev_transport_mode!.(System.get_env("ORCHARD_TRANSPORT_MODE"))
 
     case transport_mode do
       :plain_http_localhost ->
@@ -1608,14 +1687,7 @@ if config_env() == :dev do
         public_host =
           System.get_env("ORCHARD_PUBLIC_HOST") || System.get_env("PHX_HOST") || "localhost"
 
-        proxy =
-          Orchard.Config.ControllerTransport.reverse_proxy!(
-            backend_port: env_port.("PORT", "4000"),
-            bind_ip: System.get_env("ORCHARD_API_BIND_IP"),
-            public_host: public_host,
-            public_port: env_port.("ORCHARD_PUBLIC_PORT", "443"),
-            trusted_proxies: System.get_env("ORCHARD_TRUSTED_PROXIES")
-          )
+        proxy = reverse_proxy_config.(public_host)
 
         config :orchard_controller,
           transport_mode: :reverse_proxy,

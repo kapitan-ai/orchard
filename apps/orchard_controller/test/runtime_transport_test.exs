@@ -375,6 +375,22 @@ defmodule Orchard.RuntimeTransportTest do
     assert endpoint[:check_origin] == ["https://orchard.example.test:9443"]
   end
 
+  test "SPEC 10.7: reverse_proxy brackets IPv6 public origins", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_HOST" => "::1",
+        "ORCHARD_PUBLIC_PORT" => "9443"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert endpoint[:url] == [host: "::1", port: 9443, scheme: "https"]
+    assert endpoint[:check_origin] == ["https://[::1]:9443"]
+  end
+
   test "SPEC 10.7: reverse_proxy accepts explicit trusted proxy CIDRs", %{
     support_root: support_root
   } do
@@ -805,6 +821,21 @@ defmodule Orchard.RuntimeTransportTest do
              {{127, 0, 0, 1}, 32},
              {{0, 0, 0, 0, 0, 0, 0, 1}, 128}
            ]
+  end
+
+  test "source-dev reverse proxy brackets IPv6 public origins", %{
+    support_root: support_root
+  } do
+    config =
+      read_dev_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_HOST" => "::1"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert endpoint[:url] == [host: "::1", port: 443, scheme: "https"]
+    assert endpoint[:check_origin] == ["https://[::1]"]
   end
 
   test "source-dev reverse proxy drives the existing readiness transport authority", %{
