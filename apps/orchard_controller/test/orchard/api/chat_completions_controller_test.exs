@@ -76,6 +76,14 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     |> Router.call(Router.init([]))
   end
 
+  defp post_chat_endpoint(params, token, accept) do
+    build_conn()
+    |> put_req_header("accept", accept)
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> post("/v1/chat/completions", params)
+  end
+
   # Parse SSE response body into a list of parsed events.
   # Returns [{:data, decoded_map}, {:done, nil}, {:error, decoded_map}]
   defp parse_sse_body(body) do
@@ -258,6 +266,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :db
+    @tag :live
     test "successful metadata-capture request returns JSON without retaining the response", %{
       bundle: bundle
     } do
@@ -284,12 +293,13 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       grant_active_models!(tenant)
 
       conn =
-        post_chat(
+        post_chat_endpoint(
           %{
             "model" => "persist-non-stream-model@v1",
             "messages" => [%{"role" => "user", "content" => "hello"}]
           },
-          token
+          token,
+          "application/json"
         )
 
       assert conn.status == 200
@@ -1186,80 +1196,86 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   end
 
   describe "POST /v1/chat/completions (streaming happy path)" do
-    @tag :db
-    test "SPEC.md §7.2.5 keeps one public ID across SSE chunks and persistence", %{
-      bundle: bundle
-    } do
-      {:ok, _model} =
-        Orchard.Models.create_model(%{
-          model_id: "test-stream-model",
-          version: "v1",
-          display_name: "Test Stream Model",
-          artifact_uri: "file:///tmp/test-stream-model",
-          artifact_sha256: bundle.hash,
-          state: :active,
-          format: "mlx",
-          backend: "mlx",
-          capabilities: ["chat"],
-          artifact_size_bytes: 1024,
-          resident_memory_bytes: 2048,
-          kv_cache_bytes_per_token: 128,
-          prefill_workspace_bytes_per_token: 64,
-          max_context_tokens: 131_072
-        })
+    for accept <- ["text/event-stream", "application/json"] do
+      @tag :db
+      @tag :live
+      test "SPEC.md §7.2.5 keeps one public ID across SSE chunks and persistence with Accept: #{accept}",
+           %{bundle: bundle} do
+        {:ok, _model} =
+          Orchard.Models.create_model(%{
+            model_id: "test-stream-model",
+            version: "v1",
+            display_name: "Test Stream Model",
+            artifact_uri: "file:///tmp/test-stream-model",
+            artifact_sha256: bundle.hash,
+            state: :active,
+            format: "mlx",
+            backend: "mlx",
+            capabilities: ["chat"],
+            artifact_size_bytes: 1024,
+            resident_memory_bytes: 2048,
+            kv_cache_bytes_per_token: 128,
+            prefill_workspace_bytes_per_token: 64,
+            max_context_tokens: 131_072
+          })
 
-      conn =
-        post_chat(%{
-          "model" => "test-stream-model@v1",
-          "messages" => [%{"role" => "user", "content" => "hello"}],
-          "stream" => true
-        })
+        conn =
+          post_chat_endpoint(
+            %{
+              "model" => "test-stream-model@v1",
+              "messages" => [%{"role" => "user", "content" => "hello"}],
+              "stream" => true
+            },
+            default_api_token!(),
+            unquote(accept)
+          )
 
-      # SSE started (chunked 200)
-      assert conn.status == 200
+        # SSE started (chunked 200)
+        assert conn.status == 200
 
-      assert get_resp_header(conn, "content-type")
-             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+        assert get_resp_header(conn, "content-type")
+               |> Enum.any?(&String.contains?(&1, "text/event-stream"))
 
-      # Parse SSE body
-      events = parse_sse_body(conn.resp_body)
+        # Parse SSE body
+        events = parse_sse_body(conn.resp_body)
 
-      # Should have data chunks followed by [DONE]
-      data_events = Enum.filter(events, fn {type, _} -> type == :data end)
-      done_events = Enum.filter(events, fn {type, _} -> type == :done end)
+        # Should have data chunks followed by [DONE]
+        data_events = Enum.filter(events, fn {type, _} -> type == :data end)
+        done_events = Enum.filter(events, fn {type, _} -> type == :done end)
 
-      chunk_ids = Enum.map(data_events, fn {:data, chunk} -> Map.fetch!(chunk, "id") end)
-      assert [public_id] = Enum.uniq(chunk_ids)
-      assert String.starts_with?(public_id, "chatcmpl-")
-      assert %{public_id: ^public_id} = Requests.get_request_by_public_id(public_id)
+        chunk_ids = Enum.map(data_events, fn {:data, chunk} -> Map.fetch!(chunk, "id") end)
+        assert [public_id] = Enum.uniq(chunk_ids)
+        assert String.starts_with?(public_id, "chatcmpl-")
+        assert %{public_id: ^public_id} = Requests.get_request_by_public_id(public_id)
 
-      # At least: role chunk + content chunk(s) + finish chunk
-      assert length(data_events) >= 3
+        # At least: role chunk + content chunk(s) + finish chunk
+        assert length(data_events) >= 3
 
-      # First chunk should be the role marker
-      {:data, first_chunk} = List.first(data_events)
-      assert first_chunk["object"] == "chat.completion.chunk"
-      assert first_chunk["model"] == "test-stream-model@v1"
-      [first_choice] = first_chunk["choices"]
-      assert first_choice["delta"]["role"] == "assistant"
+        # First chunk should be the role marker
+        {:data, first_chunk} = List.first(data_events)
+        assert first_chunk["object"] == "chat.completion.chunk"
+        assert first_chunk["model"] == "test-stream-model@v1"
+        [first_choice] = first_chunk["choices"]
+        assert first_choice["delta"]["role"] == "assistant"
 
-      # Last data chunk should have a finish_reason
-      {:data, last_chunk} = List.last(data_events)
-      [last_choice] = last_chunk["choices"]
-      assert last_choice["finish_reason"] != nil
+        # Last data chunk should have a finish_reason
+        {:data, last_chunk} = List.last(data_events)
+        [last_choice] = last_chunk["choices"]
+        assert last_choice["finish_reason"] != nil
 
-      # Stream ends with [DONE]
-      assert done_events == [{:done, nil}]
+        # Stream ends with [DONE]
+        assert done_events == [{:done, nil}]
 
-      # No error events
-      error_events = Enum.filter(events, fn {type, _} -> type == :error end)
-      assert error_events == []
+        # No error events
+        error_events = Enum.filter(events, fn {type, _} -> type == :error end)
+        assert error_events == []
 
-      request = Requests.get_request_by_public_id(first_chunk["id"])
-      assert_text_commitment!(request)
+        request = Requests.get_request_by_public_id(first_chunk["id"])
+        assert_text_commitment!(request)
 
-      assert Sentry.Context.get_all().extra == %{}
-      assert Sentry.Context.get_all().breadcrumbs == []
+        assert Sentry.Context.get_all().extra == %{}
+        assert Sentry.Context.get_all().breadcrumbs == []
+      end
     end
   end
 
