@@ -1,6 +1,8 @@
 defmodule Orchard.API.InferenceAccepts do
   @moduledoc false
 
+  @behaviour Plug
+
   import Plug.Conn
 
   alias Orchard.API.ErrorHelpers
@@ -9,9 +11,11 @@ defmodule Orchard.API.InferenceAccepts do
   @json "application/json"
   @event_stream "text/event-stream"
 
+  @impl Plug
   @spec init(keyword()) :: keyword()
   def init(opts), do: opts
 
+  @impl Plug
   @spec call(Plug.Conn.t(), keyword()) :: Plug.Conn.t()
   def call(conn, _opts) do
     if acceptable?(conn) do
@@ -66,7 +70,7 @@ defmodule Orchard.API.InferenceAccepts do
 
   defp positive_quality?(_params), do: true
 
-  defp matches_media_range?(media_type, "*", "*"), do: media_type in [@json, @event_stream]
+  defp matches_media_range?(_media_type, "*", "*"), do: true
 
   defp matches_media_range?(media_type, type, "*") do
     String.starts_with?(media_type, type <> "/")

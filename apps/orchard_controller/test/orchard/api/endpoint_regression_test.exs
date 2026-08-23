@@ -141,6 +141,36 @@ defmodule Orchard.API.EndpointRegressionTest do
       end
     end
 
+    test "inference Accept wildcards and zero quality remain stream-aware", %{conn: conn} do
+      token = create_api_token!("inference-accept-ranges")
+
+      for {path, base_params} <- [
+            {"/v1/chat/completions",
+             %{
+               "model" => "nonexistent@v1",
+               "messages" => [%{"role" => "user", "content" => "hello"}]
+             }},
+            {"/v1/responses", %{"model" => "nonexistent@v1", "input" => "hello"}}
+          ],
+          {accept, stream?, expected_status} <- [
+            {"*/*", false, 404},
+            {"text/*", true, 404},
+            {"text/*", false, 406},
+            {"application/json;q=0", false, 406}
+          ] do
+        params = if stream?, do: Map.put(base_params, "stream", true), else: base_params
+
+        response =
+          conn
+          |> put_req_header("accept", accept)
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> post(path, params)
+
+        assert response.status == expected_status
+      end
+    end
+
     test "authenticated form-urlencoded API input remains invalid", %{conn: conn} do
       {:ok, tenant} =
         Orchard.Governance.create_tenant(%{
