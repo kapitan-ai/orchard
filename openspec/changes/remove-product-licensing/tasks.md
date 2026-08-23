@@ -30,5 +30,5 @@
 - [x] 4.6 Run `mise exec -- mix test`.
 - [x] 4.7 Run `mise exec -- mix test --cover`.
 - [x] 4.8 Run applicable packaging and CLI wrapper tests.
-- [ ] 4.9 Run RepoPrompt review/Oracle and No Mistakes on the final diff.
+- [x] 4.9 Run RepoPrompt review/Oracle and No Mistakes on the final diff.
 - [x] 4.10 Re-run residual product-license searches and inspect every remaining match.
