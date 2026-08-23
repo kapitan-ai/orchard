@@ -255,16 +255,6 @@
   overflow: hidden;
 }
 
-.sidebar-collapsed #console-license-badge {
-  max-height: 0;
-  opacity: 0;
-  margin-bottom: 0;
-  overflow: hidden;
-  border-width: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
 .sidebar-collapsed #theme-toggle {
   flex-direction: column;
   gap: 0.125rem;
@@ -301,8 +291,7 @@
     overflow: hidden;
   }
 
-  #console-sidebar .console-sidebar-version,
-  #console-sidebar #console-license-badge {
+  #console-sidebar .console-sidebar-version {
     max-height: 0;
     opacity: 0;
     margin-bottom: 0;

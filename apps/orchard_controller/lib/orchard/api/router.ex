@@ -12,7 +12,6 @@ defmodule Orchard.API.Router do
   pipeline :authenticated_api do
     plug(:accepts, ["json"])
     plug(Orchard.API.RequestContext)
-    plug(Orchard.API.LicensePlug)
   end
 
   pipeline :admin_api do

@@ -215,21 +215,19 @@ defmodule OrchardConsole.PlaygroundLive do
   end
 
   def handle_event("submit", %{"playground" => params}, socket) do
-    OrchardConsole.LicenseGate.guard(socket, fn ->
-      cond do
-        socket.assigns.active_run != nil ->
-          {:noreply, socket}
+    cond do
+      socket.assigns.active_run != nil ->
+        {:noreply, socket}
 
-        socket.assigns.models == [] ->
-          {:noreply, socket}
+      socket.assigns.models == [] ->
+        {:noreply, socket}
 
-        not socket.assigns.can_submit ->
-          reject_unready_submit(socket, params)
+      not socket.assigns.can_submit ->
+        reject_unready_submit(socket, params)
 
-        true ->
-          handle_submit(socket, params)
-      end
-    end)
+      true ->
+        handle_submit(socket, params)
+    end
   end
 
   def handle_event("reset", _params, socket) do

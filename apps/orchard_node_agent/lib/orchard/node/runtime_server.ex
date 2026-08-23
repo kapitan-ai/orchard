@@ -26,8 +26,7 @@ defmodule Orchard.Node.RuntimeServer do
                            :model_not_loaded,
                            :request_already_active,
                            :request_not_prepared,
-                           :worker_unavailable,
-                           :license_invalid
+                           :worker_unavailable
                          ])
 
   @spec get_status(StatusRequest.t(), GRPC.Server.Stream.t()) ::
@@ -48,7 +47,6 @@ defmodule Orchard.Node.RuntimeServer do
   @spec execute_inference(ExecuteInferenceRequest.t(), GRPC.Server.Stream.t()) :: :ok
   def execute_inference(%ExecuteInferenceRequest{} = request, stream) do
     SentryContext.clear_all()
-    SentryContext.apply_cached_license_status(:node_agent)
 
     # Completed requests clear process-local Sentry context for future gRPC
     # process reuse. Exceptions intentionally skip this branch so crash capture
@@ -143,9 +141,6 @@ defmodule Orchard.Node.RuntimeServer do
   defp normalize_failure_reason(:worker_unavailable),
     do: {"worker_unavailable", "worker process became unavailable"}
 
-  defp normalize_failure_reason(:license_invalid),
-    do: {"license_invalid", "node-agent license invalid"}
-
   defp normalize_failure_reason(reason),
     do: {"runtime_error", "runtime request failed: #{inspect(reason)}"}
 
@@ -169,8 +164,7 @@ defmodule Orchard.Node.RuntimeServer do
            "model_not_loaded",
            "request_already_active",
            "request_not_prepared",
-           "worker_unavailable",
-           "license_invalid"
+           "worker_unavailable"
          ] do
         value
       else

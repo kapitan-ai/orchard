@@ -20,13 +20,6 @@ defmodule OrchardCLI.Commands.InitTest do
       send(parent, {:command, command, args})
 
       case {command, args} do
-        {:license, ["status"]} ->
-          {:ok,
-           %{
-             message: "License status: valid\n  Message: License bundle is valid.",
-             valid?: true
-           }}
-
         {:env, ["init", "--service", _service]} ->
           {:ok, "Environment files: ok"}
 
@@ -65,22 +58,21 @@ defmodule OrchardCLI.Commands.InitTest do
     assert message =~ "sudo orchardctl init --host HOST"
     assert message =~ "--console"
     assert message =~ "--skip-start"
-    assert message =~ "license activate --key-stdin"
+    refute message =~ "license"
   end
 
-  test "controller-bearing role runs license, env, migrate, transport, optional console, start, and status" do
+  test "controller-bearing role runs env, migrate, transport, optional console, start, and status" do
     runtime = base_runtime(%{read_install_role: fn -> {:ok, "all"} end})
 
     assert {:ok, message} =
              Init.run(["--host", "mawarduri", "--port", "9443", "--console"], runtime)
 
     assert message =~ "Role: all"
-    assert message =~ "Step 1: sudo orchardctl license status"
-    assert message =~ "Step 7: orchardctl status"
+    assert message =~ "Step 1: sudo orchardctl env init --service all"
+    assert message =~ "Step 6: orchardctl status"
     assert message =~ "First-run initialization complete."
 
     assert collect_commands() == [
-             {:license, ["status"]},
              {:env, ["init", "--service", "all"]},
              {:migrate, []},
              {:transport, ["enable-local-https", "--host", "mawarduri", "--port", "9443"]},
@@ -99,7 +91,7 @@ defmodule OrchardCLI.Commands.InitTest do
     assert collect_commands() == []
   end
 
-  test "requires root before checking license" do
+  test "requires root before running setup" do
     parent = self()
 
     runtime =
@@ -107,14 +99,13 @@ defmodule OrchardCLI.Commands.InitTest do
         uid: fn -> 501 end,
         command_runner: fn command, args, _runtime ->
           send(parent, {:command, command, args})
-          {:ok, "License status: read_error"}
+          {:ok, "unexpected command"}
         end
       })
 
     assert {:error, message, 1} = Init.run(["--host", "mawarduri"], runtime)
     assert message =~ "root privileges required"
     assert message =~ "sudo orchardctl init --host mawarduri --port 8443"
-    refute message =~ "License is not valid"
     assert collect_commands() == []
   end
 
@@ -129,7 +120,6 @@ defmodule OrchardCLI.Commands.InitTest do
           send(parent, {:command, command, args, Map.fetch!(command_runtime, :install_role)})
 
           case command do
-            :license -> {:ok, %{message: "License status: valid", valid?: true}}
             :env -> {:ok, "Environment files: ok"}
             :migrate -> {:ok, "Database migrations completed."}
             :transport -> {:ok, "Direct HTTPS transport enabled."}
@@ -140,7 +130,6 @@ defmodule OrchardCLI.Commands.InitTest do
       })
 
     assert {:ok, _message} = Init.run(["--host", "controller.lan"], runtime)
-    assert_receive {:command, :license, ["status"], :controller}
     assert_receive {:command, :env, ["init", "--service", "controller"], :controller}
   end
 
@@ -154,7 +143,6 @@ defmodule OrchardCLI.Commands.InitTest do
           send(parent, {:command, command, args, Map.fetch!(command_runtime, :install_role)})
 
           case command do
-            :license -> {:ok, %{message: "License status: valid", valid?: true}}
             :env -> {:ok, "Environment files: ok"}
             :migrate -> {:ok, "Database migrations completed."}
             :transport -> {:ok, "Direct HTTPS transport enabled."}
@@ -166,7 +154,6 @@ defmodule OrchardCLI.Commands.InitTest do
 
     assert {:ok, _message} = Init.run(["--host", "controller.lan"], runtime)
 
-    assert_receive {:command, :license, ["status"], :controller}
     assert_receive {:command, :env, ["init", "--service", "controller"], :controller}
     assert_receive {:command, :migrate, [], :controller}
 
@@ -200,7 +187,7 @@ defmodule OrchardCLI.Commands.InitTest do
     assert collect_commands() == []
   end
 
-  test "node-agent role runs license, node-agent env init, and start only without requiring host" do
+  test "node-agent role runs env init and start only without requiring host" do
     runtime = base_runtime(%{read_install_role: fn -> {:ok, "node-agent"} end})
 
     assert {:ok, message} = Init.run([], runtime)
@@ -212,7 +199,6 @@ defmodule OrchardCLI.Commands.InitTest do
     refute message =~ "console enable"
 
     assert collect_commands() == [
-             {:license, ["status"]},
              {:env, ["init", "--service", "node-agent"]},
              {:start, []}
            ]
@@ -229,7 +215,6 @@ defmodule OrchardCLI.Commands.InitTest do
     assert message =~ "Role: node-agent"
 
     assert collect_commands() == [
-             {:license, ["status"]},
              {:env, ["init", "--service", "node-agent"]},
              {:start, []}
            ]
@@ -272,37 +257,10 @@ defmodule OrchardCLI.Commands.InitTest do
     assert message =~ "Then run: orchardctl status"
 
     assert collect_commands() == [
-             {:license, ["status"]},
              {:env, ["init", "--service", "controller"]},
              {:migrate, []},
              {:transport, ["enable-local-https", "--host", "controller.lan", "--port", "8443"]}
            ]
-  end
-
-  test "invalid license stops before env init and prints supported provisioning guidance" do
-    parent = self()
-
-    runtime =
-      base_runtime(%{
-        command_runner: fn command, args, _runtime ->
-          send(parent, {:command, command, args})
-
-          {:ok,
-           %{
-             message: "License status: missing\n  Message: No local license bundle found.",
-             valid?: false
-           }}
-        end
-      })
-
-    assert {:error, message, 1} = Init.run(["--host", "mawarduri"], runtime)
-
-    assert message =~ "License is not valid; first-run initialization stopped."
-    assert message =~ "sudo orchardctl license activate --key-stdin"
-    assert message =~ "Resume: sudo orchardctl init --host mawarduri --port 8443"
-    refute message =~ "license-secret"
-
-    assert collect_commands() == [{:license, ["status"]}]
   end
 
   test "accepts bare ok from composed commands" do
@@ -314,7 +272,6 @@ defmodule OrchardCLI.Commands.InitTest do
           send(parent, {:command, command, args})
 
           case command do
-            :license -> {:ok, %{message: "License status: valid", valid?: true}}
             :env -> :ok
             :migrate -> :ok
             :transport -> :ok
@@ -326,7 +283,7 @@ defmodule OrchardCLI.Commands.InitTest do
 
     assert {:ok, message} = Init.run(["--host", "mawarduri"], runtime)
     assert message =~ "First-run initialization complete."
-    assert message =~ "Step 2: sudo orchardctl env init --service all\nOK"
+    assert message =~ "Step 1: sudo orchardctl env init --service all\nOK"
   end
 
   test "subcommand failure stops immediately with failing subcommand and resume guidance" do
@@ -338,7 +295,6 @@ defmodule OrchardCLI.Commands.InitTest do
           send(parent, {:command, command, args})
 
           case command do
-            :license -> {:ok, %{message: "License status: valid", valid?: true}}
             :env -> {:ok, "Environment files: ok"}
             :migrate -> {:error, "Error: migration_failed", 1}
             other -> flunk("unexpected command after migrate failure: #{inspect(other)}")
@@ -354,7 +310,6 @@ defmodule OrchardCLI.Commands.InitTest do
     assert message =~ "Error: migration_failed"
 
     assert collect_commands() == [
-             {:license, ["status"]},
              {:env, ["init", "--service", "all"]},
              {:migrate, []}
            ]
@@ -369,7 +324,6 @@ defmodule OrchardCLI.Commands.InitTest do
           send(parent, {:command, command, args})
 
           case command do
-            :license -> {:ok, %{message: "License status: valid", valid?: true}}
             :env -> {:ok, "Environment files: ok"}
             :migrate -> {:ok, "Database migrations completed."}
             :transport -> {:ok, "Direct HTTPS transport enabled."}
@@ -381,7 +335,7 @@ defmodule OrchardCLI.Commands.InitTest do
 
     assert {:error, message, 1} = Init.run(["--host", "mawarduri", "--console"], runtime)
 
-    assert message =~ "Step 5: sudo orchardctl console enable"
+    assert message =~ "Step 4: sudo orchardctl console enable"
     assert message =~ "First-run initialization stopped at: sudo orchardctl start"
     assert message =~ "Then rerun: sudo orchardctl init --host mawarduri --port 8443"
     refute message =~ "Then rerun: sudo orchardctl init --host mawarduri --port 8443 --console"

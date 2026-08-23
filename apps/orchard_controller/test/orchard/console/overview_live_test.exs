@@ -130,86 +130,11 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeDegradedStub do
   end
 end
 
-defmodule OrchardConsole.OverviewLiveTest.LicensingValidStub do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :valid,
-      message: "License bundle is valid.",
-      bundle_path: "/tmp/current.json",
-      expires_at: ~U[2027-04-15 00:00:00Z],
-      license_id: "lic_console_valid",
-      machine_id: "mach_console_valid",
-      licensee: "Acme Orchard Lab",
-      max_machines: 3,
-      metadata: %{program: "aieh", reference: "aieh-2026-001"}
-    }
-  end
-end
-
-defmodule OrchardConsole.OverviewLiveTest.LicensingMissingStub do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :missing_bundle,
-      message: "No local license bundle is installed.",
-      bundle_path: "/tmp/current.json"
-    }
-  end
-end
-
-defmodule OrchardConsole.OverviewLiveTest.LicensingExpiredStub do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :expired,
-      message: "License bundle has expired.",
-      bundle_path: "/tmp/current.json",
-      expires_at: ~U[2026-04-15 00:00:00Z],
-      licensee: "Expired Orchard Lab"
-    }
-  end
-end
-
-defmodule OrchardConsole.OverviewLiveTest.LicensingPartialTrackingStub do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :valid,
-      message: "License bundle is valid.",
-      bundle_path: "/tmp/current.json",
-      metadata: %{program: "   ", reference: "aieh-2026-001"}
-    }
-  end
-end
-
-defmodule OrchardConsole.OverviewLiveTest.LicensingInvalidSignatureRawFieldsStub do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :invalid_license_signature,
-      message: "License certificate signature is invalid.",
-      bundle_path: "/tmp/current.json",
-      license_id: "lic_hidden",
-      machine_id: "mach_hidden",
-      licensee: "Hidden Licensee",
-      max_machines: 1,
-      metadata: %{program: "aieh", reference: "aieh-2026-001"}
-    }
-  end
-end
-
 defmodule OrchardConsole.OverviewLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import Ecto.Query
-  import Orchard.TestSupport.LicenseGateHelpers
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Endpoint
   alias Orchard.Governance
@@ -227,7 +152,6 @@ defmodule OrchardConsole.OverviewLiveTest do
       :console,
       Keyword.merge(previous,
         runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeStub,
-        licensing_impl: OrchardConsole.OverviewLiveTest.LicensingValidStub,
         refresh_interval_ms: 60_000
       )
     )
@@ -249,18 +173,6 @@ defmodule OrchardConsole.OverviewLiveTest do
   end
 
   describe "GET /console" do
-    test "hard mode keeps overview and license panel reachable", %{conn: conn} do
-      set_license_enforcement(:hard)
-      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
-
-      {:ok, view, html} = live(conn, "/console")
-
-      assert html =~ "System Status"
-      assert has_element?(view, "#overview-license-card")
-      assert html =~ "orchardctl license activate"
-      assert html =~ "orchardctl license status"
-    end
-
     test "renders overview page with section titles", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
@@ -367,38 +279,6 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "Overview"
     end
 
-    test "renders valid license badge in the shared shell", %{conn: conn} do
-      set_license_enforcement(:off)
-
-      {:ok, view, _html} = live(conn, "/console")
-
-      badge = view |> element("#console-license-badge") |> render()
-      assert badge =~ "Acme Orchard Lab"
-      refute badge =~ "orchardctl license activate"
-    end
-
-    test "hides source-dev missing license noise in the shared shell", %{conn: conn} do
-      set_license_enforcement(:off)
-      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
-
-      {:ok, view, html} = live(conn, "/console")
-
-      refute has_element?(view, "#console-license-badge")
-      refute has_element?(view, "#overview-license-card")
-      refute html =~ "orchardctl license activate"
-    end
-
-    test "renders activation badge in the shared shell for invalid licenses", %{conn: conn} do
-      set_license_enforcement(:warn)
-      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
-
-      {:ok, view, _html} = live(conn, "/console")
-
-      badge = view |> element("#console-license-badge") |> render()
-      assert badge =~ "Missing bundle"
-      assert badge =~ "orchardctl license activate --key-stdin"
-    end
-
     test "sidebar toggle button has JS toggle_class command wired", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
@@ -406,85 +286,6 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "phx-click"
       assert html =~ "sidebar-collapsed"
       assert html =~ "console-shell"
-    end
-  end
-
-  describe "license visibility" do
-    test "overview license card renders valid license identity and expiry", %{conn: conn} do
-      set_license_enforcement(:off)
-
-      {:ok, view, _html} = live(conn, "/console")
-
-      card = view |> element("#overview-license-card") |> render()
-      assert card =~ "Acme Orchard Lab"
-      assert card =~ "2027-04-15T00:00:00Z"
-      assert card =~ "program=aieh ref=aieh-2026-001"
-      refute card =~ "Activation required"
-    end
-
-    test "overview license card renders sanitized partial tracking", %{conn: conn} do
-      put_console_config(
-        licensing_impl: OrchardConsole.OverviewLiveTest.LicensingPartialTrackingStub
-      )
-
-      {:ok, view, _html} = live(conn, "/console")
-
-      card = view |> element("#overview-license-card") |> render()
-      assert card =~ "ref=aieh-2026-001"
-      refute card =~ "program="
-    end
-
-    test "overview hides expired license noise when enforcement is off", %{conn: conn} do
-      set_license_enforcement(:off)
-      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingExpiredStub)
-
-      {:ok, view, html} = live(conn, "/console")
-
-      refute has_element?(view, "#console-license-badge")
-      refute has_element?(view, "#overview-license-card")
-      refute html =~ "Expired Orchard Lab"
-      refute html =~ "orchardctl license activate"
-    end
-
-    test "overview license card omits unsafe identity and tracking for invalid signature", %{
-      conn: conn
-    } do
-      set_license_enforcement(:warn)
-
-      put_console_config(
-        licensing_impl: OrchardConsole.OverviewLiveTest.LicensingInvalidSignatureRawFieldsStub
-      )
-
-      {:ok, view, _html} = live(conn, "/console")
-
-      card = view |> element("#overview-license-card") |> render()
-      refute card =~ "Hidden Licensee"
-      refute card =~ "program=aieh"
-      refute card =~ "ref=aieh-2026-001"
-    end
-
-    test "overview license card renders activation guidance for a missing license", %{conn: conn} do
-      set_license_enforcement(:warn)
-      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
-
-      {:ok, view, _html} = live(conn, "/console")
-
-      activation = view |> element("#overview-license-activation") |> render()
-      assert activation =~ "Activation required"
-      assert activation =~ "orchardctl license activate --key-stdin"
-    end
-
-    test "overview license card renders activation guidance for an expired license", %{conn: conn} do
-      set_license_enforcement(:hard)
-      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingExpiredStub)
-
-      {:ok, view, _html} = live(conn, "/console")
-
-      card = view |> element("#overview-license-card") |> render()
-      assert card =~ "Expired"
-      assert card =~ "Expired Orchard Lab"
-      assert card =~ "2026-04-15T00:00:00Z"
-      assert card =~ "orchardctl license activate --key-stdin"
     end
   end
 

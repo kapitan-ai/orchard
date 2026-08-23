@@ -3,9 +3,6 @@ defmodule OrchardConsole.SettingsLiveTest do
 
   import Phoenix.LiveViewTest
 
-  import Orchard.TestSupport.LicenseGateHelpers,
-    only: [activation_guidance: 0, set_license_enforcement: 1]
-
   alias Orchard.ConsoleSettings
 
   @moduletag :live
@@ -19,7 +16,6 @@ defmodule OrchardConsole.SettingsLiveTest do
       :console,
       Keyword.merge(previous,
         playground_impl: __MODULE__.PlaygroundStub,
-        licensing_impl: __MODULE__.LicensingValidStub,
         runtime_impl: __MODULE__.RuntimeStub
       )
     )
@@ -52,7 +48,7 @@ defmodule OrchardConsole.SettingsLiveTest do
       assert html =~ "console-sidebar"
       assert has_element?(view, ~s(a[aria-current="page"][href="/console/settings"]))
 
-      assert has_element?(view, "#settings-license-card")
+      refute has_element?(view, "#settings-license-card")
       assert has_element?(view, "#settings-appearance-card")
       assert has_element?(view, "#settings-inference-defaults-card")
       assert has_element?(view, "#settings-advanced-card")
@@ -70,74 +66,6 @@ defmodule OrchardConsole.SettingsLiveTest do
       assert card_html =~ "no server-side persistence"
       assert card_html =~ "sidebar footer"
       assert Regex.scan(~r/id="theme-toggle"/, html) |> length() == 1
-    end
-  end
-
-  describe "License Status" do
-    test "hides missing license activation noise when enforcement is off", %{conn: conn} do
-      set_license_enforcement(:off)
-      put_console_config(licensing_impl: __MODULE__.LicensingMissingStub)
-
-      {:ok, view, html} = live(conn, "/console/settings")
-
-      refute has_element?(view, "#settings-license-card")
-      refute html =~ activation_guidance()
-      assert has_element?(view, "#settings-appearance-card")
-      assert has_element?(view, "#settings-inference-defaults-card")
-      assert has_element?(view, "#settings-advanced-card")
-    end
-
-    test "renders display-safe license fields as read-only status", %{conn: conn} do
-      set_license_enforcement(:off)
-
-      {:ok, view, _html} = live(conn, "/console/settings")
-
-      card_html = view |> element("#settings-license-card") |> render()
-
-      assert card_html =~ "Valid"
-      assert card_html =~ "License bundle is valid."
-      assert card_html =~ "2027-04-15T00:00:00Z"
-      assert card_html =~ "Settings Orchard Lab"
-      assert card_html =~ "program=settings ref=settings-001"
-      refute card_html =~ activation_guidance()
-      refute card_html =~ "license_certificate"
-      refute card_html =~ "machine_certificate"
-      refute card_html =~ "PRIVATE KEY"
-      refute card_html =~ "phx-submit"
-      refute card_html =~ "phx-click"
-    end
-
-    test "renders fetched activation guidance in warn mode when the license is not activated", %{
-      conn: conn
-    } do
-      set_license_enforcement(:warn)
-      put_console_config(licensing_impl: __MODULE__.LicensingMissingStub)
-
-      {:ok, view, _html} = live(conn, "/console/settings")
-
-      card_html = view |> element("#settings-license-card") |> render()
-      activation_html = view |> element("#settings-license-activation") |> render()
-
-      assert card_html =~ "Missing bundle"
-      assert card_html =~ "No local license bundle is installed."
-      assert activation_html =~ "Activation required"
-      assert activation_html =~ activation_guidance()
-    end
-
-    test "degrades safely when license inspection fails", %{conn: conn} do
-      set_license_enforcement(:hard)
-      put_console_config(licensing_impl: __MODULE__.LicensingProbeFailureStub)
-
-      {:ok, view, _html} = live(conn, "/console/settings")
-
-      card_html = view |> element("#settings-license-card") |> render()
-
-      assert card_html =~ "Malformed bundle"
-      assert card_html =~ "License inspection failed."
-      assert card_html =~ activation_guidance()
-      refute card_html =~ "license_certificate"
-      refute card_html =~ "machine_certificate"
-      refute card_html =~ "PRIVATE KEY"
     end
   end
 
@@ -637,33 +565,6 @@ defmodule OrchardConsole.SettingsLiveTest do
                max_completion_tokens: 128
              } = ConsoleSettings.get_playground_defaults()
     end
-  end
-
-  defmodule LicensingValidStub do
-    def inspect_local do
-      %Orchard.Licensing{
-        state: :valid,
-        message: "License bundle is valid.",
-        bundle_path: "/tmp/current.json",
-        expires_at: ~U[2027-04-15 00:00:00Z],
-        licensee: "Settings Orchard Lab",
-        metadata: %{program: "settings", reference: "settings-001"}
-      }
-    end
-  end
-
-  defmodule LicensingMissingStub do
-    def inspect_local do
-      %Orchard.Licensing{
-        state: :missing_bundle,
-        message: "No local license bundle is installed.",
-        bundle_path: "/tmp/current.json"
-      }
-    end
-  end
-
-  defmodule LicensingProbeFailureStub do
-    def inspect_local, do: raise("probe failed")
   end
 
   defmodule RuntimeStub do

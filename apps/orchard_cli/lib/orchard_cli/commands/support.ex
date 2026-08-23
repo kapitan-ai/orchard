@@ -31,9 +31,11 @@ defmodule OrchardCLI.Commands.Support do
   @sensitive_token_partners ~w(access api auth bearer id license refresh secret session)
   @sensitive_license_partners ~w(activation key secret token)
   @sensitive_bare_license_keys ~w(license orchard_license)
+  @legacy_product_license_diagnostic_keys ~w(
+    license_enforcement license_mode orchard_license_enforcement orchard_license_mode
+  )
   @safe_diagnostic_keys ~w(
-    completion_tokens input_tokens license_enforcement license_mode orchard_license_enforcement
-    orchard_license_mode orchard_tokenizer_executable output_tokens prompt_tokens
+    completion_tokens input_tokens orchard_tokenizer_executable output_tokens prompt_tokens
     supports_prompt_token_ids token_count tokenizer_executable tokens_per_second total_tokens
     worker_supports_prompt_token_ids
   )
@@ -528,6 +530,7 @@ defmodule OrchardCLI.Commands.Support do
     {parts, compact} = key_identity(key)
 
     cond do
+      legacy_product_license_diagnostic_key?(compact) -> true
       safe_diagnostic_key?(compact) -> false
       sensitive_key?(parts, compact) -> true
       bare_license_key?(compact) -> true
@@ -540,6 +543,7 @@ defmodule OrchardCLI.Commands.Support do
     {parts, compact} = key_identity(key)
 
     cond do
+      legacy_product_license_diagnostic_key?(compact) -> true
       safe_diagnostic_key?(compact) -> false
       sensitive_key?(parts, compact) -> true
       bare_license_key?(compact) -> true
@@ -569,6 +573,9 @@ defmodule OrchardCLI.Commands.Support do
   end
 
   defp bare_license_key?(compact), do: compact in @sensitive_bare_license_keys
+
+  defp legacy_product_license_diagnostic_key?(compact),
+    do: compact in @legacy_product_license_diagnostic_keys
 
   defp sensitive_log_payload_key?(parts, compact) do
     compact in @sensitive_log_payload_keys or
@@ -1407,7 +1414,7 @@ defmodule OrchardCLI.Commands.Support do
 
     Redaction policy:
     - config/*.env files are line-redacted for keys that commonly contain secrets.
-    - TLS keys, license bundles, model artifacts, and request payload bodies are not collected.
+    - TLS keys, legacy credential material, model artifacts, and request payload bodies are not collected.
     - logs are bounded by per-file, file-count, and aggregate tail-copy caps.
     - collected log lines containing common sensitive markers are redacted.
     """

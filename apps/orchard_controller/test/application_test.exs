@@ -699,13 +699,8 @@ defmodule OrchardApplicationTest do
     assert config.rate_limiting == [max_events: 50, interval: 60_000]
   end
 
-  test "test environment aligns shared licensing paths with tmp/test" do
-    licensing = Application.fetch_env!(:orchard_shared, :licensing)
-
-    assert Path.type(licensing[:bundle_path]) == :absolute
-    assert Path.type(licensing[:node_identity_path]) == :absolute
-    assert String.ends_with?(licensing[:bundle_path], "/tmp/test/config/licensing/current.json")
-    assert String.ends_with?(licensing[:node_identity_path], "/tmp/test/data/node-id")
+  test "test environment does not configure product licensing" do
+    assert Application.get_env(:orchard_shared, :licensing) == nil
   end
 
   defp refute_metrics_generation do

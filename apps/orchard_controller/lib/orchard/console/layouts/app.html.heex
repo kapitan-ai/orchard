@@ -26,24 +26,8 @@
     <%!-- Navigation --%>
     <.sidebar_nav active={assigns[:active_nav] || :overview} />
 
-    <%!-- Sidebar footer: license + version + collapse toggle --%>
+    <%!-- Sidebar footer: version + collapse toggle --%>
     <div class="p-3 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
-      <div
-        :if={OrchardConsole.LicenseStatus.visible?(@license_status)}
-        id="console-license-badge"
-        class="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-2 text-center dark:border-slate-700 dark:bg-slate-900/60"
-        role="status"
-      >
-        <.badge tone={OrchardConsole.LicenseStatus.badge_tone(@license_status)}>
-          {OrchardConsole.LicenseStatus.badge_label(@license_status)}
-        </.badge>
-        <p
-          :if={!OrchardConsole.LicenseStatus.valid?(@license_status)}
-          class="mt-1 text-xs leading-4 text-amber-700 dark:text-amber-300"
-        >
-          {@license_status.activation_guidance}
-        </p>
-      </div>
       <div id="console-sidebar-version" class="console-sidebar-version mb-2 text-center">
         <span class="sidebar-label text-xs text-slate-400 font-mono">
           {OrchardConsole.display_version()}

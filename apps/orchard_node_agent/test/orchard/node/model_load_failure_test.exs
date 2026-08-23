@@ -242,25 +242,6 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     assert f.message == "node runtime is at loaded-model capacity"
   end
 
-  test "license_invalid carries operator guidance in existing response fields" do
-    message = "Node-agent license invalid: activate Orchard"
-    f = ModelLoadFailure.from_reason({:license_invalid, message})
-
-    assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
-    assert f.code == "license_invalid"
-    assert f.message == message
-  end
-
-  test "to_response for license_invalid" do
-    message = "Node-agent license invalid: activate Orchard"
-    response = ModelLoadFailure.to_response({:license_invalid, message})
-
-    assert response.placement_state == :PLACEMENT_STATE_FAILED
-    assert response.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
-    assert response.failure_code == "license_invalid"
-    assert response.failure_message == message
-  end
-
   test "to_response for model_capacity_exhausted" do
     response = ModelLoadFailure.to_response(:model_capacity_exhausted)
     assert %EnsureModelLoadedResponse{} = response

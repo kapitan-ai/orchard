@@ -40,21 +40,15 @@ defmodule OrchardConsole.TenantDetailLive do
 
   @impl true
   def handle_event("create_api_key", %{"api_key" => params}, socket) do
-    OrchardConsole.LicenseGate.guard(socket, fn ->
-      create_api_key(socket, params)
-    end)
+    create_api_key(socket, params)
   end
 
   def handle_event("revoke_api_key", %{"id" => api_key_id}, socket) do
-    OrchardConsole.LicenseGate.guard(socket, fn ->
-      revoke_api_key(socket, api_key_id)
-    end)
+    revoke_api_key(socket, api_key_id)
   end
 
   def handle_event("disable_api_client", %{"id" => api_client_id}, socket) do
-    OrchardConsole.LicenseGate.guard(socket, fn ->
-      disable_api_client(socket, api_client_id)
-    end)
+    disable_api_client(socket, api_client_id)
   end
 
   def handle_event("dismiss_generated_secret", _params, socket) do
