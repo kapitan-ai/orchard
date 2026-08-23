@@ -171,7 +171,7 @@ defmodule Orchard.API.EndpointRegressionTest do
       end
     end
 
-    test "streaming inference rejects malformed Accept quality values", %{conn: conn} do
+    test "streaming inference rejects invalid Accept quality values", %{conn: conn} do
       token = create_api_token!("malformed-inference-accept-quality")
 
       for {path, params} <- [
@@ -184,7 +184,7 @@ defmodule Orchard.API.EndpointRegressionTest do
             {"/v1/responses",
              %{"model" => "nonexistent@v1", "input" => "hello", "stream" => true}}
           ],
-          quality <- ["bogus", "0.5junk"] do
+          quality <- ["bogus", "0.5junk", "2"] do
         response =
           conn
           |> put_req_header("accept", "text/event-stream;q=#{quality}")
