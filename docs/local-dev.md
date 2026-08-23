@@ -477,6 +477,33 @@ The `listen_host` must not be `0.0.0.0` or `::`.
 Allowed CIDRs must not contain `0.0.0.0/0` or `::/0`.
 BEAM target services must be admitted and BEAM target hosts must fall inside `allowed_cidrs`.
 
+#### Source-Dev Controller Transport
+
+Source-dev Controllers default to `ORCHARD_TRANSPORT_MODE=plain_http_localhost` and listen on `http://127.0.0.1:4000`. Operators may instead declare an HTTPS reverse proxy with the same transport and trusted-forwarded-header contract as a packaged Controller:
+
+```bash
+ORCHARD_TRANSPORT_MODE=reverse_proxy \
+ORCHARD_PUBLIC_HOST=orchard.internal \
+ORCHARD_PUBLIC_PORT=443 \
+mise exec -- bin/dev-controller
+```
+
+The proxy terminates HTTPS and forwards to `http://127.0.0.1:4000`. It must send one valid value for each of `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Port`, and `X-Forwarded-Proto`. Orchard trusts loopback proxy addresses by default and strips forwarded headers from untrusted peers or invalid header sets.
+
+Set `ORCHARD_API_BIND_IP` only when the proxy cannot reach the loopback backend. A non-loopback bind requires an explicit, non-empty `ORCHARD_TRUSTED_PROXIES` CIDR allowlist:
+
+```bash
+ORCHARD_TRANSPORT_MODE=reverse_proxy \
+ORCHARD_API_BIND_IP=192.168.1.10 \
+ORCHARD_TRUSTED_PROXIES=192.168.1.20/32 \
+ORCHARD_PUBLIC_HOST=orchard.internal \
+mise exec -- bin/dev-controller
+```
+
+With a valid reverse-proxy declaration, `public_api_https_enabled` passes through the existing readiness evaluator. This is a deployment assertion, not an external proxy reachability test; run an authenticated inference smoke through the public HTTPS URL before opening access to clients.
+
+`direct_https` remains release-only and is rejected in source dev. Source dev does not own certificate generation, certificate custody, or a direct Cowboy HTTPS listener.
+
 #### Packaged Controller Transport (release only)
 
 These variables apply to packaged/release controller installs, not source dev:
@@ -621,8 +648,8 @@ hostname change or expiry:
 sudo orchardctl tls init --force
 ```
 
-Source dev does not require TLS setup — the dev controller uses plain HTTP on
-localhost.
+Source dev does not require TLS setup by default. It uses plain HTTP on localhost
+unless an operator selects the supported external reverse-proxy path above.
 
 See [packaging/pkg/README.md](../packaging/pkg/README.md) for the full
 operator workflow, permission expectations, and external certificate setup.
