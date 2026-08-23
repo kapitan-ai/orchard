@@ -281,28 +281,25 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert output =~ "controller launchd service(s) were installed but not started."
       assert output =~ "Next steps for first-run setup:"
 
-      assert output =~
-               "1. Provide or verify the Orchard license using the supported license activation path."
-
-      assert output =~ "2. Run: sudo orchardctl env init --service controller"
+      assert output =~ "1. Run: sudo orchardctl env init --service controller"
 
       assert output =~
-               "3. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings."
+               "2. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings."
 
       assert output =~
                "Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to every node-agent Mac."
 
-      assert output =~ "4. Run: sudo orchardctl migrate"
+      assert output =~ "3. Run: sudo orchardctl migrate"
 
       assert output =~
-               "5. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json"
+               "4. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json"
 
       assert output =~
-               "6. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README."
+               "5. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README."
 
-      assert output =~ "7. Optional Console: sudo orchardctl console enable"
-      assert output =~ "8. Run: sudo orchardctl start"
-      assert output =~ "9. Verify: orchardctl status"
+      assert output =~ "6. Optional Console: sudo orchardctl console enable"
+      assert output =~ "7. Run: sudo orchardctl start"
+      assert output =~ "8. Verify: orchardctl status"
       refute output =~ "Run next: sudo orchardctl start"
       refute output =~ "Then run: sudo orchardctl start"
     end)
@@ -316,10 +313,10 @@ defmodule OrchardCLI.PackagingScriptTest do
 
       assert output =~ "node-agent launchd service(s) were installed but not started."
       assert output =~ "Next steps for first-run setup:"
-      assert output =~ "2. Run: sudo orchardctl env init --service node-agent"
+      assert output =~ "1. Run: sudo orchardctl env init --service node-agent"
 
       assert output =~
-               "3. Edit node-agent.env with ORCHARD_BEAM_NODE_NAME, ORCHARD_BEAM_COOKIE_FILE, EPMD/distribution ports, node display name, and worker settings."
+               "2. Edit node-agent.env with ORCHARD_BEAM_NODE_NAME, ORCHARD_BEAM_COOKIE_FILE, EPMD/distribution ports, node display name, and worker settings."
 
       assert output =~
                "Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to the controller Mac."
@@ -327,8 +324,8 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert output =~
                "Keep gRPC listener settings loopback unless intentionally using ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc compatibility fallback."
 
-      assert output =~ "4. Run: sudo orchardctl start"
-      assert output =~ "5. Verify: orchardctl status"
+      assert output =~ "3. Run: sudo orchardctl start"
+      assert output =~ "4. Verify: orchardctl status"
       refute output =~ "orchardctl migrate"
       refute output =~ "orchardctl cluster init"
       refute output =~ "transport enable-local-https"
@@ -345,21 +342,21 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert output =~
                "controller and node-agent launchd service(s) were installed but not started."
 
-      assert output =~ "2. Run: sudo orchardctl env init --service all"
+      assert output =~ "1. Run: sudo orchardctl env init --service all"
 
       assert output =~
-               "3. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings; review node-agent.env for matching BEAM node/cookie settings."
+               "2. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings; review node-agent.env for matching BEAM node/cookie settings."
 
       assert output =~
                "Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to every node-agent Mac."
 
-      assert output =~ "4. Run: sudo orchardctl migrate"
+      assert output =~ "3. Run: sudo orchardctl migrate"
 
       assert output =~
-               "5. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json"
+               "4. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json"
 
-      assert output =~ "8. Run: sudo orchardctl start"
-      assert output =~ "9. Verify: orchardctl status"
+      assert output =~ "7. Run: sudo orchardctl start"
+      assert output =~ "8. Verify: orchardctl status"
     end)
   end
 
@@ -383,7 +380,7 @@ defmodule OrchardCLI.PackagingScriptTest do
         assert output =~ "Next steps for first-run setup:"
         assert output =~ "Configure transport before start"
         assert output =~ "for reverse proxy or external certificates follow the package README"
-        assert output =~ "8. Run: sudo orchardctl start"
+        assert output =~ "7. Run: sudo orchardctl start"
       end)
     end
   end
@@ -512,7 +509,7 @@ defmodule OrchardCLI.PackagingScriptTest do
 
         refute output =~ "Configure transport before starting controller services"
         assert output =~ "Next steps for first-run setup:"
-        assert output =~ "8. Run: sudo orchardctl start"
+        assert output =~ "7. Run: sudo orchardctl start"
       end)
     end
   end

@@ -16,19 +16,19 @@
 
 - [x] 3.1 Remove shared validation, local-store, cache, status, and application wiring.
 - [x] 3.2 Remove license identity and tracking from health, logs, Sentry, telemetry, and support output while retaining secret redaction where independently useful.
-- [ ] 3.3 Remove licensing configuration, packaging defaults/hooks, documentation, fixtures, and licensing-only tests.
+- [x] 3.3 Remove licensing configuration, packaging defaults/hooks, documentation, fixtures, and licensing-only tests.
 - [x] 3.4 Verify legacy licensing environment variables are ignored and legacy bundle files are not read, changed, or deleted.
 - [x] 3.5 Verify unrelated auth, authorization, governance, quotas, accounting, billing, and legal attribution remain intact.
 
 ## 4. Validation and review
 
 - [x] 4.1 Run strict OpenSpec validation for `remove-product-licensing`.
-- [ ] 4.2 Run `mise exec -- mix format`.
-- [ ] 4.3 Run `mise exec -- mix compile --warnings-as-errors`.
-- [ ] 4.4 Run `mise exec -- mix credo --strict`.
-- [ ] 4.5 Run `mise exec -- mix dialyzer`.
-- [ ] 4.6 Run `mise exec -- mix test`.
-- [ ] 4.7 Run `mise exec -- mix test --cover`.
-- [ ] 4.8 Run applicable packaging and CLI wrapper tests.
+- [x] 4.2 Run `mise exec -- mix format`.
+- [x] 4.3 Run `mise exec -- mix compile --warnings-as-errors`.
+- [x] 4.4 Run `mise exec -- mix credo --strict`.
+- [x] 4.5 Run `mise exec -- mix dialyzer`.
+- [x] 4.6 Run `mise exec -- mix test`.
+- [x] 4.7 Run `mise exec -- mix test --cover`.
+- [x] 4.8 Run applicable packaging and CLI wrapper tests.
 - [ ] 4.9 Run RepoPrompt review/Oracle and No Mistakes on the final diff.
-- [ ] 4.10 Re-run residual product-license searches and inspect every remaining match.
+- [x] 4.10 Re-run residual product-license searches and inspect every remaining match.
