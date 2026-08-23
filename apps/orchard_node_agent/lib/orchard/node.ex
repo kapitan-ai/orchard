@@ -4,7 +4,6 @@ defmodule Orchard.Node do
   """
 
   alias Orchard.Cluster.V1.ModelRef
-  alias Orchard.Licensing
   alias Orchard.Node.{FakeRuntimeAdapter, WorkerRuntimeAdapter}
 
   @default_worker_executable "orchard-worker-mlx"
@@ -109,14 +108,6 @@ defmodule Orchard.Node do
 
   def runtime_adapter_impl do
     runtime_config()[:runtime_adapter_impl] || default_runtime_adapter_impl()
-  end
-
-  @spec license_enforcement() :: Licensing.enforcement()
-  def license_enforcement, do: Licensing.enforcement_mode()
-
-  @spec licensing_impl() :: module()
-  def licensing_impl do
-    runtime_config()[:licensing_impl] || Licensing
   end
 
   def worker_prefix_cache_mode do

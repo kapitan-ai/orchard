@@ -2,7 +2,6 @@ defmodule OrchardConsole.ModelHubLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
-  import Orchard.TestSupport.LicenseGateHelpers
 
   @moduletag :live
 
@@ -1139,29 +1138,6 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "Model imported successfully."
       assert has_element?(view, "#model-hub-download-models-link")
       refute has_element?(view, "#model-hub-download-playground-link")
-    end
-
-    test "hard mode denies download before starting coordinator work", %{conn: conn} do
-      set_license_enforcement(:hard)
-      {:ok, view, _html} = live(conn, "/console/model-hub")
-      _results = load_initial_results_and_detail(view)
-
-      html = view |> element("#model-hub-download-button") |> render_click()
-
-      assert_license_denial(html)
-      assert has_element?(view, "#model-hub-detail-content")
-      refute_receive {:stub_download_ref, _, _, _}, 100
-    end
-
-    test "warn mode permits download", %{conn: conn} do
-      set_license_enforcement(:warn)
-      {:ok, view, _html} = live(conn, "/console/model-hub")
-      _results = load_initial_results_and_detail(view)
-
-      view |> element("#model-hub-download-button") |> render_click()
-
-      assert_receive {:stub_download_ref, _ref, _repo_id, opts}, 200
-      assert opts[:activate] == true
     end
 
     test ":download_finished {:error, ...} shows error with retry", %{conn: conn} do

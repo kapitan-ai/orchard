@@ -327,17 +327,6 @@ defmodule Orchard.Node.ModelLoadFailure do
         "node runtime is at loaded-model capacity"
       )
 
-  def from_reason({:license_invalid, message}) when is_binary(message),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "license_invalid", message)
-
-  def from_reason(:license_invalid),
-    do:
-      new(
-        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
-        "license_invalid",
-        "Node-agent license invalid"
-      )
-
   # --- INTERNAL: manager-level ---
   def from_reason(:task_crashed),
     do:

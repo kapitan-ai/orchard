@@ -295,24 +295,6 @@ defmodule Orchard.SentryFilterTest do
     end
   end
 
-  test "preserves valid orchard machine hash and filters malformed values" do
-    event = %{
-      extra: %{
-        orchard_machine_id_hash: "abc123def4567890"
-      },
-      contexts: %{
-        orchard: %{
-          "orchard_machine_id_hash" => "not-a-valid-hash"
-        }
-      }
-    }
-
-    filtered = SentryFilter.filter(event)
-
-    assert filtered.extra.orchard_machine_id_hash == "abc123def4567890"
-    assert filtered.contexts.orchard["orchard_machine_id_hash"] == "[Filtered]"
-  end
-
   test "scrubs nested Keygen-style certificate and key payloads" do
     event = %{
       contexts: %{
@@ -358,23 +340,6 @@ defmodule Orchard.SentryFilterTest do
     assert filtered.extra["source_uri"] == "[Filtered]"
     assert filtered.extra["orchard_machine_id_hash"] == "abc123def4567890"
     refute inspect(filtered) =~ "/Library/Application Support/Orchard"
-  end
-
-  test "passes through non-sensitive license traceability fields" do
-    traceability = %{
-      orchard_license_state: "valid",
-      orchard_license_id: "lic_eval_123",
-      orchard_expires_at: "2027-04-15T00:00:00Z",
-      orchard_max_machines: 3,
-      orchard_tracking_program: "aieh",
-      orchard_tracking_reference: "aieh-2026-001",
-      orchard_build_channel: "trial",
-      orchard_build_ref: "abc1234"
-    }
-
-    event = %{extra: traceability}
-
-    assert SentryFilter.filter(event).extra == traceability
   end
 
   test "does not preserve raw licensee identity as Sentry traceability" do
@@ -501,13 +466,17 @@ defmodule Orchard.SentryFilterTest do
   test "canonicalizes app-relative first-party frames from a real crash stacktrace" do
     {exception, stacktrace} =
       try do
-        Orchard.Licensing.normalize_enforcement_mode!("ISSUE114_INVALID_MODE")
+        Orchard.StructCasting.cast_nested(
+          %{nested: "ISSUE114_INVALID_INPUT"},
+          :nested,
+          Orchard.StructCasting
+        )
       rescue
         raised -> {raised, __STACKTRACE__}
       end
 
-    assert {Orchard.Licensing, _function, _arity, location} = hd(stacktrace)
-    assert to_string(location[:file]) == "lib/orchard/licensing.ex"
+    assert {Orchard.StructCasting, _function, _arity, location} = hd(stacktrace)
+    assert to_string(location[:file]) == "lib/orchard/struct_casting.ex"
 
     payload =
       [exception: exception, stacktrace: stacktrace]
@@ -517,11 +486,14 @@ defmodule Orchard.SentryFilterTest do
 
     frames = get_in(payload, ["exception", Access.at(0), "stacktrace", "frames"])
 
-    assert %{"filename" => "apps/orchard_shared/lib/orchard/licensing.ex", "lineno" => lineno} =
+    assert %{
+             "filename" => "apps/orchard_shared/lib/orchard/struct_casting.ex",
+             "lineno" => lineno
+           } =
              List.last(frames)
 
     assert is_integer(lineno)
-    refute payload |> inspect() |> String.contains?("ISSUE114_INVALID_MODE")
+    refute payload |> inspect() |> String.contains?("ISSUE114_INVALID_INPUT")
   end
 
   test "filters app-relative frames whose module is not a loaded first-party module" do

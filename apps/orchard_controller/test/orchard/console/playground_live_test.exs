@@ -2,7 +2,6 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
-  import Orchard.TestSupport.LicenseGateHelpers
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ConsoleSettings
@@ -267,29 +266,6 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   # ===========================================================================
 
   describe "validation and submission" do
-    test "hard mode denies submit before starting a stream", %{conn: conn} do
-      set_license_enforcement(:hard)
-      {:ok, view, _html} = live(conn, "/console/playground")
-
-      html =
-        view
-        |> form("#playground-form", playground: %{model: "test-model@v1", prompt: "Hello"})
-        |> render_submit()
-
-      assert_license_denial(html)
-      assert has_element?(view, "#playground-form")
-      refute_receive {:stub_run_ref, _}, 100
-    end
-
-    test "warn mode permits submit", %{conn: conn} do
-      set_license_enforcement(:warn)
-      {:ok, view, _html} = live(conn, "/console/playground")
-
-      _ref = submit_prompt(view, "Hello in warn mode")
-
-      assert render(view) =~ "Hello in warn mode"
-    end
-
     test "rejects blank prompt with error", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/playground")
 

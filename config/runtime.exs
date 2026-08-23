@@ -594,16 +594,6 @@ default_node_runtime = fn root ->
   ]
 end
 
-default_licensing = fn root ->
-  [
-    bundle_path: Path.join([root, "config", "licensing", "current.json"]),
-    node_identity_path: Path.join([root, "data", "node-id"]),
-    keygen_api_base_url: "https://api.keygen.sh",
-    keygen_account_id: "6f872d6f-52ce-4bbe-8b3f-b57669753f34",
-    keygen_public_key: "f1a328edc3d42967e8545c1361d2dc22622fad52aad0dc8e5d3b3cb95d7cb18a"
-  ]
-end
-
 sentry_enrichment_enabled? = env_bool.("ORCHARD_SENTRY_ENRICHMENT_ENABLED", false)
 sentry_hash_secret = env_optional_string.("ORCHARD_SENTRY_HASH_SECRET")
 
@@ -669,29 +659,6 @@ if config_env() == :prod do
     System.get_env("ORCHARD_SUPPORT_ROOT") || "/Library/Application Support/Orchard"
 
   runtime_worker_backend = System.get_env("ORCHARD_WORKER_BACKEND") || "mlx"
-
-  license_enforcement_mode =
-    Orchard.Licensing.resolve_enforcement_mode(
-      env_optional_string.("ORCHARD_LICENSE_ENFORCEMENT"),
-      Orchard.BuildInfo.build_channel()
-    )
-
-  licensing_overrides =
-    [
-      bundle_path: env_optional_string.("ORCHARD_LICENSE_BUNDLE_PATH"),
-      node_identity_path: env_optional_string.("ORCHARD_NODE_IDENTITY_PATH"),
-      keygen_api_base_url: env_optional_string.("ORCHARD_KEYGEN_API_BASE_URL"),
-      keygen_account_id: env_optional_string.("ORCHARD_KEYGEN_ACCOUNT_ID"),
-      keygen_public_key: env_optional_string.("ORCHARD_KEYGEN_PUBLIC_KEY")
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-
-  licensing_config =
-    default_licensing.(orchard_support_root)
-    |> Keyword.merge(licensing_overrides)
-    |> Keyword.put(:enforcement_mode, license_enforcement_mode)
-
-  config :orchard_shared, :licensing, licensing_config
 
   config :orchard_controller, :node_trust,
     root:

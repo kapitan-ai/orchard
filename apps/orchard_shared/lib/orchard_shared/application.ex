@@ -5,7 +5,7 @@ defmodule OrchardShared.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [Orchard.Licensing.GateCache]
+    children = []
 
     Supervisor.start_link(children, strategy: :one_for_one, name: OrchardShared.Supervisor)
   end

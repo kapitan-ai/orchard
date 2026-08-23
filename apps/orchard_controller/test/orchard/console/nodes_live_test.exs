@@ -595,7 +595,6 @@ defmodule OrchardConsole.NodesLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
-  import Orchard.TestSupport.LicenseGateHelpers
 
   alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
@@ -643,18 +642,6 @@ defmodule OrchardConsole.NodesLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "GET /console/nodes" do
-    test "hard mode keeps nodes diagnostics reachable", %{conn: conn} do
-      set_license_enforcement(:hard)
-
-      {:ok, _view, html} = live(conn, "/console/nodes")
-
-      assert html =~ "Inventory Summary"
-      assert html =~ "Admission Review"
-      assert html =~ "Registered Nodes"
-      assert html =~ "Live Cluster"
-      assert html =~ "Control Plane"
-    end
-
     test "renders nodes page with section titles", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/nodes")
 

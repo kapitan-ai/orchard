@@ -24,9 +24,7 @@ defmodule OrchardConsole.TenantsLive do
 
   @impl true
   def handle_event("create_tenant", %{"tenant" => params}, socket) do
-    OrchardConsole.LicenseGate.guard(socket, fn ->
-      create_tenant(socket, params)
-    end)
+    create_tenant(socket, params)
   end
 
   @impl true

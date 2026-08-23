@@ -1,45 +1,3 @@
-defmodule OrchardNodeAgentApplicationTest.ValidLicense do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :valid,
-      message: "License bundle is valid.",
-      bundle_path: "/tmp/orchard-license.json",
-      license_id: "lic_valid_application_test",
-      machine_id: "mach_application_test",
-      licensee: "Orchard Test",
-      max_machines: 3,
-      metadata: %{program: "eval", reference: "phase-6"}
-    }
-  end
-end
-
-defmodule OrchardNodeAgentApplicationTest.ExpiredLicense do
-  @moduledoc false
-
-  def inspect_local do
-    %Orchard.Licensing{
-      state: :expired,
-      message: "License bundle has expired.",
-      bundle_path: "/tmp/orchard-license.json",
-      license_id: "lic_expired_application_test",
-      machine_id: "mach_application_test",
-      licensee: "Orchard Test",
-      max_machines: 3,
-      metadata: %{program: "eval", reference: "phase-6"}
-    }
-  end
-end
-
-defmodule OrchardNodeAgentApplicationTest.RaisingLicense do
-  @moduledoc false
-
-  def inspect_local do
-    raise "license store unavailable"
-  end
-end
-
 defmodule OrchardNodeAgentApplicationTest.BootstrapIdentityLoader do
   @moduledoc false
 
@@ -134,8 +92,6 @@ end
 defmodule OrchardNodeAgentApplicationTest do
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureLog
-
   alias OrchardNodeAgentApplicationTest.{
     BootstrapCookieInstaller,
     BootstrapDescriptorLoader,
@@ -145,9 +101,8 @@ defmodule OrchardNodeAgentApplicationTest do
     BootstrapStartupVerifier
   }
 
-  alias Orchard.Node.{Identity, LicenseEnforcer}
+  alias Orchard.Node.Identity
   alias Orchard.Node.SentryTelemetryBridge
-  alias Orchard.SentryContext
 
   @sentry_dsn "https://public@example.invalid/1"
 
@@ -179,8 +134,7 @@ defmodule OrchardNodeAgentApplicationTest do
       controller_enable_db_checks:
         Application.get_env(:orchard_controller, :enable_db_checks, true),
       node_agent_beam_peer_grants: Application.get_env(:orchard_node_agent, :beam_peer_grants),
-      node_agent_runtime: Application.get_env(:orchard_node_agent, :runtime, []),
-      shared_licensing: Application.get_env(:orchard_shared, :licensing, [])
+      node_agent_runtime: Application.get_env(:orchard_node_agent, :runtime, [])
     }
 
     controller_was_started = is_pid(Process.whereis(Orchard.Supervisor))
@@ -190,7 +144,6 @@ defmodule OrchardNodeAgentApplicationTest do
     stop_node_agent_app()
     remove_sentry_handler()
     SentryTelemetryBridge.detach()
-    SentryContext.clear_cached_license_status()
 
     Application.put_env(:orchard_controller, :start_repo, false)
     Application.put_env(:orchard_controller, :start_endpoint, false)
@@ -224,11 +177,8 @@ defmodule OrchardNodeAgentApplicationTest do
         previous_env.node_agent_beam_peer_grants
       )
 
-      Application.put_env(:orchard_shared, :licensing, previous_env.shared_licensing)
-
       remove_sentry_handler()
       SentryTelemetryBridge.detach()
-      SentryContext.clear_cached_license_status()
 
       if controller_was_started do
         {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
@@ -265,6 +215,67 @@ defmodule OrchardNodeAgentApplicationTest do
 
     Application.put_env(:orchard_node_agent, :beam_peer_grants, enabled: false)
     assert [Orchard.Node.Supervisor] = Orchard.NodeAgent.Application.child_specs()
+  end
+
+  test "controller and node-agent startup ignore legacy product-license configuration" do
+    legacy_root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-startup-license-#{System.unique_integer([:positive])}"
+      )
+
+    bundle_path = Path.join([legacy_root, "config", "licensing", "current.json"])
+    bundle = ~s({"license_certificate":"legacy","machine_certificate":"legacy"})
+    File.mkdir_p!(Path.dirname(bundle_path))
+    File.write!(bundle_path, bundle)
+    {:ok, before_stat} = File.stat(bundle_path)
+
+    previous_licensing = Application.get_env(:orchard_shared, :licensing)
+
+    legacy_env = %{
+      "ORCHARD_LICENSE_ENFORCEMENT" => "not-a-mode",
+      "ORCHARD_LICENSE_BUNDLE_PATH" => bundle_path,
+      "ORCHARD_KEYGEN_API_BASE_URL" => "not a url",
+      "ORCHARD_KEYGEN_ACCOUNT_ID" => "not-an-account",
+      "ORCHARD_KEYGEN_PUBLIC_KEY" => "not-a-key"
+    }
+
+    previous_env = Map.new(legacy_env, fn {key, _value} -> {key, System.get_env(key)} end)
+
+    Enum.each(legacy_env, fn {key, value} -> System.put_env(key, value) end)
+
+    Application.put_env(:orchard_shared, :licensing,
+      enforcement_mode: :hard,
+      bundle_path: bundle_path
+    )
+
+    for app <- [:orchard_node_agent, :orchard_controller] do
+      case Application.stop(app) do
+        :ok -> :ok
+        {:error, {:not_started, ^app}} -> :ok
+      end
+    end
+
+    on_exit(fn ->
+      restore_app_env(:orchard_shared, :licensing, previous_licensing)
+
+      Enum.each(previous_env, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+
+      File.rm_rf!(legacy_root)
+      assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+      assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
+    end)
+
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
+    assert File.read!(bundle_path) == bundle
+    assert {:ok, after_stat} = File.stat(bundle_path)
+    assert after_stat.size == before_stat.size
+    assert after_stat.mode == before_stat.mode
+    assert after_stat.mtime == before_stat.mtime
   end
 
   test "SPEC.md §7.5.0 peer-grant startup derives the runtime Node id from registered identity" do
@@ -464,100 +475,6 @@ defmodule OrchardNodeAgentApplicationTest do
       |> Enum.count(&(&1 == Sentry.LoggerHandler))
 
     assert handler_count == 1
-  end
-
-  test "startup logs valid local license traceability at info level" do
-    put_license_startup_config(:off, OrchardNodeAgentApplicationTest.ValidLicense)
-
-    log =
-      with_logger_level(:info, fn ->
-        capture_log([level: :info, metadata: :all], fn ->
-          assert :ok = LicenseEnforcer.enforce_startup!()
-        end)
-      end)
-
-    assert log =~ "Node-agent startup license tracking"
-    assert log =~ "orchard_license_state=valid"
-    assert log =~ "orchard_license_id=lic_valid_application_test"
-    assert log =~ "app=orchard_node_agent"
-    assert log =~ "enforcement=off"
-    refute log =~ "Orchard Test"
-  end
-
-  test "startup treats inspection failures as missing license when enforcement is off" do
-    put_license_startup_config(:off, OrchardNodeAgentApplicationTest.RaisingLicense)
-
-    log =
-      with_logger_level(:info, fn ->
-        capture_log([level: :info, metadata: :all], fn ->
-          assert :ok = LicenseEnforcer.enforce_startup!()
-        end)
-      end)
-
-    assert log =~ "Node-agent startup license tracking"
-    assert log =~ "orchard_license_state=missing"
-    assert log =~ "enforcement=off"
-  end
-
-  test "startup logs warning license traceability under warn enforcement" do
-    put_license_startup_config(:warn, OrchardNodeAgentApplicationTest.ExpiredLicense)
-
-    log =
-      capture_log([level: :warning, metadata: :all], fn ->
-        assert :ok = LicenseEnforcer.enforce_startup!()
-      end)
-
-    assert log =~ "Node-agent startup license warn"
-    assert log =~ "orchard_license_state=invalid"
-    assert log =~ "orchard_license_id=lic_expired_application_test"
-    assert log =~ "enforcement=warn"
-    refute log =~ "message="
-    refute log =~ "Orchard Test"
-  end
-
-  test "startup logs error license traceability before hard enforcement denial" do
-    put_license_startup_config(:hard, OrchardNodeAgentApplicationTest.ExpiredLicense)
-
-    log =
-      capture_log([level: :error, metadata: :all], fn ->
-        assert_raise RuntimeError,
-                     ~r/Node-agent startup blocked by licensing: expired/,
-                     fn -> LicenseEnforcer.enforce_startup!() end
-      end)
-
-    assert log =~ "Node-agent startup license deny"
-    assert log =~ "orchard_license_state=invalid"
-    assert log =~ "orchard_license_id=lic_expired_application_test"
-    assert log =~ "enforcement=hard"
-    refute log =~ "message="
-    refute log =~ "Orchard Test"
-  end
-
-  defp put_license_startup_config(enforcement, licensing_impl) do
-    shared_licensing =
-      :orchard_shared
-      |> Application.get_env(:licensing, [])
-      |> Keyword.put(:enforcement_mode, enforcement)
-      |> Keyword.put(:licensing_impl, licensing_impl)
-
-    node_runtime =
-      :orchard_node_agent
-      |> Application.get_env(:runtime, [])
-      |> Keyword.put(:licensing_impl, licensing_impl)
-
-    Application.put_env(:orchard_shared, :licensing, shared_licensing)
-    Application.put_env(:orchard_node_agent, :runtime, node_runtime)
-  end
-
-  defp with_logger_level(level, fun) do
-    previous_level = Logger.level()
-    Logger.configure(level: level)
-
-    try do
-      fun.()
-    after
-      Logger.configure(level: previous_level)
-    end
   end
 
   defp stop_controller_app do
