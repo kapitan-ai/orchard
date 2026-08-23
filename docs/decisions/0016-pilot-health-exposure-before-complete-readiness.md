@@ -6,6 +6,14 @@ Accepted.
 
 Owner decision recorded 2026-08-03 for pilot issue #118.
 
+### Amendment 2026-08-23
+
+Product licensing was removed from Orchard. The exposure boundary this decision
+established is unchanged, but the licensing fields named below no longer exist,
+so authenticated `GET /ops/v1/health` no longer reports them. The Context and
+Decision sections stay as authored to record the state that motivated the
+decision.
+
 ## Context
 
 `SPEC.md` §3.1 requires Controller readiness to include Postgres reachability,

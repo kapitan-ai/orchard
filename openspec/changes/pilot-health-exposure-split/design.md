@@ -1,7 +1,7 @@
 ## Context
 
 The current `HealthController` combines readiness evaluation with public rendering
-and observational build, transport, Console, runtime, licensing, reason, and
+and observational build, transport, Console, runtime, reason, and
 remediation detail. The evaluator is an M0 predicate, not the complete `SPEC.md`
 §3.1 aggregate. Pilot #118 needs the disclosure removed without inventing missing
 cache or leadership authorities.

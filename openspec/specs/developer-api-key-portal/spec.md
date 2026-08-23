@@ -8,7 +8,7 @@ These requirements cover identity and invite lifecycle, isolated authentication,
 ### Requirement: Developer Portal Is Isolated From Every Platform Authority
 
 Orchard SHALL expose a Developer Portal browser surface at `/portal/:organization_slug` that is distinct from Orchard Console.
-The portal SHALL NOT render operator Console chrome, other Organizations, nodes, license state, or cluster administration.
+The portal SHALL NOT render operator Console chrome, other Organizations, nodes, or cluster administration.
 A Portal User SHALL authorize only the Developer Portal for that Portal User's Organization.
 A Portal User session SHALL NOT authorize Public Inference, Operator API, Admin API, or Console access.
 This refines `SPEC.md` §2.3, §7.1, and §7.4a.

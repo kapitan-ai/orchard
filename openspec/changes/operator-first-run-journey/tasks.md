@@ -52,7 +52,7 @@
 ## 6. App-Guided Setup
 
 - [ ] 6.1 Update `docs/DESIGN.md` before implementation with reusable setup progress, blocker, resume, secret-output, and recovery patterns that follow existing Console and brand contracts.
-- [ ] 6.2 Add **Create Orchard on this Mac** for `all` and `controller` roles, composing lifecycle authorization, license validation, external Postgres preflight, public transport, migrations, first-admin initialization, internal node trust initialization, Console enablement, start, and readiness.
+- [ ] 6.2 Add **Create Orchard on this Mac** for `all` and `controller` roles, composing lifecycle authorization, external Postgres preflight, public transport, migrations, first-admin initialization, internal node trust initialization, Console enablement, start, and readiness.
 - [ ] 6.3 Add **Join existing Orchard** for the `node-agent` role, composing bundle preview/import, trust validation, local key generation, registration, pending-admission status, rejection, and activation without UI-only mutations.
 - [ ] 6.4 Add resumable setup checkpoints that preserve completed work and return to the exact failed boundary after app restart.
 - [ ] 6.5 Add all-in-one, Controller-only, and Controller-plus-worker browser/app integration tests with accessibility and failure-state coverage.

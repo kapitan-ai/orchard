@@ -205,7 +205,7 @@ readiness or observational probes run.
 
 #### Scenario: Detail contains observational metadata
 
-- **WHEN** authorized health detail includes build, transport, Console, runtime, licensing, or control-plane observations
+- **WHEN** authorized health detail includes build, transport, Console, runtime, or control-plane observations
 - **THEN** those observations do not alter the aggregate readiness result unless `SPEC.md` explicitly makes them readiness conditions
 
 #### Scenario: Detail is sanitized
@@ -226,7 +226,7 @@ Remote Controller version and build identity cease to be available without crede
   `503` with exactly `{"status":"error"}`
 - **AND** it rejects mismatched pairs, extra keys, and every other HTTP status
 - **AND** it derives Controller reachability and readiness from that exact pair
-- **AND** it does not expect build, runtime, licensing, reason, remediation, or check detail from `/health/ready`
+- **AND** it does not expect build, runtime, reason, remediation, or check detail from `/health/ready`
 - **AND** degraded output points to authenticated `GET /ops/v1/health` without
   adding an authenticated CLI probe
 

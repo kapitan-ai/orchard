@@ -1,7 +1,7 @@
 ## Why
 
 Orchard's unauthenticated readiness endpoint discloses build, transport, Console,
-runtime, licensing, check, reason, and remediation details while evaluating only an
+runtime, check, reason, and remediation details while evaluating only an
 M0 subset of the readiness conditions required by `SPEC.md` §3.1. The complete
 aggregate still depends on authoritative model, tenant, and API-key cache hydration
 and a confirmed conditional leadership source, but pilot #118 must not retain the

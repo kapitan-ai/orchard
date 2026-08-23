@@ -209,7 +209,7 @@ When installed via the macOS PKG:
 
 See [packaging/pkg/README.md](../packaging/pkg/README.md) for full operator
 documentation on transport modes, TLS management, CORS configuration,
-nginx/Caddy/Traefik reverse-proxy snippets, and the packaged licensing rollout
+nginx/Caddy/Traefik reverse-proxy snippets, and the packaged deployment rollout
 posture.
 
 ## Configuration
@@ -298,6 +298,7 @@ ELIXIR
 | `ORCHARD_NODE_AGENT_ADVERTISE_HOST` | Listen host or `127.0.0.1` | Controller-reachable host persisted during `orchardctl node join`; required when the listen host is wildcard-bound. |
 | `ORCHARD_NODE_AGENT_ADVERTISE_PORT` | Listen port | Controller-reachable gRPC compatibility port persisted during `orchardctl node join`. |
 | `ORCHARD_NODE_HOSTNAME` | Local hostname | Stable Node inventory hostname persisted during `orchardctl node join`. |
+| `ORCHARD_NODE_IDENTITY_ROOT` | `tmp/dev/config/node-identity` | Owner-only root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`. Override only when the support-root layout is intentionally changed. |
 | `ORCHARD_RUNTIME_CLIENT_PORT` | Same as listen port | Controller gRPC client port (must match listen port) |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
 | `ORCHARD_WORKER_SOCKET_DIR` | `/tmp/od-<hash>/ws` | Worker UDS directory |
@@ -307,7 +308,6 @@ ELIXIR
 | `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `auto` | Batch request admission limit reported by MLX workers for loaded placement capacity. Use an integer `>= 1` or `auto`. |
 | `ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `3` | Effective worker request limit when the max-concurrency setting is `auto`. |
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
-| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `hard` (distributed packaged channels) | Licensing mode for startup and packaged useful-work admission: `off`, `warn`, or `hard` |
 
 Node-agent runtime env vars are read when `config/dev.exs` is evaluated at BEAM
 startup. Restart `make dev`, `mise exec -- bin/dev`, or `mise exec --
@@ -1145,82 +1145,10 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 | `mlx-community/Llama-3.2-1B-Instruct-4bit` | ~664 MB | ~1.5s | Fastest, recommended for CI |
 | `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~5s | Good mid-size validation |
 
-## Licensing v0 notes
+## Legacy product-license compatibility
 
-### Contract
-
-- Orchard persists one Orchard-owned local bundle at
-  `<support_root>/config/licensing/current.json`.
-- The bundle stores only the extracted certificate pair:
-  - `license_certificate`
-  - `machine_certificate`
-- `orchardctl license activate --key-stdin` and
-  `orchardctl license activate --key-file PATH` use the stable Orchard node ID
-  as the machine fingerprint, check out both certificates, verify them offline,
-  and install the pair atomically without putting the activation key in process
-  arguments.
-- Failed activation keeps the previous local bundle untouched.
-- Orchard does **not** persist Keygen JSON envelopes as runtime state and does
-  **not** ship a Keygen admin token dependency.
-
-### Observation surfaces
-
-- `orchardctl license status` inspects only local licensing state; it does not
-  contact the controller.
-- Authenticated Controller `/ops/v1/health` exposes license state for observation
-  only; it remains **non-gating** and does not change readiness reasons or HTTP
-  status.
-- Public `/health/ready` and credential-free `orchardctl status` do not expose
-  license detail.
-
-### Optional tracking metadata
-
-License certificates may include optional AIEH/100E/SIP tracking metadata under
-the signed Keygen payload's `data.attributes.metadata` object. Orchard accepts
-both nested key forms: `orchardTracking` (observed Keygen checkout payload) and
-`orchard_tracking` (compatibility alias). Orchard extracts only the tracking
-`program` and `reference` fields and treats them as observational, non-gating
-attribution data.
-
-Recommended program values:
-
-- `aieh`
-- `100e`
-- `sip`
-
-Tracking metadata is derived only from the signed certificate payload. It is not
-persisted outside the certificate pair, and `current.json` continues to contain
-only `license_certificate` and `machine_certificate`. Missing or malformed
-tracking metadata does not affect license validity or startup enforcement.
-
-When present, tracking metadata appears in:
-
-- `orchardctl license status`
-- authenticated Controller `/ops/v1/health` JSON under `license.tracking`
-
-### Licensing environment variables
-
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev/test) / `hard` (distributed packaged channels) | Node-agent startup and packaged useful-work admission mode: `off`, `warn`, `hard` |
-| `ORCHARD_LICENSE_BUNDLE_PATH` | `<support_root>/config/licensing/current.json` | Rare override for Orchard-directed alternate layouts/debugging |
-| `ORCHARD_NODE_IDENTITY_PATH` | `<support_root>/data/node-id` | Override only when Orchard support-root layout is intentionally changed |
-| `ORCHARD_NODE_IDENTITY_ROOT` | `<support_root>/config/node-identity` | Owner-only root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`; override only when the support-root layout is intentionally changed |
-| `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional override for Orchard-directed alternate environments |
-| `ORCHARD_KEYGEN_ACCOUNT_ID` | built-in Orchard Keygen account ID | Optional override; keep paired with matching public key |
-| `ORCHARD_KEYGEN_PUBLIC_KEY` | built-in Orchard Ed25519 verification key | Optional override; keep paired with matching account ID |
-
-### Rollout and rollback posture
-
-- Source dev/test defaults to `off`; distributed packaged channels default to `hard`. Use an explicit `warn` override only for a deliberately waived rollout/rehearsal.
-- Node-agent licensing is checked at startup and at packaged useful-work admission points; source dev/test defaults keep it off unless explicitly enabled.
-- To remove runtime licensing impact quickly, set
-  `ORCHARD_LICENSE_ENFORCEMENT=off` and restart the node-agent (or the dev app
-  process when validating from source).
-
-### Confidence caveat
-
-Packaged-host lifecycle smoke was completed on 2026-04-18 for the current PKG lifecycle surface (`orchardctl status`, `start`, and `stop`), including non-root status checks. Treat that as historical packaged verification context rather than an active source-dev gate.
+Orchard no longer reads product-license environment variables or the historical local activation bundle.
+Existing files under `<support_root>/config/licensing/` are left untouched for compatibility and may be removed later through an explicitly approved data-cleanup process.
 
 ## Rollback Procedure
 
