@@ -95,7 +95,7 @@ defmodule OrchardCLITest do
   end
 
   test "top-level help forms print usage on stdout and do not halt" do
-    for argv <- [["help"], ["--help"], ["-h"]] do
+    for argv <- [["help"], ["--help"], ["-h"], ["help", "nodes"], ["--help", "nodes"]] do
       parent = self()
 
       output =
