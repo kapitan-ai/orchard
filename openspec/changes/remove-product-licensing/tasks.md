@@ -1,0 +1,34 @@
+## 1. Contract and compatibility
+
+- [x] 1.1 Update `SPEC.md` to remove product-licensing observations and state.
+- [x] 1.2 Reconcile affected active OpenSpec packages and main specs.
+- [x] 1.3 Confirm the public TDD seams before writing behavior tests.
+- [x] 1.4 Record that no licensing database schema exists and legacy bundles remain untouched.
+
+## 2. Public behavior tests and implementation
+
+- [ ] 2.1 Prove Controller product routes no longer deny useful work based on license state, then remove the HTTP gate.
+- [ ] 2.2 Prove Console actions and rendering are license-independent, then remove Console gates and status UI.
+- [ ] 2.3 Prove first-run and CLI routing no longer expose activation or status, then remove the license command.
+- [ ] 2.4 Prove Node Agent startup and runtime/model paths are license-independent, then remove enforcement.
+
+## 3. Shared and operational removal
+
+- [ ] 3.1 Remove shared validation, local-store, cache, status, and application wiring.
+- [ ] 3.2 Remove license identity and tracking from health, logs, Sentry, telemetry, and support output while retaining secret redaction where independently useful.
+- [ ] 3.3 Remove licensing configuration, packaging defaults/hooks, documentation, fixtures, and licensing-only tests.
+- [ ] 3.4 Verify legacy licensing environment variables are ignored and legacy bundle files are not read, changed, or deleted.
+- [ ] 3.5 Verify unrelated auth, authorization, governance, quotas, accounting, billing, and legal attribution remain intact.
+
+## 4. Validation and review
+
+- [x] 4.1 Run strict OpenSpec validation for `remove-product-licensing`.
+- [ ] 4.2 Run `mise exec -- mix format`.
+- [ ] 4.3 Run `mise exec -- mix compile --warnings-as-errors`.
+- [ ] 4.4 Run `mise exec -- mix credo --strict`.
+- [ ] 4.5 Run `mise exec -- mix dialyzer`.
+- [ ] 4.6 Run `mise exec -- mix test`.
+- [ ] 4.7 Run `mise exec -- mix test --cover`.
+- [ ] 4.8 Run applicable packaging and CLI wrapper tests.
+- [ ] 4.9 Run RepoPrompt review/Oracle and No Mistakes on the final diff.
+- [ ] 4.10 Re-run residual product-license searches and inspect every remaining match.

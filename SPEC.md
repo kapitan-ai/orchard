@@ -286,12 +286,12 @@ Prometheus metrics are served on the public/admin/operator API listener above; t
   `{"status":"ok"}` when the active readiness predicate passes, or HTTP `503`
   with exactly `{"status":"error"}` when it fails.
 * Public health responses SHALL NOT include checks, reasons, remediation, version,
-  build, transport, Console, runtime, licensing, tenant, or user details.
+  build, transport, Console, runtime, tenant, or user details.
 * Detailed diagnostics SHALL be available only through authenticated Operator
   `GET /ops/v1/health` using the cluster-scoped Operator-or-admin authorization
   boundary. The response SHALL include `Cache-Control: no-store`, identify its
   readiness contract, and may include sanitized checks, reasons, remediation,
-  build, transport, Console, runtime, and licensing observations.
+  build, transport, Console, and runtime observations.
 * Until authoritative cache-loaded and conditional leadership sources exist, the
   implementation MAY temporarily use the unchanged M0-era predicate identified as
   `orchard.readiness.legacy_m0.v1`. This staged predicate does not satisfy or claim
@@ -2773,7 +2773,7 @@ shared HTTP listener and the operator-or-admin bearer boundary for `/metrics`.
 Base path: `/portal/:organization_slug`
 
 The Developer Portal SHALL be a distinct browser surface from Orchard Console.
-It SHALL NOT render operator Console chrome, other Organizations, nodes, license state, or cluster administration.
+It SHALL NOT render operator Console chrome, other Organizations, nodes, or cluster administration.
 A Portal User SHALL be an interactive identity scoped to one Organization and SHALL authorize only Developer Portal access.
 A Portal User SHALL NOT be treated as an Operator, Service Account, Owner Contact, Tenant Admin, Public Inference principal, or authority for Console, Operator API, or Admin API access.
 Portal sessions SHALL NOT authorize Public Inference, Operator API, Admin API, or Console access.

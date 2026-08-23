@@ -37,12 +37,13 @@ Orchard's v1 macOS packaging contract in `SPEC.md` §11 SHALL retain support for
 
 ### Requirement: Distribution Artifacts Remain Generic
 
-Orchard distribution artifacts SHALL remain generic across app, DMG, PKG, and future release channels, with customer attribution, license activation, database configuration, TLS material, and deployment secrets provided out of band.
+Orchard distribution artifacts SHALL remain generic across app, DMG, PKG, and future release channels, with database configuration, TLS material, and deployment secrets provided out of band.
 
-#### Scenario: Activation stays separate
+#### Scenario: Deployment secrets stay separate
 
 - **WHEN** Orchard is distributed through an app-primary DMG, signed PKG, or future download channel
-- **THEN** the artifact does not embed license keys, customer identifiers, database DSNs, production TLS material, or activation secrets
+- **THEN** the artifact does not embed customer identifiers, database DSNs, production TLS material, or deployment secrets
+- **AND** the artifact does not require product-license activation
 
 ### Requirement: Distribution Requirements Are Platform Profile Scoped
 

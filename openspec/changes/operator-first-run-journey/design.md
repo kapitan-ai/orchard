@@ -299,7 +299,6 @@ App-guided setup is implemented after the domain and CLI operations stabilize.
 It composes:
 
 - Install Role authorization through the app-owned lifecycle.
-- License status and activation guidance.
 - External Postgres validation until Managed Database Mode exists.
 - Public transport configuration.
 - Migrations.
@@ -319,7 +318,6 @@ It does not create UI-only mutation paths.
 |---|---|---|
 | System-root mutation | Authorize app or PKG lifecycle and protect root-owned configuration. | Present explicit role and mutation scope, preserve state, and resume safely after failure. |
 | External Postgres | Provision, secure, back up, and keep PostgreSQL reachable. | Validate configuration clearly until Managed Database Mode owns the lifecycle. |
-| Licensing | Supply activation material out of band and protect it. | Validate before useful work without embedding customer material in the release. |
 | Public transport | Choose direct HTTPS, reverse proxy, or explicit lab-local TLS. | Validate mode and certificate state without mutating trust stores implicitly. |
 | First admin | Protect one-time output and replace bootstrap use with named credentials. | Keep initialization local, one-shot, audited, leader-gated, and credential-only. |
 | Node Enrollment | Transfer one sensitive short-lived bundle per Node. | Pin Controller identity, consume once, issue Node identity, audit, expire, revoke, and resume safely. |
@@ -360,7 +358,6 @@ Every setup stage reports the failed boundary, preserves prior completed work, a
 
 Required failure classes include:
 
-- License invalid or missing.
 - External Postgres unavailable or migrations behind.
 - Partial TLS state or public transport mismatch.
 - App/PKG ownership conflict.

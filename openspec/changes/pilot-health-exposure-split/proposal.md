@@ -12,7 +12,7 @@ incomplete predicate is identified explicitly and never presented as complete.
   `Cache-Control: no-store`.
 - Identify the unchanged predicate as `orchard.readiness.legacy_m0.v1` and publish
   its ordered checks only through Operator health.
-- Move observational runtime, licensing, build, transport, and Console probes out
+- Move observational runtime, build, transport, and Console probes out
   of the public controller.
 - Accept bounded credential-free `orchardctl status` feature loss and remove its
   reliance on remote version/build fields.

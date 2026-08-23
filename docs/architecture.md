@@ -139,7 +139,7 @@ The gRPC/mTLS path remains available for enrollment, certificate lifecycle, Peer
 | `apps/orchard_controller/` | Controller release: public APIs, Console, Repo, admission, scheduling, dispatch, governance, observability surfaces. |
 | `apps/orchard_node_agent/` | Node-agent release: node-local runtime endpoint, model acquisition/cache, worker supervision, status/diagnostics. |
 | `apps/orchard_cli/` | `orchardctl` CLI: operator/admin automation for source dev and packaged installs. |
-| `apps/orchard_shared/` | Shared generated proto modules, Runtime Endpoint domain structs, helpers, licensing/build metadata. |
+| `apps/orchard_shared/` | Shared generated proto modules, Runtime Endpoint domain structs, helpers, and build metadata. |
 | `native/orchard_tokenizer/` | Python helper for prompt rendering, exact token counts, and safe-tokenization support. |
 | `native/orchard_worker_mlx/` | Current Python MLX Worker Runtime provider and current node-agent to worker protocol implementation; the accepted target moves the provider-neutral contract and generated bindings into neutral ownership. |
 | `proto/cluster/v1/` | Controller ↔ node-agent proto source: the current gRPC runtime-operations compatibility transport, the certificate-authenticated BEAM Peer Grant delivery control service, and future-adapter contracts. |

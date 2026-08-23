@@ -10,7 +10,7 @@ Without one durable journey and ordered change package, current behavior can be 
 
 - Add a durable operator-journey document that separates current supported behavior, target product intent, and the ordered gap map.
 - Define controller-only, all-in-one, and Controller-plus-worker differences from release acquisition through Console and first inference.
-- Make sudo/root authorization, external Postgres, licensing, public transport, first-admin credentials, current BEAM transport, Node Admission, model availability, retained state, recovery, and upgrade responsibilities explicit.
+- Make sudo/root authorization, external Postgres, public transport, first-admin credentials, current BEAM transport, Node Admission, model availability, retained state, recovery, and upgrade responsibilities explicit.
 - Define structural friction counts and stable measurement boundaries for time-to-Console, time-to-first-worker-ready, and time-to-first-inference.
 - Define **Node Enrollment Bundle** as the canonical per-Node bootstrap artifact and prohibit shared BEAM cookies or long-lived credentials from that artifact.
 - Preserve the CLI-first secure one-Controller, one-Node enrollment tracer as the completed Section 2 identity foundation.

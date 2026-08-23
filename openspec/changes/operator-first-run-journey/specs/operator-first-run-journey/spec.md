@@ -290,11 +290,11 @@ This refines `SPEC.md` §5, §6, §7.2, §11.8, and Milestones 1, 3, and 4.
 
 - **WHEN** the Controller and Node Agent processes are running but no model-ready active Node can serve the request
 - **THEN** Orchard does not report first-run inference as complete
-- **AND** Orchard identifies the missing activation, model, placement, credential, or scheduling boundary
+- **AND** Orchard identifies the missing Node activation, model, placement, credential, or scheduling boundary
 
 ### Requirement: Setup Is Resumable At The Failed Boundary
 
-Guided setup SHALL preserve completed work and resume at the failed boundary after recoverable license, database, transport, enrollment, admission, model, or service errors.
+Guided setup SHALL preserve completed work and resume at the failed boundary after recoverable database, transport, enrollment, admission, model, or service errors.
 Setup SHALL NOT require the operator to restart the entire journey after a recoverable failure.
 Failure output SHALL distinguish blockers, operator responsibilities, safe remediation, and retained state.
 This refines `SPEC.md` §11, §12, and §13.

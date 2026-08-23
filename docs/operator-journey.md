@@ -32,7 +32,7 @@ The current app-primary DMG provides a verified `Orchard.app` and an app-owned r
 The app lifecycle supports `all`, `controller`, and `node-agent` Install Roles and preserves operator-owned state during update and default uninstall.
 It does not yet provide an app setup wizard.
 
-The packaged CLI provides `orchardctl init`, with `orchardctl first-run` as an alias, as a guided command sequencer for license validation, env-template generation, migration, local HTTPS, optional Console enablement, service start, and status.
+The packaged CLI provides `orchardctl init`, with `orchardctl first-run` as an alias, as a guided command sequencer for env-template generation, migration, local HTTPS, optional Console enablement, service start, and status.
 The sequencer stops at a failed step and prints a resume command.
 It does not collect an external Postgres DSN, edit BEAM identity or target values, automatically create Node trust, distribute a shared cookie, import a model to remote Macs, or replace the separate `orchardctl cluster init` first-admin operation.
 
@@ -52,7 +52,7 @@ Registration remains pending and non-schedulable until explicit admission, and a
 The authoritative current command details are in:
 
 - [`packaging/dmg/README.md`](../packaging/dmg/README.md) for DMG verification and the app-owned lifecycle.
-- [`packaging/pkg/README.md`](../packaging/pkg/README.md) for packaged configuration, external Postgres, transport, licensing, Console, service start, and the current multi-Mac first cut.
+- [`packaging/pkg/README.md`](../packaging/pkg/README.md) for packaged configuration, external Postgres, transport, Console, service start, and the current multi-Mac first cut.
 - [`docs/local-dev.md`](local-dev.md) for source-development topology and diagnostics.
 
 ### Common Prerequisites
@@ -60,7 +60,6 @@ The authoritative current command details are in:
 Before a current packaged Controller can reach Console, the operator needs:
 
 - An Apple Silicon Mac and local administrator authorization for system service installation.
-- A valid Orchard license supplied outside the generic distribution artifact.
 - Operator-managed PostgreSQL 16 or newer because Managed Database Mode is not implemented.
 - A public transport plan using direct HTTPS, an operator-managed reverse proxy, or explicit local generated HTTPS for a lab.
 - A signed, notarized, stapled release-quality DMG and its checksum and signing sidecars.
@@ -95,16 +94,15 @@ The selected Install Role decides which LaunchDaemons are installed and managed.
 
 The operator currently performs these outcomes, using the packaged runbook for commands:
 
-1. Activate or verify the Orchard license without placing it in command arguments, logs, or the release artifact.
-2. Generate the Controller or all-role env template.
-3. Set and validate the external `DATABASE_URL` and retain the generated `SECRET_KEY_BASE` unless deliberately rotating it.
-4. Configure the Controller BEAM node name, cookie path, Runtime Endpoint targets when used, and public transport values.
-5. Run migrations.
-6. Run `orchardctl cluster init` with a protected output path to create the first cluster-admin API Client and one-time API Token.
-7. Configure public HTTPS or a supported reverse proxy.
-8. Enable Console through its interactive credential prompt when browser access is desired.
-9. Start the role-selected services and verify status and readiness.
-10. Open Console at the configured public host.
+1. Generate the Controller or all-role env template.
+2. Set and validate the external `DATABASE_URL` and retain the generated `SECRET_KEY_BASE` unless deliberately rotating it.
+3. Configure the Controller BEAM node name, cookie path, Runtime Endpoint targets when used, and public transport values.
+4. Run migrations.
+5. Run `orchardctl cluster init` with a protected output path to create the first cluster-admin API Client and one-time API Token.
+6. Configure public HTTPS or a supported reverse proxy.
+7. Enable Console through its interactive credential prompt when browser access is desired.
+8. Start the role-selected services and verify status and readiness.
+9. Open Console at the configured public host.
 
 `orchardctl cluster init` is credential-only.
 It does not provision public TLS, internal Node trust, a Bootstrap Token, or a BEAM cookie.
@@ -144,7 +142,7 @@ Console and docs must not claim that one local import distributes the model acro
 ### Current Friction Baseline
 
 The counts below are structural estimates derived from the current one-Controller, one-worker runbooks.
-They are not measured usability timings and may vary with the chosen TLS and license paths.
+They are not measured usability timings and may vary with the chosen TLS path.
 
 | Friction | All-in-one baseline | Controller plus one worker baseline | Scaling behavior |
 |---|---:|---:|---|
@@ -152,8 +150,8 @@ They are not measured usability timings and may vary with the chosen TLS and lic
 | Cross-Mac secret transfers | 0 | 1 shared-cookie transfer | Adds 1 destination per worker while the current shared-cookie path remains. |
 | Explicit Runtime Endpoint target entries | 1 local target when configured | 1 remote target | Adds 1 entry per worker and requires Controller configuration ownership. |
 | Macs requiring hands-on install/configuration | 1 | 2 | Adds 1 per worker. |
-| Distinct secret categories requiring custody | License material, `SECRET_KEY_BASE`, Console credential, cluster-admin output, and inference token | The all-in-one categories plus the shared BEAM cookie | Cookie distribution expands to every worker. |
-| External prerequisites | Postgres, license, public transport, model bundle | The all-in-one set plus private addressing, port reachability, secure file transfer, and remote model availability | Network and model preparation recur per site or worker. |
+| Distinct secret categories requiring custody | `SECRET_KEY_BASE`, Console credential, cluster-admin output, and inference token | The all-in-one categories plus the shared BEAM cookie | Cookie distribution expands to every worker. |
+| External prerequisites | Postgres, public transport, model bundle | The all-in-one set plus private addressing, port reachability, secure file transfer, and remote model availability | Network and model preparation recur per site or worker. |
 
 The current repo has no accepted packaged benchmark for time-to-Console, time-to-first-worker-ready, or time-to-first-inference.
 Future implementation PRs should record sanitized timings against the measurement definitions below rather than placing machine-specific evidence in this document.
@@ -162,7 +160,6 @@ Future implementation PRs should record sanitized timings against the measuremen
 
 | Failure point | Current observable symptom | Current recovery boundary |
 |---|---|---|
-| Invalid or missing license | Guided first-run stops before useful work. | Activate through a non-argv source and rerun the guided command. |
 | Missing or invalid external Postgres configuration | Migration, DB-backed CLI, or Controller readiness fails. | Correct the root-owned Controller env, verify Postgres independently, run migrations, and resume. |
 | Partial TLS state | App lifecycle or Controller boot preflight fails closed. | Restore a complete set or deliberately regenerate the local lab set before retrying. |
 | App and PKG ownership conflict | App lifecycle reports the `com.orchard.pkg` receipt blocker. | Continue through the PKG-compatible lifecycle instead of allowing app takeover. |
@@ -200,7 +197,7 @@ It is not a claim about the current build.
 
 1. The operator verifies and installs `Orchard.app`.
 2. The operator chooses **Create Orchard on this Mac** and authorizes the `all` Install Role.
-3. Guided setup validates licensing, external Postgres, public transport, storage, and retained state.
+3. Guided setup validates external Postgres, public transport, storage, and retained state.
 4. Orchard runs migrations and the distinct first-admin and internal Node trust initialization operations.
 5. Orchard enables Console and starts services.
 6. The local Node Agent registers through the same identity model used by remote Nodes, and guided setup performs the same explicit audited Node Admission operation with confirmation inside the setup flow.

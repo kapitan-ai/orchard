@@ -16,7 +16,7 @@ implemented honestly in this pilot change.
 
 The current unauthenticated `GET /health/ready` evaluates only the M0-era checks
 for Postgres, migrations, public API HTTPS, and a constant Controller boot flag.
-It also discloses build, transport, Console, runtime, licensing, check, failure,
+It also discloses build, transport, Console, runtime, check, failure,
 and remediation details. Waiting for the complete §3.1 aggregate would preserve
 that unnecessary unauthenticated disclosure through the pilot.
 
@@ -34,7 +34,7 @@ Detailed diagnostics move to authenticated Operator `GET /ops/v1/health` under
 the existing cluster-scoped Operator-or-admin authorization boundary. The response
 is non-cacheable with `Cache-Control: no-store` and includes the readiness contract,
 ordered checks, failure detail and bounded remediation when applicable, plus the
-sanitized observational build, transport, Console, runtime, and licensing fields
+sanitized observational build, transport, Console, and runtime fields
 removed from public readiness.
 
 The staged evaluator is explicitly identified as

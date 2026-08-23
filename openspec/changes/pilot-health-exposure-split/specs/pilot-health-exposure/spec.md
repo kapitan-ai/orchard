@@ -22,8 +22,8 @@ status-only JSON bodies and SHALL NOT expose diagnostic detail publicly.
 - **WHEN** the active readiness predicate fails
 - **THEN** `GET /health/ready` returns HTTP `503`
 - **AND** its JSON body is exactly `{"status":"error"}`
-- **AND** no check, reason, remediation, version, build, transport, Console,
-  runtime, or licensing detail is present
+- **AND** no check, reason, remediation, version, build, transport, Console, or
+  runtime detail is present
 
 #### Scenario: Public readiness evaluation is unavailable
 

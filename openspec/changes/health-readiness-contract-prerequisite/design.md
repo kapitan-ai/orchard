@@ -94,7 +94,7 @@ In both stages:
 
 - `GET /ops/v1/health` uses the existing Operator-or-admin authorization boundary.
 - Operator detail carries stable checks, reasons, bounded remediation, and sanitized observations.
-- Runtime, licensing, build, transport, and Console observations remain non-gating unless `SPEC.md` explicitly changes.
+- Runtime, build, transport, and Console observations remain non-gating unless `SPEC.md` explicitly changes.
 - No public or Operator health response adds tenant or user identifiers.
 
 Alternative considered: content negotiation or a query parameter on `/health/ready`.

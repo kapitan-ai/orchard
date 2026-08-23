@@ -273,12 +273,7 @@ Notes:
 - The `border-r border-slate-200 dark:border-slate-700` divider remains the
   single source of the rail/canvas boundary. Do not add a second
   `shadow-*` or `ring-*` divider in v2.
-- Footer chrome inside the rail (visible license badge, version, collapse button)
-  keeps its existing classes, including the badge wrapper's `bg-slate-50
-  dark:bg-slate-900/60`. The badge now reads as a tinted chip *inside* the
-  recessed rail; this is intended.
-- The license badge is visible when the local license is valid or shared license enforcement is `:warn` or `:hard`.
-  In the collapsed rail the badge hides cleanly; see section 5.3.
+- Footer chrome inside the rail (version and collapse button) keeps its existing classes.
 
 ### 5.2 Sidebar Nav Items (`sidebar_nav/1`)
 
@@ -334,7 +329,6 @@ implementation. Do not add hover styling to the disabled span.
   rules in `app.css` (`#console-sidebar { width / min-width }`,
   `.sidebar-collapsed` overrides, reduced-motion media query) are unchanged
   from v2.
-- When rendered, `#console-license-badge` collapses out of view in `.sidebar-collapsed` mode via an `app.css` rule (`max-height` / `opacity` / `margin` / `border` / `padding` reset) that mirrors `console-sidebar-version`, so the full license chip does not crowd the 4.5rem collapsed rail.
 - The icon column at `h-5 w-5 flex-shrink-0` is kept on every nav item so
   collapsed-state alignment continues to work.
 - Active `aria-current="page"` is set by `sidebar_nav/1` and must remain.
@@ -655,9 +649,7 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
 - [ ] Disabled nav item is visibly inactive.
 - [ ] Collapse animation and toggle icon rotation still work; reduced
   motion is respected.
-- [ ] Version label still renders correctly when expanded; it collapses
-  cleanly when collapsed. The license badge does the same when present (valid
-  license, or `:warn`/`:hard` enforcement); it is absent otherwise.
+- [ ] Version label still renders correctly when expanded and collapses cleanly when collapsed.
 
 **Form input wells (Model Hub search)**
 
