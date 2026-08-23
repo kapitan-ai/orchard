@@ -41,6 +41,14 @@ defmodule Orchard.API.ResponsesControllerTest do
     |> Router.call(Router.init([]))
   end
 
+  defp post_responses_endpoint(params, token, accept) do
+    build_conn()
+    |> put_req_header("accept", accept)
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> post("/v1/responses", params)
+  end
+
   setup do
     previous_orchestrator =
       Application.get_env(:orchard_controller, :api_responses_orchestrator_impl)
@@ -171,6 +179,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert Repo.aggregate(Request, :count, :id) == before_count
   end
 
+  @tag :live
   test "successful non-stream request returns response payload and persists responses endpoint",
        %{bundle: bundle} do
     %{token: token, tenant: tenant} = create_api_key_with_token!("responses-success")
@@ -201,7 +210,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     grant_active_models!(tenant)
 
     conn =
-      post_responses(
+      post_responses_endpoint(
         %{
           "model" => "responses-success-model@v1",
           "instructions" => "Be helpful",
@@ -215,7 +224,8 @@ defmodule Orchard.API.ResponsesControllerTest do
           "metadata" => %{"trace" => "abc"},
           "store" => false
         },
-        token
+        token,
+        "application/json"
       )
 
     assert conn.status == 200
@@ -862,136 +872,142 @@ defmodule Orchard.API.ResponsesControllerTest do
 
   # -- Streaming tests -------------------------------------------------------
 
-  test "successful stream emits typed events in correct order", %{bundle: bundle} do
-    %{token: token, tenant: tenant} =
-      create_api_key_with_token!("responses-stream-success")
+  for accept <- ["text/event-stream", "application/json"] do
+    @tag :live
+    test "successful stream emits typed events in correct order with Accept: #{accept}", %{
+      bundle: bundle
+    } do
+      %{token: token, tenant: tenant} =
+        create_api_key_with_token!("responses-stream-success")
 
-    tenant
-    |> Tenant.changeset(%{request_body_capture_mode: :full})
-    |> Repo.update!()
+      tenant
+      |> Tenant.changeset(%{request_body_capture_mode: :full})
+      |> Repo.update!()
 
-    model =
-      create_model!(%{
-        model_id: "responses-stream-model",
-        version: "v1",
-        display_name: "Responses Stream Model",
-        artifact_uri: "file:///tmp/responses-stream-model",
-        artifact_sha256: bundle.hash,
-        artifact_source_uri: "file:///tmp/responses-stream-model",
-        state: :active,
-        format: "mlx",
-        backend: "mlx",
-        capabilities: ["chat"],
-        artifact_size_bytes: 1024,
-        resident_memory_bytes: 2048,
-        kv_cache_bytes_per_token: 128,
-        prefill_workspace_bytes_per_token: 64,
-        max_context_tokens: 131_072
-      })
+      model =
+        create_model!(%{
+          model_id: "responses-stream-model",
+          version: "v1",
+          display_name: "Responses Stream Model",
+          artifact_uri: "file:///tmp/responses-stream-model",
+          artifact_sha256: bundle.hash,
+          artifact_source_uri: "file:///tmp/responses-stream-model",
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 131_072
+        })
 
-    grant_active_models!(tenant)
+      grant_active_models!(tenant)
 
-    {:ok, policy} =
-      %RoutingPolicy{}
-      |> RoutingPolicy.changeset(%{
-        tenant_id: tenant.id,
-        name: "responses-cold-deadline",
-        residency_preference: :allow_cold_load,
-        max_cold_start_ms: 180_000,
-        max_queue_wait_ms: 3_000
-      })
-      |> Repo.insert()
+      {:ok, policy} =
+        %RoutingPolicy{}
+        |> RoutingPolicy.changeset(%{
+          tenant_id: tenant.id,
+          name: "responses-cold-deadline",
+          residency_preference: :allow_cold_load,
+          max_cold_start_ms: 180_000,
+          max_queue_wait_ms: 3_000
+        })
+        |> Repo.insert()
 
-    assert {:ok, _result} = ModelAccess.grant_model_access(tenant, model, policy.id)
+      assert {:ok, _result} = ModelAccess.grant_model_access(tenant, model, policy.id)
 
-    conn =
-      post_responses(
-        %{
-          "model" => "responses-stream-model@v1",
-          "input" => "hello",
-          "stream" => true,
-          "metadata" => %{"trace" => "stream-test"}
-        },
-        token
-      )
+      conn =
+        post_responses_endpoint(
+          %{
+            "model" => "responses-stream-model@v1",
+            "input" => "hello",
+            "stream" => true,
+            "metadata" => %{"trace" => "stream-test"}
+          },
+          token,
+          unquote(accept)
+        )
 
-    assert conn.status == 200
-    assert resp_header(conn, "content-type") == ["text/event-stream"]
+      assert conn.status == 200
+      assert resp_header(conn, "content-type") == ["text/event-stream"]
 
-    events = parse_typed_sse_events(conn)
+      events = parse_typed_sse_events(conn)
 
-    # Must start with response.created
-    assert hd(events).type == "response.created"
-    created = hd(events)
-    assert created.data["response"]["status"] == "in_progress"
-    assert created.data["response"]["model"] == "responses-stream-model@v1"
-    assert created.data["response"]["metadata"] == %{"trace" => "stream-test"}
+      # Must start with response.created
+      assert hd(events).type == "response.created"
+      created = hd(events)
+      assert created.data["response"]["status"] == "in_progress"
+      assert created.data["response"]["model"] == "responses-stream-model@v1"
+      assert created.data["response"]["metadata"] == %{"trace" => "stream-test"}
 
-    # Must contain at least one response.output_text.delta
-    delta_events = Enum.filter(events, &(&1.type == "response.output_text.delta"))
-    [first_delta | _rest] = delta_events
-    assert is_binary(first_delta.data["delta"])
-    assert first_delta.data["output_index"] == 0
-    assert first_delta.data["content_index"] == 0
+      # Must contain at least one response.output_text.delta
+      delta_events = Enum.filter(events, &(&1.type == "response.output_text.delta"))
+      [first_delta | _rest] = delta_events
+      assert is_binary(first_delta.data["delta"])
+      assert first_delta.data["output_index"] == 0
+      assert first_delta.data["content_index"] == 0
 
-    # Must contain exactly one response.output_text.done
-    done_events = Enum.filter(events, &(&1.type == "response.output_text.done"))
-    assert length(done_events) == 1
-    done = hd(done_events)
-    assert is_binary(done.data["text"])
+      # Must contain exactly one response.output_text.done
+      done_events = Enum.filter(events, &(&1.type == "response.output_text.done"))
+      assert length(done_events) == 1
+      done = hd(done_events)
+      assert is_binary(done.data["text"])
 
-    # output_text.done must appear after all deltas and before terminal
-    delta_indices =
-      Enum.with_index(events)
-      |> Enum.filter(fn {e, _} -> e.type == "response.output_text.delta" end)
-      |> Enum.map(fn {_, i} -> i end)
+      # output_text.done must appear after all deltas and before terminal
+      delta_indices =
+        Enum.with_index(events)
+        |> Enum.filter(fn {e, _} -> e.type == "response.output_text.delta" end)
+        |> Enum.map(fn {_, i} -> i end)
 
-    [{_, done_index}] =
-      Enum.with_index(events)
-      |> Enum.filter(fn {e, _} -> e.type == "response.output_text.done" end)
+      [{_, done_index}] =
+        Enum.with_index(events)
+        |> Enum.filter(fn {e, _} -> e.type == "response.output_text.done" end)
 
-    terminal_index = length(events) - 1
-    assert Enum.all?(delta_indices, &(&1 < done_index))
-    assert done_index < terminal_index
+      terminal_index = length(events) - 1
+      assert Enum.all?(delta_indices, &(&1 < done_index))
+      assert done_index < terminal_index
 
-    # Must end with response.completed (terminal)
-    terminal = List.last(events)
-    assert terminal.type == "response.completed"
-    assert terminal.data["response"]["status"] == "completed"
-    assert terminal.data["response"]["output_text"] != nil
-    # Completed terminal's output_text must match concatenated deltas
-    concatenated = Enum.map_join(delta_events, "", & &1.data["delta"])
-    assert terminal.data["response"]["output_text"] == concatenated
+      # Must end with response.completed (terminal)
+      terminal = List.last(events)
+      assert terminal.type == "response.completed"
+      assert terminal.data["response"]["status"] == "completed"
+      assert terminal.data["response"]["output_text"] != nil
+      # Completed terminal's output_text must match concatenated deltas
+      concatenated = Enum.map_join(delta_events, "", & &1.data["delta"])
+      assert terminal.data["response"]["output_text"] == concatenated
 
-    # No [DONE] in stream
-    body = collect_chunked_body(conn)
-    refute String.contains?(body, "[DONE]")
+      # No [DONE] in stream
+      body = collect_chunked_body(conn)
+      refute String.contains?(body, "[DONE]")
 
-    # Request persisted with endpoint = :responses and stream = true
-    [request] = Repo.all(Request)
-    assert request.endpoint == :responses
-    assert request.stream == true
+      # Request persisted with endpoint = :responses and stream = true
+      [request] = Repo.all(Request)
+      assert request.endpoint == :responses
+      assert request.stream == true
 
-    persisted_timeout_ms =
-      DateTime.diff(request.timeout_at, request.inserted_at, :millisecond)
+      persisted_timeout_ms =
+        DateTime.diff(request.timeout_at, request.inserted_at, :millisecond)
 
-    configured_timeout_ms = Orchard.Inference.request_timeout_ms() + 3_000 + 180_000
+      configured_timeout_ms = Orchard.Inference.request_timeout_ms() + 3_000 + 180_000
 
-    assert persisted_timeout_ms in (configured_timeout_ms - 1_000)..configured_timeout_ms
+      assert persisted_timeout_ms in (configured_timeout_ms - 1_000)..configured_timeout_ms
 
-    # first_token_at must be persisted for successful streaming requests
-    response_id = terminal.data["response"]["id"]
-    request = Requests.get_request_by_public_id(response_id)
-    assert_text_commitment!(request)
-    assert request.payload_capture_mode == :full
-    assert request.canonical_request["stream"] == true
-    assert request.response_payload == terminal.data["response"]
+      # first_token_at must be persisted for successful streaming requests
+      response_id = terminal.data["response"]["id"]
+      request = Requests.get_request_by_public_id(response_id)
+      assert_text_commitment!(request)
+      assert request.payload_capture_mode == :full
+      assert request.canonical_request["stream"] == true
+      assert request.response_payload == terminal.data["response"]
 
-    request_events = Requests.list_request_events(request)
-    refute Enum.any?(request_events, &(&1.event_type == "response.output_text.delta"))
+      request_events = Requests.list_request_events(request)
+      refute Enum.any?(request_events, &(&1.event_type == "response.output_text.delta"))
 
-    assert Sentry.Context.get_all().extra == %{}
-    assert Sentry.Context.get_all().breadcrumbs == []
+      assert Sentry.Context.get_all().extra == %{}
+      assert Sentry.Context.get_all().breadcrumbs == []
+    end
   end
 
   test "streaming empty-string text delta still emits output_text.done before terminal" do

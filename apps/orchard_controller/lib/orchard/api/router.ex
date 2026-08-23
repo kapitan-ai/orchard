@@ -10,9 +10,12 @@ defmodule Orchard.API.Router do
   end
 
   pipeline :authenticated_api do
-    plug(:accepts, ["json"])
     plug(Orchard.API.RequestContext)
     plug(Orchard.API.LicensePlug)
+  end
+
+  pipeline :inference_api do
+    plug(Orchard.API.InferenceAccepts)
   end
 
   pipeline :admin_api do
@@ -69,9 +72,13 @@ defmodule Orchard.API.Router do
   end
 
   scope "/v1", Orchard.API do
-    pipe_through(:authenticated_api)
-
+    pipe_through([:api, :authenticated_api])
     get("/models", ModelsController, :index)
+  end
+
+  scope "/v1", Orchard.API do
+    pipe_through([:inference_api, :authenticated_api])
+
     post("/chat/completions", ChatCompletionsController, :create)
     post("/responses", ResponsesController, :create)
   end

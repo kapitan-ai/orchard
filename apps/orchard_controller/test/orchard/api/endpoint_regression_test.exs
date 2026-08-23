@@ -44,6 +44,159 @@ defmodule Orchard.API.EndpointRegressionTest do
       assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
     end
 
+    test "streaming chat request accepts text/event-stream through the endpoint", %{conn: conn} do
+      token = create_api_token!("streaming-chat-accept")
+
+      conn =
+        conn
+        |> put_req_header("accept", "text/event-stream")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/v1/chat/completions", %{
+          "model" => "nonexistent@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 404
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "model_not_found"
+    end
+
+    test "streaming responses request accepts text/event-stream through the endpoint", %{
+      conn: conn
+    } do
+      token = create_api_token!("streaming-responses-accept")
+
+      conn =
+        conn
+        |> put_req_header("accept", "text/event-stream")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> post("/v1/responses", %{
+          "model" => "nonexistent@v1",
+          "input" => "hello",
+          "stream" => true
+        })
+
+      assert conn.status == 404
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "model_not_found"
+    end
+
+    test "inference endpoints return an OpenAI 406 for unsupported Accept media types", %{
+      conn: conn
+    } do
+      token = create_api_token!("unsupported-inference-accept")
+
+      for {path, params} <- [
+            {"/v1/chat/completions",
+             %{
+               "model" => "nonexistent@v1",
+               "messages" => [%{"role" => "user", "content" => "hello"}],
+               "stream" => true
+             }},
+            {"/v1/responses",
+             %{"model" => "nonexistent@v1", "input" => "hello", "stream" => true}}
+          ] do
+        response =
+          conn
+          |> put_req_header("accept", "application/xml")
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> post(path, params)
+
+        assert response.status == 406
+        assert get_resp_header(response, "content-type") |> hd() =~ "application/json"
+
+        assert Jason.decode!(response.resp_body)["error"] == %{
+                 "message" => "No acceptable response media type was requested",
+                 "type" => "invalid_request_error",
+                 "param" => nil,
+                 "code" => "not_acceptable"
+               }
+      end
+    end
+
+    test "non-streaming inference rejects text/event-stream without a JSON alternative", %{
+      conn: conn
+    } do
+      token = create_api_token!("non-streaming-event-stream-accept")
+
+      for {path, params} <- [
+            {"/v1/chat/completions",
+             %{
+               "model" => "nonexistent@v1",
+               "messages" => [%{"role" => "user", "content" => "hello"}]
+             }},
+            {"/v1/responses", %{"model" => "nonexistent@v1", "input" => "hello"}}
+          ] do
+        response =
+          conn
+          |> put_req_header("accept", "text/event-stream")
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> post(path, params)
+
+        assert response.status == 406
+        assert Jason.decode!(response.resp_body)["error"]["code"] == "not_acceptable"
+      end
+    end
+
+    test "inference Accept wildcards and zero quality remain stream-aware", %{conn: conn} do
+      token = create_api_token!("inference-accept-ranges")
+
+      for {path, base_params} <- [
+            {"/v1/chat/completions",
+             %{
+               "model" => "nonexistent@v1",
+               "messages" => [%{"role" => "user", "content" => "hello"}]
+             }},
+            {"/v1/responses", %{"model" => "nonexistent@v1", "input" => "hello"}}
+          ],
+          {accept, stream?, expected_status} <- [
+            {"*/*", false, 404},
+            {"text/*", true, 404},
+            {"text/*", false, 406},
+            {"application/json;q=0", false, 406}
+          ] do
+        params = if stream?, do: Map.put(base_params, "stream", true), else: base_params
+
+        response =
+          conn
+          |> put_req_header("accept", accept)
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> post(path, params)
+
+        assert response.status == expected_status
+      end
+    end
+
+    test "streaming inference rejects invalid Accept quality values", %{conn: conn} do
+      token = create_api_token!("malformed-inference-accept-quality")
+
+      for {path, params} <- [
+            {"/v1/chat/completions",
+             %{
+               "model" => "nonexistent@v1",
+               "messages" => [%{"role" => "user", "content" => "hello"}],
+               "stream" => true
+             }},
+            {"/v1/responses",
+             %{"model" => "nonexistent@v1", "input" => "hello", "stream" => true}}
+          ],
+          quality <- ["bogus", "0.5junk", "2"] do
+        response =
+          conn
+          |> put_req_header("accept", "text/event-stream;q=#{quality}")
+          |> put_req_header("content-type", "application/json")
+          |> put_req_header("authorization", "Bearer #{token}")
+          |> post(path, params)
+
+        assert response.status == 406
+        assert Jason.decode!(response.resp_body)["error"]["code"] == "not_acceptable"
+      end
+    end
+
     test "authenticated form-urlencoded API input remains invalid", %{conn: conn} do
       {:ok, tenant} =
         Orchard.Governance.create_tenant(%{
@@ -103,5 +256,18 @@ defmodule Orchard.API.EndpointRegressionTest do
       assert conn.status == 200
       assert get_resp_header(conn, "content-type") |> hd() =~ "text/html"
     end
+  end
+
+  defp create_api_token!(slug) do
+    {:ok, tenant} =
+      Orchard.Governance.create_tenant(%{
+        slug: "#{slug}-#{System.unique_integer([:positive])}",
+        name: slug
+      })
+
+    {:ok, %{token: token}} =
+      Orchard.Governance.create_api_key(tenant.id, %{name: "#{slug} key"})
+
+    token
   end
 end
