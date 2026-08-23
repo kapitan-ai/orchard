@@ -7,7 +7,7 @@ date the change landed on `main`.
 
 ### Breaking changes
 
-- Effective request deadlines are now bounded by a deployment-owned ceiling, `ORCHARD_MAX_REQUEST_DEADLINE_MS` (default `360000`). Saving a routing policy whose effective deadline (`request_timeout_ms + max_queue_wait_ms + max_cold_start_ms` on cold-load paths) exceeds the ceiling is rejected, pre-existing policies above it are capped at request time with a logged warning, and a configured `request_timeout_ms` above the ceiling makes the Controller raise at startup. **Required action:** if any routing policy legitimately needs a longer effective deadline, set `ORCHARD_MAX_REQUEST_DEADLINE_MS` above it (and raise reverse-proxy response timeouts accordingly — the packaged nginx/Caddy/Traefik examples now use 390s) before upgrading. ([#261](https://github.com/kapitan-ai/orchard/pull/261))
+- Effective request deadlines are now bounded by a deployment-owned ceiling, `ORCHARD_MAX_REQUEST_DEADLINE_MS` (default `360000`). Saving a routing policy whose effective deadline (`request_timeout_ms + max_queue_wait_ms + max_cold_start_ms` on cold-load paths) exceeds the ceiling is rejected, pre-existing policies above it are capped at request time with a logged warning, and a configured `request_timeout_ms` above the ceiling raises as incoherent configuration whenever the ceiling is resolved (at routing-policy save and request admission — not at Controller startup). **Required action:** if any routing policy legitimately needs a longer effective deadline, set `ORCHARD_MAX_REQUEST_DEADLINE_MS` above it (and raise reverse-proxy response timeouts accordingly — the packaged nginx/Caddy/Traefik examples now use 390s) before upgrading. ([#261](https://github.com/kapitan-ai/orchard/pull/261))
 
 ### Features
 
