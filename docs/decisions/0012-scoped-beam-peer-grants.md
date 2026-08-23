@@ -124,6 +124,14 @@ A second PKI would duplicate identity, renewal, revocation, and recovery surface
 A custom carrier would add a large security-critical handshake and compatibility surface without turning distributed Erlang into a method-level authorization system.
 The selected model keeps stock OTP TLS distribution and makes Orchard's additional authorization explicit.
 
+## Platform portability scope
+
+ADR 0023 accepts a Linux Controller as the first platform-expansion target, but this decision does not yet admit that profile to production BEAM Distribution.
+Before support is declared, the Linux Controller release must prove immutable build provenance, exact release identity, protected certificate and Peer Grant custody, trusted BEAM names, network restriction, host controls, and mixed Linux Controller/macOS Node acceptance.
+
+The first Linux Controller target remains a Controller Host and is not a schedulable Node unless a separately admitted local Node Agent satisfies the complete Node contract.
+No shared cookie, certificate-only authorization, provider identifier, or successful transport probe may substitute for the scoped Peer Grant and durable admission requirements.
+
 ## Consequences
 
 Production BEAM gains exact pair-scoped authorization, per-pair rotation, revocation, Active/Standby isolation, deterministic recovery, and visible failure without weakening Node Certificate identity.

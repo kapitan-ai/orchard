@@ -9,3 +9,9 @@ This preserves the distinction between live runtime observation and durable clus
 Rejected node admission is persisted as a Node Admission Decision, not as `decommissioning`.
 Re-admission after rejection requires current trusted registration state plus either an explicit admin clear action or a new registration and trust event recorded in audit.
 The trade-off is an extra admission-candidate persistence path before implementation can simplify observed nodes into inventory rows, but the boundary is hard to reverse once operators and support bundles rely on it.
+
+## Platform portability scope
+
+ADR 0023 removes the definition of a Node as only an Apple Silicon macOS machine, but it does not weaken this admission boundary.
+An observation from any platform or runtime provider remains untrusted candidate evidence until it reconciles to durable Node identity, trust, admission, lifecycle, capability, and policy state.
+Platform, provider, device, or transport metadata MUST NOT make an observed endpoint schedulable by itself.

@@ -8,6 +8,16 @@ tools that affect build output, warnings, generated code, Python environments,
 and packaging behavior. Do not rely on global Homebrew, system, uv-managed, or
 shell-specific runtime versions when working in this repo.
 
+## Platform scope
+
+The documented complete development and validation workflow currently targets
+the supported Apple Silicon macOS profile.
+The accepted Linux Controller profile is a Milestone 8 target and does not yet
+have a supported bootstrap, packaging, or validation lane.
+Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain
+part of that target, while Xcode, Swift, signing, launchd, Keychain, and MLX
+steps apply only to the macOS profile or its macOS Node artifacts.
+
 ## Required Toolchain
 
 Run these commands from the repo root:
@@ -42,12 +52,14 @@ The mise environment also sets:
 `uv` remains the package and virtualenv manager for `native/**`. `mise` owns
 the Python interpreter version that `uv` is allowed to use.
 
-Apple's C toolchain is also required and is outside mise, the same way the
+For the current macOS profile, Apple's C toolchain is also required and is outside mise, the same way the
 Swift and signing tools are. Compiling `apps/orchard_cli` builds the
 `orchard-secret-tty` terminal helper from `apps/orchard_cli/c_src` through
 `elixir_make`, so `mix compile`, `mix test`, and package builds need the host
 Xcode Command Line Tools for `xcrun clang`. Install them with
 `xcode-select --install` if `xcrun clang --version` fails.
+This native helper dependency is a documented portability migration input and
+must not be interpreted as part of the accepted portable CLI contract.
 
 ## Standard Commands
 

@@ -68,6 +68,15 @@ The Node Agent may continue to use a local worker protocol for Python/MLX subpro
 The BEAM-first decision applies to first-party Controller-to-Node Agent communication.
 It does not remove the local process/protocol boundary between the Node Agent and non-BEAM Worker Runtimes.
 
+## Platform portability scope
+
+ADR 0023 makes Controller Host and Node platform profiles explicit, and ADR 0026 makes normalized capability evidence independent of transport and operating system.
+This decision remains transport-independent and applies to admitted first-party Runtime Endpoints across supported profiles.
+
+The accepted Linux Controller target does not gain production BEAM admission from architecture approval or Linux compilation alone.
+Production use requires ADR 0012 build provenance, certificate, Peer Grant, trusted-name, network, host-control, and mixed-platform acceptance gates to pass for that profile.
+The existing macOS source-dev and production evidence remains valid only for the scope it actually proved.
+
 ## Consequences
 
 This removes gRPC/protobuf as the durable Controller-to-Node Agent domain abstraction for first-party Elixir services.

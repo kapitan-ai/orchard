@@ -1,14 +1,20 @@
 # Orchard Glossary
 
-Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon macOS. This glossary defines Orchard's shared language; `SPEC.md` remains the normative build contract for behavior, interfaces, states, and milestones.
+Orchard is a sovereign on-prem LLM orchestration platform with a portable control-plane core and a currently supported Apple Silicon macOS platform profile.
+This glossary defines Orchard's shared language; `SPEC.md` remains the normative build contract for behavior, interfaces, states, and milestones.
 
 ## Language
 
 ### Product Truth
 
 **Orchard**:
-A sovereign on-prem LLM orchestration platform for one to four Apple Silicon macOS machines.
+A sovereign on-prem LLM orchestration platform whose supported v1 profile spans one to four Apple Silicon macOS machines and whose accepted next target permits a Linux Controller Host with Apple Silicon macOS Nodes.
 _Avoid_: Kapitan Orchard, cloud LLM platform
+
+**Platform Profile**:
+A named combination of supported operating systems, roles, persistence mode, host lifecycle, packaging, runtime providers, and acceptance evidence.
+An accepted target profile is not supported until its explicit milestone acceptance gates pass.
+_Avoid_: architecture aspiration, operating-system detection, support claim without acceptance
 
 **Normative Build Contract**:
 The top-level product and system contract that governs Orchard behavior and resolves conflicts between docs, tests, and implementation.
@@ -36,6 +42,11 @@ _Avoid_: Release, sprint
 The central control-plane service that owns public APIs, governance, admission, scheduling, dispatch, request state, and stream relay.
 _Avoid_: Worker, node agent
 
+**Controller Host**:
+The machine that runs a Controller release.
+A Controller Host is not a schedulable Node unless a separately enrolled and admitted Node Agent also runs there.
+_Avoid_: Node, Active Leader, Controller process
+
 **Node Agent**:
 The first-party node-local Orchard service that owns local runtime execution, model cache, worker supervision, diagnostics, status, and cleanup.
 _Avoid_: Controller agent, worker runtime
@@ -54,6 +65,26 @@ _Avoid_: Worker Runtime, transport protocol, durable cluster truth, managed Mac
 **Worker Runtime**:
 The local model execution process supervised by the Node Agent.
 _Avoid_: Public API server, permanent launchd service
+
+**Runtime Provider**:
+A Node-local implementation that satisfies the provider-neutral Worker Runtime Interface for a runtime family such as MLX-LM.
+_Avoid_: model artifact format, acceleration implementation, device resource
+
+**Acceleration Implementation**:
+A hardware or software execution backend used by a Runtime Provider, such as Apple Metal through MLX.
+_Avoid_: Runtime Provider, device resource, model format
+
+**Device Resource**:
+A normalized schedulable compute device exposed by a Host Capability Provider.
+_Avoid_: Runtime Provider, operating-system name, memory domain
+
+**Memory Domain**:
+A normalized memory pool associated with one or more Device Resources, including unified or discrete memory arrangements.
+_Avoid_: raw host memory metric, device resource, runtime concurrency
+
+**Host Capability Provider**:
+A platform-specific adapter that reports normalized operating-system, architecture, device, acceleration, memory-domain, lifecycle, and secret-store capabilities without defining runtime execution semantics.
+_Avoid_: Runtime Provider, Worker Runtime, scheduler policy
 
 **MLX Worker**:
 Orchard's Apple Silicon native Worker Runtime path for MLX and MLX-LM inference.
@@ -171,7 +202,7 @@ It remains an explicit mTLS compatibility, diagnostics, external-provider, recov
 _Avoid_: Runtime Endpoint Interface, Worker Runtime Interface, first-party BEAM mesh
 
 **Worker Runtime Interface**:
-The Node Agent-local execution process contract for loading models, generating output, reporting local worker status, and handling cancellation.
+The provider-neutral, versioned Node Agent-local execution process contract for readiness, model loading and unloading, inference streaming, cancellation, health, diagnostics, and normalized failures.
 _Avoid_: Runtime Endpoint Interface, Public Inference API, provider API
 
 **Node Lifecycle Interface**:
@@ -425,7 +456,8 @@ _Avoid_: Arbitrary remote compute
 ### Nodes and Models
 
 **Node**:
-A managed Apple Silicon macOS machine represented in Orchard's cluster inventory.
+A managed machine represented in Orchard's cluster inventory and running an enrolled first-party Node Agent.
+The supported v1 Node profile is Apple Silicon macOS; Linux Node support is deferred and requires a separately accepted profile.
 _Avoid_: Server when cluster role matters
 
 **Runtime Endpoint Admission Candidate**:

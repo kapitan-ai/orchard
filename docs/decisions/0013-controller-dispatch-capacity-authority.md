@@ -83,6 +83,14 @@ Independent per-placement ceilings without an aggregate bound are rejected becau
 Persisting only the Effective Dispatch Limit is rejected because it erases the two independent authority inputs.
 The term `Admitted Capacity` is rejected because it conflates Node Admission, Request Admission, policy, runtime enforcement, and remaining headroom.
 
+## Platform portability scope
+
+ADR 0026 introduces separate host capability-provider and runtime-provider evidence, but neither evidence source supersedes Controller Dispatch Capacity Authority.
+Normalized provider and device facts may become additional fail-closed eligibility inputs only through a separately reviewed behavior change.
+They MUST NOT bypass the Controller Dispatch Ceiling, Runtime Concurrency Enforcement Limit, allocation accounting, freshness, trust, lifecycle, health, management-class, or acceptance-gate requirements in this decision.
+
+Before authoritative cutover, additive heterogeneous capability evidence remains diagnostic and omitted new fields do not create a new production rejection path beyond the current contract.
+
 ## Consequences
 
 Node Admission and operator policy changes become auditable capacity-authority writes.

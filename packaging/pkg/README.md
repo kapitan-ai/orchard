@@ -5,6 +5,12 @@ Do not layer app-owned service mutations over a host with the `com.orchard.pkg` 
 The app lifecycle refuses that takeover and keeps the PKG's role selection, launchd labels, wrapper sources, and installed-path policy aligned through `packaging/service-lifecycle.json` and contract tests.
 See `packaging/dmg/README.md` for the app-owned path.
 
+This runbook describes the supported Apple Silicon macOS packaging profile.
+The accepted Linux Controller profile is a Milestone 8 target with separate
+headless host lifecycle and packaging acceptance still required.
+Nothing in this runbook establishes Linux support or makes launchd, Keychain,
+PKG paths, or Apple signing part of the portable Controller contract.
+
 Current packaged installs use a universal PKG payload with role selection for
 `all`, `controller`, and `node-agent` hosts. Controller-bearing installs require
 an **external PostgreSQL** server today; managed Postgres is not available in
