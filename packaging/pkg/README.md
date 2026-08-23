@@ -1604,14 +1604,14 @@ shasum -a 256 Orchard-<version>-<date>-<sha>-signed.pkg
 ```
 
 Keep signing credentials, App Store Connect credentials, notary profile
-secrets, activation keys, and customer identifiers out of package payloads,
-casks, deployment scripts, logs, and documentation examples.
+secrets, and customer identifiers out of package payloads, casks, deployment
+scripts, logs, and documentation examples.
 
 ## Potential Homebrew Cask
 
 Homebrew cask distribution is not a v1 packaging requirement.
 If Orchard later adds a private tap or convenience cask, it should install the same signed and notarized PKG used for direct downloads.
-The cask should pin the exact SHA-256 of the signed PKG and must not embed license keys, customer names, organization identifiers, or other customer-specific material.
+The cask should pin the exact SHA-256 of the signed PKG and must not embed customer names, organization identifiers, or other customer-specific material.
 
 Example future cask shape:
 
