@@ -1,7 +1,12 @@
 # Contributing to Orchard
 
-Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon
-macOS. This repository is the collaborator-facing source of truth.
+Orchard is a sovereign on-prem LLM orchestration platform with a portable
+Elixir control-plane core and a currently supported Apple Silicon macOS
+platform profile.
+The accepted next platform target is a Linux Controller with external Postgres
+and Apple Silicon macOS Nodes, but that profile is not supported until the
+Milestone 8 acceptance gates in `SPEC.md` pass.
+This repository is the collaborator-facing source of truth.
 
 ## Source Of Truth
 

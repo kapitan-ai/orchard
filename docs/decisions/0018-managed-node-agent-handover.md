@@ -65,6 +65,16 @@ An external installer wrapper is not required for correctness.
 Automatic Node Agent restart after uncertain state is not introduced.
 Support for blind or manual same-root launch during uncertainty is not introduced.
 
+## Platform portability scope
+
+ADR 0023 scopes the exact launchd and Darwin mechanics in this decision to the current macOS profile.
+ADR 0023 does not weaken any exclusion, suppression, exact-instance, evidence, provisional-launch, owner-death, rollback, or zero-overlap invariant defined here.
+
+A later managed-host lifecycle interface SHALL preserve these portable safety outcomes while hiding platform service-manager and process-identity vocabulary from callers.
+The macOS adapter must continue to satisfy this complete decision.
+A future Linux adapter requires its own host-manager mechanics and conformance evidence and MUST NOT claim parity by replacing `launchctl` commands with `systemctl` commands mechanically.
+No Linux Node lifecycle support is accepted by this contract-only scope amendment.
+
 ## Consequences
 
 Managed Node Agent updates incur a bounded per-node interruption during the active handover.

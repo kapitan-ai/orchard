@@ -17,3 +17,12 @@ That boundary must not silently expand to remote or tenant-scoped execution.
 If a future remote CLI transport delegates to Admin API, it must preserve the shared admission contract and use the ADR 0004 token boundary.
 
 SPEC.md impact: `SPEC.md` §11.9 records the local node-admission and node-lifecycle CLI authority boundary.
+
+## Platform portability scope
+
+ADR 0024 refines this decision for the portable CLI target.
+The current local Controller-runtime path remains the migration baseline, not the permanent authority model for normal operator operations.
+
+Each migrated command family SHALL execute through Controller-owned authenticated, authorized, leader-aware, and audited domain operations shared by Console and CLI clients.
+The local boundary MAY remain only for a narrow bootstrap or recovery operation that cannot yet use ordinary administrator credentials.
+No command migration may weaken the action preview, confirmation, revalidation, audit, or secret-output contract established here.

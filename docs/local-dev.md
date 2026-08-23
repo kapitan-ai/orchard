@@ -7,6 +7,15 @@ single-node; multi-node source-dev testing is supported via env vars
 Read [`architecture.md`](architecture.md) first if you need repo/runtime boundary
 orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
+## Supported development profile
+
+The supported source-development profile is currently Apple Silicon macOS.
+The accepted Linux Controller profile is a Milestone 8 target, not an
+operational setup described by this guide.
+Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions
+remain the macOS implementation baseline and migration inputs rather than
+portable Controller requirements.
+
 ## Prerequisites
 
 | Dependency | Version | Notes |

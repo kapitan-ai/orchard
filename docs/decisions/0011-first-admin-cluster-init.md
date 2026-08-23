@@ -35,6 +35,15 @@ Alternatives rejected:
 
 Prior art: kubeadm mints local-file cluster-admin authority at `kubeadm init` and keeps bootstrap tokens strictly node-join material; k3s uses a server-local node token; Nomad's one-shot `acl bootstrap` demonstrates the one-shot guard plus guarded reset; Vault's `operator init` root token comes with use-for-setup-then-revoke hardening guidance, which this decision adopts as output guidance.
 
+## Platform portability scope
+
+ADR 0024 retains `orchardctl cluster init` as a narrow Controller-owned bootstrap operation because ordinary remote administrator credentials do not exist yet.
+It SHALL invoke the same Controller-owned bootstrap domain operation used by any future supported bootstrap presentation.
+It MUST NOT justify a general direct-Repo fallback for normal portable CLI commands.
+
+The final Linux host-tooling and local-authentication shape remains deferred to the Linux Controller release change.
+The existing one-shot guard, leader gate, audit, protected secret publication, and credential-only scope remain mandatory on every supported Controller profile.
+
 ## Consequences
 
 The Admin API becomes operator-usable on fresh installs through a documented local ritual, and the offline flow in §11.7 becomes fully executable.

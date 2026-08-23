@@ -1,6 +1,13 @@
 # Orchard v2 - Technical Specification
 
-This document is a normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform optimized for **1–4 Apple Silicon macOS nodes**. It is intended for a coding agent that will build the system incrementally. “MUST”, “SHALL”, and “MUST NOT” are mandatory requirements. “SHOULD” is a strong recommendation.
+This document is the normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform with a portable control plane and an existing **1–4 Apple Silicon macOS** deployment profile.
+It is intended for a coding agent that will build the system incrementally.
+“MUST”, “SHALL”, and “MUST NOT” are mandatory requirements.
+“SHOULD” is a strong recommendation.
+
+The macOS all-in-one and split-role profiles are the currently supported product profiles.
+The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
+That Linux Controller profile SHALL NOT be represented as supported until the Milestone 8 acceptance contract passes.
 
 Unless otherwise noted, implementation-facing names in this spec use the Orchard namespace: `Orchard.*` for Elixir modules, `orchard_*` for OTP apps and repositories, `orchard-*` for binaries/daemons, `orchardctl` for the CLI, and `com.orchard.*` for bundle identifiers, launchd labels, and similar platform identifiers. This naming policy does not apply to OpenAI-compatible wire protocol fields, endpoints, event names, or error envelopes, which SHALL remain unchanged for compatibility.
 
@@ -12,7 +19,7 @@ The platform exposes **OpenAI-compatible** inference APIs. Internally, it SHALL 
 
 ### 1.1 Target topology
 
-Supported deployment modes:
+Current supported deployment modes:
 
 1. **All-in-one single node**
 
@@ -37,11 +44,25 @@ Supported deployment modes:
    * active/standby coordination via Postgres advisory lock
    * requires external VIP, reverse proxy, or operator-managed endpoint failover
 
+Accepted platform-expansion target:
+
+4. **Linux Controller + macOS inference Nodes**
+
+   * 1 Linux Controller Host runs the portable control plane
+   * Postgres is operator-provided and external
+   * 1–3 admitted Apple Silicon macOS Nodes run Node Agents and MLX Worker Runtimes
+   * the Linux Controller Host is not a schedulable Node unless it separately satisfies Node admission and capability requirements
+   * final Linux distribution format, host manager, managed Postgres, and Linux accelerator Nodes remain deferred
+   * support SHALL NOT be declared before Milestone 8 acceptance completes
+
 ### 1.2 Core design rules
 
 * No Kubernetes.
 * No active/active controller mode in v1.
 * All durable state SHALL live in Postgres.
+* `orchard_shared`, `orchard_controller`, `orchard_node_agent`, and portable `orchard_cli` code SHALL depend only on portable contracts for platform-neutral behavior.
+* Platform host adapters, runtime-provider implementations, platform packaging, and vendor SDKs SHALL depend inward on portable contracts and MUST NOT become unconditional compile dependencies of the portable umbrella.
+* A Controller Host and a schedulable Node are distinct roles.
 * Controller runtime execution SHALL use the Runtime Endpoint Interface.
 * Runtime Endpoint semantics are transport-independent.
 * The gRPC/protobuf `NodeRuntimeService` remains the compatibility transport and a candidate protocol for future non-BEAM adapters.
@@ -74,6 +95,7 @@ Supported deployment modes:
                                     |
                      +--------------v----------------+
                      |  Controller (Elixir/OTP)      |
+                     |  macOS now; Linux target     |
                      |  - Public Inference API       |
                      |  - Operator API               |
                      |  - Admin API                  |
@@ -113,13 +135,34 @@ Supported deployment modes:
                                  +---------------------+
 ```
 
-### 1.4 macOS-specific platform assumptions
+### 1.4 Platform profiles and portable assumptions
 
-The system SHALL be packaged as a native macOS product using **launchd** for system daemons and agents. Managed local Postgres mode SHALL use Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path. Apple documents launchd as the system service manager for daemons/agents, and its Containerization project as a macOS Linux-container runtime built on Apple Silicon virtualization. ([Apple Support][2])
+Platform profiles bind portable Orchard roles to supported host lifecycle, paths, credential storage, packaging, and runtime payloads.
+Profile-specific requirements MUST NOT be treated as requirements of every Controller Host or Node.
+
+The current macOS profile SHALL remain a native macOS product using **launchd** for system daemons and agents.
+Managed local Postgres mode SHALL remain macOS-profile behavior using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
+Apple documents launchd as the system service manager for daemons and agents, and its Containerization project as a macOS Linux-container runtime built on Apple Silicon virtualization. ([Apple Support][2])
+
+The accepted Linux Controller target SHALL use operator-provided external Postgres and SHALL NOT require a local Node Agent, accelerator runtime, Apple tooling, launchd, Keychain, DMG, PKG, or Orchard.app.
+Its final distribution format and host manager remain deferred.
+No Linux support claim follows from portable compilation alone.
 
 ### 1.5 First-class runtime
 
-The required v1 worker runtime is **MLX-based**. The default adapter SHALL target **MLX-LM**. Additional compatible runtimes may be added later via a runtime adapter interface. MLX is specifically built for Apple Silicon, and MLX-LM provides text generation on Apple Silicon. ([GitHub][3])
+The required v1 macOS worker runtime is **MLX-based**.
+The default macOS runtime provider SHALL target **MLX-LM**.
+MLX is specifically built for Apple Silicon, and MLX-LM provides text generation on Apple Silicon. ([GitHub][3])
+
+Orchard SHALL distinguish these concepts:
+
+* **artifact format**: the model artifact representation, such as GGUF or SafeTensors
+* **runtime provider**: the Worker Runtime implementation, such as MLX-LM or a future provider
+* **acceleration implementation**: the execution technology, such as Metal, CUDA, ROCm, or CPU
+* **device resource**: a versioned device identity, topology, memory domain, and allocatable capacity
+
+Portable policy and scheduling MUST NOT infer one concept from another or use operating-system and provider names as capability proof.
+Additional runtime providers require provider-neutral conformance and applicable real-hardware acceptance before entering a supported profile.
 
 ### 1.6 Non-goals for v1
 
@@ -143,7 +186,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 
 | Component           | Process type         | Responsibility                                               |
 | ------------------- | -------------------- | ------------------------------------------------------------ |
-| `orchard-controller`    | launchd LaunchDaemon | Main control plane daemon                                    |
+| `orchard-controller`    | OTP release; launchd in macOS profile | Main control plane daemon                     |
 | `Orchard.API`           | OTP app              | HTTP API surface: `/v1`, `/ops/v1`, `/admin/v1`              |
 | `Orchard.Auth`          | OTP app              | API key auth, service account auth, RBAC                     |
 | `Orchard.Admission`     | OTP app              | validation, tenant policy, quotas, idempotency               |
@@ -159,7 +202,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 
 | Component               | Process type         | Responsibility                                   |
 | ----------------------- | -------------------- | ------------------------------------------------ |
-| `orchard-node-agent`        | launchd LaunchDaemon | Node control endpoint                            |
+| `orchard-node-agent`        | OTP release; launchd in macOS profile | Node control endpoint             |
 | `Orchard.Node.Register`      | OTP app              | join, cert renewal, heartbeat                    |
 | `Orchard.Node.Models`        | OTP app              | artifact cache, verification, load/unload        |
 | `Orchard.Node.Workers`       | OTP app              | worker supervisor, crash recovery                |
@@ -171,7 +214,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 
 | Component               | Packaging                    | Responsibility                                             |
 | ----------------------- | ---------------------------- | ---------------------------------------------------------- |
-| Tray/menu bar app       | `.app` + LaunchAgent         | local status, onboarding, logs, support bundle entry point |
+| Tray/menu bar app       | macOS `.app` + LaunchAgent   | local status, onboarding, logs, support bundle entry point |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
 | Orchard Console         | controller LiveView          | local/operator UI for runtime status, node inventory and admission review, action previews, requests, Organizations, API Tokens, and API Clients |
 | Developer Portal        | controller LiveView          | Invite-only, Organization-scoped self-service mint, list, and revoke of a Portal User's tenant-direct API Keys |
@@ -188,10 +231,11 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
   /orchard_node_agent    # node agent release
   /orchard_cli           # CLI
 /native
-  /orchard_worker_mlx    # python runtime adapter
+  /orchard_worker_mlx    # macOS MLX runtime-provider implementation
   /orchard_tokenizer     # tokenizer/render helper
 /proto
   cluster/v1/*.proto
+  orchard/worker/v1/*.proto  # target provider-neutral Worker Runtime ownership
 /packaging
   dmg/
   pkg/
@@ -205,6 +249,9 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
 * Controller MAY run on a node that also runs a node agent.
 * Worker runtimes SHALL be subprocesses supervised by node agent, not permanent launchd services.
 * Tokenization/rendering helper MAY be a bundled native or Python helper, but the controller API layer remains Elixir/OTP.
+* Controller-owned durable operations SHALL execute inside the active Controller through authenticated, authorized, leader-aware, and audited domain operations.
+* Portable CLI code SHALL own client interaction and presentation, not direct Repo authority or host lifecycle mechanics.
+* Host lifecycle actors SHALL remain external to the managed Node Agent instance and SHALL preserve the platform-neutral exclusion, fencing, observation, and provisional-launch contract.
 
 ---
 
@@ -699,7 +746,13 @@ Rules:
 
 ### 4.1 Node identity model
 
-A node is an explicitly managed resource representing one macOS Apple Silicon machine.
+A Controller Host is a host that runs a Controller instance and participates in durable orchestration and, when configured, Active/Standby leadership.
+A Controller Host is not schedulable unless an admitted Node Agent on that host separately satisfies the Node contract.
+
+A Node is an explicitly managed resource representing an admitted host that runs a Node Agent and advertises authenticated, versioned runtime-provider and device-resource capabilities.
+A Node is not defined solely by operating system or processor vendor.
+The current supported Nodes are Apple Silicon macOS hosts under the macOS profile.
+Future Node profiles require separate host lifecycle, runtime-provider, packaging, trust, and real-hardware acceptance.
 
 A node record SHALL include:
 
@@ -708,7 +761,8 @@ A node record SHALL include:
 * advertise address
 * canonical production BEAM node name after validated private IPv4 inventory exists
 * pool membership
-* chip/memory/runtime capabilities
+* platform and architecture observations
+* distinct runtime-provider, acceleration, device-resource, and memory-domain capabilities
 * trust material reference
 * lifecycle state
 * current health
@@ -1225,13 +1279,16 @@ Node agent SHALL:
 * expose the current gRPC Runtime Endpoint compatibility service
 * download/verify model artifacts
 * manage worker subprocess lifecycle
+* obtain host-observed device inventory and health through a capability-provider contract distinct from runtime-provider evidence
 * report immediate state changes
 * collect diagnostics
 * cancel orphaned requests when controller session disappears
 
 ### 4.10 Local worker contract
 
-Node agent SHALL own worker lifecycle. Local workers SHOULD speak gRPC over Unix domain sockets, with this minimal internal contract:
+Node agent SHALL own Worker Runtime subprocess lifecycle, model loading, execution, cancellation, capacity observation, diagnostics, and cleanup.
+The Worker Runtime protocol source, version policy, generated bindings, and conformance fixtures SHALL have provider-neutral ownership outside any runtime-provider implementation.
+Local workers SHOULD speak gRPC over Unix domain sockets, with this minimal internal contract:
 
 * `LoadModel`
 * `UnloadModel`
@@ -1240,6 +1297,9 @@ Node agent SHALL own worker lifecycle. Local workers SHOULD speak gRPC over Unix
 * `Status`
 
 This local API is internal-only and not part of the public compatibility contract.
+Before capability evidence authorizes work, a Worker Runtime provider SHALL report its protocol version, provider identity and version, supported artifact formats, runtime features, acceleration implementations, device bindings, memory semantics, concurrency, and cache capabilities.
+Unknown, malformed, absent, stale, or incompatible required evidence MUST NOT prove capability eligibility.
+Existing MLX-owned protocol source and hand-maintained bindings remain migration inputs until the provider-neutral ownership change is implemented and accepted.
 
 ---
 
@@ -1364,6 +1424,14 @@ Configured base lane capacity remains separate. Neither it nor a live capacity s
 
 ### 5.5 Eligibility filter
 
+The heterogeneous scheduling target SHALL match model artifact requirements to fresh authenticated runtime-provider capabilities, acceleration capabilities, device resources, memory domains, and Controller policy.
+Scheduling MUST NOT authorize work solely from operating-system names, `worker_backend` strings, transport type, or inferred provider defaults.
+Missing, malformed, stale, conflicting, unauthenticated, or version-incompatible evidence required by an accepted capability contract SHALL fail closed with stable provider-neutral explanations.
+
+This target does not change current production eligibility in this contract-only change.
+Normalized capability evidence SHALL be introduced additively and compared diagnostically before a separately reviewed behavior change makes it authoritative.
+Until that cutover, omitted new fields MUST NOT create a new rejection path beyond the current eligibility contract below.
+
 For each production MultiNode scheduling attempt, the candidate universe SHALL be the exact intersection of the effective normalized targets returned by `Inference.runtime_endpoint_targets/0`, the certificate-backed active inventory returned by `Nodes.active_runtime_endpoint_targets/0`, and the latest accepted scheduler-fresh `node_heartbeats` rows whose Node and normalized target identities match. A fresh row does not admit an unconfigured, inactive, untrusted, address-only, removed, reconfigured, or identity-mismatched target.
 
 The scheduler SHALL obtain one immutable request-scoped Postgres snapshot with one statement or equivalent read-transaction semantics, deterministically selecting the latest accepted row per intersected target by descending `observed_at` and then descending row identity. Per-Node observation times may differ; both `nodes.last_heartbeat_at` and the selected row's `observed_at` SHALL satisfy `node_freshness_threshold_ms` at query time. Controller or scheduler restart requires no production candidate-cache hydration; the next attempt reads Postgres.
@@ -1444,6 +1512,10 @@ Tier selection rule:
 * else consider Tier 2
 
 ### 5.7 Scoring formula
+
+The heterogeneous scheduling target SHALL represent memory as versioned device resources and explicit memory domains such as unified memory, discrete device memory, and system memory.
+Provider-specific working-set, VRAM, or host-memory fields MAY feed adapter normalization but MUST NOT become the portable scheduling vocabulary.
+Any change from the current observe-only memory-ranking behavior to capability eligibility or enforcement requires a separately reviewed behavior change.
 
 Within a tier, compute:
 
@@ -1724,6 +1796,13 @@ State meanings:
 * `failed`: most recent placement transition failed
 
 ### 6.4 Model bundle format
+
+The target model contract SHALL represent artifact format independently from compatible runtime providers, acceleration implementations, and device-resource requirements.
+An artifact MAY declare more than one compatible provider or acceleration requirement set.
+Portable model policy MUST NOT rewrite artifact format as a runtime-provider name.
+
+The current `format`, `adapter`, `min_agent_capability`, MLX manifest values, database constraints, and accepted model bundles remain valid migration inputs.
+They SHALL NOT be removed, reinterpreted, or made non-authoritative until additive replacements, backward decoding, data migration, and scheduler cutover pass separate review and acceptance.
 
 Offline-importable model bundle SHALL be a tarball or directory with manifest:
 
@@ -2755,6 +2834,15 @@ Degraded `plain_http_localhost` SHALL return `404` for every portal route.
 
 ### 7.5 Runtime Endpoint and Internal Worker Interfaces
 
+Runtime Endpoint semantics SHALL remain independent of Controller Host and Node operating systems.
+Runtime Endpoint Observations SHALL evolve additively to distinguish host capability-provider evidence from runtime-provider evidence and to carry normalized platform, architecture, provider, acceleration, device-resource, memory-domain, health, availability, freshness, and capability-version facts.
+Host hardware presence MUST NOT prove runtime initialization.
+Runtime readiness MUST NOT fabricate host device inventory.
+Unknown, malformed, stale, unauthenticated, or version-incompatible evidence MUST NOT prove a capability requirement.
+
+Existing observations that omit additive heterogeneous capability fields SHALL remain decodable.
+Their omission SHALL remain non-authoritative for new capability requirements and SHALL NOT change current scheduling behavior until the separately reviewed authoritative cutover.
+
 Controller runtime execution SHALL use the Runtime Endpoint Interface.
 Runtime Endpoint semantics are transport-independent.
 The gRPC/protobuf `NodeRuntimeService` remains the gRPC Compatibility Adapter and a candidate protocol for future non-BEAM adapters.
@@ -2953,6 +3041,10 @@ service NodeRuntimeService {
 ```
 
 #### 7.5.2a Worker-side service (node-agent ↔ worker)
+
+The Worker Runtime Interface is provider-neutral even while MLX is the required v1 macOS implementation.
+Its protocol source, generated bindings, version policy, and conformance fixtures SHALL be owned outside any runtime-provider implementation after the ownership migration is accepted.
+Every supported provider SHALL pass provider-neutral negotiation, health, load, unload, generation, streaming, cancellation, capacity, failure-normalization, and version-skew conformance, plus applicable real-hardware acceptance.
 
 The Worker Runtime Interface remains Node Agent-local.
 The Controller communicates with the Runtime Endpoint, not directly with Worker Runtime subprocesses.
@@ -4604,7 +4696,7 @@ Forwarded headers SHALL be trusted only in `reverse_proxy` mode and only from co
 Secrets SHALL be stored:
 
 * in Postgres only as hashes, never plaintext
-* private keys SHOULD be stored in macOS Keychain or protected filesystem paths
+* private keys SHOULD be stored in the platform profile's approved credential store or protected filesystem paths; macOS Keychain remains the macOS-profile store
 * bootstrap tokens stored only as hash
 * Portal User passwords stored only as a password hash, never plaintext
 * Portal Invite tokens stored only as a hash, with plaintext shown only in the newly issued URL
@@ -4689,6 +4781,14 @@ The purge verification SHALL explicitly enumerate every content-bearing Request 
 ---
 
 ## 11. Packaging and Deployment
+
+Distribution requirements are scoped by platform profile.
+DMG, PKG, Orchard.app, launchd, Keychain, Apple signing, notarization, and stapling requirements in this section SHALL remain mandatory for the macOS profile and MUST NOT be imposed on portable Controller compilation or the Linux Controller target.
+Generic Product Version, provenance, trust, secret-free artifact, role, rollback, retained-state, and protocol compatibility requirements remain shared where applicable.
+
+The accepted Linux Controller target uses operator-provided external Postgres and contains only portable compatible applications and assets.
+Its final distribution format, host manager, paths, service integration, and publication contract remain deferred to a separate change.
+No Linux distribution is supported by this contract-only amendment.
 
 The macOS-native packaging model SHALL use:
 
@@ -4900,6 +5000,9 @@ PKG `postinstall` SHALL NOT generate, procure, or trust production TLS certifica
 
 ### 11.5 Managed Database Mode
 
+Managed Database Mode in this section is a macOS-profile capability.
+It is not part of the first Linux Controller target.
+
 Managed DB mode SHALL:
 
 * run Postgres in a local container runtime on Apple Silicon
@@ -4915,6 +5018,8 @@ Implementation choice:
 Apple’s Containerization project is a Swift package for Linux containers on macOS using Apple Silicon virtualization, and `container` is its CLI implementation. ([Apple Open Source][9])
 
 ### 11.6 External Database Mode
+
+External Database Mode is the required database mode for the accepted Linux Controller target and remains supported for the macOS profile.
 
 External DB mode SHALL support:
 
@@ -4945,6 +5050,9 @@ Offline install flow:
 
 ### 11.8 Tray/menu bar app
 
+The Tray/Menu Bar App is a macOS-profile component.
+The first Linux Controller target is headless and does not require a desktop equivalent.
+
 Tray app SHALL provide:
 
 * local daemon status
@@ -4956,6 +5064,17 @@ Tray app SHALL provide:
 * version/build info
 
 ### 11.9 CLI
+
+The target portable CLI SHALL own argument parsing, client authentication, confirmation presentation, and output formatting.
+Normal Controller-state operations SHALL execute inside the active Controller through authenticated, authorized, leader-aware, and audited Controller-owned domain operations shared with Console clients.
+The portable CLI MUST NOT require direct Ecto Repo access, Controller application modules, launchd, Darwin native helpers, or local Controller release evaluation for normal operator operations after their command-family migrations are accepted.
+
+Host-local service management, process fencing, environment materialization, local trust-store mutation, terminal custody, and support collection SHALL belong to platform host tooling.
+Mixed commands SHALL separate Controller-owned and host-local operations.
+A narrow locally authenticated Controller bootstrap or recovery channel MAY remain only for operations that cannot yet use ordinary administrator credentials, and it SHALL invoke the same Controller-owned domain operations rather than become a general direct-Repo fallback.
+
+The existing local Controller-runtime CLI authority below remains the implemented migration baseline.
+It SHALL be replaced command family by command family only through separately reviewed security-led changes with explicit authentication, authorization, audit, leader, idempotency, confirmation, secret-output, and degraded-Controller contracts.
 
 Required commands:
 
@@ -5400,9 +5519,40 @@ Acceptance:
 * schema migration ownership is exclusive
 * interrupted requests reconcile correctly after controller handover
 
+### Milestone 8 - Platform portability and Linux Controller profile
+
+This is a vNext platform-expansion milestone.
+It does not rewrite completed macOS acceptance in Milestones 0–7.
+
+Deliver:
+
+* portable umbrella dependency boundaries with no unconditional Apple or accelerator toolchain requirement
+* Darwin host artifacts outside portable CLI compilation
+* required Linux portable and provider-neutral conformance validation
+* Controller release authority independent from CLI implementation
+* provider-neutral Worker Runtime protocol ownership and generated bindings
+* additive normalized artifact, runtime-provider, acceleration, device-resource, memory-domain, and failure contracts
+* separate host capability-provider and runtime-provider evidence
+* macOS managed lifecycle behind a host adapter that preserves ADR 0018
+* security-led migration of normal CLI command families to Controller-owned operations
+* Linux Controller release profile with operator-provided external Postgres
+
+Acceptance:
+
+* portable applications compile, lint, test, and produce coverage in the required Linux portability lane without Xcode, launchd, MLX, CUDA, or Darwin native-helper compilation
+* macOS all-in-one, split-role, Orchard.app, DMG, PKG, launchd, managed handover, retained-state, signing, notarization, air-gap, and MLX acceptance remain green
+* the Controller release does not load CLI implementation to obtain Controller authority
+* the portable CLI does not require direct Repo authority or Darwin native compilation for normal Controller-state operations
+* Worker Runtime contracts have provider-neutral ownership, generated bindings, version negotiation, drift checks, and conformance coverage
+* Linux Controller with external Postgres and an admitted macOS MLX Node passes trust, Runtime Endpoint observation, scheduling, streaming, cancellation, restart, and failure acceptance
+* production BEAM admission for the Linux Controller profile satisfies ADR 0012 provenance, identity, host-control, network, and mixed-platform acceptance gates
+* `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before the Linux Controller profile is declared supported
+
 ---
 
-This spec defines the v1 platform contract. The coding agent should implement it in milestone order, preserving wire compatibility and state-machine behavior exactly as written where fields, states, and transitions are explicitly defined.
+This spec defines the supported v1 macOS platform contract and the accepted vNext platform-expansion target.
+The coding agent should implement it in milestone order, preserving wire compatibility and state-machine behavior exactly as written where fields, states, and transitions are explicitly defined.
+Architecture acceptance does not declare an unimplemented platform profile supported.
 
 [1]: https://developers.openai.com/api/docs/guides/migrate-to-responses/ "https://developers.openai.com/api/docs/guides/migrate-to-responses/"
 [2]: https://support.apple.com/guide/terminal/script-management-with-launchd-apdc6c1077b-5d5d-4d35-9c19-60f2397b2369/mac "https://support.apple.com/guide/terminal/script-management-with-launchd-apdc6c1077b-5d5d-4d35-9c19-60f2397b2369/mac"
