@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! pg_isready --host=localhost --port=5432 --username=postgres --quiet; then
+  echo "PostgreSQL is not ready; starting it."
+  sudo service postgresql start
+fi
+
+pg_isready --host=localhost --port=5432 --username=postgres --quiet

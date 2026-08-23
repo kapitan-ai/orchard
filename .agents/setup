@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.local/bin:$PATH"
+
+step() {
+  printf '\n==> [%s] %s\n' "$(date -u +%H:%M:%S)" "$1"
+}
+
+step "Installing missing system packages"
+packages=(
+  autoconf
+  build-essential
+  libncurses-dev
+  libssh-dev
+  libssl-dev
+  libxml2-utils
+  m4
+  pkg-config
+  postgresql
+  postgresql-client
+  protobuf-compiler
+  unixodbc-dev
+  xsltproc
+)
+missing_packages=()
+for package in "${packages[@]}"; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -Fqx 'install ok installed'; then
+    missing_packages+=("$package")
+  fi
+done
+
+if ((${#missing_packages[@]})); then
+  sudo apt-get update
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    "${missing_packages[@]}"
+else
+  echo "System packages are already installed."
+fi
+
+step "Installing mise"
+if ! command -v mise >/dev/null 2>&1; then
+  curl -fsSL https://mise.run | sh
+else
+  echo "mise is already installed."
+fi
+
+step "Installing the pinned Orchard toolchain"
+mise trust --yes mise.toml
+mise install
+
+step "Starting and tuning PostgreSQL"
+postgres_config="$(find /etc/postgresql -path '*/main/postgresql.conf' -print -quit)"
+if [[ -z "$postgres_config" ]]; then
+  echo "PostgreSQL configuration was not created by the Debian package." >&2
+  exit 1
+fi
+
+orb_config="$(dirname "$postgres_config")/conf.d/99-orchard-orb.conf"
+desired_config="$(mktemp)"
+trap 'rm -f "$desired_config"' EXIT
+cat >"$desired_config" <<'EOF'
+# Amp orb development database: favor speed over crash durability.
+fsync = off
+synchronous_commit = off
+full_page_writes = off
+EOF
+
+postgres_restart=false
+if ! sudo test -f "$orb_config" || ! sudo cmp -s "$desired_config" "$orb_config"; then
+  sudo install -m 0644 "$desired_config" "$orb_config"
+  postgres_restart=true
+fi
+
+if [[ "$postgres_restart" == true ]]; then
+  sudo service postgresql restart
+else
+  sudo service postgresql start
+fi
+
+sudo -u postgres psql --set ON_ERROR_STOP=1 --quiet \
+  --command "ALTER USER postgres WITH PASSWORD 'postgres';"
+pg_isready --host=localhost --port=5432 --username=postgres
+
+step "Installing Elixir dependencies"
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" \
+  mise exec -- mix local.hex --if-missing --force
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" \
+  mise exec -- mix local.rebar --if-missing --force
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix deps.get
+
+step "Installing native Python dependencies"
+mise exec -- uv sync --locked --directory native/orchard_tokenizer
+mise exec -- uv sync --locked --directory native/orchard_worker_mlx
+
+step "Installing repository-local Node dependencies"
+mise exec -- npm ci --ignore-scripts
+
+step "Orb setup complete"
