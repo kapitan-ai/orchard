@@ -8,7 +8,7 @@
 - [x] 1.6 Amend decisions 0001, 0003, 0006, 0011, 0012, 0013, and 0018 only where platform scope or mixed-platform acceptance changes, preserving their security, transport, scheduling, release, and lifecycle invariants.
 - [x] 1.7 Reconcile architecture, tooling, local-development, packaging, glossary, and contributor documentation with the accepted profile, support status, and ownership terms.
 - [x] 1.8 Run strict validation for this change and the complete OpenSpec corpus, then review the resulting main and delta specs for incomplete or contradictory prose.
-- [ ] 1.9 Obtain collaborator review of the contract and decisions before any implementation child change begins.
+- [x] 1.9 Obtain collaborator review of the contract and decisions before any implementation child change begins.
 
 ## Follow-up Delivery Boundaries
 
