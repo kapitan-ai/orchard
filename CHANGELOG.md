@@ -3,6 +3,12 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-08-23
+
+### Breaking changes
+
+- Orchard product licensing and entitlement enforcement are removed for open-source distribution. `orchardctl license activate|status` is gone (`orchardctl license` now exits non-zero with the usage banner), the Console license gate, sidebar license badge, and Overview/Settings license cards are removed, authenticated `GET /ops/v1/health` no longer returns a `license` object, and the Node Agent no longer gates startup or useful work on license state. Packaged first-run output drops the activation step and renumbers the remaining steps. **Required action:** remove any automation that shells out to `orchardctl license` or reads `license` fields from `/ops/v1/health`, since those now fail. Legacy `ORCHARD_LICENSE_*` and product-licensing `ORCHARD_KEYGEN_*` environment variables are ignored rather than rejected, so they may stay in place through the upgrade and be cleaned up later. Existing `config/licensing/current.json` bundles are left unchanged by install, update, and the default uninstall for rollback safety. Authentication, authorization, governance, quotas, accounting, billing, third-party license notices, model metadata licenses, and macOS code-signing entitlements are unchanged. ([#271](https://github.com/kapitan-ai/orchard/pull/271), [#272](https://github.com/kapitan-ai/orchard/pull/272), [#273](https://github.com/kapitan-ai/orchard/pull/273))
+
 ## 2026-08-21
 
 ### Breaking changes
