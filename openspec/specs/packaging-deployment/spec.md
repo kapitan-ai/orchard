@@ -23,7 +23,7 @@ The app-owned lifecycle SHALL remain the current root-authorized path for role-a
 ### Requirement: Native PKG Distribution Is Not Supported
 
 Native PKG SHALL NOT be a current supported distribution channel, release artifact, operator workflow, or validation gate.
-The app MAY retain legacy PKG receipt detection solely to prevent silent ownership takeover of an existing installation.
+The app SHALL retain legacy PKG receipt detection solely to prevent silent ownership takeover of an existing installation, with the blocking behavior owned by `app-distribution-lifecycle`.
 
 #### Scenario: A legacy PKG receipt is present
 

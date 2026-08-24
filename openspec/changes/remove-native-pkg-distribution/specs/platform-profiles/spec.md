@@ -6,6 +6,7 @@ Orchard SHALL define platform profiles that bind portable roles to host lifecycl
 The macOS profile SHALL preserve the existing all-in-one Controller, Node Agent, MLX worker, app, DMG, launchd, and retained-state behavior.
 The first accepted Linux target SHALL be a Controller Host using operator-provided external Postgres and dispatching to admitted macOS MLX Nodes.
 The Linux Controller profile MUST NOT be represented as supported until its Milestone 8 acceptance gates pass.
+This requirement changes `SPEC.md` §§1.1, 1.4, 1.5, 4.1, 11, and 14.
 
 #### Scenario: Mixed Linux Controller and Mac Node cluster
 

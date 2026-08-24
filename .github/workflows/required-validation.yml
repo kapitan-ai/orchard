@@ -146,6 +146,9 @@ jobs:
       - name: Test retained payload build contract
         run: scripts/test-build-payload.sh
 
+      - name: Test payload signing and closure contracts
+        run: scripts/test-payload-signing-contracts.sh
+
       - name: Test Orchard.app lifecycle and assembly
         run: |
           swift test --package-path packaging/app

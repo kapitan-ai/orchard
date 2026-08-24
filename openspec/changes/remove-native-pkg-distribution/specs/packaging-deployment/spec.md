@@ -1,9 +1,14 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: PKG Supports Privileged Local Installation`
+- TO: `### Requirement: DMG And Orchard.app Are The Current Native Distribution`
+
 ## ADDED Requirements
 
 ### Requirement: Native PKG Distribution Is Not Supported
 
 Native PKG SHALL NOT be a current supported distribution channel, release artifact, operator workflow, or validation gate.
-The app MAY retain legacy PKG receipt detection solely to prevent silent ownership takeover of an existing installation.
+The app SHALL retain legacy PKG receipt detection solely to prevent silent ownership takeover of an existing installation, with the blocking behavior owned by `app-distribution-lifecycle`.
 
 #### Scenario: A legacy PKG receipt is present
 
@@ -13,7 +18,7 @@ The app MAY retain legacy PKG receipt detection solely to prevent silent ownersh
 
 ### Requirement: Future Distribution Channels Require Fresh Approval
 
-A future native package or additional distribution channel SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request before support is claimed.
+A future native package or additional distribution channel SHALL require a fresh OpenSpec proposal and a separate implementing pull request before support is claimed.
 That proposal and pull request SHALL update `SPEC.md`, security posture, operator documentation, artifact governance, and validation gates for the proposed channel.
 
 #### Scenario: A native package is proposed later
@@ -34,6 +39,15 @@ The app-owned lifecycle SHALL remain the current root-authorized path for role-a
 - **WHEN** Orchard produces a supported macOS distribution
 - **THEN** the distribution contains a verifiable `Orchard.app` in the DMG
 - **AND** it does not require a native PKG artifact
+
+### Requirement: Managed Device Deployment Is Deferred
+
+Orchard's current macOS distribution contract SHALL NOT require MDM, Jamf, or enterprise managed-device deployment as a supported current distribution channel.
+
+#### Scenario: MDM is not an acceptance gate
+
+- **WHEN** current macOS distribution behavior is reviewed for release readiness
+- **THEN** absence of Jamf or MDM deployment automation does not block the distribution milestone
 
 ### Requirement: Distribution Artifacts Remain Generic
 
@@ -61,3 +75,18 @@ Generic secret-free artifact, Product Version, trust, role, rollback, retained-s
 - **WHEN** Orchard compiles or validates the portable Linux Controller profile
 - **THEN** the workflow does not require Apple packaging or publication tools
 - **AND** it still enforces generic version, trust, secret-free artifact, and protocol compatibility contracts
+
+### Requirement: Platform Runtime Payloads Are Selected Explicitly
+
+A platform distribution SHALL contain only runtime providers and native host artifacts compatible with its declared profile.
+The macOS all-in-one profile SHALL retain its current Controller, Node Agent, MLX, tokenizer, app-owned host lifecycle, and role-selected payload behavior until a separately accepted change supersedes it.
+
+#### Scenario: Mac all-in-one artifact is assembled
+
+- **WHEN** the existing macOS all-in-one profile is built during the portability migration
+- **THEN** it continues to contain the accepted Mac-compatible role payloads
+- **AND** no future Linux or CUDA payload is required for acceptance
+
+## REMOVED Requirements
+
+### Requirement: Unattended Installer Command Remains Useful

@@ -4793,7 +4793,7 @@ No Linux distribution is supported by this contract-only amendment.
 
 The current macOS-native distribution model SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
 Native PKG distribution is not a supported current Orchard distribution channel.
-Legacy PKG receipt detection exists only to prevent silent app ownership takeover of an existing installation and does not define supported product behavior, a release artifact, or a validation gate.
+Legacy PKG receipt detection SHALL be retained solely to prevent silent app ownership takeover of an existing installation, as required by §11.4, and does not define a supported distribution channel, a release artifact, or a validation gate.
 Any future native package or additional distribution channel SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request that updates this contract, security posture, operator documentation, and validation gates before support is claimed.
 
 Apple recommends notarization for directly distributed macOS software, and a signed DMG is a preferred direct-distribution format outside the App Store. ([Apple Developer][8])
@@ -4876,6 +4876,8 @@ Install and update SHALL preserve operator-owned `config`, `data`, `models`, `bu
 Default uninstall SHALL remove app-owned payloads, installed commands and links, launchd plists, and install markers while retaining those operator-owned paths.
 Destructive purge behavior is not part of the v1 app lifecycle contract.
 The app lifecycle SHALL preserve complete existing TLS state, SHALL reject partial TLS state before mutation, SHALL NOT generate or trust production TLS material, and SHALL NOT mutate system trust stores.
+The app lifecycle SHALL refuse system-root install, update, and uninstall while a `com.orchard.pkg` receipt exists, SHALL fail closed before any mutation, and SHALL report that blocking receipt in non-mutating lifecycle status.
+That refusal prevents silent app ownership takeover of a legacy installation; it does not make native PKG a supported distribution channel, release artifact, operator workflow, or validation gate.
 Orchard SHALL sign nested Mach-O libraries and executables with their required entitlements before signing app helpers, the main app executable, and the outer app bundle.
 Orchard SHALL verify the nested payload and final app bundle before handing the app to the DMG distribution layer.
 

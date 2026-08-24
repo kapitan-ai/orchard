@@ -1,9 +1,14 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Lifecycle Authority Is External To The Managed Process`
+- TO: `### Requirement: Platform Lifecycle Authority Is Isolated`
+
 ## ADDED Requirements
 
 ### Requirement: Future Managed Replacement Requires Separate Approval
 
 A managed Node Agent replacement or handover protocol SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request before it becomes part of the host lifecycle interface.
-The proposal SHALL define supported platforms, process-observation semantics, failure recovery, identity-root safety, and conformance evidence without relying on superseded ADR 0018.
+The proposal SHALL define the supported platforms, process-observation semantics, failure recovery, identity-root safety, and conformance evidence without relying on superseded ADR 0018.
 
 #### Scenario: Cross-process handover is proposed
 
@@ -23,3 +28,9 @@ The current contract SHALL NOT infer a zero-overlap replacement guarantee, share
 - **WHEN** portable Orchard code invokes a supported host lifecycle operation
 - **THEN** platform-native service-manager and filesystem mechanics remain inside the selected adapter
 - **AND** the adapter boundary alone does not claim managed replacement safety that `SPEC.md` does not define
+
+## REMOVED Requirements
+
+### Requirement: Platform-Neutral Managed Host Lifecycle
+
+### Requirement: Platform Evidence Preserves Portable Outcomes

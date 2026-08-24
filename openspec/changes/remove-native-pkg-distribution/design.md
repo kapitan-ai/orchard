@@ -14,7 +14,8 @@ The repository must distinguish current support from historical or inactive mate
 ## Non-Goals
 
 - Delete historical archives or remove the app's legacy PKG receipt blocker.
-- Change Orchard.app lifecycle implementation, DMG assembly, launchd services, source-development commands, API behavior, wire contracts, or persisted data.
+- Change Orchard.app lifecycle implementation, DMG assembly, launchd service definitions, source-development commands, API behavior, wire contracts, or persisted data.
+  `orchardctl start` gains one launchd job-domain call for upgrade compatibility; see the decision below.
 - Define a replacement Managed Node Agent handover protocol.
 - Claim Linux distribution or Linux Node lifecycle support.
 
@@ -38,6 +39,19 @@ ADR 0018 remains readable as historical context, but its status points to ADR 00
 The contract does not replace zero-overlap with an implicit weaker guarantee.
 Controller `N` compatibility with Node Agent `N` and `N-1` remains a protocol compatibility rule for sequential rolling upgrades and does not authorize concurrent access to one Node Identity Root.
 
+### `orchardctl start` Clears Legacy Job-Domain Disablement
+
+Removing the handover also removed `LifecycleSystem.disable_job/2`, so `orchardctl stop` no longer applies persistent launchd job-domain disablement.
+An install upgraded from an older Orchard can still carry disablement that an earlier `orchardctl stop` applied, and `launchctl bootstrap` alone does not clear it, so that host would silently fail to start.
+`orchardctl start` therefore runs `launchctl enable system/<label>` before `launchctl bootstrap` for every selected service.
+
+Two consequences are accepted deliberately rather than incidentally:
+
+- The enable is unconditional, so `orchardctl start` also overrides an operator's own `launchctl disable`. Job-domain disablement is not a supported way to keep an Orchard service down; leaving it stopped or removing the role from the install is.
+- A nonzero `launchctl enable` fails the start before bootstrap is attempted, because the alternative is bootstrapping a job the domain will refuse to run and reporting success.
+
+`packaging/README.md` documents both, together with the matching consequence that `orchardctl stop` no longer survives a reboot or launchd domain reload.
+
 ### Reintroduction Requires A Fresh Proposal And Pull Request
 
 A future native package, additional distribution channel, or managed replacement protocol starts with a fresh OpenSpec proposal.
@@ -60,6 +74,8 @@ Legacy files, archived changes, and superseded decisions are research input only
 - **Removing the handover protocol may be read as permitting overlap.** The contract explicitly says compatibility does not authorize concurrent use of one Node Identity Root and makes no replacement safety guarantee.
 - **Future packaging may reuse stale assumptions.** The fresh-proposal and separate-PR gate requires renewed security, lifecycle, artifact, and validation design.
 - **Historical records may appear contradictory.** ADR 0018 and related historical material remain intact but are clearly classified as superseded or archived.
+- **Deleting PKG tests could silently drop coverage of retained code.** Wrapper and payload-signing regression suites are retained against `packaging/payload/bin/` and the retained signing scripts, and the payload build gate runs the real build rather than inspecting help text.
+- **Deleting the PKG runbook could strand operator guidance.** Installer-independent transport, TLS, CORS, Console, and upgrade-rollout documentation moves into `packaging/README.md` rather than disappearing with the PKG-specific material.
 
 ## Validation
 
