@@ -2800,7 +2800,7 @@ The operator SHALL deliver the copied invite URL out of band.
 Invite redemption SHALL be bound to the Organization identified by the route and SHALL succeed only for a valid unexpired invite owned by a Portal User who is currently `invited` in that Organization.
 Successful redemption SHALL set the Portal User's password, mark the invite redeemed, activate the Portal User, and end that Portal User's standing portal sessions.
 Wrong-Organization, disabled-user, invalidated, expired, redeemed, and unknown-token redemption failures SHALL use one generic external response and SHALL make no persisted mutation.
-A replacement invite SHALL use the same reissue flow for password reset and SHALL end that Portal User's standing portal sessions.
+Recopying an invite for a Portal User who remains `invited` SHALL use the same reissue flow and SHALL end that Portal User's standing portal sessions.
 
 The portal SHALL identify the Organization by slug, then authenticate one active Portal User by normalized email and password.
 Unknown Organization, unknown email, disabled Portal User, and wrong-password submissions SHALL have indistinguishable status, body shape, headers, and generic credential failure.
@@ -2811,7 +2811,7 @@ They SHALL NOT use an Organization-wide lockout.
 The operator SHALL invite and disable Portal Users from the existing Console Organization detail surface.
 Disabling a Portal User SHALL atomically invalidate every outstanding invite and end only that Portal User's portal sessions.
 Disabling a Portal User SHALL NOT revoke that Portal User's API Keys.
-Invite reissue, invite redemption, password replacement, and Portal User disablement SHALL NOT revoke minted API Keys.
+Invite reissue, invite redemption, and Portal User disablement SHALL NOT revoke minted API Keys.
 
 The portal SHALL mint tenant-direct API Keys with `issuance_surface = 'developer_portal'` and `portal_user_id` equal to the signed-in Portal User.
 A Portal User MAY have at most 10 active portal-minted tenant-direct keys.

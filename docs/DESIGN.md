@@ -527,8 +527,9 @@ After it disappears, **Copy invite** reissues a fresh hashed token, invalidates 
 The operator delivers the copied URL out of band.
 The third card contains the Portal Users table with email, status, invite state, and contextual actions.
 Use a forest badge for active users, an amber badge for invited users, and a neutral badge for disabled users.
-Invited rows expose **Copy invite**.
-Active rows expose **Disable**, and disabling a Portal User ends that user's portal sessions without automatically revoking minted API Keys.
+Invited rows expose **Copy invite** and **Disable**.
+Active rows expose **Disable**.
+Disabling a Portal User atomically invalidates every outstanding invite, ends only that user's portal sessions, and does not automatically revoke minted API Keys.
 Do not expose set, rotate, clear, reveal, or copy password actions as an operator seam.
 The operator manages developer access through Portal Invites and Portal User disablement instead.
 

@@ -79,6 +79,31 @@ defmodule Orchard.Governance.NamedPortalUserTest do
            ) == 0
   end
 
+  test "SPEC 7.4a legacy disabled user with an outstanding invite cannot reactivate" do
+    {:ok, tenant} = Governance.create_tenant(%{slug: "legacy-disabled", name: "Legacy Disabled"})
+    {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
+    {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+
+    assert {:ok, disabled} =
+             user
+             |> PortalUser.disable_changeset(DateTime.utc_now())
+             |> Repo.update()
+
+    token_row = Repo.get_by!(PortalInviteToken, portal_user_id: user.id)
+
+    assert {:error, :invalid_invite} =
+             Governance.redeem_portal_invite(tenant.slug, invite.token, @password)
+
+    persisted = Repo.get!(PortalUser, user.id)
+    assert persisted.status == "disabled"
+    assert persisted.disabled_at == disabled.disabled_at
+    assert persisted.password_hash == disabled.password_hash
+
+    persisted_token = Repo.get!(PortalInviteToken, token_row.id)
+    assert persisted_token.token_hash == token_row.token_hash
+    assert persisted_token.redeemed_at == token_row.redeemed_at
+  end
+
   test "named login creates a user-owned session and disable ends sessions only" do
     {tenant, user} = active_user!("named-login", "dev@example.com")
     {_tenant, other_user} = active_user!(tenant, "other@example.com")

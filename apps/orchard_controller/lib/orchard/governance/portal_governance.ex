@@ -204,9 +204,7 @@ defmodule Orchard.Governance.PortalGovernance do
   defp copy_invite_transaction(tenant, user_id, token, expires_at) do
     user = lock_invited_user!(tenant.id, user_id, :portal_user_not_invited)
 
-    from(row in PortalInviteToken,
-      where: row.portal_user_id == ^user.id and is_nil(row.redeemed_at)
-    )
+    from(row in PortalInviteToken, where: row.portal_user_id == ^user.id)
     |> Repo.delete_all()
 
     %PortalInviteToken{}
