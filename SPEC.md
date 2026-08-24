@@ -2795,6 +2795,8 @@ Email SHALL be the Portal User identifier and SHALL be unique by normalized valu
 SMTP SHALL NOT be required.
 For a Portal User in `invited` status, the Console SHALL provide Copy invite.
 Each Copy invite action SHALL mint a fresh single-use token, persist only its hash, extend the invite expiry, and invalidate every prior unused invite token for that Portal User.
+A Portal User SHALL have at most one stored invite row at a time.
+Invite invalidation SHALL delete the stored invite row rather than tombstone it, and Orchard SHALL NOT retain invite revocation history.
 Orchard SHALL NOT persist the plaintext invite token or URL.
 The operator SHALL deliver the copied invite URL out of band.
 Invite redemption SHALL be bound to the Organization identified by the route and SHALL succeed only for a valid unexpired invite owned by a Portal User who is currently `invited` in that Organization.
@@ -2809,7 +2811,7 @@ Failed portal logins SHALL be limited per Organization fingerprint, Portal User 
 They SHALL NOT use an Organization-wide lockout.
 
 The operator SHALL invite and disable Portal Users from the existing Console Organization detail surface.
-Disabling a Portal User SHALL atomically invalidate every outstanding invite and end only that Portal User's portal sessions.
+Disabling a Portal User SHALL atomically invalidate every outstanding invite by deleting its stored row, and SHALL end only that Portal User's portal sessions.
 Disabling a Portal User SHALL NOT revoke that Portal User's API Keys.
 Invite reissue, invite redemption, and Portal User disablement SHALL NOT revoke minted API Keys.
 
@@ -3858,15 +3860,12 @@ create table portal_users (
 
 create table portal_invite_tokens (
   id uuid primary key default gen_random_uuid(),
-  portal_user_id uuid not null references portal_users(id) on delete cascade,
+  portal_user_id uuid not null unique references portal_users(id) on delete cascade,
   token_hash bytea not null unique,
   expires_at timestamptz not null,
   redeemed_at timestamptz,
-  invalidated_at timestamptz,
   inserted_at timestamptz not null default now(),
-  check (octet_length(token_hash) = 32),
-  check (expires_at > inserted_at),
-  check (redeemed_at is null or invalidated_at is null)
+  check (octet_length(token_hash) = 32)
 );
 
 create table service_accounts (
@@ -4322,9 +4321,6 @@ create index idx_api_keys_portal_user_inserted_at
 
 create index idx_portal_sessions_user_expiry
   on portal_sessions(portal_user_id, absolute_expires_at);
-
-create index idx_portal_invite_tokens_user_expiry
-  on portal_invite_tokens(portal_user_id, expires_at desc);
 
 create extension if not exists btree_gist;
 
