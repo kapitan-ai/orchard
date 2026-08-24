@@ -4715,7 +4715,7 @@ Audit logs SHALL capture:
 
 * tenant creation/update/suspend
 * API key create/revoke
-* Portal User invite, invite reissue, invite redemption, disable, and password replacement
+* Portal User invite, invite reissue, invite redemption, and disable
 * service account changes
 * API Client Disablement
 * provisioning batch start/completion/failure
