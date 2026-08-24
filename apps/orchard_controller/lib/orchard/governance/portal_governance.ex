@@ -61,9 +61,8 @@ defmodule Orchard.Governance.PortalGovernance do
   end
 
   def disable_user(tenant_or_id, user_or_id) do
-    with {:ok, tenant} <- tenant(tenant_or_id),
-         {:ok, user} <- user_for_tenant(tenant.id, id(user_or_id)) do
-      Repo.transaction(fn -> disable_user_transaction(tenant.id, user.id) end)
+    with {:ok, tenant} <- tenant(tenant_or_id) do
+      Repo.transaction(fn -> disable_user_transaction(tenant.id, id(user_or_id)) end)
       |> unwrap()
     end
   end

@@ -523,6 +523,8 @@ The Organization detail surface manages Portal Users through three stacked Conso
 The first card is the Portal User invite form, with an email field and a navy primary **Invite** action.
 The second card is a transient sibling that appears only after an invite is issued or reissued and shows the Portal Invite URL once with its expiry and a navy **Copy invite** action.
 The show-once card is not a flash, modal, or recoverable secret store.
+Disabling the Portal User the shown URL belongs to dismisses the card, because disablement invalidates that invite.
+Disabling any other Portal User leaves the card in place.
 After it disappears, **Copy invite** reissues a fresh hashed token, invalidates the previous unused token, extends expiry, and opens a new show-once card.
 The operator delivers the copied URL out of band.
 The third card contains the Portal Users table with email, status, invite state, and contextual actions.

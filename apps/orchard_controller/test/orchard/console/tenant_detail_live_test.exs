@@ -417,8 +417,35 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
       html = render_click(view, "disable_portal_user", %{"portal_user_id" => user.id})
       assert html =~ "Disabled"
-      refute html =~ "tenant-portal-invite-url-card"
-      refute html =~ "/portal/detail-t/invites/orchard_pi_"
+      card_dismissed = not String.contains?(html, "tenant-portal-invite-url-card")
+      assert card_dismissed
+    end
+
+    test "disable dismisses only the shown invite URL of the disabled Portal User", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, first_user} = Governance.create_portal_invite(tenant, %{email: "first@example.com"})
+      {:ok, other_user} = Governance.create_portal_invite(tenant, %{email: "other@example.com"})
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      shown = render_click(view, "copy_portal_invite", %{"portal_user_id" => first_user.id})
+      [invite_url] = Regex.run(~r{/portal/detail-t/invites/orchard_pi_[\w-]+}, shown)
+
+      after_other =
+        render_click(view, "disable_portal_user", %{"portal_user_id" => other_user.id})
+
+      assert after_other =~ "tenant-portal-invite-url-card"
+      url_preserved = String.contains?(after_other, invite_url)
+      assert url_preserved
+
+      after_owner =
+        render_click(view, "disable_portal_user", %{"portal_user_id" => first_user.id})
+
+      url_dismissed = not String.contains?(after_owner, invite_url)
+      assert url_dismissed
+      card_dismissed = not String.contains?(after_owner, "tenant-portal-invite-url-card")
+      assert card_dismissed
     end
 
     test "degraded mode hides invite form", %{conn: conn, tenant: tenant} do

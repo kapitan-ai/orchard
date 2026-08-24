@@ -25,6 +25,7 @@ defmodule OrchardConsole.TenantDetailLive do
         api_clients: [],
         portal_users: [],
         portal_invite_url: nil,
+        portal_invite_user_id: nil,
         portal_https?: Transport.public_api_https_enabled?(),
         load_error: nil,
         generated_secret: nil
@@ -96,18 +97,29 @@ defmodule OrchardConsole.TenantDetailLive do
 
   def handle_event("copy_portal_invite", %{"portal_user_id" => user_id}, socket) do
     case Governance.copy_portal_invite(socket.assigns.tenant, user_id) do
-      {:ok, invite} -> {:noreply, assign(socket, portal_invite_url: invite.url)}
-      {:error, _reason} -> {:noreply, put_flash(socket, :error, "Unable to copy invite.")}
+      {:ok, invite} ->
+        {:noreply, assign(socket, portal_invite_url: invite.url, portal_invite_user_id: user_id)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Unable to copy invite.")}
     end
   end
 
   def handle_event("disable_portal_user", %{"portal_user_id" => user_id}, socket) do
     case Governance.disable_portal_user(socket.assigns.tenant, user_id) do
       {:ok, _user} ->
-        {:noreply, socket |> assign(portal_invite_url: nil) |> load_tenant_detail()}
+        {:noreply, socket |> dismiss_invite_url_for(user_id) |> load_tenant_detail()}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Unable to disable Portal User.")}
+    end
+  end
+
+  defp dismiss_invite_url_for(socket, user_id) do
+    if socket.assigns.portal_invite_user_id == user_id do
+      assign(socket, portal_invite_url: nil, portal_invite_user_id: nil)
+    else
+      socket
     end
   end
 
