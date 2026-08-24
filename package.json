@@ -12,7 +12,7 @@
     "openspec": "OPENSPEC_TELEMETRY=0 openspec"
   },
   "devDependencies": {
-    "@fission-ai/openspec": "1.4.1",
+    "@fission-ai/openspec": "1.9.0",
     "@tailwindcss/cli": "4.3.3",
     "esbuild": "0.25.0",
     "tailwindcss": "4.3.3"
