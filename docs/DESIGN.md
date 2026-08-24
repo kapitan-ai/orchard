@@ -527,10 +527,11 @@ Disabling the Portal User the shown URL belongs to dismisses the card, because d
 Disabling any other Portal User leaves the card in place.
 After it disappears, **Copy invite** reissues a fresh hashed token, invalidates the previous unused token, extends expiry, and opens a new show-once card.
 The operator delivers the copied URL out of band.
-The third card contains the Portal Users table with email, status, invite state, and contextual actions.
-Use a forest badge for active users, an amber badge for invited users, and a neutral badge for disabled users.
+The third card contains the Portal Users list, where each row places the Portal User email above its status and aligns the contextual actions to the trailing edge.
+Render the status as plain secondary text rather than a badge, and do not add a separate invite-state column.
 Invited rows expose **Copy invite** and **Disable**.
 Active rows expose **Disable**.
+Disabled rows expose no actions.
 Disabling a Portal User atomically invalidates every outstanding invite, ends only that user's portal sessions, and does not automatically revoke minted API Keys.
 Do not expose set, rotate, clear, reveal, or copy password actions as an operator seam.
 The operator manages developer access through Portal Invites and Portal User disablement instead.
@@ -538,7 +539,7 @@ The operator manages developer access through Portal Invites and Portal User dis
 The Developer Portal remains a separate, dark-pinned surface and does not inherit the Console theme preference.
 It must not render Console chrome or operator controls.
 It remains isolated to the Organization named by the route and to the portal-minted keys owned by the signed-in Portal User.
-The three operator cards remain Console surfaces and use the existing Console card, tactile-well, table, focus, and navy primary-action tokens in both Console theme modes.
+The three operator cards remain Console surfaces and use the existing Console card, tactile-well, focus, and navy primary-action tokens in both Console theme modes.
 
 ---
 

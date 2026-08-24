@@ -2784,7 +2784,7 @@ Routes:
 ```text
 GET  /portal/:organization_slug
 GET  /portal/:organization_slug/invites/:token
-POST /portal/:organization_slug/invites/:token/redeem
+POST /portal/:organization_slug/invites/:token
 POST /portal/:organization_slug/session
 POST /portal/:organization_slug/logout
 LIVE /portal/:organization_slug/keys
