@@ -29,22 +29,23 @@ defmodule Orchard.Node.RuntimeServer do
                            :worker_unavailable
                          ])
 
-  @spec get_status(StatusRequest.t(), GRPC.Server.Stream.t()) ::
+  @spec get_status(StatusRequest.t(), Orchard.GRPCTypes.server_stream()) ::
           Orchard.Cluster.V1.StatusResponse.t()
   def get_status(%StatusRequest{}, _stream), do: Status.current()
 
-  @spec ensure_model_loaded(EnsureModelLoadedRequest.t(), GRPC.Server.Stream.t()) ::
+  @spec ensure_model_loaded(EnsureModelLoadedRequest.t(), Orchard.GRPCTypes.server_stream()) ::
           Orchard.Cluster.V1.EnsureModelLoadedResponse.t()
   def ensure_model_loaded(%EnsureModelLoadedRequest{} = request, _stream) do
     Status.ensure_model_loaded(request)
   end
 
-  @spec unload_model(UnloadModelRequest.t(), GRPC.Server.Stream.t()) :: Orchard.Cluster.V1.Ack.t()
+  @spec unload_model(UnloadModelRequest.t(), Orchard.GRPCTypes.server_stream()) ::
+          Orchard.Cluster.V1.Ack.t()
   def unload_model(%UnloadModelRequest{} = request, _stream) do
     Status.unload_model(request)
   end
 
-  @spec execute_inference(ExecuteInferenceRequest.t(), GRPC.Server.Stream.t()) :: :ok
+  @spec execute_inference(ExecuteInferenceRequest.t(), Orchard.GRPCTypes.server_stream()) :: :ok
   def execute_inference(%ExecuteInferenceRequest{} = request, stream) do
     SentryContext.clear_all()
 
@@ -79,7 +80,7 @@ defmodule Orchard.Node.RuntimeServer do
     end
   end
 
-  @spec cancel_inference(CancelInferenceRequest.t(), GRPC.Server.Stream.t()) ::
+  @spec cancel_inference(CancelInferenceRequest.t(), Orchard.GRPCTypes.server_stream()) ::
           Orchard.Cluster.V1.Ack.t()
   def cancel_inference(
         %CancelInferenceRequest{
@@ -91,7 +92,7 @@ defmodule Orchard.Node.RuntimeServer do
     Status.cancel_request(request_id, controller_session_id)
   end
 
-  @spec score_prefix_cache(ScorePrefixCacheRequest.t(), GRPC.Server.Stream.t()) ::
+  @spec score_prefix_cache(ScorePrefixCacheRequest.t(), Orchard.GRPCTypes.server_stream()) ::
           ScorePrefixCacheResponse.t()
   def score_prefix_cache(%ScorePrefixCacheRequest{} = request, _stream) do
     Status.score_prefix_cache(request)

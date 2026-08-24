@@ -1340,10 +1340,10 @@ defmodule OrchardNodeAgentTest do
     assert WorkerSupervisor in child_ids
     assert Orchard.Node.ModelLoadTaskSupervisor in child_ids
 
-    # Regression: GRPC.Client.Supervisor must be owned by NodeSupervisor,
-    # not just globally registered (test_helper.exs pre-starts it as a
-    # workaround, which can mask a missing child spec).
-    assert GRPC.Client.Supervisor in child_ids
+    # grpc >= 1.0 starts GRPC.Client.Supervisor from its own application
+    # supervision tree, so client channels are no longer owned by NodeSupervisor.
+    refute GRPC.Client.Supervisor in child_ids
+    assert is_pid(Process.whereis(GRPC.Client.Supervisor))
   end
 
   test "node agent application supervisor is running" do

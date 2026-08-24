@@ -41,7 +41,7 @@ defmodule Orchard.Node.RuntimeTLS do
     end
   end
 
-  @spec server_credential() :: :plaintext_compatibility | {:ok, GRPC.Credential.t()}
+  @spec server_credential() :: :plaintext_compatibility | {:ok, Orchard.GRPCTypes.credential()}
   def server_credential do
     runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 

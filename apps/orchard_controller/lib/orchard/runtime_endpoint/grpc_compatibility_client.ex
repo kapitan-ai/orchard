@@ -20,7 +20,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
   defstruct [:channel, :target, :security]
 
   @type t :: %__MODULE__{
-          channel: GRPC.Channel.t(),
+          channel: Orchard.GRPCTypes.channel(),
           target: Target.t(),
           security: GrpcMTLS.connection_security()
         }

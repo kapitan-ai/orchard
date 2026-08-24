@@ -14,7 +14,10 @@ defmodule Orchard.BeamPeerGrants.ControlServer do
 
   @opaque_rejection "permission_denied"
 
-  @spec retrieve_beam_peer_grant(RetrieveBeamPeerGrantRequest.t(), GRPC.Server.Stream.t()) ::
+  @spec retrieve_beam_peer_grant(
+          RetrieveBeamPeerGrantRequest.t(),
+          Orchard.GRPCTypes.server_stream()
+        ) ::
           RetrieveBeamPeerGrantResponse.t()
   def retrieve_beam_peer_grant(%RetrieveBeamPeerGrantRequest{} = request, stream) do
     with certificate_der when is_binary(certificate_der) <- peer_certificate(stream),

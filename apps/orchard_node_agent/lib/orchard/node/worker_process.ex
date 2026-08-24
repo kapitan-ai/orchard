@@ -18,6 +18,7 @@ defmodule Orchard.Node.WorkerProcess do
   require Logger
 
   @score_prefix_cache_default_timeout_ms 150
+  @worker_exit_grace_ms 500
   @score_prefix_cache_local_timeout_grace_ms 50
 
   @type state :: %{
@@ -258,7 +259,7 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   def handle_info({:runtime_adapter_done, _generation_ref, :worker_unavailable}, state) do
-    {:stop, :runtime_worker_unavailable, state}
+    {:stop, worker_unavailable_exit_reason(state), state}
   end
 
   def handle_info(
@@ -405,6 +406,23 @@ defmodule Orchard.Node.WorkerProcess do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  # A runtime transport that reports unavailability may simply be a worker that just
+  # died, and the port exit status can still be in flight. Give it a short grace period
+  # so cleanup reports worker_down rather than unavailability.
+  defp worker_unavailable_exit_reason(%{adapter_state: %{port: port}}) when is_port(port) do
+    receive do
+      {^port, {:exit_status, _status}} -> :runtime_worker_exited
+    after
+      @worker_exit_grace_ms -> port_exit_reason(port)
+    end
+  end
+
+  defp worker_unavailable_exit_reason(_state), do: :runtime_worker_unavailable
+
+  defp port_exit_reason(port) do
+    if Port.info(port) == nil, do: :runtime_worker_exited, else: :runtime_worker_unavailable
   end
 
   defp finish_generation(state, request_id, generation_ref) do
