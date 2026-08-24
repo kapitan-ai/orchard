@@ -105,7 +105,7 @@ static int trusted_release_executable(const char *executable) {
   return 1;
 }
 
-static int process_is_managed(pid_t pid, const char *executable) {
+static int process_is_node_agent(pid_t pid, const char *executable) {
   int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
   size_t size = 0;
   char *buffer;
@@ -198,10 +198,9 @@ static void print_identity(const struct process_identity *identity) {
   putchar('}');
 }
 
-static int command_private_directory(const char *path);
-static int command_publish(const char *temporary, const char *destination);
 static int command_signal(const char *pid_text, const char *sec_text,
-                          const char *usec_text);
+                          const char *usec_text, const char *device_text,
+                          const char *inode_text, const char *executable);
 
 static long long monotonic_milliseconds(void) {
   struct timespec time;
@@ -351,58 +350,6 @@ static int command_lock(const char *path) {
     if (strcmp(buffer, "CHECK\n") == 0) {
       fputs("LOCKED\n", stdout);
       fflush(stdout);
-    } else if (strcmp(buffer, "PRIVATE\n") == 0) {
-      char path[PATH_MAX + 1];
-
-      if (fgets(path, sizeof(path), stdin) == NULL) {
-        close(descriptor);
-        return EX_IOERR;
-      }
-      path[strcspn(path, "\n")] = '\0';
-
-      if (path[0] == '\0' || command_private_directory(path) != 0) {
-        fputs("PRIVATE_FAILED\n", stdout);
-      } else {
-        fputs("PRIVATE_READY\n", stdout);
-      }
-      fflush(stdout);
-    } else if (strcmp(buffer, "PUBLISH\n") == 0) {
-      char temporary[PATH_MAX + 1];
-      char destination[PATH_MAX + 1];
-
-      if (fgets(temporary, sizeof(temporary), stdin) == NULL ||
-          fgets(destination, sizeof(destination), stdin) == NULL) {
-        close(descriptor);
-        return EX_IOERR;
-      }
-      temporary[strcspn(temporary, "\n")] = '\0';
-      destination[strcspn(destination, "\n")] = '\0';
-
-      if (temporary[0] == '\0' || destination[0] == '\0' ||
-          command_publish(temporary, destination) != 0) {
-        fputs("PUBLISH_FAILED\n", stdout);
-      } else {
-        fputs("PUBLISHED\n", stdout);
-      }
-      fflush(stdout);
-    } else if (strcmp(buffer, "DISABLE\n") == 0) {
-      char label[PATH_MAX + 1];
-      char target[PATH_MAX + 1];
-
-      if (fgets(label, sizeof(label), stdin) == NULL) {
-        close(descriptor);
-        return EX_IOERR;
-      }
-      label[strcspn(label, "\n")] = '\0';
-      if (label[0] == '\0' ||
-          snprintf(target, sizeof(target), "system/%s", label) >=
-              (int)sizeof(target) ||
-          run_launchctl(descriptor, "disable", target) != 0) {
-        fputs("DISABLE_FAILED\n", stdout);
-      } else {
-        fputs("DISABLED\n", stdout);
-      }
-      fflush(stdout);
     } else if (strcmp(buffer, "BOOTOUT\n") == 0) {
       char plist[PATH_MAX + 1];
       int result;
@@ -426,18 +373,27 @@ static int command_lock(const char *path) {
       char pid[32];
       char sec[32];
       char usec[32];
+      char device[32];
+      char inode[32];
+      char executable[PROC_PIDPATHINFO_MAXSIZE];
       int result;
 
       if (fgets(pid, sizeof(pid), stdin) == NULL ||
           fgets(sec, sizeof(sec), stdin) == NULL ||
-          fgets(usec, sizeof(usec), stdin) == NULL) {
+          fgets(usec, sizeof(usec), stdin) == NULL ||
+          fgets(device, sizeof(device), stdin) == NULL ||
+          fgets(inode, sizeof(inode), stdin) == NULL ||
+          fgets(executable, sizeof(executable), stdin) == NULL) {
         close(descriptor);
         return EX_IOERR;
       }
       pid[strcspn(pid, "\n")] = '\0';
       sec[strcspn(sec, "\n")] = '\0';
       usec[strcspn(usec, "\n")] = '\0';
-      result = command_signal(pid, sec, usec);
+      device[strcspn(device, "\n")] = '\0';
+      inode[strcspn(inode, "\n")] = '\0';
+      executable[strcspn(executable, "\n")] = '\0';
+      result = command_signal(pid, sec, usec, device, inode, executable);
       if (result == 0) {
         fputs("SIGNALED\n", stdout);
       } else if (result == 3) {
@@ -458,24 +414,6 @@ static int command_lock(const char *path) {
     }
   }
   close(descriptor);
-  return 0;
-}
-
-static int command_identity(const char *pid_text) {
-  char *end = NULL;
-  long parsed = strtol(pid_text, &end, 10);
-  struct process_identity identity;
-  int result;
-
-  if (end == pid_text || *end != '\0' || parsed <= 1 || parsed > INT_MAX) {
-    return EX_IOERR;
-  }
-  result = read_identity((pid_t)parsed, &identity);
-  if (result != 0) {
-    return result == 1 ? 3 : EX_IOERR;
-  }
-  print_identity(&identity);
-  putchar('\n');
   return 0;
 }
 
@@ -517,7 +455,7 @@ static int command_snapshot(const char *expected_pid_text) {
   for (int index = 0; index < count; index++) {
     char executable[PROC_PIDPATHINFO_MAXSIZE];
     struct process_identity identity;
-    int managed;
+    int node_agent;
     int identity_result;
 
     if (pids[index] <= 1) {
@@ -548,13 +486,13 @@ static int command_snapshot(const char *expected_pid_text) {
       }
       continue;
     }
-    managed =
-        pids[index] == expected_pid ? 1 : process_is_managed(pids[index], executable);
-    if (managed < 0) {
+    node_agent =
+        pids[index] == expected_pid ? 1 : process_is_node_agent(pids[index], executable);
+    if (node_agent < 0) {
       free(pids);
       return EX_IOERR;
     }
-    if (managed == 0) {
+    if (node_agent == 0) {
       continue;
     }
     identity_result = read_identity(pids[index], &identity);
@@ -624,18 +562,24 @@ static int command_identity_state(const char *pid_text, const char *sec_text,
 }
 
 static int command_signal(const char *pid_text, const char *sec_text,
-                          const char *usec_text) {
+                          const char *usec_text, const char *device_text,
+                          const char *inode_text, const char *executable) {
   char *pid_end = NULL;
   char *sec_end = NULL;
   char *usec_end = NULL;
+  char *device_end = NULL;
+  char *inode_end = NULL;
   long pid = strtol(pid_text, &pid_end, 10);
   long sec = strtol(sec_text, &sec_end, 10);
   long usec = strtol(usec_text, &usec_end, 10);
+  unsigned long long device = strtoull(device_text, &device_end, 10);
+  unsigned long long inode = strtoull(inode_text, &inode_end, 10);
   struct process_identity identity;
   int result;
 
-  if (*pid_end != '\0' || *sec_end != '\0' || *usec_end != '\0' || pid <= 1 ||
-      pid > INT_MAX) {
+  if (*pid_end != '\0' || *sec_end != '\0' || *usec_end != '\0' ||
+      *device_end != '\0' || *inode_end != '\0' || pid <= 1 || pid > INT_MAX ||
+      executable[0] == '\0') {
     return EX_IOERR;
   }
   result = read_identity((pid_t)pid, &identity);
@@ -645,110 +589,18 @@ static int command_signal(const char *pid_text, const char *sec_text,
   if (result != 0) {
     return EX_IOERR;
   }
-  if (identity.start_sec != sec || identity.start_usec != usec) {
+  if (identity.start_sec != sec || identity.start_usec != usec ||
+      (unsigned long long)identity.device != device ||
+      (unsigned long long)identity.inode != inode ||
+      strcmp(identity.executable, executable) != 0) {
     return 4;
   }
   return kill((pid_t)pid, SIGTERM) == 0 ? 0 : EX_IOERR;
 }
 
-static int command_private_directory(const char *path) {
-  int descriptor;
-  int parent_descriptor = -1;
-  int created = 0;
-  char parent[PATH_MAX];
-  char *slash;
-  struct stat directory_stat;
-
-  if (mkdir(path, 0700) == 0) {
-    created = 1;
-  } else if (errno != EEXIST) {
-    return EX_IOERR;
-  }
-  descriptor = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (descriptor < 0 || fstat(descriptor, &directory_stat) != 0 ||
-      !S_ISDIR(directory_stat.st_mode) ||
-      directory_stat.st_uid != geteuid() ||
-      fchmod(descriptor, 0700) != 0 ||
-      fsync(descriptor) != 0) {
-    if (descriptor >= 0) {
-      close(descriptor);
-    }
-    return EX_IOERR;
-  }
-  if (close(descriptor) != 0) {
-    return EX_IOERR;
-  }
-  if (!created) {
-    return 0;
-  }
-  if (strlen(path) >= sizeof(parent)) {
-    return EX_IOERR;
-  }
-  strcpy(parent, path);
-  slash = strrchr(parent, '/');
-  if (slash == NULL) {
-    return EX_IOERR;
-  }
-  *slash = '\0';
-  parent_descriptor =
-      open(parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (parent_descriptor < 0 || fsync(parent_descriptor) != 0) {
-    if (parent_descriptor >= 0) {
-      close(parent_descriptor);
-    }
-    return EX_IOERR;
-  }
-  return close(parent_descriptor) == 0 ? 0 : EX_IOERR;
-}
-
-static int command_publish(const char *temporary, const char *destination) {
-  int descriptor = open(temporary, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
-  char directory[PATH_MAX];
-  char *slash;
-  int directory_descriptor;
-  struct stat temporary_stat;
-
-  if (descriptor < 0 || fstat(descriptor, &temporary_stat) != 0 ||
-      !S_ISREG(temporary_stat.st_mode) || fchmod(descriptor, 0600) != 0 ||
-      (geteuid() == 0 && fchown(descriptor, 0, 0) != 0) || fsync(descriptor) != 0) {
-    if (descriptor >= 0) {
-      close(descriptor);
-    }
-    return EX_IOERR;
-  }
-  if (close(descriptor) != 0) {
-    return EX_IOERR;
-  }
-
-  if (strlen(destination) >= sizeof(directory)) {
-    return EX_IOERR;
-  }
-  strcpy(directory, destination);
-  slash = strrchr(directory, '/');
-  if (slash == NULL) {
-    return EX_IOERR;
-  }
-  *slash = '\0';
-
-  if (rename(temporary, destination) != 0) {
-    return EX_IOERR;
-  }
-  directory_descriptor = open(directory, O_RDONLY | O_CLOEXEC);
-  if (directory_descriptor < 0 || fsync(directory_descriptor) != 0) {
-    if (directory_descriptor >= 0) {
-      close(directory_descriptor);
-    }
-    return EX_IOERR;
-  }
-  return close(directory_descriptor) == 0 ? 0 : EX_IOERR;
-}
-
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "lock") == 0) {
     return command_lock(argv[2]);
-  }
-  if (argc == 3 && strcmp(argv[1], "identity") == 0) {
-    return command_identity(argv[2]);
   }
   if ((argc == 2 || argc == 3) && strcmp(argv[1], "snapshot") == 0) {
     return command_snapshot(argc == 3 ? argv[2] : NULL);

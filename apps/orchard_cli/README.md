@@ -107,7 +107,7 @@ machine-readable output.
 Public Model discovery and inference are deny-by-default, and the
 `tenant-model-grants` migration creates no grants. For the packaged upgrade
 rollout order and its verification steps, see
-[Tenant/Model access grant rollout](../../packaging/pkg/README.md#tenantmodel-access-grant-rollout).
+[Operator bootstrap](../../packaging/README.md#operator-bootstrap).
 
 ```text
 orchardctl models access grant <model_id@version> --tenant <uuid-or-slug> [--routing-policy-id <uuid>]
@@ -134,8 +134,8 @@ enforcement is not yet implemented.
 
 - Controller business logic or persistence rules; see `../orchard_controller/`.
 - Node-agent runtime behavior; see `../orchard_node_agent/`.
-- Installer scripts and launchd plist installation; see
-  `../../packaging/pkg/README.md`.
+- App lifecycle and launchd plist installation; see
+  `../../packaging/README.md`.
 
 ## Local work
 

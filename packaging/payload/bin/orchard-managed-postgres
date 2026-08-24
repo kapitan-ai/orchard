@@ -6,7 +6,7 @@ print_guidance() {
 orchard-managed-postgres: managed Postgres is not available in this build.
 
 Current supported path:
-  Packaged controller-bearing installs require an operator-managed external PostgreSQL server.
+  App-installed controller-bearing hosts require an operator-managed external PostgreSQL server.
   Orchard does not install, bootstrap, or manage a local Postgres runtime by default.
 
 First-run setup:
@@ -16,7 +16,7 @@ First-run setup:
   4. Run: sudo orchardctl start
 
 See the source repo docs:
-  packaging/pkg/README.md
+  packaging/README.md
   packaging/container/postgres/README.md
 EOF
 }

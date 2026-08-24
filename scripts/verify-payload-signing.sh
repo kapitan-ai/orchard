@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Verify nested Mach-O payload signatures in an Orchard PKG staging or expanded tree.
+# Verify nested Mach-O payload signatures in an Orchard payload staging tree.
 # Usage: scripts/verify-payload-signing.sh --identity 'Developer ID Application: ...' <root>
 
 set -euo pipefail
@@ -34,7 +34,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/verify-payload-signing.sh --identity <Developer ID Application identity> <root>
 
-Audits every Mach-O file under a staging or expanded PKG root. The verifier
+Audits every Mach-O file under a payload staging root. The verifier
 fails when a Mach-O is unsigned, lacks hardened runtime, lacks a secure
 timestamp, or is not signed by the expected Developer ID Application identity.
 It also enforces whole-payload Mach-O dependency closure and staged Python

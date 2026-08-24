@@ -11,6 +11,7 @@
 ## Planning note
 
 This file is a non-normative execution plan for Milestone 0. `SPEC.md` remains authoritative; where this plan differs in detail or timing, the spec wins. The checkpoints below are planning aids, while **Milestone exit criteria** maps directly to `SPEC.md` §14.
+PKG references below record the milestone's historical scaffolding scope only; native PKG is not a supported current distribution channel or validation gate.
 
 ## Goal
 

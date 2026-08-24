@@ -59,7 +59,7 @@ if [[ -n "$MANIFEST_OUTPUT" && -e "$MANIFEST_OUTPUT" ]]; then
 fi
 
 PAYLOAD="$APP/Contents/Resources/payload"
-ENTITLEMENTS="$REPO_ROOT/packaging/pkg/entitlements"
+ENTITLEMENTS="$REPO_ROOT/packaging/payload/entitlements"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchard-app-verify.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
 ENTRIES="$TMP_ROOT/entries.jsonl"

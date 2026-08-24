@@ -29,7 +29,7 @@ defmodule OrchardCLI.Commands.StopTest do
         services: test_services(),
         read_install_role: fn -> {:ok, "all"} end,
         file_regular?: fn _path -> true end,
-        managed_node_agent_stop: &LifecycleSupport.ensure_stopped/2,
+        node_agent_stop: &LifecycleSupport.ensure_stopped/2,
         cmd: fn _prog, _args, _opts -> {"\n", 0} end
       },
       overrides
@@ -106,7 +106,7 @@ defmodule OrchardCLI.Commands.StopTest do
       })
 
     assert {:error, msg, 1} = Stop.run([], runtime)
-    assert msg =~ "packaged install not found"
+    assert msg =~ "Orchard.app installation not found"
     assert msg =~ "install role"
   end
 
@@ -141,14 +141,14 @@ defmodule OrchardCLI.Commands.StopTest do
     assert target =~ "controller"
   end
 
-  test "SPEC 11.4 routes Node Agent stop through the managed process fence" do
+  test "routes Node Agent stop through the locked process fence" do
     parent = self()
 
     runtime =
       base_runtime(%{
         read_install_role: fn -> {:ok, "node-agent"} end,
-        managed_node_agent_stop: fn service, _runtime ->
-          send(parent, {:managed_stop, service.id})
+        node_agent_stop: fn service, _runtime ->
+          send(parent, {:node_agent_stop, service.id})
           {:stopped, service}
         end,
         cmd: fn prog, args, _opts ->
@@ -159,7 +159,7 @@ defmodule OrchardCLI.Commands.StopTest do
 
     assert {:ok, msg} = Stop.run([], runtime)
     assert msg =~ "Stopped Orchard services."
-    assert_receive {:managed_stop, :node_agent}
+    assert_receive {:node_agent_stop, :node_agent}
 
     refute Enum.any?(collect_cmds(), fn {_program, args} -> match?(["bootout" | _], args) end)
   end

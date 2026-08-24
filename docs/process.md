@@ -24,6 +24,7 @@ For durable decisions, see [`decisions/README.md`](decisions/README.md).
 | Architecture decision | Add or update `docs/decisions/**` when not already covered |
 | Normative invariant change | Update `SPEC.md` in the same branch |
 | Collaborator-owned substantial change | OpenSpec change package plus normal PR |
+| New or restored distribution channel | Fresh OpenSpec proposal plus a separate implementing PR |
 
 ## Artifact Lifecycle
 
@@ -38,6 +39,15 @@ For durable decisions, see [`decisions/README.md`](decisions/README.md).
 | Durable decision | `docs/decisions/**` | Commit when standalone and product-relevant |
 | Accepted OpenSpec behavior | `openspec/specs/**`, `SPEC.md`, docs, tests, code | Commit only after reconciliation |
 | Normative behavior | `SPEC.md`, code, tests | Commit through normal review |
+
+## Distribution Channel Re-Approval
+
+Dormant scripts, assets, tests, docs, archived changes, or superseded decisions
+do not authorize a distribution channel.
+Native PKG is not a current supported Orchard channel.
+Restoring it or introducing another channel requires a fresh OpenSpec proposal
+and a separate implementing pull request that reconcile `SPEC.md`, decisions,
+security posture, operator docs, artifact governance, and validation gates.
 
 ## Re-Grounding Rule
 

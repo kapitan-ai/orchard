@@ -2,11 +2,11 @@ defmodule OrchardCLI.Commands.Stop do
   @moduledoc """
   CLI handler for `orchardctl stop`.
 
-  Stops Orchard services via launchd (packaged install only, requires root).
+  Stops Orchard.app-installed services via launchd (requires root).
   Boots out the controller and node agent in reverse dependency order.
   """
 
-  alias OrchardCLI.Commands.{LifecycleSupport, ManagedNodeAgentStop}
+  alias OrchardCLI.Commands.{LifecycleSupport, NodeAgentStop}
 
   # ── Public API ──────────────────────────────────────────────────────
 
@@ -39,7 +39,7 @@ defmodule OrchardCLI.Commands.Stop do
       :ok
     else
       {:error,
-       "Error: Orchard packaged install not found.\n\n" <>
+       "Error: Orchard.app installation not found.\n\n" <>
          "orchardctl start/stop manage packaged launchd services only.\n" <>
          "For development, use: bin/dev", 1}
     end
@@ -47,7 +47,7 @@ defmodule OrchardCLI.Commands.Stop do
 
   defp stop_service(%{id: :node_agent} = service, runtime) do
     runtime
-    |> Map.get(:managed_node_agent_stop, &ManagedNodeAgentStop.stop/2)
+    |> Map.get(:node_agent_stop, &NodeAgentStop.stop/2)
     |> then(& &1.(service, runtime))
   end
 
@@ -114,7 +114,7 @@ defmodule OrchardCLI.Commands.Stop do
     """
     Usage: sudo orchardctl stop
 
-    Stop Orchard services via launchd (packaged install only).
+    Stop Orchard.app-installed services via launchd.
 
     Boots out the controller and node agent. Safe to run when
     services are already stopped.

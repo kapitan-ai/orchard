@@ -53,7 +53,7 @@ _Avoid_: Controller agent, worker runtime
 
 **Node Identity Root**:
 The owner-only filesystem root that holds a Node's private key, Node Certificate, enrolled trust state, and stored BEAM Peer Grants.
-Managed lifecycle operations treat this root as identity-bearing state and do not mutate it until the Managed Node Agent Handover proof gate is satisfied by proven exit of the exact identified outgoing Node Agent process instance or by proven absence of any managed Node Agent instance.
+Lifecycle and trust operations treat this root as identity-bearing state and must not assume that concurrent Node Agent processes can safely share it.
 _Avoid_: BEAM Authorization Root, model cache, generic support directory
 
 **Runtime Endpoint**:
@@ -895,12 +895,9 @@ v1 compatibility must not weaken v2 contents or redaction rules.
 _Avoid_: Support Bundle v1, raw local evidence, prompt export
 
 **DMG Installer**:
-The interactive macOS distribution container whose primary artifact is a verified `Orchard.app` that owns the root-authorized service lifecycle; PKG remains an optional compatibility and offline/manual artifact.
-_Avoid_: PKG Installer, launchd service
-
-**PKG Installer**:
-The root-authorized macOS package installer that installs Orchard payloads and launchd plists.
-_Avoid_: DMG Installer, LaunchDaemon runtime service
+The current interactive macOS distribution container whose primary artifact is a verified `Orchard.app` that owns the root-authorized service lifecycle.
+Native PKG is not a supported current Orchard distribution channel.
+_Avoid_: native package installer, launchd service
 
 **LaunchDaemon**:
 A launchd-managed system daemon for Orchard system services such as the Controller, Node Agent, and, when Managed Database Mode is enabled, Postgres.
@@ -915,79 +912,13 @@ The local macOS app for status, onboarding, logs, and support-bundle entry.
 _Avoid_: Orchard Console, LaunchDaemon
 
 **Install Role**:
-The app or package lifecycle selection that determines whether one Mac installs and manages the `all`, `controller`, or `node-agent` service set.
+The app lifecycle selection that determines whether one Mac installs and manages the `all`, `controller`, or `node-agent` service set.
 _Avoid_: RBAC Role, Access Level, Node Lifecycle State
-
-**Managed Lifecycle Exclusion Boundary**:
-The interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock` shared by owner-side managed Orchard.app, PKG, recovery, and Node Agent start and stop paths, including `orchardctl start` and `orchardctl stop`.
-One privileged owner retains the same crash-released kernel ownership for the complete active handover without transfer or descriptor inheritance.
-The child-side managed Node Agent launch gate is not an owner-side path and never acquires, waits on, or inherits this lock.
-Required persistent recovery evidence and start-eligibility fencing never constitute this exclusion ownership or prevent a recovery owner from acquiring it.
-_Avoid_: durable lock marker, separate app and PKG locks, managed launch gate, BEAM Peer Grant Store Lock
-
-**Inactive Incoming Staging Root**:
-The PKG destination for authenticated and signed payload content that no running Node Agent resolves, loads, or executes before active handover.
-Apple Installer may populate this inert root without stopping or mutating the active Node Agent installation.
-Activation binds to one validated complete generation in a unique namespace that remains immutable or equivalently identity-stable through atomic activation and is fully revalidated immediately before activation.
-Initial invalidity is rejected before protected active lifecycle mutation, and any later revalidation mismatch is rejected before payload or installed-state activation while start remains suppressed.
-_Avoid_: active support root, replacement activation, Node Identity Root
-
-**Managed Node Agent Start Eligibility State**:
-The authoritative protected durable launch fence for the Node Agent, valued `suppressed`, `one_shot_pending`, or `enabled`, that the child-side managed launch gate checks before Node Agent execution.
-Launchd load state is operational control, not this fence.
-The gate permits normal `RunAtLoad` and `KeepAlive` operation under `enabled`, denies under `suppressed`, and under `one_shot_pending` permits only a child that atomically claims a matching unclaimed single-consumer one-shot authorization.
-Durable suppression pairs persistent launchd job-domain disablement, so the suppressed job does not bootstrap at reboot or launchd domain reload, with launch-gate denial as defense in depth.
-A managed start attempt is defined only from `suppressed`; `enabled` with one verified healthy exact managed instance is an idempotent success, any other `enabled` combination is incoherent, and `one_shot_pending` is non-transferable to any owner other than the exact live recorded one.
-_Avoid_: launchd plist presence, launchd job load state, stale lock marker, direct binary launch
-
-**One-shot Launch Authorization**:
-The single-consumer record an owner-side start attempt creates under the canonical lock so exactly one child launch may proceed while eligibility is `one_shot_pending`.
-The child-side gate matches it without acquiring the lock against the start-attempt identity, the exact non-reusable owner process identity, a per-bootstrap nonce, the intended launchd label, the expected active or staged generation and executable identity, the eligibility generation, and the claim state, and denies on any mismatch, process-id reuse, stale generation or nonce, replacement owner, launchd retry, uncertainty, or an owner instance that is not observably live.
-Because a dead owner leaves no actor to restore job-domain disablement, that liveness requirement is the operative fence until managed recovery runs.
-_Avoid_: reusable launch token, durable enablement, exclusion ownership
-
-**Provisional Node Agent Instance**:
-A child that has claimed a one-shot authorization but has not yet been accepted by its start owner.
-It adopts no cluster identity, does not serve, records its exact non-reusable child identity, and observes the exact recorded owner instance.
-The owner's single atomic commit of terminal coherent start evidence, `enabled` eligibility, and acceptance bound to that exact child is the sole linearization point for serving.
-On observing owner exit, replacement, or uncertain liveness the child performs a fresh consistent authoritative read and serves only if that committed record names its exact identity for this attempt and eligibility generation, dropping owner-liveness monitoring; otherwise it exits without adopting identity or serving, and incomplete, torn, or stale state counts as non-acceptance.
-_Avoid_: accepted instance, blind same-root restart, launchd retry survivor
-
-**Managed Lifecycle Evidence**:
-The one shared durable schema every owner-side Node Agent lifecycle operation records before protected mutation, tagged with an operation kind of `handover`, `managed_recovery`, `start_attempt`, or `managed_stop`.
-It is recovery input and start-eligibility fencing, never exclusion ownership.
-Denial is scoped to the kind an attempted operation actually requires, so a terminal coherent stopped `managed_stop` record never by itself denies a later start, and a managed stop requires no prior terminal coherent evidence because it only moves toward the fail-closed state.
-An interrupted non-terminal record obliges the next lock-holding owner-side path to reconcile and atomically supersede or mark it within its own initial evidence while re-proving live preconditions, rather than triggering full payload recovery on its own.
-_Avoid_: exclusion ownership, lock marker, unclassified lifecycle record
-
-**Managed Node Agent Process Fence**:
-The shared ordering every owner-side path that unloads or terminates the managed Node Agent job satisfies while holding the Managed Lifecycle Exclusion Boundary, covering Managed Node Agent Handover, managed stop, start-attempt precondition establishment, and Managed Node Agent Recovery.
-It establishes durable suppression, then observes managed process state under that suppression immediately before `bootout` or other termination, captures the exact non-reusable identity of exactly one stable live instance or affirmatively records absence, rejects additional, replacement, identity-unstable, or unknown state, prevents relaunch through verified job-domain control, and proves every captured instance exited within a bounded wait.
-Post-shutdown non-observation never substitutes for pre-shutdown absence evidence, and unknown state never becomes proven absence.
-Managed stop and start-precondition establishment reuse only this fence, not payload staging or activation.
-_Avoid_: post-`bootout` absence inference, plist mutation before the gate, payload activation
-
-**Managed Node Agent Handover**:
-The bounded Orchard.app or PKG active lifecycle interval in which one privileged owner holds the Managed Lifecycle Exclusion Boundary, records initial evidence, establishes durable start suppression, captures stable exact outgoing-instance evidence or proves absence under suppression immediately before `bootout`, prevents relaunch through verified launchd job-domain control, proves every captured-instance exit, activates or mutates coherent installed state, applies the path-specific start decision, and reports the terminal result.
-Ambiguous or unproven pre-`bootout` process state does not satisfy the proof gate and remains fail-closed.
-The handover guarantees zero managed process overlap.
-_Avoid_: inactive PKG staging, rolling live overlap, blind same-root restart
-
-**Managed Node Agent Recovery**:
-A rerun of the applicable Orchard.app or PKG managed lifecycle under the Managed Lifecycle Exclusion Boundary after a failed or interrupted handover.
-It may acquire the canonical lock despite missing, incomplete, or uncertain recovery evidence, but it records or reconciles initial evidence and establishes suppression before final process observation or protected reconciliation.
-It permits a later managed start only after proving every captured outgoing-instance exit or affirmative absence under suppression immediately before `bootout`, verifying or restoring coherent installed state, and marking the handover or recovery evidence terminal coherent.
-_Avoid_: blind launchctl kickstart, manual binary launch, stale-marker deletion
 
 **BEAM Peer Grant Store Lock**:
 The operation-scoped lock used by `Orchard.Node.BeamPeerGrantStore` to serialize one BEAM Peer Grant install or load operation, including atomic publication when installing in the owner-only Node Identity Root.
-It ends with that store operation and provides neither Node Agent process-lifetime ownership nor Managed Node Agent Handover exclusion.
-_Avoid_: Managed Lifecycle Exclusion Boundary, Node Identity Root Lease, Postgres leadership lock
-
-**Node Identity Root Lease**:
-A reserved future term for a possible lifetime ownership mechanism for the Node Identity Root.
-No Node Identity Root Lease is part of the current Managed Node Agent Handover contract.
-_Avoid_: Managed Lifecycle Exclusion Boundary, BEAM Peer Grant Store Lock
+It ends with that store operation and does not establish process-lifetime ownership or a managed replacement protocol.
+_Avoid_: Node Identity Root ownership, Postgres leadership lock
 
 **Node Enrollment**:
 The identity bootstrap process that uses a Node Enrollment Bundle to move one provisioned Node to registered state through Controller validation and Node Certificate issuance.

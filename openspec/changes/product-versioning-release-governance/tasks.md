@@ -3,7 +3,7 @@
 - [x] 1.1 Approve root `VERSION` as canonical storage, with every first-party Mix project and cross-language consumer deriving from it or failing exact validation.
 - [x] 1.2 Approve the restricted pre-1.0 `-dev`, `-rc.K`, final, patch, and next-development grammar plus dedicated transition pull requests and digest-bound authorization evidence.
 - [x] 1.3 Approve signed immutable tag grammar, one fixed channel per candidate, tag-before-build sequencing, separated candidate, delivery, distribution, and surface states, and exact-byte retry and withdrawal semantics.
-- [x] 1.4 Approve the `internal`, `trial`, `pilot`, and `release` channel contracts, optional PKG treatment, and conjunctive GitHub plus Amore completion for pilot and release.
+- [x] 1.4 Approve the `internal`, `trial`, `pilot`, and `release` channel contracts, DMG artifact treatment, and conjunctive GitHub plus Amore completion for published channels.
 - [x] 1.5 Approve numeric-base `CFBundleShortVersionString` and one globally increasing `CFBundleVersion` allocation sequence in the safe range `1..9999` for `com.orchard.app`.
 - [x] 1.6 Approve exact helper package, source, lockfile, installed-distribution, and packaged-tree provenance plus an SPDX 2.3 JSON SBOM for every tagged Candidate.
 - [x] 1.7 Approve Current Release Line and explicitly enumerated Previous Supported Release Line as the meaning of `N` and `N-1`, with complete candidate compatibility suites.
@@ -25,18 +25,18 @@
 - [x] 3.2 Derive or validate the umbrella and all first-party Mix application versions against the canonical authority.
 - [ ] 3.3 Derive or validate runtime version reporting, controller membership evidence, node-agent advertisement, and CLI fallback reporting against the canonical authority.
 - [ ] 3.4 Add a repository command that validates Product Version grammar, dedicated transition evidence, canonical detached approvals, one-channel signed-tag rules, first-party agreement, compatibility declarations, Apple allocation, and packaging mappings without mutating files.
-- [ ] 3.5 Add public-interface regression tests that fail on root, child Mix, runtime, PKG, or app product-version drift.
+- [ ] 3.5 Add public-interface regression tests that fail on root, child Mix, runtime, staged payload, or app product-version drift.
 - [ ] 3.6 Add the non-publishing governance command to pull-request and `main` CI while retaining read-only release permissions.
 
 ## 4. Release Manifest And Cross-Artifact Consistency
 
 - [ ] 4.1 Define and test the immutable Candidate Manifest, Internal Build Manifest, canonical detached approval, deterministic `single_owner_exception` and revocation attestations with atomic terminal consumption, mandatory signed Candidate and Internal Build Attestation chains with atomic compare-and-swap heads, pre-existing-trust key-registry rules, surface transition and reduction rules, separate candidate and delivery or publication states, required artifacts, signing and notarization evidence, compatibility declaration, component provenance, SPDX SBOM reference, and explicit exclusion of manifest self-digests.
 - [ ] 4.2 Record exact Python helper package, source, source-tree, `pyproject.toml`, `uv.lock`, extras, target, installed-distribution, and packaged-tree provenance without changing helper package versions to match Orchard.
-- [ ] 4.3 Make PKG metadata, staged payload metadata, runtime release contents, filenames, Git commit, build date, and build channel derive from or validate against the governed identity.
+- [ ] 4.3 Make staged payload metadata, runtime release contents, filenames, Git commit, build date, and build channel derive from or validate against the governed identity.
 - [ ] 4.4 Make app assembly derive or validate numeric-base `CFBundleShortVersionString`, the globally allocated `1..9999` numeric `CFBundleVersion`, Product Version, full source commit, fixed channel, and staged payload identity.
-- [ ] 4.5 Define exact file identity and canonical JSON tree identity, then inspect mounted DMG contents, PKG metadata, staged payloads, OTP releases, complete app bundles, manifests, SBOMs, and sidecars against the Candidate Manifest.
+- [ ] 4.5 Define exact file identity and canonical JSON tree identity, then inspect mounted DMG contents, staged payloads, OTP releases, complete app trees, runtime reports, filenames, manifests, and sidecars for exact agreement.
 - [ ] 4.6 Add immutable-promotion checks that reject dirty provenance, missing final verification, or any digest change after signing, notarization, stapling, mounted verification, and checksum generation.
-- [ ] 4.7 Add test fixtures for intentionally absent optional artifacts and missing required channel artifacts without requiring app and PKG to ship together unless the approved channel policy says so.
+- [ ] 4.7 Add test fixtures for intentionally absent optional artifacts and missing required channel artifacts while rejecting native PKG unless a fresh accepted channel proposal and implementing PR add it.
 
 ## 5. Tag Candidate And Publication Workflows
 
@@ -62,7 +62,7 @@
 - [ ] 7.1 Run focused unit and integration tests for version authority, runtime reporting, packaging mappings, candidate-manifest and state-attestation validation, tag gates, and compatibility behavior.
 - [ ] 7.2 Run the full Elixir workflow from `AGENTS.md`, including formatting, warnings-as-errors compilation, Credo, Dialyzer, tests, and coverage.
 - [ ] 7.3 Run both native package Ruff, test, and coverage workflows, verify exact helper provenance and SPDX SBOM generation, and leave independent package versions unchanged unless separately justified.
-- [ ] 7.4 Run the Swift, app lifecycle, app assembly, signing-contract, DMG, PKG, and relevant credential-free release workflow tests from `AGENTS.md`.
+- [ ] 7.4 Run the Swift, app lifecycle, app assembly, signing-contract, DMG, and relevant credential-free release workflow tests from `AGENTS.md`.
 - [ ] 7.5 Run `git diff --check` and strictly validate `product-versioning-release-governance` with telemetry disabled.
 - [ ] 7.6 Run RP Review and No Mistakes against the accepted contract, implementation diff, tests, release failure paths, and exact validation evidence until blocker and important findings are resolved.
 - [ ] 7.7 Record a conditional release-governance handoff with common Product Version, full commit, Release Channel, distribution and surface state, artifact identities, validation results, capability gates, role assignments, and residual risks; include signed tag, transition record, Release Lines, Candidate Manifest, Candidate State Attestations, and SBOM for a tagged Candidate, or Internal Build Manifest and Internal Build Attestations with Candidate-only fields marked not applicable for an untagged Internal Build.

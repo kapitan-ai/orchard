@@ -38,7 +38,7 @@ This README is orientation only. Normative behavior lives in
   `../orchard_node_agent/` and `../../native/orchard_worker_mlx/`.
 - Shared generated transport modules and cross-app domain helpers; see
   `../orchard_shared/`.
-- Packaged install policy; see `../../packaging/pkg/README.md`.
+- App install policy; see `../../packaging/README.md`.
 
 ## Local work
 

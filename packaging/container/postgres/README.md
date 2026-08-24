@@ -11,12 +11,10 @@
 - Local loopback-only Postgres runtime
 - Persistent data under `/Library/Application Support/Orchard/data/`
 - Health checks via `pg_isready`
-- Automatic bootstrap during `postinstall`
+- Explicit app-lifecycle bootstrap
 
 ## Current state
 
-The `com.orchard.postgres.plist` launchd service definition remains a future-mode
-source artifact. Current PKG builds exclude it, and `postinstall` removes any
-stale installed copy early, before role/TLS validation, so unsupported managed
-Postgres state does not survive a failed install. The shipped
-`orchard-managed-postgres` wrapper is only the guard described above.
+The `com.orchard.postgres.plist` launchd service definition remains a future-mode source artifact.
+Current payload builds exclude it.
+The app lifecycle removes only launchd services it owns, and the shipped `orchard-managed-postgres` wrapper remains the guard described above.

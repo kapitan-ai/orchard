@@ -47,38 +47,6 @@ defmodule OrchardCLI.LifecycleNative do
     ArgumentError -> {:error, :exclusion_lost}
   end
 
-  @spec ensure_private_directory(lock(), String.t()) :: :ok | {:error, term()}
-  def ensure_private_directory(%{port: port, owner: owner}, path) do
-    guard_command(port, owner, ["PRIVATE\n", path, "\n"], "PRIVATE_READY")
-  end
-
-  @spec atomic_publish(lock(), String.t(), iodata(), keyword()) :: :ok | {:error, term()}
-  def atomic_publish(%{port: port, owner: owner}, destination, contents, options \\ []) do
-    directory = Path.dirname(destination)
-    staging_directory = Keyword.get(options, :staging_directory, directory)
-
-    temporary =
-      Path.join(staging_directory, ".#{Path.basename(destination)}.tmp-#{random_suffix()}")
-
-    try do
-      with :ok <- write_temporary(temporary, contents) do
-        guard_command(
-          port,
-          owner,
-          ["PUBLISH\n", temporary, "\n", destination, "\n"],
-          "PUBLISHED"
-        )
-      end
-    after
-      File.rm(temporary)
-    end
-  end
-
-  @spec disable_job(lock(), String.t()) :: :ok | {:error, term()}
-  def disable_job(%{port: port, owner: owner}, label) do
-    guard_command(port, owner, ["DISABLE\n", label, "\n"], "DISABLED", 12_000)
-  end
-
   @spec bootout(lock(), String.t()) :: :ok | {:error, term()}
   def bootout(%{port: port, owner: owner}, plist_path) do
     guard_command(
@@ -88,16 +56,6 @@ defmodule OrchardCLI.LifecycleNative do
       ["BOOTED_OUT", "BOOTOUT_ABSENT"],
       12_000
     )
-  end
-
-  @spec process_identity(String.t() | pos_integer()) ::
-          {:ok, process_identity()} | {:error, term()}
-  def process_identity(pid) do
-    case helper_command(["identity", to_string(pid)]) do
-      {output, 0} -> Jason.decode(output)
-      {_output, 3} -> {:error, :exited}
-      {output, code} -> {:error, {:identity_failed, code, String.trim(output)}}
-    end
   end
 
   @spec process_snapshot(pos_integer() | nil) ::
@@ -138,6 +96,12 @@ defmodule OrchardCLI.LifecycleNative do
       to_string(identity["start_sec"] || identity[:start_sec]),
       "\n",
       to_string(identity["start_usec"] || identity[:start_usec]),
+      "\n",
+      to_string(identity["device"] || identity[:device]),
+      "\n",
+      to_string(identity["inode"] || identity[:inode]),
+      "\n",
+      to_string(identity["executable"] || identity[:executable]),
       "\n"
     ]
 
@@ -260,15 +224,6 @@ defmodule OrchardCLI.LifecycleNative do
     end
   end
 
-  defp write_temporary(path, contents) do
-    with {:ok, file} <- File.open(path, [:write, :binary, :exclusive]),
-         :ok <- IO.binwrite(file, contents),
-         :ok <- :file.sync(file),
-         :ok <- File.close(file) do
-      File.chmod(path, 0o600)
-    end
-  end
-
   @spec run_command(String.t(), [String.t()], non_neg_integer()) :: {String.t(), integer()}
   def run_command(executable, args, timeout_ms) do
     port =
@@ -302,11 +257,5 @@ defmodule OrchardCLI.LifecycleNative do
     |> :code.priv_dir()
     |> List.to_string()
     |> Path.join("orchard-lifecycle-helper")
-  end
-
-  defp random_suffix do
-    12
-    |> :crypto.strong_rand_bytes()
-    |> Base.encode16(case: :lower)
   end
 end

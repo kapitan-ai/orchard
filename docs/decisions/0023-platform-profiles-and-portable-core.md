@@ -3,6 +3,7 @@
 ## Status
 
 Accepted on 2026-08-23 under issues #266 and #267.
+ADR 0027 supersedes only this record's preservation of native PKG distribution and ADR 0018 managed handover; the portable-core and platform-profile decision remains accepted.
 
 ## Context
 

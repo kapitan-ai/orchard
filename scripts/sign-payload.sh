@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Sign nested Mach-O binaries in an Orchard PKG staging tree.
+# Sign nested Mach-O binaries in an Orchard payload staging tree.
 # Usage: ORCHARD_PAYLOAD_SIGNING_IDENTITY='Developer ID Application: ...' scripts/sign-payload.sh [options] <staging-base>
 
 set -euo pipefail
@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/build-keychain.sh"
 
 DRY_RUN=false
-ENTITLEMENTS_DIR="$REPO_ROOT/packaging/pkg/entitlements"
+ENTITLEMENTS_DIR="$REPO_ROOT/packaging/payload/entitlements"
 MANIFEST_OUTPUT=""
 STAGING_BASE=""
 KEYCHAIN_PATH=""
@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/sign-payload.sh [options] <staging-base>
 
-Signs every Mach-O file under a PKG staging root with an explicit Developer ID
+Signs every Mach-O file under a payload staging root with an explicit Developer ID
 Application identity. Libraries are signed before executables. No --deep signing
 or implicit keychain identity fallback is used.
 
@@ -45,7 +45,7 @@ Required environment:
 
 Options:
   --dry-run                          Print codesign commands without running them
-  --entitlements-dir <dir>           Entitlements directory (default: packaging/pkg/entitlements)
+  --entitlements-dir <dir>           Entitlements directory (default: packaging/payload/entitlements)
   --manifest-output <path>           Write a TSV manifest outside the staging root
   --help                             Show this usage and exit
 EOF

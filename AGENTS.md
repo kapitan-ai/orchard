@@ -94,7 +94,7 @@ Rules:
 - **Database**: Postgres (sole persistence + coordination layer)
 - **APIs**: `/v1/responses` (canonical abstraction), `/v1/chat/completions` (compatibility facade)
 - **Internal comms**: BEAM-first Runtime Endpoints for admitted first-party services; certificate-authenticated gRPC control and compatibility paths
-- **Packaging**: native macOS DMG/PKG + launchd
+- **Packaging**: signed `Orchard.app` DMG + launchd; native PKG is not a supported current distribution channel
 - **Clustering**: Postgres advisory locks + authenticated Runtime Endpoint observations (Active/Standby control plane)
 - **Inference**: MLX-LM runtime adapter managed by the node agent (Apple Silicon native)
 
@@ -323,7 +323,7 @@ opt-out path.
 one-Controller/one-Node BEAM Peer Grant tracer (certificate-bound scoped grants,
 certificate-authenticated grant delivery, owner-only Node custody, and TLS 1.3
 Distribution launch without the shared cookie). It is source-development only;
-the packaged and two-Mac paths still use the shared-cookie first cut above. See
+the current two-Mac app-installed path still uses the shared-cookie first cut above. See
 the "Source-dev BEAM Peer Grant tracer" section in `docs/local-dev.md`.
 
 When to bypass `bin/dev`:
@@ -333,43 +333,20 @@ When to bypass `bin/dev`:
 
 See `docs/local-dev.md` for full environment setup and configuration.
 
-## Packaging (PKG)
+## macOS Distribution
 
-**Build installer with:** `mise exec -- ./scripts/build-pkg.sh`
+The current native distribution is the signed and notarized DMG containing
+`Orchard.app`.
+Use the Swift/macOS app workflow above and `packaging/dmg/README.md` for current
+build and verification guidance.
 
-This script automates the complete PKG build process:
-- Python venv setup (tokenizer + MLX worker)
-- Elixir releases (controller, node-agent, CLI)
-- Asset compilation and dependency resolution
-- Staging with correct permissions
-- PKG creation with naming convention: `Orchard-<version>-<date>-<sha>.pkg`
-
-**Build options:**
-```bash
-mise exec -- ./scripts/build-pkg.sh                    # Standard build
-mise exec -- ./scripts/build-pkg.sh --clean            # Deep clean (slow, reproducible)
-mise exec -- ./scripts/build-pkg.sh --allow-dirty      # Build with uncommitted changes
-mise exec -- ./scripts/build-pkg.sh /custom/output     # Custom output directory
-```
-
-**When to build:**
-- Cutting a release for distribution
-- Testing packaging changes
-- Validating the full installer workflow
-
-**When NOT to build:**
-- During normal development (use `mise exec -- bin/dev`)
-- Quick CLI testing (use `mise exec -- mix compile` + `mise exec -- iex -S mix`)
-
-The PKG is role-aware through a universal payload. Seed
-`/Library/Application Support/Orchard/support/.install-role.request` with
-`all`, `controller`, or `node-agent` before `installer` to control which
-LaunchDaemons are installed and managed. The persisted marker is
-`/Library/Application Support/Orchard/support/.install-role`. Managed Postgres
-is not installed or managed by default; controller hosts require external
-Postgres configuration.
-
-See `packaging/pkg/README.md` for full PKG operator documentation and `packaging/pkg/README.md#building-the-pkg` for detailed build instructions.
+Native PKG is not a supported distribution channel, release artifact, operator
+workflow, or validation gate.
+The app retains legacy PKG receipt detection only to prevent silent ownership
+takeover of an existing installation; it must not be used to claim support.
+Any future native package requires a fresh accepted OpenSpec proposal and a
+separate implementing pull request that updates the normative contract,
+security posture, operator documentation, and validation gates.
 
 ## Key Files
 

@@ -2,7 +2,7 @@ defmodule OrchardCLI.Commands.Start do
   @moduledoc """
   CLI handler for `orchardctl start`.
 
-  Starts Orchard services via launchd (packaged install only, requires root).
+  Starts Orchard.app-installed services via launchd (requires root).
   Bootstraps the node agent and controller, polls for readiness, then prints
   the status banner.
   """
@@ -45,7 +45,7 @@ defmodule OrchardCLI.Commands.Start do
         paths = Enum.join(missing, "\n  ")
 
         {:error,
-         "Error: Orchard packaged install for role #{role_name} is incomplete.\n" <>
+         "Error: Orchard.app installation for role #{role_name} is incomplete.\n" <>
            "Missing plist(s) for role #{role_name}:\n  #{paths}\n\n" <>
            "orchardctl start/stop manage packaged launchd services only.\n" <>
            "For development, use: bin/dev", 1}
@@ -261,7 +261,7 @@ defmodule OrchardCLI.Commands.Start do
     """
     Usage: sudo orchardctl start
 
-    Start Orchard services via launchd (packaged install only).
+    Start Orchard.app-installed services via launchd.
 
     Bootstraps the node agent and controller, waits for readiness,
     then prints the system status banner.

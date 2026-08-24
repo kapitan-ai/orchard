@@ -358,7 +358,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
   defp display_service_id(other), do: to_string(other)
 
   defp install_role_error_message(marker) do
-    "Error: Orchard packaged install not found.\n" <>
+    "Error: Orchard.app installation not found.\n" <>
       "Unable to determine install role from #{marker}.\n" <>
       "Expected a valid role marker (all, controller, or node-agent), or installed legacy plist(s):\n" <>
       "  /Library/LaunchDaemons/com.orchard.controller.plist\n" <>
@@ -395,6 +395,23 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
   defp service_applicable_to_role?(_optional_or_unknown, _role), do: true
 
   defp bootstrap_service(svc, runtime) do
+    case run_launchctl(runtime, ["enable", "system/#{svc.label}"]) do
+      {_output, 0} ->
+        run_bootstrap(svc, runtime)
+
+      {output, code} ->
+        {:error,
+         lifecycle_error_message(
+           "enable",
+           svc,
+           output,
+           code,
+           "Check: /Library/Application Support/Orchard/logs/"
+         ), 1}
+    end
+  end
+
+  defp run_bootstrap(svc, runtime) do
     case run_launchctl(runtime, ["bootstrap", "system", svc.plist_path]) do
       {_output, 0} ->
         {:loaded, svc}

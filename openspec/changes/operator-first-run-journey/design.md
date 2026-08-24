@@ -158,7 +158,7 @@ This sequence gives existing admission review a trusted registered Node, removes
 It is selected.
 
 The first product-code tracer covers one configured Controller and one Node Agent.
-It starts after app or PKG role installation and ends when the Node is `active` through a fresh authenticated Runtime Endpoint observation.
+It starts after app-owned role installation and ends when the Node is `active` through a fresh authenticated Runtime Endpoint observation.
 It excludes model transfer, Playground, multi-Node bulk issuance, Managed Database Mode, and app UI.
 PR #87 delivered that tracer through certificate-backed gRPC compatibility activation.
 The post-merge smoke passed focused and full validation, coverage, real ephemeral HTTPS, and certificate-backed mTLS gRPC paths.
@@ -316,7 +316,7 @@ It does not create UI-only mutation paths.
 
 | Boundary | Operator responsibility now | Target Orchard responsibility |
 |---|---|---|
-| System-root mutation | Authorize app or PKG lifecycle and protect root-owned configuration. | Present explicit role and mutation scope, preserve state, and resume safely after failure. |
+| System-root mutation | Authorize the app-owned lifecycle and protect root-owned configuration. | Present explicit role and mutation scope, preserve state, and resume safely after failure. |
 | External Postgres | Provision, secure, back up, and keep PostgreSQL reachable. | Validate configuration clearly until Managed Database Mode owns the lifecycle. |
 | Public transport | Choose direct HTTPS, reverse proxy, or explicit lab-local TLS. | Validate mode and certificate state without mutating trust stores implicitly. |
 | First admin | Protect one-time output and replace bootstrap use with named credentials. | Keep initialization local, one-shot, audited, leader-gated, and credential-only. |
@@ -360,7 +360,7 @@ Required failure classes include:
 
 - External Postgres unavailable or migrations behind.
 - Partial TLS state or public transport mismatch.
-- App/PKG ownership conflict.
+- Legacy installation ownership conflict.
 - Enrollment bundle malformed, expired, consumed, revoked, wrong-cluster, or wrong-Node.
 - Controller trust-pin mismatch before credential submission.
 - Registration response lost after token consumption.

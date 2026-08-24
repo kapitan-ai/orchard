@@ -3,7 +3,7 @@
 ### Requirement: Orchard Has One Product-Version Authority
 
 Orchard SHALL store Product Version in a root `VERSION` file containing exactly one ASCII SemVer line and one terminal newline, with no comments, surrounding whitespace, or build metadata.
-Every first-party Mix project, runtime report, shell packaging input, Swift app input, PKG identity, release filename, and tag validator SHALL derive from that file or fail exact validation against it.
+Every first-party Mix project, runtime report, shell distribution input, Swift app input, release filename, and tag validator SHALL derive from that file or fail exact validation against it.
 Independent internal component package versions SHALL NOT be treated as Orchard Product Version values.
 This requirement refines `SPEC.md` §13.1 without changing the current Product Version.
 
@@ -161,8 +161,8 @@ The `release` channel SHALL accept final versions for generally available Orchar
 The `release` channel SHALL become Published only when general Amore delivery is live and the private GitHub Release is non-draft for the exact approved candidate.
 The workflow SHALL publish through Amore first, verify its live state and digest, and publish the matching GitHub Release last.
 
-PKG SHALL remain optional unless a later accepted channel contract requires it.
-Any included PKG SHALL be signed, notarized, checksummed, and bound to the same Candidate Manifest.
+Native PKG SHALL NOT be a governed current artifact.
+Adding it or another distribution artifact type SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
 Trial, pilot, and release publication SHALL remain disabled until live capability checks prove the required Amore audience, idempotency, digest-inspection, and exact-byte promotion behavior.
 
 #### Scenario: Required channel artifact is absent
@@ -198,7 +198,7 @@ Every distributable file SHALL record a path-independent logical name, byte size
 Every governed directory tree SHALL record a canonical JSON tree sorted by bytewise relative path with entry type, normalized permission mode, regular-file size and digest, and exact symlink target.
 Canonical tree identity SHALL exclude timestamps, user IDs, group IDs, and machine-local paths.
 Orchard app identity SHALL cover every bundled file, while signing manifests SHALL remain required evidence without replacing complete tree identity.
-Every included runtime, PKG, staged payload, app, DMG, filename, manifest, sidecar, and SBOM SHALL agree with the candidate identity.
+Every included runtime, staged payload, app, DMG, filename, manifest, sidecar, and SBOM SHALL agree with the candidate identity.
 
 Later approval, attempt, upload, surface-observation, withdrawal, and publication events SHALL produce authenticated append-only State Attestations that reference the Candidate Manifest digest.
 Each State Attestation SHALL use deterministic canonical serialization, identify the actor and signer key, record transition type, timestamp, Release Channel, stable surface identifiers, and previous-attestation digest, and carry a detached signature verified against the versioned release key registry.

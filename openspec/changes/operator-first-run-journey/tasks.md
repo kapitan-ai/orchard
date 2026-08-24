@@ -66,7 +66,7 @@
 
 ## 8. Coordinated Upgrade And Drain
 
-- [ ] 8.1 Compose upgrade preflight, cordon, drain, app-owned update or PKG update, certificate and transport recovery, health verification, and resume into one observable workflow.
+- [ ] 8.1 Compose upgrade preflight, cordon, drain, app-owned update, certificate and transport recovery, health verification, and resume into one observable workflow.
 - [ ] 8.2 Preserve the `draining -> cordoned` cancel-drain recovery edge and never certify drain completion from a cancelled drain.
 - [ ] 8.3 Add Controller, Node Agent, model-transfer, certificate-renewal, and Active/Standby failure recovery tests.
 

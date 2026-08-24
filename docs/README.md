@@ -47,9 +47,12 @@ large spec sections.
 
 ### I want to package or install Orchard
 
+The current native distribution is the `Orchard.app` DMG.
+Native PKG is not supported; restoring it requires a fresh OpenSpec proposal and implementing PR.
+
 - [`operator-journey.md`](operator-journey.md) - current and target operator journeys, friction baseline, recovery points, and ordered improvement slices.
-- [`../packaging/pkg/README.md`](../packaging/pkg/README.md) — current PKG
-  build/operator runbook.
+- [`../packaging/README.md`](../packaging/README.md) - current payload build,
+  app lifecycle, and operator runbook.
 - [`../packaging/container/postgres/README.md`](../packaging/container/postgres/README.md)
   — managed Postgres current-build status and guard behavior.
 - [`../packaging/dmg/README.md`](../packaging/dmg/README.md) — `Orchard.app` DMG

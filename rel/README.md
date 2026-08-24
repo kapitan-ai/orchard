@@ -7,4 +7,4 @@ only when the release build needs files that cannot live in `packaging/`.
 Internal release identities remain underscore-based (`orchard_controller`, `orchard_node_agent`, `orchard_cli`).
 Hyphenated daemon commands and `orchardctl` are treated as packaging-level wrapper names rather than renamed Mix release outputs.
 
-See `../packaging/pkg/README.md` for the current installer and operator runbook.
+See `../packaging/README.md` for the current payload, app lifecycle, and operator runbook.

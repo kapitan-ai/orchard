@@ -11,7 +11,7 @@ Active development now needs release-boundary SemVer and immutable build provena
 - Bind each governed release to an exact product version, signed immutable tag, clean tagged commit, release channel, compatibility declaration, immutable candidate manifest, and append-only state attestations.
 - Define separate candidate, distribution, and publication-surface states plus GitHub Release draft and publication gates without granting release permissions to normal pull-request or `main` validation.
 - Require verified artifacts from the exact tagged commit to be promoted without rebuilding or changing their recorded bytes.
-- Require cross-artifact agreement across runtime reporting, PKG metadata and filename, staged payload, `Orchard.app`, DMG contents, release filenames, manifests, and sidecars.
+- Require cross-artifact agreement across runtime reporting, staged payload, `Orchard.app`, DMG contents, release filenames, manifests, sidecars, and publication evidence.
 - Define an Apple-safe mapping from Orchard release identity to `CFBundleShortVersionString` and a globally monotonic numeric `CFBundleVersion` for the Orchard app bundle identifier.
 - Preserve independent Python helper package versions and record exact helper provenance plus a candidate-level SPDX SBOM without treating helper versions as Orchard product-version mismatches.
 - Add separate normal-validation and tag-triggered release gates, including exact-commit evidence, credential boundaries, owner approval boundaries, and fail-closed publication behavior.
@@ -33,7 +33,7 @@ Active development now needs release-boundary SemVer and immutable build provena
 
 - SPEC.md impact: this proposal would refine §13.1 to define Orchard product-release identity, version transitions, and the meaning of controller and node compatibility versions, and would add narrow §11 release-governance requirements for immutable promotion, cross-artifact agreement, Apple bundle mapping, release state, and handoff evidence.
 - Build metadata impact: the umbrella and first-party Mix applications, runtime version reporting, `Orchard.BuildInfo`, and upgrade compatibility checks would consume or validate one governed product-release identity.
-- Packaging impact: PKG, staged payload, app, DMG, manifests, filenames, and sidecars would gain cross-artifact identity checks without duplicating their existing artifact-specific contracts.
+- Distribution impact: staged payload, app, DMG, manifests, filenames, and sidecars would gain cross-artifact identity checks without duplicating their existing signing or lifecycle contracts.
 - CI impact: normal validation would gain non-publishing governance checks, while a separately permissioned tag-triggered lane would own candidate construction, credential-gated verification, draft creation, and approved publication.
 - Release operations impact: tags and GitHub Release state would become distinct, verified states tied to the same clean commit and immutable artifact digests.
 - Compatibility impact: the proposal maps `N` to the Current Release Line and maps `N-1` to one explicitly enumerated Previous Supported Release Line, so the current numeric subtraction behavior must remain unchanged until the corresponding `SPEC.md` amendment and implementation land together.

@@ -31,6 +31,32 @@ defmodule OrchardCLI.Commands.LifecycleSupportTest do
     )
   end
 
+  test "start enables a persistently disabled service before bootstrap" do
+    parent = self()
+    service = hd(test_services())
+
+    runtime =
+      base_runtime(%{
+        cmd: fn program, args, opts ->
+          send(parent, {:cmd, program, args, opts})
+
+          case args do
+            ["print", "system/com.orchard.node-agent"] -> {"Could not find service", 113}
+            ["enable", "system/com.orchard.node-agent"] -> {"", 0}
+            ["bootstrap", "system", "/tmp/test-node-agent.plist"] -> {"", 0}
+          end
+        end
+      })
+
+    assert {:loaded, ^service} = LifecycleSupport.ensure_started(service, runtime)
+
+    assert [
+             {"launchctl", ["print", "system/com.orchard.node-agent"], _print_opts},
+             {"launchctl", ["enable", "system/com.orchard.node-agent"], _enable_opts},
+             {"launchctl", ["bootstrap", "system", "/tmp/test-node-agent.plist"], _bootstrap_opts}
+           ] = collect_cmds()
+  end
+
   test "restart_loaded requires root" do
     runtime = base_runtime(%{uid: fn -> 501 end})
 

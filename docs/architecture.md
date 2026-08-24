@@ -9,8 +9,10 @@ product/system/build contract.
 - **Normative target:** `SPEC.md` defines the architecture, API contracts,
   state machines, persistence rules, packaging requirements, and roadmap.
 - **Current source-dev reality:** this repo contains the Elixir umbrella apps,
-  native helper packages, proto contracts, launchd/pkg assets, and validation
-  workflows used to build toward that target.
+  native helper packages, proto contracts, app/DMG and launchd assets, and
+  validation workflows used to build toward that target.
+  Legacy PKG receipt detection remains only to prevent silent app ownership
+  takeover of an existing installation.
 - **Current packaged/operator limitation:** controller-bearing packaged installs
   require an external PostgreSQL server today. Managed Postgres is specified as
   a target mode but is not available in current builds; the packaged
@@ -119,8 +121,8 @@ Core design rules from `SPEC.md`:
 - worker runtimes are local subprocesses, not public services;
 - Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling, and request state.
 
-The current packaged multi-Mac first cut remains transitional.
-It still uses one manually distributed shared cookie and explicit Controller target entries until the enrolled production Peer Grant path is implemented and passes packaged acceptance.
+The current app-installed multi-Mac first cut remains transitional.
+It still uses one manually distributed shared cookie and explicit Controller target entries until the enrolled production Peer Grant path is implemented and passes release-install acceptance.
 The source-development shared-cookie model remains separately documented and does not establish production Node identity or authorization.
 
 In the enrolled production model, Postgres stores durable Controller-instance identity and one closed-state Peer Grant record per authorized Controller-to-Node pair.
@@ -138,12 +140,12 @@ The gRPC/mTLS path remains available for enrollment, certificate lifecycle, Peer
 |---|---|
 | `apps/orchard_controller/` | Controller release: public APIs, Console, Repo, admission, scheduling, dispatch, governance, observability surfaces. |
 | `apps/orchard_node_agent/` | Node-agent release: node-local runtime endpoint, model acquisition/cache, worker supervision, status/diagnostics. |
-| `apps/orchard_cli/` | `orchardctl` CLI: operator/admin automation for source dev and packaged installs. |
+| `apps/orchard_cli/` | `orchardctl` CLI: operator/admin automation for source dev and app-installed releases. |
 | `apps/orchard_shared/` | Shared generated proto modules, Runtime Endpoint domain structs, helpers, and build metadata. |
 | `native/orchard_tokenizer/` | Python helper for prompt rendering, exact token counts, and safe-tokenization support. |
 | `native/orchard_worker_mlx/` | Current Python MLX Worker Runtime provider and current node-agent to worker protocol implementation; the accepted target moves the provider-neutral contract and generated bindings into neutral ownership. |
 | `proto/cluster/v1/` | Controller ↔ node-agent proto source: the current gRPC runtime-operations compatibility transport, the certificate-authenticated BEAM Peer Grant delivery control service, and future-adapter contracts. |
-| `packaging/` | `Orchard.app` DMG with app-owned service lifecycle, PKG, launchd, signing/build runbooks. |
+| `packaging/` | `Orchard.app` DMG with app-owned service lifecycle, shared payload, launchd, and signing/build runbooks. |
 | `docs/` | Contributor-facing orientation, tooling, process, design, and durable decisions subordinate to `SPEC.md`. |
 
 Use [`glossary/CONTEXT.md`](glossary/CONTEXT.md) as the shared vocabulary glossary.
@@ -225,7 +227,7 @@ Runtime Endpoint and worker runtime contracts are separate:
 ### Persistence and coordination
 
 Postgres is the sole persistence and coordination layer. In the target product,
-managed Postgres is one supported topology; in the current packaged flow,
+managed Postgres is one supported topology; in the current app-installed flow,
 controller-bearing installs require operator-provided external Postgres and the
 managed Postgres helper remains a guard only.
 
@@ -242,7 +244,7 @@ This bounded CP1 audit does not enforce `SPEC.md` §7.5.5, does not replace clie
 - Shared wire/domain types: start with proto or `apps/orchard_shared/`, then
   regenerate/check downstream bindings.
 - CLI/operator automation: start in `apps/orchard_cli/` and
-  [`../packaging/pkg/README.md`](../packaging/pkg/README.md).
+  [`../packaging/README.md`](../packaging/README.md).
 - Toolchain/validation: use [`tooling.md`](tooling.md) and
   [`local-dev.md`](local-dev.md).
 - Durable design decisions not already fixed by `SPEC.md`: add an ADR under
