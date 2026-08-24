@@ -34,7 +34,7 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   Target is `[host: host, port: port]` from config.
   Returns `{:ok, channel}` or `{:error, reason}`.
   """
-  @spec connect(keyword(), keyword()) :: {:ok, GRPC.Channel.t()} | {:error, term()}
+  @spec connect(keyword(), keyword()) :: {:ok, Orchard.GRPCTypes.channel()} | {:error, term()}
   def connect(target, opts \\ []) do
     host = Keyword.fetch!(target, :host)
     port = Keyword.fetch!(target, :port)
@@ -51,7 +51,7 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   defp credential_option(%GRPC.Credential{} = credential), do: [cred: credential]
 
   @doc "Disconnect a gRPC channel best-effort and return `:ok`."
-  @spec disconnect(GRPC.Channel.t()) :: :ok
+  @spec disconnect(Orchard.GRPCTypes.channel()) :: :ok
   def disconnect(channel) do
     case GRPC.Stub.disconnect(channel) do
       {:ok, _channel} -> :ok
@@ -77,7 +77,8 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   Options:
   - `:timeout` — RPC timeout in milliseconds (default: #{@rpc_timeout_ms})
   """
-  @spec status(GRPC.Channel.t(), keyword()) :: {:ok, StatusResponse.t()} | {:error, term()}
+  @spec status(Orchard.GRPCTypes.channel(), keyword()) ::
+          {:ok, StatusResponse.t()} | {:error, term()}
   def status(channel, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
 
@@ -88,7 +89,7 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   end
 
   @doc "Ask the node-agent to ensure a model is loaded."
-  @spec ensure_model_loaded(GRPC.Channel.t(), EnsureModelLoadedRequest.t(), keyword()) ::
+  @spec ensure_model_loaded(Orchard.GRPCTypes.channel(), EnsureModelLoadedRequest.t(), keyword()) ::
           {:ok, EnsureModelLoadedResponse.t()} | {:error, term()}
   def ensure_model_loaded(channel, %EnsureModelLoadedRequest{} = request, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
@@ -100,7 +101,7 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   end
 
   @doc "Ask the node-agent to unload a model."
-  @spec unload_model(GRPC.Channel.t(), UnloadModelRequest.t(), keyword()) ::
+  @spec unload_model(Orchard.GRPCTypes.channel(), UnloadModelRequest.t(), keyword()) ::
           {:ok, Ack.t()} | {:error, term()}
   def unload_model(channel, %UnloadModelRequest{} = request, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
@@ -123,7 +124,7 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
 
   The result is `:ok` on normal completion or `{:error, reason}` on failure.
   """
-  @spec execute_inference(GRPC.Channel.t(), ExecuteInferenceRequest.t(), keyword()) ::
+  @spec execute_inference(Orchard.GRPCTypes.channel(), ExecuteInferenceRequest.t(), keyword()) ::
           {:ok, reference()}
   def execute_inference(channel, %ExecuteInferenceRequest{} = request, opts \\ []) do
     owner = Keyword.get(opts, :owner, self())
@@ -138,7 +139,7 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   end
 
   @doc "Send a cancellation request to the node-agent."
-  @spec cancel_inference(GRPC.Channel.t(), String.t(), String.t() | nil) ::
+  @spec cancel_inference(Orchard.GRPCTypes.channel(), String.t(), String.t() | nil) ::
           :ok | {:error, term()}
   def cancel_inference(channel, request_id, controller_session_id \\ nil) do
     case NodeRuntimeService.Stub.cancel_inference(
@@ -156,11 +157,19 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   end
 
   @doc "Score prefix-cache residency on a target. Always fail-open."
-  @spec score_prefix_cache(keyword() | GRPC.Channel.t(), ScorePrefixCacheRequest.t(), keyword()) ::
+  @spec score_prefix_cache(
+          keyword() | Orchard.GRPCTypes.channel(),
+          ScorePrefixCacheRequest.t(),
+          keyword()
+        ) ::
           {:ok, ScorePrefixCacheResponse.t()}
   def score_prefix_cache(target_or_channel, request, opts \\ [])
 
-  def score_prefix_cache(%GRPC.Channel{} = channel, %ScorePrefixCacheRequest{} = request, opts) do
+  def score_prefix_cache(
+        %GRPC.Channel{} = channel,
+        %ScorePrefixCacheRequest{} = request,
+        opts
+      ) do
     timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
 
     case NodeRuntimeService.Stub.score_prefix_cache(channel, request, timeout: timeout) do

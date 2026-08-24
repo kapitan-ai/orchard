@@ -51,7 +51,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @type state :: %{
           backend: String.t(),
-          channel: GRPC.Channel.t(),
+          channel: Orchard.GRPCTypes.channel(),
           executable: String.t(),
           generations: %{optional(reference()) => generation_entry()},
           log_path: String.t(),
@@ -801,7 +801,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # Public only so tests can assert direct UDS channel behavior without worker startup.
   # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
-  @spec connect_worker_socket(String.t()) :: {:ok, Channel.t()} | {:error, term()}
+  @spec connect_worker_socket(String.t()) :: {:ok, Orchard.GRPCTypes.channel()} | {:error, term()}
   def connect_worker_socket(socket_path) when is_binary(socket_path) do
     %Channel{
       host: {:local, String.to_charlist(socket_path)},

@@ -77,7 +77,7 @@ defmodule OrchardCLI.Commands.NodeJoinTest.StalledRuntimeServer do
 
   alias Orchard.Cluster.V1.StatusRequest
 
-  @spec get_status(StatusRequest.t(), GRPC.Server.Stream.t()) :: no_return()
+  @spec get_status(StatusRequest.t(), Orchard.GRPCTypes.server_stream()) :: no_return()
   def get_status(%StatusRequest{}, _stream) do
     raise GRPC.RPCError, status: :unavailable, message: "runtime status unavailable"
   end

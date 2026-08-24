@@ -9,7 +9,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcMTLS do
 
   @type connection_security ::
           :plaintext_compatibility
-          | {:mutual_tls, GRPC.Credential.t(), AuthenticatedPeer.t()}
+          | {:mutual_tls, Orchard.GRPCTypes.credential(), AuthenticatedPeer.t()}
 
   @spec for_target(Target.t()) ::
           {:ok, connection_security()} | {:error, :runtime_endpoint_identity_invalid}
