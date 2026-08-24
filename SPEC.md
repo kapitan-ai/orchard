@@ -2797,7 +2797,9 @@ For a Portal User in `invited` status, the Console SHALL provide Copy invite.
 Each Copy invite action SHALL mint a fresh single-use token, persist only its hash, extend the invite expiry, and invalidate every prior unused invite token for that Portal User.
 Orchard SHALL NOT persist the plaintext invite token or URL.
 The operator SHALL deliver the copied invite URL out of band.
-Redeeming a valid unexpired invite SHALL set the Portal User's password, mark the invite redeemed, activate the Portal User, and end that Portal User's standing portal sessions.
+Invite redemption SHALL be bound to the Organization identified by the route and SHALL succeed only for a valid unexpired invite owned by a Portal User who is currently `invited` in that Organization.
+Successful redemption SHALL set the Portal User's password, mark the invite redeemed, activate the Portal User, and end that Portal User's standing portal sessions.
+Wrong-Organization, disabled-user, invalidated, expired, redeemed, and unknown-token redemption failures SHALL use one generic external response and SHALL make no persisted mutation.
 A replacement invite SHALL use the same reissue flow for password reset and SHALL end that Portal User's standing portal sessions.
 
 The portal SHALL identify the Organization by slug, then authenticate one active Portal User by normalized email and password.
@@ -2807,7 +2809,7 @@ Failed portal logins SHALL be limited per Organization fingerprint, Portal User 
 They SHALL NOT use an Organization-wide lockout.
 
 The operator SHALL invite and disable Portal Users from the existing Console Organization detail surface.
-Disabling a Portal User SHALL end only that Portal User's portal sessions.
+Disabling a Portal User SHALL atomically invalidate every outstanding invite and end only that Portal User's portal sessions.
 Disabling a Portal User SHALL NOT revoke that Portal User's API Keys.
 Invite reissue, invite redemption, password replacement, and Portal User disablement SHALL NOT revoke minted API Keys.
 
@@ -2816,7 +2818,7 @@ A Portal User MAY have at most 10 active portal-minted tenant-direct keys.
 Revoked and expired keys SHALL NOT count toward that ceiling.
 The mint transaction SHALL serialize on the Portal User, not the Organization.
 Operator-minted tenant-direct keys SHALL NOT count toward that ceiling, SHALL remain operator-only, and SHALL NOT be visible or revocable from the portal.
-The portal SHALL list and revoke only portal-minted keys owned by the signed-in Portal User.
+The portal SHALL list and revoke only portal-minted keys whose `portal_user_id` and `tenant_id` match the signed-in Portal User and Organization.
 Keys owned by another Portal User SHALL be indistinguishable from missing keys on portal list and revoke paths.
 Portal revoke SHALL take effect on the next Public Inference authentication.
 

@@ -35,13 +35,19 @@ defmodule Orchard.Governance.PortalUser do
   end
 
   @spec activation_changeset(t(), String.t()) :: Ecto.Changeset.t()
-  def activation_changeset(user, password_hash) do
+  def activation_changeset(%__MODULE__{status: "invited"} = user, password_hash) do
     change(user,
       password_hash: password_hash,
       status: "active",
       disabled_at: nil,
       session_epoch: user.session_epoch + 1
     )
+  end
+
+  def activation_changeset(user, _password_hash) do
+    user
+    |> change()
+    |> add_error(:status, "must be invited")
   end
 
   @spec disable_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()

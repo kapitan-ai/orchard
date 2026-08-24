@@ -45,18 +45,54 @@ defmodule Orchard.Governance.NamedPortalUserTest do
     assert length(rows) == 1
     assert hd(rows).token_hash == :crypto.hash(:sha256, second.token)
     refute inspect(rows) =~ second.token
-    assert {:error, :invalid_invite} = Governance.redeem_portal_invite(first.token, @password)
-    assert {:ok, active} = Governance.redeem_portal_invite(second.token, @password)
+
+    assert {:error, :invalid_invite} =
+             Governance.redeem_portal_invite(tenant.slug, first.token, @password)
+
+    assert {:ok, active} =
+             Governance.redeem_portal_invite(tenant.slug, second.token, @password)
+
     assert active.status == "active"
     assert active.password_hash != @password
-    assert {:error, :invalid_invite} = Governance.redeem_portal_invite(second.token, @password)
+
+    assert {:error, :invalid_invite} =
+             Governance.redeem_portal_invite(tenant.slug, second.token, @password)
+  end
+
+  test "SPEC 7.4a disablement invalidates an outstanding invite without reactivation" do
+    {:ok, tenant} = Governance.create_tenant(%{slug: "disable-invite", name: "Disable Invite"})
+    {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
+    {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+
+    assert {:ok, disabled} = Governance.disable_portal_user(tenant, user)
+    assert disabled.status == "disabled"
+
+    assert {:error, :invalid_invite} =
+             Governance.redeem_portal_invite(tenant.slug, invite.token, @password)
+
+    assert {:ok, [persisted]} = Governance.list_portal_users(tenant)
+    assert persisted.status == "disabled"
+
+    assert Repo.aggregate(
+             from(token in PortalInviteToken, where: token.portal_user_id == ^user.id),
+             :count
+           ) == 0
   end
 
   test "named login creates a user-owned session and disable ends sessions only" do
     {tenant, user} = active_user!("named-login", "dev@example.com")
+    {_tenant, other_user} = active_user!(tenant, "other@example.com")
 
     assert {:ok, login} =
              Governance.create_portal_session(tenant.slug, user.email, @password, "203.0.113.1")
+
+    assert {:ok, other_login} =
+             Governance.create_portal_session(
+               tenant.slug,
+               other_user.email,
+               @password,
+               "203.0.113.8"
+             )
 
     persisted = Repo.get!(PortalSession, login.session.id)
     assert persisted.portal_user_id == user.id
@@ -69,13 +105,26 @@ defmodule Orchard.Governance.NamedPortalUserTest do
     assert {:ok, minted} =
              Governance.create_portal_api_key(login.token, tenant.slug, %{name: "keep"})
 
+    assert {:ok, other_minted} =
+             Governance.create_portal_api_key(other_login.token, tenant.slug, %{
+               name: "other-keep"
+             })
+
     assert {:ok, _} = Governance.disable_portal_user(tenant, user)
 
     assert {:error, :invalid_session} =
              Governance.validate_portal_session(login.token, tenant.slug)
 
-    assert {:ok, auth} = Governance.authenticate_api_key(minted.token)
-    assert auth.principal_type == :tenant
+    assert {:ok, %{portal_user: validated_other}} =
+             Governance.validate_portal_session(other_login.token, tenant.slug)
+
+    assert validated_other.id == other_user.id
+
+    for result <- [minted, other_minted] do
+      assert {:ok, auth} = Governance.authenticate_api_key(result.token)
+      assert auth.principal_type == :tenant
+      assert is_nil(Repo.get!(ApiKey, result.api_key.id).revoked_at)
+    end
   end
 
   test "credential failures are generic and throttling is identity plus source scoped" do
@@ -158,6 +207,31 @@ defmodule Orchard.Governance.NamedPortalUserTest do
     assert revoked.revoked_at
   end
 
+  test "SPEC 10.2 portal key listing requires Portal User and Organization ownership" do
+    {tenant, user} = active_user!("key-list-tenant", "dev@example.com")
+    {:ok, other_tenant} = Governance.create_tenant(%{slug: "key-list-other", name: "Other"})
+
+    {:ok, login} =
+      Governance.create_portal_session(tenant.slug, user.email, @password, "203.0.113.7")
+
+    generated = ApiKeySecret.generate()
+
+    {:ok, _inconsistent_key} =
+      %ApiKey{}
+      |> ApiKey.tenant_direct_changeset(%{
+        tenant_id: other_tenant.id,
+        portal_user_id: user.id,
+        name: "other-tenant-key",
+        token_prefix: generated.token_prefix,
+        secret_hash: generated.secret_hash,
+        issuance_surface: "developer_portal"
+      })
+      |> Repo.insert()
+
+    assert {:ok, %{keys: [], active_portal_count: 0}} =
+             Governance.list_portal_api_keys(login.token, tenant.slug)
+  end
+
   test "legacy unowned developer portal keys remain tenant bearers but are absent from portal" do
     {tenant, user} = active_user!("named-legacy", "dev@example.com")
 
@@ -193,7 +267,7 @@ defmodule Orchard.Governance.NamedPortalUserTest do
   defp active_user!(tenant, email) do
     {:ok, user} = Governance.create_portal_invite(tenant, %{email: email})
     {:ok, invite} = Governance.copy_portal_invite(tenant, user)
-    {:ok, user} = Governance.redeem_portal_invite(invite.token, @password)
+    {:ok, user} = Governance.redeem_portal_invite(tenant.slug, invite.token, @password)
     {tenant, Repo.get!(PortalUser, user.id)}
   end
 end

@@ -44,35 +44,18 @@ defmodule Orchard.Governance.PortalGovernance do
   def copy_invite(tenant_or_id, user_or_id) do
     with :ok <- require_https(),
          {:ok, tenant} <- tenant(tenant_or_id),
-         {:ok, user} <- user_for_tenant(tenant.id, id(user_or_id)),
-         true <- user.status == "invited" do
+         {:ok, user} <- user_for_tenant(tenant.id, id(user_or_id)) do
       token = "orchard_pi_" <> random_secret()
       expires_at = DateTime.add(now(), @invite_seconds, :second)
 
-      Repo.transaction(fn ->
-        from(row in PortalInviteToken, where: row.portal_user_id == ^user.id) |> Repo.delete_all()
-
-        %PortalInviteToken{}
-        |> PortalInviteToken.changeset(%{
-          portal_user_id: user.id,
-          token_hash: digest(token),
-          expires_at: expires_at
-        })
-        |> Repo.insert!()
-
-        delete_sessions(user.id)
-        %{token: token, url: "/portal/#{tenant.slug}/invites/#{token}", expires_at: expires_at}
-      end)
+      Repo.transaction(fn -> copy_invite_transaction(tenant, user.id, token, expires_at) end)
       |> unwrap()
-    else
-      false -> {:error, :portal_user_not_invited}
-      error -> error
     end
   end
 
-  def redeem_invite(token, password) do
+  def redeem_invite(slug, token, password) do
     with :ok <- require_https(), {:ok, password_hash} <- PortalPassword.hash(password) do
-      Repo.transaction(fn -> redeem_invite_transaction(token, password_hash) end)
+      Repo.transaction(fn -> redeem_invite_transaction(slug, token, password_hash) end)
       |> unwrap()
     end
   end
@@ -80,7 +63,7 @@ defmodule Orchard.Governance.PortalGovernance do
   def disable_user(tenant_or_id, user_or_id) do
     with {:ok, tenant} <- tenant(tenant_or_id),
          {:ok, user} <- user_for_tenant(tenant.id, id(user_or_id)) do
-      Repo.transaction(fn -> disable_user_transaction(user) end)
+      Repo.transaction(fn -> disable_user_transaction(tenant.id, user.id) end)
       |> unwrap()
     end
   end
@@ -155,7 +138,8 @@ defmodule Orchard.Governance.PortalGovernance do
         ApiKey
         |> where(
           [key],
-          key.portal_user_id == ^user.id and key.issuance_surface == "developer_portal"
+          key.portal_user_id == ^user.id and key.tenant_id == ^tenant.id and
+            key.issuance_surface == "developer_portal"
         )
         |> order_by([key], desc: key.inserted_at, desc: key.id)
         |> Repo.all()
@@ -179,7 +163,7 @@ defmodule Orchard.Governance.PortalGovernance do
           }
         end)
 
-      {:ok, %{keys: keys, active_portal_count: active_key_count(user.id)}}
+      {:ok, %{keys: keys, active_portal_count: active_key_count(tenant.id, user.id)}}
     end
   end
 
@@ -199,18 +183,12 @@ defmodule Orchard.Governance.PortalGovernance do
     _ -> :ok
   end
 
-  defp redeem_invite_transaction(token, password_hash) do
+  defp redeem_invite_transaction(slug, token, password_hash) do
     current = now()
-
-    invite =
-      PortalInviteToken
-      |> where([row], row.token_hash == ^digest(token))
-      |> where([row], is_nil(row.redeemed_at) and row.expires_at > ^current)
-      |> lock("FOR UPDATE")
-      |> Repo.one()
-
-    if is_nil(invite), do: Repo.rollback(:invalid_invite)
-    user = Repo.get!(PortalUser, invite.portal_user_id)
+    tenant = redemption_tenant!(slug)
+    user_id = redemption_user_id!(tenant.id, token)
+    user = lock_invited_user!(tenant.id, user_id, :invalid_invite)
+    invite = lock_valid_invite!(user.id, token, current)
 
     case user |> PortalUser.activation_changeset(password_hash) |> Repo.update() do
       {:ok, active} ->
@@ -223,9 +201,85 @@ defmodule Orchard.Governance.PortalGovernance do
     end
   end
 
-  defp disable_user_transaction(user) do
+  defp copy_invite_transaction(tenant, user_id, token, expires_at) do
+    user = lock_invited_user!(tenant.id, user_id, :portal_user_not_invited)
+
+    from(row in PortalInviteToken,
+      where: row.portal_user_id == ^user.id and is_nil(row.redeemed_at)
+    )
+    |> Repo.delete_all()
+
+    %PortalInviteToken{}
+    |> PortalInviteToken.changeset(%{
+      portal_user_id: user.id,
+      token_hash: digest(token),
+      expires_at: expires_at
+    })
+    |> Repo.insert!()
+
+    delete_sessions(user.id)
+    %{token: token, url: "/portal/#{tenant.slug}/invites/#{token}", expires_at: expires_at}
+  end
+
+  defp redemption_tenant!(slug) do
+    case Repo.get_by(Tenant, slug: normalize_slug(slug)) do
+      nil -> Repo.rollback(:invalid_invite)
+      tenant -> tenant
+    end
+  end
+
+  defp redemption_user_id!(tenant_id, token) do
+    case PortalInviteToken
+         |> join(:inner, [invite], user in PortalUser, on: user.id == invite.portal_user_id)
+         |> where([invite, user], invite.token_hash == ^digest(token))
+         |> where([_invite, user], user.tenant_id == ^tenant_id)
+         |> select([_invite, user], user.id)
+         |> Repo.one() do
+      nil -> Repo.rollback(:invalid_invite)
+      user_id -> user_id
+    end
+  end
+
+  defp lock_invited_user!(tenant_id, user_id, error) do
+    user =
+      PortalUser
+      |> where([row], row.id == ^user_id and row.tenant_id == ^tenant_id)
+      |> where([user], user.status == "invited")
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(user), do: Repo.rollback(error)
+    user
+  end
+
+  defp lock_valid_invite!(user_id, token, current) do
+    invite =
+      PortalInviteToken
+      |> where([row], row.portal_user_id == ^user_id and row.token_hash == ^digest(token))
+      |> where([row], is_nil(row.redeemed_at) and row.expires_at > ^current)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(invite), do: Repo.rollback(:invalid_invite)
+    invite
+  end
+
+  defp disable_user_transaction(tenant_id, user_id) do
+    user =
+      PortalUser
+      |> where([user], user.tenant_id == ^tenant_id and user.id == ^user_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(user), do: Repo.rollback(:portal_user_not_found)
+
     case user |> PortalUser.disable_changeset(now()) |> Repo.update() do
       {:ok, disabled} ->
+        from(invite in PortalInviteToken,
+          where: invite.portal_user_id == ^user.id and is_nil(invite.redeemed_at)
+        )
+        |> Repo.delete_all()
+
         delete_sessions(user.id)
         disabled
 
@@ -237,7 +291,7 @@ defmodule Orchard.Governance.PortalGovernance do
   defp mint_key_transaction(tenant, user, attrs, generated) do
     PortalUser |> where([u], u.id == ^user.id) |> lock("FOR UPDATE") |> Repo.one!()
 
-    if active_key_count(user.id) >= @active_key_limit,
+    if active_key_count(tenant.id, user.id) >= @active_key_limit,
       do: Repo.rollback(:portal_key_limit_reached)
 
     case %ApiKey{}
@@ -384,14 +438,14 @@ defmodule Orchard.Governance.PortalGovernance do
     |> Repo.delete_all()
   end
 
-  defp active_key_count(user_id) do
+  defp active_key_count(tenant_id, user_id) do
     current = now()
 
     ApiKey
     |> where(
       [k],
-      k.portal_user_id == ^user_id and k.issuance_surface == "developer_portal" and
-        is_nil(k.revoked_at)
+      k.tenant_id == ^tenant_id and k.portal_user_id == ^user_id and
+        k.issuance_surface == "developer_portal" and is_nil(k.revoked_at)
     )
     |> where([k], is_nil(k.expires_at) or k.expires_at > ^current)
     |> Repo.aggregate(:count)

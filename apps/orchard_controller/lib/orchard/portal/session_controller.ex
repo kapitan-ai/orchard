@@ -99,7 +99,7 @@ defmodule Orchard.Portal.SessionController do
 
     result =
       if password == confirmation,
-        do: Governance.redeem_portal_invite(token, password),
+        do: Governance.redeem_portal_invite(slug, token, password),
         else: {:error, :password_confirmation}
 
     case result do
