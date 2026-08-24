@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration coverage for packaged orchardctl against an assembled Controller release.
+# Integration coverage for payload orchardctl against an assembled Controller release.
 
 set -euo pipefail
 
@@ -113,12 +113,12 @@ cd "$REPO_ROOT"
 MIX_ENV=prod mise exec -- mix release orchard_controller --overwrite >/dev/null
 
 mkdir -p "$STAGED_ROOT/share/bin" "$STAGED_ROOT/releases" "$STAGED_ROOT/config" "$RUNTIME_ROOT" "$TOOLS"
-cp "$REPO_ROOT/packaging/pkg/bin/orchardctl" "$STAGED_ROOT/share/bin/orchardctl"
-cp "$REPO_ROOT/packaging/pkg/bin/orchard-controller" "$STAGED_ROOT/share/bin/orchard-controller"
+cp "$REPO_ROOT/packaging/payload/bin/orchardctl" "$STAGED_ROOT/share/bin/orchardctl"
+cp "$REPO_ROOT/packaging/payload/bin/orchard-controller" "$STAGED_ROOT/share/bin/orchard-controller"
 cp -R "$RELEASE_SOURCE" "$STAGED_ROOT/releases/orchard_controller"
 chmod 0755 "$STAGED_ROOT/share/bin/orchardctl" "$STAGED_ROOT/share/bin/orchard-controller"
 
-cmp -s "$REPO_ROOT/packaging/pkg/bin/orchardctl" "$STAGED_ROOT/share/bin/orchardctl" ||
+cmp -s "$REPO_ROOT/packaging/payload/bin/orchardctl" "$STAGED_ROOT/share/bin/orchardctl" ||
   fail "staged orchardctl does not match the changed source wrapper"
 CONTROLLER_RPC_BEAM=$(find "$STAGED_ROOT/releases/orchard_controller/lib" -path '*/ebin/Elixir.OrchardCLI.ControllerRPC.beam' -print -quit)
 [[ -n "$CONTROLLER_RPC_BEAM" ]] || fail "assembled Controller release is missing ControllerRPC"

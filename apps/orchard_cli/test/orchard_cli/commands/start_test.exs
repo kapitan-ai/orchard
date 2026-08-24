@@ -120,7 +120,7 @@ defmodule OrchardCLI.Commands.StartTest do
       })
 
     assert {:error, msg, 1} = Start.run([], runtime)
-    assert msg =~ "packaged install not found"
+    assert msg =~ "Orchard.app installation not found"
     assert msg =~ "install role"
   end
 

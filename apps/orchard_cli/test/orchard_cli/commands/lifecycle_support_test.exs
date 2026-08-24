@@ -31,6 +31,74 @@ defmodule OrchardCLI.Commands.LifecycleSupportTest do
     )
   end
 
+  test "start enables a persistently disabled service before bootstrap" do
+    parent = self()
+    service = hd(test_services())
+
+    runtime =
+      base_runtime(%{
+        cmd: fn program, args, opts ->
+          send(parent, {:cmd, program, args, opts})
+
+          case args do
+            ["print", "system/com.orchard.node-agent"] -> {"Could not find service", 113}
+            ["enable", "system/com.orchard.node-agent"] -> {"", 0}
+            ["bootstrap", "system", "/tmp/test-node-agent.plist"] -> {"", 0}
+          end
+        end
+      })
+
+    assert {:loaded, ^service} = LifecycleSupport.ensure_started(service, runtime)
+
+    assert [
+             {"launchctl", ["enable", "system/com.orchard.node-agent"], _enable_opts},
+             {"launchctl", ["print", "system/com.orchard.node-agent"], _print_opts},
+             {"launchctl", ["bootstrap", "system", "/tmp/test-node-agent.plist"], _bootstrap_opts}
+           ] = collect_cmds()
+  end
+
+  test "start enables an already loaded service without bootstrapping it" do
+    parent = self()
+    service = hd(test_services())
+
+    runtime =
+      base_runtime(%{
+        cmd: fn program, args, opts ->
+          send(parent, {:cmd, program, args, opts})
+
+          case args do
+            ["enable", "system/com.orchard.node-agent"] -> {"", 0}
+            ["print", "system/com.orchard.node-agent"] -> {"{ pid = 123 }", 0}
+          end
+        end
+      })
+
+    assert {:already_loaded, ^service} = LifecycleSupport.ensure_started(service, runtime)
+
+    assert [
+             {"launchctl", ["enable", "system/com.orchard.node-agent"], _enable_opts},
+             {"launchctl", ["print", "system/com.orchard.node-agent"], _print_opts}
+           ] = collect_cmds()
+  end
+
+  test "start reports enable failure even when the service might already be loaded" do
+    service = hd(test_services())
+
+    runtime =
+      base_runtime(%{
+        cmd: fn _program, args, _opts ->
+          case args do
+            ["enable", "system/com.orchard.node-agent"] -> {"disabled by policy", 1}
+            unexpected -> flunk("unexpected launchctl args: #{inspect(unexpected)}")
+          end
+        end
+      })
+
+    assert {:error, message, 1} = LifecycleSupport.ensure_started(service, runtime)
+    assert message =~ "enable"
+    assert message =~ "disabled by policy"
+  end
+
   test "restart_loaded requires root" do
     runtime = base_runtime(%{uid: fn -> 501 end})
 

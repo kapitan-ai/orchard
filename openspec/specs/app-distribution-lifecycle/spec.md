@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines Orchard's app-primary macOS distribution lifecycle, including app assembly and release sidecars, root-authorized role-aware service operations, transactional rollback and operator-state retention, inner-first signing, verified Amore DMG handoff, and compatibility with the parallel PKG installer.
+Defines Orchard's app-primary macOS distribution lifecycle, including app assembly and release sidecars, root-authorized role-aware service operations, transactional rollback and operator-state retention, inner-first signing, and verified Amore DMG handoff.
 
 The generic-distribution-artifact contract that the archived `2026-07-20-amore-dmg-service-lifecycle` delta also proposed here is owned solely by `packaging-deployment`, so it is deliberately not restated in this capability.
 
@@ -10,12 +10,12 @@ The generic-distribution-artifact contract that the archived `2026-07-20-amore-d
 
 ### Requirement: DMG Is App-Primary
 
-Orchard's interactive DMG in `SPEC.md` §11.3 SHALL contain a real signed `Orchard.app` as its primary install artifact, while PKG remains available as a separate compatibility and offline/manual artifact.
+Orchard's interactive DMG in `SPEC.md` §11.3 SHALL contain a real signed `Orchard.app` as its install artifact and SHALL NOT require a native PKG artifact under the current distribution contract.
 
 #### Scenario: Operator opens the DMG
 
 - **WHEN** an operator mounts an Orchard DMG
-- **THEN** the mounted image contains a verifiable `Orchard.app` whose embedded service payload can be inspected without requiring the PKG artifact
+- **THEN** the mounted image contains a verifiable `Orchard.app` whose embedded service payload can be inspected directly
 
 ### Requirement: Release Metadata Is Verifiable Without Rewriting The DMG
 
@@ -59,23 +59,29 @@ App-owned install and update SHALL preserve operator-owned `config`, `data`, `mo
 - **WHEN** an operator runs app-owned uninstall without a separately approved destructive purge operation
 - **THEN** Orchard removes executable service artifacts and retains operator configuration, data, models, bundles, logs, and support bundles
 
-### Requirement: TLS And Package Ownership Fail Closed
+### Requirement: TLS State Fails Closed
 
-The app lifecycle SHALL preserve complete TLS state, SHALL reject partial TLS state before mutation, SHALL NOT generate or trust production TLS material, SHALL NOT mutate system trust stores, and SHALL refuse system-root install, update, or uninstall while a `com.orchard.pkg` receipt exists.
+The app lifecycle SHALL preserve complete TLS state, SHALL reject partial TLS state before mutation, SHALL NOT generate or trust production TLS material, and SHALL NOT mutate system trust stores.
 
 #### Scenario: Partial TLS state blocks mutation
 
 - **WHEN** the target contains only part of the expected TLS state
 - **THEN** app-owned install or update fails before changing payloads, services, roles, TLS files, or trust stores
 
-#### Scenario: PKG receipt blocks app takeover
+### Requirement: Legacy Package Ownership Blocks App Takeover
+
+The app lifecycle SHALL refuse system-root install, update, and uninstall while a `com.orchard.pkg` receipt exists, and SHALL fail closed before any mutation, as required by `SPEC.md` §11.4.
+Retaining that refusal SHALL NOT establish native PKG as a supported distribution channel, release artifact, operator workflow, or validation gate.
+
+#### Scenario: Legacy package receipt blocks app takeover
 
 - **WHEN** the system root has a `com.orchard.pkg` receipt and the app lifecycle is asked to install, update, or uninstall it
-- **THEN** Orchard refuses and directs the operator to the PKG-compatible path without changing installed state
+- **THEN** Orchard refuses without changing installed state
+- **AND** the refusal does not claim a supported native PKG install path
 
 ### Requirement: Lifecycle Status Is Non-Mutating
 
-App-owned lifecycle status SHALL report the selected role, installation source, retained-state roots, launchd state, and blocking PKG receipt without changing the target.
+App-owned lifecycle status SHALL report the selected role, installation source, retained-state roots, launchd state, and blocking legacy package receipt without changing the target.
 
 #### Scenario: Operator inspects status
 
@@ -99,12 +105,3 @@ The Amore DMG handoff SHALL compare signing manifests before and after DMG assem
 
 - **WHEN** the mounted DMG contains an app whose nested signature or canonical entitlement digest differs from the verified input app
 - **THEN** Orchard rejects the DMG and does not mark it ready for notarization, publication, or distribution
-
-### Requirement: PKG Compatibility Is Preserved
-
-Orchard SHALL retain PKG as a supported parallel path for root-authorized launchd service installation, role selection, upgrades, repeatable operator-driven installation, and offline/manual distribution.
-
-#### Scenario: PKG remains compatible
-
-- **WHEN** an operator installs or upgrades Orchard from a supported signed PKG
-- **THEN** the configured role's launchd services and shared support-root files remain compatible with state previously written by the app-owned lifecycle path

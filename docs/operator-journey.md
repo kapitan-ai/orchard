@@ -52,7 +52,7 @@ Registration remains pending and non-schedulable until explicit admission, and a
 The authoritative current command details are in:
 
 - [`packaging/dmg/README.md`](../packaging/dmg/README.md) for DMG verification and the app-owned lifecycle.
-- [`packaging/pkg/README.md`](../packaging/pkg/README.md) for packaged configuration, external Postgres, transport, Console, service start, and the current multi-Mac first cut.
+- [`packaging/README.md`](../packaging/README.md) for packaged configuration, external Postgres, transport, Console, service start, and the current multi-Mac first cut.
 - [`docs/local-dev.md`](local-dev.md) for source-development topology and diagnostics.
 
 ### Common Prerequisites
@@ -162,7 +162,7 @@ Future implementation PRs should record sanitized timings against the measuremen
 |---|---|---|
 | Missing or invalid external Postgres configuration | Migration, DB-backed CLI, or Controller readiness fails. | Correct the root-owned Controller env, verify Postgres independently, run migrations, and resume. |
 | Partial TLS state | App lifecycle or Controller boot preflight fails closed. | Restore a complete set or deliberately regenerate the local lab set before retrying. |
-| App and PKG ownership conflict | App lifecycle reports the `com.orchard.pkg` receipt blocker. | Continue through the PKG-compatible lifecycle instead of allowing app takeover. |
+| Legacy PKG ownership conflict | App lifecycle reports the `com.orchard.pkg` receipt blocker. | Remove or migrate the legacy installation before allowing app takeover. |
 | BEAM cookie missing, mismatched, or too broadly readable | Node Agent or Controller transport validation fails. | Correct protected file ownership/mode and compare digests without exposing cookie contents. |
 | EPMD or distribution port conflict | Runtime Endpoint connection fails or returns unreachable. | Align the private-network port configuration on every participating Mac and verify reachability. |
 | Static target missing or wrong | Console diagnostics and scheduler cannot reach the intended Node Agent. | Correct the Controller target list and restart or reconfigure the Controller. |

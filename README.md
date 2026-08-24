@@ -30,8 +30,6 @@
   <a href="openspec/README.md"><img alt="OpenSpec" src="https://img.shields.io/badge/OpenSpec-strict%20validation-2563EB"></a>
 </p>
 
----
-
 ## Why Orchard
 
 Teams that cannot send prompts to a cloud provider still want the developer
@@ -99,9 +97,11 @@ your network and under your audit trail.
 
 **Packaging**
 
-- `Orchard.app` DMG with an app-owned, root-authorized service lifecycle, plus a
-  universal macOS PKG with install-time role selection (`all`, `controller`,
-  `node-agent`).
+- A signed and notarized `Orchard.app` DMG with an app-owned, root-authorized
+  service lifecycle and role selection for `all`, `controller`, and
+  `node-agent` hosts.
+- Native PKG is not a supported current distribution channel. Any future native
+  package requires a fresh accepted OpenSpec proposal and implementing PR.
 - Packaged controller installs use operator-managed external PostgreSQL 16+;
   managed Postgres is not available in this build. There is no broker, cache, or
   extra control-plane store to operate.
@@ -130,8 +130,8 @@ client.responses.create(model="your-model@v1", input="Hello!")
 ```
 
 Operators install from the release media and follow
-[`packaging/dmg/README.md`](packaging/dmg/README.md) or
-[`packaging/pkg/README.md`](packaging/pkg/README.md); contributors run from
+[`packaging/README.md`](packaging/README.md) and
+[`packaging/dmg/README.md`](packaging/dmg/README.md); contributors run from
 source with `make dev` (see [`docs/local-dev.md`](docs/local-dev.md)).
 
 ## Status & roadmap
@@ -220,7 +220,7 @@ boundaries.
 | Runtime endpoint transport | Runtime Endpoint Interface (first-party BEAM adapter; gRPC compatibility adapter) |
 | APIs | Phoenix/Plug with SSE streaming |
 | Console | Phoenix LiveView |
-| Packaging | `Orchard.app` DMG (app-owned service lifecycle) + PKG + launchd |
+| Packaging | signed `Orchard.app` DMG (app-owned service lifecycle) + launchd |
 | CLI | `orchardctl` |
 | Toolchain | mise-pinned Erlang/OTP, Elixir, Python, uv, Node.js, npm, and OpenSpec |
 
@@ -235,34 +235,33 @@ boundaries.
    operator-usable.
 
 All controller-bearing installs currently require an external Postgres
-database. The macOS PKG uses a universal payload with role selection
-(`all`, `controller`, or `node-agent`) at install time; see
-[`packaging/pkg/README.md`](packaging/pkg/README.md) for the operator runbook.
+database. The app lifecycle supports `all`, `controller`, and `node-agent`
+roles; see [`packaging/README.md`](packaging/README.md) for the operator runbook.
 
 ### Transport and TLS
 
-Packaged installs start on degraded loopback HTTP until an operator selects
+App-installed releases start on degraded loopback HTTP until an operator selects
 direct HTTPS or reverse-proxy mode. TLS is provider-neutral: bring
 reverse-proxy termination, operator-supplied certificates, internal PKI, or
 the local-CA helper (`orchardctl tls init`) for dev-lab bootstrap. CORS is an
 explicit origin allowlist, disabled by default. Full transport configuration,
 including nginx/Caddy/Traefik snippets, is in
-[`packaging/pkg/README.md`](packaging/pkg/README.md).
+[`packaging/README.md`](packaging/README.md).
 
-### Building the installer
+### Building the app payload
 
 ```bash
-mise exec -- ./scripts/build-pkg.sh
+mise exec -- ./scripts/build-payload.sh
 ```
 
-This produces `Orchard-<version>-<date>-<git-sha>.pkg`. Run `make setup`
-first; see [`packaging/pkg/README.md`](packaging/pkg/README.md#building-the-pkg)
-for full build documentation.
+The command prints the validated `PAYLOAD_ROOT` used by the app assembler.
+Run `make setup` first; see [`packaging/README.md`](packaging/README.md#shared-payload)
+for the payload contract.
 
 ## Run from source
 
 This path is for developers and contributors; operators should use the
-packaged DMG/PKG flow above. On Apple Silicon macOS, install the mise-pinned
+`Orchard.app` DMG flow above. On Apple Silicon macOS, install the mise-pinned
 toolchain from [`mise.toml`](mise.toml), and have a local PostgreSQL ≥15
 instance accepting TCP connections before starting the dev server. See
 [`docs/local-dev.md`](docs/local-dev.md) and
@@ -332,8 +331,8 @@ For operators:
   improvement slices.
 - [`packaging/dmg/README.md`](packaging/dmg/README.md) — `Orchard.app` DMG
   verification and app-owned service lifecycle.
-- [`packaging/pkg/README.md`](packaging/pkg/README.md) — install, roles,
-  transport, and TLS runbook.
+- [`packaging/README.md`](packaging/README.md) - install, roles, transport,
+  TLS, and operator runbook.
 - [`docs/pilots/README.md`](docs/pilots/README.md) — pilot start bar and
   runbook.
 

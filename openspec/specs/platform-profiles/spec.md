@@ -19,7 +19,7 @@ This requirement changes the product-wide macOS assumption in `SPEC.md` §§1.4,
 
 ### Requirement: Platform Profiles And Support Gates
 Orchard SHALL define platform profiles that bind portable roles to host lifecycle, paths, credential storage, packaging, runtime payloads, and support acceptance evidence.
-The macOS profile SHALL preserve the existing all-in-one Controller, Node Agent, MLX worker, app, DMG, PKG, launchd, and retained-state behavior.
+The macOS profile SHALL preserve the existing all-in-one Controller, Node Agent, MLX worker, app, DMG, launchd, and retained-state behavior.
 The first accepted Linux target SHALL be a Controller Host using operator-provided external Postgres and dispatching to admitted macOS MLX Nodes.
 The Linux Controller profile MUST NOT be represented as supported until its Milestone 8 acceptance gates pass.
 This requirement changes `SPEC.md` §§1.1, 1.4, 1.5, 4.1, 11, and 14.
@@ -31,7 +31,7 @@ This requirement changes `SPEC.md` §§1.1, 1.4, 1.5, 4.1, 11, and 14.
 
 #### Scenario: Existing Mac all-in-one deployment
 - **WHEN** Orchard runs under the macOS all-in-one profile
-- **THEN** the accepted Mac lifecycle, inference, packaging, signing, and retained-state guarantees remain applicable
+- **THEN** the accepted Mac app lifecycle, inference, DMG distribution, signing, and retained-state guarantees remain applicable
 
 ### Requirement: Controller Hosts And Schedulable Nodes Are Distinct
 Orchard SHALL model a Controller Host independently from a schedulable Node.

@@ -44,7 +44,7 @@ if [[ "$IDENTITY" != "-" && "$IDENTITY" != "Developer ID Application:"* ]]; then
 fi
 
 PAYLOAD="$APP/Contents/Resources/payload"
-ENTITLEMENTS="$REPO_ROOT/packaging/pkg/entitlements"
+ENTITLEMENTS="$REPO_ROOT/packaging/payload/entitlements"
 for path in \
   "$APP/Contents/Info.plist" \
   "$APP/Contents/MacOS/Orchard" \

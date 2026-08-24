@@ -1,7 +1,7 @@
 # Orchard.app and DMG packaging
 
 The DMG's primary interactive artifact is a verified `Orchard.app`.
-The app owns the root-authorized service lifecycle, while PKG remains a separate compatible path for operator-driven, offline, and manual installs.
+The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload.
 
 The first productization slice proves app assembly, install/update/uninstall behavior in a relocated root, inner-first signing, local Amore DMG assembly, mounted-app verification, and nested-signature preservation.
 Sparkle, broad updater UX, managed-device deployment, and destructive host installation remain outside this slice.
@@ -11,10 +11,10 @@ Sparkle, broad updater UX, managed-device deployment, and destructive host insta
 Build the existing production payload without installing it:
 
 ```bash
-mise exec -- ./scripts/build-pkg.sh --stage-only
+mise exec -- ./scripts/build-payload.sh
 ```
 
-Pass that staged payload to the app builder:
+Use the printed `PAYLOAD_ROOT` value with the app builder:
 
 ```bash
 scripts/build-app.sh \
@@ -25,7 +25,7 @@ scripts/build-app.sh \
 ```
 
 `Orchard.app` contains a native main executable, the native `orchard-service` lifecycle helper, the shared lifecycle contract, and the existing production payload.
-The app does not duplicate the payload build or replace the PKG path.
+The app consumes the same payload surface validated by `scripts/build-payload.sh`.
 
 ## Service lifecycle
 
@@ -53,7 +53,7 @@ Dry-run never acquires the mutation lock or performs recovery; it reports a pend
 The lifecycle owns `bin`, `native`, `releases`, `share`, the staged `support/openssl` runtime, its role and transaction markers, its role-selected LaunchDaemon plists, and only command links that point at Orchard's installed wrappers.
 It retains `config`, `data`, `models`, `bundles`, `logs`, and operator-created support contents on uninstall.
 Complete TLS state is preserved unchanged, partial TLS state fails preflight, and the app never generates certificates or mutates a trust store.
-The `com.orchard.pkg` receipt blocks app-owned system install, update, and uninstall so the two ownership models cannot silently take over each other.
+The legacy `com.orchard.pkg` receipt still blocks app-owned system install, update, and uninstall so the app cannot silently take ownership of a legacy installation.
 
 Use `--root /absolute/temporary/root` for non-destructive lifecycle tests.
 The helper rejects relative roots, canonicalizes root aliases, rejects symlinked managed ancestors, and will not replace foreign files at managed command-link paths.

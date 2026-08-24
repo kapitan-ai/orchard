@@ -144,7 +144,7 @@ The current macOS profile SHALL remain a native macOS product using **launchd** 
 Managed local Postgres mode SHALL remain macOS-profile behavior using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
 Apple documents launchd as the system service manager for daemons and agents, and its Containerization project as a macOS Linux-container runtime built on Apple Silicon virtualization. ([Apple Support][2])
 
-The accepted Linux Controller target SHALL use operator-provided external Postgres and SHALL NOT require a local Node Agent, accelerator runtime, Apple tooling, launchd, Keychain, DMG, PKG, or Orchard.app.
+The accepted Linux Controller target SHALL use operator-provided external Postgres and SHALL NOT require a local Node Agent, accelerator runtime, Apple tooling, launchd, Keychain, DMG, or Orchard.app.
 Its final distribution format and host manager remain deferred.
 No Linux support claim follows from portable compilation alone.
 
@@ -237,10 +237,11 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
   cluster/v1/*.proto
   orchard/worker/v1/*.proto  # target provider-neutral Worker Runtime ownership
 /packaging
+  app/
   dmg/
-  pkg/
   launchd/
   container/
+  payload/                 # distribution-neutral app/DMG payload assets
 ```
 
 ### 2.5 Process boundaries
@@ -251,7 +252,7 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
 * Tokenization/rendering helper MAY be a bundled native or Python helper, but the controller API layer remains Elixir/OTP.
 * Controller-owned durable operations SHALL execute inside the active Controller through authenticated, authorized, leader-aware, and audited domain operations.
 * Portable CLI code SHALL own client interaction and presentation, not direct Repo authority or host lifecycle mechanics.
-* Host lifecycle actors SHALL remain external to the managed Node Agent instance and SHALL preserve the platform-neutral exclusion, fencing, observation, and provisional-launch contract.
+* Platform-specific host lifecycle behavior SHALL remain isolated behind host adapters and SHALL NOT become a portable core dependency.
 
 ---
 
@@ -4783,19 +4784,19 @@ The purge verification SHALL explicitly enumerate every content-bearing Request 
 ## 11. Packaging and Deployment
 
 Distribution requirements are scoped by platform profile.
-DMG, PKG, Orchard.app, launchd, Keychain, Apple signing, notarization, and stapling requirements in this section SHALL remain mandatory for the macOS profile and MUST NOT be imposed on portable Controller compilation or the Linux Controller target.
+DMG, Orchard.app, launchd, Keychain, Apple signing, notarization, and stapling requirements in this section SHALL remain mandatory for the macOS profile and MUST NOT be imposed on portable Controller compilation or the Linux Controller target.
 Generic Product Version, provenance, trust, secret-free artifact, role, rollback, retained-state, and protocol compatibility requirements remain shared where applicable.
 
 The accepted Linux Controller target uses operator-provided external Postgres and contains only portable compatible applications and assets.
 Its final distribution format, host manager, paths, service integration, and publication contract remain deferred to a separate change.
 No Linux distribution is supported by this contract-only amendment.
 
-The macOS-native packaging model SHALL use:
+The current macOS-native distribution model SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
+Native PKG distribution is not a supported current Orchard distribution channel.
+Legacy PKG receipt detection SHALL be retained solely to prevent silent app ownership takeover of an existing installation, as required by §11.4, and does not define a supported distribution channel, a release artifact, or a validation gate.
+Any future native package or additional distribution channel SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request that updates this contract, security posture, operator documentation, and validation gates before support is claimed.
 
-* **DMG** for interactive installs
-* **PKG** for root-authorized service installs and repeatable local/offline installer flows
-
-Apple recommends notarization for directly distributed macOS software, and signed DMG or signed PKG are the preferred direct-distribution formats outside the App Store. ([Apple Developer][8])
+Apple recommends notarization for directly distributed macOS software, and a signed DMG is a preferred direct-distribution format outside the App Store. ([Apple Developer][8])
 
 ### 11.1 Installed components
 
@@ -4839,17 +4840,11 @@ Required launchd properties:
 * restart throttling enabled
 * dedicated non-root service user preferred
 
-For the Node Agent, `RunAtLoad` and `KeepAlive` SHALL remain subordinate to a protected Managed Node Agent Start Eligibility State that is checked by the managed launch path before Node Agent execution.
-Durable suppression SHALL combine persistent launchd job-domain disablement, so that a suppressed Node Agent job does not bootstrap at reboot or launchd job-domain reload, with managed launch-path denial as defense in depth.
-A suppressed state SHALL survive handover-owner death, reboot, launchd job-domain reload, and `KeepAlive` retry, and publishing or loading the launchd plist SHALL NOT by itself make the Node Agent launch-eligible.
-Managed Node Agent Start Eligibility State, one-shot launch authorization, and the managed launch gate SHALL apply only to the Node Agent, and other role-selected services SHALL use normal supported launchd start behavior.
 
 ### 11.3 DMG And Release Distribution Contents
 
-DMG SHALL include:
-
-* `Orchard.app` as the primary interactive install artifact
-* `Orchard.pkg` optional as a compatibility or offline/manual artifact
+DMG SHALL include `Orchard.app` as the primary interactive install artifact.
+It SHALL NOT include or require a native PKG artifact under the current distribution contract.
 
 The release distribution set SHALL place release notes, a DMG SHA-256 checksum, and the before/after app-signing manifests alongside the DMG.
 These sidecars remain outside the DMG because Amore owns final image assembly and notarization, and changing the image afterward would invalidate that outer trust boundary.
@@ -4860,7 +4855,7 @@ An outer distribution tool that changes nested code or entitlements SHALL cause 
 Amore SHALL be the current outer DMG assembly, notarization, stapling, hosting, and publication integration.
 Orchard SHALL feature-detect the required Amore CLI surface and SHALL keep nested signing and verification under Orchard control.
 
-### 11.4 Root-Authorized Service Lifecycle And PKG Behavior
+### 11.4 Root-Authorized App Service Lifecycle
 
 `Orchard.app` SHALL own a service lifecycle interface for role-aware install, update, uninstall, and status operations.
 System-root install, update, and uninstall operations SHALL require effective root privileges with effective user id 0.
@@ -4871,132 +4866,22 @@ If a failure occurs after any app-owned install, update, or uninstall mutation b
 Complete app rollback SHALL restore the prior app-owned payload, command links, launchd plists, role marker, and prior loaded-service state, and SHALL report whether rollback completed successfully.
 If required rollback cannot be completed or verified, the app lifecycle SHALL classify the installed state as uncertain, SHALL fail closed for the affected lifecycle role, and SHALL NOT start the Node Agent.
 
-Managed Node Agent lifecycle state SHALL be modeled as independent dimensions that the managed lifecycle observes and mutates separately: launchd plist presence, launchd job load state, managed Node Agent process presence, Managed Node Agent Start Eligibility State, and canonical lock ownership.
-Managed Node Agent Start Eligibility State SHALL be exactly one of `suppressed`, `one_shot_pending`, or `enabled`, and canonical lock ownership SHALL be either held by one current owner or free.
-Durable suppression SHALL combine persistent launchd job-domain disablement with managed launch-path denial, so that a suppressed Node Agent job neither bootstraps at reboot or launchd job-domain reload nor executes if it is bootstrapped anyway.
-No dimension SHALL be inferred from another, and plist presence in particular SHALL NOT be read as load state, managed process presence, or start eligibility.
-
-Managed Orchard.app and PKG Node Agent lifecycle mutations, Managed Node Agent Handover recovery, and owner-side Node Agent start authorization SHALL use one shared exclusion boundary, and every Managed Node Agent Handover SHALL use zero process overlap.
-Owner-side paths are the managed lifecycle, recovery, start-attempt, and stop paths, including Orchard.app restoration, `orchardctl start`, and `orchardctl stop`, that inspect or mutate Managed Node Agent Start Eligibility State, persistent launchd job-domain disablement, one-shot launch authorization, or managed Node Agent load or process state, or that authorize a Node Agent start.
-Each owner-side path SHALL hold the canonical lock continuously for that work.
-Managed Node Agent Start Eligibility State is the authoritative launch fence, and launchd load state is operational control that SHALL NOT be treated as that fence.
-The managed Node Agent launch path is the child-side gate that runs inside the launched Node Agent service before Node Agent execution and is not an owner-side path.
-It SHALL NOT acquire, wait on, or inherit any descriptor for the canonical lock, and it SHALL NOT contend with the start owner that launched it.
-It SHALL decide from durable state alone: `enabled` SHALL permit normal `RunAtLoad` and `KeepAlive` operation, `suppressed` SHALL deny execution, and `one_shot_pending` SHALL permit execution only by atomically claiming a matching unclaimed single-consumer one-shot launch authorization.
-It SHALL NOT reclaim an already claimed authorization and SHALL NOT transition durable eligibility to `enabled` on its own.
-The canonical boundary SHALL be one interoperable exclusive kernel advisory lock on `/Library/Application Support/Orchard/support/.app-lifecycle.lock`.
-One privileged handover owner SHALL acquire that lock and retain the same kernel lock ownership continuously, without ownership transfer or descriptor inheritance, from before initial operation evidence and durable start suppression through immediate pre-`bootout` observation, every captured-instance exit or affirmative absence, active payload activation and protected lifecycle mutation, the applicable start decision, and terminal-state reporting.
-Normal completion SHALL release the lock by closing the owning descriptor, owner process death SHALL release it through the operating system, and contention SHALL perform no managed mutation or Node Agent start.
-A later managed operation MAY retry after kernel ownership is released.
-Owner-side operations SHALL record durable lifecycle evidence in one shared schema whose operation kind is exactly one of `handover`, `managed_recovery`, `start_attempt`, or `managed_stop`.
-Before changing Managed Node Agent Start Eligibility State or performing any other protected active mutation, the owner SHALL durably record required evidence containing the operation identity, kind, and phase, the exact owner and target identities, the prior observed eligibility, launchd load, and managed process state, the bound staging generation when applicable, prior active path and start policy as needed, and the intended mutation.
-For an operation that does not start the Node Agent, the owner SHALL mark its evidence terminal coherent only after verifying the resulting state that its operation kind requires and recording the applicable no-start policy outcome.
-A later managed start SHALL use a distinct `start_attempt` identity and evidence record.
-Evidence denial SHALL be scoped to the evidence kind the attempted operation actually requires, and evidence of a kind that operation does not depend on SHALL NOT deny it.
-Missing, incomplete, or uncertain required evidence SHALL deny Node Agent start but SHALL NOT constitute exclusion ownership or prevent a managed recovery owner from acquiring the canonical kernel lock.
-Persistent metadata is recovery evidence and start-eligibility fencing, not exclusion ownership, and it SHALL NOT authorize mutation or start independently of a current canonical lock owner.
-An interrupted non-terminal evidence record SHALL NOT by itself require full payload recovery or substitute for live state proof; instead the next lock-holding owner-side path SHALL explicitly reconcile it and atomically supersede or mark it within that path's own initial evidence before proceeding, while re-proving every applicable live fence and installed-state precondition.
-
-PKG payload placement by Apple Installer SHALL write authenticated and signed content only into an inactive incoming staging root that a running Node Agent never resolves, loads, or executes.
-Inactive staging is not active Node Agent installation mutation and MAY occur before the shared lock is acquired while the current Node Agent continues running.
-Before relaunch prevention or active mutation, the handover owner SHALL bind activation to exactly one complete authenticated and signed staging generation in a unique per-generation namespace and verify that generation's identity, completeness, integrity, trust, and intended installation target.
-The bound generation SHALL be an immutable or equivalently identity-stable snapshot that concurrent or repeated installers cannot replace or modify through activation.
-The owner SHALL revalidate the bound pathname or descriptor identity, manifest, signature, complete file set, content integrity, trust, and target immediately before atomic activation.
-Initial discovery of partial, stale, mixed-generation, untrusted, ambiguous, replaced, modified, or missing staged content SHALL fail before any protected active Node Agent lifecycle mutation.
-Any bound-generation identity or content mismatch detected by immediate pre-activation revalidation SHALL fail before payload or installed-state activation and SHALL leave start eligibility suppressed for managed recovery.
-PKG `preinstall` SHALL NOT stop the active Node Agent, prevent its relaunch, or mutate active payload, launchd records, command links, role state, or the Node Identity Root.
-After staging, PKG `postinstall` SHALL synchronously invoke one privileged handover owner that acquires and retains the canonical lock for the complete active handover.
-Direct `/usr/sbin/installer -pkg ... -target /` invocation SHALL enter this package-owned handover path without requiring an external Orchard wrapper.
-
-Every owner-side path that unloads or terminates the managed Node Agent job SHALL satisfy the Managed Node Agent Process Fence while holding the canonical lock.
-Managed Node Agent Handover, managed stop, start-attempt precondition establishment, and managed recovery are all such paths.
-The fence SHALL first establish protected durable start suppression, which SHALL set Managed Node Agent Start Eligibility State to `suppressed`, invalidate any outstanding one-shot launch authorization, and apply persistent launchd job-domain disablement.
-Under that suppression and immediately before `bootout` or any other termination, the owner SHALL affirmatively observe managed Node Agent process state.
-When exactly one stable instance is running, the owner SHALL capture non-reusable evidence that identifies that exact process instance, durably add that evidence to the operation record, and verify identity stability through shutdown.
-When that observation instead proves that no managed instance exists, the owner SHALL durably record that affirmative absence.
-An additional, replacement, identity-unstable, or unknown managed process state SHALL fail the fence, and unknown state SHALL NOT become proven absence.
-The owner SHALL then prevent relaunch through verified launchd job-domain control, such as successful `bootout` followed by proof that the job is unloaded, without first editing or deleting the protected launchd plist.
-When an instance was captured, the owner SHALL wait within a bounded period for proof that every captured managed instance exited after managed shutdown.
-Only captured-instance exit or affirmative absence recorded under suppression immediately before shutdown SHALL satisfy the fence.
-A failure to observe process state before `bootout` or termination SHALL NOT be converted into proven absence afterward, and post-shutdown non-observation SHALL NOT substitute for pre-shutdown absence evidence.
-Failure to satisfy any fence obligation SHALL fail the operation closed with durable suppression retained and without Node Agent start.
-
-While holding the shared lock, the handover owner SHALL first durably record its required initial `handover` or `managed_recovery` evidence and then satisfy the Managed Node Agent Process Fence.
-Failure to acquire or retain exclusion, validate and identity-stabilize applicable staging, record required recovery evidence, or satisfy the fence SHALL fail closed without active mutation or Node Agent start.
-Only after the fence succeeds MAY the owner activate the bound staged generation and mutate the Node Agent payload, launchd plist, command symlink, role marker, or Node Identity Root.
-
-Every supported managed Node Agent stop, including `orchardctl stop` and any Orchard.app-initiated managed stop, SHALL acquire the canonical lock and retain it for the complete stop.
-Before protected mutation, the stop owner SHALL durably record `managed_stop` evidence carrying the operation identity, kind, and phase, the exact owner and target identities, the prior observed eligibility, launchd load, and managed process state, and the intended suppression, disablement, and unload mutation.
-Because a managed stop only moves toward the fail-closed state, it SHALL NOT require prior terminal coherent evidence of any kind.
-While retaining that lock, the stop owner SHALL satisfy the Managed Node Agent Process Fence and SHALL record, as its phases complete, the immediate pre-shutdown exact capture or affirmative absence, the unload proof, and the exit proof for every captured instance.
-A managed stop reuses only that process fence, SHALL NOT perform payload staging or activation, and its evidence SHALL carry no staging, activation, rollback, or start-policy fields.
-The stop owner SHALL mark `managed_stop` evidence terminal coherent stopped only after proving suppressed eligibility, applied persistent launchd job-domain disablement, an unloaded job, and every captured-instance exit or valid pre-shutdown absence, and SHALL then release the lock.
-Known failure or uncertainty SHALL fail the stop closed with durable suppression retained and the relevant observed and captured evidence recorded rather than report a successful stop, so an instance that survives `bootout` unobserved SHALL NOT be reported as stopped.
-A managed stop SHALL NOT leave Managed Node Agent Start Eligibility State `enabled` or `one_shot_pending`, so a managed stop followed by a managed start always re-enters the start attempt from `suppressed`.
-
-After a coherent successful Orchard.app operation or successful required rollback, Orchard.app MAY restore services that were previously loaded and remain selected by the installed role only through the managed start-attempt protocol.
-PKG SHALL leave every role-selected service stopped when the package operation completes after a successful fresh install or upgrade, SHALL NOT automatically start any of them, and SHALL NOT restore their prior loaded-service state.
-For the Node Agent, PKG SHALL additionally leave Managed Node Agent Start Eligibility State `suppressed` with persistent launchd job-domain disablement applied, so that reboot, launchd job-domain reload, and `KeepAlive` retry cannot start it.
-Other role-selected services SHALL NOT use Managed Node Agent Start Eligibility State, one-shot launch authorization, or the managed Node Agent launch gate, and their later start SHALL use normal supported launchd start behavior.
-`orchardctl start` SHALL be the supported later PKG start path.
-Every managed Node Agent start request, including Orchard.app restoration and `orchardctl start`, SHALL acquire the canonical lock and, while retaining it, dispatch on the observed Managed Node Agent Start Eligibility State.
-A managed start attempt SHALL be defined only from `suppressed`.
-When eligibility is `enabled` and the owner verifies exactly one healthy managed Node Agent instance running from the coherent active state, the request SHALL succeed idempotently and SHALL NOT be a new start attempt.
-Any other combination under `enabled` is incoherent and SHALL enter managed recovery under the same lock, which SHALL first establish suppression, invalidate any outstanding one-shot launch authorization, unload the launchd job, and prove exact captured-instance exit or affirmative absence before a distinct `suppressed`-state start attempt may run.
-`one_shot_pending` SHALL be non-transferable: only the exact live recorded owner instance MAY continue its own bounded attempt, and a different owner, a recorded owner that is not observably live, or any uncertainty SHALL normalize through managed recovery to `suppressed` and use a new start-attempt identity.
-An owner SHALL NOT release the canonical lock while its own start attempt remains pending.
-
-A start attempt from `suppressed` SHALL verify prior terminal coherent handover or recovery evidence and coherent installed state, and record distinct non-terminal evidence for the current start attempt.
-While retaining the lock and with eligibility still `suppressed`, the owner SHALL verify or establish the unloaded, not-running precondition rather than assume it, and SHALL record no one-shot launch authorization and bootstrap nothing until it has proven both that the launchd job is unloaded and that no managed Node Agent process is running.
-If the launchd job is loaded, the owner SHALL satisfy the Managed Node Agent Process Fence for that job: under suppression and immediately before `bootout` it SHALL capture the exact non-reusable identity of exactly one stable live instance or record affirmative absence at that observation, and it SHALL then prove the job unloaded and prove that every captured instance exited.
-If the launchd job is already unloaded and observation under suppression affirmatively proves that no managed Node Agent process is running, the owner MAY continue.
-In any other case, including an unloaded job together with a live, additional, replacement, identity-unstable, or unknown managed Node Agent process, the owner SHALL NOT bootstrap and the start attempt SHALL fail closed with durable suppression retained, leaving reconciliation to managed recovery.
-Unknown managed process state SHALL NOT become proven absence in any of these cases.
-The owner SHALL then lift persistent launchd job-domain disablement for exactly one explicit bootstrap, durably record one single-consumer one-shot launch authorization, record eligibility as `one_shot_pending`, and bootstrap the launchd job while retaining the lock.
-That authorization SHALL carry, and the child-side gate SHALL match without acquiring the canonical lock, the unique start-attempt identity, the exact non-reusable identity of the owner process expressed as its process id together with a kernel-supplied start generation or start time or an equivalent non-reusable discriminator, a per-bootstrap nonce, the intended launchd label, the expected active or staged generation and executable identity, the current eligibility generation, and the single-consumer claim state.
-The gate SHALL deny execution unless every matched component agrees, the authorization is unclaimed, and the recorded owner instance is observably still live, and it SHALL treat process-id reuse, a stale generation or nonce, a replacement owner, a launchd retry, any mismatch, and any uncertainty as denial.
-Between owner death and the next managed recovery, that refusal to claim an authorization whose recorded owner instance is not observably live SHALL be the operative fence, because no live actor remains to restore persistent job-domain disablement.
-At most one child SHALL atomically claim that authorization, and a losing or retrying child SHALL exit without serving.
-On a successful claim the child SHALL record its own exact non-reusable child identity into the authorization and SHALL run provisional: it SHALL NOT adopt cluster identity, SHALL NOT serve, and SHALL observe the exact recorded owner instance.
-The owner SHALL verify that exact claimed child and SHALL then perform one atomic transition that marks the start attempt terminal coherent, transitions durable eligibility to `enabled`, and binds acceptance to that exact claimed child.
-That atomic transition SHALL be the sole linearization point at which a provisional child may begin serving.
-When a provisional child observes that the recorded owner instance has exited, been replaced, or become uncertain, it SHALL perform a fresh consistent authoritative read of durable state rather than exit on that observation alone.
-If one atomically committed record shows the start attempt terminal coherent for this attempt and eligibility generation, durable eligibility `enabled`, and acceptance bound to this exact child identity, the child SHALL leave provisional state, serve under normal `RunAtLoad` and `KeepAlive` operation, and stop monitoring owner liveness.
-Otherwise the child SHALL exit without adopting cluster identity and without serving, and incomplete, torn, or stale state SHALL count as non-acceptance.
-Failure, mismatch, uncertainty, or owner death before that atomic terminal transition SHALL invalidate the one-shot authorization, SHALL cause any provisional child to exit without serving, and SHALL keep or restore durable suppression including persistent launchd job-domain disablement, so that no later bootstrap, reboot, launchd job-domain reload, or `KeepAlive` retry can claim the interrupted authorization.
-Owner death after a successful atomic terminal transition is normal operation and SHALL NOT invalidate the accepted Node Agent instance.
-Publishing a launchd plist, loading a launchd domain, or a `RunAtLoad` or `KeepAlive` attempt SHALL NOT bypass suppressed start eligibility.
-If evidence required for the attempted operation is missing, incomplete, or uncertain, or if mutation, rollback, activation, installed state, or the current start attempt is uncertain, start eligibility SHALL remain suppressed and the managed lifecycle SHALL NOT start the Node Agent.
-A terminal coherent stopped `managed_stop` record SHALL NOT by itself deny a later managed start.
-
-Managed recovery SHALL rerun the applicable Orchard.app or PKG lifecycle under the same shared exclusion boundary.
-A recovery owner MAY acquire the canonical lock despite missing, incomplete, or uncertain recovery evidence, but it SHALL record or reconcile initial recovery evidence, satisfy the Managed Node Agent Process Fence before protected reconciliation, and treat that evidence as input rather than exclusion ownership.
-Managed recovery MAY permit a later managed start only after satisfying that fence, verifying or restoring a coherent installed state, and marking the handover or recovery evidence terminal coherent, followed by the applicable Orchard.app or PKG managed start policy.
-A blind or manual same-root Node Agent launch while uncertainty remains is unsupported and SHALL NOT be treated as recovery.
-Direct or manual Node Agent launches that bypass the supported managed launch path and `orchardctl start` eligibility path remain unsupported and outside the managed handover guarantee.
+The current contract does not define Managed Node Agent Handover, a zero-overlap replacement protocol, shared lifecycle exclusion, durable start-eligibility state, one-shot launch authorization, or provisional child acceptance.
+Controller and Node Agent version compatibility does not imply that concurrent processes may safely share one Node Identity Root.
+A future managed replacement or cross-installer handover protocol SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request before it becomes supported behavior.
 
 The BEAM Peer Grant Store Lock is the operation-scoped lock used by `Orchard.Node.BeamPeerGrantStore` to serialize one grant store install or load operation, including atomic publication when installing in the owner-only Node Identity Root.
-It SHALL end with that store operation and SHALL NOT become a lifecycle lock, Managed Node Agent Handover exclusion, or Node Identity Root Lease.
+It SHALL end with that store operation and SHALL NOT become a process-lifetime Node Identity Root Lease.
 Install and update SHALL preserve operator-owned `config`, `data`, `models`, `bundles`, `logs`, and support-bundle contents.
 Default uninstall SHALL remove app-owned payloads, installed commands and links, launchd plists, and install markers while retaining those operator-owned paths.
 Destructive purge behavior is not part of the v1 app lifecycle contract.
 The app lifecycle SHALL preserve complete existing TLS state, SHALL reject partial TLS state before mutation, SHALL NOT generate or trust production TLS material, and SHALL NOT mutate system trust stores.
-The first app lifecycle slice SHALL refuse system-root install, update, or uninstall while a `com.orchard.pkg` receipt exists so it cannot leave PKG ownership metadata inconsistent.
-
+The app lifecycle SHALL refuse system-root install, update, and uninstall while a `com.orchard.pkg` receipt exists, SHALL fail closed before any mutation, and SHALL report that blocking receipt in non-mutating lifecycle status.
+That refusal prevents silent app ownership takeover of a legacy installation; it does not make native PKG a supported distribution channel, release artifact, operator workflow, or validation gate.
 Orchard SHALL sign nested Mach-O libraries and executables with their required entitlements before signing app helpers, the main app executable, and the outer app bundle.
 Orchard SHALL verify the nested payload and final app bundle before handing the app to the DMG distribution layer.
 
-PKG remains a supported parallel path for privileged local installation, repeatable operator-driven workflows, and offline/manual distribution.
-App and PKG artifacts SHALL use compatible role values, installed paths, launchd labels, and retained-state semantics.
-
-PKG SHALL support:
-
-* unattended `installer -pkg ... -target /`
-* postinstall creation of launchd plists
-* optional managed DB enablement
-* optional controller-only or node-only install modes
-
-PKG `postinstall` SHALL NOT generate, procure, or trust production TLS certificate material by default. On a controller/all-role install with no TLS material, `postinstall` SHALL continue launchd plist installation and print supported post-install actions: configure `ORCHARD_TRANSPORT_MODE=direct_https` with operator-provided certificate/key material, run the explicit `orchardctl tls init --no-trust` local-CA helper for local/dev-lab bootstrap, or configure `ORCHARD_TRANSPORT_MODE=plain_http_localhost` for local/emergency HTTP behavior. During the one-release legacy compatibility window, `ORCHARD_TLS_CERTFILE`/`ORCHARD_TLS_KEYFILE` and `ORCHARD_TLS_DISABLED=true` MAY be accepted as shims for those modes. `postinstall` SHALL NOT mutate system trust stores.
+`Orchard.app` and its DMG distribution SHALL remain generic and SHALL NOT embed customer identifiers, database DSNs, production TLS material, deployment secrets, or product-license activation state.
 
 ### 11.5 Managed Database Mode
 
@@ -5034,16 +4919,16 @@ External DB mode SHALL support:
 
 Air-gapped install SHALL support:
 
-* offline PKG/DMG transfer
+* offline DMG transfer
 * offline model bundle import
 * no required network egress
-* manual update packages
+* manual app update media
 * prepackaged container image tar for managed Postgres mode
 
 Offline install flow:
 
-1. transfer signed installer media and model bundles
-2. install PKG
+1. transfer the signed DMG distribution set and model bundles
+2. install `Orchard.app` and run its root-authorized lifecycle for the selected role
 3. run `orchardctl cluster init`
 4. import model bundles from removable media
 5. bootstrap/join nodes via offline-generated token or imported certs
@@ -5136,7 +5021,7 @@ It SHALL refuse with a stable `cluster_already_initialized` error when an enable
 An explicit `--force-new-admin` recovery flag SHALL mint an additional admin credential without resetting, deleting, or mutating existing credentials, and SHALL require confirmation and record a cluster-scoped audit event.
 `orchardctl cluster init` uses the same local controller-runtime authority boundary and leader-only write-path gate as node-admission CLI commands.
 First-admin provisioning is a local controller-host CLI operation, not an Admin API endpoint; Bootstrap Tokens remain scoped to node join only per §10.1.
-`orchardctl cluster init` is credential-only: TLS material remains provisioned separately per §11.4, and PKG `postinstall` SHALL NOT seed admin credentials.
+`orchardctl cluster init` is credential-only: TLS material remains provisioned separately per §11.4, and the app-owned install lifecycle SHALL NOT seed admin credentials.
 Successful initialization output SHOULD direct operators to provision named admin API Clients and then revoke the bootstrap credential.
 
 `orchardctl requests inspect` SHALL render a request's persisted scheduler explanation through the shared scheduler explanation reason-code contract in stable human and JSON forms.
@@ -5307,7 +5192,7 @@ Migration ownership SHALL be protected by advisory lock.
 
 1. stop public traffic or accept brief outage
 2. backup config + DB
-3. run the app-owned update lifecycle or install the new PKG
+3. run the app-owned update lifecycle
 4. start controller
 5. run migrations
 6. wait for readiness
@@ -5327,21 +5212,20 @@ For each node:
 
 1. cordon
 2. drain
-3. run the app-owned update lifecycle or install the package
-4. complete the §11.4 Managed Node Agent Handover gate, activate coherent replacement state under the shared exclusion boundary, and mark the required recovery evidence terminal coherent
-5. after an Orchard.app update, permit prior loaded-state restoration only through a distinct verified managed start attempt; after a PKG upgrade, keep the Node Agent start-suppressed until a later eligible `orchardctl start` uses that protocol
-6. verify heartbeat + status sync after the Node Agent is started
-7. uncordon
+3. run the app-owned update lifecycle
+4. keep the Node cordoned if the lifecycle reports failure, rollback failure, or uncertain installed state
+5. verify the intended Node Agent version, heartbeat, and status synchronization after the service is started
+6. uncordon
 
 This supports rolling worker-plane upgrades without full cluster downtime.
-The Controller `N` support window for Node Agent versions `N` and `N-1` SHALL be made safe on each managed node by Managed Node Agent Handover, not by simultaneous use of one Node Identity Root.
-A bounded exit-wait timeout, lifecycle failure, owner death, or uncertain mutation, rollback, activation, or installed state SHALL NOT authorize a blind or manual same-root Node Agent launch.
-Recovery from such a failure SHALL use the applicable managed lifecycle under the §11.4 shared exclusion boundary before any later start is reauthorized.
+The Controller `N` support window for Node Agent versions `N` and `N-1` provides protocol compatibility across sequential node upgrades.
+It does not authorize concurrent Node Agent processes to share one Node Identity Root and does not define a zero-overlap replacement protocol.
+Any future managed handover guarantee requires a fresh accepted OpenSpec proposal and a separate implementing pull request.
 
 ### 13.5 Worker upgrade
 
 Workers are bundled with node agent.
-Worker upgrade occurs via node agent package upgrade.
+Worker upgrade occurs through the app-owned Node Agent update lifecycle.
 No standalone worker upgrade path in v1.
 
 ### 13.6 Managed Postgres upgrade
@@ -5374,7 +5258,7 @@ Deliver:
 * node agent release boots
 * Postgres repo/migrations
 * launchd plists
-* DMG/PKG packaging skeleton
+* Orchard.app and DMG packaging skeleton
 * `/health/live`, `/health/ready`
 
 Acceptance:
@@ -5383,7 +5267,7 @@ Acceptance:
 * node agent starts on macOS
 * `Orchard.app` assembles as a valid app bundle and passes sandboxed service-lifecycle rollback and retention tests
 * the verified app assembles into a mountable DMG without nested signature or entitlement drift
-* PKG installs launchd services correctly
+* the app-owned lifecycle installs launchd services correctly
 
 ### Milestone 1 - Single-node inference MVP
 
@@ -5493,7 +5377,7 @@ Deliver:
 * retention modes
 * offline model import workflow
 * managed Postgres container mode
-* PKG unattended install flow
+* offline DMG and app-owned install flow
 
 Acceptance:
 
@@ -5533,14 +5417,14 @@ Deliver:
 * provider-neutral Worker Runtime protocol ownership and generated bindings
 * additive normalized artifact, runtime-provider, acceleration, device-resource, memory-domain, and failure contracts
 * separate host capability-provider and runtime-provider evidence
-* macOS managed lifecycle behind a host adapter that preserves ADR 0018
+* macOS app-owned lifecycle behind a host adapter without claiming an unimplemented cross-process handover protocol
 * security-led migration of normal CLI command families to Controller-owned operations
 * Linux Controller release profile with operator-provided external Postgres
 
 Acceptance:
 
 * portable applications compile, lint, test, and produce coverage in the required Linux portability lane without Xcode, launchd, MLX, CUDA, or Darwin native-helper compilation
-* macOS all-in-one, split-role, Orchard.app, DMG, PKG, launchd, managed handover, retained-state, signing, notarization, air-gap, and MLX acceptance remain green
+* macOS all-in-one, split-role, Orchard.app, DMG, launchd, retained-state, signing, notarization, air-gap, and MLX acceptance remain green
 * the Controller release does not load CLI implementation to obtain Controller authority
 * the portable CLI does not require direct Repo authority or Darwin native compilation for normal Controller-state operations
 * Worker Runtime contracts have provider-neutral ownership, generated bindings, version negotiation, drift checks, and conformance coverage

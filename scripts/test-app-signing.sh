@@ -61,10 +61,10 @@ jq -e '.entries | all(.entitlement_class != null and .entitlement_digest != null
 
 ditto --norsrc --noextattr "$APP" "$WRONG_ENTITLEMENTS_APP"
 codesign --force --options runtime --sign - \
-  --entitlements "$REPO_ROOT/packaging/pkg/entitlements/beam.entitlements" \
+  --entitlements "$REPO_ROOT/packaging/payload/entitlements/beam.entitlements" \
   "$WRONG_ENTITLEMENTS_APP/Contents/Resources/payload/native/nested-helper"
 codesign --force --options runtime --sign - \
-  --entitlements "$REPO_ROOT/packaging/pkg/entitlements/default.entitlements" \
+  --entitlements "$REPO_ROOT/packaging/payload/entitlements/default.entitlements" \
   "$WRONG_ENTITLEMENTS_APP"
 if "$REPO_ROOT/scripts/verify-app-signing.sh" --ad-hoc \
   "$WRONG_ENTITLEMENTS_APP" > "$TMP_ROOT/wrong-entitlements.out" 2>&1; then

@@ -195,19 +195,19 @@ OrchardCLI.main(["api-clients", "bulk-provision", "--apply", "--file", "/path/to
 Apply writes One-time Secret Output to the chosen output CSV only after the batch commits.
 The output CSV contains `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at`.
 
-### Packaged install
+### Orchard.app install
 
-When installed via the macOS PKG:
+When installed through the macOS app lifecycle:
 
 - Controller defaults to degraded **loopback HTTP** (`plain_http_localhost`) until an operator chooses a transport mode
 - Supports first-class transport modes: `reverse_proxy`, `direct_https`, and `plain_http_localhost`
 - `reverse_proxy` uses an operator-managed HTTPS proxy in front of Orchard's HTTP backend; forwarded headers are trusted from loopback only unless `ORCHARD_TRUSTED_PROXIES` is set
 - `direct_https` consumes operator-provided cert/key material from public, proprietary/paid, or internal PKI CAs, or explicit local-CA helper output for dev-lab bootstrap
-- The PKG does not generate, procure, or trust production TLS certificates by default; `orchardctl tls init` is an explicit local CA helper only
+- The app does not generate, procure, or trust production TLS certificates by default; `orchardctl tls init` is an explicit local CA helper only
 - `/ca.crt` publishes only generated-local CA metadata output and returns `404` for operator-provided CA/cert material
 - CORS is configurable via `ORCHARD_CORS_ORIGINS`
 
-See [packaging/pkg/README.md](../packaging/pkg/README.md) for full operator
+See [packaging/README.md](../packaging/README.md) for full operator
 documentation on transport modes, TLS management, CORS configuration,
 nginx/Caddy/Traefik reverse-proxy snippets, and the packaged deployment rollout
 posture.
@@ -504,9 +504,9 @@ With a valid reverse-proxy declaration, `public_api_https_enabled` passes throug
 
 `direct_https` remains release-only and is rejected in source dev. Source dev does not own certificate generation, certificate custody, or a direct Cowboy HTTPS listener.
 
-#### Packaged Controller Transport (release only)
+#### Installed Controller Transport (release only)
 
-These variables apply to packaged/release controller installs, not source dev:
+These variables apply to app-installed release controllers, not source dev:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -514,7 +514,7 @@ These variables apply to packaged/release controller installs, not source dev:
 | `PORT` | `4000` | HTTP listen port for `plain_http_localhost`; HTTP backend port for `reverse_proxy` |
 | `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port for `direct_https` |
 | `ORCHARD_API_BIND_IP` | `0.0.0.0` for `direct_https`; `127.0.0.1` for `reverse_proxy`; ignored for `plain_http_localhost` | Bind IP for the active listener. Non-loopback `reverse_proxy` binds require `ORCHARD_TRUSTED_PROXIES`. |
-| `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required for console access** when not using `localhost`. See [packaging README](../packaging/pkg/README.md#console-troubleshooting). |
+| `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required for console access** when not using `localhost`. See [packaging README](../packaging/README.md#transport-and-tls). |
 | `ORCHARD_PUBLIC_PORT` | `443` | Browser-visible HTTPS port for `reverse_proxy` display URLs and origin checks |
 | `ORCHARD_TRUSTED_PROXIES` | loopback only (`127.0.0.1/32`, `::1/128`) | Comma-separated CIDRs allowed to supply `x-forwarded-*` headers in `reverse_proxy` mode |
 | `ORCHARD_TLS_CERTFILE` | _(unset)_ | Legacy shim / `direct_https` operator certificate path |
@@ -523,7 +523,7 @@ These variables apply to packaged/release controller installs, not source dev:
 | `ORCHARD_TLS_DISABLED` | _(unset)_ | Legacy shim: truthy maps to `plain_http_localhost`; explicit false maps to `direct_https` during compatibility window |
 | `ORCHARD_CORS_ORIGINS` | _(empty)_ | Comma-separated CORS origin allowlist |
 
-See [packaging/pkg/README.md](../packaging/pkg/README.md) for full details
+See [packaging/README.md](../packaging/README.md) for full details
 on transport modes, truthy/falsy values, and validation behavior.
 
 ### Config Files
@@ -624,9 +624,9 @@ on localhost only.
 
 ## LAN Client Trust Workflow
 
-Packaged installs can bootstrap LAN client trust only when the operator explicitly chooses local generated TLS:
+App-installed releases can bootstrap LAN client trust only when the operator explicitly chooses local generated TLS:
 
-1. **Generate certificates** — after install, run `sudo orchardctl tls init --no-trust`; the PKG installer does not generate certificates automatically
+1. **Generate certificates** - after install, run `sudo orchardctl tls init --no-trust`; the app does not generate certificates automatically
 2. **Select direct HTTPS** — configure `ORCHARD_TRANSPORT_MODE=direct_https` for the controller before restart
 3. **Trust CA locally** (optional):
    ```bash
@@ -651,7 +651,7 @@ sudo orchardctl tls init --force
 Source dev does not require TLS setup by default. It uses plain HTTP on localhost
 unless an operator selects the supported external reverse-proxy path above.
 
-See [packaging/pkg/README.md](../packaging/pkg/README.md) for the full
+See [packaging/README.md](../packaging/README.md) for the full
 operator workflow, permission expectations, and external certificate setup.
 
 ## Two-Node Source-Dev Cluster Testing
@@ -1169,11 +1169,11 @@ Verify: the node-agent log will show `worker starting backend=stub`. No
 generation-mode override is required; `stub` resolves to stream mode when the
 mode env var is unset.
 
-### Packaged Install (launchd)
+### App Install (launchd)
 
-Packaged rollback switches the backend through the root-owned `node-agent.env`
+Installed rollback switches the backend through the root-owned `node-agent.env`
 override and restarts through the supported managed lifecycle path.
-[packaging/pkg/README.md](../packaging/pkg/README.md#env-file-overrides) owns
+[packaging/README.md](../packaging/README.md#environment-files) owns
 that procedure.
 
 ### Verification After Rollback
@@ -1273,15 +1273,15 @@ mise exec -- iex -S mix phx.server
 
 ## Current Source-Dev Limitations
 
-- Source dev controller uses loopback HTTP (`127.0.0.1:4000`); packaged
-  installs default to degraded loopback HTTP until an operator selects
+- Source dev controller uses loopback HTTP (`127.0.0.1:4000`); app-installed
+  releases default to degraded loopback HTTP until an operator selects
   `reverse_proxy` or `direct_https` (see [Transport Modes](#transport-modes))
-- Source dev gRPC on port 50071; packaged installs on 50061
+- Source dev gRPC uses port 50071; app-installed releases use port 50061
 - Source-dev node-agent gRPC remains loopback and non-TLS
 - Public `/v1/*` API routes require Bearer API Tokens.
   Tenant-direct API Tokens remain supported, and service-account-owned API Tokens require an enabled API Client with tenant-scoped `inference_client` access.
   Full quota policy remains incomplete
-- Multi-node is supported for source-dev testing and the packaged external-sites multi-Mac BEAM cut documented in the [packaging README](../packaging/pkg/README.md#packaged-external-sites-multi-mac-first-cut); broader production multi-node scheduling remains M4
+- Multi-node is supported for source-dev testing and the distributed macOS multi-Mac BEAM cut documented in the [packaging README](../packaging/README.md#multi-mac-runtime); broader production multi-node scheduling remains M4
 - Split-role BEAM Runtime Endpoint mode is the default for `bin/dev-controller` and `bin/dev-node-agent`
 - All-in-one `bin/dev` rejects explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
 - gRPC compatibility remains available for split-role source dev only through `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`

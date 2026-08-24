@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Regression coverage for packaged orchardctl Controller-runtime routing.
+# Regression coverage for payload orchardctl Controller-runtime routing.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_WRAPPER="$REPO_ROOT/packaging/pkg/bin/orchardctl"
+SOURCE_WRAPPER="$REPO_ROOT/packaging/payload/bin/orchardctl"
 TMP_ROOT="$(mktemp -d)"
 PACKAGE_ROOT="$TMP_ROOT/Library/Application Support/Orchard"
 TOOLS="$TMP_ROOT/tools"
@@ -390,4 +390,4 @@ run_case umask-standalone success status
 [[ "$RUN_STATUS" -eq 0 ]] || fail "expected standalone invocation to succeed"
 assert_invocation "standalone_umask=$caller_umask"
 
-printf 'packaged orchardctl Controller-runtime routing tests passed\n'
+printf 'payload orchardctl Controller-runtime routing tests passed\n'

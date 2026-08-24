@@ -1,8 +1,8 @@
 ## Context
 
 Orchard currently reports product version `0.5.0-dev` from first-party OTP application metadata and records Git SHA, build date, and build channel separately through `Orchard.BuildInfo`.
-The same product-version literal is repeated in the umbrella and four first-party Mix projects, while the PKG builder reads only the umbrella value.
-The app builder receives independent marketing and build values, and no current gate proves that those values agree with the staged payload or PKG identity.
+The same product-version literal is repeated in the umbrella and four first-party Mix projects.
+The app builder receives independent marketing and build values, and no current gate proves that those values agree with the staged payload identity.
 The two bundled Python helpers each use an independent `0.1.0` package version, which is component provenance rather than Orchard product identity.
 
 The live repository state was reverified on 2026-07-23 from commit `b564f90e858820ccfbfaffbe432feb601ae24d67`.
@@ -32,7 +32,7 @@ GitHub protected-environment approvals, immutable Releases, and artifact attesta
 - Establish one canonical Orchard product-version authority for every first-party release surface.
 - Define a pre-1.0 release-transition policy that does not use product-version bumps as per-commit build identity.
 - Bind a governed release to an exact version, signed tag, clean commit, channel, compatibility declaration, and immutable manifest.
-- Fail closed when runtime, PKG, staged payload, app, DMG, filenames, manifests, sidecars, or publication surfaces disagree about release identity.
+- Fail closed when runtime, staged payload, app, DMG, filenames, manifests, sidecars, or publication surfaces disagree about release identity.
 - Define deterministic Apple marketing-version and globally monotonic build-version constraints for the Orchard app bundle identifier.
 - Preserve independent helper package versions while recording exact provenance and a candidate-level SPDX SBOM.
 - Separate read-only normal validation from narrowly permissioned candidate, signing, drafting, approval, and publication workflows.
@@ -44,7 +44,7 @@ GitHub protected-environment approvals, immutable Releases, and artifact attesta
 - Bump the current Orchard product version.
 - Create or rewrite tags, GitHub Releases, packages, apps, DMGs, checksums, manifests, SBOMs, or release notes.
 - Implement build scripts, CI workflows, signing, notarization, or publication.
-- Change app lifecycle, PKG lifecycle, generic artifact secrecy, or existing signing-order requirements.
+- Change app lifecycle, generic artifact secrecy, or existing signing-order requirements.
 - Force internal Python package versions to match the Orchard product version.
 - Backfill a GitHub Release for `v0.4.0` or rewrite historical release evidence.
 - Store credentials, keychain names, DSNs, local paths, or workflow session identifiers in release metadata.
@@ -56,7 +56,7 @@ GitHub protected-environment approvals, immutable Releases, and artifact attesta
 
 Orchard will store its product version in a root `VERSION` file containing exactly one ASCII SemVer line and one terminal newline.
 The file will contain no comments, surrounding whitespace, or SemVer build metadata.
-Root and child Mix projects, runtime reporting, shell packaging, Swift app assembly, PKG metadata, filenames, and tag validation will derive from that file or fail exact validation against it.
+Root and child Mix projects, runtime reporting, shell distribution inputs, Swift app assembly, filenames, and tag validation will derive from that file or fail exact validation against it.
 Independent Python helper versions remain separate.
 
 The `VERSION` file is canonical storage, while semantic authority remains `SPEC.md`, accepted release policy, and authorized transition evidence.
@@ -167,8 +167,8 @@ Exact-byte Promotion occurs only within that channel, while a channel change req
 | `pilot` | Named design partners or a controlled production-like rollout | RC | The same required set as `trial` | A non-draft private GitHub Release and access-restricted Amore delivery must contain the exact approved bytes. |
 | `release` | Generally available Orchard customers | Final | Signed and notarized DMG, release notes, DMG checksum, before and after signing manifests, Candidate Manifest, compatibility report, SPDX SBOM, and state evidence | General Amore delivery must be live and the private GitHub Release must be non-draft for the same approved candidate. |
 
-PKG remains optional for every channel unless a later accepted offline-distribution contract makes it required.
-Any included PKG must be signed, notarized, checksummed, and bound to the same Candidate Manifest.
+Native PKG is not a governed current artifact.
+Adding it or another artifact type requires a fresh accepted OpenSpec proposal and a separate implementing pull request before any channel may include it.
 Because this repository is private, GitHub Releases act as the internal release registry while Amore remains the customer-facing distribution surface assigned by `SPEC.md`.
 The release workflow publishes through Amore first, verifies its live state and digest, and publishes the GitHub Release last.
 
@@ -282,7 +282,7 @@ Current numeric minor arithmetic in `Orchard.Upgrade` remains unchanged until `S
 
 1. Amend `SPEC.md` with accepted Product Version, Release Channel, publication, and Release Line semantics without changing the current version.
 2. Add root `VERSION`, transition-record and compatibility-registry schemas, and exact first-party BEAM validation.
-3. Derive or validate PKG, staged payload, app, Apple metadata, runtime reporting, and filenames against the governed identity.
+3. Derive or validate staged payload, app, Apple metadata, runtime reporting, and filenames against the governed identity.
 4. Define Candidate Manifest, canonical tree, State Attestation, component-provenance, and SPDX SBOM schemas without enabling publication.
 5. Add normal CI governance checks with read-only permissions.
 6. Add a non-publishing signed-tag candidate workflow and exercise it in an isolated repository or dry-run mode.

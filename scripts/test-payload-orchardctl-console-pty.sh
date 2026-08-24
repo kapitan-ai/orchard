@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real macOS PTY coverage for the packaged orchardctl console entry path.
+# Real macOS PTY coverage for the payload orchardctl console entry path.
 
 set -euo pipefail
 
@@ -33,7 +33,7 @@ cleanup() {
 trap cleanup EXIT
 
 fail() {
-  printf 'packaged orchardctl PTY failure: %s\n' "$1" >&2
+  printf 'payload orchardctl PTY failure: %s\n' "$1" >&2
   exit 1
 }
 
@@ -88,7 +88,7 @@ chmod 0755 "$TRANSIENT_PS_FIXTURE"
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$ORCHARDCTL"
 chmod 0755 "$ORCHARDCTL"
 
 xcrun clang -std=c11 -Wall -Wextra -Werror -pedantic \
@@ -102,7 +102,7 @@ sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$WAIT_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$WAIT_ORCHARDCTL"
 chmod 0755 "$WAIT_ORCHARDCTL"
 
 sed \
@@ -110,7 +110,7 @@ sed \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e "s|^_cli_parent_probe=/bin/ps$|_cli_parent_probe=\"$TRANSIENT_PS_FIXTURE\"|" \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$SIGNAL_PROBE_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$SIGNAL_PROBE_ORCHARDCTL"
 chmod 0755 "$SIGNAL_PROBE_ORCHARDCTL"
 
 sed \
@@ -118,7 +118,7 @@ sed \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e "s|^_cli_process_probe=/bin/ps$|_cli_process_probe=\"$TRANSIENT_PS_FIXTURE\"|" \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$WAIT_PROBE_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$WAIT_PROBE_ORCHARDCTL"
 chmod 0755 "$WAIT_PROBE_ORCHARDCTL"
 
 sed \
@@ -126,14 +126,14 @@ sed \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { while guard_parent_matches; do /bin/sleep 0.01 \|\| :; done; return 1; }|' \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$GUARD_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$GUARD_ORCHARDCTL"
 chmod 0755 "$GUARD_ORCHARDCTL"
 
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e "s|^_guard_process_probe=/bin/ps$|_guard_process_probe=\"$TRANSIENT_PS_FIXTURE\"|" \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$GUARD_READY_PROBE_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$GUARD_READY_PROBE_ORCHARDCTL"
 chmod 0755 "$GUARD_READY_PROBE_ORCHARDCTL"
 
 sed \
@@ -142,7 +142,7 @@ sed \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { while guard_parent_matches; do /bin/sleep 0.01 \|\| :; done; return 1; }|' \
   -e "s|^_guard_parent_probe=/bin/ps$|_guard_parent_probe=\"$TRANSIENT_PS_FIXTURE\"|" \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$GUARD_TERM_PROBE_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$GUARD_TERM_PROBE_ORCHARDCTL"
 chmod 0755 "$GUARD_TERM_PROBE_ORCHARDCTL"
 
 sed \
@@ -151,35 +151,35 @@ sed \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e 's|^cli_pre_launch_barrier() { :; }$|cli_pre_launch_barrier() { printf "__ORCHARD_PRE_LAUNCH__\\n__ORCHARD_LAUNCHER_PID__:%s\\n" "$_cli_pid"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; }|' \
   -e "s|^_cli_launch_wait_command=/bin/sleep$|_cli_launch_wait_command=\"$LAUNCH_WAIT_FIXTURE\"|" \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$LAUNCH_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$LAUNCH_ORCHARDCTL"
 chmod 0755 "$LAUNCH_ORCHARDCTL"
 
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e 's|^cli_pre_exit_barrier() { :; }$|cli_pre_exit_barrier() { printf "__ORCHARD_PRE_EXIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; }|' \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$EXIT_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$EXIT_ORCHARDCTL"
 chmod 0755 "$EXIT_ORCHARDCTL"
 
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e 's|^cli_post_wait_barrier() { :; }$|cli_post_wait_barrier() { printf "__ORCHARD_CLI_POST_WAIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; }|' \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$CLI_WAIT_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$CLI_WAIT_ORCHARDCTL"
 chmod 0755 "$CLI_WAIT_ORCHARDCTL"
 
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e 's|^guard_post_wait_barrier() { :; }$|guard_post_wait_barrier() { printf "__ORCHARD_GUARD_POST_WAIT__\\n"; while [ -z "$_termination_signal" ]; do /bin/sleep 0.01 \|\| :; done; printf "__ORCHARD_GUARD_POST_SIGNAL__:%s\\n" "$_termination_status"; }|' \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$GUARD_WAIT_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$GUARD_WAIT_ORCHARDCTL"
 chmod 0755 "$GUARD_WAIT_ORCHARDCTL"
 
 sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
   -e 's#^_completion_uid=$(/usr/bin/id -u) || exit 1$#_completion_uid=$(/usr/bin/false) || exit 1#' \
-  "$REPO_ROOT/packaging/pkg/bin/orchardctl" > "$SETUP_FAIL_ORCHARDCTL"
+  "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$SETUP_FAIL_ORCHARDCTL"
 chmod 0755 "$SETUP_FAIL_ORCHARDCTL"
 
 SETUP_FAIL_OUTPUT=$(
@@ -487,4 +487,4 @@ CONSOLE_STATE=$(
 )
 [[ "$CONSOLE_STATE" = 'console-disabled' ]] || fail "packaged runtime did not keep Console disabled"
 
-printf '%s\n' 'Packaged orchardctl PTY secret-input test passed.'
+printf '%s\n' 'payload orchardctl PTY secret-input test passed.'

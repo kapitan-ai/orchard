@@ -2,9 +2,9 @@ defmodule OrchardCLI.PackagingWrapperTest do
   use ExUnit.Case, async: true
 
   @repo_root Path.expand("../../../..", __DIR__)
-  @orchardctl Path.join(@repo_root, "packaging/pkg/bin/orchardctl")
+  @orchardctl Path.join(@repo_root, "packaging/payload/bin/orchardctl")
 
-  test "packaged orchardctl wrapper securely sources controller.env for DB-backed commands" do
+  test "payload orchardctl wrapper securely sources controller.env for DB-backed commands" do
     content = File.read!(@orchardctl)
 
     assert content =~ "ORCHARD_ROOT=\"/Library/Application Support/Orchard\""
@@ -22,7 +22,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
     assert content =~ "wait \"$_cli_pid\""
   end
 
-  test "packaged orchardctl wrapper propagates DATABASE_URL from secure controller.env" do
+  test "payload orchardctl wrapper propagates DATABASE_URL from secure controller.env" do
     with_temp_wrapper(fn wrapper, root ->
       env_path = Path.join([root, "config", "controller.env"])
       File.write!(env_path, "DATABASE_URL=ecto://user:pass@localhost/orchard_controller\n")
@@ -34,7 +34,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
     end)
   end
 
-  test "packaged orchardctl wrapper skips insecure controller.env without blocking dispatch" do
+  test "payload orchardctl wrapper skips insecure controller.env without blocking dispatch" do
     with_temp_wrapper(fn wrapper, root ->
       env_path = Path.join([root, "config", "controller.env"])
       File.write!(env_path, "DATABASE_URL=ecto://user:pass@localhost/orchard_controller\n")
@@ -47,7 +47,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
     end)
   end
 
-  test "packaged orchardctl wrapper forwards piped stdin to the supervised CLI" do
+  test "payload orchardctl wrapper forwards piped stdin to the supervised CLI" do
     with_temp_wrapper(fn wrapper, _root ->
       assert {output, 0} =
                System.cmd(
@@ -65,7 +65,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
     end)
   end
 
-  test "packaged orchardctl wrapper tolerates a closed standard input" do
+  test "payload orchardctl wrapper tolerates a closed standard input" do
     with_temp_wrapper(fn wrapper, _root ->
       assert {output, 0} =
                System.cmd(
@@ -83,7 +83,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
     end)
   end
 
-  test "packaged orchardctl wrapper runs the CLI in the invocation directory" do
+  test "payload orchardctl wrapper runs the CLI in the invocation directory" do
     with_temp_wrapper(fn wrapper, _root ->
       workdir = Path.join(Path.dirname(wrapper), "operator-cwd")
       File.mkdir_p!(workdir)
@@ -106,7 +106,7 @@ defmodule OrchardCLI.PackagingWrapperTest do
     end)
   end
 
-  test "packaged orchardctl wrapper remains valid POSIX shell" do
+  test "payload orchardctl wrapper remains valid POSIX shell" do
     assert {"", 0} = System.cmd("sh", ["-n", @orchardctl], stderr_to_stdout: true)
   end
 

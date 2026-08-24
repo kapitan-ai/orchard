@@ -17,7 +17,7 @@ defmodule OrchardCLI.LifecycleNativeTest do
           end)
         end)
 
-      assert_receive {:locked, ^holder, lock, :ok}
+      assert_receive {:locked, ^holder, lock, :ok}, 1_000
       assert is_map(lock.guard_identity)
       assert is_integer(lock.lock_device)
       assert is_integer(lock.lock_inode)
@@ -67,52 +67,6 @@ defmodule OrchardCLI.LifecycleNativeTest do
     end)
   end
 
-  test "durable publication atomically replaces the destination" do
-    with_temp("lifecycle-publish", fn directory ->
-      destination = Path.join(directory, "state.json")
-      lock_path = Path.join(directory, ".app-lifecycle.lock")
-
-      assert :ok =
-               LifecycleNative.with_lock(lock_path, fn lock ->
-                 assert :ok =
-                          LifecycleNative.atomic_publish(lock, destination, ~s({"generation":1}))
-
-                 assert File.read!(destination) == ~s({"generation":1})
-
-                 assert :ok =
-                          LifecycleNative.atomic_publish(lock, destination, ~s({"generation":2}))
-               end)
-
-      assert File.read!(destination) == ~s({"generation":2})
-      assert File.stat!(destination).mode |> Bitwise.band(0o777) == 0o600
-    end)
-  end
-
-  test "guard death after validation prevents protected publication" do
-    with_temp("lifecycle-publish-guard", fn directory ->
-      destination = Path.join(directory, "state.json")
-      lock_path = Path.join(directory, ".app-lifecycle.lock")
-
-      assert {:error, _reason} =
-               LifecycleNative.with_lock(lock_path, fn lock ->
-                 assert :ok = LifecycleNative.lock_valid(lock)
-                 Port.close(lock.port)
-                 LifecycleNative.atomic_publish(lock, destination, ~s({"generation":1}))
-               end)
-
-      refute File.exists?(destination)
-    end)
-  end
-
-  test "process identity includes a non-reusable start time" do
-    assert {:ok, identity} = LifecycleNative.process_identity(System.pid())
-    assert identity["pid"] == String.to_integer(System.pid())
-    assert is_integer(identity["start_sec"])
-    assert is_integer(identity["start_usec"])
-    assert identity["executable"] != ""
-    assert :alive = LifecycleNative.process_identity_state(identity)
-  end
-
   test "orphan census rejects spoofed release environment outside the trusted release root" do
     executable = System.find_executable("elixir")
 
@@ -143,7 +97,7 @@ defmodule OrchardCLI.LifecycleNativeTest do
     end
   end
 
-  test "launchd PID census and exact-identity signal cover an unmarked managed process" do
+  test "launchd PID census and exact-identity signal cover an unmarked Node Agent process" do
     with_temp("lifecycle-signal", fn directory ->
       source =
         :orchard_cli

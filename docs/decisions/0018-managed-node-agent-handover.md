@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted.
+Superseded by ADR 0027 on 2026-08-24.
 
 Owner decision recorded 2026-08-04 for issue #158 and reconciled 2026-08-05.
+The remainder of this record is preserved as historical context and no longer defines current Orchard behavior.
 
 ## Context
 

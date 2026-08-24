@@ -33,12 +33,13 @@ Their present security and operator-usable status differs.
 - Single-host source development through `bin/dev` is a development-only mode that uses loopback HTTP and loopback gRPC without production TLS.
 - Split-role source development defaults to BEAM Runtime Endpoints with explicit shared cookie material, bounded distribution networking, and no automatic gRPC fallback.
 - The source-development shared-cookie model is not the Production BEAM Operating Model.
-- The macOS PKG currently supports `all`, `controller`, and `node-agent` install roles, with Controller-bearing roles requiring operator-managed external Postgres.
-- The current packaged multi-Mac shared-cookie BEAM path is a transitional first cut for trusted private networks and is not the production authorization model.
+- The macOS app lifecycle supports `all`, `controller`, and `node-agent` install roles, with Controller-bearing roles requiring operator-managed external Postgres.
+- Native PKG is not a supported current distribution or security boundary. Legacy PKG material does not authorize installation or publication, and any future native package requires a fresh accepted OpenSpec proposal and implementing PR.
+- The current app-installed multi-Mac shared-cookie BEAM path is a transitional first cut for trusted private networks and is not the production authorization model.
 - Enrolled gRPC with exact certificate-bound mutual TLS is a compatibility and control path for trusted inventory.
 - Explicit static or source-development gRPC targets may use plaintext compatibility and do not establish production Node trust.
 - Production first-party BEAM requires exact certificate identity, trusted inventory, explicit admission, restricted networking, and an active scoped BEAM Peer Grant.
-- Packaged production Peer Grant acceptance, general multi-Node bootstrap, Managed Database Mode, complete air-gapped acceptance, and Active/Standby acceptance remain incomplete or target behavior where the current operator documentation says so.
+- Release-installed production Peer Grant acceptance, general multi-Node bootstrap, Managed Database Mode, complete air-gapped acceptance, and Active/Standby acceptance remain incomplete or target behavior where the current operator documentation says so.
 
 ## Intended attacker model
 
@@ -226,7 +227,8 @@ Any future commitment of that kind requires an explicit owner decision and a pol
 - [`docs/decisions/0007-operator-api-operator-or-admin-auth.md`](docs/decisions/0007-operator-api-operator-or-admin-auth.md) defines Operator API bearer authority.
 - [`docs/decisions/0011-first-admin-cluster-init.md`](docs/decisions/0011-first-admin-cluster-init.md) defines first-admin and break-glass local authority.
 - [`docs/decisions/0012-scoped-beam-peer-grants.md`](docs/decisions/0012-scoped-beam-peer-grants.md) defines Production BEAM authorization and its residual high-trust boundary.
+- [`docs/decisions/0027-remove-native-pkg-and-managed-handover.md`](docs/decisions/0027-remove-native-pkg-and-managed-handover.md) removes native PKG and the superseded managed handover protocol from the current security contract.
 - [`openspec/specs/runtime-endpoints/spec.md`](openspec/specs/runtime-endpoints/spec.md) contains accepted Runtime Endpoint requirements.
 - [`openspec/specs/packaging-deployment/spec.md`](openspec/specs/packaging-deployment/spec.md) and [`openspec/specs/app-distribution-lifecycle/spec.md`](openspec/specs/app-distribution-lifecycle/spec.md) contain accepted packaging and application-distribution requirements.
 - [`docs/local-dev.md`](docs/local-dev.md) documents source-development behavior.
-- [`packaging/pkg/README.md`](packaging/pkg/README.md) and [`packaging/dmg/README.md`](packaging/dmg/README.md) document current package and distribution behavior.
+- [`packaging/README.md`](packaging/README.md) and [`packaging/dmg/README.md`](packaging/dmg/README.md) document current payload, app lifecycle, and distribution behavior.

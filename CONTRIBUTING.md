@@ -30,7 +30,7 @@ branch reconciles the conflict. `SPEC.md` wins until explicitly updated.
 - Use `docs/architecture.md` for repo and runtime orientation.
 - Use `docs/local-dev.md` for source development setup.
 - Use `docs/tooling.md` for pinned toolchain and validation commands.
-- Use `packaging/pkg/README.md` for packaged installer behavior.
+- Use `packaging/README.md` for payload, app lifecycle, and operator behavior.
 
 ## Change Workflow
 

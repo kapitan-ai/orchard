@@ -162,10 +162,10 @@ mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
 The resolved-environment guard verifies the exact MLX-LM source revision, loader signatures, tokenizer registration, and explicit model and tokenizer distrust on the sharded loading surface without downloading a model.
 See the "MLX-LM security baseline" section of `native/orchard_worker_mlx/README.md` for the pinned revision, the remote-code controls, and the residual the guard asserts against.
 
-Package builds should run through the same toolchain:
+Shared payload builds should run through the same toolchain:
 
 ```bash
-mise exec -- ./scripts/build-pkg.sh
+mise exec -- ./scripts/build-payload.sh
 ```
 
 ## Generated Contracts
@@ -227,8 +227,13 @@ by mise:
 - PostgreSQL local or external service
 - Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
   Elixir proto generation
-- Xcode Command Line Tools and macOS packaging tools such as `pkgbuild`,
-  `pkgutil`, `codesign`, `xcrun`, and `notarytool`
+- Xcode Command Line Tools and macOS distribution tools such as `codesign`,
+  `xcrun`, `hdiutil`, and `notarytool`
+
+Native PKG tools and scripts are not part of the current supported toolchain or
+release gates.
+Any future native package requires a fresh accepted OpenSpec proposal and a
+separate implementing pull request before its tools become required.
 - model bundles and local MLX smoke-test data
 - operator signing identities, keychains, and notarization credentials
 

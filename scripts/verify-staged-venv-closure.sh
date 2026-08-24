@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Verify Orchard staged or expanded PKG payload Mach-O dependency closure.
+# Verify Orchard staged payload Mach-O dependency closure.
 # Usage: scripts/verify-staged-venv-closure.sh [--no-smoke] [--forbid-path <path>]... <staging-or-expanded-root>
 #
 # --forbid-path names an extra build-host root (for example the repo checkout) that

@@ -23,4 +23,4 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence ends with [ADR 0026: Separate capability and runtime providers](0026-separate-capability-and-runtime-providers.md).
+The current sequence ends with [ADR 0027: Remove native PKG distribution and managed Node Agent handover](0027-remove-native-pkg-and-managed-handover.md).
