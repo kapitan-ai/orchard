@@ -10,7 +10,6 @@ defmodule OrchardCLI do
     Console,
     Env,
     Init,
-    License,
     Migrate,
     Models,
     Node,
@@ -48,7 +47,6 @@ defmodule OrchardCLI do
   defp dispatch_command(["console" | rest]), do: Console.run(rest)
   defp dispatch_command(["cluster" | rest]), do: Cluster.run(rest)
   defp dispatch_command(["env" | rest]), do: Env.run(rest)
-  defp dispatch_command(["license" | rest]), do: License.run(rest)
   defp dispatch_command(["node" | rest]), do: Node.run(rest)
   defp dispatch_command(["nodes" | rest]), do: Nodes.run(rest)
   defp dispatch_command(["models" | rest]), do: Models.run(rest)
@@ -60,7 +58,11 @@ defmodule OrchardCLI do
   defp dispatch_command(["tls" | rest]), do: TLS.run(rest)
   defp dispatch_command(["transport" | rest]), do: Transport.run(rest)
   defp dispatch_command(["upgrade" | rest]), do: Upgrade.run(rest)
-  defp dispatch_command(_args), do: print_usage()
+  defp dispatch_command([]), do: print_usage()
+  defp dispatch_command(["help" | _rest]), do: print_usage()
+  defp dispatch_command(["--help" | _rest]), do: print_usage()
+  defp dispatch_command(["-h" | _rest]), do: print_usage()
+  defp dispatch_command(_args), do: {:error, usage(), 1}
 
   defp handle_result(:ok, _halt_fn), do: :ok
 
@@ -76,10 +78,10 @@ defmodule OrchardCLI do
   end
 
   defp print_usage do
-    IO.puts("orchardctl")
+    IO.puts(usage())
+  end
 
-    IO.puts(
-      "Available commands: status, start, stop, init, first-run, migrate, console, cluster, env, license, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
-    )
+  defp usage do
+    "orchardctl\nAvailable commands: status, start, stop, init, first-run, migrate, console, cluster, env, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
   end
 end

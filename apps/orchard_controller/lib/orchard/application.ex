@@ -14,9 +14,7 @@ defmodule Orchard.Application do
   }
 
   alias Orchard.ControllerInstances.MembershipOwner
-  alias Orchard.Licensing
   alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
-  alias Orchard.SentryContext
 
   @impl true
   def start(_type, _args) do
@@ -47,7 +45,6 @@ defmodule Orchard.Application do
     end
 
     warn_if_sentry_live_view_hook_unavailable()
-    attach_startup_license_context()
 
     Supervisor.start_link(child_specs(),
       strategy: :one_for_one,
@@ -89,46 +86,6 @@ defmodule Orchard.Application do
           "and restart the controller. See issue #191."
       )
     end
-  end
-
-  defp attach_startup_license_context do
-    status = inspect_startup_license()
-
-    Logger.info(
-      "Controller startup license status",
-      license_metadata(status, app: :orchard_controller)
-    )
-
-    SentryContext.cache_license_status(status)
-    SentryContext.apply_license_status(status, :controller)
-  end
-
-  defp inspect_startup_license do
-    licensing_impl().inspect_local()
-  rescue
-    _exception -> missing_license_status()
-  catch
-    _kind, _reason -> missing_license_status()
-  end
-
-  defp licensing_impl do
-    Application.get_env(:orchard_shared, :licensing, [])[:licensing_impl] || Licensing
-  end
-
-  defp missing_license_status do
-    %Licensing{
-      state: :missing_bundle,
-      message: "license inspection failed during controller startup",
-      bundle_path: ""
-    }
-  end
-
-  defp license_metadata(status, extra) do
-    status
-    |> SentryContext.build_license_extra()
-    |> Map.drop([:orchard_licensee])
-    |> Map.to_list()
-    |> Keyword.merge(extra)
   end
 
   defp maybe_add_repo(children) do

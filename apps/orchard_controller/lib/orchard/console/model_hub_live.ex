@@ -46,15 +46,11 @@ defmodule OrchardConsole.ModelHubLive do
   end
 
   def handle_event("download_model", _params, socket) do
-    OrchardConsole.LicenseGate.guard(socket, fn ->
-      handle_download_model(socket)
-    end)
+    handle_download_model(socket)
   end
 
   def handle_event("retry_download", _params, socket) do
-    OrchardConsole.LicenseGate.guard(socket, fn ->
-      handle_retry_download(socket)
-    end)
+    handle_retry_download(socket)
   end
 
   @impl true

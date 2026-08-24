@@ -89,7 +89,49 @@ defmodule OrchardCLITest do
     refute output =~ "not implemented yet"
 
     assert output =~
-             "status, start, stop, init, first-run, migrate, console, cluster, env, license, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
+             "status, start, stop, init, first-run, migrate, console, cluster, env, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
+
+    refute output =~ "license"
+  end
+
+  test "top-level help forms print usage on stdout and do not halt" do
+    for argv <- [["help"], ["--help"], ["-h"], ["help", "nodes"], ["--help", "nodes"]] do
+      parent = self()
+
+      output =
+        capture_io(fn ->
+          OrchardCLI.main(argv, fn code -> send(parent, {:halt, code}) end)
+        end)
+
+      assert output =~ "Available commands:"
+      refute output =~ "license"
+      refute_received {:halt, _code}
+    end
+  end
+
+  test "unknown command exits non-zero with usage on stderr" do
+    parent = self()
+
+    output =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["definitely-not-a-command"], fn code -> send(parent, {:halt, code}) end)
+      end)
+
+    assert output =~ "Available commands:"
+    assert_receive {:halt, 1}
+  end
+
+  test "product-license command is absent" do
+    parent = self()
+
+    output =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["license", "status"], fn code -> send(parent, {:halt, code}) end)
+      end)
+
+    assert output =~ "Available commands:"
+    refute output =~ "license"
+    assert_receive {:halt, 1}
   end
 
   test "advertised deferred commands exit non-zero through main" do
@@ -302,16 +344,10 @@ defmodule OrchardCLITest do
     assert output =~ "health endpoint"
   end
 
-  test "license help dispatches through main without network activity" do
-    output = capture_io(fn -> OrchardCLI.main(["license", "help"], &no_halt/1) end)
-    assert output =~ "orchardctl license"
-    assert output =~ "activate --key-stdin"
-  end
-
   test "init help dispatches through main" do
     output = capture_io(fn -> OrchardCLI.main(["init", "--help"], &no_halt/1) end)
     assert output =~ "sudo orchardctl init --host HOST"
-    assert output =~ "license activate --key-stdin"
+    refute output =~ "license"
   end
 
   test "first-run is an alias for init" do
@@ -343,18 +379,6 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main(["console", "help"], &no_halt/1) end)
     assert output =~ "orchardctl console <command>"
     assert output =~ "enable|disable|rotate"
-  end
-
-  test "license with missing subcommand exits non-zero" do
-    parent = self()
-
-    stderr =
-      capture_io(:stderr, fn ->
-        OrchardCLI.main(["license"], halt_stub(parent))
-      end)
-
-    assert stderr =~ "orchardctl license"
-    assert_received {:halt_called, 1}
   end
 
   test "status with extra args exits non-zero" do

@@ -12,9 +12,6 @@ defmodule Orchard.Config.M1RuntimeDefaults do
   @default_worker_ready_timeout_ms 5_000
   @default_worker_load_timeout_ms 120_000
   @default_worker_shutdown_timeout_ms 1_000
-  @default_keygen_api_base_url "https://api.keygen.sh"
-  @orchard_keygen_account_id "6f872d6f-52ce-4bbe-8b3f-b57669753f34"
-  @orchard_keygen_public_key "f1a328edc3d42967e8545c1361d2dc22622fad52aad0dc8e5d3b3cb95d7cb18a"
 
   def hf do
     [
@@ -115,16 +112,6 @@ defmodule Orchard.Config.M1RuntimeDefaults do
         receive_timeout_ms: 60_000,
         req_options: []
       ]
-    ]
-  end
-
-  def licensing(root) do
-    [
-      bundle_path: Path.join([root, "config", "licensing", "current.json"]),
-      node_identity_path: Path.join([root, "data", "node-id"]),
-      keygen_api_base_url: @default_keygen_api_base_url,
-      keygen_account_id: @orchard_keygen_account_id,
-      keygen_public_key: @orchard_keygen_public_key
     ]
   end
 end

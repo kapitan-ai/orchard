@@ -587,11 +587,6 @@ config :orchard_node_agent,
       worker_auto_max_concurrent_requests_per_model: worker_auto_max_concurrent_requests_per_model
     )
 
-config :orchard_shared,
-       :licensing,
-       Orchard.Config.M1RuntimeDefaults.licensing(dev_root)
-       |> Keyword.put(:enforcement_mode, :off)
-
 # Console: enabled with no auth for frictionless local development.
 config :orchard_controller, :console,
   enabled: true,

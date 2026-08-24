@@ -12,7 +12,7 @@ This README is orientation only. Normative shared contracts live in
 - Generated Elixir modules for `proto/cluster/v1/` under `lib/cluster/v1/`.
 - Shared Runtime Endpoint domain structs, target normalization, and mappers used
   across releases.
-- Shared filesystem/path, build metadata, licensing, manifest, and Sentry helper
+- Shared filesystem/path, build metadata, manifest, and Sentry helper
   modules when they are release-neutral.
 
 ## Does not own

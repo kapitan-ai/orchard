@@ -7,7 +7,6 @@ defmodule Orchard.API.SentryCrashCaptureTest do
   alias Orchard.API.RequestContext
   alias Orchard.API.SentryContextBoundary
   alias Orchard.Governance
-  alias Orchard.Licensing
   alias Orchard.Repo
   alias Orchard.SentryContext
   alias Orchard.SentryLogger
@@ -80,7 +79,6 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
     remove_sentry_handler()
     SentryContext.clear_all()
-    SentryContext.clear_cached_license_status()
 
     sentry_identity =
       SentryRelease.identity("orchard_controller", "0.5.0-dev",
@@ -109,29 +107,15 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     :ok = SentryLogger.install_handler()
     _flushed_reports = Sentry.Test.pop_sentry_reports()
 
-    license_status = %Licensing{
-      state: :valid,
-      message: "License bundle is valid.",
-      bundle_path: "/tmp/orchard-license.json",
-      license_id: "lic_controller_sentry_crash_test",
-      machine_id: "mach_controller_sentry_crash_test",
-      licensee: "Controller Sentry Crash Test",
-      max_machines: 2,
-      metadata: %{program: "eval", reference: "phase-6"}
-    }
-
-    SentryContext.cache_license_status(license_status)
-
     on_exit(fn ->
       remove_sentry_handler()
       restore_sentry_env(previous_sentry)
       restore_enrichment(previous_enrichment)
       restore_sentry_handler(previous_handler)
       SentryContext.clear_all()
-      SentryContext.clear_cached_license_status()
     end)
 
-    %{license_status: license_status, sentry_identity: sentry_identity}
+    %{sentry_identity: sentry_identity}
   end
 
   test "logger-captured request-process crash preserves safe controller Sentry context" do
@@ -160,14 +144,6 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
     assert event.tags.orchard_app == "controller"
     assert event.tags.orchard_surface == "api"
-    assert event.tags.orchard_license_state == "valid"
-    assert event.tags.orchard_tracking_program == "eval"
-    assert event.tags.orchard_tracking_reference == "phase-6"
-
-    assert event.extra.orchard_license_state == "valid"
-    assert event.extra.orchard_license_id == "lic_controller_sentry_crash_test"
-    assert event.extra.orchard_tracking_program == "eval"
-    assert event.extra.orchard_tracking_reference == "phase-6"
     assert event.extra.orchard_api_key_hash == SentryContext.hash_id(api_key.id)
     assert event.extra.orchard_principal_hash == SentryContext.hash_id(tenant.id)
     assert event.extra.orchard_tenant_hash == SentryContext.hash_id(tenant.id)
@@ -181,10 +157,8 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
     {payload, envelope} = serialized_filtered_event(event)
 
-    assert payload["extra"]["orchard_license_id"] == "lic_controller_sentry_crash_test"
     assert payload["extra"]["orchard_api_key_hash"] == SentryContext.hash_id(api_key.id)
     assert payload["extra"]["orchard_principal_hash"] == SentryContext.hash_id(tenant.id)
-    assert payload["tags"]["orchard_tracking_reference"] == "phase-6"
     assert [breadcrumb] = payload["breadcrumbs"]
     assert breadcrumb["data"] == %{"auth_mechanism" => "bearer"}
     refute envelope =~ token

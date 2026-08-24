@@ -62,6 +62,12 @@ run, and prints command-specific usage, `SPEC.md` traceability, and the current
 supported source-dev or packaged workflow. `--help` for the same path is
 side-effect free.
 
+Invoking `orchardctl` with no arguments, or with a top-level `help`, `--help`,
+or `-h` form, prints the command index on stdout and exits zero. Any other
+unrecognized top-level argument prints the same index on stderr and exits `1`,
+so automation that calls a removed or misspelled command fails loudly instead of
+silently succeeding.
+
 `orchardctl cluster init` mints the first cluster-admin API Client credential as
 a local, one-shot, audited controller-host operation behind the leader-only
 write gate. It requires a `--output` path for One-time Secret Output, and only

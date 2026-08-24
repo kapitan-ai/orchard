@@ -54,8 +54,7 @@ defmodule Orchard.SentryFilter do
   @safe_event_tag_keys ~w(
     orchard_app orchard_version orchard_build_channel build_sha build_date
     orchard_surface orchard_endpoint stream tooling scheduler_strategy
-    failure_category terminal_source orchard_license_state
-    orchard_tracking_program orchard_tracking_reference worker_backend
+    failure_category terminal_source worker_backend
   )
 
   @safe_event_extra_keys ~w(
@@ -67,9 +66,6 @@ defmodule Orchard.SentryFilter do
     orchard_model_already_loaded orchard_ensure_model_loaded_ms
     orchard_accepted_to_first_delta_ms orchard_accepted_to_terminal_ms
     orchard_event_count orchard_anomaly orchard_model_backend
-    orchard_license_state orchard_license_id orchard_machine_id_hash
-    orchard_max_machines orchard_expires_at orchard_tracking_program
-    orchard_tracking_reference orchard_build_channel orchard_build_ref
     sentry_filter_failed
   )
 
@@ -173,7 +169,6 @@ defmodule Orchard.SentryFilter do
                                 "orchard_tenant_hash",
                                 "orchard_principal_hash",
                                 "orchard_node_hash",
-                                "orchard_machine_id_hash",
                                 "node_hash"
                               ])
 
@@ -184,7 +179,7 @@ defmodule Orchard.SentryFilter do
                                skip_rpc sentry_filter_failed
                              ))
   @integer_diagnostic_keys MapSet.new(~w(
-                               orchard_event_count orchard_max_machines waiter_count
+                               orchard_event_count waiter_count
                                replied_waiter_count max_loaded_models reserved_model_count_before
                              ))
   @number_diagnostic_keys MapSet.new(~w(
@@ -198,11 +193,10 @@ defmodule Orchard.SentryFilter do
   @identifier_diagnostic_keys MapSet.new(~w(
                                   orchard_app orchard_version orchard_build_channel orchard_surface
                                   orchard_endpoint scheduler_strategy failure_category terminal_source
-                                  orchard_license_state orchard_tracking_program
-                                  orchard_tracking_reference worker_backend request_id model_backend
+                                  worker_backend request_id model_backend
                                   orchard_principal_type orchard_request_id orchard_db_request_id
                                   orchard_model_version orchard_scheduler_strategy orchard_anomaly
-                                  orchard_model_backend orchard_license_id orchard_build_ref
+                                  orchard_model_backend
                                   auth_mechanism reason endpoint model_version terminal_source backend
                                   adapter outcome source_scheme incoming_version victim_version
                                   cancel_reason rpc_result stop_result
@@ -570,7 +564,6 @@ defmodule Orchard.SentryFilter do
   end
 
   defp diagnostic_value_type("build_date"), do: :date
-  defp diagnostic_value_type("orchard_expires_at"), do: :timestamp
   defp diagnostic_value_type("build_sha"), do: :sha
 
   defp diagnostic_value_type(key) do

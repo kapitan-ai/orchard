@@ -75,11 +75,6 @@ config :orchard_node_agent,
       fake_runtime?: true
     )
 
-config :orchard_shared,
-       :licensing,
-       Orchard.Config.M1RuntimeDefaults.licensing(test_root)
-       |> Keyword.put(:enforcement_mode, :off)
-
 # Console: enabled with no auth for deterministic test behavior.
 config :orchard_controller, :console,
   enabled: true,

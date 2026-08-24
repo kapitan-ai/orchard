@@ -25,8 +25,6 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Cluster.V1.TokenUsage
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.InferenceEvent, as: OrchardInferenceEvent
-  alias Orchard.Licensing.Gate
-  alias Orchard.Licensing.LocalStore
   alias Orchard.ModelManifest
   alias Orchard.ModelManifest.RuntimeRequirements
   alias Orchard.ModelManifest.Tokenizer
@@ -45,9 +43,6 @@ defmodule OrchardNodeAgentTest do
 
   @test_model_id "mlx-community/phi-3"
   @test_version "main"
-  @licensing_fixture_dir Path.expand("../../orchard_shared/test/fixtures/licensing", __DIR__)
-  @licensing_public_key_hex "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
-  @licensing_local_node_id "11111111-2222-4333-8444-555555555555"
 
   defmodule BlockingRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
@@ -2803,30 +2798,6 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "license denial at start_request cleans up prepared request state", %{bundle: bundle} do
-    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
-      with_hard_mode_license(fn ->
-        copy_license_fixture!("valid_bound_to_local")
-        Gate.refresh()
-
-        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
-
-        request = execute_inference_request("req-license-flip-start")
-
-        assert :ok = NodeStatus.prepare_request(request, self())
-        assert %StatusResponse{active_request_count: 1} = NodeStatus.current()
-
-        replace_license_bundle_externally!("expired")
-        Gate.refresh()
-
-        assert {:error, :license_invalid} = NodeStatus.start_request(request)
-        assert %StatusResponse{active_request_count: 0} = NodeStatus.current()
-        refute_receive {:node_runtime_event, "req-license-flip-start", _event}, 100
-      end)
-    end)
-  end
-
   test "cancel_inference is accepted over gRPC" do
     with_channel(fn channel ->
       request = %CancelInferenceRequest{
@@ -5337,77 +5308,6 @@ defmodule OrchardNodeAgentTest do
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
       metadata_json: ~s({"source":"test"})
     })
-  end
-
-  defp with_hard_mode_license(fun) when is_function(fun, 0) do
-    previous_licensing = Application.get_env(:orchard_shared, :licensing, [])
-
-    tmp_dir =
-      Path.join([
-        System.tmp_dir!(),
-        "orchard-node-agent-license-test",
-        Integer.to_string(System.unique_integer([:positive]))
-      ])
-
-    bundle_path = Path.join([tmp_dir, "config", "licensing", "current.json"])
-    node_identity_path = Path.join([tmp_dir, "data", "node-id"])
-
-    Application.put_env(
-      :orchard_shared,
-      :licensing,
-      Keyword.merge(previous_licensing,
-        bundle_path: bundle_path,
-        node_identity_path: node_identity_path,
-        keygen_public_key: @licensing_public_key_hex,
-        enforcement_mode: :hard,
-        gate_cache_ttl_seconds: 1
-      )
-    )
-
-    write_node_identity!(node_identity_path, @licensing_local_node_id)
-
-    try do
-      fun.()
-    after
-      Gate.refresh()
-      Application.put_env(:orchard_shared, :licensing, previous_licensing)
-      File.rm_rf!(tmp_dir)
-    end
-  end
-
-  defp copy_license_fixture!(name) do
-    licensing = Application.get_env(:orchard_shared, :licensing, [])
-    bundle_path = Keyword.fetch!(licensing, :bundle_path)
-
-    File.mkdir_p!(Path.dirname(bundle_path))
-    File.cp!(license_fixture_path(name), bundle_path)
-  end
-
-  defp replace_license_bundle_externally!(fixture_name) do
-    licensing = Application.get_env(:orchard_shared, :licensing, [])
-    bundle_path = Keyword.fetch!(licensing, :bundle_path)
-
-    assert :ok = LocalStore.write(bundle_path, load_license_fixture_bundle!(fixture_name))
-  end
-
-  defp load_license_fixture_bundle!(name) do
-    name
-    |> license_fixture_path()
-    |> File.read!()
-    |> Jason.decode!()
-    |> then(fn %{
-                 "license_certificate" => license_certificate,
-                 "machine_certificate" => machine_certificate
-               } ->
-      %{license_certificate: license_certificate, machine_certificate: machine_certificate}
-    end)
-  end
-
-  defp license_fixture_path(name), do: Path.join(@licensing_fixture_dir, "#{name}.json")
-
-  defp write_node_identity!(node_identity_path, node_id) do
-    File.mkdir_p!(Path.dirname(node_identity_path))
-    File.write!(node_identity_path, node_id <> "\n")
   end
 
   defp score_prefix_cache_request do

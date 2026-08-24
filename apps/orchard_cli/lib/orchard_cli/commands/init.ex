@@ -4,7 +4,6 @@ defmodule OrchardCLI.Commands.Init do
   alias OrchardCLI.Commands.{
     Console,
     Env,
-    License,
     LifecycleSupport,
     Migrate,
     Start,
@@ -185,7 +184,6 @@ defmodule OrchardCLI.Commands.Init do
 
   defp steps_for_role(:node_agent, config) do
     [
-      step(:license, ["status"], "orchardctl license status", true),
       step(
         :env,
         ["init", "--service", "node-agent"],
@@ -199,7 +197,6 @@ defmodule OrchardCLI.Commands.Init do
     service = LifecycleSupport.display_role(role)
 
     [
-      step(:license, ["status"], "orchardctl license status", true),
       step(
         :env,
         ["init", "--service", service],
@@ -275,23 +272,6 @@ defmodule OrchardCLI.Commands.Init do
   defp normalize_command_result({:error, _message, _code} = error), do: error
 
   defp handle_step_success(
-         %{command: :license} = step,
-         _message,
-         metadata,
-         rest,
-         runtime,
-         config,
-         lines,
-         index
-       ) do
-    if valid_license?(metadata) do
-      execute_steps(rest, runtime, config, lines, index + 1)
-    else
-      {:error, invalid_license_message(lines, step, config), 1}
-    end
-  end
-
-  defp handle_step_success(
          %{command: :console},
          _message,
          _metadata,
@@ -311,23 +291,6 @@ defmodule OrchardCLI.Commands.Init do
   defp run_command(%{command: command, args: args}, runtime) do
     runner = Map.get(runtime, :command_runner, &default_command_runner/3)
     runner.(command, args, runtime)
-  end
-
-  defp valid_license?(%{valid?: true}), do: true
-  defp valid_license?(_metadata), do: false
-
-  defp invalid_license_message(lines, step, config) do
-    Enum.join(
-      lines ++
-        [
-          "License is not valid; first-run initialization stopped.",
-          "Provision a license through the supported path:",
-          "Run: sudo orchardctl license activate --key-stdin",
-          "Resume: #{init_resume_command(config)}",
-          "Checked by: #{display_step(step)}"
-        ],
-      "\n"
-    )
   end
 
   defp step_failure_message(lines, step_line, message, step, config) do
@@ -447,19 +410,6 @@ defmodule OrchardCLI.Commands.Init do
 
   defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
 
-  defp default_command_runner(:license, _args, runtime) do
-    command_runtime = command_runtime(runtime)
-
-    with {:ok, json} <- License.run(["status", "--json"], command_runtime),
-         {:ok, payload} <- Jason.decode(json),
-         {:ok, message} <- License.run(["status"], command_runtime) do
-      {:ok, %{message: message, valid?: payload["state"] == "valid"}}
-    else
-      {:error, _message, _code} = error -> error
-      _other -> {:error, "Error: unable to determine structured license status", 1}
-    end
-  end
-
   defp default_command_runner(:env, args, runtime) do
     if Map.has_key?(runtime, :command_runtime) do
       Env.run(args, command_runtime(runtime))
@@ -507,8 +457,8 @@ defmodule OrchardCLI.Commands.Init do
     Guided packaged first-run setup. `orchardctl first-run` is an alias.
 
     Role behavior:
-      node-agent       license check, node-agent env init, start guidance
-      controller/all   license check, env init, migrate, transport, optional Console, start/status
+      node-agent       node-agent env init and start guidance
+      controller/all   env init, migrate, transport, optional Console, start/status
 
     Options:
       --host HOST     Browser/API hostname or IP for controller/all transport setup
@@ -516,9 +466,6 @@ defmodule OrchardCLI.Commands.Init do
       --console       Enable Console through the same interactive prompt path as orchardctl console enable
       --skip-start    Configure without starting services
       --help          Show this help
-
-    License provisioning:
-      sudo orchardctl license activate --key-stdin
 
     Examples:
       sudo orchardctl init --host mawarduri --port 8443
