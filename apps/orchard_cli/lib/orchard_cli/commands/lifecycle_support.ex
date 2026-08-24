@@ -170,10 +170,12 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
   @spec ensure_started(service(), map()) ::
           {:loaded | :already_loaded, service()} | {:error, String.t(), 1}
   def ensure_started(svc, runtime) do
-    if service_loaded?(svc, runtime) do
-      {:already_loaded, svc}
-    else
-      bootstrap_service(svc, runtime)
+    with :ok <- enable_service(svc, runtime) do
+      if service_loaded?(svc, runtime) do
+        {:already_loaded, svc}
+      else
+        run_bootstrap(svc, runtime)
+      end
     end
   end
 
@@ -394,10 +396,10 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
   defp service_applicable_to_role?(%{id: :node_agent}, role), do: role in [:all, :node_agent]
   defp service_applicable_to_role?(_optional_or_unknown, _role), do: true
 
-  defp bootstrap_service(svc, runtime) do
+  defp enable_service(svc, runtime) do
     case run_launchctl(runtime, ["enable", "system/#{svc.label}"]) do
       {_output, 0} ->
-        run_bootstrap(svc, runtime)
+        :ok
 
       {output, code} ->
         {:error,
