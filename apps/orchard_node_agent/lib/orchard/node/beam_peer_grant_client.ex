@@ -139,7 +139,7 @@ defmodule Orchard.Node.BeamPeerGrantClient.GRPCTransport do
   @default_connect_timeout_ms 5_000
   @default_rpc_timeout_ms 5_000
 
-  @spec retrieve(String.t(), GRPC.Credential.t(), struct(), keyword()) ::
+  @spec retrieve(String.t(), Orchard.GRPCTypes.credential(), struct(), keyword()) ::
           {:ok, Orchard.Cluster.V1.RetrieveBeamPeerGrantResponse.t()} | {:error, atom()}
   def retrieve(target, credential, request, opts \\ []) do
     connector = Keyword.get(opts, :connector, GRPC.Stub)

@@ -20,7 +20,6 @@ defmodule Orchard.Node.Supervisor do
   @impl true
   def init(_init_arg) do
     children = [
-      {GRPC.Client.Supervisor, []},
       ModelManager,
       {Task.Supervisor, name: Orchard.Node.ModelLoadTaskSupervisor},
       RuntimeProcessReaper,

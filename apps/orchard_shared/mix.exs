@@ -34,8 +34,10 @@ defmodule OrchardShared.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
-      {:grpc, "~> 0.11.5"},
-      {:protobuf, "~> 0.16.0"},
+      {:grpc, "~> 1.0"},
+      {:grpc_server, "~> 1.0"},
+      {:gun, "~> 2.4"},
+      {:protobuf, "~> 0.17.0"},
       {:hackney, "~> 1.8", runtime: false},
       {:req, "~> 0.5", only: :test}
     ]

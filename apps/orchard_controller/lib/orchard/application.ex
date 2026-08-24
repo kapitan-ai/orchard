@@ -118,7 +118,6 @@ defmodule Orchard.Application do
     else
       children ++
         [
-          {GRPC.Client.Supervisor, []},
           Orchard.Tokenizer.CompatibilityCache,
           Orchard.Tokenizer.TelemetryCounters,
           Orchard.DispatchCapacity.QuarantineStore,
