@@ -103,8 +103,11 @@ defmodule OrchardConsole.TenantDetailLive do
 
   def handle_event("disable_portal_user", %{"portal_user_id" => user_id}, socket) do
     case Governance.disable_portal_user(socket.assigns.tenant, user_id) do
-      {:ok, _user} -> {:noreply, load_tenant_detail(socket)}
-      {:error, _reason} -> {:noreply, put_flash(socket, :error, "Unable to disable Portal User.")}
+      {:ok, _user} ->
+        {:noreply, socket |> assign(portal_invite_url: nil) |> load_tenant_detail()}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Unable to disable Portal User.")}
     end
   end
 

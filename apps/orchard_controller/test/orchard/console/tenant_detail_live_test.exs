@@ -417,6 +417,8 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
       html = render_click(view, "disable_portal_user", %{"portal_user_id" => user.id})
       assert html =~ "Disabled"
+      refute html =~ "tenant-portal-invite-url-card"
+      refute html =~ "/portal/detail-t/invites/orchard_pi_"
     end
 
     test "degraded mode hides invite form", %{conn: conn, tenant: tenant} do
