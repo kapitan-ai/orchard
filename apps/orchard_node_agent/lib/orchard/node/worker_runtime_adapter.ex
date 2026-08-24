@@ -1120,8 +1120,27 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp worker_unavailable_error?(reason), do: normalize_rpc_error(reason) == :worker_unavailable
   defp stream_cancelled_error?(reason), do: normalize_rpc_error(reason) == :rpc_cancelled
 
+  # grpc >= 1.0 reports a dropped worker transport as internal/13 with a
+  # ":stream_error: :closed"-style message. Classify it as worker unavailability so
+  # the worker exit path owns the terminal event instead of reporting an internal
+  # runtime stream error.
+  defp normalize_rpc_error(%RPCError{status: status, message: message})
+       when status in [:internal, 13] do
+    if transport_closed_message?(message) do
+      :worker_unavailable
+    else
+      normalize_rpc_status(status)
+    end
+  end
+
   defp normalize_rpc_error(%RPCError{status: status}), do: normalize_rpc_status(status)
   defp normalize_rpc_error(other), do: {:rpc_error, inspect(other)}
+
+  defp transport_closed_message?(message) when is_binary(message) do
+    String.starts_with?(message, [":stream_error:", ":connection_error:"])
+  end
+
+  defp transport_closed_message?(_message), do: false
 
   # Parses "code: detail" format from worker Ack.message into {code, detail}.
   # Falls back to {"worker_load_failed", raw_message} for malformed messages.
