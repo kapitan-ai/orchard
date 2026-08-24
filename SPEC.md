@@ -2819,7 +2819,7 @@ Revoked and expired keys SHALL NOT count toward that ceiling.
 The mint transaction SHALL serialize on the Portal User, not the Organization.
 Operator-minted tenant-direct keys SHALL NOT count toward that ceiling, SHALL remain operator-only, and SHALL NOT be visible or revocable from the portal.
 The portal SHALL list and revoke only portal-minted keys whose `portal_user_id` and `tenant_id` match the signed-in Portal User and Organization.
-Keys owned by another Portal User SHALL be indistinguishable from missing keys on portal list and revoke paths.
+Keys owned by another Portal User or another Organization SHALL be indistinguishable from missing keys on portal list and revoke paths.
 Portal revoke SHALL take effect on the next Public Inference authentication.
 
 Legacy portal-minted keys with `portal_user_id IS NULL` SHALL remain valid `orchard_sk_*` Bearer credentials until explicitly revoked.
