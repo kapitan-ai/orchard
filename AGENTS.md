@@ -337,8 +337,8 @@ See `docs/local-dev.md` for full environment setup and configuration.
 ## macOS Distribution
 
 The approved macOS native distribution profile is the signed and notarized DMG containing `Orchard.app`.
-The initial source-availability transition does not promise a supported public binary.
-Public binary support requires an explicit release decision and completed build, verification, signing, notarization, stapling, and publication gates.
+Do not describe Orchard as having a supported public binary, and do not treat source availability as a licensing change.
+`SPEC.md` §11 owns the source-availability contract and `packaging/dmg/README.md` owns the release gates.
 Use the Swift/macOS app workflow above and `packaging/dmg/README.md` for current build and verification guidance.
 
 Native PKG is not a supported distribution channel, release artifact, operator

@@ -83,8 +83,7 @@ The mixed-platform acceptance profile becomes satisfied only after Milestone 8 b
 Until then, the Linux Controller profile remains an accepted target rather than a current support claim.
 
 The approved macOS native distribution design remains `Orchard.app` inside a DMG.
-Source availability during the initial source-availability transition does not promise a supported public binary.
-Public binary support requires an explicit release decision and completion of the applicable release gates.
+`SPEC.md` §11 owns the source-availability, supported public binary, and licensing contract for that profile.
 
 A Controller Host is the machine that runs a Controller release.
 It is not a schedulable Node unless a separately enrolled and admitted Node

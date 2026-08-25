@@ -3,7 +3,7 @@
 ## Status
 
 Accepted on 2026-08-24.
-Source-availability scope and qualified-profile terminology added on 2026-08-25 without restoring native PKG or managed handover.
+Qualified-profile terminology added on 2026-08-25 without restoring native PKG or managed handover.
 
 Supersedes ADR 0018.
 Supersedes only the native PKG and managed-handover preservation clause in ADR 0023; ADR 0023's portable Orchard control-plane core and qualified-profile decision remains accepted.
@@ -22,9 +22,6 @@ Controller compatibility with Node Agent versions `N` and `N-1` does not itself 
 The macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`.
 `Orchard.app` retains its root-authorized role-aware service lifecycle, transactional rollback, retained-state, signing, and DMG verification obligations.
 Source-development workflows and supported public, operator, admin, and Runtime Endpoint APIs are unchanged.
-The initial source-availability transition does not promise a supported public binary.
-Public binary support requires an explicit release decision and completion of the applicable build, verification, signing, notarization, stapling, and publication gates.
-Source availability does not change Orchard's licensing terms.
 
 Native PKG is removed from the active distribution contract.
 Native PKG scripts, package assets, dedicated tests, and active operator documentation are removed.

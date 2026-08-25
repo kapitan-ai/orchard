@@ -15,7 +15,7 @@
 - [x] 2.1 Reconcile `SPEC.md` §§1.1, 1.2, 1.4, 1.5, 2, 4.1, 10, 11, and 14 with the qualified profile vocabulary and the portable Orchard control-plane core.
 - [x] 2.2 State in `SPEC.md` that source availability does not imply a supported public binary and that credentialed release gates remain release-only.
 - [x] 2.3 Qualify ADR 0023 with the same vocabulary without rewriting its historical decision.
-- [x] 2.4 Record the source-availability scope in ADR 0027 with a dated Status annotation so the addition is not attributed to its original reviewers.
+- [x] 2.4 Annotate ADR 0027 with a dated Status note for the qualified-profile terminology so the addition is not attributed to its original reviewers.
 - [x] 2.5 Keep the archived `remove-native-pkg-distribution` package at its original decision scope.
 
 ## 3. Documentation
