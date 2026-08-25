@@ -28,11 +28,9 @@ Do not extract an `orchard_node_core` application unless a later concrete depend
 Treat Controller Hosts and schedulable Nodes as distinct roles.
 A Controller Host does not become schedulable unless an admitted Node Agent on that host separately satisfies the Node trust, lifecycle, health, capability, and capacity contracts.
 
-Use four qualified profile kinds.
-A platform profile binds Orchard host roles to an operating system, architecture, and platform acceptance evidence.
-A distribution profile binds a platform profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
-A runtime-provider profile binds a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
-An acceptance profile defines a named topology and the evidence required to prove its participating profiles operate together.
+Use four qualified, composable profile kinds: platform, distribution, runtime-provider, and acceptance.
+`SPEC.md` §1.4 "Qualified profiles and portable assumptions" is the normative definition of each kind, and the "Product Truth" section of `docs/glossary/CONTEXT.md` carries the shared vocabulary; this record does not restate either.
+The trade-off is deliberate: four kinds cost more vocabulary than one unqualified "profile", and in exchange platform support, deployment artifacts, runtime-provider support, and cross-platform acceptance stay separately claimable instead of one qualified profile silently implying the others.
 Host-lifecycle adapters remain platform integration boundaries, while Orchard.app and DMG remain deployment artifacts.
 Neither is a profile.
 
