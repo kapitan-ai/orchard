@@ -94,7 +94,7 @@ Rules:
 - **Database**: Postgres (sole persistence + coordination layer)
 - **APIs**: `/v1/responses` (canonical abstraction), `/v1/chat/completions` (compatibility facade)
 - **Internal comms**: BEAM-first Runtime Endpoints for admitted first-party services; certificate-authenticated gRPC control and compatibility paths
-- **Packaging**: signed `Orchard.app` DMG + launchd; native PKG is not a supported current distribution channel
+- **Packaging**: approved macOS native distribution profile using a signed `Orchard.app` inside a DMG plus launchd; native PKG is not a supported current distribution channel
 - **Clustering**: Postgres advisory locks + authenticated Runtime Endpoint observations (Active/Standby control plane)
 - **Inference**: MLX-LM runtime adapter managed by the node agent (Apple Silicon native)
 
@@ -110,6 +110,7 @@ Rules:
 | M5 | Observability and diagnostics |
 | M6 | Security hardening and air-gap |
 | M7 | Upgrade safety and Active/Standby controller |
+| M8 | Portable Orchard control-plane core and Linux Controller profile |
 
 ## Conventions
 
@@ -335,10 +336,10 @@ See `docs/local-dev.md` for full environment setup and configuration.
 
 ## macOS Distribution
 
-The current native distribution is the signed and notarized DMG containing
-`Orchard.app`.
-Use the Swift/macOS app workflow above and `packaging/dmg/README.md` for current
-build and verification guidance.
+The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`.
+Do not describe Orchard as having a supported public binary, and do not treat source availability as a licensing change.
+`SPEC.md` §11 owns the source-availability contract and `packaging/dmg/README.md` owns the release gates.
+Use the Swift/macOS app workflow above and `packaging/dmg/README.md` for current build and verification guidance.
 
 Native PKG is not a supported distribution channel, release artifact, operator
 workflow, or validation gate.

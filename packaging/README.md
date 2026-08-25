@@ -1,15 +1,18 @@
 # Orchard Packaging and Operator Runbook
 
-Orchard ships as `Orchard.app` inside a DMG.
-The app owns the root-authorized service lifecycle and installs the shared payload under `/Library/Application Support/Orchard`.
+The approved macOS native distribution profile uses `Orchard.app` inside a DMG.
+Source availability does not promise a supported public binary; see [`dmg/README.md`](dmg/README.md) for the release gates a public binary must clear.
+The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload under `/Library/Application Support/Orchard`.
 See [`dmg/README.md`](dmg/README.md) for app assembly, signing, DMG verification, and lifecycle details.
 
 The accepted Linux Controller profile remains a future milestone with separate headless lifecycle and packaging acceptance requirements.
-Nothing in this runbook makes launchd, Keychain, macOS paths, or Apple signing part of the portable Controller contract.
+Nothing in this runbook makes launchd, Keychain, macOS paths, or Apple signing part of the portable Orchard control-plane core contract.
 
-## Shared payload
+## Shared distribution-neutral payload
 
-Build the distribution-neutral payload with:
+The payload is a deployment artifact rather than a profile, and `Orchard.app` and the DMG are its current macOS native-distribution consumers.
+
+Build the shared distribution-neutral payload with:
 
 ```bash
 mise exec -- ./scripts/build-payload.sh
@@ -19,7 +22,7 @@ The script builds the Elixir releases and native helper environments, stages the
 It prints `PAYLOAD_ROOT=<path>` after the staged payload passes validation.
 Pass that path to `scripts/build-app.sh`.
 
-Shared wrapper sources live in `packaging/payload/bin/`.
+Payload wrapper sources live in `packaging/payload/bin/`.
 Payload signing entitlements live in `packaging/payload/entitlements/`.
 The staged operator-facing commands are:
 
@@ -222,7 +225,8 @@ Restart services through `orchardctl stop` and `orchardctl start` rather than di
 
 ## Multi-Mac runtime
 
-The current distributed macOS path supports one controller Mac and one or more node-agent Macs on a trusted private network or VPN.
+The current packaged distributed macOS path is a first-cut private-network deployment and rehearsal path for one controller Mac and one or more node-agent Macs on a trusted private network or VPN.
+It is not yet a general support claim and has unresolved production acceptance gaps.
 BEAM Runtime Endpoint transport is the first-party default.
 gRPC remains an explicit compatibility path.
 

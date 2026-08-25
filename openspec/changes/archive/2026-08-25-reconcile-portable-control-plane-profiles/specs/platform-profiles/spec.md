@@ -1,10 +1,11 @@
-# platform-profiles Specification
+## RENAMED Requirements
 
-## Purpose
+- FROM: `### Requirement: Portable Core Dependency Contract`
+- TO: `### Requirement: Portable Orchard Control-Plane Core Dependency Contract`
+- FROM: `### Requirement: Platform Profiles And Support Gates`
+- TO: `### Requirement: Qualified Profiles And Support Gates`
 
-Defines the portable Orchard control-plane core dependency boundary, qualified profile composition and support gates, the distinction between Controller Hosts and schedulable Nodes, and provider-neutral vocabulary for heterogeneous runtimes and resources.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Portable Orchard Control-Plane Core Dependency Contract
 `orchard_shared`, `orchard_controller`, `orchard_node_agent`, and the portable `orchard_cli` SHALL compile and run their platform-neutral tests on Linux validation hosts without Xcode, `xcrun`, launchd, MLX, CUDA, or platform-native helper compilation.
@@ -40,24 +41,3 @@ This requirement changes `SPEC.md` §§1.1, 1.4, 1.5, 4.1, 11, and 14.
 #### Scenario: Existing Mac all-in-one deployment
 - **WHEN** Orchard runs the all-in-one topology under the Apple Silicon macOS platform profile, macOS native distribution profile, and macOS MLX Node runtime profile
 - **THEN** the accepted Mac app lifecycle, inference, DMG distribution, signing, and retained-state guarantees remain applicable
-
-### Requirement: Controller Hosts And Schedulable Nodes Are Distinct
-Orchard SHALL model a Controller Host independently from a schedulable Node.
-A Node SHALL represent an admitted host running a Node Agent and advertising versioned runtime and device capabilities; it MUST NOT be defined solely as an Apple Silicon Mac.
-A Controller Host SHALL NOT become schedulable unless it also satisfies the Node admission and capability contract.
-This requirement changes `SPEC.md` §§1.1 and 4.1.
-
-#### Scenario: Linux Controller has no Node Agent
-- **WHEN** a Linux Controller Host runs without an admitted local Node Agent
-- **THEN** it participates in Controller leadership and durable orchestration
-- **AND** the scheduler does not create a local inference candidate for that host
-
-### Requirement: Heterogeneous Runtime Vocabulary
-Orchard SHALL represent artifact format, runtime provider, acceleration implementation, and device resource as distinct concepts.
-Portable policy and scheduling MUST NOT infer one concept from another or branch on an operating-system name.
-This requirement changes `SPEC.md` §§1.5, 4.1, 5.5, 6.4, and 8.2.
-
-#### Scenario: One artifact supports multiple providers
-- **WHEN** a model artifact is compatible with more than one runtime provider or acceleration implementation
-- **THEN** Orchard records and evaluates each compatibility independently
-- **AND** the artifact format is not rewritten as a provider name

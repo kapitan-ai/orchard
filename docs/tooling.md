@@ -10,13 +10,15 @@ shell-specific runtime versions when working in this repo.
 
 ## Platform scope
 
-The documented complete development and validation workflow currently targets
-the supported Apple Silicon macOS profile.
-The accepted Linux Controller profile is a Milestone 8 target and does not yet
-have a supported bootstrap, packaging, or validation lane.
-Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain
-part of that target, while Xcode, Swift, signing, launchd, Keychain, and MLX
-steps apply only to the macOS profile or its macOS Node artifacts.
+The documented complete development and validation workflow currently runs on the supported Apple Silicon macOS platform profile.
+The accepted Linux Controller profile is a Milestone 8 target and does not yet have a supported bootstrap, packaging, or validation lane.
+Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain part of that target.
+Apple's C toolchain is a build prerequisite of the current macOS platform profile development workflow, because compiling `apps/orchard_cli` builds a native helper; see "Required Toolchain" below.
+Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
+
+The target validation design moves broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance to Linux.
+Separate macOS lanes prove host lifecycle, Orchard.app/DMG behavior, and MLX runtime behavior.
+Credential-free signing-contract validation may run in normal CI, while Developer ID signing, notarization, stapling, and publication remain credentialed release-only operations.
 
 ## Required Toolchain
 
@@ -38,9 +40,9 @@ The pinned toolchain currently covers:
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
 | Node.js | `24.17.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
 | npm | `11.13.0` | Package manager for root tool and asset pins |
-| OpenSpec | `@fission-ai/openspec@1.4.1` | OpenSpec change/spec validation |
+| OpenSpec | `@fission-ai/openspec@1.9.0` | OpenSpec change/spec validation |
 | esbuild | `0.25.0` | Phoenix JavaScript asset bundling CLI |
-| Tailwind CSS | `4.1.3` | Phoenix CSS asset build CLI |
+| Tailwind CSS | `4.3.3` | Phoenix CSS asset build CLI |
 
 The mise environment also sets:
 
@@ -52,14 +54,10 @@ The mise environment also sets:
 `uv` remains the package and virtualenv manager for `native/**`. `mise` owns
 the Python interpreter version that `uv` is allowed to use.
 
-For the current macOS profile, Apple's C toolchain is also required and is outside mise, the same way the
-Swift and signing tools are. Compiling `apps/orchard_cli` builds the
-`orchard-secret-tty` terminal helper from `apps/orchard_cli/c_src` through
-`elixir_make`, so `mix compile`, `mix test`, and package builds need the host
-Xcode Command Line Tools for `xcrun clang`. Install them with
-`xcode-select --install` if `xcrun clang --version` fails.
-This native helper dependency is a documented portability migration input and
-must not be interpreted as part of the accepted portable CLI contract.
+For the current macOS validation workflow, Apple's C toolchain is also required and is outside mise, the same way the Swift and signing tools are.
+Compiling `apps/orchard_cli` builds the `orchard-secret-tty` terminal helper from `apps/orchard_cli/c_src` through `elixir_make`, so `mix compile`, `mix test`, and package builds need the host Xcode Command Line Tools for `xcrun clang`.
+Install them with `xcode-select --install` if `xcrun clang --version` fails.
+This native helper dependency is a documented portability migration input and must not be interpreted as part of the accepted portable CLI contract.
 
 ## Standard Commands
 
@@ -162,7 +160,7 @@ mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
 The resolved-environment guard verifies the exact MLX-LM source revision, loader signatures, tokenizer registration, and explicit model and tokenizer distrust on the sharded loading surface without downloading a model.
 See the "MLX-LM security baseline" section of `native/orchard_worker_mlx/README.md` for the pinned revision, the remote-code controls, and the residual the guard asserts against.
 
-Shared payload builds should run through the same toolchain:
+Shared distribution-neutral payload builds should run through the same toolchain:
 
 ```bash
 mise exec -- ./scripts/build-payload.sh

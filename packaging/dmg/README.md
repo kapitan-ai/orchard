@@ -1,7 +1,8 @@
 # Orchard.app and DMG packaging
 
-The DMG's primary interactive artifact is a verified `Orchard.app`.
+The approved macOS native distribution profile uses a DMG whose primary interactive deployment artifact is a verified `Orchard.app`.
 The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload.
+Source availability does not promise a supported public binary or bypass the release gates documented below.
 
 The first productization slice proves app assembly, install/update/uninstall behavior in a relocated root, inner-first signing, local Amore DMG assembly, mounted-app verification, and nested-signature preservation.
 Sparkle, broad updater UX, managed-device deployment, and destructive host installation remain outside this slice.

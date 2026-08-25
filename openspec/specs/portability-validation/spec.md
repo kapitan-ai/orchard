@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Defines the validation lanes and dependency-driven gate selection required to prove Orchard's portable core, provider-neutral contracts, and platform-specific behavior without substituting one class of evidence for another.
+Defines the validation lanes and dependency-driven gate selection required to prove the portable Orchard control-plane core, provider-neutral contracts, and platform-specific behavior without substituting one class of evidence for another.
 
 ## Requirements
 
 ### Requirement: Required Linux Portable Validation
-Every non-documentation product change that can affect portable Orchard code SHALL run required Linux validation for portable application compilation, static analysis, tests, and coverage without Apple or accelerator toolchains.
+Every non-documentation product change that can affect the portable Orchard control-plane core SHALL run required Linux validation for portable application compilation, static analysis, tests, and coverage without Apple or accelerator toolchains.
 The lane SHALL include the portable tokenizer workflow and Worker Runtime stubs that do not import accelerator implementations.
 
 #### Scenario: Controller source changes
@@ -23,9 +23,11 @@ Passing conformance MUST NOT be represented as real-hardware acceptance.
 - **WHEN** a change modifies normalized capability or resource semantics
 - **THEN** provider-neutral conformance validates success, unknown, malformed, stale, and version-skew paths
 
-### Requirement: Platform Acceptance Remains Separate
-macOS host lifecycle, Apple Silicon MLX, Swift app, macOS packaging, and credentialed publication SHALL remain separate applicable lanes.
-Future Linux host and CUDA acceptance SHALL be added as separate lanes when those profiles are proposed.
+### Requirement: macOS Contract Lanes Remain Separate
+macOS host-lifecycle validation, Orchard.app and DMG validation, and macOS MLX Node runtime validation SHALL run as separate applicable lanes.
+Credential-free signing-contract validation MAY run in normal CI.
+Developer ID signing, notarization, stapling, and publication SHALL remain release-only operations.
+Future Linux host and CUDA acceptance SHALL be added as separate lanes when their qualified profiles are proposed.
 Fake or Linux portable validation MUST NOT replace real platform acceptance for platform-specific behavior.
 
 #### Scenario: MLX provider behavior changes
