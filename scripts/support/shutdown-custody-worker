@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${ORCHARD_SHUTDOWN_CUSTODY_STATE_DIR:?missing smoke state directory}"
+real_worker="${ORCHARD_SHUTDOWN_CUSTODY_REAL_WORKER:?missing real worker executable}"
+socket_path=""
+args=("$@")
+
+while (($# > 0)); do
+  case "$1" in
+    --socket-path)
+      (($# >= 2)) || exit 64
+      socket_path="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$socket_path" ]] || exit 64
+mkdir -p -- "$state_dir"
+printf '%s\n' "$$" >"$state_dir/worker.pid.tmp"
+printf '%s\n' "$socket_path" >"$state_dir/worker.socket.tmp"
+mv -- "$state_dir/worker.pid.tmp" "$state_dir/worker.pid"
+mv -- "$state_dir/worker.socket.tmp" "$state_dir/worker.socket"
+
+exec "$real_worker" "${args[@]}"
