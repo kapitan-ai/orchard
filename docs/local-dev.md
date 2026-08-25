@@ -1278,7 +1278,7 @@ mise exec -- iex -S mix phx.server
 - Public `/v1/*` API routes require Bearer API Tokens.
   Tenant-direct API Tokens remain supported, and service-account-owned API Tokens require an enabled API Client with tenant-scoped `inference_client` access.
   Full quota policy remains incomplete
-- Multi-node is supported for source-dev testing and the distributed macOS multi-Mac BEAM cut documented in the [packaging README](../packaging/README.md#multi-mac-runtime); broader production multi-node scheduling remains M4
+- Multi-node is supported for source-dev testing; the packaged distributed macOS multi-Mac BEAM cut documented in the [packaging README](../packaging/README.md#multi-mac-runtime) is a first cut rather than a general support claim, and broader production multi-node scheduling remains M4
 - Split-role BEAM Runtime Endpoint mode is the default for `bin/dev-controller` and `bin/dev-node-agent`
 - All-in-one `bin/dev` rejects explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
 - gRPC compatibility remains available for split-role source dev only through `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`

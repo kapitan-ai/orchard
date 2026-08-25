@@ -228,7 +228,8 @@ boundaries.
 1. **All-in-one** — a single Mac runs everything: controller, node agent, and
    worker.
 2. **Controller + workers** — one Mac as the control plane, 1–3 Macs as worker
-   nodes.
+   nodes. The packaged private-network path is a first cut with unresolved
+   production acceptance gaps, not yet a general support claim.
 3. **Active/Standby (target)** — up to 2 controllers with exactly 1 active
    leader, still within the overall 1–4 Mac limit. Failover is not yet
    operator-usable.
