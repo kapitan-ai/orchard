@@ -233,9 +233,9 @@ defmodule OrchardConsole.NodeDetailLiveTest do
                "the node appears under Admission Review as a separate pending registered entry"
 
       assert html =~
-               "This observed candidate is a separate review row that the join does not close."
+               "This observed candidate remains a separate Admission Review record that the join does not close."
 
-      assert html =~ "It stays listed until an operator rejects or otherwise clears it."
+      refute html =~ "otherwise clears it"
       assert html =~ "Preview reject"
       refute html =~ "Preview admit"
     end

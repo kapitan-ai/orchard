@@ -498,7 +498,7 @@ defmodule OrchardConsole.NodeDetailLive do
                   After a successful join, the node appears under Admission Review as a separate pending registered entry. Node Admission remains required before the node is active or schedulable.
                 </p>
                 <p class="mt-2 text-sm text-slate-700 dark:text-slate-300">
-                  This observed candidate is a separate review row that the join does not close. It stays listed until an operator rejects or otherwise clears it.
+                  This observed candidate remains a separate Admission Review record that the join does not close.
                 </p>
               </.card>
             </div>
