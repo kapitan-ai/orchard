@@ -465,9 +465,12 @@ defmodule OrchardConsole.NodeDetailLive do
                 <p class="text-sm text-slate-700 dark:text-slate-300">
                   Enrollment bundle creation requires a configured Controller HTTPS endpoint.
                 </p>
-                <ol id="node-detail-enrollment-commands" class="mt-3 space-y-3">
+                <ol
+                  id="node-detail-enrollment-commands"
+                  class="mt-3 list-decimal space-y-3 pl-5 text-sm text-slate-700 dark:text-slate-300"
+                >
                   <li>
-                    <code class="block rounded border border-slate-200 bg-white p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
                       orchardctl nodes trust init
                     </code>
                     <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
@@ -475,7 +478,7 @@ defmodule OrchardConsole.NodeDetailLive do
                     </p>
                   </li>
                   <li>
-                    <code class="block rounded border border-slate-200 bg-white p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
                       orchardctl nodes enrollment create --output PATH [--expires-in DURATION]
                     </code>
                     <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
@@ -483,7 +486,7 @@ defmodule OrchardConsole.NodeDetailLive do
                     </p>
                   </li>
                   <li>
-                    <code class="block rounded border border-slate-200 bg-white p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
                       orchardctl node join --enrollment-bundle PATH
                     </code>
                     <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
@@ -492,7 +495,10 @@ defmodule OrchardConsole.NodeDetailLive do
                   </li>
                 </ol>
                 <p class="mt-4 text-sm text-slate-700 dark:text-slate-300">
-                  After a successful join, the node appears under Admission Review as pending registered. Node Admission remains required before the node is active or schedulable.
+                  After a successful join, the node appears under Admission Review as a separate pending registered entry. Node Admission remains required before the node is active or schedulable.
+                </p>
+                <p class="mt-2 text-sm text-slate-700 dark:text-slate-300">
+                  This observed candidate is a separate review row that the join does not close. It stays listed until an operator rejects or otherwise clears it.
                 </p>
               </.card>
             </div>
