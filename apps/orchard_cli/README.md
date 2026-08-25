@@ -17,9 +17,8 @@ This README is orientation only. Normative CLI requirements live in
 - First cluster-admin provisioning through `cluster init`, minting the bootstrap
   admin API Client credential with required One-time Secret Output (`--output`),
   `--json`, `--client-name`, and `--force-new-admin`/`--yes` recovery minting.
-- Node trust and enrollment commands (`nodes trust init`,
-  `nodes enrollment create`, `node join`); the enrollment flow is described in
-  [`../../docs/architecture.md`](../../docs/architecture.md).
+- SPEC-required future command paths that return explicit deferred status until
+  their milestones land: `node join`.
 - Node-admission-review commands (`nodes inspect`, `nodes pending`,
   `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
   previews, and `--yes` execution gating. `nodes reject` requires a nonblank
@@ -57,6 +56,11 @@ This README is orientation only. Normative CLI requirements live in
 - Human-readable operator output and command validation.
 
 ## Current command status
+
+The deferred path above is advertised by `orchardctl`, exits non-zero when
+run, and prints command-specific usage, `SPEC.md` traceability, and the current
+supported source-dev or packaged workflow. `--help` for the same path is
+side-effect free.
 
 Invoking `orchardctl` with no arguments, or with a top-level `help`, `--help`,
 or `-h` form, prints the command index on stdout and exits zero. Any other
