@@ -663,6 +663,7 @@ If publication cannot be confirmed after credential authority commits, the comma
 The command refuses a second init with `cluster_already_initialized` and supports `--force-new-admin --yes` recovery minting, `--client-name`, and `--json`.
 `orchardctl nodes trust init` initializes the internal Node trust authority on the controller host and is a required, idempotent, leader-gated prerequisite before any enrollment bundle can be issued; it is separate from the credential-only `orchardctl cluster init`.
 `orchardctl nodes enrollment create --output PATH` issues an owner-only, single-Node Enrollment bundle from the active controller, and `orchardctl node join --enrollment-bundle PATH` redeems it with pinned controller trust before persisting the Node identity and validated gRPC compatibility advertisement.
+Bundle issuance requires a configured Controller HTTPS endpoint, so it fails closed with `controller_https_not_configured` under the `plain_http_localhost` source-dev default; select `reverse_proxy` first (see [Source-Dev Controller Transport](#source-dev-controller-transport)).
 Set `ORCHARD_NODE_AGENT_ADVERTISE_HOST` to a Controller-reachable private address when `ORCHARD_NODE_AGENT_LISTEN_HOST` is `0.0.0.0`; wildcard addresses fail closed and are never persisted as trusted targets.
 `orchardctl cluster status [--json]` is implemented for read-only cluster and control-plane status, with the shared `ControlPlaneStatus` payload and a control-plane summary in `--json` mode.
 `orchardctl nodes inspect`, `orchardctl nodes pending`, `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for the current node-admission-review slice, with stable JSON and human output, `--dry-run` previews, and `--yes` execution gating; `orchardctl nodes reject` additionally requires a nonblank `--reason`.
@@ -830,7 +831,7 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
    - With static runtime target fallback enabled, the controller ActivationProbe probes configured Runtime Endpoint targets when trusted admitted/active inventory is empty.
    - Successful observations create or refresh durable `pending_observed` admission candidates without auto-admit.
    - BEAM candidate `endpoint_target` / `target_ref` keep the configured `service@host` identity instead of collapsing to loopback gRPC listen metadata.
-   - Operators still review and admit through the normal admission path (#128 covers policy/decision detail).
+   - Operators review these candidates through the normal admission path, but admit stays blocked until trusted registration completes, so an observed candidate is rejection-only (see [ADR 0003](decisions/0003-observed-runtime-endpoints-are-admission-candidates.md)).
 
 ### Verification
 
@@ -857,7 +858,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | BEAM `connect` / `:gen_tcp` returns `:ehostunreach` while `ping` works | macOS Local Network Privacy blocked the BEAM launch context | Relaunch controller/node-agent from Terminal.app (or another GUI app with Local Network allowed). |
 | Source-dev BEAM bootstrap reports wildcard-bound EPMD | Another `epmd` is listening on `0.0.0.0`/`*` for that port | `ERL_EPMD_PORT=<port> epmd -kill`, confirm only the address-constrained listener remains, rerun. |
 | Console boot warns `Sentry.LiveViewHook` unavailable / LiveView crashes lack Sentry context | Sentry was compiled without LiveView on the compile path | Console still mounts. To restore LiveView Sentry context: `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
-| Live Cluster healthy but Registered Nodes inventory is zero / candidates stuck `pending_observed` | Configured-target observation is not bootstrapping durable admission inventory yet | Inference may still work via configured targets. See issue #192. |
+| Live Cluster healthy but Registered Nodes inventory is zero while candidates sit in `pending_observed` | Expected admission boundary: a runtime status read creates an untrusted admission candidate and never registers a Node | Complete Node trust, enrollment, and join as described in [Two-Node Source-Dev Cluster Testing](#two-node-source-dev-cluster-testing), then admit the registered Node. Inference may still work through configured source-dev targets meanwhile. |
 | Model load fails with missing `tokenizer.json` or `artifact_hash_mismatch` | Incomplete artifact copy on controller or worker | Re-import a complete bundle and sync the full artifact directory to the worker path. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
 | BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ipv4` or uses the wrong role service | Use `orchard_controller@<controller-ipv4>` for the controller and exactly `orchard_node_agent@<node-ipv4>` for node-agents. |
