@@ -233,7 +233,7 @@ boundaries.
    leader, still within the overall 1–4 Mac limit. Failover is not yet
    operator-usable.
 4. **Linux Controller + macOS MLX Nodes (accepted target)** - a Linux Controller profile using external Postgres operates admitted Apple Silicon macOS Nodes under the macOS MLX Node runtime profile.
-   This mixed-platform acceptance profile is not supported until the Milestone 8 gates pass.
+   That target is not supported until the mixed-platform acceptance profile and the remaining Milestone 8 gates in `SPEC.md` pass.
 
 All controller-bearing installs currently require an external Postgres
 database. The app lifecycle supports `all`, `controller`, and `node-agent`
@@ -256,7 +256,7 @@ mise exec -- ./scripts/build-payload.sh
 ```
 
 The command prints the validated `PAYLOAD_ROOT` used by the app assembler.
-Run `make setup` first; see [`packaging/README.md`](packaging/README.md#macos-native-distribution-payload)
+Run `make setup` first; see [`packaging/README.md`](packaging/README.md#shared-distribution-neutral-payload)
 for the payload contract.
 
 ## Run from source

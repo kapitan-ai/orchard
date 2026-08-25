@@ -3,15 +3,17 @@
 The approved macOS native distribution profile uses `Orchard.app` inside a DMG.
 The initial source-availability transition does not promise a supported public binary.
 Public binary support requires an explicit release decision and completed release gates.
-The app owns the root-authorized service lifecycle and installs the macOS native distribution payload under `/Library/Application Support/Orchard`.
+The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload under `/Library/Application Support/Orchard`.
 See [`dmg/README.md`](dmg/README.md) for app assembly, signing, DMG verification, and lifecycle details.
 
 The accepted Linux Controller profile remains a future milestone with separate headless lifecycle and packaging acceptance requirements.
 Nothing in this runbook makes launchd, Keychain, macOS paths, or Apple signing part of the portable Orchard control-plane core contract.
 
-## macOS native distribution payload
+## Shared distribution-neutral payload
 
-Build the macOS native distribution payload with:
+The payload is a deployment artifact rather than a profile, and `Orchard.app` and the DMG are its current macOS native-distribution consumers.
+
+Build the shared distribution-neutral payload with:
 
 ```bash
 mise exec -- ./scripts/build-payload.sh

@@ -12,7 +12,9 @@ shell-specific runtime versions when working in this repo.
 
 The documented complete development and validation workflow currently runs on the supported Apple Silicon macOS platform profile.
 The accepted Linux Controller profile is a Milestone 8 target and does not yet have a supported bootstrap, packaging, or validation lane.
-Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain part of that target, while Xcode, Swift, signing, launchd, Keychain, and MLX steps apply only to the macOS native distribution profile or macOS MLX Node runtime profile.
+Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain part of that target.
+Apple's C toolchain is a build prerequisite of the current macOS platform profile development workflow, because compiling `apps/orchard_cli` builds a native helper; see "Required Toolchain" below.
+Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
 
 The target validation design moves broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance to Linux.
 Separate macOS lanes prove host lifecycle, Orchard.app/DMG behavior, and MLX runtime behavior.
@@ -158,7 +160,7 @@ mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
 The resolved-environment guard verifies the exact MLX-LM source revision, loader signatures, tokenizer registration, and explicit model and tokenizer distrust on the sharded loading surface without downloading a model.
 See the "MLX-LM security baseline" section of `native/orchard_worker_mlx/README.md` for the pinned revision, the remote-code controls, and the residual the guard asserts against.
 
-macOS native distribution payload builds should run through the same toolchain:
+Shared distribution-neutral payload builds should run through the same toolchain:
 
 ```bash
 mise exec -- ./scripts/build-payload.sh

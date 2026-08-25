@@ -257,7 +257,7 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
   dmg/
   launchd/
   container/
-  payload/                 # shared macOS native distribution payload assets
+  payload/                 # shared distribution-neutral payload assets consumed by Orchard.app and the DMG
 ```
 
 ### 2.5 Process boundaries
