@@ -212,7 +212,7 @@ It is not a claim about the current build.
 2. Console shows the newly issued Portal Invite URL once, and the operator delivers it to that developer through an out-of-band channel.
 3. While the Portal User remains invited, **Copy invite** reissues the invite with a fresh hashed token and extended expiry, invalidates the previous unused token, and shows the replacement URL once for copying.
 4. The developer redeems the Portal Invite, chooses a password, and signs in to the Organization-scoped Developer Portal.
-5. When access must end, the operator disables that Portal User, which ends only that user's portal sessions without automatically revoking minted API Keys.
+5. When access must end, the operator disables that Portal User, which atomically invalidates every outstanding invite, ends only that user's portal sessions, and does not automatically revoke minted API Keys.
 6. The operator reviews that Portal User's portal-minted keys in Console and may revoke selected keys by displayed prefix when key access must also end.
 
 ### Target Controller-Only Journey

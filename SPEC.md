@@ -2784,7 +2784,7 @@ Routes:
 ```text
 GET  /portal/:organization_slug
 GET  /portal/:organization_slug/invites/:token
-POST /portal/:organization_slug/invites/:token/redeem
+POST /portal/:organization_slug/invites/:token
 POST /portal/:organization_slug/session
 POST /portal/:organization_slug/logout
 LIVE /portal/:organization_slug/keys
@@ -2795,10 +2795,14 @@ Email SHALL be the Portal User identifier and SHALL be unique by normalized valu
 SMTP SHALL NOT be required.
 For a Portal User in `invited` status, the Console SHALL provide Copy invite.
 Each Copy invite action SHALL mint a fresh single-use token, persist only its hash, extend the invite expiry, and invalidate every prior unused invite token for that Portal User.
+A Portal User SHALL have at most one stored invite row at a time.
+Invite invalidation SHALL delete the stored invite row rather than tombstone it, and Orchard SHALL NOT retain invite revocation history.
 Orchard SHALL NOT persist the plaintext invite token or URL.
 The operator SHALL deliver the copied invite URL out of band.
-Redeeming a valid unexpired invite SHALL set the Portal User's password, mark the invite redeemed, activate the Portal User, and end that Portal User's standing portal sessions.
-A replacement invite SHALL use the same reissue flow for password reset and SHALL end that Portal User's standing portal sessions.
+Invite redemption SHALL be bound to the Organization identified by the route and SHALL succeed only for a valid unexpired invite owned by a Portal User who is currently `invited` in that Organization.
+Successful redemption SHALL set the Portal User's password, mark the invite redeemed, activate the Portal User, and end that Portal User's standing portal sessions.
+Wrong-Organization, disabled-user, invalidated, expired, redeemed, and unknown-token redemption failures SHALL use one generic external response and SHALL make no persisted mutation.
+Recopying an invite for a Portal User who remains `invited` SHALL use the same reissue flow and SHALL end that Portal User's standing portal sessions.
 
 The portal SHALL identify the Organization by slug, then authenticate one active Portal User by normalized email and password.
 Unknown Organization, unknown email, disabled Portal User, and wrong-password submissions SHALL have indistinguishable status, body shape, headers, and generic credential failure.
@@ -2807,17 +2811,17 @@ Failed portal logins SHALL be limited per Organization fingerprint, Portal User 
 They SHALL NOT use an Organization-wide lockout.
 
 The operator SHALL invite and disable Portal Users from the existing Console Organization detail surface.
-Disabling a Portal User SHALL end only that Portal User's portal sessions.
+Disabling a Portal User SHALL atomically invalidate every outstanding invite by deleting its stored row, and SHALL end only that Portal User's portal sessions.
 Disabling a Portal User SHALL NOT revoke that Portal User's API Keys.
-Invite reissue, invite redemption, password replacement, and Portal User disablement SHALL NOT revoke minted API Keys.
+Invite reissue, invite redemption, and Portal User disablement SHALL NOT revoke minted API Keys.
 
 The portal SHALL mint tenant-direct API Keys with `issuance_surface = 'developer_portal'` and `portal_user_id` equal to the signed-in Portal User.
 A Portal User MAY have at most 10 active portal-minted tenant-direct keys.
 Revoked and expired keys SHALL NOT count toward that ceiling.
 The mint transaction SHALL serialize on the Portal User, not the Organization.
 Operator-minted tenant-direct keys SHALL NOT count toward that ceiling, SHALL remain operator-only, and SHALL NOT be visible or revocable from the portal.
-The portal SHALL list and revoke only portal-minted keys owned by the signed-in Portal User.
-Keys owned by another Portal User SHALL be indistinguishable from missing keys on portal list and revoke paths.
+The portal SHALL list and revoke only portal-minted keys whose `portal_user_id` and `tenant_id` match the signed-in Portal User and Organization.
+Keys owned by another Portal User or another Organization SHALL be indistinguishable from missing keys on portal list and revoke paths.
 Portal revoke SHALL take effect on the next Public Inference authentication.
 
 Legacy portal-minted keys with `portal_user_id IS NULL` SHALL remain valid `orchard_sk_*` Bearer credentials until explicitly revoked.
@@ -3856,15 +3860,12 @@ create table portal_users (
 
 create table portal_invite_tokens (
   id uuid primary key default gen_random_uuid(),
-  portal_user_id uuid not null references portal_users(id) on delete cascade,
+  portal_user_id uuid not null unique references portal_users(id) on delete cascade,
   token_hash bytea not null unique,
   expires_at timestamptz not null,
   redeemed_at timestamptz,
-  invalidated_at timestamptz,
   inserted_at timestamptz not null default now(),
-  check (octet_length(token_hash) = 32),
-  check (expires_at > inserted_at),
-  check (redeemed_at is null or invalidated_at is null)
+  check (octet_length(token_hash) = 32)
 );
 
 create table service_accounts (
@@ -4321,9 +4322,6 @@ create index idx_api_keys_portal_user_inserted_at
 create index idx_portal_sessions_user_expiry
   on portal_sessions(portal_user_id, absolute_expires_at);
 
-create index idx_portal_invite_tokens_user_expiry
-  on portal_invite_tokens(portal_user_id, expires_at desc);
-
 create extension if not exists btree_gist;
 
 alter table api_keys
@@ -4713,7 +4711,7 @@ Audit logs SHALL capture:
 
 * tenant creation/update/suspend
 * API key create/revoke
-* Portal User invite, invite reissue, invite redemption, disable, and password replacement
+* Portal User invite, invite reissue, invite redemption, and disable
 * service account changes
 * API Client Disablement
 * provisioning batch start/completion/failure

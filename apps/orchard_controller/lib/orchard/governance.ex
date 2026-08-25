@@ -69,7 +69,11 @@ defmodule Orchard.Governance do
 
   defdelegate create_portal_invite(tenant, attrs), to: PortalGovernance, as: :create_invite
   defdelegate copy_portal_invite(tenant, user), to: PortalGovernance, as: :copy_invite
-  defdelegate redeem_portal_invite(token, password), to: PortalGovernance, as: :redeem_invite
+
+  defdelegate redeem_portal_invite(slug, token, password),
+    to: PortalGovernance,
+    as: :redeem_invite
+
   defdelegate disable_portal_user(tenant, user), to: PortalGovernance, as: :disable_user
   defdelegate list_portal_users(tenant), to: PortalGovernance, as: :list_users
 

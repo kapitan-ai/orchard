@@ -22,7 +22,7 @@ defmodule Orchard.Portal.KeysLiveTest do
     {:ok, tenant} = Governance.create_tenant(%{slug: "portal-keys", name: "Portal Keys"})
     {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
     {:ok, invite} = Governance.copy_portal_invite(tenant, user)
-    {:ok, user} = Governance.redeem_portal_invite(invite.token, @password)
+    {:ok, user} = Governance.redeem_portal_invite(tenant.slug, invite.token, @password)
 
     {:ok, session} =
       Governance.create_portal_session(
