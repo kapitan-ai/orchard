@@ -1022,7 +1022,29 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     if port_open?(port) do
       stop_runtime_with_escalation(port, os_pid, timeout_ms)
     else
+      stop_closed_port_runtime(os_pid, timeout_ms)
+    end
+  end
+
+  defp stop_closed_port_runtime(os_pid, timeout_ms) do
+    if WorkerProcessLifecycle.os_process_alive?(os_pid) do
+      _ = WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
+
+      case wait_for_os_pid_exit(os_pid, timeout_ms) do
+        :ok -> :ok
+        {:error, :timeout} -> kill_closed_port_runtime(os_pid, timeout_ms)
+      end
+    else
       :ok
+    end
+  end
+
+  defp kill_closed_port_runtime(os_pid, timeout_ms) do
+    _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
+
+    case wait_for_os_pid_exit(os_pid, timeout_ms) do
+      :ok -> :ok
+      {:error, :timeout} -> {:error, :worker_shutdown_timeout}
     end
   end
 
@@ -1030,14 +1052,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # The tree-kill is defense-in-depth against intermediate launchers
   # (e.g. `uv run`) that swallow signals without forwarding to children.
   defp stop_runtime_with_escalation(port, os_pid, timeout_ms) do
-    WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
+    _ = WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
 
     case wait_for_port_exit(port, timeout_ms) do
       {:ok, _status} ->
         :ok
 
       {:error, :timeout} ->
-        WorkerProcessLifecycle.kill_process_tree(os_pid)
+        _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
 
         case wait_for_port_exit(port, timeout_ms) do
           {:ok, _status} -> :ok
@@ -1052,6 +1074,25 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       {^port, {:data, _data}} -> wait_for_port_exit(port, timeout_ms)
     after
       timeout_ms -> {:error, :timeout}
+    end
+  end
+
+  defp wait_for_os_pid_exit(os_pid, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_os_pid_exit(os_pid, deadline)
+  end
+
+  defp do_wait_for_os_pid_exit(os_pid, deadline) do
+    cond do
+      not WorkerProcessLifecycle.os_process_alive?(os_pid) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :timeout}
+
+      true ->
+        Process.sleep(@poll_interval_ms)
+        do_wait_for_os_pid_exit(os_pid, deadline)
     end
   end
 

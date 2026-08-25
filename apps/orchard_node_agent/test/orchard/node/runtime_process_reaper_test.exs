@@ -9,6 +9,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
 
   use ExUnit.Case, async: false
 
+  alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerProcessLifecycle
 
@@ -128,6 +129,142 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
 
     WorkerProcessLifecycle.kill_process_tree(os_pid)
+  end
+
+  test "requested reap records cooperative TERM and clears lease custody" do
+    root = unique_root("cooperative")
+    marker_path = Path.join(root, "events.log")
+    File.mkdir_p!(root)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:cooperative, marker_path)
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    {:ok, ref} = watch(os_pid)
+    RuntimeProcessReaper.reap(ref, :custody_test)
+
+    assert CustodyTestHelpers.wait_until(
+             fn -> event_logged?(marker_path, "term_received mode=cooperative") end,
+             1_000
+           )
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "requested reap records resistant TERM before bounded KILL escalation" do
+    root = unique_root("resistant")
+    marker_path = Path.join(root, "events.log")
+    File.mkdir_p!(root)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    {:ok, ref} = watch(os_pid)
+    RuntimeProcessReaper.reap(ref, :custody_test)
+
+    assert CustodyTestHelpers.wait_until(
+             fn -> event_logged?(marker_path, "term_ignored mode=resistant") end,
+             1_000
+           )
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "release cancels a pending resistant-process escalation and clears monitors" do
+    root = unique_root("release")
+    marker_path = Path.join(root, "events.log")
+    File.mkdir_p!(root)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    {:ok, ref} = watch(os_pid)
+    RuntimeProcessReaper.reap(ref, :custody_test)
+
+    assert CustodyTestHelpers.wait_until(
+             fn ->
+               event_logged?(marker_path, "term_ignored mode=resistant") and
+                 match?(
+                   %{timer_ref: timer_ref} when is_reference(timer_ref),
+                   :sys.get_state(RuntimeProcessReaper).leases[ref]
+                 )
+             end,
+             1_000
+           )
+
+    RuntimeProcessReaper.release(ref)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+    Process.sleep(@short_timeout_ms + 100)
+    assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+  end
+
+  test "reaper termination sweeps only its exact leased child" do
+    original_reaper = Process.whereis(RuntimeProcessReaper)
+    assert Process.unregister(RuntimeProcessReaper)
+
+    on_exit(fn ->
+      case Process.whereis(RuntimeProcessReaper) do
+        nil ->
+          Process.register(original_reaper, RuntimeProcessReaper)
+
+        ^original_reaper ->
+          :ok
+
+        other ->
+          GenServer.stop(other, :shutdown)
+          Process.register(original_reaper, RuntimeProcessReaper)
+      end
+    end)
+
+    assert {:ok, private_reaper} = RuntimeProcessReaper.start_link()
+    Process.unlink(private_reaper)
+    {leased_port, leased_pid} = CustodyTestHelpers.start_control_child!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(leased_port, leased_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+    end)
+
+    assert {:ok, _ref} = watch(leased_pid)
+    assert WorkerProcessLifecycle.os_process_alive?(leased_pid)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+
+    assert :ok = GenServer.stop(private_reaper, :shutdown)
+    CustodyTestHelpers.assert_os_pid_dead!(leased_pid, 2_000)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  defp watch(os_pid) do
+    RuntimeProcessReaper.watch(self(), os_pid, %{
+      shutdown_timeout_ms: @short_timeout_ms,
+      model_ref: nil,
+      phase: :loaded
+    })
+  end
+
+  defp unique_root(label) do
+    Path.join(
+      "/tmp",
+      "oc-reaper-#{label}-#{System.unique_integer([:positive, :monotonic])}"
+    )
+  end
+
+  defp event_logged?(marker_path, event) do
+    case File.read(marker_path) do
+      {:ok, contents} -> String.contains?(contents, event)
+      {:error, _reason} -> false
+    end
   end
 
   defp wait_until(fun, timeout_ms) do

@@ -7,6 +7,10 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   has already exited.
   """
 
+  require Logger
+
+  @type signal_result :: :ok | {:error, :signal_failed}
+
   @spec os_process_alive?(non_neg_integer()) :: boolean()
   def os_process_alive?(os_pid) when is_integer(os_pid) and os_pid > 0 do
     case System.cmd("kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true) do
@@ -17,15 +21,25 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
 
   def os_process_alive?(_), do: false
 
-  @spec send_signal(non_neg_integer(), String.t()) :: :ok
+  @spec send_signal(non_neg_integer(), String.t()) :: signal_result()
   def send_signal(os_pid, signal) when is_integer(os_pid) and os_pid > 0 do
-    _ = System.cmd("kill", [signal, Integer.to_string(os_pid)], stderr_to_stdout: true)
-    :ok
+    case System.cmd("kill", [signal, Integer.to_string(os_pid)], stderr_to_stdout: true) do
+      {_output, 0} ->
+        :ok
+
+      {_output, exit_status} ->
+        Logger.warning(
+          "worker signal failed os_pid=#{os_pid} signal=#{signal_name(signal)} " <>
+            "exit_status=#{exit_status}"
+        )
+
+        {:error, :signal_failed}
+    end
   end
 
-  def send_signal(_, _), do: :ok
+  def send_signal(_, _), do: {:error, :signal_failed}
 
-  @spec kill_process_tree(non_neg_integer() | nil) :: :ok
+  @spec kill_process_tree(non_neg_integer() | nil) :: signal_result()
   def kill_process_tree(os_pid) when is_integer(os_pid) and os_pid > 0 do
     {children_output, _} =
       System.cmd("pgrep", ["-P", Integer.to_string(os_pid)], stderr_to_stdout: true)
@@ -36,7 +50,7 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
     |> Enum.each(fn child_pid ->
       case Integer.parse(child_pid) do
         {child_pid_int, _} when child_pid_int > 0 ->
-          kill_process_tree(child_pid_int)
+          _ = kill_process_tree(child_pid_int)
 
         _other ->
           :ok
@@ -44,8 +58,11 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
     end)
 
     send_signal(os_pid, "-KILL")
-    :ok
   end
 
-  def kill_process_tree(_), do: :ok
+  def kill_process_tree(_), do: {:error, :signal_failed}
+
+  defp signal_name("-TERM"), do: "TERM"
+  defp signal_name("-KILL"), do: "KILL"
+  defp signal_name(_signal), do: "unknown"
 end

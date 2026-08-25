@@ -11,6 +11,7 @@ defmodule OrchardNodeAgent.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
+      elixirc_paths: elixirc_paths(Mix.env()),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       # M0 exception: this shell is intentionally shallow and the threshold will
@@ -19,6 +20,9 @@ defmodule OrchardNodeAgent.MixProject do
       deps: deps()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   def application do
     [

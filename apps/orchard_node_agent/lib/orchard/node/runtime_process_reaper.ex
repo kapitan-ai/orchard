@@ -142,7 +142,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
       %{os_pid: os_pid} = _lease ->
         if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-          WorkerProcessLifecycle.kill_process_tree(os_pid)
+          _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
         end
 
         {:noreply, cleanup_lease(state, ref)}
@@ -163,7 +163,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   def terminate(_reason, state) do
     Enum.each(state.leases, fn {_ref, %{os_pid: os_pid}} ->
       if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-        WorkerProcessLifecycle.kill_process_tree(os_pid)
+        _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
       end
     end)
 
@@ -179,7 +179,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         log_orphan_reap(lease, reason)
 
         if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-          WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
+          _ = WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
           timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
           put_in(state.leases[ref][:timer_ref], timer_ref)
         else
