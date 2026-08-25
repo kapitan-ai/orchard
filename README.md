@@ -45,7 +45,7 @@ your network and under your audit trail.
 - **Governed, not just exposed** — organizations, tenants, RBAC, API keys,
   deny-by-default model access, and audit logs are part of the product, not an
   afterthought. Full configurable quota policy is still being completed.
-- **Operable by one person** - the approved macOS native distribution design uses a signed `Orchard.app` inside a DMG, launchd-managed services, a guided `orchardctl init`, and a web Console.
+- **Operable by one person** — the approved macOS native distribution design uses a signed `Orchard.app` inside a DMG, launchd-managed services, a guided `orchardctl init`, and a web Console.
   No Kubernetes, no containers, no message broker.
 - **Apple Silicon native** — models execute on [MLX](https://github.com/ml-explore/mlx),
   Apple's native ML stack, on the Macs you already have.
@@ -232,7 +232,7 @@ boundaries.
 3. **Active/Standby (target)** — up to 2 controllers with exactly 1 active
    leader, still within the overall 1–4 Mac limit. Failover is not yet
    operator-usable.
-4. **Linux Controller + macOS MLX Nodes (accepted target)** - a Linux Controller profile using external Postgres operates admitted Apple Silicon macOS Nodes under the macOS MLX Node runtime profile.
+4. **Linux Controller + macOS MLX Nodes (accepted target)** — a Linux Controller profile using external Postgres operates admitted Apple Silicon macOS Nodes under the macOS MLX Node runtime profile.
    That target is not supported until the mixed-platform acceptance profile and the remaining Milestone 8 gates in `SPEC.md` pass.
 
 All controller-bearing installs currently require an external Postgres
