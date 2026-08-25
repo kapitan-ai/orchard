@@ -187,7 +187,7 @@ defmodule OrchardConsole.NodesLive do
                   kind={:empty}
                   layout={:panel}
                   title="No nodes registered yet."
-                  body="A compatible node-agent will appear here after a successful status read."
+                  body="Registered nodes appear after Node Enrollment and a successful node join. A runtime status read only creates an admission candidate for review."
                 />
               <% @inventory.status == :ok -> %>
                 <.table id="nodes-table" rows={@inventory.rows} row_id={fn node -> "node-#{node.id}" end}>

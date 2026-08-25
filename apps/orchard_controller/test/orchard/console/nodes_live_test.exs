@@ -911,6 +911,9 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert html =~ "No nodes registered yet."
       assert html =~ "nodes-empty-state"
+      assert html =~ "Registered nodes appear after Node Enrollment and a successful node join."
+      assert html =~ "A runtime status read only creates an admission candidate for review."
+      refute html =~ "after a successful status read"
     end
   end
 
