@@ -38,7 +38,8 @@ Neither is a profile.
 
 The current supported platform profile remains Apple Silicon macOS.
 The macOS native distribution profile preserves Orchard.app inside a DMG, launchd, Keychain, app-owned lifecycle, rollback, retained state, signing, notarization, stapling, and air-gap guarantees already accepted by `SPEC.md`.
-The macOS MLX Node runtime profile preserves Apple Silicon, Metal, MLX-LM, tokenizer, Node Agent, provider-neutral conformance, and real-runtime qualification.
+The macOS MLX Node runtime profile qualifies a Node role that pairs the portable Node Agent with Apple Silicon, Metal, MLX-LM, the tokenizer stack, provider-neutral conformance, and real-runtime qualification.
+The Node Agent stays part of the portable Orchard control-plane core rather than becoming provider-specific.
 ADR 0027 removes native PKG and managed Node Agent handover from these current profiles without weakening Orchard.app and DMG lifecycle requirements.
 
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.

@@ -69,12 +69,13 @@ Profile kinds are qualified and composable:
 |---|---|---|
 | Platform | Supported Apple Silicon macOS platform profile; accepted Linux Controller profile | Host operating system, architecture, roles, and platform acceptance |
 | Distribution | macOS native distribution profile | Orchard.app, DMG, host lifecycle, paths, credential storage, rollback, retained state, and release evidence |
-| Runtime-provider | macOS MLX Node runtime profile | Apple Silicon, Metal, MLX-LM, tokenizer, Node Agent, conformance, and real-runtime qualification |
+| Runtime-provider | macOS MLX Node runtime profile | A Node role pairing the portable Node Agent with Apple Silicon, Metal, MLX-LM, the tokenizer stack, conformance, and real-runtime qualification |
 | Acceptance | mixed-platform acceptance profile | Evidence that a portable Controller, including Linux, operates admitted macOS MLX Nodes |
 
 Host-lifecycle adapters remain platform integration boundaries.
 Orchard.app and DMG remain deployment artifacts.
 Neither is a profile.
+The portable Node Agent stays inside the portable Orchard control-plane core and does not become provider-specific under a runtime-provider profile.
 
 The supported v1 Apple Silicon macOS platform profile covers Controller and Node roles in the existing all-in-one and multi-Mac topologies.
 The accepted Linux Controller profile is headless, uses external Postgres, and does not imply a local Node Agent, accelerator runtime, or Apple dependency.
@@ -82,7 +83,7 @@ The mixed-platform acceptance profile becomes satisfied only after Milestone 8 b
 Until then, the Linux Controller profile remains an accepted target rather than a current support claim.
 
 The approved macOS native distribution design remains `Orchard.app` inside a DMG.
-Source availability during an initial source-first Curated OSS transition does not promise a supported public binary.
+Source availability during the initial source-availability transition does not promise a supported public binary.
 Public binary support requires an explicit release decision and completion of the applicable release gates.
 
 A Controller Host is the machine that runs a Controller release.

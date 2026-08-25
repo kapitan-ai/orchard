@@ -97,8 +97,9 @@ your network and under your audit trail.
 **Packaging and availability**
 
 - The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`, with an app-owned, root-authorized service lifecycle and role selection for `all`, `controller`, and `node-agent` hosts.
-- The initial Curated OSS transition may be source-first.
+- The initial source-availability transition may be source-first.
   Source availability does not promise a supported public binary, which requires an explicit release decision and completed release gates.
+  Source availability also does not change Orchard's licensing terms.
 - Native PKG is not a supported current distribution channel. Any future native
   package requires a fresh accepted OpenSpec proposal and implementing PR.
 - Packaged controller installs use operator-managed external PostgreSQL 16+;

@@ -23,6 +23,7 @@ Orchard SHALL define platform, distribution, runtime-provider, and acceptance pr
 A platform profile SHALL bind host roles to an operating system, architecture, and platform acceptance evidence.
 A distribution profile SHALL bind a platform profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
 A runtime-provider profile SHALL bind a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
+A runtime-provider profile MUST NOT make the portable Node Agent provider-specific.
 An acceptance profile SHALL define a named topology and the evidence required to prove its participating profiles operate together.
 Host-lifecycle adapters and deployment artifacts MUST NOT be represented as profiles.
 The Apple Silicon macOS platform profile, macOS native distribution profile, and macOS MLX Node runtime profile SHALL preserve the accepted all-in-one and split-role behavior applicable to each profile.

@@ -1,7 +1,7 @@
 # Orchard Packaging and Operator Runbook
 
 The approved macOS native distribution profile uses `Orchard.app` inside a DMG.
-An initial source-first Curated OSS transition does not promise a supported public binary.
+The initial source-availability transition does not promise a supported public binary.
 Public binary support requires an explicit release decision and completed release gates.
 The app owns the root-authorized service lifecycle and installs the macOS native distribution payload under `/Library/Application Support/Orchard`.
 See [`dmg/README.md`](dmg/README.md) for app assembly, signing, DMG verification, and lifecycle details.

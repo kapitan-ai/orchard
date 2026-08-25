@@ -26,7 +26,8 @@ _Avoid_: Platform Profile, Runtime-Provider Profile, deployment artifact
 
 **Runtime-Provider Profile**:
 A named binding of a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
-_Avoid_: Platform Profile, Distribution Profile, Runtime Provider alone
+It qualifies the Node role rather than making the portable Node Agent provider-specific.
+_Avoid_: Platform Profile, Distribution Profile, Runtime Provider alone, provider-specific Node Agent
 
 **Acceptance Profile**:
 A named topology and evidence contract that proves participating Platform, Distribution, and Runtime-Provider Profiles operate together.
@@ -49,12 +50,17 @@ The macOS Distribution Profile whose approved interactive artifact is `Orchard.a
 _Avoid_: macOS Platform Profile, DMG artifact alone, native PKG
 
 **macOS MLX Node Runtime Profile**:
-The Runtime-Provider Profile for an Apple Silicon macOS Node using Metal, MLX-LM, and the MLX Worker Runtime with real-runtime qualification.
-_Avoid_: macOS Platform Profile, MLX artifact format, generic Node profile
+The Runtime-Provider Profile qualifying an Apple Silicon macOS Node role that pairs the portable Node Agent with Metal, MLX-LM, the tokenizer stack, and the MLX Worker Runtime under real-runtime qualification.
+_Avoid_: macOS Platform Profile, MLX artifact format, generic Node profile, provider-specific Node Agent
 
 **Mixed-Platform Acceptance Profile**:
 The Acceptance Profile that proves a portable Controller, including a Linux Controller, can operate admitted macOS Nodes under the macOS MLX Node Runtime Profile.
 _Avoid_: Mixed-platform Platform Profile, deployment topology alone, Linux support claim without acceptance
+
+**Initial Source-Availability Transition**:
+The first period in which Orchard source is readable in this repository before any supported public binary is published.
+It neither promises a supported public binary nor changes Orchard's licensing terms.
+_Avoid_: Curated OSS, open source release, public binary availability, licensing change
 
 **Normative Build Contract**:
 The top-level product and system contract that governs Orchard behavior and resolves conflicts between docs, tests, and implementation.

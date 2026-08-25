@@ -29,6 +29,7 @@ A distribution profile binds a platform profile and install roles to deployment 
 A runtime-provider profile binds a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
 An acceptance profile names a topology and the evidence required to prove its participating profiles operate together.
 Host-lifecycle adapters and deployment artifacts are implementation boundaries and artifacts, so they are not profiles.
+A runtime-provider profile qualifies the Node role it applies to and does not make the portable Node Agent provider-specific.
 
 ### The Portable Boundary Is Named For What It Contains
 
@@ -38,8 +39,9 @@ Naming the members keeps the boundary reviewable without introducing a new appli
 ### Approved Distribution Design Is Not A Public Binary Promise
 
 The signed and notarized DMG containing `Orchard.app` remains the approved macOS native distribution design.
-An initial source-first Curated OSS transition does not promise a supported public binary.
+The initial source-availability transition does not promise a supported public binary.
 A supported public binary requires an explicit release decision and completion of every applicable build, verification, signing, notarization, stapling, and publication gate.
+Source availability also does not change Orchard's licensing terms, which this change leaves exactly as they are.
 
 ### The Completed PKG-Removal Package Keeps Its Original Scope
 

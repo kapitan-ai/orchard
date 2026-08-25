@@ -337,7 +337,7 @@ See `docs/local-dev.md` for full environment setup and configuration.
 ## macOS Distribution
 
 The approved macOS native distribution profile is the signed and notarized DMG containing `Orchard.app`.
-An initial source-first Curated OSS transition does not promise a supported public binary.
+The initial source-availability transition does not promise a supported public binary.
 Public binary support requires an explicit release decision and completed build, verification, signing, notarization, stapling, and publication gates.
 Use the Swift/macOS app workflow above and `packaging/dmg/README.md` for current build and verification guidance.
 

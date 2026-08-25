@@ -11,10 +11,11 @@ The archived `remove-native-pkg-distribution` change is complete and owns the na
 - Keep the Apple Silicon macOS platform profile, the macOS native distribution profile, the macOS MLX Node runtime profile, and the mixed-platform acceptance profile distinct from one another.
 - Keep the Linux Controller as a platform profile that uses operator-provided external Postgres and stays unsupported until its Milestone 8 acceptance gates pass.
 - Describe the signed and notarized DMG containing `Orchard.app` as the approved macOS native distribution rather than an already available public binary.
-- Permit a source-first Curated OSS transition without representing source availability as public binary availability or support.
+- Permit the initial source-availability transition without representing source availability as public binary availability, support, or a licensing change.
 - Keep macOS host-lifecycle, Orchard.app and DMG, and macOS MLX Node runtime validation in separate lanes, and keep Developer ID signing, notarization, stapling, and publication release-only.
 
-SPEC.md impact: §§1.1, 1.4, 1.5, 4.1, 11, 13, and 14 adopt the qualified profile vocabulary, name the portable Orchard control-plane core, and separate source availability from supported public binary availability.
+SPEC.md impact: §§1.1, 1.4, 1.5, 2, 4.1, 10, 11, and 14 adopt the qualified profile vocabulary, name the portable Orchard control-plane core, and separate source availability from supported public binary availability.
+The §10 edit reassigns approved credential storage from the platform profile to the distribution profile without changing which secrets are stored or how.
 Native PKG and managed handover remain removed, Orchard.app remains inside the DMG, and no legal licensing term changes.
 
 ## Capabilities

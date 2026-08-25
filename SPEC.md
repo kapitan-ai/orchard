@@ -151,7 +151,8 @@ Profile-specific requirements MUST NOT be treated as requirements of every Contr
 
 The current Apple Silicon macOS platform profile SHALL support the Controller and Node roles in the accepted all-in-one and split-role topologies.
 The macOS native distribution profile SHALL use `Orchard.app` inside a DMG and SHALL preserve launchd, Keychain, app-owned lifecycle, rollback, retained-state, signing, notarization, and stapling requirements.
-The macOS MLX Node runtime profile SHALL bind the Node Agent and tokenizer to Apple Silicon, Metal, the MLX-LM runtime provider, provider-neutral conformance, and real MLX runtime acceptance.
+The macOS MLX Node runtime profile SHALL qualify a Node role that pairs the portable Node Agent with Apple Silicon, Metal, the MLX-LM runtime provider, the tokenizer stack, provider-neutral conformance, and real MLX runtime acceptance.
+The Node Agent SHALL remain part of the portable Orchard control-plane core and MUST NOT become provider-specific through a runtime-provider profile.
 Managed local Postgres mode SHALL remain behavior of the macOS native distribution profile using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
 Apple documents launchd as the system service manager for daemons and agents, and its Containerization project as a macOS Linux-container runtime built on Apple Silicon virtualization. ([Apple Support][2])
 
@@ -4805,8 +4806,9 @@ Its final distribution format, host manager, paths, service integration, and pub
 No Linux distribution is supported by this contract-only amendment.
 
 The macOS native distribution profile SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
-The initial Curated OSS transition MAY be source-first.
+The initial source-availability transition MAY be source-first, meaning Orchard source is readable in this repository before any public binary is published.
 Source availability SHALL NOT be represented as public binary availability or support, and a supported public binary requires an explicit release decision plus every applicable build, verification, signing, notarization, stapling, and publication gate.
+Source availability SHALL NOT be represented as a change to Orchard's licensing terms, which remain the terms stated in the repository.
 Native PKG distribution is not a supported current Orchard distribution channel.
 Legacy PKG receipt detection SHALL be retained solely to prevent silent app ownership takeover of an existing installation, as required by §11.4, and does not define a supported distribution channel, a release artifact, or a validation gate.
 Any future native package or additional distribution channel SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request that updates this contract, security posture, operator documentation, and validation gates before support is claimed.
