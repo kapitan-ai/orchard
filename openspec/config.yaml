@@ -1,8 +1,8 @@
 schema: spec-driven
 
 context: |
-  Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon macOS.
-  Tech stack: Elixir/OTP umbrella app, Phoenix/LiveView console, Postgres, gRPC over mTLS, native macOS packaging, MLX-LM runtime adapter.
+  Orchard is a sovereign on-prem LLM orchestration platform with a portable Orchard control-plane core, a supported Apple Silicon macOS platform profile, and an accepted Linux Controller target.
+  Tech stack: Elixir/OTP umbrella app, Phoenix/LiveView console, Postgres, a BEAM-first Runtime Endpoint Interface for admitted first-party services, certificate-authenticated gRPC control and compatibility paths, native macOS packaging, and an MLX-LM runtime adapter.
   SPEC.md is the top-level normative product/system contract. OpenSpec materials are subordinate change-intent artifacts.
   Behavior-changing work must state SPEC.md impact and reconcile accepted behavior with SPEC.md, docs, tests, and implementation.
   Do not copy private workbench context, prompt exports, active goal packages, local evidence paths, credentials, DSNs, or tool session identifiers into OpenSpec artifacts.

@@ -1,6 +1,6 @@
 ## 1. Accepted specs
 
-- [x] 1.1 Rename and modify the `platform-profiles` portable core and profile requirements to the portable Orchard control-plane core and the four qualified profile kinds.
+- [x] 1.1 Rename and modify the `platform-profiles` portable Orchard control-plane core dependency and qualified-profile requirements.
 - [x] 1.2 Rename and modify the `packaging-deployment` distribution scope and payload selection requirements to the macOS native distribution profile.
 - [x] 1.3 Add the `packaging-deployment` requirement separating source availability from supported public binary availability.
 - [x] 1.4 Rename and modify the `portability-validation` macOS lane requirement and requalify required Linux portable validation.
@@ -17,6 +17,7 @@
 - [x] 2.3 Qualify ADR 0023 with the same vocabulary without rewriting its historical decision.
 - [x] 2.4 Annotate ADR 0027 with a dated Status note for the qualified-profile terminology so the addition is not attributed to its original reviewers.
 - [x] 2.5 Keep the archived `remove-native-pkg-distribution` package at its original decision scope.
+- [x] 2.6 Reconcile the pre-existing topology-status contradiction so current external-Postgres paths remain distinct from future Managed Database Mode, packaged multi-Mac acceptance, and Active/Standby operation.
 
 ## 3. Documentation
 
@@ -24,9 +25,10 @@
 - [x] 3.2 Reconcile `docs/architecture.md`, `docs/tooling.md`, `docs/local-dev.md`, and `docs/process.md`.
 - [x] 3.3 Reconcile `docs/glossary/CONTEXT.md` with qualified profile terms and qualified Node platform wording.
 - [x] 3.4 Reconcile `packaging/README.md` and `packaging/dmg/README.md` with the approved macOS native distribution wording.
-- [x] 3.5 Distinguish portable-core build prerequisites such as the Apple C toolchain used by `orchard_cli` from validation steps owned by the macOS native distribution and macOS MLX Node runtime profiles.
+- [x] 3.5 Distinguish portable Orchard control-plane core build prerequisites such as the Apple C toolchain used by `orchard_cli` from validation steps owned by the macOS native distribution and macOS MLX Node runtime profiles.
 - [x] 3.6 Describe the mixed-platform acceptance profile as evidence that is satisfied rather than a deployment topology that is supported.
 - [x] 3.7 Keep the shared distribution-neutral payload contract and name `Orchard.app` and the DMG as its current macOS native-distribution consumers without treating the payload as a profile.
+- [x] 3.8 Reconcile live OpenSpec context with the portable Orchard control-plane core, supported macOS platform profile, accepted Linux Controller target, and BEAM-first Runtime Endpoint boundary.
 
 ## 4. Preserved decisions
 

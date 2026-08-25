@@ -1,11 +1,13 @@
 # Orchard v2 - Technical Specification
 
-This document is the normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform with a portable Orchard control-plane core and an existing **1–4 Apple Silicon macOS** platform profile.
+This document is the normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform with a portable Orchard control-plane core and a supported **Apple Silicon macOS** platform profile.
 It is intended for a coding agent that will build the system incrementally.
 “MUST”, “SHALL”, and “MUST NOT” are mandatory requirements.
 “SHOULD” is a strong recommendation.
 
-The macOS all-in-one and split-role deployment topologies are the currently supported product topologies.
+The Apple Silicon macOS platform profile is the only currently supported platform profile.
+Within that profile, the app-installed all-in-one topology and the validated source-development split-role topology are current, while packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps.
+Current Controller-bearing installations require operator-provided external Postgres, Managed Database Mode remains future Milestone 6 work, and Active/Standby operation remains a Milestone 7 target.
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
 That Linux Controller profile SHALL NOT be represented as supported until the Milestone 8 acceptance contract passes.
 
@@ -17,27 +19,32 @@ The platform exposes **OpenAI-compatible** inference APIs. Internally, it SHALL 
 
 ## 1. System Architecture
 
-### 1.1 Target topology
+### 1.1 Topology contracts and status
 
-Current supported deployment modes:
+Current and accepted deployment modes:
 
 1. **All-in-one single node**
 
+   * current app-installed topology
    * 1 Mac runs:
 
      * control plane
      * node agent
      * local worker runtime
-     * managed Postgres
+   * current builds require operator-provided external Postgres
+   * Managed Database Mode remains future Milestone 6 work and is not part of the topology identity
 
 2. **Controller + worker nodes**
 
+   * current and validated for source development
+   * packaged private-network operation remains a first-cut rehearsal path with unresolved production acceptance gaps
    * 1 Mac runs control plane
    * 1–3 Macs run node agent + local workers
-   * Postgres is either managed on controller host or external
+   * current builds require operator-provided external Postgres
 
-3. **Active/Standby control plane**
+3. **Active/Standby control plane target**
 
+   * accepted Milestone 7 design that is not currently operator-usable
    * 2 controller instances maximum
    * exactly 1 active leader at a time
    * remains within the overall 1–4 Mac deployment limit
@@ -140,7 +147,7 @@ Accepted platform-expansion target:
 
 Orchard SHALL use qualified, composable profile kinds so platform support, distribution, runtime-provider support, and cross-platform acceptance remain distinct.
 
-* A **platform profile** binds Orchard host roles to a supported operating system, architecture, and platform acceptance evidence.
+* A **platform profile** binds Orchard host roles to a specified operating system, architecture, and platform acceptance evidence.
 * A **distribution profile** binds a platform profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
 * A **runtime-provider profile** binds a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
 * An **acceptance profile** defines a named topology and the evidence required to prove its participating profiles operate together.
@@ -148,12 +155,14 @@ Orchard SHALL use qualified, composable profile kinds so platform support, distr
 A host-lifecycle adapter is a platform integration boundary, not a profile.
 A deployment artifact is a produced distribution input or output, not a profile.
 Profile-specific requirements MUST NOT be treated as requirements of every Controller Host, Node, distribution, or runtime provider.
+Defining or accepting a profile does not declare it supported; a support claim requires its applicable acceptance evidence and gates to pass.
 
-The current Apple Silicon macOS platform profile SHALL support the Controller and Node roles in the accepted all-in-one and split-role topologies.
+The current Apple Silicon macOS platform profile SHALL preserve the accepted Controller and Node behavior of the all-in-one and split-role topologies at their documented support status.
 The macOS native distribution profile SHALL use `Orchard.app` inside a DMG and SHALL preserve launchd, Keychain, app-owned lifecycle, rollback, retained-state, signing, notarization, and stapling requirements.
 The macOS MLX Node runtime profile SHALL qualify a Node role that pairs the portable Node Agent with Apple Silicon, Metal, the MLX-LM runtime provider, the tokenizer stack, provider-neutral conformance, and real MLX runtime acceptance.
 The Node Agent SHALL remain part of the portable Orchard control-plane core and MUST NOT become provider-specific through a runtime-provider profile.
-Managed local Postgres mode SHALL remain behavior of the macOS native distribution profile using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
+Managed local Postgres mode SHALL remain target behavior of the macOS native distribution profile using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
+Managed local Postgres mode is unavailable in current builds and remains future Milestone 6 work.
 Apple documents launchd as the system service manager for daemons and agents, and its Containerization project as a macOS Linux-container runtime built on Apple Silicon virtualization. ([Apple Support][2])
 
 The accepted Linux Controller profile is a platform profile for the Controller role.

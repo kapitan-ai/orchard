@@ -26,7 +26,9 @@ A runtime-provider profile SHALL bind a Node role to a Worker Runtime provider, 
 A runtime-provider profile MUST NOT make the portable Node Agent provider-specific.
 An acceptance profile SHALL define a named topology and the evidence required to prove its participating profiles operate together.
 Host-lifecycle adapters and deployment artifacts MUST NOT be represented as profiles.
+Defining or accepting a profile SHALL NOT be represented as a support claim before its applicable acceptance evidence and gates pass.
 The Apple Silicon macOS platform profile, macOS native distribution profile, and macOS MLX Node runtime profile SHALL preserve the accepted all-in-one and split-role behavior applicable to each profile.
+Managed Database Mode and Active/Standby operation SHALL remain future milestone work rather than current topology support claims.
 The first accepted Linux target SHALL be a Controller Host using operator-provided external Postgres and dispatching to admitted macOS MLX Nodes.
 The Linux Controller profile MUST NOT be represented as supported until its Milestone 8 acceptance gates pass.
 This requirement changes `SPEC.md` §§1.1, 1.4, 1.5, 4.1, 11, and 14.

@@ -77,7 +77,8 @@ Orchard.app and DMG remain deployment artifacts.
 Neither is a profile.
 The portable Node Agent stays inside the portable Orchard control-plane core and does not become provider-specific under a runtime-provider profile.
 
-The supported v1 Apple Silicon macOS platform profile covers Controller and Node roles in the existing all-in-one and multi-Mac topologies.
+The supported v1 Apple Silicon macOS platform profile covers the current app-installed all-in-one path and the validated source-development split-role path.
+Packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps, and Active/Standby operation remains a Milestone 7 target.
 The accepted Linux Controller profile is headless, uses external Postgres, and does not imply a local Node Agent, accelerator runtime, or Apple dependency.
 The mixed-platform acceptance profile becomes satisfied only after Milestone 8 build, conformance, packaging, upgrade, rollback, security, and topology acceptance passes.
 Until then, the Linux Controller profile remains an accepted target rather than a current support claim.
@@ -91,7 +92,8 @@ Agent also runs there.
 
 ## System at a glance
 
-Orchard's current supported topology spans one to four Apple Silicon Macs.
+Orchard currently supports the app-installed all-in-one path and validates split-role source development under the Apple Silicon macOS platform profile.
+Packaged multi-Mac operation is not yet a general support claim.
 Its accepted mixed-platform target permits the Controller Host to run headlessly on Linux while inference Nodes remain Apple Silicon Macs under the macOS MLX Node runtime profile.
 The logical topology is:
 

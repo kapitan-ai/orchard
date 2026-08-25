@@ -55,6 +55,6 @@ Every supported runtime provider SHALL pass the same provider-neutral conformanc
 Hardware-specific acceptance SHALL supplement and MUST NOT replace provider-neutral conformance.
 
 #### Scenario: Provider is proposed for support
-- **WHEN** a runtime provider is proposed for a supported runtime-provider profile
+- **WHEN** a runtime provider is proposed for support under a runtime-provider profile
 - **THEN** it passes provider-neutral conformance
 - **AND** it passes the applicable real-hardware acceptance lane

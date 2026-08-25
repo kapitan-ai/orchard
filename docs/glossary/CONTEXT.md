@@ -8,7 +8,7 @@ This glossary defines Orchard's shared language; `SPEC.md` remains the normative
 ### Product Truth
 
 **Orchard**:
-A sovereign on-prem LLM orchestration platform whose supported Apple Silicon macOS platform profile spans one to four machines and whose accepted next target permits a Linux Controller Host with Apple Silicon macOS Nodes.
+A sovereign on-prem LLM orchestration platform whose current supported platform profile is Apple Silicon macOS and whose accepted next platform target permits a Linux Controller Host with Apple Silicon macOS Nodes.
 _Avoid_: Kapitan Orchard, cloud LLM platform
 
 **Portable Orchard Control-Plane Core**:
@@ -16,7 +16,8 @@ The platform-neutral Shared, Controller, Node Agent, and portable CLI behavior t
 _Avoid_: Portable core, portable control plane, portable control-plane core, Linux-only core, Linux Orchard, macOS Orchard
 
 **Platform Profile**:
-A named binding of Orchard host roles to a supported operating system, architecture, and platform acceptance evidence.
+A named binding of Orchard host roles to a specified operating system, architecture, and platform acceptance evidence.
+Defining or accepting a Platform Profile does not declare it supported; support requires the applicable acceptance evidence and gates to pass.
 An accepted target profile is not supported until its explicit milestone acceptance gates pass.
 _Avoid_: Distribution Profile, Runtime-Provider Profile, Acceptance Profile, unqualified profile, support claim without acceptance
 
@@ -172,11 +173,13 @@ It is not a per-function capability sandbox.
 _Avoid_: Runtime Endpoint Interface, protocol-isolated adapter, least-privilege RPC boundary
 
 **All-in-One Deployment**:
-A deployment topology where one Mac runs the Controller, Node Agent, Worker Runtime, and Managed Database Mode.
-_Avoid_: Single binary install, External Database Mode
+A deployment topology where one Mac runs the Controller, Node Agent, and Worker Runtime.
+Its Database Mode is orthogonal to the topology identity.
+_Avoid_: Single binary install, Database Mode
 
 **Controller and Worker Deployment**:
-A deployment topology where one Mac runs the Controller and one to three Macs run Node Agents and Worker Runtimes; database ownership may be managed on the controller host or external.
+A deployment topology where one Mac runs the Controller and one to three Macs run Node Agents and Worker Runtimes.
+Its Database Mode is orthogonal to the topology identity.
 _Avoid_: Database mode, cloud cluster, Kubernetes cluster
 
 **Active/Standby Control Plane**:

@@ -31,6 +31,13 @@ An acceptance profile names a topology and the evidence required to prove its pa
 Host-lifecycle adapters and deployment artifacts are implementation boundaries and artifacts, so they are not profiles.
 A runtime-provider profile qualifies the Node role it applies to and does not make the portable Node Agent provider-specific.
 
+### Profile Definition And Topology Identity Do Not Imply Support
+
+Defining or accepting a profile names its contract target without declaring it supported.
+Support requires the applicable acceptance evidence and gates to pass.
+Topology identity is also orthogonal to Database Mode and milestone status.
+The current app-installed all-in-one path requires external Postgres, split-role source development is validated, packaged multi-Mac operation remains a first-cut rehearsal path, Managed Database Mode remains future Milestone 6 work, and Active/Standby operation remains a Milestone 7 target.
+
 ### The Portable Boundary Is Named For What It Contains
 
 The portable Orchard control-plane core is the platform-neutral behavior of `orchard_shared`, `orchard_controller`, `orchard_node_agent`, and the portable `orchard_cli`, together with the provider-neutral contracts they depend on.
@@ -56,12 +63,15 @@ The source-first and qualified-profile decisions are recorded here instead, so t
 
 ## Migration Plan
 
-1. Rename the portable core and profile requirements in `platform-profiles`, and define the four qualified profile kinds.
+1. Rename the dependency requirement to the portable Orchard control-plane core and define the four qualified profile kinds in `platform-profiles`.
+   Separate profile definition and topology identity from support status and milestone acceptance.
 2. Scope the Apple distribution gates and payload selection requirements in `packaging-deployment` to the macOS native distribution profile, and add the source availability requirement.
 3. Split the macOS contract lanes in `portability-validation` and keep credentialed release operations release-only.
 4. Requalify the portable boundary reference in `host-lifecycle-adapters` and the provider support trigger in `worker-runtime-providers`.
-5. Reconcile `SPEC.md`, `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, decisions, glossary, architecture, tooling, local development, process, and packaging documentation with the same vocabulary.
-6. Validate this change strictly while it is active, then archive it without reapplying already synchronized accepted specs.
+5. Requalify the `app-distribution-lifecycle` Purpose prose without changing its requirements.
+   OpenSpec delta grammar does not model Purpose-only edits, so the proposal Impact and task 1.7 record the provenance without a no-op requirement delta.
+6. Reconcile `SPEC.md`, `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, decisions, glossary, architecture, tooling, local development, process, and packaging documentation with the same vocabulary.
+7. Validate this change strictly while it is active, then archive it without reapplying already synchronized accepted specs.
 
 ## Risks And Mitigations
 
