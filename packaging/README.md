@@ -225,7 +225,8 @@ Restart services through `orchardctl stop` and `orchardctl start` rather than di
 
 ## Multi-Mac runtime
 
-The current distributed macOS path supports one controller Mac and one or more node-agent Macs on a trusted private network or VPN.
+The current packaged distributed macOS path is a first-cut private-network deployment and rehearsal path for one controller Mac and one or more node-agent Macs on a trusted private network or VPN.
+It is not yet a general support claim and has unresolved production acceptance gaps.
 BEAM Runtime Endpoint transport is the first-party default.
 gRPC remains an explicit compatibility path.
 
