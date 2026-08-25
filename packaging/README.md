@@ -1,15 +1,17 @@
 # Orchard Packaging and Operator Runbook
 
-Orchard ships as `Orchard.app` inside a DMG.
-The app owns the root-authorized service lifecycle and installs the shared payload under `/Library/Application Support/Orchard`.
+The approved macOS native distribution profile uses `Orchard.app` inside a DMG.
+An initial source-first Curated OSS transition does not promise a supported public binary.
+Public binary support requires an explicit release decision and completed release gates.
+The app owns the root-authorized service lifecycle and installs the macOS native distribution payload under `/Library/Application Support/Orchard`.
 See [`dmg/README.md`](dmg/README.md) for app assembly, signing, DMG verification, and lifecycle details.
 
 The accepted Linux Controller profile remains a future milestone with separate headless lifecycle and packaging acceptance requirements.
-Nothing in this runbook makes launchd, Keychain, macOS paths, or Apple signing part of the portable Controller contract.
+Nothing in this runbook makes launchd, Keychain, macOS paths, or Apple signing part of the portable Orchard control-plane core contract.
 
-## Shared payload
+## macOS native distribution payload
 
-Build the distribution-neutral payload with:
+Build the macOS native distribution payload with:
 
 ```bash
 mise exec -- ./scripts/build-payload.sh
@@ -19,7 +21,7 @@ The script builds the Elixir releases and native helper environments, stages the
 It prints `PAYLOAD_ROOT=<path>` after the staged payload passes validation.
 Pass that path to `scripts/build-app.sh`.
 
-Shared wrapper sources live in `packaging/payload/bin/`.
+Payload wrapper sources live in `packaging/payload/bin/`.
 Payload signing entitlements live in `packaging/payload/entitlements/`.
 The staged operator-facing commands are:
 

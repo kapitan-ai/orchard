@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines Orchard's app-primary macOS distribution lifecycle, including app assembly and release sidecars, root-authorized role-aware service operations, transactional rollback and operator-state retention, inner-first signing, and verified Amore DMG handoff.
+Defines the macOS native distribution profile's app-primary lifecycle, including app assembly and release sidecars, root-authorized role-aware service operations, transactional rollback and operator-state retention, inner-first signing, and verified Amore DMG handoff.
 
 The generic-distribution-artifact contract that the archived `2026-07-20-amore-dmg-service-lifecycle` delta also proposed here is owned solely by `packaging-deployment`, so it is deliberately not restated in this capability.
 

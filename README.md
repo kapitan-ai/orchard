@@ -45,9 +45,8 @@ your network and under your audit trail.
 - **Governed, not just exposed** — organizations, tenants, RBAC, API keys,
   deny-by-default model access, and audit logs are part of the product, not an
   afterthought. Full configurable quota policy is still being completed.
-- **Operable by one person** — a signed `Orchard.app` DMG, launchd-managed
-  services, a guided `orchardctl init`, and a web Console. No Kubernetes, no
-  containers, no message broker.
+- **Operable by one person** - the approved macOS native distribution design uses a signed `Orchard.app` inside a DMG, launchd-managed services, a guided `orchardctl init`, and a web Console.
+  No Kubernetes, no containers, no message broker.
 - **Apple Silicon native** — models execute on [MLX](https://github.com/ml-explore/mlx),
   Apple's native ML stack, on the Macs you already have.
 
@@ -95,11 +94,11 @@ your network and under your audit trail.
   request-correlated logs; structured logging and OpenTelemetry tracing are
   specified but not yet shipped.
 
-**Packaging**
+**Packaging and availability**
 
-- A signed and notarized `Orchard.app` DMG with an app-owned, root-authorized
-  service lifecycle and role selection for `all`, `controller`, and
-  `node-agent` hosts.
+- The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`, with an app-owned, root-authorized service lifecycle and role selection for `all`, `controller`, and `node-agent` hosts.
+- The initial Curated OSS transition may be source-first.
+  Source availability does not promise a supported public binary, which requires an explicit release decision and completed release gates.
 - Native PKG is not a supported current distribution channel. Any future native
   package requires a fresh accepted OpenSpec proposal and implementing PR.
 - Packaged controller installs use operator-managed external PostgreSQL 16+;
@@ -129,10 +128,8 @@ client = OpenAI(base_url="https://orchard.internal/v1", api_key=ORCHARD_API_KEY)
 client.responses.create(model="your-model@v1", input="Hello!")
 ```
 
-Operators install from the release media and follow
-[`packaging/README.md`](packaging/README.md) and
-[`packaging/dmg/README.md`](packaging/dmg/README.md); contributors run from
-source with `make dev` (see [`docs/local-dev.md`](docs/local-dev.md)).
+Operators with approved release media follow [`packaging/README.md`](packaging/README.md) and [`packaging/dmg/README.md`](packaging/dmg/README.md).
+Contributors run from source with `make dev` as documented in [`docs/local-dev.md`](docs/local-dev.md).
 
 ## Status & roadmap
 
@@ -164,6 +161,7 @@ configurable tenant quota policy, Active/Standby failover, and managed Postgres
 | M5 | Observability and diagnostics | Partial (metrics floor, diagnostics) |
 | M6 | Security hardening and air-gap | Partial (transport/certificate slices) |
 | M7 | Upgrade safety and Active/Standby controller | Planned |
+| M8 | Portable Orchard control-plane core and Linux Controller profile | Accepted target |
 
 ## Architecture
 
@@ -220,7 +218,7 @@ boundaries.
 | Runtime endpoint transport | Runtime Endpoint Interface (first-party BEAM adapter; gRPC compatibility adapter) |
 | APIs | Phoenix/Plug with SSE streaming |
 | Console | Phoenix LiveView |
-| Packaging | signed `Orchard.app` DMG (app-owned service lifecycle) + launchd |
+| Packaging | macOS native distribution profile with `Orchard.app` inside a DMG, app-owned service lifecycle, and launchd |
 | CLI | `orchardctl` |
 | Toolchain | mise-pinned Erlang/OTP, Elixir, Python, uv, Node.js, npm, and OpenSpec |
 
@@ -233,6 +231,8 @@ boundaries.
 3. **Active/Standby (target)** — up to 2 controllers with exactly 1 active
    leader, still within the overall 1–4 Mac limit. Failover is not yet
    operator-usable.
+4. **Linux Controller + macOS MLX Nodes (accepted target)** - a Linux Controller profile using external Postgres operates admitted Apple Silicon macOS Nodes under the macOS MLX Node runtime profile.
+   This mixed-platform acceptance profile is not supported until the Milestone 8 gates pass.
 
 All controller-bearing installs currently require an external Postgres
 database. The app lifecycle supports `all`, `controller`, and `node-agent`
@@ -255,18 +255,15 @@ mise exec -- ./scripts/build-payload.sh
 ```
 
 The command prints the validated `PAYLOAD_ROOT` used by the app assembler.
-Run `make setup` first; see [`packaging/README.md`](packaging/README.md#shared-payload)
+Run `make setup` first; see [`packaging/README.md`](packaging/README.md#macos-native-distribution-payload)
 for the payload contract.
 
 ## Run from source
 
-This path is for developers and contributors; operators should use the
-`Orchard.app` DMG flow above. On Apple Silicon macOS, install the mise-pinned
-toolchain from [`mise.toml`](mise.toml), and have a local PostgreSQL ≥15
-instance accepting TCP connections before starting the dev server. See
-[`docs/local-dev.md`](docs/local-dev.md) and
-[`docs/tooling.md`](docs/tooling.md) for prerequisites and pinned command
-forms.
+This path is for developers and contributors.
+Operators with approved release media use the `Orchard.app`-inside-DMG flow above.
+On Apple Silicon macOS, install the mise-pinned toolchain from [`mise.toml`](mise.toml), and have a local PostgreSQL ≥15 instance accepting TCP connections before starting the dev server.
+See [`docs/local-dev.md`](docs/local-dev.md) and [`docs/tooling.md`](docs/tooling.md) for prerequisites and pinned command forms.
 
 ```bash
 make setup

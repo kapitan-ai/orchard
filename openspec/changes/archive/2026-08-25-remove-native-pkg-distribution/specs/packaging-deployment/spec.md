@@ -1,7 +1,11 @@
 ## RENAMED Requirements
 
 - FROM: `### Requirement: PKG Supports Privileged Local Installation`
-- TO: `### Requirement: DMG And Orchard.app Are The Current Native Distribution`
+- TO: `### Requirement: DMG And Orchard.app Are The Approved macOS Native Distribution`
+- FROM: `### Requirement: Distribution Requirements Are Platform Profile Scoped`
+- TO: `### Requirement: Distribution Requirements Are Distribution-Profile Scoped`
+- FROM: `### Requirement: Platform Runtime Payloads Are Selected Explicitly`
+- TO: `### Requirement: Distribution Payloads Are Selected Explicitly`
 
 ## ADDED Requirements
 
@@ -27,11 +31,23 @@ That proposal and pull request SHALL update `SPEC.md`, security posture, operato
 - **THEN** existing legacy material is insufficient authority to ship it
 - **AND** review begins from a fresh proposal and implementing pull request
 
+### Requirement: Source Availability Does Not Imply Public Binary Support
+
+Orchard SHALL permit the initial Curated OSS transition to be source-first without publishing a supported public binary.
+Source availability SHALL NOT be represented as public binary availability or support.
+A supported public binary SHALL require an explicit release decision and completion of every applicable build, verification, signing, notarization, stapling, and publication gate.
+
+#### Scenario: Source is available before public binaries
+
+- **WHEN** Orchard source is available without an approved public binary release
+- **THEN** documentation does not promise a supported downloadable binary
+- **AND** the approved Orchard.app-inside-DMG design remains unchanged
+
 ## MODIFIED Requirements
 
-### Requirement: DMG And Orchard.app Are The Current Native Distribution
+### Requirement: DMG And Orchard.app Are The Approved macOS Native Distribution
 
-Orchard's current macOS distribution SHALL use a signed and notarized DMG containing `Orchard.app`.
+The approved macOS native distribution profile SHALL use a signed and notarized DMG containing `Orchard.app`.
 The app-owned lifecycle SHALL remain the current root-authorized path for role-aware service installation, update, uninstall, and status.
 
 #### Scenario: Current macOS distribution is assembled
@@ -59,10 +75,10 @@ Orchard distribution artifacts SHALL remain generic across app, DMG, and future 
 - **THEN** the artifact does not embed customer identifiers, database DSNs, production TLS material, or deployment secrets
 - **AND** the artifact does not require product-license activation
 
-### Requirement: Distribution Requirements Are Platform Profile Scoped
+### Requirement: Distribution Requirements Are Distribution-Profile Scoped
 
-DMG, Orchard.app, launchd, Keychain, Apple signing, notarization, and stapling requirements SHALL apply to the macOS distribution profile and SHALL remain release gates for that profile.
-Portable Controller compilation and the Linux Controller profile MUST NOT require those Apple distribution tools.
+DMG, Orchard.app, launchd, Keychain, Apple signing, notarization, and stapling requirements SHALL apply to the macOS native distribution profile and SHALL remain release gates for that profile.
+Portable Orchard control-plane core compilation and the Linux Controller profile MUST NOT require those Apple distribution tools.
 Generic secret-free artifact, Product Version, trust, role, rollback, retained-state, and protocol compatibility invariants SHALL remain shared where applicable across profiles.
 
 #### Scenario: macOS release is produced
@@ -72,18 +88,18 @@ Generic secret-free artifact, Product Version, trust, role, rollback, retained-s
 
 #### Scenario: Linux Controller is compiled and validated
 
-- **WHEN** Orchard compiles or validates the portable Linux Controller profile
+- **WHEN** Orchard compiles or validates the portable Orchard control-plane core for the Linux Controller profile
 - **THEN** the workflow does not require Apple packaging or publication tools
 - **AND** it still enforces generic version, trust, secret-free artifact, and protocol compatibility contracts
 
-### Requirement: Platform Runtime Payloads Are Selected Explicitly
+### Requirement: Distribution Payloads Are Selected Explicitly
 
-A platform distribution SHALL contain only runtime providers and native host artifacts compatible with its declared profile.
-The macOS all-in-one profile SHALL retain its current Controller, Node Agent, MLX, tokenizer, app-owned host lifecycle, and role-selected payload behavior until a separately accepted change supersedes it.
+A distribution profile SHALL contain only runtime providers and native host artifacts compatible with its declared platform and runtime-provider profiles.
+The macOS native distribution profile SHALL retain the accepted Controller, Node Agent, MLX, tokenizer, app-owned host lifecycle, and role-selected payload behavior for the all-in-one topology until a separately accepted change supersedes it.
 
 #### Scenario: Mac all-in-one artifact is assembled
 
-- **WHEN** the existing macOS all-in-one profile is built during the portability migration
+- **WHEN** the existing macOS all-in-one topology is built during the portability migration
 - **THEN** it continues to contain the accepted Mac-compatible role payloads
 - **AND** no future Linux or CUDA payload is required for acceptance
 

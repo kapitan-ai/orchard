@@ -1,9 +1,10 @@
-# ADR: Platform profiles refine Orchard's portable core
+# ADR: Qualified profiles refine the portable Orchard control-plane core
 
 ## Status
 
 Accepted on 2026-08-23 under issues #266 and #267.
-ADR 0027 supersedes only this record's preservation of native PKG distribution and ADR 0018 managed handover; the portable-core and platform-profile decision remains accepted.
+Terminology reconciled on 2026-08-25 without changing the accepted dependency boundary.
+ADR 0027 supersedes only this record's preservation of native PKG distribution and ADR 0018 managed handover; the portable Orchard control-plane core and qualified-profile decision remains accepted.
 
 ## Context
 
@@ -15,24 +16,35 @@ Portable compilation alone is not sufficient evidence for supported deployment.
 
 ## Decision
 
-Define a portable Orchard core and bind it to supported platform profiles.
+Define the portable Orchard control-plane core and bind it to qualified, composable profiles.
 
-The portable core consists of `orchard_shared`, `orchard_controller`, `orchard_node_agent`, and portable `orchard_cli` behavior.
+The portable Orchard control-plane core consists of the platform-neutral behavior of `orchard_shared`, `orchard_controller`, `orchard_node_agent`, and portable `orchard_cli`, together with the provider-neutral contracts on which they depend.
 These applications SHALL depend on portable contracts for platform-neutral behavior.
 Platform host adapters, runtime-provider implementations, platform packaging, and vendor SDKs SHALL depend inward on those contracts and MUST NOT become unconditional compile dependencies of the portable umbrella.
 
-Keep `orchard_node_agent` as the portable Node orchestration core.
+Keep `orchard_node_agent` inside the portable Orchard control-plane core as the Node orchestration participant.
 Do not extract an `orchard_node_core` application unless a later concrete dependency or supervision constraint requires it.
 
 Treat Controller Hosts and schedulable Nodes as distinct roles.
 A Controller Host does not become schedulable unless an admitted Node Agent on that host separately satisfies the Node trust, lifecycle, health, capability, and capacity contracts.
 
+Use four qualified profile kinds.
+A platform profile binds Orchard host roles to an operating system, architecture, and platform acceptance evidence.
+A distribution profile binds a platform profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
+A runtime-provider profile binds a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
+An acceptance profile defines a named topology and the evidence required to prove its participating profiles operate together.
+Host-lifecycle adapters remain platform integration boundaries, while Orchard.app and DMG remain deployment artifacts.
+Neither is a profile.
+
 The current supported platform profile remains Apple Silicon macOS.
-It preserves the all-in-one and split-role topologies, launchd, Orchard.app, DMG, PKG, managed handover, signing, notarization, air-gap, retained-state, managed Postgres, and MLX guarantees already accepted by `SPEC.md`.
+The macOS native distribution profile preserves Orchard.app inside a DMG, launchd, Keychain, app-owned lifecycle, rollback, retained state, signing, notarization, stapling, and air-gap guarantees already accepted by `SPEC.md`.
+The macOS MLX Node runtime profile preserves Apple Silicon, Metal, MLX-LM, tokenizer, Node Agent, provider-neutral conformance, and real-runtime qualification.
+ADR 0027 removes native PKG and managed Node Agent handover from these current profiles without weakening Orchard.app and DMG lifecycle requirements.
 
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
-The Linux Controller profile is headless and does not require a local Node Agent or accelerator runtime.
-It SHALL NOT be declared supported until its release, trust, transport, scheduling, streaming, cancellation, restart, failure, provenance, and mixed-platform acceptance passes.
+The Linux Controller profile is a headless platform profile and does not require a local Node Agent, accelerator runtime, Xcode, launchd, Keychain, Orchard.app, or DMG.
+The mixed-platform acceptance profile proves a portable Controller, including the Linux Controller, operating admitted macOS Nodes under the macOS MLX Node runtime profile.
+The Linux Controller profile SHALL NOT be declared supported until its release, trust, transport, scheduling, streaming, cancellation, restart, failure, provenance, and mixed-platform acceptance passes.
 
 Final Linux packaging, host management, managed Postgres, Linux Node lifecycle, Linux accelerator discovery, and CUDA or ROCm runtime support remain deferred.
 
@@ -40,8 +52,9 @@ Final Linux packaging, host management, managed Postgres, Linux Node lifecycle, 
 
 The repository gains an enforceable dependency direction and a sequence for proving portability before adding another accelerator stack.
 Mac-specific operational guarantees remain visible instead of being reduced to a lowest-common-denominator abstraction.
-CI and release composition must later separate portable validation from platform acceptance and publication.
-Every new platform or runtime profile requires explicit contracts and acceptance evidence.
+CI must later move broad portable validation to Linux and keep macOS host-lifecycle, Orchard.app/DMG, and MLX evidence in separate applicable lanes.
+Credential-free signing-contract validation may run in normal CI, while Developer ID signing, notarization, stapling, and publication remain release-only.
+Every new platform, distribution, runtime-provider, or acceptance profile requires explicit contracts and acceptance evidence.
 
 The architecture contract may be accepted before implementation, but support status cannot.
 The vNext milestone carries the support gate and preserves completed v1 macOS acceptance as historical truth.

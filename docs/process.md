@@ -48,6 +48,8 @@ Native PKG is not a current supported Orchard channel.
 Restoring it or introducing another channel requires a fresh OpenSpec proposal
 and a separate implementing pull request that reconcile `SPEC.md`, decisions,
 security posture, operator docs, artifact governance, and validation gates.
+An initial source-first Curated OSS transition does not promise a supported public binary.
+Public binary support requires an explicit release decision and completion of every applicable build, verification, signing, notarization, stapling, and publication gate.
 
 ## Re-Grounding Rule
 

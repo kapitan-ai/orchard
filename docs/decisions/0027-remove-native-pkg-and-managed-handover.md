@@ -5,7 +5,7 @@
 Accepted on 2026-08-24.
 
 Supersedes ADR 0018.
-Supersedes only the native PKG and managed-handover preservation clause in ADR 0023; ADR 0023's portable-core and platform-profile decision remains accepted.
+Supersedes only the native PKG and managed-handover preservation clause in ADR 0023; ADR 0023's portable Orchard control-plane core and qualified-profile decision remains accepted.
 
 ## Context
 
@@ -18,9 +18,11 @@ Controller compatibility with Node Agent versions `N` and `N-1` does not itself 
 
 ## Decision
 
-The current native macOS distribution is the signed and notarized DMG containing `Orchard.app`.
+The macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`.
 `Orchard.app` retains its root-authorized role-aware service lifecycle, transactional rollback, retained-state, signing, and DMG verification obligations.
 Source-development workflows and supported public, operator, admin, and Runtime Endpoint APIs are unchanged.
+An initial source-first Curated OSS transition does not promise a supported public binary.
+Public binary support requires an explicit release decision and completion of the applicable build, verification, signing, notarization, stapling, and publication gates.
 
 Native PKG is removed from the active distribution contract.
 Native PKG scripts, package assets, dedicated tests, and active operator documentation are removed.

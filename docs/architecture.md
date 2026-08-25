@@ -59,19 +59,31 @@ conflict is reconciled. `SPEC.md` wins until explicitly updated.
 
 ## Platform profiles and support status
 
-Orchard's Controller, Node Agent, CLI, and shared OTP applications form a
-portable core whose inward dependencies must remain independent of launchd,
-Keychain, MLX, Apple frameworks, and fixed macOS filesystem layouts.
-Platform integrations belong behind explicit host capability, lifecycle,
-packaging, and runtime-provider boundaries.
+Orchard's Controller, Node Agent, CLI, and shared OTP applications form the portable Orchard control-plane core.
+Its inward dependencies must remain independent of launchd, Keychain, MLX, Apple frameworks, and fixed macOS filesystem layouts.
+Platform integrations belong behind explicit host capability, lifecycle, packaging, and runtime-provider boundaries.
 
-The supported v1 profile remains Apple Silicon macOS for Controller and Node
-roles, including the existing all-in-one and multi-Mac topologies.
-The accepted next target is a headless Linux Controller using external Postgres
-with Apple Silicon macOS MLX Nodes.
-That target is an architecture commitment, not a current support claim, and it
-becomes supported only after Milestone 8 build, conformance, packaging,
-upgrade, rollback, security, and mixed-platform acceptance passes.
+Profile kinds are qualified and composable:
+
+| Profile kind | Current or accepted Orchard profile | Scope |
+|---|---|---|
+| Platform | Supported Apple Silicon macOS platform profile; accepted Linux Controller profile | Host operating system, architecture, roles, and platform acceptance |
+| Distribution | macOS native distribution profile | Orchard.app, DMG, host lifecycle, paths, credential storage, rollback, retained state, and release evidence |
+| Runtime-provider | macOS MLX Node runtime profile | Apple Silicon, Metal, MLX-LM, tokenizer, Node Agent, conformance, and real-runtime qualification |
+| Acceptance | mixed-platform acceptance profile | Evidence that a portable Controller, including Linux, operates admitted macOS MLX Nodes |
+
+Host-lifecycle adapters remain platform integration boundaries.
+Orchard.app and DMG remain deployment artifacts.
+Neither is a profile.
+
+The supported v1 Apple Silicon macOS platform profile covers Controller and Node roles in the existing all-in-one and multi-Mac topologies.
+The accepted Linux Controller profile is headless, uses external Postgres, and does not imply a local Node Agent, accelerator runtime, or Apple dependency.
+The mixed-platform acceptance profile becomes satisfied only after Milestone 8 build, conformance, packaging, upgrade, rollback, security, and topology acceptance passes.
+Until then, the Linux Controller profile remains an accepted target rather than a current support claim.
+
+The approved macOS native distribution design remains `Orchard.app` inside a DMG.
+Source availability during an initial source-first Curated OSS transition does not promise a supported public binary.
+Public binary support requires an explicit release decision and completion of the applicable release gates.
 
 A Controller Host is the machine that runs a Controller release.
 It is not a schedulable Node unless a separately enrolled and admitted Node
@@ -80,8 +92,7 @@ Agent also runs there.
 ## System at a glance
 
 Orchard's current supported topology spans one to four Apple Silicon Macs.
-Its accepted platform-expansion target permits the Controller Host to run
-headlessly on Linux while inference Nodes remain Apple Silicon Macs.
+Its accepted mixed-platform target permits the Controller Host to run headlessly on Linux while inference Nodes remain Apple Silicon Macs under the macOS MLX Node runtime profile.
 The logical topology is:
 
 ```text
@@ -145,7 +156,7 @@ The gRPC/mTLS path remains available for enrollment, certificate lifecycle, Peer
 | `native/orchard_tokenizer/` | Python helper for prompt rendering, exact token counts, and safe-tokenization support. |
 | `native/orchard_worker_mlx/` | Current Python MLX Worker Runtime provider and current node-agent to worker protocol implementation; the accepted target moves the provider-neutral contract and generated bindings into neutral ownership. |
 | `proto/cluster/v1/` | Controller ↔ node-agent proto source: the current gRPC runtime-operations compatibility transport, the certificate-authenticated BEAM Peer Grant delivery control service, and future-adapter contracts. |
-| `packaging/` | `Orchard.app` DMG with app-owned service lifecycle, shared payload, launchd, and signing/build runbooks. |
+| `packaging/` | macOS native distribution profile artifacts and runbooks for `Orchard.app`, DMG, app-owned service lifecycle, payload, launchd, signing, and verification. |
 | `docs/` | Contributor-facing orientation, tooling, process, design, and durable decisions subordinate to `SPEC.md`. |
 
 Use [`glossary/CONTEXT.md`](glossary/CONTEXT.md) as the shared vocabulary glossary.

@@ -1,11 +1,11 @@
 # Orchard v2 - Technical Specification
 
-This document is the normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform with a portable control plane and an existing **1–4 Apple Silicon macOS** deployment profile.
+This document is the normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform with a portable Orchard control-plane core and an existing **1–4 Apple Silicon macOS** platform profile.
 It is intended for a coding agent that will build the system incrementally.
 “MUST”, “SHALL”, and “MUST NOT” are mandatory requirements.
 “SHOULD” is a strong recommendation.
 
-The macOS all-in-one and split-role profiles are the currently supported product profiles.
+The macOS all-in-one and split-role deployment topologies are the currently supported product topologies.
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
 That Linux Controller profile SHALL NOT be represented as supported until the Milestone 8 acceptance contract passes.
 
@@ -48,7 +48,7 @@ Accepted platform-expansion target:
 
 4. **Linux Controller + macOS inference Nodes**
 
-   * 1 Linux Controller Host runs the portable control plane
+   * 1 Linux Controller Host runs the portable Orchard control-plane core
    * Postgres is operator-provided and external
    * 1–3 admitted Apple Silicon macOS Nodes run Node Agents and MLX Worker Runtimes
    * the Linux Controller Host is not a schedulable Node unless it separately satisfies Node admission and capability requirements
@@ -60,6 +60,7 @@ Accepted platform-expansion target:
 * No Kubernetes.
 * No active/active controller mode in v1.
 * All durable state SHALL live in Postgres.
+* The portable Orchard control-plane core SHALL consist of the platform-neutral behavior of `orchard_shared`, `orchard_controller`, `orchard_node_agent`, and portable `orchard_cli`, together with the provider-neutral contracts on which they depend.
 * `orchard_shared`, `orchard_controller`, `orchard_node_agent`, and portable `orchard_cli` code SHALL depend only on portable contracts for platform-neutral behavior.
 * Platform host adapters, runtime-provider implementations, platform packaging, and vendor SDKs SHALL depend inward on portable contracts and MUST NOT become unconditional compile dependencies of the portable umbrella.
 * A Controller Host and a schedulable Node are distinct roles.
@@ -135,18 +136,32 @@ Accepted platform-expansion target:
                                  +---------------------+
 ```
 
-### 1.4 Platform profiles and portable assumptions
+### 1.4 Qualified profiles and portable assumptions
 
-Platform profiles bind portable Orchard roles to supported host lifecycle, paths, credential storage, packaging, and runtime payloads.
-Profile-specific requirements MUST NOT be treated as requirements of every Controller Host or Node.
+Orchard SHALL use qualified, composable profile kinds so platform support, distribution, runtime-provider support, and cross-platform acceptance remain distinct.
 
-The current macOS profile SHALL remain a native macOS product using **launchd** for system daemons and agents.
-Managed local Postgres mode SHALL remain macOS-profile behavior using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
+* A **platform profile** binds Orchard host roles to a supported operating system, architecture, and platform acceptance evidence.
+* A **distribution profile** binds a platform profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
+* A **runtime-provider profile** binds a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
+* An **acceptance profile** defines a named topology and the evidence required to prove its participating profiles operate together.
+
+A host-lifecycle adapter is a platform integration boundary, not a profile.
+A deployment artifact is a produced distribution input or output, not a profile.
+Profile-specific requirements MUST NOT be treated as requirements of every Controller Host, Node, distribution, or runtime provider.
+
+The current Apple Silicon macOS platform profile SHALL support the Controller and Node roles in the accepted all-in-one and split-role topologies.
+The macOS native distribution profile SHALL use `Orchard.app` inside a DMG and SHALL preserve launchd, Keychain, app-owned lifecycle, rollback, retained-state, signing, notarization, and stapling requirements.
+The macOS MLX Node runtime profile SHALL bind the Node Agent and tokenizer to Apple Silicon, Metal, the MLX-LM runtime provider, provider-neutral conformance, and real MLX runtime acceptance.
+Managed local Postgres mode SHALL remain behavior of the macOS native distribution profile using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
 Apple documents launchd as the system service manager for daemons and agents, and its Containerization project as a macOS Linux-container runtime built on Apple Silicon virtualization. ([Apple Support][2])
 
-The accepted Linux Controller target SHALL use operator-provided external Postgres and SHALL NOT require a local Node Agent, accelerator runtime, Apple tooling, launchd, Keychain, DMG, or Orchard.app.
+The accepted Linux Controller profile is a platform profile for the Controller role.
+It SHALL use operator-provided external Postgres and SHALL NOT require a local Node Agent, accelerator runtime, Apple tooling, launchd, Keychain, DMG, or Orchard.app.
 Its final distribution format and host manager remain deferred.
 No Linux support claim follows from portable compilation alone.
+
+The mixed-platform acceptance profile SHALL prove a portable Controller, including the Linux Controller profile, operating admitted macOS Nodes that satisfy the macOS MLX Node runtime profile.
+Passing that acceptance profile is required before the Linux Controller profile is declared supported and does not turn a Controller Host into a schedulable Node.
 
 ### 1.5 First-class runtime
 
@@ -162,7 +177,7 @@ Orchard SHALL distinguish these concepts:
 * **device resource**: a versioned device identity, topology, memory domain, and allocatable capacity
 
 Portable policy and scheduling MUST NOT infer one concept from another or use operating-system and provider names as capability proof.
-Additional runtime providers require provider-neutral conformance and applicable real-hardware acceptance before entering a supported profile.
+Additional runtime providers require their own runtime-provider profile with provider-neutral conformance and applicable real-runtime acceptance before support is claimed.
 
 ### 1.6 Non-goals for v1
 
@@ -186,7 +201,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 
 | Component           | Process type         | Responsibility                                               |
 | ------------------- | -------------------- | ------------------------------------------------------------ |
-| `orchard-controller`    | OTP release; launchd in macOS profile | Main control plane daemon                     |
+| `orchard-controller`    | OTP release; launchd in macOS native distribution profile | Main control plane daemon                     |
 | `Orchard.API`           | OTP app              | HTTP API surface: `/v1`, `/ops/v1`, `/admin/v1`              |
 | `Orchard.Auth`          | OTP app              | API key auth, service account auth, RBAC                     |
 | `Orchard.Admission`     | OTP app              | validation, tenant policy, quotas, idempotency               |
@@ -202,7 +217,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 
 | Component               | Process type         | Responsibility                                   |
 | ----------------------- | -------------------- | ------------------------------------------------ |
-| `orchard-node-agent`        | OTP release; launchd in macOS profile | Node control endpoint             |
+| `orchard-node-agent`        | OTP release; launchd in macOS native distribution profile | Node control endpoint             |
 | `Orchard.Node.Register`      | OTP app              | join, cert renewal, heartbeat                    |
 | `Orchard.Node.Models`        | OTP app              | artifact cache, verification, load/unload        |
 | `Orchard.Node.Workers`       | OTP app              | worker supervisor, crash recovery                |
@@ -241,7 +256,7 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
   dmg/
   launchd/
   container/
-  payload/                 # distribution-neutral app/DMG payload assets
+  payload/                 # shared macOS native distribution payload assets
 ```
 
 ### 2.5 Process boundaries
@@ -252,7 +267,7 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
 * Tokenization/rendering helper MAY be a bundled native or Python helper, but the controller API layer remains Elixir/OTP.
 * Controller-owned durable operations SHALL execute inside the active Controller through authenticated, authorized, leader-aware, and audited domain operations.
 * Portable CLI code SHALL own client interaction and presentation, not direct Repo authority or host lifecycle mechanics.
-* Platform-specific host lifecycle behavior SHALL remain isolated behind host adapters and SHALL NOT become a portable core dependency.
+* Platform-specific host lifecycle behavior SHALL remain isolated behind host adapters and SHALL NOT become a portable Orchard control-plane core dependency.
 
 ---
 
@@ -752,8 +767,8 @@ A Controller Host is not schedulable unless an admitted Node Agent on that host 
 
 A Node is an explicitly managed resource representing an admitted host that runs a Node Agent and advertises authenticated, versioned runtime-provider and device-resource capabilities.
 A Node is not defined solely by operating system or processor vendor.
-The current supported Nodes are Apple Silicon macOS hosts under the macOS profile.
-Future Node profiles require separate host lifecycle, runtime-provider, packaging, trust, and real-hardware acceptance.
+The current supported Nodes are Apple Silicon macOS hosts under the supported Apple Silicon macOS platform profile and macOS MLX Node runtime profile.
+Future Node support requires separate platform, distribution, runtime-provider, trust, and real-runtime acceptance evidence as applicable.
 
 A node record SHALL include:
 
@@ -4695,7 +4710,7 @@ Forwarded headers SHALL be trusted only in `reverse_proxy` mode and only from co
 Secrets SHALL be stored:
 
 * in Postgres only as hashes, never plaintext
-* private keys SHOULD be stored in the platform profile's approved credential store or protected filesystem paths; macOS Keychain remains the macOS-profile store
+* private keys SHOULD be stored in the distribution profile's approved credential store or protected filesystem paths; macOS Keychain remains the macOS native distribution profile's credential store
 * bootstrap tokens stored only as hash
 * Portal User passwords stored only as a password hash, never plaintext
 * Portal Invite tokens stored only as a hash, with plaintext shown only in the newly issued URL
@@ -4781,15 +4796,17 @@ The purge verification SHALL explicitly enumerate every content-bearing Request 
 
 ## 11. Packaging and Deployment
 
-Distribution requirements are scoped by platform profile.
-DMG, Orchard.app, launchd, Keychain, Apple signing, notarization, and stapling requirements in this section SHALL remain mandatory for the macOS profile and MUST NOT be imposed on portable Controller compilation or the Linux Controller target.
+Distribution requirements are scoped by distribution profile.
+DMG, Orchard.app, launchd, Keychain, Apple signing, notarization, and stapling requirements in this section SHALL remain mandatory for the macOS native distribution profile and MUST NOT be imposed on portable Orchard control-plane core validation or the Linux Controller profile.
 Generic Product Version, provenance, trust, secret-free artifact, role, rollback, retained-state, and protocol compatibility requirements remain shared where applicable.
 
-The accepted Linux Controller target uses operator-provided external Postgres and contains only portable compatible applications and assets.
+The accepted Linux Controller profile uses operator-provided external Postgres and contains only portable applications and assets compatible with that profile.
 Its final distribution format, host manager, paths, service integration, and publication contract remain deferred to a separate change.
 No Linux distribution is supported by this contract-only amendment.
 
-The current macOS-native distribution model SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
+The macOS native distribution profile SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
+The initial Curated OSS transition MAY be source-first.
+Source availability SHALL NOT be represented as public binary availability or support, and a supported public binary requires an explicit release decision plus every applicable build, verification, signing, notarization, stapling, and publication gate.
 Native PKG distribution is not a supported current Orchard distribution channel.
 Legacy PKG receipt detection SHALL be retained solely to prevent silent app ownership takeover of an existing installation, as required by §11.4, and does not define a supported distribution channel, a release artifact, or a validation gate.
 Any future native package or additional distribution channel SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request that updates this contract, security posture, operator documentation, and validation gates before support is claimed.
@@ -4883,8 +4900,8 @@ Orchard SHALL verify the nested payload and final app bundle before handing the 
 
 ### 11.5 Managed Database Mode
 
-Managed Database Mode in this section is a macOS-profile capability.
-It is not part of the first Linux Controller target.
+Managed Database Mode in this section is a macOS native distribution profile capability.
+It is not part of the first Linux Controller profile.
 
 Managed DB mode SHALL:
 
@@ -4902,7 +4919,7 @@ Apple’s Containerization project is a Swift package for Linux containers on ma
 
 ### 11.6 External Database Mode
 
-External Database Mode is the required database mode for the accepted Linux Controller target and remains supported for the macOS profile.
+External Database Mode is the required database mode for the accepted Linux Controller profile and remains supported for the macOS native distribution profile.
 
 External DB mode SHALL support:
 
@@ -4933,8 +4950,8 @@ Offline install flow:
 
 ### 11.8 Tray/menu bar app
 
-The Tray/Menu Bar App is a macOS-profile component.
-The first Linux Controller target is headless and does not require a desktop equivalent.
+The Tray/Menu Bar App is a macOS native distribution profile component.
+The first Linux Controller profile is headless and does not require a desktop equivalent.
 
 Tray app SHALL provide:
 
@@ -5401,38 +5418,40 @@ Acceptance:
 * schema migration ownership is exclusive
 * interrupted requests reconcile correctly after controller handover
 
-### Milestone 8 - Platform portability and Linux Controller profile
+### Milestone 8 - Portable Orchard control-plane core and Linux Controller profile
 
 This is a vNext platform-expansion milestone.
 It does not rewrite completed macOS acceptance in Milestones 0–7.
 
 Deliver:
 
-* portable umbrella dependency boundaries with no unconditional Apple or accelerator toolchain requirement
+* portable Orchard control-plane core dependency boundaries with no unconditional Apple or accelerator toolchain requirement
 * Darwin host artifacts outside portable CLI compilation
-* required Linux portable and provider-neutral conformance validation
+* required Linux validation for the portable Orchard control-plane core and provider-neutral conformance
 * Controller release authority independent from CLI implementation
 * provider-neutral Worker Runtime protocol ownership and generated bindings
 * additive normalized artifact, runtime-provider, acceleration, device-resource, memory-domain, and failure contracts
 * separate host capability-provider and runtime-provider evidence
 * macOS app-owned lifecycle behind a host adapter without claiming an unimplemented cross-process handover protocol
 * security-led migration of normal CLI command families to Controller-owned operations
-* Linux Controller release profile with operator-provided external Postgres
+* Linux Controller platform profile with operator-provided external Postgres
 
 Acceptance:
 
-* portable applications compile, lint, test, and produce coverage in the required Linux portability lane without Xcode, launchd, MLX, CUDA, or Darwin native-helper compilation
-* macOS all-in-one, split-role, Orchard.app, DMG, launchd, retained-state, signing, notarization, air-gap, and MLX acceptance remain green
+* portable Orchard control-plane core applications compile, lint, test, and produce coverage in the required Linux portability lane without Xcode, launchd, MLX, CUDA, or Darwin native-helper compilation
+* macOS host-lifecycle, Orchard.app/DMG, and MLX validation run as separate applicable macOS lanes
+* credential-free signing-contract validation remains distinct from release-only Developer ID signing, notarization, stapling, and publication
+* macOS all-in-one, split-role, Orchard.app, DMG, launchd, retained-state, air-gap, and MLX acceptance remain green
 * the Controller release does not load CLI implementation to obtain Controller authority
 * the portable CLI does not require direct Repo authority or Darwin native compilation for normal Controller-state operations
 * Worker Runtime contracts have provider-neutral ownership, generated bindings, version negotiation, drift checks, and conformance coverage
-* Linux Controller with external Postgres and an admitted macOS MLX Node passes trust, Runtime Endpoint observation, scheduling, streaming, cancellation, restart, and failure acceptance
+* the mixed-platform acceptance profile proves a Linux Controller with external Postgres operating an admitted macOS Node under the macOS MLX Node runtime profile across trust, Runtime Endpoint observation, scheduling, streaming, cancellation, restart, and failure behavior
 * production BEAM admission for the Linux Controller profile satisfies ADR 0012 provenance, identity, host-control, network, and mixed-platform acceptance gates
 * `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before the Linux Controller profile is declared supported
 
 ---
 
-This spec defines the supported v1 macOS platform contract and the accepted vNext platform-expansion target.
+This spec defines the supported v1 Apple Silicon macOS platform profile and the accepted vNext platform-expansion target for the portable Orchard control-plane core.
 The coding agent should implement it in milestone order, preserving wire compatibility and state-machine behavior exactly as written where fields, states, and transitions are explicitly defined.
 Architecture acceptance does not declare an unimplemented platform profile supported.
 

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Defines the portability boundary that isolates platform-native host lifecycle implementations from Orchard's portable core without claiming an unimplemented managed Node Agent replacement protocol.
+Defines the portability boundary that isolates platform-native host lifecycle implementations from the portable Orchard control-plane core without claiming an unimplemented managed Node Agent replacement protocol.
 
 ## Requirements
 
 ### Requirement: Platform Lifecycle Authority Is Isolated
 
-Platform-specific service installation, update, start, stop, uninstall, and status behavior SHALL be implemented behind a host lifecycle adapter rather than inside the managed Node Agent or portable core.
+Platform-specific service installation, update, start, stop, uninstall, and status behavior SHALL be implemented behind a host lifecycle adapter rather than inside the managed Node Agent or portable Orchard control-plane core.
 The current contract SHALL NOT infer a zero-overlap replacement guarantee, shared lifecycle exclusion protocol, durable start-eligibility state, or provisional launch protocol from that adapter boundary.
 
 #### Scenario: Portable code requests a host lifecycle operation

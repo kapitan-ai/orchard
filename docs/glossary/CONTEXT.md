@@ -1,6 +1,6 @@
 # Orchard Glossary
 
-Orchard is a sovereign on-prem LLM orchestration platform with a portable control-plane core and a currently supported Apple Silicon macOS platform profile.
+Orchard is a sovereign on-prem LLM orchestration platform with a portable Orchard control-plane core and a currently supported Apple Silicon macOS platform profile.
 This glossary defines Orchard's shared language; `SPEC.md` remains the normative build contract for behavior, interfaces, states, and milestones.
 
 ## Language
@@ -8,13 +8,53 @@ This glossary defines Orchard's shared language; `SPEC.md` remains the normative
 ### Product Truth
 
 **Orchard**:
-A sovereign on-prem LLM orchestration platform whose supported v1 profile spans one to four Apple Silicon macOS machines and whose accepted next target permits a Linux Controller Host with Apple Silicon macOS Nodes.
+A sovereign on-prem LLM orchestration platform whose supported Apple Silicon macOS platform profile spans one to four machines and whose accepted next target permits a Linux Controller Host with Apple Silicon macOS Nodes.
 _Avoid_: Kapitan Orchard, cloud LLM platform
 
+**Portable Orchard Control-Plane Core**:
+The platform-neutral Shared, Controller, Node Agent, and portable CLI behavior together with the provider-neutral contracts on which they depend.
+_Avoid_: Portable core, portable control plane, portable control-plane core, Linux-only core, Linux Orchard, macOS Orchard
+
 **Platform Profile**:
-A named combination of supported operating systems, roles, persistence mode, host lifecycle, packaging, runtime providers, and acceptance evidence.
+A named binding of Orchard host roles to a supported operating system, architecture, and platform acceptance evidence.
 An accepted target profile is not supported until its explicit milestone acceptance gates pass.
-_Avoid_: architecture aspiration, operating-system detection, support claim without acceptance
+_Avoid_: Distribution Profile, Runtime-Provider Profile, Acceptance Profile, unqualified profile, support claim without acceptance
+
+**Distribution Profile**:
+A named binding of a Platform Profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
+_Avoid_: Platform Profile, Runtime-Provider Profile, deployment artifact
+
+**Runtime-Provider Profile**:
+A named binding of a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
+_Avoid_: Platform Profile, Distribution Profile, Runtime Provider alone
+
+**Acceptance Profile**:
+A named topology and evidence contract that proves participating Platform, Distribution, and Runtime-Provider Profiles operate together.
+_Avoid_: Platform Profile, deployment topology alone, support claim without acceptance
+
+**Host-Lifecycle Adapter**:
+A platform-specific boundary that preserves Orchard lifecycle outcomes without making host mechanics part of portable policy.
+_Avoid_: Platform Profile, Runtime Provider, deployment artifact
+
+**Deployment Artifact**:
+A produced distribution input or output delivered or assembled under a Distribution Profile.
+_Avoid_: Platform Profile, Distribution Profile, source tree
+
+**Linux Controller Profile**:
+The accepted headless Linux Platform Profile for a Controller Host using operator-provided external Postgres and no implicit Apple or accelerator dependency.
+_Avoid_: Linux Orchard, Linux Node Profile, supported profile before Milestone 8 acceptance
+
+**macOS Native Distribution Profile**:
+The macOS Distribution Profile whose approved interactive artifact is `Orchard.app` inside a DMG and whose lifecycle preserves platform-native trust and retained operator state.
+_Avoid_: macOS Platform Profile, DMG artifact alone, native PKG
+
+**macOS MLX Node Runtime Profile**:
+The Runtime-Provider Profile for an Apple Silicon macOS Node using Metal, MLX-LM, and the MLX Worker Runtime with real-runtime qualification.
+_Avoid_: macOS Platform Profile, MLX artifact format, generic Node profile
+
+**Mixed-Platform Acceptance Profile**:
+The Acceptance Profile that proves a portable Controller, including a Linux Controller, can operate admitted macOS Nodes under the macOS MLX Node Runtime Profile.
+_Avoid_: Mixed-platform Platform Profile, deployment topology alone, Linux support claim without acceptance
 
 **Normative Build Contract**:
 The top-level product and system contract that governs Orchard behavior and resolves conflicts between docs, tests, and implementation.
@@ -102,13 +142,13 @@ In packaged production, BEAM Distribution is limited to admitted first-party Orc
 _Avoid_: Durable cluster truth, database replacement, public API, external provider integration
 
 **Source-dev BEAM Operating Model**:
-The source-development distribution profile for first-party Controller-to-Node Agent BEAM Runtime Endpoint communication.
+The source-development operating model for first-party Controller-to-Node Agent BEAM Runtime Endpoint communication.
 It uses long BEAM node names with IPv4-literal hosts, explicit shared cookie material, bounded distribution networking, explicit BEAM target configuration, and no automatic gRPC fallback.
 The current implementation exposes this as the default through `bin/dev-controller` and `bin/dev-node-agent` source-dev launches while `bin/dev` remains the gRPC default.
 _Avoid_: Production BEAM security model, ambient `.erlang.cookie`, implicit fallback, durable cluster truth
 
 **Production BEAM Operating Model**:
-The enrolled first-party Controller-to-Node Agent distribution profile that combines Node Certificates, trusted inventory, and scoped BEAM Peer Grants.
+The enrolled first-party Controller-to-Node Agent operating model that combines Node Certificates, trusted inventory, and scoped BEAM Peer Grants.
 _Avoid_: Source-dev shared-cookie model, certificate-only BEAM authorization, static target list
 
 **BEAM Peer Grant**:
@@ -895,9 +935,9 @@ v1 compatibility must not weaken v2 contents or redaction rules.
 _Avoid_: Support Bundle v1, raw local evidence, prompt export
 
 **DMG Installer**:
-The current interactive macOS distribution container whose primary artifact is a verified `Orchard.app` that owns the root-authorized service lifecycle.
+The approved interactive deployment artifact for the macOS Native Distribution Profile whose primary artifact is a verified `Orchard.app` that owns the root-authorized service lifecycle.
 Native PKG is not a supported current Orchard distribution channel.
-_Avoid_: native package installer, launchd service
+_Avoid_: native package installer, launchd service, Distribution Profile
 
 **LaunchDaemon**:
 A launchd-managed system daemon for Orchard system services such as the Controller, Node Agent, and, when Managed Database Mode is enabled, Postgres.
