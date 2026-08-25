@@ -4,6 +4,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.CustodyTestHelpers
+  alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerProcess
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.Node.WorkerRuntimeAdapter
@@ -67,8 +68,12 @@ defmodule Orchard.Node.WorkerCustodyTest do
 
   test "SPEC.md §4.9 closed BEAM port still reaps its live recorded PID", context do
     state = load_stub_runtime!(context)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
 
-    on_exit(fn -> CustodyTestHelpers.stop_child(state.port, state.os_pid) end)
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(state.port, state.os_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+    end)
 
     Port.close(state.port)
     assert is_nil(Port.info(state.port))
@@ -78,6 +83,71 @@ defmodule Orchard.Node.WorkerCustodyTest do
 
     CustodyTestHelpers.assert_os_pid_dead!(state.os_pid, 2_000)
     refute File.exists?(state.socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "SPEC.md §4.9 noisy TERM-resistant shutdown reaches bounded KILL", context do
+    marker_path = Path.join(context.root, "events.log")
+
+    {port, os_pid} =
+      CustodyTestHelpers.start_signal_child!(:chatty_resistant, marker_path)
+
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+    end)
+
+    assert {:ok, reaper_ref} =
+             RuntimeProcessReaper.watch(self(), os_pid, %{
+               shutdown_timeout_ms: @shutdown_timeout_ms,
+               model_ref: context.model_ref,
+               phase: :loaded
+             })
+
+    File.write!(context.socket_path, "owned runtime artifact")
+
+    state = %{
+      backend: "stub",
+      channel: nil,
+      executable: Path.join(__DIR__, "../../../support/custody-signal-child"),
+      generations: %{},
+      model_ref: context.model_ref,
+      os_pid: os_pid,
+      port: port,
+      reaper_ref: reaper_ref,
+      shutdown_timeout_ms: @shutdown_timeout_ms,
+      socket_path: context.socket_path
+    }
+
+    task =
+      Task.async(fn ->
+        receive do
+          :unload -> WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+        end
+      end)
+
+    assert true = Port.connect(port, task.pid)
+    send(task.pid, :unload)
+
+    result = Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill)
+    assert {:ok, :ok} = result
+
+    assert CustodyTestHelpers.wait_until(
+             fn ->
+               case File.read(marker_path) do
+                 {:ok, contents} -> String.contains?(contents, "term_ignored mode=resistant")
+                 {:error, _reason} -> false
+               end
+             end,
+             1_000
+           )
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    refute File.exists?(context.socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
 

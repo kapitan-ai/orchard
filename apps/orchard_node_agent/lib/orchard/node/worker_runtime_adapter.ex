@@ -1069,11 +1069,22 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp wait_for_port_exit(port, timeout_ms) do
-    receive do
-      {^port, {:exit_status, status}} -> {:ok, status}
-      {^port, {:data, _data}} -> wait_for_port_exit(port, timeout_ms)
-    after
-      timeout_ms -> {:error, :timeout}
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_port_exit(port, deadline)
+  end
+
+  defp do_wait_for_port_exit(port, deadline) do
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+    if remaining_ms <= 0 do
+      {:error, :timeout}
+    else
+      receive do
+        {^port, {:exit_status, status}} -> {:ok, status}
+        {^port, {:data, _data}} -> do_wait_for_port_exit(port, deadline)
+      after
+        remaining_ms -> {:error, :timeout}
+      end
     end
   end
 

@@ -47,7 +47,13 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
   end
 
   test "reaper kills the worker child when the owner process dies" do
-    {_port, os_pid} = start_sleeper_port!()
+    {port, os_pid} = start_sleeper_port!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+    end)
 
     owner_pid =
       spawn(fn ->
@@ -78,6 +84,8 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
              end,
              500
            )
+
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
   test "watch returns an error when the reaper name is unavailable" do
@@ -136,9 +144,11 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     marker_path = Path.join(root, "events.log")
     File.mkdir_p!(root)
     {port, os_pid} = CustodyTestHelpers.start_signal_child!(:cooperative, marker_path)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
 
     on_exit(fn ->
       CustodyTestHelpers.stop_child(port, os_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
       File.rm_rf!(root)
     end)
 
@@ -151,6 +161,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
            )
 
     CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
 
@@ -159,9 +170,11 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     marker_path = Path.join(root, "events.log")
     File.mkdir_p!(root)
     {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
 
     on_exit(fn ->
       CustodyTestHelpers.stop_child(port, os_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
       File.rm_rf!(root)
     end)
 
@@ -174,6 +187,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
            )
 
     CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
 

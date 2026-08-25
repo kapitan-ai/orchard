@@ -38,15 +38,17 @@ defmodule Orchard.Node.CustodyTestHelpers do
     {port, os_pid}
   end
 
-  @spec start_signal_child!(:cooperative | :resistant, Path.t()) :: {port(), pos_integer()}
-  def start_signal_child!(mode, marker_path) when mode in [:cooperative, :resistant] do
+  @spec start_signal_child!(:chatty_resistant | :cooperative | :resistant, Path.t()) ::
+          {port(), pos_integer()}
+  def start_signal_child!(mode, marker_path)
+      when mode in [:chatty_resistant, :cooperative, :resistant] do
     shell = System.find_executable("sh") || "/bin/sh"
     fixture = Path.join(__DIR__, "custody-signal-child")
 
     port =
       Port.open(
         {:spawn_executable, shell},
-        [{:args, [fixture, Atom.to_string(mode), marker_path]}, :stderr_to_stdout]
+        [{:args, [fixture, Atom.to_string(mode), marker_path]}, :stderr_to_stdout, :exit_status]
       )
 
     os_pid = port |> Port.info() |> Keyword.fetch!(:os_pid)

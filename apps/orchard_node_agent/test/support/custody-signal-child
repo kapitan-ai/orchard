@@ -23,14 +23,20 @@ resist() {
 
 case "$mode" in
   cooperative) trap cooperate TERM ;;
-  resistant) trap resist TERM ;;
+  resistant | chatty_resistant) trap resist TERM ;;
   *) exit 64 ;;
 esac
 
 printf 'ready\n' > "${marker_path}.ready"
 
 while :; do
-  sleep 1 &
+  if [ "$mode" = "chatty_resistant" ]; then
+    printf 'runtime_output\n'
+    sleep 0.01 &
+  else
+    sleep 1 &
+  fi
+
   child_pid=$!
   wait "$child_pid" || true
 done
