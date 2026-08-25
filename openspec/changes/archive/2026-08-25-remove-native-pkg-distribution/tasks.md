@@ -1,11 +1,10 @@
 ## 1. Normative contract
 
-- [x] 1.1 Remove native PKG from `SPEC.md` distribution, offline, upgrade, milestone, and macOS native distribution profile requirements.
+- [x] 1.1 Remove native PKG from `SPEC.md` distribution, offline, upgrade, milestone, and platform-profile requirements.
 - [x] 1.2 Remove Managed Node Agent zero-overlap handover, start-eligibility, exclusion, evidence, staging, and recovery requirements from `SPEC.md`.
 - [x] 1.3 Preserve Orchard.app/DMG lifecycle, source-development, API, retained-state, signing, and rolling-version compatibility requirements.
 - [x] 1.4 State that future packaging or managed handover requires a fresh accepted OpenSpec proposal and separate implementing pull request.
 - [x] 1.5 Keep the legacy PKG receipt takeover blocker normative in `SPEC.md` §11.4 and in the `app-distribution-lifecycle` capability.
-- [x] 1.6 Distinguish source availability from supported public binaries without changing the approved Orchard.app-inside-DMG design.
 
 ## 2. Accepted specs and decisions
 
@@ -14,7 +13,6 @@
 - [x] 2.3 Delete the abandoned active `managed-node-agent-handover` change instead of archiving it.
 - [x] 2.4 Declare the removed, renamed, added, and modified requirements explicitly in this change's spec deltas.
 - [x] 2.5 Record the `orchardctl start` job-domain enable and the non-persistent `orchardctl stop` in ADR 0027 and `design.md`.
-- [x] 2.6 Declare the profile-taxonomy requirement renames and archive this completed change without reapplying synchronized accepted specs.
 
 ## 3. Active changes and documentation
 

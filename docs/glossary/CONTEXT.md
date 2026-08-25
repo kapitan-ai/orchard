@@ -497,7 +497,7 @@ _Avoid_: Arbitrary remote compute
 
 **Node**:
 A managed machine represented in Orchard's cluster inventory and running an enrolled first-party Node Agent.
-The supported v1 Node profile is Apple Silicon macOS; Linux Node support is deferred and requires a separately accepted profile.
+The supported v1 Node runs under the Apple Silicon macOS platform profile and the macOS MLX Node runtime profile; Linux Node support is deferred and requires separately accepted platform and runtime-provider profiles.
 _Avoid_: Server when cluster role matters
 
 **Runtime Endpoint Admission Candidate**:

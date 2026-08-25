@@ -1,14 +1,12 @@
 ## Context
 
-Orchard currently has an implemented app-owned macOS lifecycle designed for distribution through a signed DMG and native PKG material that still carried active normative support claims.
+Orchard currently has an implemented app-owned macOS lifecycle distributed through a signed DMG and native PKG material that still carried active normative support claims.
 ADR 0018 layered a broad zero-overlap Managed Node Agent replacement protocol over both paths, but the protocol was not implemented and the PKG `preinstall` behavior contradicted the normative ordering.
 The repository must distinguish current support from historical or inactive material without removing source development, APIs, or Orchard.app/DMG.
 
 ## Goals
 
-- Align `SPEC.md`, accepted OpenSpec specs, active changes, decisions, security guidance, contributor guidance, and operator docs on Orchard.app/DMG as the approved macOS native distribution design.
-- Distinguish source availability from supported public binary availability.
-- Keep portable, macOS platform, macOS distribution, macOS runtime, and credentialed release evidence in distinct validation lanes.
+- Align `SPEC.md`, accepted OpenSpec specs, active changes, decisions, security guidance, contributor guidance, and operator docs on Orchard.app/DMG as the current native distribution.
 - Remove current native PKG support and Managed Node Agent zero-overlap handover claims.
 - Preserve app lifecycle rollback, retained state, signing, DMG verification, source development, supported APIs, and rolling-version compatibility.
 - Make future packaging or managed handover require fresh explicit review and implementation.
@@ -20,22 +18,18 @@ The repository must distinguish current support from historical or inactive mate
   `orchardctl start` gains one launchd job-domain call for upgrade compatibility; see the decision below.
 - Define a replacement Managed Node Agent handover protocol.
 - Claim Linux distribution or Linux Node lifecycle support.
-- Change Orchard's legal licensing posture.
 
 ## Decisions
 
-### Orchard.app/DMG Is The Approved macOS Native Distribution
+### Orchard.app/DMG Is The Current Native Distribution
 
-The signed and notarized DMG containing `Orchard.app` remains the approved macOS native distribution design.
+The signed and notarized DMG containing `Orchard.app` remains the current macOS distribution.
 The app-owned root-authorized lifecycle remains responsible for role-aware install, update, uninstall, status, transactional rollback, and retained operator state.
 Release sidecars, inner-first signing, mounted-DMG verification, and Amore handoff remain unchanged.
 
-An initial source-first Curated OSS transition does not promise a supported public binary.
-Public binary support requires an explicit release decision and completed build, verification, signing, notarization, stapling, and publication gates.
-
 ### Native PKG Has No Current Support Authority
 
-Native PKG is removed from release artifacts, install and upgrade workflows, offline flows, validation gates, macOS native distribution profile acceptance, and contributor command guidance.
+Native PKG is removed from release artifacts, install and upgrade workflows, offline flows, validation gates, platform-profile acceptance, and contributor command guidance.
 PKG implementation code, scripts, package assets, dedicated tests, and active operator documentation are deleted.
 The app retains only the legacy receipt blocker needed to prevent silent ownership takeover of an existing installation.
 
@@ -73,7 +67,6 @@ Legacy files, archived changes, and superseded decisions are research input only
 5. Reconcile active change packages that still assume PKG artifacts or handover behavior.
 6. Update contributor, tooling, process, architecture, glossary, security, local-development, and operator guidance.
 7. Validate the change strictly and classify residual matches as superseded history, archived history, explicit non-support language, legacy receipt compatibility, or unrelated vocabulary.
-8. Archive the completed change without reapplying already synchronized accepted specs.
 
 ## Risks And Mitigations
 

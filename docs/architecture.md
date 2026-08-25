@@ -57,7 +57,7 @@ product/system/build contract.
 When this guide and `SPEC.md` disagree, treat the branch as blocked until the
 conflict is reconciled. `SPEC.md` wins until explicitly updated.
 
-## Platform profiles and support status
+## Qualified profiles and portable assumptions
 
 Orchard's Controller, Node Agent, CLI, and shared OTP applications form the portable Orchard control-plane core.
 Its inward dependencies must remain independent of launchd, Keychain, MLX, Apple frameworks, and fixed macOS filesystem layouts.
