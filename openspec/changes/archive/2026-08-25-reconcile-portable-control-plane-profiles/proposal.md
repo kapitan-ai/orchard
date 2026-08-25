@@ -14,7 +14,7 @@ The archived `remove-native-pkg-distribution` change is complete and owns the na
 - Permit the initial source-availability transition without representing source availability as public binary availability, support, or a licensing change.
 - Keep macOS host-lifecycle, Orchard.app and DMG, and macOS MLX Node runtime validation in separate lanes, and keep Developer ID signing, notarization, stapling, and publication release-only.
 
-SPEC.md impact: §§1.1, 1.4, 1.5, 2, 4.1, 10, 11, and 14 adopt the qualified profile vocabulary, name the portable Orchard control-plane core, and separate source availability from supported public binary availability.
+SPEC.md impact: §§1.1, 1.2, 1.4, 1.5, 2, 4.1, 10, 11, and 14 adopt the qualified profile vocabulary, name the portable Orchard control-plane core, and separate source availability from supported public binary availability.
 The §10 edit reassigns approved credential storage from the platform profile to the distribution profile without changing which secrets are stored or how.
 Native PKG and managed handover remain removed, Orchard.app remains inside the DMG, and no legal licensing term changes.
 
