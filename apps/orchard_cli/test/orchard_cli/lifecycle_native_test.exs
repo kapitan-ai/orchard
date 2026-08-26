@@ -1,6 +1,8 @@
 defmodule OrchardCLI.LifecycleNativeTest do
   use ExUnit.Case, async: false
 
+  @moduletag :macos
+
   alias OrchardCLI.LifecycleNative
   alias OrchardCLI.TestTemp
 

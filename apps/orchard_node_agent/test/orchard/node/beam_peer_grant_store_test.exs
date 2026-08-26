@@ -1,6 +1,8 @@
 defmodule Orchard.Node.BeamPeerGrantStoreTest do
   use ExUnit.Case, async: true
 
+  @moduletag :macos
+
   import Bitwise, only: [band: 2]
 
   alias Orchard.Cluster.V1.{RetrieveBeamPeerGrantRequest, RetrieveBeamPeerGrantResponse}
