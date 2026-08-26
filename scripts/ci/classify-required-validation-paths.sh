@@ -39,6 +39,18 @@ while IFS= read -r path; do
     docs/decisions/*|docs/architecture.md|docs/tooling.md|docs/process.md)
       enable_all
       ;;
+    native/orchard_worker_mlx/README.md)
+      portable=true
+      conformance=true
+      macos=true
+      mlx=true
+      packaging=true
+      ;;
+    native/orchard_tokenizer/README.md)
+      portable=true
+      conformance=true
+      packaging=true
+      ;;
     docs/*|*.md)
       ;;
     packaging/*|scripts/build-app.sh|scripts/build-dmg.sh|scripts/build-payload.sh|scripts/sign-app.sh|scripts/test-app-*|scripts/test-build-app.sh|scripts/test-build-dmg.sh|scripts/test-build-payload.sh|scripts/test-payload-*)
