@@ -67,7 +67,11 @@ assert_no_first_party_build_since() {
     directory="$BUILD_PATH/lib/$app"
     [[ -d "$directory" ]] || continue
 
-    touched="$(find "$directory" -type f -newer "$marker" -print -quit)"
+    # Mix stamps .mix/compile.lock for every umbrella application it locks,
+    # including the children --skip-umbrella-children then declines to build.
+    # That bookkeeping file is not compiled output.
+    touched="$(find "$directory" -type f -newer "$marker" \
+      ! -path "$directory/.mix/compile.lock" -print -quit)"
     if [[ -n "$touched" ]]; then
       fail "dependency preparation compiled first-party umbrella output: $touched"
     fi
