@@ -29,6 +29,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.ModelManifest.RuntimeRequirements
   alias Orchard.ModelManifest.Tokenizer
   alias Orchard.Node
+  alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.ModelManager
   alias Orchard.Node.RuntimeEndpoint, as: NodeRuntimeEndpoint
   alias Orchard.Node.RuntimeServer
@@ -36,6 +37,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Node.SharedContract
   alias Orchard.Node.Status, as: NodeStatus
   alias Orchard.Node.Supervisor, as: NodeSupervisor
+  alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.Node.WorkerSupervisor
   alias Orchard.NodeAgent.Supervisor, as: NodeAgentSupervisor
   alias Orchard.RuntimeEndpoint.ModelRef, as: RuntimeModelRef
@@ -2461,6 +2463,12 @@ defmodule OrchardNodeAgentTest do
        %{bundle: bundle} do
     with_real_worker_runtime(fn ->
       socket_path = real_worker_socket_path()
+      custody_ref = make_ref()
+      {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+      on_exit(fn ->
+        CustodyTestHelpers.stop_child(control_port, control_pid)
+      end)
 
       refute File.exists?(socket_path)
 
@@ -2476,6 +2484,9 @@ defmodule OrchardNodeAgentTest do
                  )
 
         wait_until(fn -> File.exists?(socket_path) end)
+        os_pid = worker_os_pid()
+        assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+        send(self(), {custody_ref, os_pid})
 
         request = execute_inference_request("req-r5-real-runtime")
         assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request)
@@ -2519,8 +2530,12 @@ defmodule OrchardNodeAgentTest do
                  )
       end)
 
+      assert_receive {^custody_ref, os_pid}
       wait_until(fn -> worker_count() == 0 end)
+      CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
       refute File.exists?(socket_path)
+      assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+      CustodyTestHelpers.assert_reaper_empty!(1_000)
     end)
   end
 

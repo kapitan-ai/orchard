@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+mode=$1
+marker_path=$2
+child_pid=
+
+stop_child() {
+  if [ -n "$child_pid" ]; then
+    kill "$child_pid" 2>/dev/null || true
+  fi
+}
+
+cooperate() {
+  printf 'term_received mode=cooperative\n' >> "$marker_path"
+  stop_child
+  exit 0
+}
+
+resist() {
+  printf 'term_ignored mode=resistant\n' >> "$marker_path"
+}
+
+case "$mode" in
+  cooperative) trap cooperate TERM ;;
+  resistant | chatty_resistant) trap resist TERM ;;
+  *) exit 64 ;;
+esac
+
+printf 'ready\n' > "${marker_path}.ready"
+
+while :; do
+  if [ "$mode" = "chatty_resistant" ]; then
+    printf 'runtime_output\n'
+    sleep 0.01 &
+  else
+    sleep 1 &
+  fi
+
+  child_pid=$!
+  wait "$child_pid" || true
+done

@@ -38,6 +38,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @poll_interval_ms 50
   @rpc_timeout_ms 1_000
+  # Slice of the shutdown budget reserved to confirm an uncatchable SIGKILL.
+  @kill_confirm_ms 250
   @default_generation_mode "batch"
   @default_max_concurrent_generations "auto"
   @default_auto_max_concurrent_generations 3
@@ -57,6 +59,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           log_path: String.t(),
           model_path: String.t(),
           model_ref: ModelRef.t(),
+          os_identity: WorkerProcessLifecycle.custody_identity() | nil,
           os_pid: non_neg_integer() | nil,
           port: port(),
           reaper_ref: reference() | nil,
@@ -274,7 +277,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            {:ok, resolved_executable} <- resolve_executable(executable),
            :ok <- ensure_socket_parent(socket_path),
            :ok <- ensure_log_parent(log_path),
-           :ok <- cleanup_socket(socket_path) do
+           :ok <- WorkerProcessLifecycle.remove_owned_socket(socket_path) do
         start_runtime(%{
           owner_pid: owner_pid,
           model_ref: model_ref,
@@ -342,11 +345,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     start_time = System.monotonic_time(:millisecond)
 
     unload_result = if skip_rpc?, do: :ok, else: unload_model_rpc(state.channel, state.model_ref)
-    stop_result = stop_runtime(state.port, state.os_pid, shutdown_timeout_ms)
+
+    stop_result =
+      stop_runtime(
+        state.port,
+        state.os_pid,
+        Map.get(state, :os_identity),
+        shutdown_timeout_ms
+      )
 
     cleanup_generation_tasks(state.generations)
     _ = disconnect_channel(state.channel)
-    socket_result = cleanup_socket(state.socket_path)
+    socket_result = WorkerProcessLifecycle.remove_owned_socket(state.socket_path)
 
     if is_reference(state[:reaper_ref]),
       do: RuntimeProcessReaper.release(state.reaper_ref)
@@ -469,30 +479,78 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       log_path: log_path,
       model_path: model_path,
       model_ref: model_ref,
+      os_pid: os_pid,
+      owner_pid: owner_pid,
+      port: port,
+      ready_timeout_ms: ready_timeout_ms,
       shutdown_timeout_ms: shutdown_timeout_ms,
       socket_path: socket_path
     }
 
+    case WorkerProcessLifecycle.process_identity(os_pid) do
+      {:ok, os_identity} ->
+        start_watched_runtime(Map.put(runtime_params, :os_identity, os_identity))
+
+      {:error, :identity_unavailable} ->
+        reason = launch_identity_failure_reason(port)
+
+        cleanup_failed_runtime(%{
+          channel: nil,
+          os_identity: nil,
+          os_pid: os_pid,
+          port: port,
+          reaper_ref: nil,
+          shutdown_timeout_ms: shutdown_timeout_ms,
+          socket_path: socket_path
+        })
+
+        {:error, reason}
+    end
+  end
+
+  # A worker that dies during launch is reaped before `ps` can snapshot it, so
+  # identity capture fails for a reason the operator cannot act on. The port's
+  # exit status names the actual failure and points at the worker log.
+  defp launch_identity_failure_reason(port) do
+    if port_open?(port) do
+      :identity_unavailable
+    else
+      drain_port_exit_reason(port)
+    end
+  end
+
+  defp drain_port_exit_reason(port) do
+    case poll_port(port) do
+      {:exit_status, status} -> {:worker_exited, status}
+      :ignore -> drain_port_exit_reason(port)
+      :none -> :identity_unavailable
+    end
+  end
+
+  defp start_watched_runtime(params) do
     reaper_meta = %{
-      shutdown_timeout_ms: shutdown_timeout_ms,
-      model_ref: model_ref,
+      shutdown_timeout_ms: params.shutdown_timeout_ms,
+      model_ref: params.model_ref,
+      os_identity: params.os_identity,
+      socket_path: params.socket_path,
       phase: :loading
     }
 
-    case RuntimeProcessReaper.watch(owner_pid, os_pid, reaper_meta) do
+    case RuntimeProcessReaper.watch(params.owner_pid, params.os_pid, reaper_meta) do
       {:ok, reaper_ref} ->
-        case wait_for_worker_ready(socket_path, port, ready_timeout_ms) do
+        case wait_for_worker_ready(params.socket_path, params.port, params.ready_timeout_ms) do
           {:ok, channel} ->
-            load_model_or_cleanup(channel, port, os_pid, reaper_ref, runtime_params)
+            load_model_or_cleanup(channel, params.port, params.os_pid, reaper_ref, params)
 
           {:error, reason} ->
             cleanup_failed_runtime(%{
               channel: nil,
-              os_pid: os_pid,
-              port: port,
+              os_identity: params.os_identity,
+              os_pid: params.os_pid,
+              port: params.port,
               reaper_ref: reaper_ref,
-              shutdown_timeout_ms: shutdown_timeout_ms,
-              socket_path: socket_path
+              shutdown_timeout_ms: params.shutdown_timeout_ms,
+              socket_path: params.socket_path
             })
 
             {:error, reason}
@@ -501,11 +559,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       {:error, reason} ->
         cleanup_failed_runtime(%{
           channel: nil,
-          os_pid: os_pid,
-          port: port,
+          os_identity: params.os_identity,
+          os_pid: params.os_pid,
+          port: params.port,
           reaper_ref: nil,
-          shutdown_timeout_ms: shutdown_timeout_ms,
-          socket_path: socket_path
+          shutdown_timeout_ms: params.shutdown_timeout_ms,
+          socket_path: params.socket_path
         })
 
         {:error, reason}
@@ -524,6 +583,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            log_path: params.log_path,
            model_path: params.model_path,
            model_ref: params.model_ref,
+           os_identity: params.os_identity,
            os_pid: os_pid,
            port: port,
            reaper_ref: reaper_ref,
@@ -534,6 +594,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       {:error, reason} ->
         cleanup_failed_runtime(%{
           channel: channel,
+          os_identity: params.os_identity,
           os_pid: os_pid,
           port: port,
           reaper_ref: reaper_ref,
@@ -589,14 +650,6 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     log_path
     |> Path.dirname()
     |> File.mkdir_p()
-  end
-
-  defp cleanup_socket(socket_path) do
-    case File.rm(socket_path) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
-      {:error, reason} -> {:error, {:socket_cleanup_failed, reason}}
-    end
   end
 
   # Public only so tests can validate worker process launch args without starting a port.
@@ -1007,7 +1060,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     )
   end
 
-  defp stop_runtime(port, nil, timeout_ms) do
+  defp stop_runtime(port, nil, _os_identity, timeout_ms) do
     if port_open?(port) do
       case wait_for_port_exit(port, timeout_ms) do
         {:ok, _status} -> :ok
@@ -1018,11 +1071,50 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp stop_runtime(port, os_pid, timeout_ms) do
+  defp stop_runtime(port, os_pid, os_identity, timeout_ms) do
     if port_open?(port) do
       stop_runtime_with_escalation(port, os_pid, timeout_ms)
     else
+      stop_closed_port_runtime(os_pid, os_identity, timeout_ms)
+    end
+  end
+
+  # The BEAM has already relinquished custody of a closed port's child, so the
+  # recorded PID may have been recycled to an unrelated process. Every signal on
+  # this path is gated on the identity snapshot captured at launch.
+  defp stop_closed_port_runtime(os_pid, os_identity, timeout_ms) do
+    if WorkerProcessLifecycle.os_process_alive?(os_pid) do
+      terminate_closed_port_runtime(os_pid, os_identity, timeout_ms)
+    else
       :ok
+    end
+  end
+
+  # TERM grace and post-KILL confirmation share the single `timeout_ms` budget so
+  # a TERM-resistant child cannot block the calling WorkerProcess for twice the
+  # configured shutdown timeout and orphan its `unload` call.
+  defp terminate_closed_port_runtime(os_pid, os_identity, timeout_ms) do
+    kill_deadline = System.monotonic_time(:millisecond) + timeout_ms
+    term_deadline = kill_deadline - min(@kill_confirm_ms, div(timeout_ms, 2))
+    signal_result = WorkerProcessLifecycle.signal_owned_process(os_pid, os_identity, "-TERM")
+
+    if WorkerProcessLifecycle.custody_refused?(signal_result) do
+      :ok
+    else
+      confirm_closed_port_exit(os_pid, os_identity, term_deadline, kill_deadline)
+    end
+  end
+
+  defp confirm_closed_port_exit(os_pid, os_identity, term_deadline, kill_deadline) do
+    case WorkerProcessLifecycle.escalate_owned_exit(
+           os_pid,
+           os_identity,
+           term_deadline,
+           kill_deadline
+         ) do
+      :ok -> :ok
+      {:error, :timeout} -> {:error, :worker_shutdown_timeout}
+      {:error, _custody_refusal} -> :ok
     end
   end
 
@@ -1030,14 +1122,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # The tree-kill is defense-in-depth against intermediate launchers
   # (e.g. `uv run`) that swallow signals without forwarding to children.
   defp stop_runtime_with_escalation(port, os_pid, timeout_ms) do
-    WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
+    _ = WorkerProcessLifecycle.send_signal(os_pid, "-TERM")
 
     case wait_for_port_exit(port, timeout_ms) do
       {:ok, _status} ->
         :ok
 
       {:error, :timeout} ->
-        WorkerProcessLifecycle.kill_process_tree(os_pid)
+        _ = WorkerProcessLifecycle.kill_process_tree(os_pid)
 
         case wait_for_port_exit(port, timeout_ms) do
           {:ok, _status} -> :ok
@@ -1047,11 +1139,22 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp wait_for_port_exit(port, timeout_ms) do
-    receive do
-      {^port, {:exit_status, status}} -> {:ok, status}
-      {^port, {:data, _data}} -> wait_for_port_exit(port, timeout_ms)
-    after
-      timeout_ms -> {:error, :timeout}
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_port_exit(port, deadline)
+  end
+
+  defp do_wait_for_port_exit(port, deadline) do
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+    if remaining_ms <= 0 do
+      {:error, :timeout}
+    else
+      receive do
+        {^port, {:exit_status, status}} -> {:ok, status}
+        {^port, {:data, _data}} -> do_wait_for_port_exit(port, deadline)
+      after
+        remaining_ms -> {:error, :timeout}
+      end
     end
   end
 
@@ -1073,6 +1176,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   defp cleanup_failed_runtime(%{
          channel: channel,
+         os_identity: os_identity,
          os_pid: os_pid,
          port: port,
          reaper_ref: reaper_ref,
@@ -1080,9 +1184,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          socket_path: socket_path
        }) do
     if is_reference(reaper_ref), do: RuntimeProcessReaper.reap(reaper_ref, :cleanup_failed)
-    _ = stop_runtime(port, os_pid, shutdown_timeout_ms)
+    _ = stop_runtime(port, os_pid, os_identity, shutdown_timeout_ms)
     _ = disconnect_channel(channel)
-    _ = cleanup_socket(socket_path)
+    _ = WorkerProcessLifecycle.remove_owned_socket(socket_path)
     if is_reference(reaper_ref), do: RuntimeProcessReaper.release(reaper_ref)
     :ok
   end
