@@ -157,6 +157,8 @@ Recommended targets:
 - `make openspec` — run pinned OpenSpec validation.
 - `make format` — run Elixir formatter.
 - `make test` — run the default test suite.
+- `make cover` — run the default test suite with coverage.
+- `make macos-native-test-helpers` — stage macOS test helpers for direct `mix test` runs.
 - `make check-elixir` — run the full Elixir quality workflow.
 
 `make dev` must remain a foreground/blocking command equivalent to
@@ -207,8 +209,15 @@ Run these in order for Elixir/OTP changes from the umbrella root:
 2. `mise exec -- mix compile --warnings-as-errors`
 3. `mise exec -- mix credo --strict`
 4. `mise exec -- mix dialyzer`
-5. `mise exec -- mix test`
-6. `mise exec -- mix test --cover`
+5. `make macos-native-test-helpers`
+6. `mise exec -- mix test`
+7. `mise exec -- mix test --cover`
+
+`make check-elixir` runs the same workflow, and `make test` and `make cover`
+stage the macOS test helpers themselves. Step 5 is required only before a bare
+`mix test` invocation: retained macOS terminal-custody and launchd lifecycle
+tests resolve their helpers from the `orchard_cli` application `priv` directory,
+and ordinary portable `mix compile` no longer emits them.
 
 Rules:
 
@@ -330,7 +339,7 @@ the "Source-dev BEAM Peer Grant tracer" section in `docs/local-dev.md`.
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
-- `mise exec -- mix test` - test suite (uses its own DB and defaults to port 50071 via `test.exs`; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port)
+- `make test` - test suite (stages the macOS test helpers, then runs `mise exec -- mix test`; uses its own DB and defaults to port 50071 via `test.exs`; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` first when invoking `mise exec -- mix test` directly.
 
 See `docs/local-dev.md` for full environment setup and configuration.
 

@@ -8,6 +8,7 @@
 - [x] 2.1 Add the explicit macOS native-helper builder and source/test Make targets.
 - [x] 2.2 Preserve lifecycle and secret-terminal behavior through focused macOS regressions.
 - [x] 2.3 Build and stage both production helpers during payload assembly while excluding test-only artifacts and sources.
+- [x] 2.4 Reconcile the contributor and local-development test workflows with explicit macOS helper staging.
 
 ## 3. Validation
 

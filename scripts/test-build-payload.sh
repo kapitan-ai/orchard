@@ -238,6 +238,22 @@ if find "$PAYLOAD_ROOT" -name 'orchard-secret-tty-test' -print -quit | grep -q .
     fail 'payload staged the test-only terminal helper'
 fi
 
+# Darwin helper sources build into binaries outside the payload; neither the
+# helper sources nor any make recipe may reach the staged tree.
+for helper_source in orchard_secret_tty.c orchard_lifecycle_helper.c; do
+    if find "$PAYLOAD_ROOT" -name "$helper_source" -print -quit | grep -q .; then
+        fail "payload staged a Darwin native helper source: $helper_source"
+    fi
+done
+
+# Scoped to the staged releases so the sweep cannot trip over C sources that
+# legitimately ship inside the staged Python environments under native/.
+staged_source="$(find "$PAYLOAD_ROOT/releases" -type f \
+    \( -name '*.c' -o -name 'Makefile' \) -print -quit 2>/dev/null || true)"
+if [[ -n "$staged_source" ]]; then
+    fail "staged release tree contains native build inputs: $staged_source"
+fi
+
 # Managed Postgres has no LaunchDaemon until Managed Database Mode ships.
 if [[ -e "$PAYLOAD_ROOT/share/launchd/com.orchard.postgres.plist" ]]; then
     fail 'managed Postgres LaunchDaemon must not be staged'

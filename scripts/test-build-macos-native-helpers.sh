@@ -34,8 +34,4 @@ if [[ -e "$OUTPUT/orchard-secret-tty-test" ]]; then
   fail 'production-only rebuild retained the test helper'
 fi
 
-if find "$OUTPUT" -type f \( -name '*.c' -o -name 'Makefile' \) -print -quit | grep -q .; then
-  fail 'native-helper build output contains source files'
-fi
-
 printf 'macOS native-helper build test passed\n'
