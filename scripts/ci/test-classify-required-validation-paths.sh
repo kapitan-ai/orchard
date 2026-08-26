@@ -37,6 +37,12 @@ assert_case mlx-provider \
 assert_case worker-protocol \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto
+assert_case worker-package-readme \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  native/orchard_worker_mlx/README.md
+assert_case tokenizer-package-readme \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  native/orchard_tokenizer/README.md
 assert_case retained-macos-helper-consumer \
   'portable=true conformance=true macos=true mlx=false packaging=true ' \
   apps/orchard_cli/lib/orchard_cli/secret_tty.ex
