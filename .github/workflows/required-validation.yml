@@ -137,6 +137,15 @@ jobs:
       - name: Run Dialyzer
         run: mise exec -- mix dialyzer
 
+      - name: Prove portable compilation excludes Darwin helpers
+        run: scripts/test-portable-core-compilation.sh
+
+      - name: Test explicit macOS native-helper build
+        run: scripts/test-build-macos-native-helpers.sh
+
+      - name: Build macOS native helpers for Mix tests
+        run: make macos-native-test-helpers
+
       - name: Run tests
         run: mise exec -- mix test
 

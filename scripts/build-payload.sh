@@ -796,6 +796,10 @@ cd "$REPO_ROOT"
 # Build releases
 log_info "Building Elixir releases..."
 
+log_info "Building macOS native helpers for orchard_cli"
+"$REPO_ROOT/scripts/build-macos-native-helpers.sh" \
+    --output "$REPO_ROOT/_build/prod/lib/orchard_cli/priv"
+
 log_info "  → orchard_controller"
 mix release orchard_controller
 

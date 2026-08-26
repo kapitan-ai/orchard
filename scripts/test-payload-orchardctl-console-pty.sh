@@ -38,6 +38,8 @@ fail() {
 }
 
 cd "$REPO_ROOT"
+"$REPO_ROOT/scripts/build-macos-native-helpers.sh" \
+  --output "$REPO_ROOT/_build/prod/lib/orchard_cli/priv" >/dev/null
 MIX_ENV=prod mise exec -- mix release orchard_cli --overwrite >/dev/null
 
 mkdir -p "$STAGED_ROOT/releases" "$STAGED_ROOT/support" "$STAGED_ROOT/config" "$TOOLS"

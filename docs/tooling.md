@@ -13,7 +13,7 @@ shell-specific runtime versions when working in this repo.
 The documented complete development and validation workflow currently runs on the supported Apple Silicon macOS platform profile.
 The accepted Linux Controller profile is a Milestone 8 target and does not yet have a supported bootstrap, packaging, or validation lane.
 Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain part of that target.
-Apple's C toolchain is a build prerequisite of the current macOS platform profile development workflow, because compiling `apps/orchard_cli` builds a native helper; see "Required Toolchain" below.
+Apple's C toolchain is a build prerequisite only for explicit macOS host-artifact builds and validation; ordinary portable Orchard control-plane core compilation does not invoke it.
 Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
 
 The target validation design moves broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance to Linux.
@@ -54,10 +54,14 @@ The mise environment also sets:
 `uv` remains the package and virtualenv manager for `native/**`. `mise` owns
 the Python interpreter version that `uv` is allowed to use.
 
-For the current macOS validation workflow, Apple's C toolchain is also required and is outside mise, the same way the Swift and signing tools are.
-Compiling `apps/orchard_cli` builds the `orchard-secret-tty` terminal helper from `apps/orchard_cli/c_src` through `elixir_make`, so `mix compile`, `mix test`, and package builds need the host Xcode Command Line Tools for `xcrun clang`.
-Install them with `xcode-select --install` if `xcrun clang --version` fails.
-This native helper dependency is a documented portability migration input and must not be interpreted as part of the accepted portable CLI contract.
+For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
+Ordinary `mix compile` does not build Darwin helpers.
+Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
+The `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically.
+Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
+The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
+Payload assembly invokes the same builder before producing the packaged CLI release.
+Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun clang --version` fails.
 
 ## Standard Commands
 
