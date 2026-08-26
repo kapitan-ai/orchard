@@ -26,16 +26,16 @@ assert_case controller-only \
   'portable=true conformance=true macos=false mlx=false packaging=false ' \
   apps/orchard_controller/lib/orchard/api/router.ex
 assert_case tokenizer \
-  'portable=true conformance=true macos=false mlx=false packaging=false ' \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
   native/orchard_tokenizer/src/orchard_tokenizer/cli.py
 assert_case macos-packaging \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   packaging/app/Sources/OrchardApp/main.swift
 assert_case mlx-provider \
-  'portable=true conformance=true macos=true mlx=true packaging=false ' \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
   native/orchard_worker_mlx/src/orchard_worker_mlx/runtime.py
 assert_case worker-protocol \
-  'portable=true conformance=true macos=true mlx=true packaging=false ' \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
   native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto
 assert_case retained-macos-helper-consumer \
   'portable=true conformance=true macos=true mlx=false packaging=true ' \
@@ -43,6 +43,12 @@ assert_case retained-macos-helper-consumer \
 assert_case retained-macos-test \
   'portable=true conformance=true macos=true mlx=false packaging=true ' \
   apps/orchard_cli/test/orchard_cli/commands/console_pty_test.exs
+assert_case macos-pty-support \
+  'portable=false conformance=false macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/test/support/console_pty_harness.c
+assert_case macos-test-helper \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_cli/test/test_helper.exs
 assert_case source-to-doc-rename \
   'portable=true conformance=true macos=false mlx=false packaging=false ' \
   apps/orchard_controller/lib/orchard/api/router.ex docs/router.md

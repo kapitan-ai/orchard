@@ -1,7 +1,7 @@
 ## 1. Dependency Fan-Out
 
 - [x] 1.1 Add a repository-owned classifier for portable, conformance, macOS, MLX, and packaging lanes.
-- [x] 1.2 Add trigger-matrix tests for portable-only, provider, macOS-native, packaging, normative, shared-protocol, root-toolchain, workflow, source renames, and ordinary documentation changes.
+- [x] 1.2 Add trigger-matrix tests for portable-only, provider, native package, macOS-native fixture, packaging, normative, shared-protocol, root-toolchain, workflow, source rename, and ordinary documentation changes.
 
 ## 2. Required Validation Lanes
 

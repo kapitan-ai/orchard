@@ -33,6 +33,8 @@ The classifier SHALL emit independent portable, conformance, macOS, MLX, and pac
 Pushes to `main` SHALL run every lane.
 
 Shared contracts, proto source, root configuration, root toolchain, release composition, accepted OpenSpec material, `SPEC.md`, and workflow changes SHALL fan out to every lane.
+Native package source, lockfile, metadata, or entrypoint changes SHALL also select packaging validation because payload assembly installs non-editable package trees in a separate environment.
+Retained macOS test fixtures SHALL select each macOS host or packaged PTY lane that consumes them.
 Unknown paths SHALL fail safe by selecting every lane.
 Ordinary documentation MAY select no heavy lane.
 Pull-request diffs SHALL disable rename detection so both the removed source path and added destination path enter classification.

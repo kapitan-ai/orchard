@@ -23,6 +23,12 @@ enable_macos_consumers() {
   packaging=true
 }
 
+enable_portable_macos_tests() {
+  portable=true
+  conformance=true
+  macos=true
+}
+
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
 
@@ -42,11 +48,30 @@ while IFS= read -r path; do
     apps/orchard_cli/lib/orchard_cli/lifecycle_native.ex|apps/orchard_cli/lib/orchard_cli/lifecycle_system.ex|apps/orchard_cli/lib/orchard_cli/secret_tty.ex|apps/orchard_cli/lib/orchard_cli/commands/console.ex|apps/orchard_cli/lib/orchard_cli/commands/node_agent_stop.ex|apps/orchard_cli/test/orchard_cli/lifecycle_native_test.exs|apps/orchard_cli/test/orchard_cli/commands/console_pty_test.exs|apps/orchard_node_agent/lib/orchard/node/beam_peer_grant_store.ex|apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs)
       enable_macos_consumers
       ;;
+    apps/orchard_cli/test/support/console_pty_harness.c|apps/orchard_cli/test/support/orchardctl_delayed_term_fixture.c)
+      macos=true
+      packaging=true
+      ;;
+    apps/orchard_cli/test/support/console_pty_process.ex|apps/orchard_cli/test/support/flock_holder.swift|apps/orchard_cli/test/test_helper.exs|apps/orchard_node_agent/test/test_helper.exs)
+      enable_portable_macos_tests
+      ;;
+    native/orchard_worker_mlx/pyproject.toml|native/orchard_worker_mlx/uv.lock|native/orchard_worker_mlx/bin/*|native/orchard_worker_mlx/proto/*|native/orchard_worker_mlx/src/*)
+      portable=true
+      conformance=true
+      macos=true
+      mlx=true
+      packaging=true
+      ;;
     native/orchard_worker_mlx/*)
       portable=true
       conformance=true
       macos=true
       mlx=true
+      ;;
+    native/orchard_tokenizer/pyproject.toml|native/orchard_tokenizer/uv.lock|native/orchard_tokenizer/bin/*|native/orchard_tokenizer/src/*)
+      portable=true
+      conformance=true
+      packaging=true
       ;;
     native/orchard_tokenizer/*)
       portable=true
