@@ -24,8 +24,10 @@ Their source and compiler hook currently live inside `apps/orchard_cli`, so ever
 
 ### macOS packaging owns helper source and compilation
 
-Darwin C sources SHALL live under `packaging/macos/native_helpers` and SHALL be compiled only through `scripts/build-macos-native-helpers.sh`.
-The portable CLI Mix project SHALL NOT declare a native compiler hook for these sources.
+The retained Darwin terminal-custody and lifecycle helper sources SHALL live under `packaging/macos/native_helpers` and SHALL be compiled only through `scripts/build-macos-native-helpers.sh`.
+The portable CLI Mix project SHALL NOT declare a native compiler hook for those sources.
+This decision covers the two retained production helpers only.
+Darwin-only test fixtures that their own test or validation script compiles at run time behind an operating-system guard stay beside those tests and are outside this decision.
 
 Keeping the sources under `apps/orchard_cli` behind an operating-system conditional was rejected because the portable application would continue to own a platform compiler boundary.
 
