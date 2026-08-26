@@ -39,6 +39,17 @@ defmodule Orchard.TestSupport.RepoManager do
   end
 
   defp ensure_repo_started(state) do
+    state = start_repo_if_needed(state)
+
+    try do
+      Sandbox.mode(Repo, :manual)
+      state
+    rescue
+      error in RuntimeError -> recover_non_sandbox_repo(error, __STACKTRACE__, state)
+    end
+  end
+
+  defp start_repo_if_needed(state) do
     case Process.whereis(Repo) do
       nil ->
         {:ok, _pid} = Repo.start_link()
@@ -47,8 +58,21 @@ defmodule Orchard.TestSupport.RepoManager do
         :ok
     end
 
-    Sandbox.mode(Repo, :manual)
     state
+  end
+
+  defp recover_non_sandbox_repo(error, stacktrace, state) do
+    if String.starts_with?(error.message, "cannot invoke sandbox operation with pool ") do
+      state
+      |> stop_repo()
+      |> start_repo_if_needed()
+      |> then(fn restarted_state ->
+        :ok = Sandbox.mode(Repo, :manual)
+        restarted_state
+      end)
+    else
+      reraise error, stacktrace
+    end
   end
 
   defp stop_repo(state) do
