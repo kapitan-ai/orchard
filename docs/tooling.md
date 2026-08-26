@@ -11,13 +11,13 @@ shell-specific runtime versions when working in this repo.
 ## Platform scope
 
 The documented complete development and validation workflow currently runs on the supported Apple Silicon macOS platform profile.
-The accepted Linux Controller profile is a Milestone 8 target and does not yet have a supported bootstrap, packaging, or validation lane.
+The accepted Linux Controller profile is a Milestone 8 target and does not yet have a supported bootstrap, packaging, or deployment path; required CI does run a Linux portable Orchard control-plane core validation lane, which is validation coverage rather than Linux Controller profile support.
 Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain part of that target.
 Ordinary portable Orchard control-plane core compilation no longer invokes `xcrun` or builds Orchard's own Darwin helpers; Apple's C toolchain is a build prerequisite for explicit macOS host-artifact builds and validation.
 Dependency compilation on the current macOS profile still requires a working host C compiler for third-party NIFs such as `argon2_elixir`.
 Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
 
-The target validation design moves broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance to Linux.
+Required validation runs broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance on Linux.
 Separate macOS lanes prove host lifecycle, Orchard.app/DMG behavior, and MLX runtime behavior.
 Credential-free signing-contract validation may run in normal CI, while Developer ID signing, notarization, stapling, and publication remain credentialed release-only operations.
 
@@ -58,7 +58,7 @@ the Python interpreter version that `uv` is allowed to use.
 For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
 Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.
 Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
-The `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically.
+On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically; on Linux they skip staging because the retained macOS tags are excluded there.
 Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
 The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
 Payload assembly invokes the same builder before producing the packaged CLI release.

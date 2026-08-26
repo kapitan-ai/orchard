@@ -12,7 +12,6 @@ EXCLUDES=(
   --exclude macos
   --exclude mlx_smoke
   --exclude mlx_benchmark
-  --exclude safe_tokenization_smoke
 )
 
 mise exec -- mix test "${EXCLUDES[@]}"

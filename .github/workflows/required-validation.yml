@@ -44,17 +44,26 @@ jobs:
 
       - name: Classify changed paths
         id: classify
+        shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          set -o pipefail
+
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             printf '%s=true\n' portable conformance macos mlx packaging >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA" \
+          if ! changed_paths="$(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")"; then
+            printf 'Unable to diff %s..%s; refusing to classify validation lanes.\n' \
+              "$BASE_SHA" "$HEAD_SHA" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$changed_paths" \
             | scripts/ci/classify-required-validation-paths.sh \
             >> "$GITHUB_OUTPUT"
 
@@ -108,6 +117,15 @@ jobs:
         run: |
           MIX_ENV=test mise exec -- mix ecto.create
           MIX_ENV=test mise exec -- mix ecto.migrate
+
+      - name: Cache Dialyzer PLTs
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.mix/dialyxir_erlang-*.plt
+            _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt
+            _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt.hash
+          key: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
 
       - name: Run portable static gates
         run: |

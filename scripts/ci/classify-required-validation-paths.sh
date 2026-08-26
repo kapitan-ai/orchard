@@ -29,8 +29,12 @@ enable_portable_macos_tests() {
   macos=true
 }
 
+saw_path=false
+
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
+
+  saw_path=true
 
   case "$path" in
     SPEC.md|AGENTS.md|mix.exs|mix.lock|mise.toml|Makefile|package.json|package-lock.json|config/*|rel/*|proto/*|openspec/*|.github/workflows/*|apps/orchard_shared/*)
@@ -89,9 +93,14 @@ while IFS= read -r path; do
       portable=true
       conformance=true
       ;;
+    apps/orchard_controller/test/*|apps/orchard_node_agent/test/*|apps/orchard_cli/test/*)
+      portable=true
+      conformance=true
+      ;;
     apps/orchard_controller/*|apps/orchard_node_agent/*|apps/orchard_cli/*)
       portable=true
       conformance=true
+      packaging=true
       ;;
     scripts/ci/*|scripts/test-linux-portable-core.sh|scripts/test-provider-neutral-conformance.sh)
       enable_all
@@ -101,6 +110,11 @@ while IFS= read -r path; do
       ;;
   esac
 done
+
+if [[ "$saw_path" != "true" ]]; then
+  printf 'classify-required-validation-paths: no changed paths on stdin\n' >&2
+  exit 1
+fi
 
 printf 'portable=%s\n' "$portable"
 printf 'conformance=%s\n' "$conformance"

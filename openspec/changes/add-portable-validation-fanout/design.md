@@ -35,7 +35,9 @@ Pushes to `main` SHALL run every lane.
 Shared contracts, proto source, root configuration, root toolchain, release composition, accepted OpenSpec material, `SPEC.md`, and workflow changes SHALL fan out to every lane.
 Native package source, lockfile, metadata, or entrypoint changes SHALL also select packaging validation because payload assembly installs non-editable package trees in a separate environment.
 Retained macOS test fixtures SHALL select each macOS host or packaged PTY lane that consumes them.
+First-party umbrella application source outside `test/` SHALL also select packaging validation because payload assembly and the packaged CLI lanes build `MIX_ENV=prod` releases from those trees.
 Unknown paths SHALL fail safe by selecting every lane.
+An empty changed-path set SHALL fail classification rather than emit an all-inapplicable decision, so a failed or unresolvable pull-request diff cannot green the required gate with no validation.
 Ordinary documentation MAY select no heavy lane.
 Pull-request diffs SHALL disable rename detection so both the removed source path and added destination path enter classification.
 
