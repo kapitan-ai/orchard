@@ -470,8 +470,6 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         memory_budget_overhead_bytes: memory_budget_overhead_bytes
       )
 
-    os_identity = capture_os_identity(os_pid)
-
     runtime_params = %{
       backend: backend,
       executable: executable,
@@ -479,34 +477,57 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       log_path: log_path,
       model_path: model_path,
       model_ref: model_ref,
-      os_identity: os_identity,
+      os_pid: os_pid,
+      owner_pid: owner_pid,
+      port: port,
+      ready_timeout_ms: ready_timeout_ms,
       shutdown_timeout_ms: shutdown_timeout_ms,
       socket_path: socket_path
     }
 
+    case WorkerProcessLifecycle.process_identity(os_pid) do
+      {:ok, os_identity} ->
+        start_watched_runtime(Map.put(runtime_params, :os_identity, os_identity))
+
+      {:error, :identity_unavailable} = error ->
+        cleanup_failed_runtime(%{
+          channel: nil,
+          os_identity: nil,
+          os_pid: os_pid,
+          port: port,
+          reaper_ref: nil,
+          shutdown_timeout_ms: shutdown_timeout_ms,
+          socket_path: socket_path
+        })
+
+        error
+    end
+  end
+
+  defp start_watched_runtime(params) do
     reaper_meta = %{
-      shutdown_timeout_ms: shutdown_timeout_ms,
-      model_ref: model_ref,
-      os_identity: os_identity,
-      socket_path: socket_path,
+      shutdown_timeout_ms: params.shutdown_timeout_ms,
+      model_ref: params.model_ref,
+      os_identity: params.os_identity,
+      socket_path: params.socket_path,
       phase: :loading
     }
 
-    case RuntimeProcessReaper.watch(owner_pid, os_pid, reaper_meta) do
+    case RuntimeProcessReaper.watch(params.owner_pid, params.os_pid, reaper_meta) do
       {:ok, reaper_ref} ->
-        case wait_for_worker_ready(socket_path, port, ready_timeout_ms) do
+        case wait_for_worker_ready(params.socket_path, params.port, params.ready_timeout_ms) do
           {:ok, channel} ->
-            load_model_or_cleanup(channel, port, os_pid, reaper_ref, runtime_params)
+            load_model_or_cleanup(channel, params.port, params.os_pid, reaper_ref, params)
 
           {:error, reason} ->
             cleanup_failed_runtime(%{
               channel: nil,
-              os_identity: os_identity,
-              os_pid: os_pid,
-              port: port,
+              os_identity: params.os_identity,
+              os_pid: params.os_pid,
+              port: params.port,
               reaper_ref: reaper_ref,
-              shutdown_timeout_ms: shutdown_timeout_ms,
-              socket_path: socket_path
+              shutdown_timeout_ms: params.shutdown_timeout_ms,
+              socket_path: params.socket_path
             })
 
             {:error, reason}
@@ -515,22 +536,15 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       {:error, reason} ->
         cleanup_failed_runtime(%{
           channel: nil,
-          os_identity: os_identity,
-          os_pid: os_pid,
-          port: port,
+          os_identity: params.os_identity,
+          os_pid: params.os_pid,
+          port: params.port,
           reaper_ref: nil,
-          shutdown_timeout_ms: shutdown_timeout_ms,
-          socket_path: socket_path
+          shutdown_timeout_ms: params.shutdown_timeout_ms,
+          socket_path: params.socket_path
         })
 
         {:error, reason}
-    end
-  end
-
-  defp capture_os_identity(os_pid) do
-    case WorkerProcessLifecycle.process_identity(os_pid) do
-      {:ok, identity} -> identity
-      {:error, :identity_unavailable} -> nil
     end
   end
 

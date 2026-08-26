@@ -65,10 +65,13 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
 
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
 
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
     {:ok, _ref} =
       RuntimeProcessReaper.watch(owner_pid, os_pid, %{
         shutdown_timeout_ms: @short_timeout_ms,
         model_ref: nil,
+        os_identity: os_identity,
         phase: :loading
       })
 
@@ -122,10 +125,13 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
         end
       end)
 
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
     {:ok, ref} =
       RuntimeProcessReaper.watch(owner_pid, os_pid, %{
         shutdown_timeout_ms: @short_timeout_ms,
         model_ref: nil,
+        os_identity: os_identity,
         phase: :loading
       })
 
@@ -324,6 +330,61 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
+  test "owner-down reaping without launch identity cleans socket and lease without signaling" do
+    root = unique_root("owner-down-no-identity")
+    socket_path = Path.join(root, "worker.sock")
+    File.mkdir_p!(root)
+    File.write!(socket_path, "owned runtime artifact")
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    owner_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} =
+             RuntimeProcessReaper.watch(owner_pid, control_pid, %{
+               shutdown_timeout_ms: @short_timeout_ms,
+               model_ref: nil,
+               os_identity: nil,
+               phase: :loaded,
+               socket_path: socket_path
+             })
+
+    Process.exit(owner_pid, :kill)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+
+    refute File.exists?(socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "shutdown sweep without launch identity cleans socket without signaling" do
+    root = unique_root("shutdown-no-identity")
+    socket_path = Path.join(root, "worker.sock")
+    File.mkdir_p!(root)
+    File.write!(socket_path, "owned runtime artifact")
+    private_reaper = start_private_reaper!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} = watch(control_pid, os_identity: nil, socket_path: socket_path)
+    assert :ok = GenServer.stop(private_reaper, :shutdown)
+
+    refute File.exists?(socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
   defp start_private_reaper! do
     original_reaper = Process.whereis(RuntimeProcessReaper)
     assert Process.unregister(RuntimeProcessReaper)
@@ -348,9 +409,12 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
   end
 
   defp watch(os_pid, meta \\ []) do
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
     base = %{
       shutdown_timeout_ms: @short_timeout_ms,
       model_ref: nil,
+      os_identity: os_identity,
       phase: :loaded
     }
 

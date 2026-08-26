@@ -122,6 +122,81 @@ defmodule Orchard.Node.WorkerCustodyTest do
     refute File.exists?(context.socket_path)
   end
 
+  test "SPEC.md §4.9 closed Port without launch identity does not signal a recorded PID",
+       context do
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    File.write!(context.socket_path, "owned runtime artifact")
+
+    state = %{
+      backend: "stub",
+      channel: nil,
+      executable: Path.expand("../../support/custody-signal-child", __DIR__),
+      generations: %{},
+      model_ref: context.model_ref,
+      os_identity: nil,
+      os_pid: control_pid,
+      port: exited_port!(),
+      reaper_ref: nil,
+      shutdown_timeout_ms: @shutdown_timeout_ms,
+      socket_path: context.socket_path
+    }
+
+    log =
+      capture_log(fn ->
+        assert :ok = WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+      end)
+
+    assert log =~ "worker custody identity unavailable"
+    assert log =~ "os_pid=#{control_pid}"
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    refute File.exists?(context.socket_path)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
+  test "SPEC.md §4.9 launch aborts before arming reaper when identity capture fails",
+       context do
+    fake_bin = Path.join(context.root, "fake-bin")
+    fake_ps = Path.join(fake_bin, "ps")
+    worker = Path.join(context.root, "identity-unavailable-worker")
+    File.mkdir_p!(fake_bin)
+    File.write!(fake_ps, "#!/bin/sh\nexit 1\n")
+    File.chmod!(fake_ps, 0o755)
+    File.write!(worker, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n")
+    File.chmod!(worker, 0o755)
+    File.write!(context.socket_path, "owned runtime artifact")
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+    previous_path = System.fetch_env!("PATH")
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    result =
+      try do
+        System.put_env("PATH", fake_bin <> ":" <> previous_path)
+
+        WorkerRuntimeAdapter.load_model(context.model_ref,
+          backend: "stub",
+          executable: worker,
+          load_timeout_ms: 5_000,
+          log_path: context.log_path,
+          models_root: context.models_root,
+          owner: self(),
+          ready_timeout_ms: 5_000,
+          shutdown_timeout_ms: @shutdown_timeout_ms,
+          socket_path: context.socket_path
+        )
+      after
+        System.put_env("PATH", previous_path)
+      end
+
+    assert {:error, :identity_unavailable} = result
+    refute File.exists?(context.socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+  end
+
   test "SPEC.md §4.9 noisy TERM-resistant shutdown reaches bounded KILL", context do
     marker_path = Path.join(context.root, "events.log")
 
@@ -135,10 +210,13 @@ defmodule Orchard.Node.WorkerCustodyTest do
       CustodyTestHelpers.stop_child(control_port, control_pid)
     end)
 
+    assert {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
     assert {:ok, reaper_ref} =
              RuntimeProcessReaper.watch(self(), os_pid, %{
                shutdown_timeout_ms: @shutdown_timeout_ms,
                model_ref: context.model_ref,
+               os_identity: os_identity,
                phase: :loaded
              })
 
@@ -150,6 +228,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
       executable: Path.expand("../../support/custody-signal-child", __DIR__),
       generations: %{},
       model_ref: context.model_ref,
+      os_identity: os_identity,
       os_pid: os_pid,
       port: port,
       reaper_ref: reaper_ref,

@@ -4,22 +4,48 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STATE_ROOT=""
 BEAM_PID=""
+BEAM_IDENTITY=""
 WORKER_PID=""
+WORKER_IDENTITY=""
 CONTROL_PID=""
+CONTROL_IDENTITY=""
 SOCKET_PATH=""
 BUNDLE_ROOT="$REPO_ROOT/tmp/dev/models/issue-286-shutdown-custody"
 BUNDLE_OWNED=false
 PORT="${ORCHARD_SHUTDOWN_CUSTODY_PORT:-50091}"
 
+process_identity() {
+  local pid="$1"
+  local identity
+
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  identity="$(ps -o uid= -o lstart= -p "$pid" 2>/dev/null)" || return 1
+  identity="$(printf '%s\n' "$identity" | awk '{$1=$1; print}')"
+  [[ -n "$identity" ]] || return 1
+  printf '%s\n' "$identity"
+}
+
+cleanup_owned_pid() {
+  local pid="$1"
+  local expected_identity="$2"
+  local current_identity
+
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  [[ -n "$expected_identity" ]] || return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  current_identity="$(process_identity "$pid")" || return 0
+  [[ "$current_identity" == "$expected_identity" ]] || return 0
+
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   trap - EXIT INT TERM
 
-  for pid in "$WORKER_PID" "$BEAM_PID" "$CONTROL_PID"; do
-    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-    fi
-  done
+  cleanup_owned_pid "$WORKER_PID" "$WORKER_IDENTITY"
+  cleanup_owned_pid "$BEAM_PID" "$BEAM_IDENTITY"
+  cleanup_owned_pid "$CONTROL_PID" "$CONTROL_IDENTITY"
 
   exec 9>&- 2>/dev/null || true
   [[ -n "$STATE_ROOT" ]] && rm -rf -- "$STATE_ROOT" >/dev/null 2>&1
@@ -71,6 +97,22 @@ wait_for_death() {
   ! kill -0 "$pid" 2>/dev/null
 }
 
+assert_exit_cleanup_rejects_stale_pid() {
+  (
+    STATE_ROOT=""
+    BUNDLE_OWNED=false
+    WORKER_PID="$CONTROL_PID"
+    WORKER_IDENTITY="stale-worker-identity"
+    BEAM_PID="$CONTROL_PID"
+    BEAM_IDENTITY="stale-beam-identity"
+    CONTROL_IDENTITY="stale-control-identity"
+    trap cleanup EXIT
+  )
+
+  kill -0 "$CONTROL_PID" 2>/dev/null ||
+    fail "EXIT cleanup signaled a stale or mismatched recorded PID"
+}
+
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 
@@ -110,6 +152,7 @@ export ORCHARD_SHUTDOWN_CUSTODY_REAL_WORKER="$REAL_WORKER"
 cd "$REPO_ROOT"
 mise exec -- bin/dev-node-agent <&9 >"$STATE_ROOT/node-agent.log" 2>&1 &
 BEAM_PID=$!
+BEAM_IDENTITY="$(process_identity "$BEAM_PID")" || fail "BEAM launch identity unavailable"
 
 wait_for_port || fail "launcher readiness timeout"
 
@@ -126,11 +169,14 @@ SOCKET_PATH="$(cat "$STATE_ROOT/worker.socket")"
 
 [[ "$WORKER_PID" =~ ^[1-9][0-9]*$ ]] || fail "invalid worker identity"
 kill -0 "$WORKER_PID" 2>/dev/null || fail "exact worker not running"
+WORKER_IDENTITY="$(process_identity "$WORKER_PID")" || fail "worker launch identity unavailable"
 [[ -S "$SOCKET_PATH" ]] || fail "exact worker socket unavailable"
 
 sleep 3600 &
 CONTROL_PID=$!
+CONTROL_IDENTITY="$(process_identity "$CONTROL_PID")" || fail "control launch identity unavailable"
 kill -0 "$CONTROL_PID" 2>/dev/null || fail "control child unavailable"
+assert_exit_cleanup_rejects_stale_pid
 
 kill -TERM "$BEAM_PID" 2>/dev/null || fail "foreground termination failed"
 wait_for_death "$BEAM_PID" 30 || fail "foreground shutdown timeout"
@@ -145,4 +191,5 @@ printf '%s\n' \
   "  beam: exited on SIGTERM (bounded)" \
   "  worker child: exact pid dead" \
   "  worker socket: removed" \
-  "  control child: survived"
+  "  control child: survived" \
+  "  EXIT cleanup: stale and mismatched PIDs rejected"

@@ -96,8 +96,8 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   @doc """
   Sends `signal` to `os_pid` only while it still matches `identity`.
 
-  A `nil` identity means no snapshot was captured (for example when `ps` is
-  unavailable) and falls back to unguarded signalling.
+  A missing identity fails closed because a numeric PID is not custody proof
+  after the BEAM Port has closed.
   """
   @spec signal_owned_process(non_neg_integer(), custody_identity() | nil, String.t()) ::
           owned_signal_result()
@@ -142,7 +142,10 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
     end
   end
 
-  defp confirm_custody(_os_pid, nil), do: :ok
+  defp confirm_custody(os_pid, nil) do
+    Logger.warning("worker custody identity unavailable os_pid=#{os_pid}")
+    {:error, :identity_mismatch}
+  end
 
   defp confirm_custody(os_pid, identity) when is_binary(identity) do
     case process_identity(os_pid) do

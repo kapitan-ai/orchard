@@ -117,7 +117,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
       model_ref: Map.get(meta, :model_ref),
       phase: Map.get(meta, :phase, :loading),
       os_pid: os_pid,
-      os_identity: lease_identity(meta, os_pid),
+      os_identity: lease_identity(meta),
       shutdown_timeout_ms: Map.get(meta, :shutdown_timeout_ms, 1_000),
       socket_path: Map.get(meta, :socket_path),
       term_deadline: nil,
@@ -210,8 +210,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   defp resolve_term_deadline(%{term_deadline: nil} = lease) do
-    _ = WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM")
-    System.monotonic_time(:millisecond) + lease.shutdown_timeout_ms
+    case WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM") do
+      :ok -> System.monotonic_time(:millisecond) + lease.shutdown_timeout_ms
+      {:error, _reason} -> System.monotonic_time(:millisecond)
+    end
   end
 
   defp resolve_term_deadline(%{term_deadline: deadline}), do: deadline
@@ -226,15 +228,20 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         _ = cleanup_socket(lease.socket_path)
 
         if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-          _ = WorkerProcessLifecycle.signal_owned_process(os_pid, lease.os_identity, "-TERM")
-          timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+          case WorkerProcessLifecycle.signal_owned_process(os_pid, lease.os_identity, "-TERM") do
+            {:error, :identity_mismatch} ->
+              cleanup_lease(state, ref)
 
-          state
-          |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
-          |> put_in(
-            [Access.key(:leases), ref, :term_deadline],
-            System.monotonic_time(:millisecond) + timeout
-          )
+            _signal_result ->
+              timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+
+              state
+              |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
+              |> put_in(
+                [Access.key(:leases), ref, :term_deadline],
+                System.monotonic_time(:millisecond) + timeout
+              )
+          end
         else
           cleanup_lease(state, ref)
         end
@@ -276,16 +283,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
   defp log_orphan_reap(_lease, _reason), do: :ok
 
-  defp lease_identity(meta, os_pid) do
+  defp lease_identity(meta) do
     case Map.get(meta, :os_identity) do
-      identity when is_binary(identity) ->
-        identity
-
-      _other ->
-        case WorkerProcessLifecycle.process_identity(os_pid) do
-          {:ok, identity} -> identity
-          {:error, :identity_unavailable} -> nil
-        end
+      identity when is_binary(identity) -> identity
+      _other -> nil
     end
   end
 

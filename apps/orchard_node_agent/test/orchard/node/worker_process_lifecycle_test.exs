@@ -82,13 +82,23 @@ defmodule Orchard.Node.WorkerProcessLifecycleTest do
     CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
   end
 
-  test "custody-gated signals fall back to unguarded delivery without a snapshot" do
+  test "custody-gated signals fail closed without a launch identity" do
     {port, os_pid} = CustodyTestHelpers.start_control_child!()
 
     on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
 
-    assert :ok = WorkerProcessLifecycle.signal_owned_process(os_pid, nil, "-TERM")
-    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    log =
+      capture_log(fn ->
+        assert {:error, :identity_mismatch} =
+                 WorkerProcessLifecycle.signal_owned_process(os_pid, nil, "-TERM")
+
+        assert {:error, :identity_mismatch} =
+                 WorkerProcessLifecycle.kill_owned_process_tree(os_pid, nil)
+      end)
+
+    assert log =~ "worker custody identity unavailable"
+    assert log =~ "os_pid=#{os_pid}"
+    assert WorkerProcessLifecycle.os_process_alive?(os_pid)
     assert {:error, :identity_unavailable} = WorkerProcessLifecycle.process_identity(@missing_pid)
   end
 
