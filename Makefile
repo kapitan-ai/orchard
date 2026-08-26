@@ -15,6 +15,7 @@ help:
 	  '  make macos-native-test-helpers Build macOS helpers for Mix tests' \
 	  '  make format         Run Elixir formatter' \
 	  '  make test           Run default test suite' \
+	  '  make cover          Run default test suite with coverage' \
 	  '  make check-elixir   Run full Elixir quality workflow'
 
 setup: setup-elixir setup-native setup-openspec
