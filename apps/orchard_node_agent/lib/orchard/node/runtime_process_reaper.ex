@@ -228,26 +228,30 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         _ = cleanup_socket(lease.socket_path)
 
         if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-          case WorkerProcessLifecycle.signal_owned_process(os_pid, lease.os_identity, "-TERM") do
-            {:error, :identity_mismatch} ->
-              cleanup_lease(state, ref)
-
-            _signal_result ->
-              timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
-
-              state
-              |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
-              |> put_in(
-                [Access.key(:leases), ref, :term_deadline],
-                System.monotonic_time(:millisecond) + timeout
-              )
-          end
+          start_live_process_reaping(state, ref, lease, timeout)
         else
           cleanup_lease(state, ref)
         end
 
       _other ->
         state
+    end
+  end
+
+  defp start_live_process_reaping(state, ref, lease, timeout) do
+    case WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM") do
+      {:error, :identity_mismatch} ->
+        cleanup_lease(state, ref)
+
+      _signal_result ->
+        timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+
+        state
+        |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
+        |> put_in(
+          [Access.key(:leases), ref, :term_deadline],
+          System.monotonic_time(:millisecond) + timeout
+        )
     end
   end
 
