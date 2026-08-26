@@ -5,6 +5,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/required-validation.yml"
 PEER_GRANT_TEST="$ROOT/apps/orchard_controller/test/orchard/beam_peer_grants_test.exs"
+PORTABLE_HELPER_FIXTURES=(
+  "$ROOT/apps/orchard_controller/test/orchard/tokenizer_client_test.exs"
+  "$ROOT/apps/orchard_controller/test/orchard/models/bundle_builder_test.exs"
+  "$ROOT/apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs"
+)
 
 fail() {
   printf 'platform test routing failed: %s\n' "$1" >&2
@@ -61,6 +66,12 @@ grep -Fq 'mix test --cover --exclude macos' <<<"$linux_cover_plan" ||
 peer_grant_case="$(grep -B 2 -F 'Node retrieves and stores a grant over a real mTLS control stream' "$PEER_GRANT_TEST")"
 grep -Fq '@tag :macos' <<<"$peer_grant_case" ||
   fail 'Darwin lockf-backed peer-grant case was not tagged for macOS routing'
+
+for fixture in "${PORTABLE_HELPER_FIXTURES[@]}"; do
+  stat_probe="$(grep -F 'stat -c' "$fixture" | grep -F 'stat -f' | head -n 1)"
+  [[ "$stat_probe" == *"stat -c '%a'"*"stat -f '%Lp'"* ]] ||
+    fail "portable helper fixture did not probe GNU stat before BSD stat: $fixture"
+done
 
 macos_host_job="$(
   awk '
