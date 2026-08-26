@@ -35,6 +35,7 @@ Pushes to `main` SHALL run every lane.
 Shared contracts, proto source, root configuration, root toolchain, release composition, accepted OpenSpec material, `SPEC.md`, and workflow changes SHALL fan out to every lane.
 Unknown paths SHALL fail safe by selecting every lane.
 Ordinary documentation MAY select no heavy lane.
+Pull-request diffs SHALL disable rename detection so both the removed source path and added destination path enter classification.
 
 Using only workflow-native directory filters was rejected because the dependency rules would be harder to test locally and unknown paths could silently miss consumers.
 
@@ -42,6 +43,7 @@ Using only workflow-native directory filters was rejected because the dependency
 
 The Linux portable lane SHALL run the portable compile tripwire, format check, warnings-as-errors compilation, Credo, Dialyzer, portable Mix tests and coverage, tokenizer formatting, lint, tests, and coverage.
 It SHALL install the Worker Runtime base environment without the MLX extra so stub-backed tests can run without importing accelerator implementations.
+It SHALL run focused Worker Runtime stub formatting, lint, tests, and coverage from that base environment.
 
 The provider-neutral lane SHALL run focused contract tests over Worker Runtime mapping, Runtime Endpoints, capability evaluation, lifecycle command invariants, and scheduling.
 It SHALL remain separately named so its success is not represented as Linux host support or real-hardware acceptance.

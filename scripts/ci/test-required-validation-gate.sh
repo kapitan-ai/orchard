@@ -38,6 +38,8 @@ run_case fail required-lane-fails "${COMMON[@]}" PORTABLE_RESULT=failure
 run_case fail required-lane-skips "${COMMON[@]}" CONFORMANCE_RESULT=skipped
 run_case fail inapplicable-lane-runs "${COMMON[@]}" MACOS_RESULT=success
 run_case fail classifier-fails "${COMMON[@]}" CHANGES_RESULT=failure
+run_case fail empty-requirement "${COMMON[@]}" PORTABLE_REQUIRED=
+run_case fail malformed-requirement "${COMMON[@]}" CONFORMANCE_REQUIRED=maybe
 
 run_case pass all-lanes-skipped \
   CHANGES_RESULT=success \

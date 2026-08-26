@@ -54,7 +54,7 @@ jobs:
             exit 0
           fi
 
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+          git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA" \
             | scripts/ci/classify-required-validation-paths.sh \
             >> "$GITHUB_OUTPUT"
 

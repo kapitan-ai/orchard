@@ -32,8 +32,20 @@ assert_case macos-packaging \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   packaging/app/Sources/OrchardApp/main.swift
 assert_case mlx-provider \
-  'portable=false conformance=true macos=true mlx=true packaging=false ' \
+  'portable=true conformance=true macos=true mlx=true packaging=false ' \
   native/orchard_worker_mlx/src/orchard_worker_mlx/runtime.py
+assert_case worker-protocol \
+  'portable=true conformance=true macos=true mlx=true packaging=false ' \
+  native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto
+assert_case retained-macos-helper-consumer \
+  'portable=true conformance=true macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/lib/orchard_cli/secret_tty.ex
+assert_case retained-macos-test \
+  'portable=true conformance=true macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/test/orchard_cli/commands/console_pty_test.exs
+assert_case source-to-doc-rename \
+  'portable=true conformance=true macos=false mlx=false packaging=false ' \
+  apps/orchard_controller/lib/orchard/api/router.ex docs/router.md
 assert_case normative-contract \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   SPEC.md
