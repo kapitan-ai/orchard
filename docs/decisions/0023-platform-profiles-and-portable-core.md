@@ -9,7 +9,7 @@ ADR 0027 supersedes only this record's preservation of native PKG distribution a
 ## Context
 
 `SPEC.md` historically defines Orchard as one Apple Silicon macOS product with launchd, Apple packaging, and MLX requirements applied to the whole umbrella.
-The current repository already has useful portable boundaries, but `orchard_cli` unconditionally compiles Darwin helpers, macOS defaults reach portable configuration, and release composition mixes platform-specific payloads with portable applications.
+At the time of this decision the repository already had useful portable boundaries, but `orchard_cli` unconditionally compiled Darwin helpers, macOS defaults reached portable configuration, and release composition mixed platform-specific payloads with portable applications.
 
 Orchard needs a path to Linux Controller Hosts and later Linux accelerator Nodes without weakening the accepted macOS product or scattering operating-system conditionals through portable code.
 Portable compilation alone is not sufficient evidence for supported deployment.
