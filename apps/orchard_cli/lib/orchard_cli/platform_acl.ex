@@ -184,7 +184,7 @@ defmodule OrchardCLI.PlatformACL do
             scope: :access,
             kind: :other,
             qualifier: nil,
-            disposition: String.to_existing_atom(disposition),
+            disposition: darwin_disposition(disposition),
             permissions: permissions
           }
 
@@ -229,7 +229,7 @@ defmodule OrchardCLI.PlatformACL do
         entry = %{
           platform: :linux,
           scope: linux_scope(default),
-          kind: String.to_existing_atom(kind),
+          kind: linux_kind(kind),
           qualifier: empty_to_nil(qualifier),
           permissions: permissions
         }
@@ -249,6 +249,14 @@ defmodule OrchardCLI.PlatformACL do
 
   defp linux_scope("default:"), do: :default
   defp linux_scope(""), do: :access
+
+  defp darwin_disposition("allow"), do: :allow
+  defp darwin_disposition("deny"), do: :deny
+
+  defp linux_kind("user"), do: :user
+  defp linux_kind("group"), do: :group
+  defp linux_kind("mask"), do: :mask
+  defp linux_kind("other"), do: :other
 
   defp accumulate_linux_entry(entry, %{base_kinds: base_kinds} = accumulator) do
     case linux_base_kind(entry) do
