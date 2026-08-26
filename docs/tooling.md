@@ -115,6 +115,17 @@ The last two steps use the Make wrappers because they stage the retained macOS
 test helpers before Mix runs. Substitute `mise exec -- mix test` and
 `mise exec -- mix test --cover` only after `make macos-native-test-helpers`.
 
+Portable-boundary and macOS native-helper proofs:
+
+```bash
+scripts/test-portable-core-compilation.sh
+scripts/test-build-macos-native-helpers.sh
+```
+
+The first forces a first-party umbrella recompile behind an `xcrun` tripwire and rejects any newly emitted or changed Orchard Darwin helper artifact.
+The second exercises the explicit helper builder and proves a production-only build excludes the test-only terminal helper.
+Run both when changing umbrella compile configuration, the retained helper sources, or the helper builder.
+
 Native validation:
 
 ```bash

@@ -18,7 +18,7 @@ Build the shared distribution-neutral payload with:
 mise exec -- ./scripts/build-payload.sh
 ```
 
-The script builds the Elixir releases and native helper environments, stages the command wrappers and selected launchd plists, remediates Mach-O dependencies, removes macOS metadata, and verifies payload closure.
+The script builds the macOS native helpers, the Elixir releases, and the native helper environments, stages the command wrappers and selected launchd plists, remediates Mach-O dependencies, removes macOS metadata, and verifies payload closure.
 It prints `PAYLOAD_ROOT=<path>` after the staged payload passes validation.
 Pass that path to `scripts/build-app.sh`.
 
