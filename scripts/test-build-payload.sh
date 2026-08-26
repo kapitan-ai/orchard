@@ -15,15 +15,35 @@ unset ORCHARD_BUILD_CHANNEL
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchard-build-payload.XXXXXX")"
+PRIV_DIR="$REPO_ROOT/_build/prod/lib/orchard_cli/priv"
+PRIV_STASH="$(mktemp -d "${TMPDIR:-/tmp}/orchard-build-payload-priv.XXXXXX")"
+PRIV_STASHED=false
+PRIV_CREATED=false
+
+# The builder writes real helpers into the repo build tree, so this test takes
+# custody of that directory and hands the developer's copy back untouched.
+restore_priv() {
+    if [[ "$PRIV_STASHED" == "true" ]]; then
+        rm -rf "$PRIV_DIR"
+        mv "$PRIV_STASH/priv" "$PRIV_DIR"
+        PRIV_STASHED=false
+        PRIV_CREATED=false
+    elif [[ "$PRIV_CREATED" == "true" ]]; then
+        rm -rf "$PRIV_DIR"
+        PRIV_CREATED=false
+    fi
+}
+
 cleanup() {
+    restore_priv
     rm -rf \
         "$TMP_ROOT" \
+        "$PRIV_STASH" \
         "$REPO_ROOT/native/orchard_tokenizer/.venv-pkg" \
         "$REPO_ROOT/native/orchard_worker_mlx/.venv-pkg" \
         "$REPO_ROOT/_build/prod/rel/orchard_controller" \
         "$REPO_ROOT/_build/prod/rel/orchard_node_agent" \
-        "$REPO_ROOT/_build/prod/rel/orchard_cli" \
-        "$REPO_ROOT/_build/prod/lib/orchard_cli/priv/orchard-secret-tty-test"
+        "$REPO_ROOT/_build/prod/rel/orchard_cli"
 }
 trap cleanup EXIT INT TERM
 
@@ -176,8 +196,16 @@ done
 
 chmod +x "$TOOLS/git" "$TOOLS/uv" "$TOOLS/mix"
 
-mkdir -p "$REPO_ROOT/_build/prod/lib/orchard_cli/priv"
-: > "$REPO_ROOT/_build/prod/lib/orchard_cli/priv/orchard-secret-tty-test"
+if [[ -e "$PRIV_DIR" ]]; then
+    mv "$PRIV_DIR" "$PRIV_STASH/priv"
+    PRIV_STASHED=true
+fi
+mkdir -p "$PRIV_DIR"
+PRIV_CREATED=true
+
+# Seed only the stale test-only helper: the production helpers must come from
+# the builder invocation under test, never from a previous run's leftovers.
+: > "$PRIV_DIR/orchard-secret-tty-test"
 
 BUILD_OUT="$TMP_ROOT/build.out"
 if ! PATH="$TOOLS:$PATH" "$REPO_ROOT/scripts/build-payload.sh" "$OUT_DIR" \
