@@ -961,7 +961,7 @@ and a synthetic bundle, so it needs no real model weights and no GPU.
 
 - `mise` and `nc` on `PATH`
 - The MLX worker virtualenv built once via `make setup` (or
-  `mise exec -- uv sync --directory native/orchard_worker_mlx`), so both
+  `mise exec -- uv sync --locked --directory native/orchard_worker_mlx`), so both
   `native/orchard_worker_mlx/bin/orchard-worker-mlx` and
   `native/orchard_worker_mlx/.venv/bin/orchard-worker-mlx` are executable
 - A free listen port — the smoke defaults to `50091` and refuses to start when
