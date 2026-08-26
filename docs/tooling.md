@@ -106,9 +106,13 @@ mise exec -- mix format
 mise exec -- mix compile --warnings-as-errors
 mise exec -- mix credo --strict
 mise exec -- mix dialyzer
-mise exec -- mix test
-mise exec -- mix test --cover
+make test
+make cover
 ```
+
+The last two steps use the Make wrappers because they stage the retained macOS
+test helpers before Mix runs. Substitute `mise exec -- mix test` and
+`mise exec -- mix test --cover` only after `make macos-native-test-helpers`.
 
 Native validation:
 
