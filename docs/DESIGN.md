@@ -630,10 +630,13 @@ mise exec -- mix compile --warnings-as-errors
 mise exec -- mix credo --strict
 mise exec -- mix dialyzer
 mise exec -- mix test apps/orchard_controller/test/orchard/console/core_components_test.exs
-mise exec -- mix test
-mise exec -- mix test --cover
+make test
+make cover
 git diff --check
 ```
+
+`make test` and `make cover` stage the retained macOS test helpers before Mix
+runs; the scoped Console run above needs no helper staging.
 
 Repo-wide gates that fail outside the touched scope must be recorded as
 explicit baseline blockers, not silently accepted.
