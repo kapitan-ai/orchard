@@ -46,7 +46,7 @@ Payload tests SHALL prove both production helpers are staged and the test-only h
 ## Risks / Trade-offs
 
 - **A caller forgets the explicit helper build** - retained helper operations fail closed, and documented Make targets plus CI build the helpers before macOS tests.
-- **A stale helper remains in a local build tree** - the portable regression cleans first-party build output before compiling and rejects any emitted helper artifact.
+- **A stale helper remains in a local build tree** - the portable regression forces first-party recompilation in a fixed development environment and compares the Darwin helper artifact inventory before and after that compilation, rejecting any newly emitted or changed helper. It does not delete build output, so helpers already staged by an explicit builder invocation are preserved in every build environment and are not counted as emission.
 - **Packaging omits a helper** - payload integration tests require both executable helpers in the packaged CLI release.
 
 ## Migration Plan
