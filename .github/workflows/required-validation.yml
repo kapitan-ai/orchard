@@ -222,6 +222,13 @@ jobs:
           MIX_ENV=test mise exec -- mix ecto.create
           MIX_ENV=test mise exec -- mix ecto.migrate
 
+      - name: Run portable helper transport tests on BSD stat
+        run: >-
+          mise exec -- mix test
+          apps/orchard_controller/test/orchard/tokenizer_client_test.exs
+          apps/orchard_controller/test/orchard/models/bundle_builder_test.exs
+          apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs
+
       - name: Test explicit macOS native-helper boundary
         run: |
           scripts/test-portable-core-compilation.sh

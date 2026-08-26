@@ -50,6 +50,9 @@ assert_case tokenizer \
 assert_case macos-packaging \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   packaging/app/Sources/OrchardApp/main.swift
+assert_case packaging-contract-readme \
+  'portable=false conformance=false macos=true mlx=false packaging=true ' \
+  packaging/dmg/README.md
 assert_case mlx-provider \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   native/orchard_worker_mlx/src/orchard_worker_mlx/runtime.py
@@ -77,6 +80,15 @@ assert_case case-tagged-macos-status-test \
 assert_case case-tagged-macos-peer-grant-test \
   'portable=true conformance=true macos=true mlx=false packaging=false ' \
   apps/orchard_controller/test/orchard/beam_peer_grants_test.exs
+assert_case bsd-stat-tokenizer-transport-test \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_controller/test/orchard/tokenizer_client_test.exs
+assert_case bsd-stat-catalog-transport-test \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_controller/test/orchard/models/bundle_builder_test.exs
+assert_case bsd-stat-preflight-transport-test \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs
 assert_case macos-pty-support \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   apps/orchard_cli/test/support/console_pty_harness.c

@@ -38,6 +38,7 @@ Retained macOS test fixtures SHALL select each macOS host or packaged PTY lane t
 First-party umbrella application source outside `test/` SHALL also select packaging validation because payload assembly and the packaged CLI lanes build `MIX_ENV=prod` releases from those trees.
 Unknown paths SHALL fail safe by selecting every lane.
 An empty changed-path set SHALL fail classification rather than emit an all-inapplicable decision, so a failed or unresolvable pull-request diff cannot green the required gate with no validation.
+Packaging-owned Markdown SHALL be classified before ordinary documentation, and unrecognized nested Markdown SHALL fail safe rather than inherit the top-level documentation exemption.
 Ordinary documentation MAY select no heavy lane.
 Pull-request diffs SHALL disable rename detection so both the removed source path and added destination path enter classification.
 
@@ -46,6 +47,7 @@ Using only workflow-native directory filters was rejected because the dependency
 ### Linux portable and provider-neutral evidence are separate
 
 The Linux portable lane SHALL run the portable compile tripwire, format check, warnings-as-errors compilation, Credo, Dialyzer, portable Mix tests and coverage, tokenizer formatting, lint, tests, and coverage.
+Its repository-owned entrypoint SHALL reject every host whose kernel name is not `Linux`.
 It SHALL install the Worker Runtime base environment without the MLX extra so stub-backed tests can run without importing accelerator implementations.
 It SHALL run focused Worker Runtime stub formatting, lint, tests, and coverage from that base environment.
 
@@ -57,6 +59,7 @@ Combining both lanes was rejected because focused provider-neutral failures woul
 ### Retained platform evidence stays explicit
 
 The macOS host lane SHALL provision a deterministic test Postgres, compile the retained Darwin helpers through the explicit builder, and run tests tagged `macos`.
+It SHALL also run the focused portable helper-transport suites so their GNU-first, BSD-fallback permission probes are exercised under BSD `stat`.
 Darwin-only integration cases that transitively invoke macOS host commands such as `lockf` SHALL carry the same tag as their owning modules.
 Files that mix portable and case-level `macos` tests SHALL fan out to both portable and macOS host lanes when changed.
 The MLX lane SHALL install the accelerator extra and run the real provider package tests on Apple Silicon.

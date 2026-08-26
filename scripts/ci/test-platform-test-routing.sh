@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/required-validation.yml"
 PEER_GRANT_TEST="$ROOT/apps/orchard_controller/test/orchard/beam_peer_grants_test.exs"
+LINUX_PORTABLE_TEST="$ROOT/scripts/test-linux-portable-core.sh"
 PORTABLE_HELPER_FIXTURES=(
   "$ROOT/apps/orchard_controller/test/orchard/tokenizer_client_test.exs"
   "$ROOT/apps/orchard_controller/test/orchard/models/bundle_builder_test.exs"
@@ -85,5 +86,23 @@ assert_precedes "$macos_host_job" 'brew install postgresql@16' 'mise exec -- mix
 assert_precedes "$macos_host_job" 'pg_isready' 'mise exec -- mix test --only macos'
 assert_precedes "$macos_host_job" 'MIX_ENV=test mise exec -- mix ecto.create' 'mise exec -- mix test --only macos'
 assert_precedes "$macos_host_job" 'MIX_ENV=test mise exec -- mix ecto.migrate' 'mise exec -- mix test --only macos'
+assert_precedes "$macos_host_job" 'Run portable helper transport tests on BSD stat' 'mise exec -- mix test --only macos'
+
+host_stub_dir="$(mktemp -d)"
+host_stub_marker="$host_stub_dir/mise-called"
+trap 'rm -rf "$host_stub_dir"' EXIT
+
+printf '#!/bin/sh\nprintf "FreeBSD\\n"\n' >"$host_stub_dir/uname"
+printf '#!/bin/sh\ntouch "$ORCHARD_TEST_MISE_MARKER"\nexit 99\n' >"$host_stub_dir/mise"
+chmod +x "$host_stub_dir/uname" "$host_stub_dir/mise"
+
+host_guard_status=0
+ORCHARD_TEST_MISE_MARKER="$host_stub_marker" PATH="$host_stub_dir:$PATH" \
+  "$LINUX_PORTABLE_TEST" >/dev/null 2>&1 || host_guard_status=$?
+
+[[ "$host_guard_status" -eq 69 ]] ||
+  fail "Linux portable test accepted FreeBSD host (status $host_guard_status)"
+[[ ! -e "$host_stub_marker" ]] ||
+  fail 'Linux portable test invoked mise on FreeBSD host'
 
 printf 'platform test-routing tests passed\n'

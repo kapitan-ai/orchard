@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "$(uname -s)" != "Linux" ]]; then
   printf 'test-linux-portable-core: Linux host required\n' >&2
   exit 69
 fi

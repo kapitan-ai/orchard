@@ -55,11 +55,11 @@ while IFS= read -r path; do
       conformance=true
       packaging=true
       ;;
-    docs/*|*.md)
-      ;;
     packaging/*|scripts/build-app.sh|scripts/build-dmg.sh|scripts/build-payload.sh|scripts/sign-app.sh|scripts/test-app-*|scripts/test-build-app.sh|scripts/test-build-dmg.sh|scripts/test-build-payload.sh|scripts/test-payload-*)
       macos=true
       packaging=true
+      ;;
+    docs/*|README.md|CONTRIBUTING.md|CONTEXT-MAP.md|CLAUDE.md)
       ;;
     apps/orchard_cli/lib/orchard_cli/lifecycle_native.ex|apps/orchard_cli/lib/orchard_cli/lifecycle_system.ex|apps/orchard_cli/lib/orchard_cli/secret_tty.ex|apps/orchard_cli/lib/orchard_cli/commands/console.ex|apps/orchard_cli/lib/orchard_cli/commands/node_agent_stop.ex|apps/orchard_cli/test/orchard_cli/lifecycle_native_test.exs|apps/orchard_cli/test/orchard_cli/commands/console_pty_test.exs|apps/orchard_node_agent/lib/orchard/node/beam_peer_grant_store.ex|apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs)
       enable_macos_consumers
@@ -71,7 +71,7 @@ while IFS= read -r path; do
     apps/orchard_cli/test/support/console_pty_process.ex|apps/orchard_cli/test/support/flock_holder.swift|apps/orchard_cli/test/test_helper.exs|apps/orchard_node_agent/test/test_helper.exs)
       enable_portable_macos_tests
       ;;
-    apps/orchard_cli/test/orchard_cli/commands/cluster_test.exs|apps/orchard_cli/test/orchard_cli/commands/status_test.exs|apps/orchard_controller/test/orchard/beam_peer_grants_test.exs)
+    apps/orchard_cli/test/orchard_cli/commands/cluster_test.exs|apps/orchard_cli/test/orchard_cli/commands/status_test.exs|apps/orchard_controller/test/orchard/beam_peer_grants_test.exs|apps/orchard_controller/test/orchard/tokenizer_client_test.exs|apps/orchard_controller/test/orchard/models/bundle_builder_test.exs|apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs)
       enable_portable_macos_tests
       ;;
     native/orchard_worker_mlx/pyproject.toml|native/orchard_worker_mlx/uv.lock|native/orchard_worker_mlx/bin/*|native/orchard_worker_mlx/proto/*|native/orchard_worker_mlx/src/*)
