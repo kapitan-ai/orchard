@@ -89,10 +89,10 @@ defmodule Orchard.Node.WorkerProcessLifecycleTest do
 
     log =
       capture_log(fn ->
-        assert {:error, :identity_mismatch} =
+        assert {:error, :identity_unavailable} =
                  WorkerProcessLifecycle.signal_owned_process(os_pid, nil, "-TERM")
 
-        assert {:error, :identity_mismatch} =
+        assert {:error, :identity_unavailable} =
                  WorkerProcessLifecycle.kill_owned_process_tree(os_pid, nil)
       end)
 
@@ -100,6 +100,97 @@ defmodule Orchard.Node.WorkerProcessLifecycleTest do
     assert log =~ "os_pid=#{os_pid}"
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
     assert {:error, :identity_unavailable} = WorkerProcessLifecycle.process_identity(@missing_pid)
+  end
+
+  test "custody refusal separates an already-exited target from a recycled PID" do
+    {port, os_pid} = CustodyTestHelpers.start_control_child!()
+
+    assert {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+    CustodyTestHelpers.stop_child(port, os_pid)
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :identity_unavailable} =
+                 WorkerProcessLifecycle.signal_owned_process(os_pid, identity, "-TERM")
+
+        assert {:error, :identity_unavailable} =
+                 WorkerProcessLifecycle.kill_owned_process_tree(os_pid, identity)
+      end)
+
+    refute log =~ "worker custody identity mismatch"
+
+    assert WorkerProcessLifecycle.custody_refused?({:error, :identity_unavailable})
+    assert WorkerProcessLifecycle.custody_refused?({:error, :identity_mismatch})
+    refute WorkerProcessLifecycle.custody_refused?({:error, :signal_failed})
+    refute WorkerProcessLifecycle.custody_refused?(:ok)
+  end
+
+  test "escalate_owned_exit spends no grace past an already-elapsed TERM deadline" do
+    root = Path.join("/tmp", "oc-escalate-#{System.unique_integer([:positive, :monotonic])}")
+    marker_path = Path.join(root, "events.log")
+    File.mkdir_p!(root)
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+    started = System.monotonic_time(:millisecond)
+
+    assert :ok =
+             WorkerProcessLifecycle.escalate_owned_exit(
+               os_pid,
+               identity,
+               started,
+               started + 2_000
+             )
+
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    assert elapsed < 500,
+           "expected an elapsed TERM deadline to escalate immediately, spent #{elapsed}ms"
+
+    refute WorkerProcessLifecycle.os_process_alive?(os_pid)
+  end
+
+  test "escalate_owned_exit refuses to kill a PID whose identity snapshot changed" do
+    {port, os_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+
+    now = System.monotonic_time(:millisecond)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :identity_mismatch} =
+                 WorkerProcessLifecycle.escalate_owned_exit(
+                   os_pid,
+                   @stale_identity,
+                   now,
+                   now + 500
+                 )
+      end)
+
+    assert log =~ "worker custody identity mismatch"
+    assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+  end
+
+  test "remove_owned_socket drops an owned path and tolerates a missing one" do
+    root = Path.join("/tmp", "oc-socket-#{System.unique_integer([:positive, :monotonic])}")
+    socket_path = Path.join(root, "worker.sock")
+    File.mkdir_p!(root)
+    File.write!(socket_path, "owned runtime artifact")
+
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    assert :ok = WorkerProcessLifecycle.remove_owned_socket(socket_path)
+    refute File.exists?(socket_path)
+    assert :ok = WorkerProcessLifecycle.remove_owned_socket(socket_path)
+    assert :ok = WorkerProcessLifecycle.remove_owned_socket(nil)
   end
 
   test "await_exit reports a bounded timeout while the child is still alive" do

@@ -17,10 +17,12 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   `WorkerProcess` does not trap exits, so on orderly `Application.stop/1` it dies
   without running its adapter unload; the reaper is therefore the only component
   that can remove the owned socket without depending on worker cooperation. The
-  shutdown sweep preserves each lease's remaining TERM grace before escalating,
-  bounded by `@sweep_budget_ms` so it always fits the supervisor shutdown budget,
-  and every signal is gated on the identity snapshot so a recycled PID belonging
-  to an unrelated process is never targeted.
+  shutdown sweep delivers TERM to every lease before it waits on any of them, so
+  a single shared `@sweep_budget_ms` grace window runs concurrently across leases
+  instead of being consumed by whichever lease the map happened to yield first.
+  The budget always fits the supervisor shutdown budget, and every signal is
+  gated on the identity snapshot so a recycled PID belonging to an unrelated
+  process is never targeted.
   """
 
   use GenServer
@@ -184,39 +186,55 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   def terminate(_reason, state) do
     sweep_deadline = System.monotonic_time(:millisecond) + @sweep_budget_ms
 
-    Enum.each(state.leases, fn {_ref, lease} -> sweep_lease(lease, sweep_deadline) end)
+    state.leases
+    |> Enum.map(fn {_ref, lease} -> signal_swept_lease(lease, sweep_deadline) end)
+    |> Enum.each(&await_swept_lease(&1, sweep_deadline))
 
     :ok
   end
 
-  defp sweep_lease(lease, sweep_deadline) do
-    _ = cleanup_socket(lease.socket_path)
+  defp signal_swept_lease(lease, sweep_deadline) do
+    _ = WorkerProcessLifecycle.remove_owned_socket(lease.socket_path)
 
-    if WorkerProcessLifecycle.os_process_alive?(lease.os_pid) do
-      grace_deadline = min(resolve_term_deadline(lease), sweep_deadline)
-      grace_ms = max(0, grace_deadline - System.monotonic_time(:millisecond))
-
-      case WorkerProcessLifecycle.await_exit(lease.os_pid, grace_ms) do
-        :ok ->
-          :ok
-
-        {:error, :timeout} ->
-          _ = WorkerProcessLifecycle.kill_owned_process_tree(lease.os_pid, lease.os_identity)
-          :ok
-      end
+    with true <- WorkerProcessLifecycle.os_process_alive?(lease.os_pid),
+         deadline when is_integer(deadline) <- resolve_term_deadline(lease) do
+      {lease, min(deadline, sweep_deadline)}
     else
-      :ok
+      _unsignalled -> :swept
     end
   end
 
-  defp resolve_term_deadline(%{term_deadline: nil} = lease) do
-    case WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM") do
-      :ok -> System.monotonic_time(:millisecond) + lease.shutdown_timeout_ms
-      {:error, _reason} -> System.monotonic_time(:millisecond)
-    end
+  defp await_swept_lease(:swept, _sweep_deadline), do: :ok
+
+  defp await_swept_lease({lease, grace_deadline}, sweep_deadline) do
+    _ =
+      WorkerProcessLifecycle.escalate_owned_exit(
+        lease.os_pid,
+        lease.os_identity,
+        grace_deadline,
+        sweep_deadline
+      )
+
+    :ok
   end
 
-  defp resolve_term_deadline(%{term_deadline: deadline}), do: deadline
+  defp resolve_term_deadline(%{term_deadline: deadline}) when is_integer(deadline), do: deadline
+
+  defp resolve_term_deadline(lease) do
+    signal_result =
+      WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM")
+
+    cond do
+      WorkerProcessLifecycle.custody_refused?(signal_result) ->
+        :custody_refused
+
+      signal_result == :ok ->
+        System.monotonic_time(:millisecond) + lease.shutdown_timeout_ms
+
+      true ->
+        System.monotonic_time(:millisecond)
+    end
+  end
 
   defp start_reaping(state, ref, reason) do
     case get_in(state.leases[ref]) do
@@ -225,7 +243,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
       %{os_pid: os_pid, shutdown_timeout_ms: timeout, timer_ref: nil} = lease ->
         log_orphan_reap(lease, reason)
-        _ = cleanup_socket(lease.socket_path)
+        _ = WorkerProcessLifecycle.remove_owned_socket(lease.socket_path)
 
         if WorkerProcessLifecycle.os_process_alive?(os_pid) do
           start_live_process_reaping(state, ref, lease, timeout)
@@ -239,19 +257,20 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   defp start_live_process_reaping(state, ref, lease, timeout) do
-    case WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM") do
-      {:error, :identity_mismatch} ->
-        cleanup_lease(state, ref)
+    signal_result =
+      WorkerProcessLifecycle.signal_owned_process(lease.os_pid, lease.os_identity, "-TERM")
 
-      _signal_result ->
-        timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
+    if WorkerProcessLifecycle.custody_refused?(signal_result) do
+      cleanup_lease(state, ref)
+    else
+      timer_ref = Process.send_after(self(), {:escalate, ref}, timeout)
 
-        state
-        |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
-        |> put_in(
-          [Access.key(:leases), ref, :term_deadline],
-          System.monotonic_time(:millisecond) + timeout
-        )
+      state
+      |> put_in([Access.key(:leases), ref, :timer_ref], timer_ref)
+      |> put_in(
+        [Access.key(:leases), ref, :term_deadline],
+        System.monotonic_time(:millisecond) + timeout
+      )
     end
   end
 
@@ -292,12 +311,5 @@ defmodule Orchard.Node.RuntimeProcessReaper do
       identity when is_binary(identity) -> identity
       _other -> nil
     end
-  end
-
-  defp cleanup_socket(nil), do: :ok
-
-  defp cleanup_socket(socket_path) when is_binary(socket_path) do
-    _ = File.rm(socket_path)
-    :ok
   end
 end

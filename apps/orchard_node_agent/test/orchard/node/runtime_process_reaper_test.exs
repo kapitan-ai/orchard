@@ -15,6 +15,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
 
   @short_timeout_ms 200
   @stale_identity "0 Thu Jan 1 00:00:00 1970"
+  @sweep_grace_ms 1_000
 
   setup do
     # The node agent application starts the reaper under its supervisor.
@@ -303,6 +304,47 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert event_logged?(marker_path, "term_ignored mode=resistant")
     CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
     refute File.exists?(socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "reaper termination signals every lease before it waits on any of them" do
+    root = unique_root("sweep-broadcast")
+    File.mkdir_p!(root)
+    private_reaper = start_private_reaper!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    children =
+      Enum.map(1..3, fn index ->
+        marker_path = Path.join(root, "events-#{index}.log")
+        {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+        %{marker_path: marker_path, os_pid: os_pid, port: port}
+      end)
+
+    on_exit(fn ->
+      Enum.each(children, &CustodyTestHelpers.stop_child(&1.port, &1.os_pid))
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      File.rm_rf!(root)
+    end)
+
+    Enum.each(children, fn child ->
+      assert {:ok, _ref} = watch(child.os_pid, shutdown_timeout_ms: @sweep_grace_ms)
+    end)
+
+    sweep = Task.async(fn -> GenServer.stop(private_reaper, :shutdown) end)
+
+    # Every lease must record TERM well inside a single lease's grace window; a
+    # sweep that waits per lease only reaches the last one after N grace windows.
+    assert CustodyTestHelpers.wait_until(
+             fn ->
+               Enum.all?(children, &event_logged?(&1.marker_path, "term_ignored mode=resistant"))
+             end,
+             div(@sweep_grace_ms, 2)
+           ),
+           "expected the sweep to TERM every lease before awaiting any lease's exit"
+
+    assert :ok = Task.await(sweep, 5_000)
+
+    Enum.each(children, &CustodyTestHelpers.assert_os_pid_dead!(&1.os_pid, 2_000))
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 

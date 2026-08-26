@@ -10,6 +10,12 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   the kernel is free to recycle it for an unrelated process. `process_identity/1`
   captures an owner/start-time snapshot at launch, and the `*_owned_*` helpers
   refuse to signal a PID whose snapshot no longer matches.
+
+  Custody refusal has two distinct reasons. `:identity_mismatch` means the PID is
+  live but belongs to something else — the security-relevant case.
+  `:identity_unavailable` means no snapshot was captured, or the target has
+  already exited, which is the ordinary outcome of a shutdown race. Both refuse
+  to signal; only the former is logged as a warning.
   """
 
   require Logger
@@ -17,7 +23,8 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   @poll_interval_ms 25
 
   @type signal_result :: :ok | {:error, :signal_failed}
-  @type owned_signal_result :: signal_result() | {:error, :identity_mismatch}
+  @type custody_refusal :: :identity_mismatch | :identity_unavailable
+  @type owned_signal_result :: signal_result() | {:error, custody_refusal()}
   @type custody_identity :: String.t()
 
   @spec os_process_alive?(non_neg_integer()) :: boolean()
@@ -121,14 +128,78 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   end
 
   @doc """
+  Reports whether a `*_owned_*` result was refused for custody reasons.
+
+  Callers use this instead of matching a single reason so a new refusal reason
+  can never silently re-arm signalling on an unproven PID.
+  """
+  @spec custody_refused?(term()) :: boolean()
+  def custody_refused?({:error, reason})
+      when reason in [:identity_mismatch, :identity_unavailable],
+      do: true
+
+  def custody_refused?(_result), do: false
+
+  @doc """
+  Waits for `os_pid` to exit by `term_deadline`, then escalates to a
+  custody-gated tree kill confirmed by `kill_deadline`.
+
+  Both arguments are absolute `System.monotonic_time(:millisecond)` values, so a
+  caller's shutdown budget is spent once across both phases rather than once per
+  phase.
+  """
+  @spec escalate_owned_exit(
+          non_neg_integer(),
+          custody_identity() | nil,
+          integer(),
+          integer()
+        ) :: :ok | {:error, :timeout} | {:error, custody_refusal()}
+  def escalate_owned_exit(os_pid, identity, term_deadline, kill_deadline) do
+    case await_exit_until(os_pid, term_deadline) do
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        kill_result = kill_owned_process_tree(os_pid, identity)
+
+        if custody_refused?(kill_result) do
+          kill_result
+        else
+          await_exit_until(os_pid, kill_deadline)
+        end
+    end
+  end
+
+  @doc """
+  Removes a worker-owned Unix socket path.
+
+  The reaper must be able to drop the socket even when the worker died without
+  running its own adapter unload, so a missing file is success.
+  """
+  @spec remove_owned_socket(Path.t() | nil) :: :ok | {:error, {:socket_cleanup_failed, term()}}
+  def remove_owned_socket(nil), do: :ok
+
+  def remove_owned_socket(socket_path) when is_binary(socket_path) do
+    case File.rm(socket_path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:socket_cleanup_failed, reason}}
+    end
+  end
+
+  @doc """
   Polls until `os_pid` has exited or `timeout_ms` elapses.
   """
   @spec await_exit(non_neg_integer(), non_neg_integer()) :: :ok | {:error, :timeout}
   def await_exit(os_pid, timeout_ms) when is_integer(timeout_ms) and timeout_ms >= 0 do
-    await_exit_by_deadline(os_pid, System.monotonic_time(:millisecond) + timeout_ms)
+    await_exit_until(os_pid, System.monotonic_time(:millisecond) + timeout_ms)
   end
 
-  defp await_exit_by_deadline(os_pid, deadline) do
+  @doc """
+  Polls until `os_pid` has exited or the absolute monotonic `deadline` passes.
+  """
+  @spec await_exit_until(non_neg_integer(), integer()) :: :ok | {:error, :timeout}
+  def await_exit_until(os_pid, deadline) when is_integer(deadline) do
     cond do
       not os_process_alive?(os_pid) ->
         :ok
@@ -138,13 +209,13 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
 
       true ->
         Process.sleep(@poll_interval_ms)
-        await_exit_by_deadline(os_pid, deadline)
+        await_exit_until(os_pid, deadline)
     end
   end
 
   defp confirm_custody(os_pid, nil) do
     Logger.warning("worker custody identity unavailable os_pid=#{os_pid}")
-    {:error, :identity_mismatch}
+    {:error, :identity_unavailable}
   end
 
   defp confirm_custody(os_pid, identity) when is_binary(identity) do
@@ -152,7 +223,11 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
       {:ok, ^identity} ->
         :ok
 
-      _other ->
+      {:error, :identity_unavailable} ->
+        Logger.debug("worker custody target already exited os_pid=#{os_pid}")
+        {:error, :identity_unavailable}
+
+      {:ok, _other_identity} ->
         Logger.warning("worker custody identity mismatch os_pid=#{os_pid}")
         {:error, :identity_mismatch}
     end
