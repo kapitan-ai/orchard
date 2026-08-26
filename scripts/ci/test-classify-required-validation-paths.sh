@@ -68,6 +68,15 @@ assert_case retained-macos-helper-consumer \
 assert_case retained-macos-test \
   'portable=true conformance=true macos=true mlx=false packaging=true ' \
   apps/orchard_cli/test/orchard_cli/commands/console_pty_test.exs
+assert_case case-tagged-macos-cluster-test \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_cli/test/orchard_cli/commands/cluster_test.exs
+assert_case case-tagged-macos-status-test \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_cli/test/orchard_cli/commands/status_test.exs
+assert_case case-tagged-macos-peer-grant-test \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_controller/test/orchard/beam_peer_grants_test.exs
 assert_case macos-pty-support \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   apps/orchard_cli/test/support/console_pty_harness.c

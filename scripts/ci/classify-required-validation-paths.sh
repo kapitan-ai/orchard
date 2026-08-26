@@ -71,6 +71,9 @@ while IFS= read -r path; do
     apps/orchard_cli/test/support/console_pty_process.ex|apps/orchard_cli/test/support/flock_holder.swift|apps/orchard_cli/test/test_helper.exs|apps/orchard_node_agent/test/test_helper.exs)
       enable_portable_macos_tests
       ;;
+    apps/orchard_cli/test/orchard_cli/commands/cluster_test.exs|apps/orchard_cli/test/orchard_cli/commands/status_test.exs|apps/orchard_controller/test/orchard/beam_peer_grants_test.exs)
+      enable_portable_macos_tests
+      ;;
     native/orchard_worker_mlx/pyproject.toml|native/orchard_worker_mlx/uv.lock|native/orchard_worker_mlx/bin/*|native/orchard_worker_mlx/proto/*|native/orchard_worker_mlx/src/*)
       portable=true
       conformance=true

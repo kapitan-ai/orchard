@@ -58,6 +58,7 @@ Combining both lanes was rejected because focused provider-neutral failures woul
 
 The macOS host lane SHALL provision a deterministic test Postgres, compile the retained Darwin helpers through the explicit builder, and run tests tagged `macos`.
 Darwin-only integration cases that transitively invoke macOS host commands such as `lockf` SHALL carry the same tag as their owning modules.
+Files that mix portable and case-level `macos` tests SHALL fan out to both portable and macOS host lanes when changed.
 The MLX lane SHALL install the accelerator extra and run the real provider package tests on Apple Silicon.
 The packaging lane SHALL retain payload, signing-contract, Swift application, lifecycle, assembled app, DMG, and packaged CLI validation.
 
