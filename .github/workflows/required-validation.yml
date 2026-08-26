@@ -194,6 +194,21 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Provision deterministic Postgres
+        run: |
+          # macOS runners have no Docker service containers, so this lane
+          # provisions its own Postgres instead of using `services:`.
+          brew install postgresql@16
+          echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
+
+      - name: Start Postgres
+        run: |
+          pgdata="$RUNNER_TEMP/pgdata"
+          initdb --username="$PGUSER" --auth=trust --encoding=UTF8 --pgdata="$pgdata"
+          pg_ctl --pgdata="$pgdata" --log="$RUNNER_TEMP/postgres.log" \
+            --options="-p $PGPORT -k $RUNNER_TEMP" --wait start
+          pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
+
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
@@ -201,6 +216,11 @@ jobs:
 
       - name: Install Elixir dependencies
         run: make setup-elixir
+
+      - name: Prepare test database
+        run: |
+          MIX_ENV=test mise exec -- mix ecto.create
+          MIX_ENV=test mise exec -- mix ecto.migrate
 
       - name: Test explicit macOS native-helper boundary
         run: |

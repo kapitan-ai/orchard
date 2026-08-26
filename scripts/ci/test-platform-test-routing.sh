@@ -3,10 +3,33 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKFLOW="$ROOT/.github/workflows/required-validation.yml"
+PEER_GRANT_TEST="$ROOT/apps/orchard_controller/test/orchard/beam_peer_grants_test.exs"
 
 fail() {
   printf 'platform test routing failed: %s\n' "$1" >&2
   exit 1
+}
+
+line_number() {
+  local content="$1"
+  local pattern="$2"
+
+  awk -v pattern="$pattern" 'index($0, pattern) { print NR; exit }' <<<"$content"
+}
+
+assert_precedes() {
+  local content="$1"
+  local before="$2"
+  local after="$3"
+  local before_line
+  local after_line
+
+  before_line="$(line_number "$content" "$before")"
+  after_line="$(line_number "$content" "$after")"
+
+  [[ -n "$before_line" && -n "$after_line" && "$before_line" -lt "$after_line" ]] ||
+    fail "expected '$before' before '$after'"
 }
 
 darwin_test_plan="$(make --no-print-directory -n -C "$ROOT" HOST_OS=Darwin test)"
@@ -34,5 +57,22 @@ grep -Fq 'mix test --exclude macos' <<<"$linux_test_plan" ||
   fail 'Linux test plan did not exclude macOS-tagged tests'
 grep -Fq 'mix test --cover --exclude macos' <<<"$linux_cover_plan" ||
   fail 'Linux coverage plan did not exclude macOS-tagged tests'
+
+peer_grant_case="$(grep -B 2 -F 'Node retrieves and stores a grant over a real mTLS control stream' "$PEER_GRANT_TEST")"
+grep -Fq '@tag :macos' <<<"$peer_grant_case" ||
+  fail 'Darwin lockf-backed peer-grant case was not tagged for macOS routing'
+
+macos_host_job="$(
+  awk '
+    /^  macos-host:/ { capture = 1 }
+    capture && /^  [a-zA-Z0-9_-]+:/ && $0 !~ /^  macos-host:/ { exit }
+    capture { print }
+  ' "$WORKFLOW"
+)"
+
+assert_precedes "$macos_host_job" 'brew install postgresql@16' 'mise exec -- mix test --only macos'
+assert_precedes "$macos_host_job" 'pg_isready' 'mise exec -- mix test --only macos'
+assert_precedes "$macos_host_job" 'MIX_ENV=test mise exec -- mix ecto.create' 'mise exec -- mix test --only macos'
+assert_precedes "$macos_host_job" 'MIX_ENV=test mise exec -- mix ecto.migrate' 'mise exec -- mix test --only macos'
 
 printf 'platform test-routing tests passed\n'

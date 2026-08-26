@@ -907,6 +907,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     assert Enum.sort(certificate.extended_key_usages) == [:client_auth, :server_auth]
   end
 
+  @tag :macos
   test "SPEC.md §7.5.0 Node retrieves and stores a grant over a real mTLS control stream", %{
     root: root,
     trust_root: trust_root,
