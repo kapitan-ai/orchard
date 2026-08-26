@@ -260,6 +260,7 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert length(code_classes) == 3
       assert Enum.all?(code_classes, &String.contains?(&1, "bg-slate-50"))
       assert Enum.all?(code_classes, &String.contains?(&1, "dark:bg-slate-900/60"))
+      assert Enum.all?(code_classes, &String.contains?(&1, "shadow-inner"))
       refute Enum.any?(code_classes, &String.contains?(&1, "bg-white"))
       refute Enum.any?(code_classes, &String.contains?(&1, "dark:bg-slate-950"))
     end

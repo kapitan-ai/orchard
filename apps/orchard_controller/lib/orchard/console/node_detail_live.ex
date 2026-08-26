@@ -470,7 +470,7 @@ defmodule OrchardConsole.NodeDetailLive do
                   class="mt-3 list-decimal space-y-3 pl-5 text-sm text-slate-700 dark:text-slate-300"
                 >
                   <li>
-                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 shadow-inner font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
                       orchardctl nodes trust init
                     </code>
                     <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
@@ -478,7 +478,7 @@ defmodule OrchardConsole.NodeDetailLive do
                     </p>
                   </li>
                   <li>
-                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 shadow-inner font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
                       orchardctl nodes enrollment create --output PATH [--expires-in DURATION]
                     </code>
                     <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
@@ -486,7 +486,7 @@ defmodule OrchardConsole.NodeDetailLive do
                     </p>
                   </li>
                   <li>
-                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 shadow-inner font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
                       orchardctl node join --enrollment-bundle PATH
                     </code>
                     <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
