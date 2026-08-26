@@ -248,6 +248,9 @@ done
 
 # Scoped to the staged releases so the sweep cannot trip over C sources that
 # legitimately ship inside the staged Python environments under native/.
+# Residual harness limitation: release trees here come from the fake mix stub,
+# so this sweep guards the contract rather than exercising a real release.
+# scripts/test-payload-orchardctl-console-pty.sh stages a genuine release.
 staged_source="$(find "$PAYLOAD_ROOT/releases" -type f \
     \( -name '*.c' -o -name 'Makefile' \) -print -quit 2>/dev/null || true)"
 if [[ -n "$staged_source" ]]; then

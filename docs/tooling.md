@@ -13,7 +13,8 @@ shell-specific runtime versions when working in this repo.
 The documented complete development and validation workflow currently runs on the supported Apple Silicon macOS platform profile.
 The accepted Linux Controller profile is a Milestone 8 target and does not yet have a supported bootstrap, packaging, or validation lane.
 Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain part of that target.
-Apple's C toolchain is a build prerequisite only for explicit macOS host-artifact builds and validation; ordinary portable Orchard control-plane core compilation does not invoke it.
+Ordinary portable Orchard control-plane core compilation no longer invokes `xcrun` or builds Orchard's own Darwin helpers; Apple's C toolchain is a build prerequisite for explicit macOS host-artifact builds and validation.
+Dependency compilation on the current macOS profile still requires a working host C compiler for third-party NIFs such as `argon2_elixir`.
 Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
 
 The target validation design moves broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance to Linux.
@@ -55,7 +56,7 @@ The mise environment also sets:
 the Python interpreter version that `uv` is allowed to use.
 
 For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
-Ordinary `mix compile` does not build Darwin helpers.
+Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.
 Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
 The `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically.
 Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
