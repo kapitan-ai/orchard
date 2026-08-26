@@ -950,6 +950,42 @@ mise exec -- mix credo --strict
 mise exec -- mix dialyzer
 ```
 
+## Node Agent Shutdown Custody Smoke
+
+`scripts/smoke-node-agent-shutdown-custody.sh` proves that an orderly foreground
+`bin/dev-node-agent` shutdown cannot leave its owned runtime child or worker
+socket behind while unrelated processes survive. It uses the stub worker backend
+and a synthetic bundle, so it needs no real model weights and no GPU.
+
+### Prerequisites
+
+- `mise` and `nc` on `PATH`
+- The MLX worker virtualenv built once via `make setup` (or
+  `mise exec -- uv sync --directory native/orchard_worker_mlx`), so both
+  `native/orchard_worker_mlx/bin/orchard-worker-mlx` and
+  `native/orchard_worker_mlx/.venv/bin/orchard-worker-mlx` are executable
+- A free listen port — the smoke defaults to `50091` and refuses to start when
+  the port is already bound
+- No pre-existing `tmp/dev/models/issue-286-shutdown-custody` directory; the
+  smoke creates and removes its own bundle
+
+### Running the Smoke Script
+
+```bash
+mise exec -- ./scripts/smoke-node-agent-shutdown-custody.sh
+
+# When 50091 is already taken (for example by another worktree)
+ORCHARD_SHUTDOWN_CUSTODY_PORT=50191 mise exec -- ./scripts/smoke-node-agent-shutdown-custody.sh
+```
+
+The script starts `bin/dev-node-agent` in the foreground, loads the synthetic
+bundle over gRPC, records the exact worker PID and socket path, starts an
+unrelated control child, sends `SIGTERM` to the node agent, and then asserts that
+the node agent exited within its bound, the exact worker PID is dead, the worker
+socket is gone, and the control child survived. It prints a single `PASS`/`FAIL`
+summary and removes its temporary state; record the result in the pull request or
+issue rather than committing evidence files.
+
 ## Apple Silicon MLX Smoke Tests
 
 Opt-in smoke tests verify real MLX inference on Apple Silicon hardware. These are

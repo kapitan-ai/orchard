@@ -14,6 +14,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
   alias Orchard.Node.WorkerProcessLifecycle
 
   @short_timeout_ms 200
+  @stale_identity "0 Thu Jan 1 00:00:00 1970"
 
   setup do
     # The node agent application starts the reaper under its supervisor.
@@ -223,6 +224,107 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
   end
 
   test "reaper termination sweeps only its exact leased child" do
+    private_reaper = start_private_reaper!()
+    {leased_port, leased_pid} = CustodyTestHelpers.start_control_child!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(leased_port, leased_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+    end)
+
+    assert {:ok, _ref} = watch(leased_pid)
+    assert WorkerProcessLifecycle.os_process_alive?(leased_pid)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+
+    assert :ok = GenServer.stop(private_reaper, :shutdown)
+    CustodyTestHelpers.assert_os_pid_dead!(leased_pid, 2_000)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "reaper termination preserves the TERM grace and removes the owned socket" do
+    root = unique_root("sweep-grace")
+    marker_path = Path.join(root, "events.log")
+    socket_path = Path.join(root, "worker.sock")
+    File.mkdir_p!(root)
+    File.write!(socket_path, "owned runtime artifact")
+
+    private_reaper = start_private_reaper!()
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:cooperative, marker_path)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} = watch(os_pid, socket_path: socket_path)
+    assert :ok = GenServer.stop(private_reaper, :shutdown)
+
+    # A cooperative child only writes this marker from its TERM trap, so the
+    # marker proves the sweep delivered TERM instead of an immediate KILL.
+    assert CustodyTestHelpers.wait_until(
+             fn -> event_logged?(marker_path, "term_received mode=cooperative") end,
+             500
+           )
+
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    refute File.exists?(socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "reaper termination escalates a TERM-resistant lease to bounded KILL" do
+    root = unique_root("sweep-kill")
+    marker_path = Path.join(root, "events.log")
+    socket_path = Path.join(root, "worker.sock")
+    File.mkdir_p!(root)
+    File.write!(socket_path, "owned runtime artifact")
+
+    private_reaper = start_private_reaper!()
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn ->
+      CustodyTestHelpers.stop_child(port, os_pid)
+      CustodyTestHelpers.stop_child(control_port, control_pid)
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, _ref} = watch(os_pid, socket_path: socket_path)
+    assert :ok = GenServer.stop(private_reaper, :shutdown)
+
+    assert event_logged?(marker_path, "term_ignored mode=resistant")
+    CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
+    refute File.exists?(socket_path)
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "reaper termination refuses to signal a lease whose PID identity changed" do
+    private_reaper = start_private_reaper!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    assert {:ok, _ref} = watch(control_pid, os_identity: @stale_identity)
+    assert :ok = GenServer.stop(private_reaper, :shutdown)
+
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "owner-down reaping refuses to signal a lease whose PID identity changed" do
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    {:ok, ref} = watch(control_pid, os_identity: @stale_identity)
+    RuntimeProcessReaper.reap(ref, :custody_test)
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  defp start_private_reaper! do
     original_reaper = Process.whereis(RuntimeProcessReaper)
     assert Process.unregister(RuntimeProcessReaper)
 
@@ -242,29 +344,17 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
 
     assert {:ok, private_reaper} = RuntimeProcessReaper.start_link()
     Process.unlink(private_reaper)
-    {leased_port, leased_pid} = CustodyTestHelpers.start_control_child!()
-    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
-
-    on_exit(fn ->
-      CustodyTestHelpers.stop_child(leased_port, leased_pid)
-      CustodyTestHelpers.stop_child(control_port, control_pid)
-    end)
-
-    assert {:ok, _ref} = watch(leased_pid)
-    assert WorkerProcessLifecycle.os_process_alive?(leased_pid)
-    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
-
-    assert :ok = GenServer.stop(private_reaper, :shutdown)
-    CustodyTestHelpers.assert_os_pid_dead!(leased_pid, 2_000)
-    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    private_reaper
   end
 
-  defp watch(os_pid) do
-    RuntimeProcessReaper.watch(self(), os_pid, %{
+  defp watch(os_pid, meta \\ []) do
+    base = %{
       shutdown_timeout_ms: @short_timeout_ms,
       model_ref: nil,
       phase: :loaded
-    })
+    }
+
+    RuntimeProcessReaper.watch(self(), os_pid, Map.merge(base, Map.new(meta)))
   end
 
   defp unique_root(label) do

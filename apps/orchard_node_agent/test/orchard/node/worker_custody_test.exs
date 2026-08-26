@@ -1,6 +1,8 @@
 defmodule Orchard.Node.WorkerCustodyTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.CustodyTestHelpers
@@ -11,6 +13,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
   alias Orchard.Node.WorkerSupervisor
 
   @shutdown_timeout_ms 200
+  @stale_identity "0 Thu Jan 1 00:00:00 1970"
 
   setup do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
@@ -87,6 +90,38 @@ defmodule Orchard.Node.WorkerCustodyTest do
     CustodyTestHelpers.assert_reaper_empty!(1_000)
   end
 
+  test "SPEC.md §4.9 closed BEAM port refuses to signal a recycled PID", context do
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    File.write!(context.socket_path, "owned runtime artifact")
+
+    state = %{
+      backend: "stub",
+      channel: nil,
+      executable: Path.expand("../../support/custody-signal-child", __DIR__),
+      generations: %{},
+      model_ref: context.model_ref,
+      os_identity: @stale_identity,
+      os_pid: control_pid,
+      port: exited_port!(),
+      reaper_ref: nil,
+      shutdown_timeout_ms: @shutdown_timeout_ms,
+      socket_path: context.socket_path
+    }
+
+    log =
+      capture_log(fn ->
+        assert :ok = WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+      end)
+
+    assert log =~ "worker custody identity mismatch"
+    assert log =~ "os_pid=#{control_pid}"
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+    refute File.exists?(context.socket_path)
+  end
+
   test "SPEC.md §4.9 noisy TERM-resistant shutdown reaches bounded KILL", context do
     marker_path = Path.join(context.root, "events.log")
 
@@ -112,7 +147,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
     state = %{
       backend: "stub",
       channel: nil,
-      executable: Path.join(__DIR__, "../../../support/custody-signal-child"),
+      executable: Path.expand("../../support/custody-signal-child", __DIR__),
       generations: %{},
       model_ref: context.model_ref,
       os_pid: os_pid,
@@ -215,6 +250,18 @@ defmodule Orchard.Node.WorkerCustodyTest do
              )
 
     state
+  end
+
+  defp exited_port! do
+    true_executable = System.find_executable("true") || "/usr/bin/true"
+    port = Port.open({:spawn_executable, true_executable}, [:exit_status])
+
+    assert_receive {^port, {:exit_status, _status}}, 2_000
+
+    assert CustodyTestHelpers.wait_until(fn -> is_nil(Port.info(port)) end, 1_000),
+           "expected the fixture port to close after its program exited"
+
+    port
   end
 
   defp worker_executable do
