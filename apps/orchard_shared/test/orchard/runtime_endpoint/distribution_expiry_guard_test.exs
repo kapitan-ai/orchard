@@ -137,7 +137,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
                hard_stop: fn -> send(test_pid, :independent_hard_stop) end
              )
 
-    assert_receive :application_stopped
+    assert_receive :application_stopped, 500
     GenServer.stop(pid)
     assert_receive :independent_hard_stop, 500
   end

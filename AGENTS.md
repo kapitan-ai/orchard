@@ -158,7 +158,7 @@ Recommended targets:
 - `make format` — run Elixir formatter.
 - `make test` — run the default test suite.
 - `make cover` — run the default test suite with coverage.
-- `make macos-native-test-helpers` — stage macOS test helpers for direct `mix test` runs.
+- `make macos-native-test-helpers` — stage macOS test helpers for direct `mix test` runs (Darwin hosts only).
 - `make check-elixir` — run the full Elixir quality workflow.
 
 `make dev` must remain a foreground/blocking command equivalent to
@@ -213,11 +213,9 @@ Run these in order for Elixir/OTP changes from the umbrella root:
 6. `mise exec -- mix test`
 7. `mise exec -- mix test --cover`
 
-`make check-elixir` runs the same workflow, and `make test` and `make cover`
-stage the macOS test helpers themselves. Step 5 is required only before a bare
-`mix test` invocation: retained macOS terminal-custody and launchd lifecycle
-tests resolve their helpers from the `orchard_cli` application `priv` directory,
-and ordinary portable `mix compile` no longer emits them.
+`make check-elixir` runs the same workflow.
+On Darwin hosts, `make test` and `make cover` stage the macOS test helpers and run every test; on non-Darwin hosts they skip helper staging and exclude tests tagged `macos`.
+Step 5 is required only before a bare `mix test` invocation on Darwin: retained macOS terminal-custody and launchd lifecycle tests resolve their helpers from the `orchard_cli` application `priv` directory, and ordinary portable `mix compile` no longer emits them.
 
 Rules:
 
@@ -339,7 +337,7 @@ the "Source-dev BEAM Peer Grant tracer" section in `docs/local-dev.md`.
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
-- `make test` - test suite (stages the macOS test helpers, then runs `mise exec -- mix test`; uses its own DB and defaults to port 50071 via `test.exs`; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` first when invoking `mise exec -- mix test` directly.
+- `make test` - test suite (stages the macOS test helpers and runs every test on Darwin; skips helper staging and excludes the `macos` tag on non-Darwin hosts; uses its own DB and defaults to port 50071 via `test.exs`; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` first when invoking `mise exec -- mix test` directly on Darwin.
 
 See `docs/local-dev.md` for full environment setup and configuration.
 

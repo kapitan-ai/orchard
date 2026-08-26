@@ -2717,7 +2717,7 @@ defmodule Orchard.Tokenizer.ClientTest do
       exit 43
     fi
 
-    dir_mode=$(stat -f '%Lp' "$request_dir" 2>/dev/null || stat -c '%a' "$request_dir")
+    dir_mode=$(stat -c '%a' "$request_dir" 2>/dev/null || stat -f '%Lp' "$request_dir")
 
     if [ "$dir_mode" != "700" ]; then
       printf 'unexpected directory mode %s\n' "$dir_mode" > "#{probe_file}"

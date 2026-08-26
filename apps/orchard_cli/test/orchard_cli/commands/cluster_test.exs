@@ -8,6 +8,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
   alias Orchard.Governance.{ApiKey, AuditLog, RoleBinding, ServiceAccount}
   alias Orchard.Repo
   alias OrchardCLI.Commands.Cluster, as: ClusterCmd
+  alias OrchardCLI.PlatformACL
 
   defmodule ConfigurableFileOps do
     @descriptor_preflight_payload "orchard-cluster-init-write-preflight\n"
@@ -457,13 +458,13 @@ defmodule OrchardCLI.Commands.ClusterTest do
       end
     end
 
-    def remove_acl(path) do
+    def remove_acl(path, type) do
       if staging_protection_target?(path, :cluster_file_ops_fail_staging_acl_removal) do
         Process.put(:cluster_file_ops_unprotected_staging_dir, path)
         maybe_replace_unprotected_staging(path)
         {:error, :acl_removal_failed}
       else
-        strip_acl(path)
+        PlatformACL.remove_extended(path, type)
       end
     end
 
@@ -472,18 +473,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
         Process.put(:cluster_file_ops_retained_output_parent_probe_path, path)
         {:error, :acl_inspection_failed}
       else
-        case System.cmd("/bin/ls", ["-lde", path], stderr_to_stdout: true) do
-          {output, 0} ->
-            entries =
-              output
-              |> String.split("\n", trim: true)
-              |> Enum.filter(&Regex.match?(~r/^\s+\d+:\s/, &1))
-
-            {:ok, entries}
-
-          {_output, _status} ->
-            {:error, :acl_inspection_failed}
-        end
+        PlatformACL.entries(path)
       end
     end
 
@@ -509,13 +499,6 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
     defp staging_protection_target?(path, key) do
       Process.get(key) == true and path == Process.get(:cluster_file_ops_staging_dir)
-    end
-
-    defp strip_acl(path) do
-      case System.cmd("/bin/chmod", ["-N", path], stderr_to_stdout: true) do
-        {_output, 0} -> :ok
-        {_output, _status} -> {:error, :acl_removal_failed}
-      end
     end
 
     def sync_directory(_path) do
@@ -792,6 +775,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert token_occurrences(File.read!(output_path), token) == 1
     end
 
+    @tag :macos
     test "SPEC.md §7.4.4 public init strips inherited non-owner read ACL before minting",
          %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "acl-protected-admin.json")
@@ -823,6 +807,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute log =~ "orchard_sk_"
     end
 
+    @tag :macos
     test "SPEC.md §7.4.4 public init rejects a parent ACL granting non-owner mutation",
          %{tmp_dir: tmp_dir} do
       assert_public_init_rejects_parent_acl(
@@ -832,6 +817,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       )
     end
 
+    @tag :macos
     test "SPEC.md §7.4.4 public init rejects a parent ACL granting non-owner ownership control",
          %{tmp_dir: tmp_dir} do
       assert_public_init_rejects_parent_acl(

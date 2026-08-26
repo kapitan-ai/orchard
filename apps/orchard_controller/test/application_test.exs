@@ -177,7 +177,7 @@ defmodule OrchardApplicationTest do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
 
     bootstrap = Process.whereis(Orchard.Metrics.Bootstrap)
-    generation = Process.whereis(Orchard.Metrics.Supervisor)
+    generation = metrics_generation()
     ledger = Process.whereis(CardinalityLedger)
     assert is_pid(generation)
     assert is_pid(ledger)

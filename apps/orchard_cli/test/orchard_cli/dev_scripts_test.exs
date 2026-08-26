@@ -63,7 +63,7 @@ defmodule OrchardCLI.DevScriptsTest do
     script = Path.join(@repo_root, "scripts/test-source-dev-worker-cleanup.sh")
 
     assert {output, 0} =
-             System.cmd("bash", [script],
+             System.cmd("/bin/bash", [script],
                cd: @repo_root,
                stderr_to_stdout: true
              )

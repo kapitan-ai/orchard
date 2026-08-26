@@ -411,6 +411,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     refute banner =~ "127.0.0.1:4101/console"
   end
 
+  @tag :macos
   test "packaged fallback uses direct HTTPS when ORCHARD_TRANSPORT_MODE selects it" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_port = System.get_env("ORCHARD_API_HTTPS_PORT")
@@ -442,6 +443,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "Console: https://orchard.example.internal:9443/console"
   end
 
+  @tag :macos
   test "direct HTTPS packaged fallback passes configured external CA to request" do
     ca_path =
       Path.join(System.tmp_dir!(), "orchard-status-ca-#{System.unique_integer([:positive])}.crt")
@@ -477,6 +479,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert Keyword.get(opts, :ca_certfile) == ca_path
   end
 
+  @tag :macos
   test "packaged fallback uses HTTPS for legacy shims when transport mode is unset" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_disabled = System.get_env("ORCHARD_TLS_DISABLED")
@@ -618,6 +621,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert message =~ "ORCHARD_TRUSTED_PROXIES contains invalid CIDR"
   end
 
+  @tag :macos
   test "packaged fallback brackets IPv6 public display host" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_host = System.get_env("ORCHARD_PUBLIC_HOST")
@@ -668,6 +672,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert message =~ "invalid ORCHARD_API_BIND_IP: not-an-ip"
   end
 
+  @tag :macos
   test "packaged fallback does not auto-use generated-local CA with explicit operator certs" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
@@ -725,6 +730,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert Keyword.get(opts, :ca_certfile) == nil
   end
 
+  @tag :macos
   test "packaged fallback allows explicit default cert paths with external CA despite generated-local metadata" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
@@ -771,6 +777,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert {:ok, _banner} = Status.run([], runtime)
   end
 
+  @tag :macos
   test "packaged fallback allows explicit cert CA override despite generated-local metadata" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
@@ -820,6 +827,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert {:ok, _banner} = Status.run([], runtime)
   end
 
+  @tag :macos
   test "packaged fallback rejects missing generated-local default CA in direct_https" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     support_root = System.get_env("ORCHARD_SUPPORT_ROOT")
@@ -893,6 +901,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert message =~ "ORCHARD_TLS_CACERTFILE cannot override generated-local CA publication"
   end
 
+  @tag :macos
   test "packaged fallback rejects malformed explicit CA in direct_https" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
@@ -923,6 +932,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert message =~ "TLS CA certificate file is malformed"
   end
 
+  @tag :macos
   test "packaged fallback rejects missing explicit CA in direct_https" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
@@ -1006,6 +1016,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     end
   end
 
+  @tag :macos
   test "packaged fallback rejects malformed legacy transport envs" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_disabled = System.get_env("ORCHARD_TLS_DISABLED")

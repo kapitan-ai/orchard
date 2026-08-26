@@ -619,7 +619,7 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
       exit 43
     fi
 
-    mode=$(stat -f %Lp "$transport_dir" 2>/dev/null || stat -c %a "$transport_dir" 2>/dev/null || printf unknown)
+    mode=$(stat -c '%a' "$transport_dir" 2>/dev/null || stat -f '%Lp' "$transport_dir" 2>/dev/null || printf unknown)
 
     if [ "$mode" != "700" ]; then
       exit 44

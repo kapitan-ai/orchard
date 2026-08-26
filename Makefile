@@ -55,6 +55,16 @@ macos-native-helpers:
 macos-native-test-helpers:
 	scripts/build-macos-native-helpers.sh --output _build/test/lib/orchard_cli/priv --include-test-helper
 
+HOST_OS ?= $(shell uname -s)
+
+ifeq ($(HOST_OS),Darwin)
+MACOS_TEST_HELPER_PREREQ := macos-native-test-helpers
+MIX_TEST_PLATFORM_ARGS :=
+else
+MACOS_TEST_HELPER_PREREQ :=
+MIX_TEST_PLATFORM_ARGS := --exclude macos
+endif
+
 format:
 	mise exec -- mix format
 
@@ -67,10 +77,10 @@ credo:
 dialyzer:
 	mise exec -- mix dialyzer
 
-test: macos-native-test-helpers
-	mise exec -- mix test
+test: $(MACOS_TEST_HELPER_PREREQ)
+	mise exec -- mix test $(MIX_TEST_PLATFORM_ARGS)
 
-cover: macos-native-test-helpers
-	mise exec -- mix test --cover
+cover: $(MACOS_TEST_HELPER_PREREQ)
+	mise exec -- mix test --cover $(MIX_TEST_PLATFORM_ARGS)
 
 check-elixir: format compile credo dialyzer test cover

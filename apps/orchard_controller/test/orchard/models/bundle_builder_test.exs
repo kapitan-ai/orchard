@@ -1345,7 +1345,7 @@ defmodule Orchard.Models.BundleBuilderTest do
     [ -f "$request" ] || exit 22
     [ ! -L "$request" ] || exit 23
 
-    mode=$(stat -f '%Lp' "$selected" 2>/dev/null || stat -c '%a' "$selected" 2>/dev/null || echo unknown)
+    mode=$(stat -c '%a' "$selected" 2>/dev/null || stat -f '%Lp' "$selected" 2>/dev/null || echo unknown)
     [ "$mode" = "700" ] || exit 24
 
     payload=$(cat)

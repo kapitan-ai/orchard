@@ -7,6 +7,7 @@ defmodule OrchardCLI.Commands.Cluster do
   alias Orchard.ControlPlane
   alias Orchard.Governance.ClusterBootstrap
   alias OrchardCLI.Commands.GovernanceHelpers
+  alias OrchardCLI.PlatformACL
   alias OrchardCLI.RepoRuntime
 
   @cluster_status_object "cluster_management.cluster_status"
@@ -15,18 +16,6 @@ defmodule OrchardCLI.Commands.Cluster do
   @cluster_init_object "cluster_management.cluster_init"
   @cluster_init_contract_version "orchard.cluster_management.cluster_init.v2"
 
-  @acl_mutation_rights ~w(
-    add_file
-    add_subdirectory
-    append
-    chown
-    delete
-    delete_child
-    write
-    writeattr
-    writeextattr
-    writesecurity
-  )
   @private_directory_mode 0o700
   @secret_file_mode 0o600
   @descriptor_preflight_payload "orchard-cluster-init-write-preflight\n"
@@ -1366,7 +1355,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp protect_created_path(path, identity, type, mode, ops) do
     with :ok <- verify_path(path, identity, type, nil, ops),
-         :ok <- remove_extended_acl(path, ops),
+         :ok <- remove_extended_acl(path, type, ops),
          :ok <- verify_path(path, identity, type, nil, ops),
          :ok <- ops.chmod(path, mode),
          :ok <- verify_path(path, identity, type, mode, ops) do
@@ -1387,14 +1376,11 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp remove_extended_acl(path, ops) do
-    if descriptor_ops?(ops, :remove_acl, 1) do
-      ops.remove_acl(path)
+  defp remove_extended_acl(path, type, ops) do
+    if descriptor_ops?(ops, :remove_acl, 2) do
+      ops.remove_acl(path, type)
     else
-      case System.cmd("/bin/chmod", ["-N", path], stderr_to_stdout: true) do
-        {_output, 0} -> :ok
-        {_output, _status} -> {:error, :acl_removal_failed}
-      end
+      PlatformACL.remove_extended(path, type)
     end
   end
 
@@ -1410,7 +1396,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp verify_parent_acl_safe(path, ops) do
     with {:ok, entries} <- acl_entries(path, ops),
-         false <- Enum.any?(entries, &acl_grants_mutation?/1) do
+         false <- Enum.any?(entries, &PlatformACL.grants_parent_mutation?/1) do
       :ok
     else
       true -> {:error, :output_parent_acl_unsafe}
@@ -1422,30 +1408,7 @@ defmodule OrchardCLI.Commands.Cluster do
     if descriptor_ops?(ops, :acl_entries, 1) do
       ops.acl_entries(path)
     else
-      case System.cmd("/bin/ls", ["-lde", path], stderr_to_stdout: true) do
-        {output, 0} ->
-          entries =
-            output
-            |> String.split("\n", trim: true)
-            |> Enum.filter(&Regex.match?(~r/^\s+\d+:\s/, &1))
-
-          {:ok, entries}
-
-        {_output, _status} ->
-          {:error, :acl_inspection_failed}
-      end
-    end
-  end
-
-  defp acl_grants_mutation?(entry) do
-    case String.split(entry, ~r/\s+allow\s+/, parts: 2) do
-      [_principal, rights] ->
-        rights
-        |> String.split([",", " "], trim: true)
-        |> Enum.any?(&(&1 in @acl_mutation_rights))
-
-      _other ->
-        false
+      PlatformACL.entries(path)
     end
   end
 
