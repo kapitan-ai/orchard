@@ -61,3 +61,14 @@ The aggregate decision SHALL be implemented by a repository-owned evaluator with
 
 - **WHEN** a lane classified as inapplicable reports success, failure, or cancellation instead of skipped
 - **THEN** the required aggregate gate fails closed
+
+### Requirement: Default Test Commands Respect Host Boundaries
+
+The repository-owned default test and coverage commands SHALL stage retained Darwin test helpers and run macOS-tagged tests on Darwin hosts.
+On non-Darwin hosts, those commands MUST NOT invoke the Darwin helper builder and MUST exclude tests tagged `macos`.
+
+#### Scenario: Contributor runs default tests on Linux
+
+- **WHEN** a contributor runs the repository-owned default test or coverage command on Linux
+- **THEN** the command runs the portable test surface without invoking Darwin tooling
+- **AND** retained macOS-only test cases remain assigned to the macOS host lane

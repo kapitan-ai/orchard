@@ -74,7 +74,7 @@ Inline workflow conditionals were rejected because they are difficult to exercis
 ## Risks / Trade-offs
 
 - **A dependency edge is omitted** - unknown paths and normative shared surfaces select every lane, while matrix tests lock the known classifications.
-- **A macOS-only test is silently lost** - retained Darwin test modules carry the `macos` tag and the macOS host lane runs that tag explicitly.
+- **A macOS-only test is silently lost** - retained Darwin-only test modules and cases carry the `macos` tag and the macOS host lane runs that tag explicitly.
 - **Linux accidentally imports MLX** - the portable lane installs only the base Worker Runtime environment and never selects the `mlx` extra.
 - **Conditional jobs make branch protection ambiguous** - the unchanged aggregate gate requires exact success or skipped states for every lane.
 

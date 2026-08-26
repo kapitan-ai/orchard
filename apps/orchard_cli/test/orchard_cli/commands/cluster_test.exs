@@ -792,6 +792,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert token_occurrences(File.read!(output_path), token) == 1
     end
 
+    @tag :macos
     test "SPEC.md §7.4.4 public init strips inherited non-owner read ACL before minting",
          %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "acl-protected-admin.json")
@@ -823,6 +824,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute log =~ "orchard_sk_"
     end
 
+    @tag :macos
     test "SPEC.md §7.4.4 public init rejects a parent ACL granting non-owner mutation",
          %{tmp_dir: tmp_dir} do
       assert_public_init_rejects_parent_acl(
@@ -832,6 +834,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       )
     end
 
+    @tag :macos
     test "SPEC.md §7.4.4 public init rejects a parent ACL granting non-owner ownership control",
          %{tmp_dir: tmp_dir} do
       assert_public_init_rejects_parent_acl(

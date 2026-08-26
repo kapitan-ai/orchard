@@ -163,6 +163,33 @@ PY
   return 69
 }
 
+# Return success when argv launches an orchard-worker-mlx executable directly
+# or through a supported interpreter. Later arguments are not executable
+# identity: agent prompts and diagnostics may legitimately mention the worker
+# name without launching one.
+orchard_source_dev_args_launch_worker() {
+  local args="$1"
+  local -a tokens=()
+  local -a launch_tokens=()
+  local token executable interpreter
+
+  read -r -a tokens <<< "$args"
+  [[ ${#tokens[@]} -gt 0 ]] || return 1
+
+  launch_tokens+=("${tokens[0]}")
+  interpreter="${tokens[0]##*/}"
+  if [[ ${#tokens[@]} -gt 1 && "$interpreter" =~ ^(ba|z|k)?sh$|^python([0-9.]*)?$ ]]; then
+    launch_tokens+=("${tokens[1]}")
+  fi
+
+  for token in "${launch_tokens[@]}"; do
+    executable="${token##*/}"
+    [[ "$executable" == orchard-worker-mlx* ]] && return 0
+  done
+
+  return 1
+}
+
 # List matching workers as "pid full argv". The ps format is supported by both
 # BSD/macOS and Linux; avoid pgrep flags whose full-argv behavior is not
 # portable across those platforms.
@@ -172,7 +199,7 @@ orchard_source_dev_worker_processes() {
   while IFS= read -r line; do
     read -r pid args <<< "$line"
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$args" == *orchard-worker-mlx* ]] || continue
+    orchard_source_dev_args_launch_worker "$args" || continue
     [[ "$pid" != "$$" ]] || continue
     printf '%s %s\n' "$pid" "$args"
   done < <(ps -ww -A -o pid= -o args= 2>/dev/null || true)

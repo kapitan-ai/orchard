@@ -59,7 +59,7 @@ the Python interpreter version that `uv` is allowed to use.
 For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
 Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.
 Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
-On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically; on Linux they skip staging because the helpers are Darwin-only, and the Linux portable lane excludes the retained `macos` tag instead.
+On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically and run every test; on non-Darwin hosts they skip staging and exclude the retained `macos` tag.
 Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
 The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
 Payload assembly invokes the same builder before producing the packaged CLI release.
@@ -112,9 +112,8 @@ make test
 make cover
 ```
 
-The last two steps use the Make wrappers because they stage the retained macOS
-test helpers before Mix runs. Substitute `mise exec -- mix test` and
-`mise exec -- mix test --cover` only after `make macos-native-test-helpers`.
+The last two steps use the Make wrappers because they stage the retained macOS test helpers before Mix runs on Darwin and exclude macOS-only tests on non-Darwin hosts.
+Substitute `mise exec -- mix test` and `mise exec -- mix test --cover` on Darwin only after `make macos-native-test-helpers`.
 
 Portable-boundary and macOS native-helper proofs:
 

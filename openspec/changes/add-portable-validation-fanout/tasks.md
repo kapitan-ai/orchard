@@ -8,7 +8,7 @@
 - [x] 2.1 Add Linux portable compilation, static analysis, tests, coverage, tokenizer, and non-accelerator Worker Runtime setup.
 - [x] 2.2 Add focused provider-neutral conformance on Linux.
 - [x] 2.3 Retain explicit macOS host-native, Apple Silicon MLX, Orchard.app, DMG, signing-contract, and packaged CLI evidence.
-- [x] 2.4 Tag retained Darwin-only test modules and run them explicitly in the macOS host lane.
+- [x] 2.4 Tag retained Darwin-only test modules and cases and run them explicitly in the macOS host lane.
 
 ## 3. Aggregate Gate
 

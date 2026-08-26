@@ -635,8 +635,8 @@ make cover
 git diff --check
 ```
 
-`make test` and `make cover` stage the retained macOS test helpers before Mix
-runs; the scoped Console run above needs no helper staging.
+On Darwin, `make test` and `make cover` stage the retained macOS test helpers before Mix runs.
+On non-Darwin hosts, those targets exclude tests tagged `macos`; the scoped Console run above needs no helper staging.
 
 Repo-wide gates that fail outside the touched scope must be recorded as
 explicit baseline blockers, not silently accepted.

@@ -935,10 +935,9 @@ The tracer and its supporting flows are validated by
 
 ## Testing
 
-On Darwin hosts, `make test` and `make cover` stage the retained macOS native
-helpers into `_build/test/lib/orchard_cli/priv` before running Mix, because
-ordinary portable `mix compile` no longer emits them. Invoke `mix test` directly
-only after `make macos-native-test-helpers`.
+On Darwin hosts, `make test` and `make cover` stage the retained macOS native helpers into `_build/test/lib/orchard_cli/priv` before running every test, because ordinary portable `mix compile` no longer emits them.
+On non-Darwin hosts, the same Make targets skip helper staging and exclude tests tagged `macos`.
+Invoke `mix test` directly on Darwin only after `make macos-native-test-helpers`.
 
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)
@@ -950,7 +949,7 @@ ORCHARD_TEST_NODE_AGENT_PORT=50171 make test
 # With coverage
 make cover
 
-# Direct Mix invocation, once the macOS test helpers are staged
+# Direct Mix invocation on Darwin, once the macOS test helpers are staged
 make macos-native-test-helpers
 mise exec -- mix test apps/orchard_cli/test/orchard_cli/lifecycle_native_test.exs
 
