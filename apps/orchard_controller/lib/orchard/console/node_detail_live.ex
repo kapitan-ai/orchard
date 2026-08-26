@@ -453,6 +453,56 @@ defmodule OrchardConsole.NodeDetailLive do
               </.card>
             </div>
 
+            <div
+              :if={observed_candidate_guidance?(@target_kind, @status)}
+              id="node-detail-enrollment-guidance-card"
+            >
+              <.card>
+                <:title>Enrollment Guidance</:title>
+                <:subtitle>
+                  This candidate was observed from a runtime status read. Observation does not enroll or register the node.
+                </:subtitle>
+                <p class="text-sm text-slate-700 dark:text-slate-300">
+                  Enrollment bundle creation requires a configured Controller HTTPS endpoint.
+                </p>
+                <ol
+                  id="node-detail-enrollment-commands"
+                  class="mt-3 list-decimal space-y-3 pl-5 text-sm text-slate-700 dark:text-slate-300"
+                >
+                  <li>
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 shadow-inner font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
+                      orchardctl nodes trust init
+                    </code>
+                    <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
+                      Initialize internal Node trust on the leader Controller.
+                    </p>
+                  </li>
+                  <li>
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 shadow-inner font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
+                      orchardctl nodes enrollment create --output PATH [--expires-in DURATION]
+                    </code>
+                    <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
+                      Create the Node Enrollment bundle on the Controller.
+                    </p>
+                  </li>
+                  <li>
+                    <code class="block rounded border border-slate-200 bg-slate-50 p-2 shadow-inner font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200">
+                      orchardctl node join --enrollment-bundle PATH
+                    </code>
+                    <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">
+                      Join from the worker node using the enrollment bundle.
+                    </p>
+                  </li>
+                </ol>
+                <p class="mt-4 text-sm text-slate-700 dark:text-slate-300">
+                  After a successful join, the node appears under Admission Review as a separate pending registered entry. Node Admission remains required before the node is active or schedulable.
+                </p>
+                <p class="mt-2 text-sm text-slate-700 dark:text-slate-300">
+                  This observed candidate remains a separate Admission Review record that the join does not close.
+                </p>
+              </.card>
+            </div>
+
             <div :if={@target_kind == :candidate} id="node-detail-candidate-evidence-card">
               <.card>
                 <:title>Candidate Evidence</:title>
@@ -811,6 +861,12 @@ defmodule OrchardConsole.NodeDetailLive do
   end
 
   defp normalize_capacity_ceiling(value), do: value
+
+  defp observed_candidate_guidance?(:candidate, status) do
+    status_value(status, :admission, :category) == "pending_observed"
+  end
+
+  defp observed_candidate_guidance?(_target_kind, _status), do: false
 
   defp can_open_admit?(:node, %Node{}, status) do
     status_value(status, :admission, :category) in ["pending_provisioned", "pending_registered"]

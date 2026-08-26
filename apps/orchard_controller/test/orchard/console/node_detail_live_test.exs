@@ -213,6 +213,94 @@ defmodule OrchardConsole.NodeDetailLiveTest do
     end
   end
 
+  describe "observed candidate enrollment guidance" do
+    test "renders full read-only guidance and preserves rejection-only controls", %{conn: conn} do
+      candidate = insert_candidate!(%{})
+
+      {:ok, _view, html} = live(conn, "/console/nodes/pending/#{candidate.id}")
+
+      assert html =~ ~s(id="node-detail-enrollment-guidance-card")
+      assert html =~ "Observation does not enroll or register the node."
+      assert html =~ "Enrollment bundle creation requires a configured Controller HTTPS endpoint."
+      assert html =~ "orchardctl nodes trust init"
+
+      assert html =~
+               "orchardctl nodes enrollment create --output PATH [--expires-in DURATION]"
+
+      assert html =~ "orchardctl node join --enrollment-bundle PATH"
+
+      assert html =~
+               "the node appears under Admission Review as a separate pending registered entry"
+
+      assert html =~
+               "This observed candidate remains a separate Admission Review record that the join does not close."
+
+      refute html =~ "otherwise clears it"
+      assert html =~ "Preview reject"
+      refute html =~ "Preview admit"
+    end
+
+    test "renders command sequence as a visibly numbered recessed code well", %{conn: conn} do
+      candidate = insert_candidate!(%{})
+
+      {:ok, _view, html} = live(conn, "/console/nodes/pending/#{candidate.id}")
+
+      [_, ol_attrs | _] = String.split(html, ~s(id="node-detail-enrollment-commands"), parts: 2)
+      [ol_tag | _] = String.split(ol_attrs, ">", parts: 2)
+
+      assert ol_tag =~ "list-decimal"
+      assert ol_tag =~ "pl-5"
+
+      code_classes =
+        html
+        |> String.split(~s(<code class="block rounded))
+        |> tl()
+        |> Enum.map(&(&1 |> String.split(~s("), parts: 2) |> hd()))
+
+      assert length(code_classes) == 3
+      assert Enum.all?(code_classes, &String.contains?(&1, "bg-slate-50"))
+      assert Enum.all?(code_classes, &String.contains?(&1, "dark:bg-slate-900/60"))
+      assert Enum.all?(code_classes, &String.contains?(&1, "shadow-inner"))
+      refute Enum.any?(code_classes, &String.contains?(&1, "bg-white"))
+      refute Enum.any?(code_classes, &String.contains?(&1, "dark:bg-slate-950"))
+    end
+
+    test "renders guidance before Candidate Evidence", %{conn: conn} do
+      candidate = insert_candidate!(%{})
+
+      {:ok, _view, html} = live(conn, "/console/nodes/pending/#{candidate.id}")
+
+      {guidance_index, _length} =
+        :binary.match(html, ~s(id="node-detail-enrollment-guidance-card"))
+
+      {evidence_index, _length} =
+        :binary.match(html, ~s(id="node-detail-candidate-evidence-card"))
+
+      assert guidance_index < evidence_index
+    end
+
+    test "does not render guidance for non-observed candidates", %{conn: conn} do
+      candidate =
+        insert_candidate!(%{
+          source: :provisioned_placeholder,
+          admission_category: :pending_provisioned
+        })
+
+      {:ok, _view, html} = live(conn, "/console/nodes/pending/#{candidate.id}")
+
+      assert html =~ "Candidate Evidence"
+      refute html =~ "node-detail-enrollment-guidance-card"
+    end
+
+    test "does not render guidance for registered node details", %{conn: conn} do
+      node = insert_node!(%{state: :registered})
+
+      {:ok, _view, html} = live(conn, "/console/nodes/#{node.id}")
+
+      refute html =~ "node-detail-enrollment-guidance-card"
+    end
+  end
+
   describe "admission action previews" do
     test "previews and executes node admit with shared blockers and confirmation", %{conn: conn} do
       trust = establish_local_controller_identity!()
