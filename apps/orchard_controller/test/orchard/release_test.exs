@@ -104,15 +104,26 @@ defmodule Orchard.ReleaseTest do
       :orchard_controller,
       Repo,
       Keyword.merge(Application.fetch_env!(:orchard_controller, Repo),
-        hostname: 123,
+        hostname: "127.0.0.1",
+        port: 1,
+        connect_timeout: 100,
+        backoff_min: 100,
+        backoff_max: 100,
         pool: DBConnection.ConnectionPool,
-        pool_size: 1
+        pool_count: 1,
+        pool_size: 1,
+        queue_interval: 10,
+        queue_target: 10
       )
     )
 
     :ok = RepoManager.stop_repo()
 
-    assert {:error, {:db_unreachable, _message}} = Release.backfill_resident_memory()
+    assert {:error, {:db_unreachable, _message}} =
+             RepoManager.run_bounded_failure_probe(
+               fn -> Release.backfill_resident_memory() end,
+               2_000
+             )
   end
 
   test "SPEC 13.7 DB helpers fail closed when DB checks are disabled" do

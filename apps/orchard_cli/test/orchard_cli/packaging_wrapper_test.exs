@@ -1,6 +1,8 @@
 defmodule OrchardCLI.PackagingWrapperTest do
   use ExUnit.Case, async: true
 
+  @moduletag :macos
+
   @repo_root Path.expand("../../../..", __DIR__)
   @orchardctl Path.join(@repo_root, "packaging/payload/bin/orchardctl")
 

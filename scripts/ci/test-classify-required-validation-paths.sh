@@ -35,6 +35,15 @@ assert_rejects() {
 assert_case ordinary-docs \
   'portable=false conformance=false macos=false mlx=false packaging=false ' \
   docs/local-dev.md README.md
+assert_case unknown-nested-doc \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  docs/new-area/contract.md
+assert_case unknown-nested-doc-support \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  docs/new-area/check.sh
+assert_case unknown-top-level-doc-support \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  docs/check.sh
 assert_case controller-only \
   'portable=true conformance=true macos=false mlx=false packaging=true ' \
   apps/orchard_controller/lib/orchard/api/router.ex
@@ -65,6 +74,12 @@ assert_case worker-package-readme \
 assert_case tokenizer-package-readme \
   'portable=true conformance=true macos=false mlx=false packaging=true ' \
   native/orchard_tokenizer/README.md
+assert_case worker-unknown-package-metadata \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  native/orchard_worker_mlx/MANIFEST.in
+assert_case tokenizer-unknown-package-metadata \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  native/orchard_tokenizer/MANIFEST.in
 assert_case retained-macos-helper-consumer \
   'portable=true conformance=true macos=true mlx=false packaging=true ' \
   apps/orchard_cli/lib/orchard_cli/secret_tty.ex
@@ -89,9 +104,24 @@ assert_case bsd-stat-catalog-transport-test \
 assert_case bsd-stat-preflight-transport-test \
   'portable=true conformance=true macos=true mlx=false packaging=false ' \
   apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs
+assert_case portable-shared-test \
+  'portable=true conformance=true macos=false mlx=false packaging=false ' \
+  apps/orchard_shared/test/orchard/runtime_endpoint/target_test.exs
 assert_case macos-pty-support \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   apps/orchard_cli/test/support/console_pty_harness.c
+assert_case macos-payload-wrapper-test \
+  'portable=false conformance=false macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/test/orchard_cli/packaging_wrapper_test.exs
+assert_case macos-payload-script-test \
+  'portable=false conformance=false macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/test/orchard_cli/payload_wrapper_script_test.exs
+assert_case portable-platform-acl \
+  'portable=true conformance=true macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/lib/orchard_cli/platform_acl.ex
+assert_case portable-cluster-init \
+  'portable=true conformance=true macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/lib/orchard_cli/commands/cluster.ex
 assert_case macos-test-helper \
   'portable=true conformance=true macos=true mlx=false packaging=false ' \
   apps/orchard_cli/test/test_helper.exs

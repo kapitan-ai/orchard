@@ -8,6 +8,8 @@ defmodule OrchardCLI.PayloadWrapperScriptTest do
 
   use ExUnit.Case, async: true
 
+  @moduletag :macos
+
   @repo_root Path.expand("../../../..", __DIR__)
   @controller_wrapper Path.join(@repo_root, "packaging/payload/bin/orchard-controller")
   @node_agent_wrapper Path.join(@repo_root, "packaging/payload/bin/orchard-node-agent")

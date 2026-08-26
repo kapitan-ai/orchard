@@ -111,6 +111,8 @@ jobs:
 
       - name: Install portable dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes acl
           make setup-elixir
           mise exec -- uv sync --locked --directory native/orchard_tokenizer
           mise exec -- uv sync --locked --directory native/orchard_worker_mlx

@@ -18,6 +18,40 @@ defmodule Orchard.TestSupport.RepoManager do
     GenServer.call(__MODULE__, :stop_repo, 30_000)
   end
 
+  @spec run_bounded_failure_probe((-> result), pos_integer()) :: result when result: var
+  def run_bounded_failure_probe(fun, timeout_ms)
+      when is_function(fun, 0) and is_integer(timeout_ms) and timeout_ms > 0 do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        try do
+          {:returned, fun.()}
+        rescue
+          error in Mix.Error -> {:raised, error, __STACKTRACE__}
+        end
+      end)
+
+    try do
+      case Task.yield(task, timeout_ms) do
+        {:ok, {:returned, result}} ->
+          result
+
+        {:ok, {:raised, error, stacktrace}} ->
+          reraise error, stacktrace
+
+        {:exit, reason} ->
+          raise "repo failure probe exited: #{inspect(reason)}"
+
+        nil ->
+          Task.shutdown(task, :brutal_kill)
+          raise "repo failure probe exceeded #{timeout_ms}ms"
+      end
+    after
+      Supervisor.stop(supervisor)
+    end
+  end
+
   @impl true
   def init(:ok) do
     {:ok, %{}, {:continue, :ensure_repo_started}}

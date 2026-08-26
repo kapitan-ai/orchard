@@ -106,9 +106,16 @@ defmodule Mix.Tasks.Orchard.Backfill.ResidentMemoryTest do
       :orchard_controller,
       Repo,
       Keyword.merge(Application.fetch_env!(:orchard_controller, Repo),
-        hostname: 123,
+        hostname: "127.0.0.1",
+        port: 1,
+        connect_timeout: 100,
+        backoff_min: 100,
+        backoff_max: 100,
         pool: DBConnection.ConnectionPool,
-        pool_size: 1
+        pool_count: 1,
+        pool_size: 1,
+        queue_interval: 10,
+        queue_target: 10
       )
     )
 
@@ -117,9 +124,14 @@ defmodule Mix.Tasks.Orchard.Backfill.ResidentMemoryTest do
     assert_raise Mix.Error,
                  ~r/resident_memory_bytes backfill failed to start: \{:db_unreachable,/,
                  fn ->
-                   capture_io(fn ->
-                     Mix.Task.run("orchard.backfill.resident_memory", [])
-                   end)
+                   RepoManager.run_bounded_failure_probe(
+                     fn ->
+                       capture_io(fn ->
+                         Mix.Task.run("orchard.backfill.resident_memory", [])
+                       end)
+                     end,
+                     2_000
+                   )
                  end
   end
 

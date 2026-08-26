@@ -37,6 +37,10 @@ while IFS= read -r path; do
   saw_path=true
 
   case "$path" in
+    apps/orchard_shared/test/*)
+      portable=true
+      conformance=true
+      ;;
     SPEC.md|AGENTS.md|mix.exs|mix.lock|mise.toml|Makefile|package.json|package-lock.json|config/*|rel/*|proto/*|openspec/*|.github/workflows/*|apps/orchard_shared/*)
       enable_all
       ;;
@@ -59,7 +63,12 @@ while IFS= read -r path; do
       macos=true
       packaging=true
       ;;
-    docs/*|README.md|CONTRIBUTING.md|CONTEXT-MAP.md|CLAUDE.md)
+    docs/*)
+      if [[ "$path" != docs/*.md || "$path" == docs/*/* ]]; then
+        enable_all
+      fi
+      ;;
+    README.md|CONTRIBUTING.md|CONTEXT-MAP.md|CLAUDE.md)
       ;;
     apps/orchard_cli/lib/orchard_cli/lifecycle_native.ex|apps/orchard_cli/lib/orchard_cli/lifecycle_system.ex|apps/orchard_cli/lib/orchard_cli/secret_tty.ex|apps/orchard_cli/lib/orchard_cli/commands/console.ex|apps/orchard_cli/lib/orchard_cli/commands/node_agent_stop.ex|apps/orchard_cli/test/orchard_cli/lifecycle_native_test.exs|apps/orchard_cli/test/orchard_cli/commands/console_pty_test.exs|apps/orchard_node_agent/lib/orchard/node/beam_peer_grant_store.ex|apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs)
       enable_macos_consumers
@@ -68,11 +77,18 @@ while IFS= read -r path; do
       macos=true
       packaging=true
       ;;
+    apps/orchard_cli/test/orchard_cli/packaging_wrapper_test.exs|apps/orchard_cli/test/orchard_cli/payload_wrapper_script_test.exs)
+      macos=true
+      packaging=true
+      ;;
     apps/orchard_cli/test/support/console_pty_process.ex|apps/orchard_cli/test/support/flock_holder.swift|apps/orchard_cli/test/test_helper.exs|apps/orchard_node_agent/test/test_helper.exs)
       enable_portable_macos_tests
       ;;
     apps/orchard_cli/test/orchard_cli/commands/cluster_test.exs|apps/orchard_cli/test/orchard_cli/commands/status_test.exs|apps/orchard_controller/test/orchard/beam_peer_grants_test.exs|apps/orchard_controller/test/orchard/tokenizer_client_test.exs|apps/orchard_controller/test/orchard/models/bundle_builder_test.exs|apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs)
       enable_portable_macos_tests
+      ;;
+    apps/orchard_cli/lib/orchard_cli/platform_acl.ex|apps/orchard_cli/lib/orchard_cli/commands/cluster.ex)
+      enable_macos_consumers
       ;;
     native/orchard_worker_mlx/pyproject.toml|native/orchard_worker_mlx/uv.lock|native/orchard_worker_mlx/bin/*|native/orchard_worker_mlx/proto/*|native/orchard_worker_mlx/src/*)
       portable=true
@@ -86,6 +102,7 @@ while IFS= read -r path; do
       conformance=true
       macos=true
       mlx=true
+      packaging=true
       ;;
     native/orchard_tokenizer/pyproject.toml|native/orchard_tokenizer/uv.lock|native/orchard_tokenizer/bin/*|native/orchard_tokenizer/src/*)
       portable=true
@@ -95,6 +112,7 @@ while IFS= read -r path; do
     native/orchard_tokenizer/*)
       portable=true
       conformance=true
+      packaging=true
       ;;
     apps/orchard_controller/test/*|apps/orchard_node_agent/test/*|apps/orchard_cli/test/*)
       portable=true

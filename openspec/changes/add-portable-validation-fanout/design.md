@@ -50,6 +50,8 @@ The Linux portable lane SHALL run the portable compile tripwire, format check, w
 Its repository-owned entrypoint SHALL reject every host whose kernel name is not `Linux`.
 It SHALL install the Worker Runtime base environment without the MLX extra so stub-backed tests can run without importing accelerator implementations.
 It SHALL run focused Worker Runtime stub formatting, lint, tests, and coverage from that base environment.
+It SHALL provision standard Linux ACL tooling and execute the portable `cluster init` safety surface against GNU `getfacl` and `setfacl` rather than excluding the behavior from Linux validation.
+The ACL seam SHALL retain Darwin `chmod -N` and `ls -lde` behavior, remove Linux access ACLs plus directory default ACLs, ignore only mode-derived base entries, and fail closed on unsupported hosts, tool failures, or malformed inspection output.
 
 The provider-neutral lane SHALL run focused contract tests over Worker Runtime mapping, Runtime Endpoints, capability evaluation, lifecycle command invariants, and scheduling.
 It SHALL remain separately named so its success is not represented as Linux host support or real-hardware acceptance.
@@ -61,6 +63,7 @@ Combining both lanes was rejected because focused provider-neutral failures woul
 The macOS host lane SHALL provision a deterministic test Postgres, compile the retained Darwin helpers through the explicit builder, and run tests tagged `macos`.
 It SHALL also run the focused portable helper-transport suites so their GNU-first, BSD-fallback permission probes are exercised under BSD `stat`.
 Darwin-only integration cases that transitively invoke macOS host commands such as `lockf` SHALL carry the same tag as their owning modules.
+Test modules that exclusively exercise the staged macOS application payload SHALL carry a module-level `macos` tag and remain covered by the macOS and packaging lanes.
 Files that mix portable and case-level `macos` tests SHALL fan out to both portable and macOS host lanes when changed.
 The MLX lane SHALL install the accelerator extra and run the real provider package tests on Apple Silicon.
 The packaging lane SHALL retain payload, signing-contract, Swift application, lifecycle, assembled app, DMG, and packaged CLI validation.

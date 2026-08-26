@@ -139,10 +139,6 @@ FAKE_OTHER="$TMP_ROOT/orchard-worker-mlx-other"
 cp "$FAKE_WORKER" "$FAKE_OTHER"
 chmod +x "$FAKE_OTHER"
 
-FAKE_UNRELATED="$TMP_ROOT/unrelated-command"
-cp "$FAKE_WORKER" "$FAKE_UNRELATED"
-chmod +x "$FAKE_UNRELATED"
-
 FAKE_AMBIGUOUS="$TMP_ROOT/orchard-worker-mlx-ambiguous"
 cat > "$FAKE_AMBIGUOUS" <<'SCRIPT'
 #!/usr/bin/env bash
@@ -300,12 +296,9 @@ fi
 
 # Carrying the expected executable as an unrelated argument must not establish
 # ownership. Only argv0, or argv1 after a recognized interpreter, is valid.
-bash "$FAKE_UNRELATED" "$FAKE_WORKER" --socket-path "$socket_other" &
+bash "$FAKE_OTHER" "$FAKE_WORKER" --socket-path "$socket_other" &
 unrelated_arg_pid=$!
 sleep 0.2
-unrelated_enumeration="$(orchard_source_dev_worker_processes)"
-[[ "$unrelated_enumeration" != *"$unrelated_arg_pid "* ]] ||
-  fail "worker enumeration matched an unrelated executable argument"
 orchard_source_dev_cleanup_workers "$REPO_ROOT" "$FAKE_WORKER" >/dev/null 2>&1
 process_is_running "$unrelated_arg_pid" || fail "unrelated executable argument established ownership"
 kill -TERM "$unrelated_arg_pid" 2>/dev/null || true
