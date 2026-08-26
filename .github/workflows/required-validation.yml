@@ -13,78 +13,79 @@ concurrency:
   group: orchard-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  ORCHARD_TEST_NODE_AGENT_PORT: "50171"
+  PGHOST: localhost
+  PGPORT: "5432"
+  PGUSER: postgres
+  PGPASSWORD: postgres
+  PGDATABASE_TEST: orchard_test
+
 jobs:
-  # Detect whether the change touches anything beyond documentation. Runs on a
-  # cheap Linux runner so docs-only PRs never spin up the macOS runner. Do NOT
-  # use `paths-ignore` on the workflow trigger instead: a workflow skipped by
-  # path filtering leaves its required checks stuck in "Pending" and blocks
-  # merging (see GitHub docs, "Handling skipped but required checks").
   changes:
-    name: Detect changed paths
+    name: Classify required validation
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
     outputs:
-      # Pushes to main always run the full suite; PRs run it unless the diff
-      # is docs-only (docs/** and top-level *.md).
-      run_full: ${{ github.event_name != 'pull_request' || steps.filter.outputs.non_docs == 'true' }}
+      portable: ${{ steps.classify.outputs.portable }}
+      conformance: ${{ steps.classify.outputs.conformance }}
+      macos: ${{ steps.classify.outputs.macos }}
+      mlx: ${{ steps.classify.outputs.mlx }}
+      packaging: ${{ steps.classify.outputs.packaging }}
     steps:
-      - name: Detect non-docs changes
-        id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          predicate-quantifier: some-with-excludes
-          filters: |
-            non_docs:
-              - '**'
-              - '!docs/**'
-              - '!*.md'
+          fetch-depth: 0
+          persist-credentials: false
 
-  required-validation:
-    name: Required Orchard validation
-    # Orchard is an Apple Silicon macOS-native product: the suite exercises
-    # macOS system binaries (BSD `date -j -f`, `/usr/bin/lockf`, launchctl) and
-    # BEAM TLS Distribution behavior that only pass on macOS. Run the required
-    # check on a pinned Apple Silicon runner.
-    runs-on: nscloud-macos-sequoia-stable-arm64-6x14
-    timeout-minutes: 60
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            printf '%s=true\n' portable conformance macos mlx packaging >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+            | scripts/ci/classify-required-validation-paths.sh \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Test validation fan-out and aggregate gate
+        run: |
+          scripts/ci/test-classify-required-validation-paths.sh
+          scripts/ci/test-required-validation-gate.sh
+
+  linux-portable:
+    name: Linux portable control-plane core
     needs: changes
-    if: needs.changes.outputs.run_full == 'true'
-    env:
-      ORCHARD_TEST_NODE_AGENT_PORT: "50171"
-      PGHOST: localhost
-      PGPORT: "5432"
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGDATABASE_TEST: orchard_test
-
+    if: needs.changes.outputs.portable == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Provision deterministic Postgres
-        run: |
-          # macOS runners have no Docker service containers. Provision a fresh,
-          # reproducible Postgres 16 cluster with trust auth on a fixed port.
-          brew install postgresql@16
-          echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
-
-      - name: Start Postgres
-        run: |
-          pgdata="$RUNNER_TEMP/pgdata"
-          initdb --username="$PGUSER" --auth=trust --encoding=UTF8 --pgdata="$pgdata"
-          pg_ctl --pgdata="$pgdata" --log="$RUNNER_TEMP/postgres.log" \
-            --options="-p $PGPORT -k $RUNNER_TEMP" --wait start
-          for _ in $(seq 1 30); do
-            pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER" && break
-            sleep 1
-          done
-          pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
 
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
@@ -94,123 +95,241 @@ jobs:
       - name: Validate Product Version consistency
         run: make validate-product-version
 
-      - name: Install Elixir dependencies
-        run: make setup-elixir
+      - name: Install portable dependencies
+        run: |
+          make setup-elixir
+          mise exec -- uv sync --locked --directory native/orchard_tokenizer
+          mise exec -- uv sync --locked --directory native/orchard_worker_mlx
 
       - name: Prove portable compilation excludes Darwin helpers
         run: scripts/test-portable-core-compilation.sh
-
-      - name: Bootstrap native environments from lockfiles
-        run: |
-          mise exec -- uv sync --locked --directory native/orchard_tokenizer
-          mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
-          mise exec -- native/orchard_worker_mlx/bin/orchard-worker-mlx --help >/dev/null
-
-      - name: Validate MLX-LM security baseline
-        run: |
-          mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
-            pytest
-
-      - name: Install OpenSpec dependencies
-        run: make setup-openspec
 
       - name: Prepare test database
         run: |
           MIX_ENV=test mise exec -- mix ecto.create
           MIX_ENV=test mise exec -- mix ecto.migrate
 
-      - name: Check formatting
-        run: mise exec -- mix format --check-formatted
+      - name: Run portable static gates
+        run: |
+          mise exec -- mix format --check-formatted
+          mise exec -- mix compile --warnings-as-errors
+          mise exec -- mix credo --strict
+          mise exec -- mix dialyzer
 
-      - name: Compile without warnings
-        run: mise exec -- mix compile --warnings-as-errors
+      - name: Run portable tests and coverage
+        run: scripts/test-linux-portable-core.sh
 
-      - name: Run Credo
-        run: mise exec -- mix credo --strict
-
-      - name: Cache Dialyzer PLTs
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+  provider-conformance:
+    name: Provider-neutral conformance
+    needs: changes
+    if: needs.changes.outputs.conformance == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: |
-            ~/.mix/dialyxir_erlang-*.plt
-            _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt
-            _build/dev/dialyxir_erlang-*_elixir-*_deps-dev.plt.hash
-          key: orchard-dialyzer-plt-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          persist-credentials: false
 
-      - name: Run Dialyzer
-        run: mise exec -- mix dialyzer
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          cache: false
 
-      - name: Test explicit macOS native-helper build
-        run: scripts/test-build-macos-native-helpers.sh
+      - name: Install Elixir dependencies
+        run: make setup-elixir
 
-      - name: Build macOS native helpers for Mix tests
-        run: make macos-native-test-helpers
+      - name: Prepare test database
+        run: |
+          MIX_ENV=test mise exec -- mix ecto.create
+          MIX_ENV=test mise exec -- mix ecto.migrate
 
-      - name: Run tests
-        run: mise exec -- mix test
+      - name: Run provider-neutral conformance tests
+        run: scripts/test-provider-neutral-conformance.sh
 
-      - name: Run coverage
-        run: mise exec -- mix test --cover
+  macos-host:
+    name: macOS host validation
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
+    runs-on: nscloud-macos-sequoia-stable-arm64-6x14
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Test retained payload build contract
-        run: scripts/test-build-payload.sh
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          cache: false
 
-      - name: Test payload signing and closure contracts
-        run: scripts/test-payload-signing-contracts.sh
+      - name: Install Elixir dependencies
+        run: make setup-elixir
+
+      - name: Test explicit macOS native-helper boundary
+        run: |
+          scripts/test-portable-core-compilation.sh
+          scripts/test-build-macos-native-helpers.sh
+          make macos-native-test-helpers
+          mise exec -- mix test --only macos
+
+  mlx-validation:
+    name: MLX provider validation
+    needs: changes
+    if: needs.changes.outputs.mlx == 'true'
+    runs-on: nscloud-macos-sequoia-stable-arm64-6x14
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          cache: false
+
+      - name: Bootstrap MLX environment from lockfile
+        run: |
+          mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
+          mise exec -- native/orchard_worker_mlx/bin/orchard-worker-mlx --help >/dev/null
+
+      - name: Validate MLX-LM security baseline
+        run: >-
+          mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx
+          pytest
+
+  packaging-validation:
+    name: Orchard.app and DMG validation
+    needs: changes
+    if: needs.changes.outputs.packaging == 'true'
+    runs-on: nscloud-macos-sequoia-stable-arm64-6x14
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Provision deterministic Postgres
+        run: |
+          brew install postgresql@16
+          echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
+
+      - name: Start Postgres
+        run: |
+          pgdata="$RUNNER_TEMP/pgdata"
+          initdb --username="$PGUSER" --auth=trust --encoding=UTF8 --pgdata="$pgdata"
+          pg_ctl --pgdata="$pgdata" --log="$RUNNER_TEMP/postgres.log" \
+            --options="-p $PGPORT -k $RUNNER_TEMP" --wait start
+          pg_isready --host="$PGHOST" --port="$PGPORT" --username="$PGUSER"
+
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          cache: false
+
+      - name: Install repository dependencies
+        run: make setup
+
+      - name: Prepare test database
+        run: |
+          MIX_ENV=test mise exec -- mix ecto.create
+          MIX_ENV=test mise exec -- mix ecto.migrate
+
+      - name: Test retained payload and signing contracts
+        run: |
+          scripts/test-build-payload.sh
+          scripts/test-payload-signing-contracts.sh
 
       - name: Test Orchard.app lifecycle and assembly
         run: |
+          xcrun swift-format lint --recursive packaging/app/Sources packaging/app/Tests
+          swift build --package-path packaging/app
           swift test --package-path packaging/app
+          swift test --package-path packaging/app --enable-code-coverage
           scripts/test-app-service-lifecycle.sh
           scripts/test-build-app.sh
           scripts/test-app-signing.sh
           scripts/test-build-dmg.sh
 
-      - name: Test payload orchardctl Controller runtime routing
-        run: scripts/test-payload-orchardctl-controller-runtime.sh
+      - name: Test packaged orchardctl
+        run: |
+          scripts/test-payload-orchardctl-controller-runtime.sh
+          scripts/test-payload-orchardctl-console-pty.sh
+          scripts/test-payload-orchardctl-controller-release.sh
 
-      - name: Test payload orchardctl PTY secret input
-        run: scripts/test-payload-orchardctl-console-pty.sh
+  openspec-validation:
+    name: OpenSpec validation
+    needs: changes
+    if: needs.changes.outputs.portable == 'true' || needs.changes.outputs.conformance == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Test payload orchardctl assembled Controller release RPC
-        run: scripts/test-payload-orchardctl-controller-release.sh
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          cache: false
+
+      - name: Install OpenSpec dependencies
+        run: make setup-openspec
 
       - name: Validate OpenSpec
         env:
           OPENSPEC_TELEMETRY: "0"
         run: mise exec -- npm run openspec -- validate --all --strict --no-interactive
 
-  # Aggregating gate: this job name ("Required Orchard validation gate") must
-  # be the required status check in branch protection, replacing
-  # "Required Orchard validation". It always runs (`if: always()`) and reports
-  # success when the heavy macOS job passed, or when it was legitimately
-  # skipped because the change is docs-only. This is the recommended pattern
-  # for keeping a required check green on docs-only PRs without leaving it
-  # stuck in "Pending".
   required-validation-gate:
     name: Required Orchard validation gate
+    needs:
+      - changes
+      - linux-portable
+      - provider-conformance
+      - macos-host
+      - mlx-validation
+      - packaging-validation
+      - openspec-validation
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, required-validation]
-    if: always()
     steps:
-      - name: Evaluate validation result
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Evaluate required validation results
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
-          VALIDATION_RESULT: ${{ needs.required-validation.result }}
-          RUN_FULL: ${{ needs.changes.outputs.run_full }}
-        run: |
-          if [ "$CHANGES_RESULT" != "success" ]; then
-            echo "Path detection job did not succeed: $CHANGES_RESULT"
-            exit 1
-          fi
-          if [ "$VALIDATION_RESULT" = "success" ]; then
-            echo "Full validation passed."
-            exit 0
-          fi
-          if [ "$VALIDATION_RESULT" = "skipped" ] && [ "$RUN_FULL" != "true" ]; then
-            echo "Docs-only change: full validation legitimately skipped."
-            exit 0
-          fi
-          echo "Required validation result: $VALIDATION_RESULT"
-          exit 1
+          CONFORMANCE_REQUIRED: ${{ needs.changes.outputs.conformance }}
+          CONFORMANCE_RESULT: ${{ needs.provider-conformance.result }}
+          MACOS_REQUIRED: ${{ needs.changes.outputs.macos }}
+          MACOS_RESULT: ${{ needs.macos-host.result }}
+          MLX_REQUIRED: ${{ needs.changes.outputs.mlx }}
+          MLX_RESULT: ${{ needs.mlx-validation.result }}
+          OPENSPEC_REQUIRED: ${{ needs.changes.outputs.portable == 'true' || needs.changes.outputs.conformance == 'true' }}
+          OPENSPEC_RESULT: ${{ needs.openspec-validation.result }}
+          PACKAGING_REQUIRED: ${{ needs.changes.outputs.packaging }}
+          PACKAGING_RESULT: ${{ needs.packaging-validation.result }}
+          PORTABLE_REQUIRED: ${{ needs.changes.outputs.portable }}
+          PORTABLE_RESULT: ${{ needs.linux-portable.result }}
+        run: scripts/ci/evaluate-required-validation.sh
