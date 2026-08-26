@@ -11,11 +11,12 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   captures an owner/start-time snapshot at launch, and the `*_owned_*` helpers
   refuse to signal a PID whose snapshot no longer matches.
 
-  Custody refusal has two distinct reasons. `:identity_mismatch` means the PID is
-  live but belongs to something else — the security-relevant case.
-  `:identity_unavailable` means no snapshot was captured, or the target has
-  already exited, which is the ordinary outcome of a shutdown race. Both refuse
-  to signal; only the former is logged as a warning.
+  Custody refusal has two distinct reasons and neither one signals.
+  `:identity_mismatch` means the PID is live but belongs to something else — the
+  security-relevant case, logged as a warning. `:identity_unavailable` covers
+  both a missing launch snapshot, warned because it leaves an owned child
+  unsignallable, and a target that has already exited, the ordinary outcome of a
+  shutdown race, logged at debug.
   """
 
   require Logger

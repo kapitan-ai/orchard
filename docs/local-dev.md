@@ -982,9 +982,12 @@ The script starts `bin/dev-node-agent` in the foreground, loads the synthetic
 bundle over gRPC, records the exact worker PID and socket path, starts an
 unrelated control child, sends `SIGTERM` to the node agent, and then asserts that
 the node agent exited within its bound, the exact worker PID is dead, the worker
-socket is gone, and the control child survived. It prints a single `PASS`/`FAIL`
-summary and removes its temporary state; record the result in the pull request or
-issue rather than committing evidence files.
+socket is gone, and the control child survived. It also asserts that its own
+`EXIT` cleanup refuses to signal a recorded PID whose launch identity no longer
+matches, so a stale worker, BEAM, or control PID cannot kill an unrelated
+process. It prints a single `PASS`/`FAIL` summary and removes its temporary
+state; record the result in the pull request or issue rather than committing
+evidence files.
 
 ## Apple Silicon MLX Smoke Tests
 
