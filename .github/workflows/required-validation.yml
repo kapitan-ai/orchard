@@ -22,6 +22,10 @@ env:
   PGDATABASE_TEST: orchard_test
 
 jobs:
+  # Lane selection lives in job-level `if:` conditions, never in workflow-level
+  # `paths-ignore`: a workflow skipped by path filtering leaves its required
+  # checks stuck in "Pending" and blocks merging (see GitHub docs, "Handling
+  # skipped but required checks").
   changes:
     name: Classify required validation
     runs-on: ubuntu-latest
@@ -245,6 +249,8 @@ jobs:
 
       - name: Provision deterministic Postgres
         run: |
+          # macOS runners have no Docker service containers, so this lane
+          # provisions its own Postgres instead of using `services:`.
           brew install postgresql@16
           echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
 
@@ -316,6 +322,9 @@ jobs:
           OPENSPEC_TELEMETRY: "0"
         run: mise exec -- npm run openspec -- validate --all --strict --no-interactive
 
+  # This job name is the required status check in branch protection. Renaming it
+  # silently drops the gate, so keep the name and add new lanes to `needs`
+  # plus the evaluator inputs instead.
   required-validation-gate:
     name: Required Orchard validation gate
     needs:

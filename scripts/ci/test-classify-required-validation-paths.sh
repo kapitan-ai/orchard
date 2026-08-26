@@ -93,6 +93,13 @@ assert_case workflow \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   .github/workflows/required-validation.yml
 
+assert_case unclassified-new-surface \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  Dockerfile
+assert_case unclassified-path-overrides-docs-only \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  docs/local-dev.md Dockerfile
+
 assert_rejects empty-diff ''
 assert_rejects blank-line-only-diff $'\n\n'
 
