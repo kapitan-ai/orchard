@@ -6,7 +6,9 @@ Validation selection SHALL follow owned dependency edges and contract fan-out ra
 The repository SHALL own an executable classifier that emits independent portable, provider-neutral conformance, macOS host, MLX provider, and packaging decisions from changed paths.
 Changes to shared contracts, proto source, root configuration, toolchain, release composition, normative product contracts, accepted OpenSpec contracts, or the required workflow SHALL trigger every consuming lane needed to prove compatibility.
 Documentation-only optimization MUST NOT classify a normative `SPEC.md` or OpenSpec contract change as ordinary prose that skips applicable validation.
+First-party umbrella application source that the packaged release composes MUST select the packaging lane.
 Unknown paths MUST select every lane rather than risk missing a dependency edge.
+An empty changed-path set MUST fail classification rather than emit an all-inapplicable decision.
 
 #### Scenario: Worker protocol changes
 
@@ -16,9 +18,21 @@ Unknown paths MUST select every lane rather than risk missing a dependency edge.
 
 #### Scenario: Controller-only portable change
 
-- **WHEN** a change modifies only portable Controller behavior
+- **WHEN** a change modifies only portable Controller source
+- **THEN** the Linux portable, provider-neutral conformance, and packaging lanes run because the packaged release builds that source
+- **AND** unrelated macOS host and MLX provider lanes are explicitly inapplicable
+
+#### Scenario: Portable application test-only change
+
+- **WHEN** a change modifies only portable first-party application test source
 - **THEN** the Linux portable and provider-neutral conformance lanes run
 - **AND** unrelated macOS host, MLX provider, and packaging lanes are explicitly inapplicable
+
+#### Scenario: Changed paths cannot be resolved
+
+- **WHEN** classification receives no changed paths
+- **THEN** classification fails
+- **AND** the required aggregate gate fails instead of reporting that every lane was legitimately inapplicable
 
 #### Scenario: Ordinary documentation changes
 

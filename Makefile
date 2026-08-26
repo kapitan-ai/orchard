@@ -55,6 +55,12 @@ macos-native-helpers:
 macos-native-test-helpers:
 	scripts/build-macos-native-helpers.sh --output _build/test/lib/orchard_cli/priv --include-test-helper
 
+ifeq ($(shell uname -s),Darwin)
+MACOS_TEST_HELPER_PREREQ := macos-native-test-helpers
+else
+MACOS_TEST_HELPER_PREREQ :=
+endif
+
 format:
 	mise exec -- mix format
 
@@ -67,10 +73,10 @@ credo:
 dialyzer:
 	mise exec -- mix dialyzer
 
-test: macos-native-test-helpers
+test: $(MACOS_TEST_HELPER_PREREQ)
 	mise exec -- mix test
 
-cover: macos-native-test-helpers
+cover: $(MACOS_TEST_HELPER_PREREQ)
 	mise exec -- mix test --cover
 
 check-elixir: format compile credo dialyzer test cover
