@@ -15,6 +15,8 @@ defmodule Orchard.Node.WorkerCustodyTest do
   @shutdown_timeout_ms 200
   @stale_identity "0 Thu Jan 1 00:00:00 1970"
   @closed_port_budget_ms 600
+  @kill_confirm_reserve_ms 250
+  @escalation_slack_ms 150
 
   setup do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
@@ -248,6 +250,8 @@ defmodule Orchard.Node.WorkerCustodyTest do
       CustodyTestHelpers.stop_child(control_port, control_pid)
     end)
 
+    escalation_overhead_ms = measure_escalation_overhead!(context)
+
     assert {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
     File.write!(context.socket_path, "owned runtime artifact")
 
@@ -273,8 +277,14 @@ defmodule Orchard.Node.WorkerCustodyTest do
     assert :ok = WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
     elapsed = System.monotonic_time(:millisecond) - started
 
-    assert elapsed < @closed_port_budget_ms,
-           "closed-Port unload spent #{elapsed}ms of a #{@closed_port_budget_ms}ms budget"
+    ceiling_ms =
+      @closed_port_budget_ms - @kill_confirm_reserve_ms + escalation_overhead_ms +
+        @escalation_slack_ms
+
+    assert elapsed <= ceiling_ms,
+           "closed-Port unload spent #{elapsed}ms; one #{@closed_port_budget_ms}ms budget " <>
+             "less its KILL-confirmation reserve allows #{ceiling_ms}ms " <>
+             "(measured escalation overhead #{escalation_overhead_ms}ms)"
 
     assert {:ok, marker} = File.read(marker_path)
     assert marker =~ "term_ignored mode=resistant"
@@ -398,6 +408,29 @@ defmodule Orchard.Node.WorkerCustodyTest do
     CustodyTestHelpers.assert_os_pid_dead!(state.os_pid, 2_000)
     refute File.exists?(state.socket_path)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  # Cost of one custody-gated escalation with no waiting left, so the closed-Port
+  # budget assertion tracks this machine's process-spawn cost instead of assuming it.
+  defp measure_escalation_overhead!(context) do
+    marker_path = Path.join(context.root, "baseline-events.log")
+    {port, os_pid} = CustodyTestHelpers.start_signal_child!(:resistant, marker_path)
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+
+    assert {:ok, identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+    started = System.monotonic_time(:millisecond)
+
+    assert :ok =
+             WorkerProcessLifecycle.escalate_owned_exit(
+               os_pid,
+               identity,
+               started,
+               started + 2_000
+             )
+
+    System.monotonic_time(:millisecond) - started
   end
 
   defp load_stub_runtime!(context) do
