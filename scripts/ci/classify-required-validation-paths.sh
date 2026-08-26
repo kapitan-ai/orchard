@@ -16,6 +16,13 @@ enable_all() {
   packaging=true
 }
 
+enable_macos_consumers() {
+  portable=true
+  conformance=true
+  macos=true
+  packaging=true
+}
+
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
 
@@ -32,7 +39,11 @@ while IFS= read -r path; do
       macos=true
       packaging=true
       ;;
+    apps/orchard_cli/lib/orchard_cli/lifecycle_native.ex|apps/orchard_cli/lib/orchard_cli/lifecycle_system.ex|apps/orchard_cli/lib/orchard_cli/secret_tty.ex|apps/orchard_cli/lib/orchard_cli/commands/console.ex|apps/orchard_cli/lib/orchard_cli/commands/node_agent_stop.ex|apps/orchard_cli/test/orchard_cli/lifecycle_native_test.exs|apps/orchard_cli/test/orchard_cli/commands/console_pty_test.exs|apps/orchard_node_agent/lib/orchard/node/beam_peer_grant_store.ex|apps/orchard_node_agent/test/orchard/node/beam_peer_grant_store_test.exs)
+      enable_macos_consumers
+      ;;
     native/orchard_worker_mlx/*)
+      portable=true
       conformance=true
       macos=true
       mlx=true
