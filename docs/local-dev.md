@@ -935,15 +935,24 @@ The tracer and its supporting flows are validated by
 
 ## Testing
 
+`make test` and `make cover` stage the retained macOS native helpers into
+`_build/test/lib/orchard_cli/priv` before running Mix, because ordinary portable
+`mix compile` no longer emits them. Invoke `mix test` directly only after
+`make macos-native-test-helpers`.
+
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)
-mise exec -- mix test
+make test
 
 # If another worktree already owns the default test node-agent port
-ORCHARD_TEST_NODE_AGENT_PORT=50171 mise exec -- mix test
+ORCHARD_TEST_NODE_AGENT_PORT=50171 make test
 
 # With coverage
-mise exec -- mix test --cover
+make cover
+
+# Direct Mix invocation, once the macOS test helpers are staged
+make macos-native-test-helpers
+mise exec -- mix test apps/orchard_cli/test/orchard_cli/lifecycle_native_test.exs
 
 # Strict checks
 mise exec -- mix credo --strict

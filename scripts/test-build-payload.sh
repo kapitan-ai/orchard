@@ -15,9 +15,30 @@ unset ORCHARD_BUILD_CHANNEL
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchard-build-payload.XXXXXX")"
+PRIV_DIR="$REPO_ROOT/_build/prod/lib/orchard_cli/priv"
+PRIV_STASH="$(mktemp -d "${TMPDIR:-/tmp}/orchard-build-payload-priv.XXXXXX")"
+PRIV_STASHED=false
+PRIV_CREATED=false
+
+# The builder writes real helpers into the repo build tree, so this test takes
+# custody of that directory and hands the developer's copy back untouched.
+restore_priv() {
+    if [[ "$PRIV_STASHED" == "true" ]]; then
+        rm -rf "$PRIV_DIR"
+        mv "$PRIV_STASH/priv" "$PRIV_DIR"
+        PRIV_STASHED=false
+        PRIV_CREATED=false
+    elif [[ "$PRIV_CREATED" == "true" ]]; then
+        rm -rf "$PRIV_DIR"
+        PRIV_CREATED=false
+    fi
+}
+
 cleanup() {
+    restore_priv
     rm -rf \
         "$TMP_ROOT" \
+        "$PRIV_STASH" \
         "$REPO_ROOT/native/orchard_tokenizer/.venv-pkg" \
         "$REPO_ROOT/native/orchard_worker_mlx/.venv-pkg" \
         "$REPO_ROOT/_build/prod/rel/orchard_controller" \
@@ -127,6 +148,12 @@ exit 0
 BIN
   chmod +x "\$root/_build/prod/rel/\$release/bin/\$release"
   : > "\$root/_build/prod/rel/\$release/erts-16.4/bin/beam.smp"
+  if { [ "\$release" = "orchard_cli" ] || [ "\$release" = "orchard_controller" ]; } &&
+    [ -d "\$root/_build/prod/lib/orchard_cli/priv" ]; then
+    app_root="\$root/_build/prod/rel/\$release/lib/orchard_cli-$FAKE_VERSION"
+    mkdir -p "\$app_root"
+    cp -R "\$root/_build/prod/lib/orchard_cli/priv" "\$app_root/priv"
+  fi
   exit 0
 fi
 echo "unexpected mix invocation: \$*" >&2
@@ -168,6 +195,17 @@ SH
 done
 
 chmod +x "$TOOLS/git" "$TOOLS/uv" "$TOOLS/mix"
+
+if [[ -e "$PRIV_DIR" ]]; then
+    mv "$PRIV_DIR" "$PRIV_STASH/priv"
+    PRIV_STASHED=true
+fi
+mkdir -p "$PRIV_DIR"
+PRIV_CREATED=true
+
+# Seed only the stale test-only helper: the production helpers must come from
+# the builder invocation under test, never from a previous run's leftovers.
+: > "$PRIV_DIR/orchard-secret-tty-test"
 
 BUILD_OUT="$TMP_ROOT/build.out"
 if ! PATH="$TOOLS:$PATH" "$REPO_ROOT/scripts/build-payload.sh" "$OUT_DIR" \
@@ -216,6 +254,36 @@ for staged_command in orchardctl orchard-controller orchard-node-agent orchard-m
         "$PAYLOAD_ROOT/share/bin/$staged_command" ||
         fail "staged command differs from packaging/payload/bin/$staged_command"
 done
+
+for helper in orchard-secret-tty orchard-lifecycle-helper; do
+    helper_path="$(find "$PAYLOAD_ROOT/releases/orchard_cli/lib" \
+        -path "*/priv/$helper" -type f -print -quit 2>/dev/null || true)"
+    test -n "$helper_path" || fail "missing staged macOS native helper: $helper"
+    test -x "$helper_path" || fail "staged macOS native helper is not executable: $helper"
+done
+
+if find "$PAYLOAD_ROOT" -name 'orchard-secret-tty-test' -print -quit | grep -q .; then
+    fail 'payload staged the test-only terminal helper'
+fi
+
+# Darwin helper sources build into binaries outside the payload; neither the
+# helper sources nor any make recipe may reach the staged tree.
+for helper_source in orchard_secret_tty.c orchard_lifecycle_helper.c; do
+    if find "$PAYLOAD_ROOT" -name "$helper_source" -print -quit | grep -q .; then
+        fail "payload staged a Darwin native helper source: $helper_source"
+    fi
+done
+
+# Scoped to the staged releases so the sweep cannot trip over C sources that
+# legitimately ship inside the staged Python environments under native/.
+# Residual harness limitation: release trees here come from the fake mix stub,
+# so this sweep guards the contract rather than exercising a real release.
+# scripts/test-payload-orchardctl-console-pty.sh stages a genuine release.
+staged_source="$(find "$PAYLOAD_ROOT/releases" -type f \
+    \( -name '*.c' -o -name 'Makefile' \) -print -quit 2>/dev/null || true)"
+if [[ -n "$staged_source" ]]; then
+    fail "staged release tree contains native build inputs: $staged_source"
+fi
 
 # Managed Postgres has no LaunchDaemon until Managed Database Mode ships.
 if [[ -e "$PAYLOAD_ROOT/share/launchd/com.orchard.postgres.plist" ]]; then

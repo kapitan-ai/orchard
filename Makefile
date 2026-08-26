@@ -1,4 +1,4 @@
-.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version format compile credo dialyzer test cover check-elixir
+.PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec validate-product-version macos-native-helpers macos-native-test-helpers format compile credo dialyzer test cover check-elixir
 
 MIX_BOOTSTRAP_ERL_AFLAGS = -ssl protocol_version \"['tlsv1.2']\"
 
@@ -11,8 +11,11 @@ help:
 	  '  make dev-node-agent Run source-dev node-agent host' \
 	  '  make openspec       Run pinned OpenSpec validation' \
 	  '  make validate-product-version Validate Product Version consistency' \
+	  '  make macos-native-helpers Build macOS helpers for source development' \
+	  '  make macos-native-test-helpers Build macOS helpers for Mix tests' \
 	  '  make format         Run Elixir formatter' \
 	  '  make test           Run default test suite' \
+	  '  make cover          Run default test suite with coverage' \
 	  '  make check-elixir   Run full Elixir quality workflow'
 
 setup: setup-elixir setup-native setup-openspec
@@ -46,6 +49,12 @@ openspec:
 validate-product-version:
 	mise exec -- elixir scripts/validate-product-version.exs
 
+macos-native-helpers:
+	scripts/build-macos-native-helpers.sh --output _build/dev/lib/orchard_cli/priv
+
+macos-native-test-helpers:
+	scripts/build-macos-native-helpers.sh --output _build/test/lib/orchard_cli/priv --include-test-helper
+
 format:
 	mise exec -- mix format
 
@@ -58,10 +67,10 @@ credo:
 dialyzer:
 	mise exec -- mix dialyzer
 
-test:
+test: macos-native-test-helpers
 	mise exec -- mix test
 
-cover:
+cover: macos-native-test-helpers
 	mise exec -- mix test --cover
 
 check-elixir: format compile credo dialyzer test cover

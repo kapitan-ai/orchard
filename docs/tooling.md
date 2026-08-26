@@ -13,7 +13,8 @@ shell-specific runtime versions when working in this repo.
 The documented complete development and validation workflow currently runs on the supported Apple Silicon macOS platform profile.
 The accepted Linux Controller profile is a Milestone 8 target and does not yet have a supported bootstrap, packaging, or validation lane.
 Portable tools such as mise, Erlang, Elixir, Node.js, npm, and Postgres remain part of that target.
-Apple's C toolchain is a build prerequisite of the current macOS platform profile development workflow, because compiling `apps/orchard_cli` builds a native helper; see "Required Toolchain" below.
+Ordinary portable Orchard control-plane core compilation no longer invokes `xcrun` or builds Orchard's own Darwin helpers; Apple's C toolchain is a build prerequisite for explicit macOS host-artifact builds and validation.
+Dependency compilation on the current macOS profile still requires a working host C compiler for third-party NIFs such as `argon2_elixir`.
 Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
 
 The target validation design moves broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance to Linux.
@@ -54,10 +55,14 @@ The mise environment also sets:
 `uv` remains the package and virtualenv manager for `native/**`. `mise` owns
 the Python interpreter version that `uv` is allowed to use.
 
-For the current macOS validation workflow, Apple's C toolchain is also required and is outside mise, the same way the Swift and signing tools are.
-Compiling `apps/orchard_cli` builds the `orchard-secret-tty` terminal helper from `apps/orchard_cli/c_src` through `elixir_make`, so `mix compile`, `mix test`, and package builds need the host Xcode Command Line Tools for `xcrun clang`.
-Install them with `xcode-select --install` if `xcrun clang --version` fails.
-This native helper dependency is a documented portability migration input and must not be interpreted as part of the accepted portable CLI contract.
+For macOS host-artifact validation, Apple's C toolchain is required outside mise, the same way the Swift and signing tools are.
+Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling third-party NIF dependencies such as `argon2_elixir` still needs a working host C compiler.
+Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
+The `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically.
+Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
+The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
+Payload assembly invokes the same builder before producing the packaged CLI release.
+Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun clang --version` fails.
 
 ## Standard Commands
 
@@ -102,9 +107,24 @@ mise exec -- mix format
 mise exec -- mix compile --warnings-as-errors
 mise exec -- mix credo --strict
 mise exec -- mix dialyzer
-mise exec -- mix test
-mise exec -- mix test --cover
+make test
+make cover
 ```
+
+The last two steps use the Make wrappers because they stage the retained macOS
+test helpers before Mix runs. Substitute `mise exec -- mix test` and
+`mise exec -- mix test --cover` only after `make macos-native-test-helpers`.
+
+Portable-boundary and macOS native-helper proofs:
+
+```bash
+scripts/test-portable-core-compilation.sh
+scripts/test-build-macos-native-helpers.sh
+```
+
+The first forces a first-party umbrella recompile behind an `xcrun` tripwire and rejects any newly emitted or changed Orchard Darwin helper artifact.
+The second exercises the explicit helper builder and proves a production-only build excludes the test-only terminal helper.
+Run both when changing umbrella compile configuration, the retained helper sources, or the helper builder.
 
 Native validation:
 

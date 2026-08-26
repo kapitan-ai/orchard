@@ -97,6 +97,9 @@ jobs:
       - name: Install Elixir dependencies
         run: make setup-elixir
 
+      - name: Prove portable compilation excludes Darwin helpers
+        run: scripts/test-portable-core-compilation.sh
+
       - name: Bootstrap native environments from lockfiles
         run: |
           mise exec -- uv sync --locked --directory native/orchard_tokenizer
@@ -136,6 +139,12 @@ jobs:
 
       - name: Run Dialyzer
         run: mise exec -- mix dialyzer
+
+      - name: Test explicit macOS native-helper build
+        run: scripts/test-build-macos-native-helpers.sh
+
+      - name: Build macOS native helpers for Mix tests
+        run: make macos-native-test-helpers
 
       - name: Run tests
         run: mise exec -- mix test
