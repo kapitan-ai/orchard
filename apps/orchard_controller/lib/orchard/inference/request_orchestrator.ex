@@ -15,6 +15,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   alias Orchard.Inference.{
     AdmissionPolicy,
+    AttemptRetryClassifier,
     CacheAffinity,
     CanonicalRequestSerializer,
     ChatError,
@@ -33,6 +34,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Requests.{
     CapturePolicy,
     Idempotency,
+    InferenceAttemptFailure,
     InferenceAttemptResult,
     Request,
     RequestServer,
@@ -662,7 +664,44 @@ defmodule Orchard.Inference.RequestOrchestrator do
         end
 
       {:error, reason} ->
-        {:error, reason, step_context}
+        outcome = failed_dispatch_outcome(schedule)
+        {:error, reason, Map.put(step_context, :attempt_outcome, outcome)}
+    end
+  end
+
+  defp failed_dispatch_outcome(schedule) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    attrs = %{
+      attempt_outcome: :failed,
+      node_id: trusted_node_id(schedule),
+      accepted: false,
+      events: [],
+      failure:
+        InferenceAttemptFailure.normalize(%{category: :controller, code: :orchestration_error}),
+      execution_resolution: :unresolved,
+      capacity_release_outcome: :unresolved,
+      started_at: now,
+      ended_at: now,
+      first_token_at: nil,
+      output_committed: false,
+      output_commitment_kind: nil,
+      delivery_state: :pending,
+      delivered_event_count: 0,
+      runtime_retryable: nil
+    }
+
+    {:ok, outcome} = AttemptOutcome.new(attrs)
+    outcome
+  end
+
+  defp trusted_node_id(schedule) do
+    case Map.get(schedule, :node_id) do
+      node_id when is_binary(node_id) ->
+        if match?({:ok, _uuid}, Ecto.UUID.cast(node_id)), do: node_id, else: nil
+
+      _node_id ->
+        nil
     end
   end
 
@@ -1353,7 +1392,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
     case terminal_persister.(
            db_request,
            terminal_attrs,
-           post_observation_terminal_steps(canonical, events, terminal_attrs, step_context)
+           post_observation_terminal_steps(
+             db_request,
+             canonical,
+             events,
+             terminal_attrs,
+             step_context
+           )
          ) do
       {:ok, _updated} ->
         advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
@@ -1379,7 +1424,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     case terminal_persister.(
            db_request,
            terminal_attrs,
-           failure_terminal_steps(terminal_attrs, step_context)
+           failure_terminal_steps(db_request, terminal_attrs, step_context)
          ) do
       {:ok, _request} ->
         advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
@@ -1504,15 +1549,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp post_observation_terminal_steps(canonical, events, terminal_attrs, step_context) do
+  defp post_observation_terminal_steps(
+         db_request,
+         canonical,
+         events,
+         terminal_attrs,
+         step_context
+       ) do
     build_tool_call_proposed_steps(canonical, events, step_context) ++
-      [terminal_inference_turn_step(events, terminal_attrs, step_context)]
+      [terminal_inference_turn_step(db_request, events, terminal_attrs, step_context)]
   end
 
-  defp failure_terminal_steps(_terminal_attrs, nil), do: []
+  defp failure_terminal_steps(_db_request, _terminal_attrs, nil), do: []
 
-  defp failure_terminal_steps(terminal_attrs, step_context) do
-    [terminal_inference_turn_step([], terminal_attrs, step_context)]
+  defp failure_terminal_steps(db_request, terminal_attrs, step_context) do
+    [terminal_inference_turn_step(db_request, [], terminal_attrs, step_context)]
   end
 
   defp inference_turn_started_step(step_context) do
@@ -1530,7 +1581,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     }
   end
 
-  defp terminal_inference_turn_step(events, terminal_attrs, step_context) do
+  defp terminal_inference_turn_step(db_request, events, terminal_attrs, step_context) do
     event_type = RequestStepEvent.terminal_step_event_type!(terminal_attrs.state)
 
     %{
@@ -1543,6 +1594,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       boundary: "post_observation",
       result:
         terminal_step_result(
+          db_request,
           events,
           terminal_attrs,
           Map.get(step_context, :attempt_outcome),
@@ -1600,13 +1652,14 @@ defmodule Orchard.Inference.RequestOrchestrator do
     }
   end
 
-  defp terminal_step_result(events, terminal_attrs, nil, _event_type, _attempt) do
+  defp terminal_step_result(_db_request, events, terminal_attrs, nil, _event_type, _attempt) do
     events
     |> legacy_terminal_step_result(terminal_attrs)
     |> maybe_put_result("error_code", Map.get(terminal_attrs, :error_code))
   end
 
   defp terminal_step_result(
+         db_request,
          events,
          terminal_attrs,
          %AttemptOutcome{} = outcome,
@@ -1615,7 +1668,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
        ) do
     result =
       outcome
-      |> attempt_result_fields()
+      |> attempt_result_fields(db_request, attempt)
       |> Map.merge(legacy_terminal_step_result(events, terminal_attrs))
 
     {:ok, normalized} = InferenceAttemptResult.new(event_type, attempt, result)
@@ -1631,7 +1684,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     |> maybe_put_result("http_status", Map.get(terminal_attrs, :http_status))
   end
 
-  defp attempt_result_fields(%AttemptOutcome{} = outcome) do
+  defp attempt_result_fields(%AttemptOutcome{} = outcome, db_request, attempt) do
     base = %{
       "attempt_outcome" => Atom.to_string(outcome.attempt_outcome),
       "started_at" => outcome.started_at,
@@ -1649,34 +1702,47 @@ defmodule Orchard.Inference.RequestOrchestrator do
       commitment_kind_string(outcome.output_commitment_kind)
     )
     |> maybe_put_result("node_id", outcome.node_id)
-    |> put_attempt_failure(outcome)
+    |> put_attempt_failure(outcome, db_request, attempt)
   end
 
-  defp put_attempt_failure(result, %AttemptOutcome{attempt_outcome: :completed}), do: result
+  defp put_attempt_failure(
+         result,
+         %AttemptOutcome{attempt_outcome: :completed},
+         _db_request,
+         _attempt
+       ),
+       do: result
 
-  defp put_attempt_failure(result, %AttemptOutcome{failure: failure} = outcome) do
+  defp put_attempt_failure(
+         result,
+         %AttemptOutcome{failure: failure} = outcome,
+         db_request,
+         attempt
+       ) do
+    retry_decision =
+      %{
+        attempt: attempt,
+        output_committed: outcome.output_committed,
+        budget_remaining?:
+          RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) > 0,
+        cancelled?: outcome.attempt_outcome == :cancelled,
+        failure_class: Map.fetch!(failure, "failure_class"),
+        failure_code: Map.fetch!(failure, "failure_code"),
+        runtime_retryable: outcome.runtime_retryable,
+        alternate_available?: false
+      }
+      |> AttemptRetryClassifier.new()
+      |> AttemptRetryClassifier.decide()
+      |> Atom.to_string()
+
     result
     |> Map.merge(failure)
-    |> Map.put("retry_decision", attempt_retry_decision(outcome))
+    |> maybe_put_result("runtime_retryable", outcome.runtime_retryable)
+    |> Map.put("retry_decision", retry_decision)
   end
 
   defp commitment_kind_string(nil), do: nil
   defp commitment_kind_string(kind), do: Atom.to_string(kind)
-
-  defp attempt_retry_decision(%AttemptOutcome{output_committed: true}), do: "output_committed"
-  defp attempt_retry_decision(%AttemptOutcome{attempt_outcome: :cancelled}), do: "cancelled"
-
-  defp attempt_retry_decision(%AttemptOutcome{
-         failure: %{"failure_class" => "identity_unresolved"}
-       }),
-       do: "identity_unresolved"
-
-  defp attempt_retry_decision(%AttemptOutcome{
-         failure: %{"failure_class" => "occupancy_unresolved"}
-       }),
-       do: "occupancy_unresolved"
-
-  defp attempt_retry_decision(%AttemptOutcome{}), do: "not_retryable"
 
   defp terminal_finish_reason(events) do
     case Enum.find(events, &(InferenceEvent.kind(&1) == :completed)) do

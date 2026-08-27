@@ -1773,6 +1773,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert :failed in states
     assert state_before?(states, :validated, :failed)
     refute :scheduled in states
+    assert Requests.list_request_step_events(request) == []
   end
 
   test "execute/3 terminalizes a validated request when dispatch crashes", %{bundle: bundle} do
@@ -1797,11 +1798,18 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert :scheduled in states
     assert :dispatching in states
 
-    assert [started_step, failed_step] = Requests.list_request_step_events(request)
+    step_events = Requests.list_request_step_events(request)
+
+    assert [started_step, failed_step] = step_events
     assert started_step.event_type == "request_step.started"
     assert failed_step.event_type == "request_step.failed"
-    assert failed_step.result["error_code"] == "orchestration_error"
-    refute Map.has_key?(failed_step.result, "attempt_outcome")
+    assert failed_step.result["attempt_outcome"] == "failed"
+    assert failed_step.result["failure_class"] == "controller_failure"
+    assert failed_step.result["failure_code"] == "orchestration_error"
+    assert failed_step.result["retry_decision"] == "not_retryable"
+    assert failed_step.result["accepted"] == false
+    assert failed_step.result["output_committed"] == false
+    refute Enum.any?(step_events, &(&1.attempt == 2))
   end
 
   test "queue admission enabled records immediate grant metadata before dispatch", %{
@@ -2148,7 +2156,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end)
   end
 
-  test "post-grant pre-schedule caller disconnect releases grant and never dispatches", %{
+  test "SPEC.md §7.2.7 post-grant pre-schedule caller disconnect has no retry decision", %{
     bundle: bundle
   } do
     put_queue_admission_config(enabled: true)
@@ -2170,6 +2178,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.error_code == "request_caller_disconnect"
     assert_queue_metadata(request, "interrupted_before_dispatch", granted?: true)
     refute :scheduled in request_event_states(request)
+    assert Requests.list_request_step_events(request) == []
 
     assert {:ok, next_grant} = hold_queue_lane(canonical)
     assert :ok = QueueManager.release(next_grant)
@@ -2590,6 +2599,35 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Enum.any?(Requests.list_request_step_events(request), &(&1.attempt == 2))
   end
 
+  test "SPEC.md §7.2.7 delivery-time caller cancellation persists a cancelled retry decision", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+    put_runtime_events([InferenceEvent.completed(:finish_reason_stop, nil)])
+
+    model = create_active_model!(bundle, "request-orchestrator-delivery-cancel")
+    canonical = canonical_request("request-orchestrator-delivery-cancel", stream?: true)
+    handler = fn _request_id, _event -> :cancel end
+
+    assert {:error, {:dispatch_failed, :request_caller_disconnect}} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.http_status == 499
+    assert request.error_code == "request_caller_disconnect"
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["attempt_outcome"] == "cancelled"
+    refute terminal_result["output_committed"]
+    assert terminal_result["failure_class"] == "cancellation"
+    assert terminal_result["failure_code"] == "request_caller_disconnect"
+    assert terminal_result["retry_decision"] == "cancelled"
+    refute Map.has_key?(terminal_result, "runtime_retryable")
+  end
+
   test "execute/3 persists first_token_at for successful requests with output", %{bundle: bundle} do
     model = create_active_model!(bundle, "request-orchestrator-success")
     canonical = canonical_request("request-orchestrator-success", stream?: false)
@@ -2610,7 +2648,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_unreachable_scheduler_config()
 
     model = create_active_model!(bundle, "request-orchestrator-start-failure")
-    canonical = canonical_request("request-orchestrator-start-failure", stream?: false)
+
+    canonical =
+      canonical_request("request-orchestrator-start-failure",
+        stream?: false,
+        admission: %{timeout_ms: 120_000}
+      )
 
     assert {:error,
             {:model_load_failed,
@@ -2637,7 +2680,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_result["execution_resolution"] == "not_started"
     assert terminal_result["failure_class"] == "model_load_failure"
     assert terminal_result["failure_code"] == "runtime_unavailable"
-    assert terminal_result["retry_decision"] == "not_retryable"
+    assert terminal_result["retry_decision"] == "no_alternative_node"
     refute Enum.any?(step_events, &(&1.attempt == 2))
   end
 
@@ -2774,6 +2817,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.state == :failed
     assert request.http_status == 504
     assert request.error_code == "load_timeout"
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["failure_class"] == "model_load_failure"
+    assert terminal_result["failure_code"] == "load_timeout"
+    assert terminal_result["retry_decision"] == "no_alternative_node"
+    refute Map.has_key?(terminal_result, "runtime_retryable")
   end
 
   test "execute/3 aborts before dispatch side effects when request_step.started persistence fails",
@@ -2853,6 +2904,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       assert terminal_step.result["attempt_outcome"] == Atom.to_string(expected_state)
       assert terminal_step.result["failure_class"] == failure_class
       assert terminal_step.result["failure_code"] == failure_code
+      assert terminal_step.result["runtime_retryable"] == false
+
+      expected_retry_decision =
+        if expected_state == :cancelled, do: "cancelled", else: "not_retryable"
+
+      assert terminal_step.result["retry_decision"] == expected_retry_decision
       assert terminal_step.result["error_message"] == request.error_message
       assert terminal_step.result["http_status"] == request.http_status
     end)
