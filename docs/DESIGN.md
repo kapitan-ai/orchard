@@ -521,7 +521,9 @@ When raw decision debug JSON is shown, apply the same key-based unsafe-key deny-
 
 The Organization detail surface manages Portal Users through three stacked Console cards.
 The first card is the Portal User invite form, with an email field and a navy primary **Invite** action.
-The second card is a transient sibling that appears only after an invite is issued or reissued and shows the Portal Invite URL once with its expiry and a navy **Copy invite** action.
+Submitting **Invite** creates the Portal User in `invited` status without issuing a token or showing a Portal Invite URL.
+The operator then uses **Copy invite** on that invited Portal User to issue the first token.
+The second card is a transient sibling that appears only after the first or a later **Copy invite** action succeeds and shows the Portal Invite URL once with a navy **Copy invite URL** action.
 The show-once card is not a flash, modal, or recoverable secret store.
 Disabling the Portal User the shown URL belongs to dismisses the card, because disablement invalidates that invite.
 Disabling any other Portal User leaves the card in place.
