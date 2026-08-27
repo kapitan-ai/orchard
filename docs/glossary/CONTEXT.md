@@ -297,8 +297,9 @@ A Portal User is not a Public Inference principal, Operator, Service Account, or
 _Avoid_: User account, Portal Developer, Tenant Admin, Owner Contact, Service Account
 
 **Portal Invite**:
-A single-use expiring token the operator can recopy from Console while the Portal User is invited.
-Each copy replaces the unused token.
+A single-use expiring token the operator issues and reissues with Copy invite from Console while the Portal User is invited.
+Creating the Portal User issues no token and shows no invite URL.
+Each Copy invite replaces any previous unused token.
 Orchard stores only the hash.
 _Avoid_: Persisted plaintext invite URL, magic link email, SMTP invite, Owner Contact
 

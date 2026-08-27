@@ -8,7 +8,7 @@
 
 - [x] 2.1 Reconcile `docs/DESIGN.md` with the Create then Copy Console sequence.
 - [x] 2.2 Reconcile `docs/operator-journey.md` with first issuance, later reissue, and deliberate separate key revocation.
-- [x] 2.3 Leave `SPEC.md`, the glossary, ADR 0020, and the archived 2026-08-14 package unchanged.
+- [x] 2.3 Leave `SPEC.md`, ADR 0020, and the archived 2026-08-14 package unchanged, and align the glossary Portal Invite entry with Create then Copy.
 - [x] 2.4 Record active-user recovery, audit vocabulary, and neutral key-attribution labels only as owner-gated non-goals.
 - [x] 2.5 Keep issue #270 independent.
 

@@ -1,11 +1,13 @@
 defmodule OrchardConsole.TenantDetailLiveTest do
   use Orchard.ConnCase, async: false
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
+  alias Orchard.Governance.PortalInviteToken
   alias Orchard.Repo
 
   @moduletag :live
@@ -397,6 +399,38 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "Invited"
       assert {:ok, [user]} = Governance.list_portal_users(tenant)
       assert user.email == "dev@example.com"
+    end
+
+    test "invite form creates an invited Portal User without issuing a token or URL", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      created =
+        view
+        |> form("#tenant-portal-invite-form", portal_invite: %{email: "dev@example.com"})
+        |> render_submit()
+
+      assert created =~ "Invited"
+      refute created =~ "tenant-portal-invite-url-card"
+      refute created =~ "/portal/#{tenant.slug}/invites/"
+      assert {:ok, [user]} = Governance.list_portal_users(tenant)
+      assert user.status == "invited"
+
+      assert Repo.aggregate(
+               from(row in PortalInviteToken, where: row.portal_user_id == ^user.id),
+               :count
+             ) == 0
+
+      issued = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+      assert issued =~ "tenant-portal-invite-url-card"
+      assert issued =~ "/portal/#{tenant.slug}/invites/orchard_pi_"
+
+      assert Repo.aggregate(
+               from(row in PortalInviteToken, where: row.portal_user_id == ^user.id),
+               :count
+             ) == 1
     end
 
     test "Copy invite reissues a transient URL and disable leaves owned keys alone", %{

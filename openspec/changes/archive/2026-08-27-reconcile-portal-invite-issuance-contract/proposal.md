@@ -25,7 +25,7 @@ The accepted capability also needs to name deletion as the invalidation mechanis
 - Product behavior impact: none.
 - Implementation impact: none.
 - Persistence impact: none.
-- Documentation impact: the accepted capability spec, Console design guidance, and operator journey use one Create then Copy contract.
+- Documentation impact: the accepted capability spec, Console design guidance, operator journey, and glossary Portal Invite entry use one Create then Copy contract.
 - Historical impact: the archived 2026-08-14 Developer Portal package remains unchanged as a record of earlier intent, while current accepted truth remains in `SPEC.md`, accepted specs, and this reconciliation.
 
 ## Non-Goals
