@@ -265,7 +265,10 @@ Native PKG tools and scripts are not part of the current supported toolchain or
 release gates.
 Any future native package requires a fresh accepted OpenSpec proposal and a
 separate implementing pull request before its tools become required.
-- model bundles and local MLX smoke-test data
+- model bundles and local MLX smoke-test data. `scripts/prepare-mlx-smoke-bundle.sh`
+  writes the pinned Qwen3 bundle under `~/.cache/orchard/mlx-smoke-bundles/` and
+  is not a mise, CI, or `make test` gate. Prove the helper without a HuggingFace
+  download via `scripts/test-prepare-mlx-smoke-bundle.sh`.
 - operator signing identities, keychains, and notarization credentials
 
 Document these in the relevant runbook or packaging guide rather than adding
