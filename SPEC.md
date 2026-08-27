@@ -1679,7 +1679,7 @@ Model-load retry eligibility SHALL be based only on the normalized `ModelLoadFai
 Unknown classes, unknown codes, deterministic failures, `retryable: false`, terminal-conformance failures, persistence failures, event-handler failures, orchestration failures, unresolved occupancy, and unresolved identity SHALL NOT retry.
 Retry-capable failures are limited to resolved pre-acceptance Node or transport unavailability, the closed transient model-load categories, resolved worker or Node loss before acceptance, and an accepted pre-commit transient failure whose drain proves termination.
 
-The attempt 1 decline precedence SHALL be `output_committed`, `budget_exhausted`, `cancelled`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
+The attempt 1 decline precedence SHALL be `output_committed`, `cancelled`, `budget_exhausted`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
 An unsuccessful attempt 2 SHALL record `retry_exhausted` unless caller cancellation or disconnect caused its terminal outcome, in which case it SHALL record `cancelled`; no attempt 2 outcome SHALL trigger a third attempt.
 If no different eligible Node exists, Orchard SHALL start no second attempt, SHALL NOT re-enter the queue or extend a budget, and SHALL preserve attempt 1's stable public failure while recording `no_alternative_node` as internal evidence.
 Attempt 1's stable failure classification SHALL be fixed in its typed outcome, and any breaker-eligible failure effect SHALL be durable before the fresh alternate scheduler decision.

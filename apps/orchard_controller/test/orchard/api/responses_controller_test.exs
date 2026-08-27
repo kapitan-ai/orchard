@@ -703,7 +703,8 @@ defmodule Orchard.API.ResponsesControllerTest do
     cases = [
       {:model_busy, 503, "server_error", "model_busy"},
       {:queue_full, 429, "rate_limit_error", "queue_full"},
-      {:queue_timeout, 504, "server_error", "queue_timeout"}
+      {:queue_timeout, 504, "server_error", "queue_timeout"},
+      {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
     ]
 
     for {reason, status, type, code} <- cases do
@@ -1134,7 +1135,7 @@ defmodule Orchard.API.ResponsesControllerTest do
            ]
   end
 
-  test "streaming interrupted partial tool calls remain incomplete in the terminal payload" do
+  test "SPEC.md §7.2.7 streaming caller disconnect uses cancellation with incomplete output" do
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(true), %{}},
       events: [
@@ -1163,6 +1164,13 @@ defmodule Orchard.API.ResponsesControllerTest do
     terminal = List.last(events)
     assert terminal.type == "response.failed"
     assert terminal.data["response"]["status"] == "incomplete"
+
+    assert terminal.data["response"]["error"] == %{
+             "type" => "server_error",
+             "code" => "request_cancelled",
+             "message" => "Request was cancelled",
+             "param" => nil
+           }
 
     assert terminal.data["response"]["output"] == [
              %{

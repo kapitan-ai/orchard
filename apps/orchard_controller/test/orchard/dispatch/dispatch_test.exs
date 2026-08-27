@@ -111,6 +111,13 @@ defmodule Orchard.Dispatch.DispatchTest.TerminalContractClient do
     ]
   end
 
+  defp events_for("req-dispatch-runtime-retryable") do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.failed("runtime_unavailable", "runtime unavailable", true)
+    ]
+  end
+
   defp events_for("req-dispatch-post-terminal-error") do
     [
       InferenceEvent.accepted(0),
@@ -164,6 +171,29 @@ defmodule Orchard.Dispatch.DispatchTest.NeverAcceptClient do
     do: {:ok, make_ref()}
 
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts), do: :ok
+end
+
+defmodule Orchard.Dispatch.DispatchTest.HoldAfterAcceptClient do
+  @moduledoc false
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: DisconnectRaisingClient
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.get(opts, :owner, self())
+    ref = make_ref()
+    send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
 defmodule Orchard.Dispatch.DispatchTest.DeadlineCapturingClient do
@@ -383,8 +413,12 @@ defmodule Orchard.Dispatch.DispatchTest do
       execute = execute_request("req-dispatch-e2e")
       model_load = model_load_request(bundle)
 
-      assert %AttemptOutcome{attempt_outcome: :completed, accepted: true, events: events} =
-               RequestDispatcher.dispatch(schedule, execute, model_load)
+      assert %AttemptOutcome{
+               attempt_outcome: :completed,
+               accepted: true,
+               runtime_retryable: nil,
+               events: events
+             } = RequestDispatcher.dispatch(schedule, execute, model_load)
 
       assert length(events) >= 3
       assert InferenceEvent.kind(hd(events)) == :accepted
@@ -397,6 +431,28 @@ defmodule Orchard.Dispatch.DispatchTest do
         |> Enum.map(& &1.event.delta)
 
       assert deltas == ["orchard ", "ready"]
+    end
+
+    test "SPEC.md §5.8 copies runtime retryability into unsuccessful attempt evidence", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-runtime-retryable"
+
+      assert %AttemptOutcome{
+               attempt_outcome: :failed,
+               accepted: true,
+               runtime_retryable: true,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "runtime_unavailable"
+               }
+             } =
+               RequestDispatcher.dispatch(
+                 build_schedule(request_id),
+                 execute_request(request_id),
+                 model_load_request(bundle),
+                 client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+               )
     end
 
     test "SPEC 7.5.5: accepted stream without a terminal becomes one failed terminal", %{
@@ -804,14 +860,15 @@ defmodule Orchard.Dispatch.DispatchTest do
                )
     end
 
-    test "caller disconnect triggers cancellation", %{bundle: bundle} do
+    test "SPEC.md §7.2.7 caller disconnect after acceptance produces cancellation evidence", %{
+      bundle: bundle
+    } do
       schedule = build_schedule("req-dispatch-disconnect")
       execute = execute_request("req-dispatch-disconnect")
       model_load = model_load_request(bundle)
 
       test_pid = self()
 
-      # Spawn a caller process that we'll kill to simulate disconnect
       caller =
         spawn(fn ->
           receive do
@@ -819,7 +876,6 @@ defmodule Orchard.Dispatch.DispatchTest do
           end
         end)
 
-      # Dispatch in a separate process, monitoring the caller
       dispatch_pid =
         spawn(fn ->
           on_accepted = fn _request_id, _event ->
@@ -830,29 +886,58 @@ defmodule Orchard.Dispatch.DispatchTest do
           result =
             RequestDispatcher.dispatch(schedule, execute, model_load,
               caller: caller,
-              on_accepted: on_accepted
+              on_accepted: on_accepted,
+              client_impl: Orchard.Dispatch.DispatchTest.HoldAfterAcceptClient
             )
 
           send(test_pid, {:dispatch_result, result})
         end)
 
       assert_receive :dispatch_accepted, 10_000
-
-      # Kill the caller to simulate disconnect
       Process.exit(caller, :kill)
 
-      # Dispatch should complete with events
-      assert_receive {:dispatch_result, %AttemptOutcome{events: events}}, 10_000
+      assert_receive {:dispatch_result,
+                      %AttemptOutcome{
+                        attempt_outcome: :cancelled,
+                        runtime_retryable: false,
+                        failure: %{
+                          "failure_class" => "cancellation",
+                          "failure_code" => "request_caller_disconnect"
+                        },
+                        events: events
+                      }},
+                     10_000
+
       assert events != []
       terminal = List.last(events)
       assert InferenceEvent.terminal?(terminal)
 
-      # Exactly one terminal event in the stream (Task 4 guarantee)
       terminal_count = Enum.count(events, &InferenceEvent.terminal?/1)
       assert terminal_count == 1, "expected exactly 1 terminal, got #{terminal_count}"
 
-      # Clean up
       if Process.alive?(dispatch_pid), do: Process.exit(dispatch_pid, :kill)
+    end
+
+    test "SPEC.md §7.2.7 dispatch-capacity caller-down is cancellation", %{bundle: bundle} do
+      caller = spawn(fn -> Process.sleep(:infinity) end)
+      Process.exit(caller, :kill)
+      refute Process.alive?(caller)
+
+      request_id = "req-dispatch-capacity-caller-down"
+
+      assert %AttemptOutcome{
+               attempt_outcome: :cancelled,
+               failure: %{
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               }
+             } =
+               RequestDispatcher.dispatch(
+                 build_schedule(request_id),
+                 execute_request(request_id),
+                 model_load_request(bundle),
+                 caller: caller
+               )
     end
 
     test "dispatch returns sanitized error when node connection fails" do

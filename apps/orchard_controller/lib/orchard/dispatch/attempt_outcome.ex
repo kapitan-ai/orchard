@@ -23,7 +23,7 @@ defmodule Orchard.Dispatch.AttemptOutcome do
     :delivery_state,
     :delivered_event_count
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [runtime_retryable: nil]
 
   @attempt_outcomes [:completed, :failed, :cancelled, :timed_out, :interrupted]
   @execution_resolutions [:not_started, :terminated, :unresolved]
@@ -55,7 +55,8 @@ defmodule Orchard.Dispatch.AttemptOutcome do
           output_committed: boolean(),
           output_commitment_kind: commitment_kind() | nil,
           delivery_state: delivery_state(),
-          delivered_event_count: non_neg_integer()
+          delivered_event_count: non_neg_integer(),
+          runtime_retryable: boolean() | nil
         }
 
   @spec new(map()) :: {:ok, t()} | {:error, :invalid_attempt_outcome}
@@ -79,6 +80,7 @@ defmodule Orchard.Dispatch.AttemptOutcome do
       ) do
     if valid_identity?(attempt_outcome, node_id, accepted, events) and
          valid_result?(attempt_outcome, failure, execution_resolution, capacity_release_outcome) and
+         valid_runtime_retryable?(attempt_outcome, Map.get(attrs, :runtime_retryable)) and
          ordered_timestamps?(started_at, ended_at, first_token_at) and
          valid_commitment?(accepted, output_committed, output_commitment_kind, first_token_at) and
          valid_delivery?(
@@ -214,6 +216,14 @@ defmodule Orchard.Dispatch.AttemptOutcome do
   end
 
   defp valid_failure?(_attempt_outcome, _failure), do: false
+
+  defp valid_runtime_retryable?(:completed, nil), do: true
+
+  defp valid_runtime_retryable?(attempt_outcome, runtime_retryable)
+       when attempt_outcome != :completed,
+       do: is_boolean(runtime_retryable) or is_nil(runtime_retryable)
+
+  defp valid_runtime_retryable?(_attempt_outcome, _runtime_retryable), do: false
 
   defp valid_commitment?(true, true, :text, %DateTime{}), do: true
 

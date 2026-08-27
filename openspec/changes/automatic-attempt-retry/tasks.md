@@ -38,11 +38,11 @@
 
 ## 5. Closed failure taxonomy and cancellation
 
-- [ ] 5.1 Normalize every failure row in `docs/decisions/0019-one-request-bounded-alternate-node-retry.md` into a closed retry classification
-- [ ] 5.2 Require both runtime `retryable: true` and an allowlisted transient code
-- [ ] 5.3 Keep terminal-conformance, persistence, handler, serializer, orchestration, unknown, and deterministic failures non-retryable
-- [ ] 5.4 Apply the attempt 1 decline precedence and the attempt 2 `retry_exhausted` rule with caller cancellation taking precedence
-- [ ] 5.5 Unify caller disconnect as cancelled across all dispatch phases and both public APIs
+- [x] 5.1 Normalize every failure row in `docs/decisions/0019-one-request-bounded-alternate-node-retry.md` into a closed retry classification
+- [x] 5.2 Require both runtime `retryable: true` and an allowlisted transient code
+- [x] 5.3 Keep terminal-conformance, persistence, handler, serializer, orchestration, unknown, and deterministic failures non-retryable
+- [x] 5.4 Apply the attempt 1 decline precedence and the attempt 2 `retry_exhausted` rule with caller cancellation taking precedence
+- [x] 5.5 Unify caller disconnect as cancelled across all dispatch phases and both public APIs
 
 ## 6. Hard prior-Node exclusion
 

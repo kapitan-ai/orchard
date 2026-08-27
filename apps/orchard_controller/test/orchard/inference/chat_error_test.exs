@@ -130,17 +130,17 @@ defmodule Orchard.Inference.ChatErrorTest do
     error = ChatError.from_failed_event(event)
 
     assert ChatError.api_mapping(error) == %{
-             status: :internal_server_error,
+             status: 499,
              type: "server_error",
-             code: "internal_error",
-             message: "Inference failed: caller exited",
+             code: "request_cancelled",
+             message: "Request was cancelled",
              param: nil
            }
 
     assert ChatError.sse_mapping(error) == %{
              type: "server_error",
-             code: "request_caller_disconnect",
-             message: "caller exited",
+             code: "request_cancelled",
+             message: "Request was cancelled",
              param: nil
            }
 
@@ -201,12 +201,46 @@ defmodule Orchard.Inference.ChatErrorTest do
              param: nil
            }
 
+    assert ChatError.sse_mapping(error) == %{
+             type: "server_error",
+             code: "request_cancelled",
+             message: "request was cancelled upstream",
+             param: nil
+           }
+
     assert ChatError.terminal_attrs(error) == %{
              state: :cancelled,
              http_status: 500,
              error_code: "request_cancelled",
              error_message: "request was cancelled upstream"
            }
+  end
+
+  test "SPEC.md §7.2.7 execute-time caller disconnect aliases share the cancellation mapping" do
+    reasons = [
+      :request_caller_disconnect,
+      {:dispatch_failed, :caller_disconnect},
+      {:dispatch_failed, :request_caller_disconnect}
+    ]
+
+    for reason <- reasons do
+      error = ChatError.from_execute_error(reason)
+
+      assert ChatError.api_mapping(error) == %{
+               status: 499,
+               type: "server_error",
+               code: "request_cancelled",
+               message: "Request was cancelled",
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: "request_cancelled",
+               message: "Request was cancelled",
+               param: nil
+             }
+    end
   end
 
   test "cluster_busy execute errors preserve scheduler saturation mapping" do

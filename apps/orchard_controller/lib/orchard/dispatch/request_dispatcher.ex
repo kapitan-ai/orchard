@@ -335,7 +335,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       output_committed: delivery_output_committed?(delivery),
       output_commitment_kind: delivery_commitment_kind(delivery),
       delivery_state: delivery_state(delivery),
-      delivered_event_count: delivered_event_count(delivery)
+      delivered_event_count: delivered_event_count(delivery),
+      runtime_retryable: attempt_runtime_retryable(terminal)
     }
 
     {:ok, outcome} = AttemptOutcome.new(attrs)
@@ -405,6 +406,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp delivered_event_count(nil), do: 0
 
+  defp attempt_runtime_retryable(%InferenceEvent{
+         event: %InferenceEvent.Failed{retryable: retryable}
+       }),
+       do: retryable
+
+  defp attempt_runtime_retryable(_terminal), do: nil
+
   defp attempt_outcome(_result, %InferenceEvent{event: %InferenceEvent.Completed{}}),
     do: :completed
 
@@ -428,7 +436,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        do: :timed_out
 
   defp attempt_outcome({:error, {:dispatch_failed, reason}}, _terminal)
-       when reason in [:caller_disconnect, :request_caller_disconnect],
+       when reason in [
+              :caller_disconnect,
+              :request_caller_disconnect,
+              :dispatch_capacity_caller_down
+            ],
        do: :cancelled
 
   defp attempt_outcome(_result, _terminal), do: :failed
@@ -472,8 +484,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp failure_source(reason) when reason in [:dispatch_timeout, :request_timeout],
     do: %{category: :deadline, code: :request_timeout}
 
-  defp failure_source(reason) when reason in [:caller_disconnect, :request_caller_disconnect],
-    do: %{category: :cancellation, code: :request_caller_disconnect}
+  defp failure_source(reason)
+       when reason in [
+              :caller_disconnect,
+              :request_caller_disconnect,
+              :dispatch_capacity_caller_down
+            ],
+       do: %{category: :cancellation, code: :request_caller_disconnect}
 
   defp failure_source(code)
        when code in ["deadline_exceeded", "request_timeout", "request_timed_out", "timed_out"],

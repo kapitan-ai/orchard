@@ -76,8 +76,8 @@ Terminal-conformance, persistence, handler, serializer, and orchestration failur
 Attempt 1 decline precedence is:
 
 1. `output_committed`
-2. `budget_exhausted`
-3. `cancelled`
+2. `cancelled`
+3. `budget_exhausted`
 4. `not_retryable`
 5. `identity_unresolved`
 6. `occupancy_unresolved`
