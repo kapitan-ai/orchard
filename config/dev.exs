@@ -594,21 +594,31 @@ config :orchard_controller, :console,
   username: nil,
   password: nil
 
+verify_mode? = System.get_env("ORCHARD_VERIFY_MODE") == "1"
+
 config :orchard_controller, Orchard.API.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT") || "4000")],
   check_origin: false,
   cors_origins: [],
-  code_reloader: true,
+  code_reloader: not verify_mode?,
   debug_errors: true,
   secret_key_base: String.duplicate("dev-secret-", 8),
-  watchers: [
-    esbuild: {Esbuild, :install_and_run, [:orchard, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:orchard, ~w(--watch)]}
-  ],
-  live_reload: [
-    patterns: [
-      ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
-      ~r"lib/orchard/console/.*(ex)$",
-      ~r"lib/orchard/console/.*(heex)$"
-    ]
-  ]
+  watchers:
+    if(verify_mode?,
+      do: [],
+      else: [
+        esbuild: {Esbuild, :install_and_run, [:orchard, ~w(--sourcemap=inline --watch)]},
+        tailwind: {Tailwind, :install_and_run, [:orchard, ~w(--watch)]}
+      ]
+    ),
+  live_reload:
+    if(verify_mode?,
+      do: [],
+      else: [
+        patterns: [
+          ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
+          ~r"lib/orchard/console/.*(ex)$",
+          ~r"lib/orchard/console/.*(heex)$"
+        ]
+      ]
+    )
