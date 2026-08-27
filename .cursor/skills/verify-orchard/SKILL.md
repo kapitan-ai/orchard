@@ -117,6 +117,7 @@ ${ORCHARD_VERIFY_STATE_DIR}/artifacts/overview/
 ```
 
 **API / inference proofs** (optional, heavier setup):
+- Prepare a local Orchard bundle with `scripts/prepare-mlx-smoke-bundle.sh` and export `ORCHARD_MLX_SMOKE_MODEL_PATH` from `--print-path`. That helper is not a CI gate.
 - Import/activate a model and grant tenant access per `docs/local-dev.md` before Playground or `/v1/chat/completions` checks.
 - Never commit API tokens; pass via env (`ORCHARD_API_KEY`) only for the run.
 

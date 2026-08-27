@@ -1005,7 +1005,9 @@ separate from `mix test`, which uses the fake/stub runtime and requires no GPU.
 ### Prerequisites
 
 - Apple Silicon Mac (M1/M2/M3/M4)
-- A local Orchard model bundle directory (not downloaded by the script)
+- A local Orchard model bundle directory. `scripts/smoke-mlx.sh` does not
+  download weights; use [Preparing a Smoke Test Bundle from HuggingFace](#preparing-a-smoke-test-bundle-from-huggingface)
+  (`scripts/prepare-mlx-smoke-bundle.sh`) for the pinned Qwen3 snapshot.
 - `make setup` already run in the repo, or the equivalent manual setup commands
   from [Quick Start](#quick-start)
 
@@ -1093,87 +1095,45 @@ mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs -
 
 The smoke tests require an **Orchard bundle** — a directory containing a
 `manifest.json` plus model files. HuggingFace MLX models don't include this
-manifest, so you must create a wrapper bundle.
+manifest, so you must wrap a snapshot.
 
-### Quick Setup
+`scripts/prepare-mlx-smoke-bundle.sh` is opt-in local convenience. It is not a
+CI, `make test`, or product validation gate. It pins
+`mlx-community/Qwen3-0.6B-4bit` at revision
+`73e3e38d981303bc594367cd910ea6eb48349da8`, copies files with `cp -L` into
+`~/.cache/orchard/mlx-smoke-bundles/qwen3-0.6b-4bit` (outside the repo), and
+writes `manifest.json` through `Orchard.Models.BundleBuilder`.
 
 ```bash
-# 1. Download a small MLX model (if not already cached).
-# This helper is convenience-only, not a build or validation gate.
-mise exec -- uvx --from huggingface-hub \
-  huggingface-cli download mlx-community/Llama-3.2-1B-Instruct-4bit
-
-# 2. Create a bundle directory with copies of the model files
-BUNDLE_DIR="$HOME/Models/orchard-smoke/llama-3.2-1b-instruct-4bit"
-mkdir -p "$BUNDLE_DIR"
-
-HF_SNAPSHOT="$HOME/.cache/huggingface/hub/models--mlx-community--Llama-3.2-1B-Instruct-4bit/snapshots/<commit-hash>"
-for f in config.json model.safetensors model.safetensors.index.json \
-         tokenizer.json tokenizer_config.json special_tokens_map.json \
-         chat_template.jinja; do
-  if [ -e "$HF_SNAPSHOT/$f" ]; then
-    cp -L "$HF_SNAPSHOT/$f" "$BUNDLE_DIR/$f"
-  fi
-done
-
-# If the snapshot has no chat_template.jinja, import can still derive one from
-# tokenizer_config.json when that file embeds chat_template. Chat-capable
-# bundles must resolve a template at import time.
-
-# 3. Create manifest.json
-# If chat_template.jinja is present, models import can auto-fill path + sha256.
-# You may still declare chat_template explicitly for pinned smoke fixtures.
-# If the file is absent, import derives from tokenizer_config.json when possible.
-if [ -f "$BUNDLE_DIR/chat_template.jinja" ]; then
-  CHAT_TEMPLATE_SHA=$(shasum -a 256 "$BUNDLE_DIR/chat_template.jinja" | awk '{print $1}')
-  CHAT_TEMPLATE_JSON=$(cat <<EOF
-  "chat_template": {
-    "path": "chat_template.jinja",
-    "sha256": "$CHAT_TEMPLATE_SHA"
-  },
-EOF
-)
-else
-  CHAT_TEMPLATE_JSON=""
-fi
-
-cat > "$BUNDLE_DIR/manifest.json" << EOF
-{
-  "model_id": "mlx-community/Llama-3.2-1B-Instruct-4bit",
-  "version": "08231374eeacb049a0eade7922910865b8fce912",
-  "format": "mlx",
-  "artifact_layout": "directory",
-  "entrypoint": ".",
-  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "size_bytes": 696254464,
-  "max_context_tokens": 131072,
-  "capabilities": ["chat"],
-  "tokenizer": {
-    "kind": "huggingface_tokenizer_json",
-    "path": "tokenizer.json"
-  },
-$CHAT_TEMPLATE_JSON
-  "runtime_requirements": {
-    "adapter": "mlx_lm",
-    "min_agent_capability": "mlx"
-  }
-}
-EOF
+mise exec -- ./scripts/prepare-mlx-smoke-bundle.sh
+eval "$(mise exec -- ./scripts/prepare-mlx-smoke-bundle.sh --print-path)"
+mise exec -- ./scripts/smoke-mlx.sh
 ```
 
-**Important:** Use `cp -L` (follow symlinks), not `ln -s`. The worker's
-bundle-path validation rejects symlinks that resolve outside the bundle root.
+Use `--from-snapshot DIR` on an air-gapped host that already has the pinned
+snapshot. Use `--force` to rebuild. The script refuses destinations inside the
+repository.
+
+`scripts/test-prepare-mlx-smoke-bundle.sh` checks help text, in-repo refusal, and
+`--from-snapshot` with a fake snapshot. It does not download weights and is not
+a CI gate.
+
+Qwen3 can enter thinking mode and spend a short smoke's token budget on
+`<think>` blocks. Use `enable_thinking=false` / non-thinking on Chat Completions.
+
+The worker still rejects symlinks that resolve outside the bundle root. Do not
+replace the script's `cp -L` copy with `ln -s`.
 
 ### Manifest Field Reference
 
 | Field | Value | Notes |
 |-------|-------|-------|
-| `model_id` | HF repo name | e.g. `mlx-community/Llama-3.2-1B-Instruct-4bit` |
+| `model_id` | HF repo name | e.g. `mlx-community/Qwen3-0.6B-4bit` |
 | `version` | HF commit hash | Pin for reproducibility |
 | `format` | `"mlx"` | Required |
 | `artifact_layout` | `"directory"` | Required |
 | `entrypoint` | `"."` | Path to model weights dir (`.` = bundle root) |
-| `sha256` | 64-char hex | Placeholder OK for smoke; real value for production |
+| `sha256` | 64-char hex | `BundleBuilder` computes this from bundle files |
 | `max_context_tokens` | From `config.json` `max_position_embeddings` | |
 | `tokenizer.kind` | `"huggingface_tokenizer_json"` | Required |
 | `tokenizer.path` | `"tokenizer.json"` | Relative to bundle root |
@@ -1186,8 +1146,8 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 
 | Model | Size | Load Time (M3 Max) | Notes |
 |-------|------|--------------------|-------|
-| `mlx-community/Llama-3.2-1B-Instruct-4bit` | ~664 MB | ~1.5s | Fastest, recommended for CI |
-| `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~5s | Good mid-size validation |
+| `mlx-community/Qwen3-0.6B-4bit` | ~335 MB | Fast | Default for `prepare-mlx-smoke-bundle.sh`. Not a CI gate. |
+| `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~5s | Optional mid-size validation |
 
 ## Legacy product-license compatibility
 
@@ -1246,12 +1206,12 @@ diagnostics.
 
 | Failure | Likely Cause | Where to Look |
 |---------|-------------|---------------|
-| `Bundle is missing manifest.json` | Bundle not prepared correctly | Re-run bundle prep steps above |
+| `Bundle is missing manifest.json` | Bundle not prepared correctly | Re-run `scripts/prepare-mlx-smoke-bundle.sh` |
 | `bundle_path_escape` | Symlinks in bundle dir | Use `cp -L` instead of `ln -s` |
 | `model_load_failed` | MLX/mlx-lm version mismatch | Check `mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx` ran, inspect worker logs |
 | `unsupported_runtime_adapter` | Wrong `adapter` in manifest | Must be `"mlx_lm"` |
 | `tokenizer_missing` | Wrong `tokenizer.path` | Check `tokenizer.json` exists in bundle |
-| Python smoke timeout | Model too large for hardware | Use smaller model (1B recommended) |
+| Python smoke timeout | Model too large for hardware | Use the pinned Qwen3 0.6B 4-bit bundle |
 | Elixir smoke failure | Node-agent/worker lifecycle issue | Check worker stdout/stderr |
 | `mlx_backend_unavailable` | MLX extras not installed | Run `mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx` |
 

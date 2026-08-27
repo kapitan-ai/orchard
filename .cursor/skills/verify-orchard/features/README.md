@@ -50,4 +50,4 @@ Each feature file starts with an H1 title and one paragraph describing user-visi
 
 ## Optional (heavy setup)
 
-- Playground chat and `/v1/chat/completions` require an imported model, tenant grants, and API token per `docs/local-dev.md`. Add a feature file when those steps are scripted for verification.
+- Playground chat and `/v1/chat/completions` require an imported model, tenant grants, and API token per `docs/local-dev.md`. Prepare the pinned Qwen3 bundle with `scripts/prepare-mlx-smoke-bundle.sh` and `ORCHARD_MLX_SMOKE_MODEL_PATH`; that script is not a CI gate. Add a feature file when import/grants/token are scripted for verification.
