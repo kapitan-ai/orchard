@@ -86,8 +86,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+run_python() {
+  (cd "$REPO_ROOT" && mise exec -- python - "$@")
+}
+
 inside_repo() {
-  python3 - "$REPO_ROOT" "$1" <<'PY'
+  run_python "$REPO_ROOT" "$1" <<'PY'
 import os
 import sys
 
@@ -123,7 +127,7 @@ refuse_repo_dest "$BUNDLE_DIR"
 
 manifest_matches() {
   local manifest="$1"
-  python3 - "$manifest" "$REPO_ID" "$REVISION" <<'PY'
+  run_python "$manifest" "$REPO_ID" "$REVISION" <<'PY'
 import json
 import sys
 
@@ -139,11 +143,20 @@ raise SystemExit(1)
 PY
 }
 
-print_path() {
-  printf 'export ORCHARD_MLX_SMOKE_MODEL_PATH=%s\n' "$BUNDLE_DIR"
+bundle_ready() {
+  local dir="$1"
+  [ -f "$dir/manifest.json" ] || return 1
+  manifest_matches "$dir/manifest.json" || return 1
+  [ -f "$dir/config.json" ] || return 1
+  [ -f "$dir/tokenizer.json" ] || return 1
+  [ -f "$dir/model.safetensors" ] || [ -f "$dir/model.safetensors.index.json" ] || return 1
 }
 
-if [ "$FORCE" -eq 0 ] && [ -f "$BUNDLE_DIR/manifest.json" ] && manifest_matches "$BUNDLE_DIR/manifest.json"; then
+print_path() {
+  printf 'export ORCHARD_MLX_SMOKE_MODEL_PATH=%q\n' "$BUNDLE_DIR"
+}
+
+if [ "$FORCE" -eq 0 ] && bundle_ready "$BUNDLE_DIR"; then
   print_path
   exit 0
 fi
@@ -172,8 +185,13 @@ SNAPSHOT="$(resolve_snapshot)"
 [ -f "$SNAPSHOT/tokenizer.json" ] || fail "snapshot is missing tokenizer.json: $SNAPSHOT"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/orchard-mlx-smoke-bundle.XXXXXX")"
+PUBLISH=""
+OLD=""
 cleanup() {
   rm -rf "$STAGE"
+  if [ -n "${PUBLISH:-}" ] && [ -d "$PUBLISH" ]; then
+    rm -rf "$PUBLISH"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -195,9 +213,26 @@ shopt -u dotglob nullglob
 [ -f "$STAGE/manifest.json" ] || fail "BundleBuilder did not write manifest.json"
 manifest_matches "$STAGE/manifest.json" || fail "written manifest does not match $REPO_ID @$REVISION"
 
-rm -rf "$BUNDLE_DIR"
-mkdir -p "$BUNDLE_DIR"
-cp -R "$STAGE"/. "$BUNDLE_DIR"/
+PARENT="$(dirname "$BUNDLE_DIR")"
+NAME="$(basename "$BUNDLE_DIR")"
+PUBLISH="$(mktemp -d "$PARENT/${NAME}.publishing.XXXXXX")"
+cp -R "$STAGE"/. "$PUBLISH"/
+if [ -e "$BUNDLE_DIR" ]; then
+  OLD="$(mktemp -d "$PARENT/${NAME}.replaced.XXXXXX")"
+  rm -rf "$OLD"
+  mv "$BUNDLE_DIR" "$OLD"
+fi
+if ! mv "$PUBLISH" "$BUNDLE_DIR"; then
+  if [ -n "$OLD" ] && [ -d "$OLD" ]; then
+    mv "$OLD" "$BUNDLE_DIR" || true
+  fi
+  fail "failed to publish bundle to $BUNDLE_DIR"
+fi
+PUBLISH=""
+if [ -n "${OLD:-}" ]; then
+  rm -rf "$OLD"
+fi
+OLD=""
 
 printf 'Qwen3 thinking mode can consume a short smoke. Use enable_thinking=false / non-thinking on Chat Completions.\n' >&2
 print_path

@@ -10,6 +10,18 @@ fail() {
   exit 1
 }
 
+want_export() {
+  printf 'export ORCHARD_MLX_SMOKE_MODEL_PATH=%q' "$1"
+}
+
+assert_export() {
+  local got="$1"
+  local dest="$2"
+  local want
+  want="$(want_export "$dest")"
+  [ "$got" = "$want" ] || fail "expected $want (got: $got)"
+}
+
 [ -x "$PREPARE" ] || chmod +x "$PREPARE"
 
 help_out="$("$PREPARE" --help)"
@@ -45,13 +57,12 @@ printf 'ignore me\n' > "$SNAPSHOT/README.md"
 out="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$DEST")"
 [ -d "$DEST" ] || fail "destination directory was not created"
 ABS_DEST="$(cd "$DEST" && pwd)"
-printf '%s\n' "$out" | grep -qx "export ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
-  || fail "first run did not print the destination path (got: $out)"
+assert_export "$out" "$ABS_DEST"
 [ -f "$DEST/manifest.json" ] || fail "manifest.json was not written"
 [ -f "$DEST/config.json" ] || fail "config.json was not copied"
 [ ! -f "$DEST/README.md" ] || fail "README.md should not be copied into the bundle"
 
-python3 - "$DEST/manifest.json" <<'PY' || fail "manifest pin mismatch"
+(cd "$REPO_ROOT" && mise exec -- python - "$DEST/manifest.json") <<'PY' || fail "manifest pin mismatch"
 import json
 import sys
 
@@ -64,11 +75,24 @@ assert "chat_template" in manifest
 PY
 
 again="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$DEST")"
-printf '%s\n' "$again" | grep -qx "export ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
-  || fail "idempotent run did not print the destination path (got: $again)"
+assert_export "$again" "$ABS_DEST"
 
 printed="$("$PREPARE" --bundle-dir "$DEST" --print-path)"
-printf '%s\n' "$printed" | grep -qx "export ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
-  || fail "--print-path did not print the prepared destination (got: $printed)"
+assert_export "$printed" "$ABS_DEST"
+
+rm -f "$DEST/model.safetensors"
+if "$PREPARE" --bundle-dir "$DEST" --print-path >/dev/null 2>&1; then
+  fail "--print-path should fail when weights are missing"
+fi
+rebuilt="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$DEST")"
+[ -f "$DEST/model.safetensors" ] || fail "incomplete dest was not rebuilt"
+assert_export "$rebuilt" "$ABS_DEST"
+
+SPACE_DEST="$TMP/bundle dir"
+space_out="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$SPACE_DEST")"
+SPACE_ABS="$(cd "$SPACE_DEST" && pwd)"
+assert_export "$space_out" "$SPACE_ABS"
+eval "$space_out"
+[ "$ORCHARD_MLX_SMOKE_MODEL_PATH" = "$SPACE_ABS" ] || fail "eval of %q export did not set the spaced dest"
 
 printf 'test-prepare-mlx-smoke-bundle: PASS\n'
