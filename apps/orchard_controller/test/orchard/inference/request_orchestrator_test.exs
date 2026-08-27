@@ -909,6 +909,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.Inference.QueueManager
+  alias Orchard.Inference.RequestDeadline
   alias Orchard.Inference.RequestOrchestrator
   alias Orchard.InferenceEvent
   alias Orchard.Node
@@ -2626,6 +2627,41 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_result["failure_code"] == "request_caller_disconnect"
     assert terminal_result["retry_decision"] == "cancelled"
     refute Map.has_key?(terminal_result, "runtime_retryable")
+  end
+
+  test "SPEC.md §§5.8 and 7.2.7 caller cancellation wins when the deadline lapses during delivery",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+    put_runtime_events([InferenceEvent.completed(:finish_reason_stop, nil)])
+
+    model = create_active_model!(bundle, "request-orchestrator-delivery-cancel-deadline")
+
+    canonical =
+      canonical_request("request-orchestrator-delivery-cancel-deadline",
+        stream?: true,
+        admission: %{timeout_ms: 1_000}
+      )
+
+    handler = fn request_id, _event ->
+      request = Requests.get_request_by_public_id(request_id)
+      remaining_ms = RequestDeadline.remaining_ms(request.timeout_at, DateTime.utc_now())
+      Process.sleep(remaining_ms + 1)
+      :cancel
+    end
+
+    assert {:error, {:dispatch_failed, :request_caller_disconnect}} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.http_status == 499
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["attempt_outcome"] == "cancelled"
+    refute terminal_result["output_committed"]
+    assert terminal_result["retry_decision"] == "cancelled"
   end
 
   test "execute/3 persists first_token_at for successful requests with output", %{bundle: bundle} do

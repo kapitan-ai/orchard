@@ -117,7 +117,9 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
              :output_committed
 
     assert decide(Map.merge(eligible, %{budget_remaining?: false, cancelled?: true})) ==
-             :budget_exhausted
+             :cancelled
+
+    assert decide(Map.put(eligible, :budget_remaining?, false)) == :budget_exhausted
 
     assert decide(Map.put(eligible, :cancelled?, true)) == :cancelled
 

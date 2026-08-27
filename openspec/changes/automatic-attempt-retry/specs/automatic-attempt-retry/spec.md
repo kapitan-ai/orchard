@@ -81,7 +81,7 @@ Orchard SHALL permit attempt 2 only when attempt 1 failed before Output Commitme
 An inference Runtime Endpoint `Failed` event MUST carry both `retryable: true` and one of the stable transient codes `node_unavailable`, `node_timeout`, `runtime_unavailable`, `resource_exhausted`, `timeout`, `worker_unavailable`, or `worker_down`.
 A model-load failure MUST qualify only through a normalized category of `acquisition_failed`, `runtime_unavailable`, `resource_exhausted`, or `timeout`; its failure code or message MUST NOT independently authorize retry.
 Unknown, deterministic, terminal-conformance, persistence, handler, serializer, orchestration, occupancy-ambiguous, and identity-ambiguous failures SHALL NOT retry.
-Attempt 1 decline precedence SHALL be `output_committed`, `budget_exhausted`, `cancelled`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
+Attempt 1 decline precedence SHALL be `output_committed`, `cancelled`, `budget_exhausted`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
 This requirement traces to `SPEC.md` §5.8, §5.9, §§12.1-12.4, §12.7, and `docs/decisions/0019-one-request-bounded-alternate-node-retry.md`.
 
 #### Scenario: Runtime assertion is insufficient by itself

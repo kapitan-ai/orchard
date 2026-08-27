@@ -42,8 +42,8 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   )
   @attempt_one_gates [
     :output_committed,
-    :budget_exhausted,
     :cancelled,
+    :budget_exhausted,
     :taxonomy,
     :alternate
   ]
