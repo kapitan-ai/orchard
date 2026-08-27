@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Prove scripts/prepare-mlx-smoke-bundle.sh without a HuggingFace download.
-# Convenience only. Not a CI, make test, or product validation gate.
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Prepare a pinned Orchard MLX smoke bundle outside the repository.
-# Convenience only. Not a CI, make test, or product validation gate.
-
 set -euo pipefail
 
 REPO_ID="mlx-community/Qwen3-0.6B-4bit"

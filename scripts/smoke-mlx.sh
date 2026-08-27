@@ -2,8 +2,6 @@
 # scripts/smoke-mlx.sh — Run Apple Silicon MLX smoke tests (Python + Elixir)
 #
 # Requires ORCHARD_MLX_SMOKE_MODEL_PATH pointing to a local Orchard model bundle.
-# This script does not download weights. Use scripts/prepare-mlx-smoke-bundle.sh
-# for the pinned Qwen3 MLX 4-bit snapshot (opt-in; not a CI gate).
 # Exit 0 on all-pass, non-zero on any failure.
 
 set -euo pipefail
