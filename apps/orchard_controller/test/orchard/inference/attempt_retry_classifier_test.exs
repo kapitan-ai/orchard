@@ -149,11 +149,13 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
     end
 
     assert_raise FunctionClauseError, fn ->
+      # Dynamic dispatch avoids a compile-time type warning for this intentional invalid input.
+      # credo:disable-for-next-line Credo.Check.Refactor.Apply
       apply(AttemptRetryClassifier, :new, [Map.delete(base_facts(), :failure_code)])
     end
 
     assert_raise FunctionClauseError, fn ->
-      apply(AttemptRetryClassifier, :new, [Map.put(base_facts(), :attempt, 3)])
+      AttemptRetryClassifier.new(Map.put(base_facts(), :attempt, 3))
     end
   end
 
