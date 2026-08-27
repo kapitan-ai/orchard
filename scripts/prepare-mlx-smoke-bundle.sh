@@ -143,13 +143,48 @@ raise SystemExit(1)
 PY
 }
 
+bundle_layout_ok() {
+  run_python "$1" <<'PY'
+import json
+import os
+import sys
+
+root = sys.argv[1]
+
+
+def load_json(name):
+    path = os.path.join(root, name)
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise SystemExit(1)
+    with open(path, encoding="utf-8") as handle:
+        json.load(handle)
+
+
+load_json("config.json")
+load_json("tokenizer.json")
+index_path = os.path.join(root, "model.safetensors.index.json")
+weights_path = os.path.join(root, "model.safetensors")
+if os.path.isfile(index_path):
+    with open(index_path, encoding="utf-8") as handle:
+        index = json.load(handle)
+    names = set((index.get("weight_map") or {}).values())
+    if not names:
+        raise SystemExit(1)
+    for name in names:
+        path = os.path.join(root, name)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise SystemExit(1)
+elif not os.path.isfile(weights_path) or os.path.getsize(weights_path) == 0:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 bundle_ready() {
   local dir="$1"
   [ -f "$dir/manifest.json" ] || return 1
   manifest_matches "$dir/manifest.json" || return 1
-  [ -f "$dir/config.json" ] || return 1
-  [ -f "$dir/tokenizer.json" ] || return 1
-  [ -f "$dir/model.safetensors" ] || [ -f "$dir/model.safetensors.index.json" ] || return 1
+  bundle_layout_ok "$dir"
 }
 
 print_path() {
@@ -191,6 +226,9 @@ cleanup() {
   rm -rf "$STAGE"
   if [ -n "${PUBLISH:-}" ] && [ -d "$PUBLISH" ]; then
     rm -rf "$PUBLISH"
+  fi
+  if [ -n "${OLD:-}" ] && [ -d "$OLD" ] && [ ! -e "$BUNDLE_DIR" ]; then
+    mv "$OLD" "$BUNDLE_DIR" || true
   fi
 }
 trap cleanup EXIT INT TERM

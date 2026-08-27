@@ -88,6 +88,19 @@ rebuilt="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$DEST")"
 [ -f "$DEST/model.safetensors" ] || fail "incomplete dest was not rebuilt"
 assert_export "$rebuilt" "$ABS_DEST"
 
+printf 'not-json\n' > "$DEST/config.json"
+if "$PREPARE" --bundle-dir "$DEST" --print-path >/dev/null 2>&1; then
+  fail "--print-path should fail when config.json is not JSON"
+fi
+printf '%s\n' '{"max_position_embeddings": 4096}' > "$DEST/config.json"
+: > "$DEST/model.safetensors"
+if "$PREPARE" --bundle-dir "$DEST" --print-path >/dev/null 2>&1; then
+  fail "--print-path should fail when weights are empty"
+fi
+rebuilt="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$DEST")"
+[ -s "$DEST/model.safetensors" ] || fail "empty weights dest was not rebuilt"
+assert_export "$rebuilt" "$ABS_DEST"
+
 SPACE_DEST="$TMP/bundle dir"
 space_out="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$SPACE_DEST")"
 SPACE_ABS="$(cd "$SPACE_DEST" && pwd)"
