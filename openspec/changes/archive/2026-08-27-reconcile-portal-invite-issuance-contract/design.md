@@ -21,6 +21,13 @@ Portal User disablement deletes every outstanding unused invite row in the same 
 Orchard retains no invite invalidation tombstone, revocation record, or separate invite-state column.
 Redeemed state remains the `redeemed_at` value on the single stored invite row and does not authorize active-user recovery.
 
+### Every Copy Invite Action Ends Standing Sessions
+
+`copy_invite_transaction/4` deletes the Portal User's sessions on every Copy invite action, including the initial issuance.
+The accepted session-termination sentence previously named only invite reissue, which under-named the shipped behavior once the first Copy invite became the initial issuance path.
+The reconciled sentence names initial invite issuance alongside reissue, redemption, and disablement.
+This is a naming correction to already-shipped behavior and requires no product code, migration, or test change.
+
 ### The Canonical Redemption Route Remains The Shipped Route
 
 Invite redemption uses `POST /portal/:organization_slug/invites/:token`.

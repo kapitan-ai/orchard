@@ -87,3 +87,24 @@ This refines `SPEC.md` §7.4a, §8, §10.8, and §10.9.
 - **WHEN** a caller submits an invite for a disabled Portal User, an invalidated invite, an expired invite, a redeemed invite, or an unknown token
 - **THEN** every submission SHALL receive the same generic invalid-invite response contract
 - **AND** Orchard SHALL NOT persist a mutation
+
+### Requirement: Portal Sessions Belong To One Portal User
+
+Every Developer Portal session SHALL belong to one `portal_user_id` and that Portal User's Organization.
+Initial invite issuance, invite reissue, invite redemption, and Portal User disablement SHALL end that Portal User's standing sessions.
+Portal User disablement SHALL invalidate every outstanding invite in the same transaction that changes the user's status and ends the user's sessions.
+Disabling a Portal User SHALL NOT automatically revoke owned API Keys.
+This refines `SPEC.md` §7.4a and §8.
+
+#### Scenario: Disable ends sessions without revoking keys
+
+- **WHEN** an operator disables one Portal User who has a standing session and active owned keys
+- **THEN** only that Portal User's sessions SHALL fail revalidation
+- **AND** other Portal Users' sessions SHALL remain valid
+- **AND** the disabled Portal User's keys SHALL remain valid Bearer credentials until explicitly revoked
+
+#### Scenario: Disable an invited Portal User
+
+- **WHEN** an operator disables an invited Portal User with an outstanding invite
+- **THEN** the Portal User SHALL remain disabled
+- **AND** every outstanding invite for that Portal User SHALL be invalid immediately when disablement commits

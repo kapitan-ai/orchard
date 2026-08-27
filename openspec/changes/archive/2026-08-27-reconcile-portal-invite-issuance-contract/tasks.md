@@ -3,6 +3,7 @@
 - [x] 1.1 Clarify that Portal User creation persists only an invited identity and issues no token or URL.
 - [x] 1.2 Clarify that the first Copy invite action issues the initial token and later actions reissue through the same path.
 - [x] 1.3 Record one-row deletion-based invalidation, no retained invalidation history, invited-only redemption, and the canonical POST route.
+- [x] 1.4 Name initial invite issuance in the session-termination sentence so it matches shipped Copy invite behavior.
 
 ## 2. Durable documentation
 

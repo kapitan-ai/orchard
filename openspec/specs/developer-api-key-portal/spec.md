@@ -137,7 +137,7 @@ This refines `SPEC.md` §7.4a.
 ### Requirement: Portal Sessions Belong To One Portal User
 
 Every Developer Portal session SHALL belong to one `portal_user_id` and that Portal User's Organization.
-Invite reissue, invite redemption, and Portal User disablement SHALL end that Portal User's standing sessions.
+Initial invite issuance, invite reissue, invite redemption, and Portal User disablement SHALL end that Portal User's standing sessions.
 Portal User disablement SHALL invalidate every outstanding invite in the same transaction that changes the user's status and ends the user's sessions.
 Disabling a Portal User SHALL NOT automatically revoke owned API Keys.
 This refines `SPEC.md` §7.4a and §8.
