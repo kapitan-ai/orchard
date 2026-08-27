@@ -208,12 +208,13 @@ It is not a claim about the current build.
 
 ### Target Developer Portal Access
 
-1. The operator opens the Organization in Console and invites a Portal User by email.
-2. Console shows the newly issued Portal Invite URL once, and the operator delivers it to that developer through an out-of-band channel.
-3. While the Portal User remains invited, **Copy invite** reissues the invite with a fresh hashed token and extended expiry, invalidates the previous unused token, and shows the replacement URL once for copying.
-4. The developer redeems the Portal Invite, chooses a password, and signs in to the Organization-scoped Developer Portal.
-5. When access must end, the operator disables that Portal User, which atomically invalidates every outstanding invite, ends only that user's portal sessions, and does not automatically revoke minted API Keys.
-6. The operator reviews that Portal User's portal-minted keys in Console and may revoke selected keys by displayed prefix when key access must also end.
+1. The operator opens the Organization in Console and creates a Portal User in `invited` status by email.
+2. Console shows the invited Portal User without issuing a token or displaying a Portal Invite URL.
+3. The operator selects **Copy invite** to issue the first single-use token, and Console shows the Portal Invite URL once for out-of-band delivery.
+4. While the Portal User remains invited, each later **Copy invite** action deletes the previous unused invite row, issues a fresh hash-only token with an extended expiry, and shows the replacement URL once.
+5. The developer redeems the Portal Invite, chooses a password, and signs in to the Organization-scoped Developer Portal.
+6. When access must end, the operator disables that Portal User, which atomically deletes every outstanding invite, ends only that user's portal sessions, and does not automatically revoke minted API Keys.
+7. The operator separately reviews Organization API Keys in Console and deliberately revokes known keys when key access must also end.
 
 ### Target Controller-Only Journey
 
