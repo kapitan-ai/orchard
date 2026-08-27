@@ -201,6 +201,13 @@ defmodule Orchard.Inference.ChatErrorTest do
              param: nil
            }
 
+    assert ChatError.sse_mapping(error) == %{
+             type: "server_error",
+             code: "request_cancelled",
+             message: "request was cancelled upstream",
+             param: nil
+           }
+
     assert ChatError.terminal_attrs(error) == %{
              state: :cancelled,
              http_status: 500,

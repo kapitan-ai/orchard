@@ -388,6 +388,7 @@ defmodule Orchard.Inference.ChatError do
   @spec sse_mapping(t()) :: sse_mapping()
   @sse_passthrough_kinds [
     :request_timed_out,
+    :request_cancelled,
     :request_interrupted,
     :request_failed
   ]
@@ -399,7 +400,11 @@ defmodule Orchard.Inference.ChatError do
     |> Map.put(:param, nil)
   end
 
-  def sse_mapping(%__MODULE__{kind: :request_cancelled}) do
+  def sse_mapping(%__MODULE__{
+        kind: :request_cancelled,
+        source_code: source_code
+      })
+      when source_code in ["request_client_disconnect", "request_caller_disconnect"] do
     %{
       type: "server_error",
       code: "request_cancelled",
