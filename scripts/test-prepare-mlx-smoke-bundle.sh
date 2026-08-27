@@ -48,7 +48,7 @@ printf 'ignore me\n' > "$SNAPSHOT/README.md"
 out="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$DEST")"
 [ -d "$DEST" ] || fail "destination directory was not created"
 ABS_DEST="$(cd "$DEST" && pwd)"
-printf '%s\n' "$out" | grep -qx "ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
+printf '%s\n' "$out" | grep -qx "export ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
   || fail "first run did not print the destination path (got: $out)"
 [ -f "$DEST/manifest.json" ] || fail "manifest.json was not written"
 [ -f "$DEST/config.json" ] || fail "config.json was not copied"
@@ -67,11 +67,11 @@ assert "chat_template" in manifest
 PY
 
 again="$("$PREPARE" --from-snapshot "$SNAPSHOT" --bundle-dir "$DEST")"
-printf '%s\n' "$again" | grep -qx "ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
+printf '%s\n' "$again" | grep -qx "export ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
   || fail "idempotent run did not print the destination path (got: $again)"
 
 printed="$("$PREPARE" --bundle-dir "$DEST" --print-path)"
-printf '%s\n' "$printed" | grep -qx "ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
+printf '%s\n' "$printed" | grep -qx "export ORCHARD_MLX_SMOKE_MODEL_PATH=$ABS_DEST" \
   || fail "--print-path did not print the prepared destination (got: $printed)"
 
 printf 'test-prepare-mlx-smoke-bundle: PASS\n'

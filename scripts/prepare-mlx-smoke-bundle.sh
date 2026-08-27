@@ -33,7 +33,7 @@ Options:
   --bundle-dir DIR       Destination directory (default: ~/.cache/orchard/mlx-smoke-bundles/qwen3-0.6b-4bit)
   --from-snapshot DIR    Copy from an existing snapshot instead of downloading
   --force                Rebuild even when the pinned manifest already exists
-  --print-path           Print ORCHARD_MLX_SMOKE_MODEL_PATH and exit if the bundle is already prepared
+  --print-path           Print export ORCHARD_MLX_SMOKE_MODEL_PATH=... and exit if the bundle is already prepared
   -h, --help             Show this help
 
 Pinned model: $REPO_ID @$REVISION
@@ -143,7 +143,7 @@ PY
 }
 
 print_path() {
-  printf 'ORCHARD_MLX_SMOKE_MODEL_PATH=%s\n' "$BUNDLE_DIR"
+  printf 'export ORCHARD_MLX_SMOKE_MODEL_PATH=%s\n' "$BUNDLE_DIR"
 }
 
 if [ "$FORCE" -eq 0 ] && [ -f "$BUNDLE_DIR/manifest.json" ] && manifest_matches "$BUNDLE_DIR/manifest.json"; then
