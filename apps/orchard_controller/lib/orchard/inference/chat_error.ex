@@ -36,7 +36,7 @@ defmodule Orchard.Inference.ChatError do
           | :internal
 
   @type mapping :: %{
-          status: atom(),
+          status: atom() | integer(),
           type: String.t(),
           code: String.t() | nil,
           message: String.t(),
@@ -128,6 +128,12 @@ defmodule Orchard.Inference.ChatError do
 
   def from_execute_error({:dispatch_failed, :request_timeout}),
     do: build(:request_timed_out, source_code: "request_timeout")
+
+  def from_execute_error(:request_caller_disconnect),
+    do: build(:request_cancelled, source_code: "request_caller_disconnect")
+
+  def from_execute_error({:dispatch_failed, :caller_disconnect}),
+    do: build(:request_cancelled, source_code: "request_caller_disconnect")
 
   def from_execute_error({:dispatch_failed, :request_caller_disconnect}),
     do: build(:request_cancelled, source_code: "request_caller_disconnect")
@@ -316,15 +322,14 @@ defmodule Orchard.Inference.ChatError do
 
   def api_mapping(%__MODULE__{
         kind: :request_cancelled,
-        source_code: source_code,
-        source_message: message
+        source_code: source_code
       })
       when source_code in ["request_client_disconnect", "request_caller_disconnect"] do
     %{
-      status: :internal_server_error,
+      status: 499,
       type: "server_error",
-      code: "internal_error",
-      message: "Inference failed: #{message}",
+      code: "request_cancelled",
+      message: "Request was cancelled",
       param: nil
     }
   end
@@ -383,7 +388,6 @@ defmodule Orchard.Inference.ChatError do
   @spec sse_mapping(t()) :: sse_mapping()
   @sse_passthrough_kinds [
     :request_timed_out,
-    :request_cancelled,
     :request_interrupted,
     :request_failed
   ]
@@ -393,6 +397,15 @@ defmodule Orchard.Inference.ChatError do
     |> ModelLoadFailure.api_mapping()
     |> Map.delete(:status)
     |> Map.put(:param, nil)
+  end
+
+  def sse_mapping(%__MODULE__{kind: :request_cancelled}) do
+    %{
+      type: "server_error",
+      code: "request_cancelled",
+      message: "Request was cancelled",
+      param: nil
+    }
   end
 
   def sse_mapping(%__MODULE__{kind: :runtime_endpoint_conformance}) do

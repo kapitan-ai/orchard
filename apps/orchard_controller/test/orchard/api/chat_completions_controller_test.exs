@@ -1092,7 +1092,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       cases = [
         {:model_busy, 503, "server_error", "model_busy"},
         {:queue_full, 429, "rate_limit_error", "queue_full"},
-        {:queue_timeout, 504, "server_error", "queue_timeout"}
+        {:queue_timeout, 504, "server_error", "queue_timeout"},
+        {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
       ]
 
       for {reason, status, type, code} <- cases do
@@ -1445,11 +1446,43 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       refute Enum.any?(events, fn {type, _payload} -> type == :done end)
     end
 
+    test "SPEC.md §7.2.7 runtime caller disconnect uses the public cancellation SSE envelope" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.failed("request_caller_disconnect", "caller exited", false)
+        ],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+      assert [{:error, payload}] = Enum.filter(events, fn {type, _payload} -> type == :error end)
+
+      assert payload["error"] == %{
+               "type" => "server_error",
+               "code" => "request_cancelled",
+               "message" => "Request was cancelled",
+               "param" => nil
+             }
+
+      refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+    end
+
     test "SPEC.md §7.2.7 streaming busy and queue execute errors use chat SSE error envelope" do
       cases = [
         {:model_busy, "server_error", "model_busy"},
         {:queue_full, "rate_limit_error", "queue_full"},
-        {:queue_timeout, "server_error", "queue_timeout"}
+        {:queue_timeout, "server_error", "queue_timeout"},
+        {:request_caller_disconnect, "server_error", "request_cancelled"}
       ]
 
       for {reason, type, code} <- cases do
