@@ -17,14 +17,14 @@ From the repo root:
 chmod +x .cursor/skills/verify-orchard/scripts/control-orchard.sh
 export ORCHARD_VERIFY_RUN_ID="orchard-$(date +%Y%m%d%H%M%S)-$$"
 export PATH="$PWD/.cursor/skills/verify-orchard/scripts:$PATH"
-control-orchard bootstrap   # idempotent; repairs missing tmp/dev/node-trust files
+control-orchard bootstrap   # creates missing node-trust; wipe/re-init only with ORCHARD_VERIFY_TRUST_RECOVER=1
 control-orchard launch
 control-orchard meta
 ```
 
 **Ready when:** `GET http://127.0.0.1:${ORCHARD_VERIFY_PORT:-4000}/health/live` returns exactly `{"status":"ok"}`.
 
-Verification launch sets `ORCHARD_VERIFY_MODE=1`, which disables Phoenix code reload and asset watchers in `config/dev.exs` so health probes stay stable. It runs `mix assets.build` before boot.
+Verification launch sets `ORCHARD_VERIFY_MODE=1`, which disables Phoenix code reload and asset watchers in `config/dev.exs` so health probes stay stable. It runs `mix assets.build` before boot. Launch checks the HTTP port is free before bootstrap, so an existing `make dev` is not disrupted by trust recovery.
 
 **Defaults:**
 - HTTP port `4000` (`ORCHARD_VERIFY_PORT` to override)
@@ -134,7 +134,7 @@ If launch failed mid-boot, still run `control-orchard stop` to clear a partial P
 
 | Command | Purpose |
 |---------|---------|
-| `control-orchard bootstrap` | Ensure `tmp/dev/node-trust` exists (orphan DB recovery) |
+| `control-orchard bootstrap` | Ensure `tmp/dev/node-trust` exists; opt-in orphan recover via `ORCHARD_VERIFY_TRUST_RECOVER=1` |
 | `control-orchard launch` | Background source-dev with log + pid files |
 | `control-orchard doctor` | Readiness gate before driving |
 | `control-orchard stop` | Stop the launched instance |

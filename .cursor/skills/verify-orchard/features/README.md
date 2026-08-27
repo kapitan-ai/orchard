@@ -6,7 +6,7 @@ This directory is the maintained source for verifying user-facing Orchard operat
 
 - PostgreSQL accepting connections on `${PGHOST:-localhost}:${PGPORT:-5432}` with dev credentials (`PGUSER`/`PGPASSWORD`, default `postgres`/`postgres`).
 - Repo dependencies installed (`make setup` once).
-- Run `control-orchard bootstrap` before first launch if `tmp/dev/node-trust/current` is missing (repairs orphaned DB trust without local files).
+- Run `control-orchard bootstrap` before first launch if `tmp/dev/node-trust/current` is missing. Orphan DB wipe needs `ORCHARD_VERIFY_TRUST_RECOVER=1`.
 - Launch with `control-orchard launch` and confirm `control-orchard doctor` passes.
 - Set a disposable run id: `export ORCHARD_VERIFY_RUN_ID="orchard-$(date +%Y%m%d%H%M%S)-$$"`.
 - Put `.cursor/skills/verify-orchard/scripts` on `PATH`.

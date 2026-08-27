@@ -34,8 +34,8 @@ usage() {
 Usage: control-orchard <command>
 
 Commands:
-  bootstrap Ensure dev node-trust files exist (recovers orphaned DB state)
-  launch    Start source-dev in the background (mise exec -- bin/dev)
+  bootstrap Ensure tmp/dev/node-trust exists (opt-in orphan recover)
+  launch    Start source-dev in the background (mix phx.server)
   doctor    Read-only health check for the verification instance
   stop      Stop the instance started by launch (PID file only)
   meta      Print state paths for the current run
@@ -45,7 +45,9 @@ Environment:
   ORCHARD_VERIFY_PORT          HTTP port (default: 4000)
   ORCHARD_VERIFY_RUN_ID        Stable run id for state dir naming
   ORCHARD_VERIFY_STATE_DIR     Override state directory
-  ORCHARD_VERIFY_READY_TIMEOUT_SEC  Launch wait timeout (default: 180)
+  ORCHARD_VERIFY_READY_TIMEOUT_SEC  Launch wait timeout (default: 300)
+  ORCHARD_VERIFY_TRUST_RECOVER      Set to 1 to allow wiping orphaned DB trust
+                                    when local node-trust files are missing
 EOF
 }
 
@@ -63,6 +65,7 @@ require_repo() {
 cmd_bootstrap() {
   require_repo
   local trust_root="${ORCHARD_NODE_TRUST_ROOT:-${REPO_ROOT}/tmp/dev/node-trust}"
+  local allow_recover="${ORCHARD_VERIFY_TRUST_RECOVER:-0}"
 
   if [[ -e "${trust_root}/current" ]]; then
     echo "==> Node trust files present at ${trust_root}/current"
@@ -74,9 +77,12 @@ cmd_bootstrap() {
   (
     cd "$REPO_ROOT"
     export MIX_ENV=dev
+    export ORCHARD_VERIFY_TRUST_RECOVER="$allow_recover"
     mise exec -- mix run --no-start -e '
       Application.ensure_all_started(:logger)
       Application.load(:orchard_controller)
+
+      allow_recover? = System.get_env("ORCHARD_VERIFY_TRUST_RECOVER") == "1"
 
       init = fn ->
         Ecto.Migrator.with_repo(Orchard.Repo, fn _repo ->
@@ -105,14 +111,26 @@ cmd_bootstrap() {
         :ok ->
           IO.puts("==> Node trust initialized")
 
-        {:error, _} ->
-          IO.puts("==> Trust init failed; recovering orphaned DB trust without local files")
+        {:error, :not_found} when allow_recover? ->
+          IO.puts("==> Orphaned DB trust (local files missing); recovering with ORCHARD_VERIFY_TRUST_RECOVER=1")
           {:ok, _, _} = recover.()
 
           case init.() do
             :ok -> IO.puts("==> Node trust initialized after orphan recovery")
             other -> IO.inspect(other); System.halt(1)
           end
+
+        {:error, :not_found} ->
+          IO.puts(:stderr, """
+          error: orchard_dev has cluster trust rows but #{System.get_env("ORCHARD_NODE_TRUST_ROOT") || "tmp/dev/node-trust"} has no current files.
+          Refusing to delete shared DB trust by default (this would disrupt an existing make dev session).
+          Restore the missing node-trust files, or re-run with ORCHARD_VERIFY_TRUST_RECOVER=1 only if you intend to wipe and re-init local trust.
+          """)
+          System.halt(1)
+
+        {:error, reason} ->
+          IO.puts(:stderr, "error: node trust init failed: #{inspect(reason)}")
+          System.halt(1)
       end
     '
   )
@@ -120,7 +138,6 @@ cmd_bootstrap() {
 
 cmd_launch() {
   require_repo
-  cmd_bootstrap
   write_meta
 
   if [[ -f "$PID_FILE" ]]; then
@@ -143,6 +160,8 @@ cmd_launch() {
     echo "error: PostgreSQL is not accepting connections on ${PGHOST:-localhost}:${PGPORT:-5432}" >&2
     exit 1
   fi
+
+  cmd_bootstrap
 
   echo "==> Ensuring dev database..."
   (
