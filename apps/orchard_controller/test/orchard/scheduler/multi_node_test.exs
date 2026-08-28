@@ -1598,6 +1598,52 @@ defmodule Orchard.Scheduler.MultiNodeTest do
              ]
     end
 
+    test "SPEC.md §5.5 verifies compatibility identity before scoring with empty exclusions" do
+      configured_node_id = "00000000-0000-4000-a000-0000000000ad"
+      reported_node_id = "00000000-0000-4000-a000-0000000000ae"
+
+      target =
+        Target.grpc_compat(
+          host: "10.44.0.50",
+          port: 50_070,
+          node_id: configured_node_id
+        )
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: [[host: "10.44.0.50", port: 50_070]],
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 120]
+      )
+
+      stub_probe(
+        target,
+        make_status(reported_node_id,
+          host: "10.44.0.50",
+          port: 50_070,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{prefix_cache_fingerprints: []})
+          ]
+        )
+      )
+
+      stub_score("10.44.0.50", 50_070, ok_resident_score())
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 exclude_node_ids: [],
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> [target] end
+               )
+
+      assert [rejected] = decision.rejected_candidates
+      assert rejected.node_id == configured_node_id
+      assert rejected.reason_codes == ["runtime_identity_mismatch"]
+      assert score_calls() == []
+    end
+
     test "SPEC.md §5.5 excludes every compatibility address for the same prior Node" do
       node_id = "00000000-0000-4000-a000-0000000000ef"
 

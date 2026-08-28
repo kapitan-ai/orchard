@@ -707,9 +707,7 @@ defmodule Orchard.Scheduler.MultiNode do
   defp canonical_node_id_set(_node_ids), do: :error
 
   defp filter_prior_nodes({:ok, excluded_node_ids}, candidates) do
-    if MapSet.size(excluded_node_ids) == 0,
-      do: {candidates, []},
-      else: partition_prior_nodes(candidates, excluded_node_ids)
+    partition_prior_nodes(candidates, excluded_node_ids)
   end
 
   defp filter_prior_nodes(:error, candidates) do
