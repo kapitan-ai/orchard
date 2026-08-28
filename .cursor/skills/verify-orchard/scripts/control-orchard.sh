@@ -183,19 +183,67 @@ cmd_launch() {
   echo "    state: ${STATE_DIR}"
   echo "    log:   ${LOG_FILE}"
 
-  (
-    cd "$REPO_ROOT"
-    export MIX_ENV=dev
-    export ORCHARD_VERIFY_MODE=1
-    export PORT="$PORT"
-    export ORCHARD_SOURCE_DEV_ROLE=all_in_one
-    export ORCHARD_NODE_AGENT_LISTEN_PORT=50071
-    export ORCHARD_RUNTIME_CLIENT_PORT=50071
-    exec mise exec -- mix phx.server
-  ) >"$LOG_FILE" 2>&1 &
+  # Detach into a new session so the BEAM survives this helper returning
+  # (agent shells send SIGHUP to the launch process group when the command ends).
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "error: python3 is required to detach the verification server" >&2
+    exit 1
+  fi
 
-  pid=$!
-  echo "$pid" >"$PID_FILE"
+  python3 - "$REPO_ROOT" "$LOG_FILE" "$PID_FILE" "$PORT" <<'PY'
+import os
+import sys
+import time
+
+repo, log_path, pid_path, port = sys.argv[1:5]
+env_update = {
+    "MIX_ENV": "dev",
+    "ORCHARD_VERIFY_MODE": "1",
+    "PORT": port,
+    "ORCHARD_SOURCE_DEV_ROLE": "all_in_one",
+    "ORCHARD_NODE_AGENT_LISTEN_PORT": "50071",
+    "ORCHARD_RUNTIME_CLIENT_PORT": "50071",
+}
+
+pid = os.fork()
+if pid > 0:
+    for _ in range(100):
+        try:
+            with open(pid_path, encoding="utf-8") as handle:
+                child = int(handle.read().strip())
+            os.kill(child, 0)
+            os._exit(0)
+        except (OSError, ValueError):
+            time.sleep(0.05)
+    sys.stderr.write("error: detached server did not record a live pid\n")
+    os._exit(1)
+
+os.setsid()
+pid = os.fork()
+if pid > 0:
+    os._exit(0)
+
+os.chdir(repo)
+os.environ.update(env_update)
+devnull = os.open(os.devnull, os.O_RDONLY)
+log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+os.dup2(devnull, 0)
+os.dup2(log_fd, 1)
+os.dup2(log_fd, 2)
+if devnull > 2:
+    os.close(devnull)
+if log_fd > 2:
+    os.close(log_fd)
+
+child = os.fork()
+if child == 0:
+    os.execvp("mise", ["mise", "exec", "--", "mix", "phx.server"])
+with open(pid_path, "w", encoding="utf-8") as handle:
+    handle.write(f"{child}\n")
+os._exit(0)
+PY
+
+  pid="$(cat "$PID_FILE")"
 
   deadline=$((SECONDS + READY_TIMEOUT_SEC))
   while (( SECONDS < deadline )); do

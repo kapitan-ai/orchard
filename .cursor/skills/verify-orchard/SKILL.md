@@ -24,6 +24,8 @@ control-orchard meta
 
 **Ready when:** `GET http://127.0.0.1:${ORCHARD_VERIFY_PORT:-4000}/health/live` returns exactly `{"status":"ok"}`.
 
+`launch` detaches the BEAM into a new session so the helper can return without SIGHUP-killing the server. `stop` still targets only the recorded PID.
+
 Verification launch sets `ORCHARD_VERIFY_MODE=1`, which disables Phoenix code reload and asset watchers in `config/dev.exs` so health probes stay stable. It runs `mix assets.build` before boot. Launch checks the HTTP port is free before bootstrap, so an existing `make dev` is not disrupted by trust recovery.
 
 **Defaults:**
@@ -60,11 +62,11 @@ Pass criteria:
 3. `/health/live` body is `{"status":"ok"}`
 4. `/console` returns HTTP 200 and HTML containing `Orchard Console`
 
-`/health/ready` may be non-200 while runtime/worker subsystems are still warming — log it, but do not treat it alone as launch failure.
+`/health/ready` may be HTTP 503 with exactly `{"status":"error"}` on source-dev (`plain_http_localhost` fails the public HTTPS check). Log it; do not treat it alone as launch failure.
 
 ## Drive
 
-**Harness:** `cursor-ide-browser` MCP (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_take_screenshot`).
+**Harness:** `cursor-ide-browser` MCP (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_take_screenshot`). If that MCP is unavailable mid-run, the same URLs, sidebar labels, and wait conditions can be driven with another Chromium CDP session (for example `agent-browser open|snapshot|click|screenshot`) against `ORCHARD_VERIFY_BASE_URL`.
 
 **Conventions:**
 1. Run `control-orchard doctor` first.
@@ -136,7 +138,7 @@ If launch failed mid-boot, still run `control-orchard stop` to clear a partial P
 | Command | Purpose |
 |---------|---------|
 | `control-orchard bootstrap` | Ensure `tmp/dev/node-trust` exists; opt-in orphan recover via `ORCHARD_VERIFY_TRUST_RECOVER=1` |
-| `control-orchard launch` | Background source-dev with log + pid files |
+| `control-orchard launch` | Detach source-dev (new session) with log + pid files |
 | `control-orchard doctor` | Readiness gate before driving |
 | `control-orchard stop` | Stop the launched instance |
 | `control-orchard meta` | Print `BASE_URL`, pid, log, artifacts paths |
