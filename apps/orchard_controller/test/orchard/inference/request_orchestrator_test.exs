@@ -9,7 +9,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
 
   def scheduled_node_id, do: @scheduled_node_id
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request), do: schedule(request, [])
+
+  def schedule(%CanonicalRequest{} = request, opts) do
+    send(Process.whereis(:request_orchestrator_test_pid), {:scheduler_opts, opts})
     capacity_input = ConformanceFixture.input()
 
     {:ok,
@@ -37,7 +40,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.DelayedScheduler do
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
   @impl true
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     Process.sleep(50)
     StubMultiNodeScheduler.schedule(request)
   end
@@ -49,7 +52,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMalformedExplanationSche
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.merge(schedule, %{
@@ -70,7 +73,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRejectedExplanationSched
 
   alias Orchard.CanonicalRequest
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     {:error, :cluster_busy,
      %{
        strategy: :multi_node,
@@ -126,7 +129,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMalformedRejectedExplana
 
   alias Orchard.CanonicalRequest
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     {:error, :cluster_busy,
      %{
        strategy: :multi_node,
@@ -148,7 +151,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubBareFailureScheduler do
 
   alias Orchard.CanonicalRequest
 
-  def schedule(%CanonicalRequest{}), do: {:error, :no_active_nodes}
+  def schedule(%CanonicalRequest{}, _opts), do: {:error, :no_active_nodes}
 end
 
 defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetScheduler do
@@ -159,7 +162,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetSch
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
   alias Orchard.RuntimeEndpoint.Target
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       runtime_target = Inference.runtime_client_target()
 
@@ -188,7 +191,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler d
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.merge(schedule, %{
@@ -210,7 +213,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.merge(schedule, %{
@@ -247,7 +250,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMemoryScheduler do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.merge(schedule, %{
@@ -280,7 +283,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMemoryUnavailableSchedul
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.merge(schedule, %{
@@ -307,7 +310,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMemoryTierOnlyScheduler 
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.merge(schedule, %{
@@ -324,7 +327,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableSc
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.put(schedule, :prefix_cache_status, %{
@@ -346,7 +349,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreSchedule
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        schedule
@@ -383,7 +386,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPromotedPrefixCacheScore
 
   def promoted_node_id, do: @promoted_node_id
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     capacity_input = ConformanceFixture.input()
 
     {:ok,
@@ -461,7 +464,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreUnavaila
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
       {:ok,
        Map.put(schedule, :prefix_cache_score, %{
@@ -488,7 +491,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
 
   def scheduled_node_id, do: @scheduled_node_id
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     capacity_input = ConformanceFixture.input()
 
     {:ok,
@@ -512,7 +515,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseScheduler 
 
   alias Orchard.CanonicalRequest
 
-  def schedule(%CanonicalRequest{}) do
+  def schedule(%CanonicalRequest{}, _opts) do
     raise FunctionClauseError, module: __MODULE__, function: :schedule, arity: 1
   end
 end
@@ -639,7 +642,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubLiveCapacityScheduler do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     owner = Application.fetch_env!(:orchard_controller, :request_orchestrator_live_capacity_owner)
     send(owner, {:live_capacity_schedule_attempt, self(), request.public_id})
 
@@ -925,6 +928,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.RequestServer
+  alias Orchard.RuntimeEndpoint.Target
   alias Orchard.TestSupport.TerminalCardinality
 
   setup :setup_sentry_context
@@ -1065,6 +1069,100 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.endpoint == :responses
     assert request.canonical_request["endpoint"] == "responses"
+  end
+
+  test "SPEC.md §5.8 attempt 1 schedules with an empty prior-Node exclusion set", %{
+    bundle: bundle
+  } do
+    put_multi_node_scheduler_config()
+    model = create_active_model!(bundle, "request-orchestrator-initial-exclusions")
+    canonical = canonical_request("request-orchestrator-initial-exclusions", stream?: false)
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+    assert_receive {:scheduler_opts, [exclude_node_ids: []]}
+  end
+
+  test "ADR 0019 orchestrator defense rejects a scheduler-selected excluded Node" do
+    node_id = Ecto.UUID.generate()
+
+    schedule = %{
+      node_id: node_id,
+      runtime_endpoint_target:
+        Target.grpc_compat(host: "10.0.0.41", port: 50_061, node_id: node_id)
+    }
+
+    assert {:error, {:dispatch_failed, :identity_unresolved}} =
+             RequestOrchestrator.validate_scheduler_selection(schedule, [String.upcase(node_id)])
+  end
+
+  test "ADR 0019 orchestrator defense re-resolves legacy target identity" do
+    target = [host: "10.0.0.43", port: 50_061]
+    excluded_node = insert_runtime_node!(target)
+
+    schedule = %{
+      node_id: Ecto.UUID.generate(),
+      runtime_client_target: target
+    }
+
+    assert {:error, {:dispatch_failed, :identity_unresolved}} =
+             RequestOrchestrator.validate_scheduler_selection(schedule, [excluded_node.id])
+  end
+
+  test "ADR 0019 orchestrator defense re-resolves gRPC target identity by address" do
+    target = [host: "10.0.0.45", port: 50_061]
+    excluded_node = insert_runtime_node!(target)
+    asserted_node_id = Ecto.UUID.generate()
+
+    schedule = %{
+      node_id: asserted_node_id,
+      runtime_endpoint_target:
+        Target.grpc_compat(
+          host: Keyword.fetch!(target, :host),
+          port: Keyword.fetch!(target, :port),
+          node_id: asserted_node_id
+        )
+    }
+
+    assert {:error, {:dispatch_failed, :identity_unresolved}} =
+             RequestOrchestrator.validate_scheduler_selection(schedule, [excluded_node.id])
+  end
+
+  test "ADR 0019 orchestrator defense fails closed on missing or conflicting selected identity" do
+    selected_node_id = Ecto.UUID.generate()
+    conflicting_node_id = Ecto.UUID.generate()
+    exclusions = [Ecto.UUID.generate()]
+
+    schedules = [
+      %{node_id: nil},
+      %{
+        node_id: selected_node_id,
+        runtime_endpoint_target:
+          Target.grpc_compat(
+            host: "10.0.0.42",
+            port: 50_061,
+            node_id: conflicting_node_id
+          )
+      }
+    ]
+
+    for schedule <- schedules do
+      assert {:error, {:dispatch_failed, :identity_unresolved}} =
+               RequestOrchestrator.validate_scheduler_selection(schedule, exclusions)
+    end
+
+    assert {:error, {:dispatch_failed, :identity_unresolved}} =
+             RequestOrchestrator.validate_scheduler_selection(
+               %{
+                 node_id: selected_node_id,
+                 runtime_endpoint_target:
+                   Target.grpc_compat(
+                     host: "10.0.0.44",
+                     port: 50_061,
+                     node_id: selected_node_id
+                   )
+               },
+               ["not-a-node-uuid"]
+             )
   end
 
   test "Sentry controller enrichment records request lifecycle breadcrumbs and public request extra",

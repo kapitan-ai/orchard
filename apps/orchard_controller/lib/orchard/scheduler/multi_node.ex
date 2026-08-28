@@ -46,6 +46,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Models
   alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
+  alias Orchard.Nodes.ExclusionSet
   alias Orchard.Scheduler.CircuitBreakerEligibility
   alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
 
@@ -76,7 +77,6 @@ defmodule Orchard.Scheduler.MultiNode do
   heartbeat snapshot, ranks candidates, and returns a dispatch-compatible schedule map.
   The existing inline-probe path remains only for confirmed-empty trusted inventory.
   """
-  @impl true
   def schedule(%CanonicalRequest{} = request) do
     schedule(request, [])
   end
@@ -85,12 +85,15 @@ defmodule Orchard.Scheduler.MultiNode do
   Schedule with injectable options for testing.
 
   Options:
+  - `:exclude_node_ids` - durable Node UUIDs removed before capacity
+    annotation, tiering, ranking, and scoring
   - `:status_client` - module implementing the Runtime Endpoint client callbacks
     (default: `Inference.runtime_endpoint_client/0`)
   - `:status_timeout_ms` - timeout for each status probe (default: #{@default_status_timeout_ms})
   - `:observed_at` - explicit deterministic observation/snapshot boundary for tests
   - `:compatibility_probe_runner` - internal compatibility-wave runner
   """
+  @impl true
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
     started_at = System.monotonic_time()
     result = do_schedule(request, opts)
@@ -195,9 +198,12 @@ defmodule Orchard.Scheduler.MultiNode do
   defp schedule_production_candidates(request, targets, active_targets, opts) do
     case production_candidate_snapshot(targets, active_targets, opts) do
       {:ok, snapshot} ->
-        base_candidates =
+        {base_candidates, exclusion_rejections} =
           snapshot.candidates
           |> Enum.map(&snapshot_candidate(&1, request))
+          |> exclude_prior_nodes(opts)
+
+        base_candidates = Enum.map(base_candidates, &enrich_candidate(&1, request))
 
         breaker_snapshot =
           CircuitBreakerEligibility.snapshot(
@@ -220,7 +226,9 @@ defmodule Orchard.Scheduler.MultiNode do
             |> annotate_residency_policy(request, opts)
           end)
 
-        source_rejections = Enum.map(snapshot.rejections, &snapshot_rejection/1)
+        source_rejections =
+          exclusion_rejections ++ snapshot_rejections(snapshot.rejections, opts)
+
         available_candidates = Enum.filter(candidates, &schedule_eligible?/1)
 
         if available_candidates == [] do
@@ -273,12 +281,7 @@ defmodule Orchard.Scheduler.MultiNode do
       |> Enum.reduce({[], []}, fn {target, result}, {candidates, rejections} ->
         case result do
           {:ok, {:candidate, candidate}} ->
-            annotated =
-              candidate
-              |> annotate_dispatch_capacity(request, opts, observed_at)
-              |> annotate_residency_policy(request, opts)
-
-            {[annotated | candidates], rejections}
+            {[candidate | candidates], rejections}
 
           {:ok, {:rejected, rejection}} ->
             {candidates, [rejection | rejections]}
@@ -302,8 +305,20 @@ defmodule Orchard.Scheduler.MultiNode do
         end
       end)
 
-    candidates = Enum.reverse(candidates)
-    source_rejections = Enum.reverse(source_rejections)
+    {candidates, exclusion_rejections} =
+      candidates
+      |> Enum.reverse()
+      |> exclude_prior_nodes(opts)
+
+    candidates =
+      Enum.map(candidates, fn candidate ->
+        candidate
+        |> enrich_candidate(request)
+        |> annotate_dispatch_capacity(request, opts, observed_at)
+        |> annotate_residency_policy(request, opts)
+      end)
+
+    source_rejections = exclusion_rejections ++ Enum.reverse(source_rejections)
     available_candidates = Enum.filter(candidates, &schedule_eligible?/1)
 
     if available_candidates == [] do
@@ -635,6 +650,170 @@ defmodule Orchard.Scheduler.MultiNode do
     )
   end
 
+  defp snapshot_rejections(rejections, opts) do
+    opts
+    |> Keyword.get(:exclude_node_ids, [])
+    |> ExclusionSet.canonicalize()
+    |> map_snapshot_rejections(rejections)
+  end
+
+  defp map_snapshot_rejections({:ok, excluded_node_ids}, rejections) do
+    Enum.map(rejections, &snapshot_rejection_for_exclusions(&1, excluded_node_ids))
+  end
+
+  defp map_snapshot_rejections(:error, rejections),
+    do: Enum.map(rejections, &snapshot_rejection/1)
+
+  defp snapshot_rejection_for_exclusions(rejection, excluded_node_ids) do
+    case verified_snapshot_rejection_node_id(rejection) do
+      {:ok, node_id} ->
+        maybe_excluded_snapshot_rejection(rejection, excluded_node_ids, node_id)
+
+      :error ->
+        snapshot_rejection(rejection)
+    end
+  end
+
+  defp maybe_excluded_snapshot_rejection(rejection, excluded_node_ids, node_id) do
+    if MapSet.member?(excluded_node_ids, node_id) do
+      rejection
+      |> Map.from_struct()
+      |> Map.put(:candidate_source, "monitor_snapshot")
+      |> candidate_rejection(
+        "previous_attempt_node_excluded",
+        "prior_node_identity_matched"
+      )
+    else
+      snapshot_rejection(rejection)
+    end
+  end
+
+  defp verified_snapshot_rejection_node_id(%{
+         node_id: node_id,
+         target: %Target{node_id: target_node_id}
+       }) do
+    with {:ok, canonical} <- Ecto.UUID.cast(node_id),
+         {:ok, ^canonical} <- Ecto.UUID.cast(target_node_id) do
+      {:ok, canonical}
+    else
+      _error -> :error
+    end
+  end
+
+  defp verified_snapshot_rejection_node_id(_rejection), do: :error
+
+  defp exclude_prior_nodes(candidates, opts) do
+    opts
+    |> Keyword.get(:exclude_node_ids, [])
+    |> ExclusionSet.canonicalize()
+    |> filter_prior_nodes(candidates)
+  end
+
+  defp filter_prior_nodes({:ok, excluded_node_ids}, candidates) do
+    partition_prior_nodes(candidates, excluded_node_ids)
+  end
+
+  defp filter_prior_nodes(:error, candidates) do
+    rejections =
+      Enum.map(candidates, fn candidate ->
+        candidate_rejection(
+          candidate,
+          "runtime_identity_mismatch",
+          "invalid_exclusion_set"
+        )
+      end)
+
+    {[], rejections}
+  end
+
+  defp partition_prior_nodes(candidates, excluded_node_ids) do
+    {remaining, rejections} =
+      Enum.reduce(candidates, {[], []}, fn candidate, acc ->
+        partition_prior_node(candidate, excluded_node_ids, acc)
+      end)
+
+    {Enum.reverse(remaining), Enum.reverse(rejections)}
+  end
+
+  defp partition_prior_node(candidate, excluded_node_ids, {remaining, rejections}) do
+    case verified_candidate_node_id(candidate) do
+      {:ok, node_id} ->
+        partition_verified_node(
+          candidate,
+          excluded_node_ids,
+          node_id,
+          remaining,
+          rejections
+        )
+
+      :error ->
+        {remaining,
+         [
+           candidate_rejection(
+             candidate,
+             "runtime_identity_mismatch",
+             "durable_node_identity_conflict"
+           )
+           | rejections
+         ]}
+    end
+  end
+
+  defp partition_verified_node(candidate, excluded_node_ids, node_id, remaining, rejections) do
+    if MapSet.member?(excluded_node_ids, node_id) do
+      {remaining,
+       [
+         candidate_rejection(
+           candidate,
+           "previous_attempt_node_excluded",
+           "prior_node_identity_matched"
+         )
+         | rejections
+       ]}
+    else
+      {[candidate | remaining], rejections}
+    end
+  end
+
+  defp verified_candidate_node_id(%{
+         candidate_source: "monitor_snapshot",
+         node_id: node_id,
+         target: %Target{node_id: target_node_id}
+       }) do
+    with {:ok, canonical} <- Ecto.UUID.cast(node_id),
+         {:ok, ^canonical} <- Ecto.UUID.cast(target_node_id) do
+      {:ok, canonical}
+    else
+      _error -> :error
+    end
+  end
+
+  defp verified_candidate_node_id(%{
+         candidate_source: "bounded_compatibility_probe",
+         node_id: node_id,
+         target: %Target{node_id: target_node_id},
+         observation: %Observation{} = observation
+       }) do
+    with {:ok, canonical} <- Ecto.UUID.cast(node_id),
+         ^canonical <- BeamIdentity.metadata_node_id(observation),
+         true <- is_nil(target_node_id) or Ecto.UUID.cast(target_node_id) == {:ok, canonical} do
+      {:ok, canonical}
+    else
+      _error -> :error
+    end
+  end
+
+  defp verified_candidate_node_id(_candidate), do: :error
+
+  defp candidate_rejection(candidate, reason_code, fact) do
+    candidate
+    |> Map.put(:diagnostics, %{fact: fact})
+    |> explanation_candidate(%{
+      eligible: false,
+      reason_codes: [reason_code]
+    })
+  end
+
   defp compatibility_rejection(target, node_id, reason_code, fact) do
     explanation_candidate(
       %{
@@ -900,7 +1079,7 @@ defmodule Orchard.Scheduler.MultiNode do
   defp candidate_tier(%{loaded_model?: true}), do: "loaded"
   defp candidate_tier(_candidate), do: "cold"
 
-  defp snapshot_candidate(snapshot_candidate, request) do
+  defp snapshot_candidate(snapshot_candidate, _request) do
     observation =
       Observation.new(%{
         endpoint_id: snapshot_candidate.target.id,
@@ -916,25 +1095,31 @@ defmodule Orchard.Scheduler.MultiNode do
         supports_prompt_token_ids: snapshot_candidate.supports_prompt_token_ids
       })
 
-    loaded_model? = model_loaded?(observation, request)
-
     %{
       node_id: snapshot_candidate.node.id,
       target: snapshot_candidate.target,
       node: snapshot_candidate.node,
       observation: observation,
       availability: snapshot_candidate.availability,
-      loaded_model?: loaded_model?,
       active_request_count: snapshot_candidate.active_request_count,
       max_concurrency: snapshot_candidate.max_concurrency,
       supports_prompt_token_ids: snapshot_candidate.supports_prompt_token_ids,
       candidate_source: "monitor_snapshot"
     }
+  end
+
+  defp enrich_candidate(candidate, request) do
+    loaded_model? = model_loaded?(candidate.observation, request)
+
+    candidate
+    |> Map.put(:loaded_model?, loaded_model?)
     |> maybe_put_model_placement_capacity(
-      model_placement_capacity_for(observation, request.model_ref, loaded_model?)
+      model_placement_capacity_for(candidate.observation, request.model_ref, loaded_model?)
     )
-    |> maybe_put_prefix_cache_status(prefix_cache_status_for(observation, request.model_ref))
-    |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))
+    |> maybe_put_prefix_cache_status(
+      prefix_cache_status_for(candidate.observation, request.model_ref)
+    )
+    |> maybe_put_memory_budget(memory_budget_for(candidate.observation, request.model_ref))
   end
 
   defp probe_target(target, client, timeout, observed_at, request) do
@@ -975,7 +1160,7 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp resolve_probe_observation(target, observation, request) do
+  defp resolve_probe_observation(target, observation, _request) do
     case BeamIdentity.resolve_candidate_node_id(target, observation) do
       :missing ->
         {:rejected,
@@ -998,7 +1183,6 @@ defmodule Orchard.Scheduler.MultiNode do
       {:ok, node_id} ->
         target = schedule_target(target, node_id)
         {:ok, capacity_management_class} = Authorization.classify_unmanaged_target(target)
-        loaded_model? = model_loaded?(observation, request)
 
         {:candidate,
          %{
@@ -1007,18 +1191,12 @@ defmodule Orchard.Scheduler.MultiNode do
            node: %{id: node_id, health: compatibility_health(observation)},
            observation: observation,
            availability: observation.availability,
-           loaded_model?: loaded_model?,
            active_request_count: observation.aggregate_active_request_count,
            max_concurrency: node_max_concurrency(observation),
            supports_prompt_token_ids: observation.supports_prompt_token_ids,
            capacity_management_class: capacity_management_class,
            candidate_source: "bounded_compatibility_probe"
-         }
-         |> maybe_put_model_placement_capacity(
-           model_placement_capacity_for(observation, request.model_ref, loaded_model?)
-         )
-         |> maybe_put_prefix_cache_status(prefix_cache_status_for(observation, request.model_ref))
-         |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))}
+         }}
     end
   end
 
@@ -1342,7 +1520,10 @@ defmodule Orchard.Scheduler.MultiNode do
            production_candidate_snapshot(effective_targets, active_targets, opts),
          {:ok, snapshot_candidate} <-
            matching_snapshot_candidate(snapshot.candidates, candidate),
-         refreshed = snapshot_candidate(snapshot_candidate, request),
+         refreshed =
+           snapshot_candidate
+           |> snapshot_candidate(request)
+           |> enrich_candidate(request),
          refreshed_placement <-
            Map.get(
              refreshed,

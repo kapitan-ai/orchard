@@ -23,7 +23,9 @@ defmodule Orchard.Portal.KeysLive do
       |> assign(:generated_secret, nil)
       |> assign(:copy_status, :idle)
       |> assign(:stored_ack, false)
-      |> assign(:form_error, nil)
+      |> assign(:mint_error, nil)
+      |> assign(:revoke_error, nil)
+      |> assign(:focus_cap_status?, false)
       |> assign(:key_name, "")
       |> refresh_keys()
 
@@ -31,7 +33,7 @@ defmodule Orchard.Portal.KeysLive do
       Process.send_after(self(), :revalidate_portal_session, @revalidate_ms)
     end
 
-    {:ok, socket}
+    {:ok, socket, temporary_assigns: [focus_cap_status?: false]}
   end
 
   @impl true
@@ -42,13 +44,17 @@ defmodule Orchard.Portal.KeysLive do
       {:noreply,
        socket
        |> assign(:mint_open?, true)
-       |> assign(:form_error, nil)
+       |> assign(:mint_error, nil)
        |> assign(:key_name, "")}
     end
   end
 
   def handle_event("close_mint", _params, socket) do
-    {:noreply, assign(socket, :mint_open?, false)}
+    {:noreply,
+     socket
+     |> assign(:mint_open?, false)
+     |> assign(:mint_error, nil)
+     |> assign(:key_name, "")}
   end
 
   def handle_event("mint_key", %{"key" => %{"name" => name}}, socket) do
@@ -68,24 +74,29 @@ defmodule Orchard.Portal.KeysLive do
          |> assign(:generated_secret, result)
          |> assign(:copy_status, :idle)
          |> assign(:stored_ack, false)
-         |> assign(:form_error, nil)
+         |> assign(:mint_error, nil)
          |> refresh_keys()}
 
       {:error, :portal_key_limit_reached} ->
         {:noreply,
          socket
-         |> assign(:mint_open?, false)
-         |> assign(:form_error, "Portal cap reached — revoke a key to mint a new one.")
-         |> refresh_keys()}
+         |> assign(:key_name, name)
+         |> reconcile_key_limit()}
 
       {:error, :invalid_session} ->
         {:noreply, expire_session(socket)}
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign(socket, :form_error, first_error(changeset))}
+        {:noreply,
+         socket
+         |> assign(:key_name, name)
+         |> assign(:mint_error, first_error(changeset))}
 
       {:error, _reason} ->
-        {:noreply, assign(socket, :form_error, "Could not mint that key.")}
+        {:noreply,
+         socket
+         |> assign(:key_name, name)
+         |> assign(:mint_error, "Could not mint that key.")}
     end
   end
 
@@ -123,7 +134,8 @@ defmodule Orchard.Portal.KeysLive do
     {:noreply,
      socket
      |> assign(:revoke_key, key)
-     |> assign(:revoke_confirmation, "")}
+     |> assign(:revoke_confirmation, "")
+     |> assign(:revoke_error, nil)}
   end
 
   def handle_event("update_revoke_confirmation", params, socket) do
@@ -132,7 +144,10 @@ defmodule Orchard.Portal.KeysLive do
   end
 
   def handle_event("close_revoke", _params, socket) do
-    {:noreply, assign(socket, :revoke_key, nil)}
+    {:noreply,
+     socket
+     |> assign(:revoke_key, nil)
+     |> assign(:revoke_error, nil)}
   end
 
   def handle_event("revoke_key", _params, socket) do
@@ -156,13 +171,14 @@ defmodule Orchard.Portal.KeysLive do
              socket
              |> assign(:revoke_key, nil)
              |> assign(:revoke_confirmation, "")
+             |> assign(:revoke_error, nil)
              |> refresh_keys()}
 
           {:error, :invalid_session} ->
             {:noreply, expire_session(socket)}
 
           {:error, _reason} ->
-            {:noreply, assign(socket, :form_error, "Could not revoke that key.")}
+            {:noreply, assign(socket, :revoke_error, "Could not revoke that key.")}
         end
     end
   end
@@ -208,10 +224,23 @@ defmodule Orchard.Portal.KeysLive do
         </div>
       </div>
 
-      <p :if={@active_portal_count >= 10} class="text-sm text-slate-400">
-        Portal cap reached — revoke a key to mint a new one.
+      <p
+        id="portal-key-cap-message"
+        class="text-sm text-slate-400"
+        role="status"
+        aria-atomic="true"
+        tabindex="-1"
+      >
+        <span
+          :if={@active_portal_count >= 10}
+          phx-mounted={
+            if @focus_cap_status?,
+              do: Phoenix.LiveView.JS.focus(to: "#portal-key-cap-message")
+          }
+        >
+          Portal cap reached — revoke a key to mint a new one.
+        </span>
       </p>
-      <p :if={@form_error} class="text-sm text-red-400">{@form_error}</p>
 
       <div
         :if={@keys == []}
@@ -295,8 +324,25 @@ defmodule Orchard.Portal.KeysLive do
           name="key[name]"
           placeholder="production-agent"
           required
-          class="mt-1 block w-full rounded-md border border-slate-600 bg-slate-900/60 px-3 py-2 text-sm text-slate-50 shadow-inner focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40"
+          value={@key_name}
+          aria-invalid={if @mint_error, do: "true"}
+          aria-describedby={if @mint_error, do: "portal-mint-error"}
+          class={[
+            "mt-1 block w-full rounded-md bg-slate-900/60 px-3 py-2 text-sm text-slate-50 shadow-inner focus-visible:outline-none focus-visible:ring-2",
+            if(@mint_error,
+              do: "border border-red-400 ring-1 ring-red-400/30 focus-visible:border-red-400 focus-visible:ring-red-400/40",
+              else: "border border-slate-600 focus-visible:ring-sky-400/40"
+            )
+          ]}
         />
+        <p
+          :if={@mint_error}
+          id="portal-mint-error"
+          role="alert"
+          class="mt-1 text-xs text-red-400"
+        >
+          {@mint_error}
+        </p>
         <p class="mt-2 text-sm text-slate-400">Name it after the app or agent that will hold it.</p>
         <div class="mt-6 flex justify-end gap-3">
           <button type="button" phx-click="close_mint" class="text-sm text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700">Cancel</button>
@@ -416,6 +462,9 @@ defmodule Orchard.Portal.KeysLive do
           value={@revoke_confirmation}
           class="mt-4 block w-full rounded-md border border-slate-600 bg-slate-900/60 px-3 py-2 text-sm text-slate-50 shadow-inner focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700"
         />
+        <p :if={@revoke_error} id="portal-revoke-error" role="alert" class="mt-1 text-xs text-red-400">
+          {@revoke_error}
+        </p>
         <div class="mt-6 flex justify-end gap-3">
           <button type="button" phx-click="close_revoke" class="text-sm text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/40 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-700">Cancel</button>
           <button
@@ -444,6 +493,22 @@ defmodule Orchard.Portal.KeysLive do
 
       {:error, _reason} ->
         assign(socket, :keys, [])
+    end
+  end
+
+  defp reconcile_key_limit(socket) do
+    socket = refresh_keys(socket)
+
+    if socket.assigns.active_portal_count >= 10 do
+      socket
+      |> assign(:mint_open?, false)
+      |> assign(:mint_error, nil)
+      |> assign(:key_name, "")
+      |> assign(:focus_cap_status?, true)
+    else
+      socket
+      |> assign(:mint_open?, true)
+      |> assign(:mint_error, "Key capacity changed. Review the current keys and try again.")
     end
   end
 

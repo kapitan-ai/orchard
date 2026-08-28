@@ -5,7 +5,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest.UnsupportedVersionScoreSched
   alias Orchard.Inference
   alias Orchard.TestSupport.DispatchCapacityFixtures
 
-  def schedule(%CanonicalRequest{} = request) do
+  def schedule(%CanonicalRequest{} = request, _opts) do
     schedule =
       DispatchCapacityFixtures.authorize_unmanaged_schedule(%{
         strategy: :multi_node,

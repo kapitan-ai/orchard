@@ -46,11 +46,11 @@
 
 ## 6. Hard prior-Node exclusion
 
-- [ ] 6.1 Extend scheduler contracts with hard `exclude_node_ids`
-- [ ] 6.2 Filter excluded Node identities before tiering, ranking, scoring, and prefix-cache scoring
-- [ ] 6.3 Record the `SPEC.md` §7.3.5 rejection reason code `previous_attempt_node_excluded` in scheduler explanations
-- [ ] 6.4 Make admitted single-target scheduling fail when its Node is excluded
-- [ ] 6.5 Recheck the selected Node in the orchestrator before dispatch
+- [x] 6.1 Extend scheduler contracts with hard `exclude_node_ids`
+- [x] 6.2 Filter excluded Node identities before tiering, ranking, scoring, and prefix-cache scoring
+- [x] 6.3 Record the `SPEC.md` §7.3.5 rejection reason code `previous_attempt_node_excluded` in scheduler explanations
+- [x] 6.4 Make admitted single-target scheduling fail when its Node is excluded
+- [x] 6.5 Recheck the selected Node in the orchestrator before dispatch
 - [ ] 6.6 Keep the §7.5.3 `ScorePrefixCache` caps per logical Request so attempt 2 uses only their unconsumed remainder and otherwise ranks fail-open
 - [ ] 6.7 Prove alternate scheduling runs no second compatibility status-probe wave and records `no_alternative_node` on that branch
 

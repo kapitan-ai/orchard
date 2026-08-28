@@ -14,6 +14,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     transport_unreachable
     runtime_not_ready
     runtime_identity_mismatch
+    previous_attempt_node_excluded
     version_incompatible
     pool_not_allowed
     model_format_unsupported

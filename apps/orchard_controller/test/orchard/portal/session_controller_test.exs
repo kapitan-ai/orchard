@@ -57,8 +57,19 @@ defmodule Orchard.Portal.SessionControllerTest do
     {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
     {:ok, invite} = Governance.copy_portal_invite(tenant, user)
 
+    unavailable =
+      conn |> https_conn() |> get("/portal/portal-route-other/invites/#{invite.token}")
+
+    assert {422, headers, body} = unusable_invite_get_signature(unavailable)
+    assert headers["content-type"] == ["text/html; charset=utf-8"]
+    assert headers["cache-control"] == ["no-store"]
+    assert body =~ "This invite is invalid, expired, or already used."
+
     page = conn |> https_conn() |> get("/portal/#{tenant.slug}/invites/#{invite.token}")
     assert html_response(page, 200) =~ "Set your password"
+    assert page.resp_body =~ ~s|id="invite-password"|
+    assert page.resp_body =~ ~s|id="invite-password-confirmation"|
+    assert page.resp_body =~ ~s|name="_csrf_token"|
     csrf_token = csrf_token(page)
 
     redeemed =
@@ -89,7 +100,7 @@ defmodule Orchard.Portal.SessionControllerTest do
     {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
     {:ok, invite} = Governance.copy_portal_invite(tenant, user)
 
-    page = conn |> https_conn() |> get("/portal/portal-route-other/invites/#{invite.token}")
+    page = conn |> https_conn() |> get("/portal/#{tenant.slug}/invites/#{invite.token}")
 
     wrong_organization =
       post_form(page, "/portal/portal-route-other/invites/#{invite.token}", %{
@@ -136,6 +147,9 @@ defmodule Orchard.Portal.SessionControllerTest do
     {:ok, disabled} = Governance.copy_portal_invite(tenant, disabled_user)
     {:ok, _disabled_user} = Governance.disable_portal_user(tenant, disabled_user)
 
+    {:ok, other_tenant} =
+      Governance.create_tenant(%{slug: "portal-invalid-other", name: "Invalid Other"})
+
     {:ok, redeemed_user} =
       Governance.create_portal_invite(tenant, %{email: "redeemed@example.com"})
 
@@ -144,13 +158,35 @@ defmodule Orchard.Portal.SessionControllerTest do
     {:ok, _active_user} =
       Governance.redeem_portal_invite(tenant.slug, redeemed.token, @password)
 
-    responses = [
-      redeem_attempt(conn, tenant.slug, invalidated.token),
-      redeem_attempt(conn, tenant.slug, expired.token),
-      redeem_attempt(conn, tenant.slug, disabled.token),
-      redeem_attempt(conn, tenant.slug, redeemed.token),
-      redeem_attempt(conn, tenant.slug, "orchard_pi_unknown")
+    unusable_tokens = [
+      invalidated.token,
+      expired.token,
+      disabled.token,
+      redeemed.token,
+      "orchard_pi_unknown"
     ]
+
+    get_responses =
+      Enum.map(unusable_tokens, fn token ->
+        conn |> https_conn() |> get("/portal/#{tenant.slug}/invites/#{token}")
+      end) ++
+        [
+          conn
+          |> https_conn()
+          |> get("/portal/#{other_tenant.slug}/invites/#{replacement.token}")
+        ]
+
+    signatures = Enum.map(get_responses, &unusable_invite_get_signature/1)
+    assert length(Enum.uniq(signatures)) == 1
+
+    assert hd(signatures) ==
+             {422, unusable_invite_headers(hd(get_responses)),
+              normalize_unusable_invite_body(hd(get_responses).resp_body)}
+
+    valid_page =
+      conn |> https_conn() |> get("/portal/#{tenant.slug}/invites/#{replacement.token}")
+
+    responses = Enum.map(unusable_tokens, &redeem_attempt(valid_page, tenant.slug, &1))
 
     assert Enum.map(responses, &invalid_invite_response_signature/1)
            |> Enum.uniq() ==
@@ -264,11 +300,44 @@ defmodule Orchard.Portal.SessionControllerTest do
     }
   end
 
-  defp redeem_attempt(conn, slug, token) do
-    page = conn |> https_conn() |> get("/portal/#{slug}/invites/#{token}")
+  defp unusable_invite_get_signature(conn) do
+    {
+      conn.status,
+      unusable_invite_headers(conn),
+      normalize_unusable_invite_body(conn.resp_body)
+    }
+  end
 
-    post_form(page, "/portal/#{slug}/invites/#{token}", %{
-      "_csrf_token" => csrf_token(page),
+  defp unusable_invite_headers(conn) do
+    for name <- [
+          "cache-control",
+          "content-security-policy",
+          "content-type",
+          "referrer-policy",
+          "x-content-type-options",
+          "x-frame-options"
+        ],
+        into: %{} do
+      {name, get_resp_header(conn, name)}
+    end
+  end
+
+  defp normalize_unusable_invite_body(body) do
+    assert body =~ "This invite is invalid, expired, or already used."
+    refute body =~ ~s|id="invite-password"|
+    refute body =~ ~s|id="invite-password-confirmation"|
+    refute body =~ "<form"
+
+    Regex.replace(
+      ~r/name="csrf-token" content="[^"]+"/,
+      body,
+      ~s|name="csrf-token" content="CSRF"|
+    )
+  end
+
+  defp redeem_attempt(conn, slug, token) do
+    post_form(conn, "/portal/#{slug}/invites/#{token}", %{
+      "_csrf_token" => csrf_token(conn),
       "invite[password]" => @password,
       "invite[password_confirmation]" => @password
     })
