@@ -21,6 +21,7 @@ erl_crash.dump
 # IDE
 .idea/
 .vscode/
+/.cursor/plans/
 *.swp
 
 # Release artifacts
