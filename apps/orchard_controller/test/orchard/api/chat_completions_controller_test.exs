@@ -51,6 +51,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Models.RoutingPolicy
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Nodes.Node, as: InventoryNode
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{Idempotency, Request}
@@ -1654,6 +1655,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     test "non-streaming model load failure returns mapped HTTP status and error envelope", %{
       bundle: bundle
     } do
+      insert_runtime_inventory_node!()
+
       # Create a model in DB but don't stage cache, and give a source URI
       # pointing to a nonexistent path so model acquisition fails.
       {:ok, _model} =
@@ -1708,6 +1711,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     test "streaming model load failure emits SSE error with mapped code and no [DONE]", %{
       bundle: bundle
     } do
+      insert_runtime_inventory_node!()
+
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "fail-stream-model",
@@ -1810,6 +1815,24 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   end
 
   defp refute_struct_artifacts!(_value), do: :ok
+
+  defp insert_runtime_inventory_node! do
+    target = Orchard.Inference.runtime_client_target()
+
+    %InventoryNode{}
+    |> InventoryNode.changeset(%{
+      id: Node.node_id(),
+      hostname: "chat-controller-runtime.local",
+      display_name: "chat-controller-runtime",
+      advertise_addr: Keyword.fetch!(target, :host),
+      rpc_port: Keyword.fetch!(target, :port),
+      state: :active,
+      health: :healthy,
+      capabilities: %{},
+      tool_readiness: %{}
+    })
+    |> Repo.insert!()
+  end
 
   defp stub_chat_orchestrator(config) do
     Application.put_env(

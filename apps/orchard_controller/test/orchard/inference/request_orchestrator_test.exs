@@ -484,6 +484,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   alias Orchard.DispatchCapacity.{ConformanceFixture, Evaluator}
   alias Orchard.Inference
 
+  @scheduled_node_id "00000000-0000-4000-a000-000000000001"
+
+  def scheduled_node_id, do: @scheduled_node_id
+
   def schedule(%CanonicalRequest{} = request) do
     capacity_input = ConformanceFixture.input()
 
@@ -494,7 +498,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
        runtime_client_target: [host: "127.0.0.1", port: 1],
        request_timeout_ms: Inference.request_timeout_ms(),
        model_load_timeout_ms: 2_000,
-       node_id: "00000000-0000-4000-a000-000000000001",
+       node_id: @scheduled_node_id,
        dispatch_capacity_input: capacity_input,
        dispatch_capacity_evaluation: Evaluator.evaluate(capacity_input),
        dispatch_capacity_acquisition_input_provider: fn -> capacity_input end,
@@ -899,10 +903,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient
+  alias Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler
 
   alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
+  alias Orchard.CircuitBreakers
   alias Orchard.DispatchCapacity
   alias Orchard.DispatchCapacity.Policy
   alias Orchard.Governance
@@ -2714,10 +2720,22 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_result["attempt_outcome"] == "failed"
     assert terminal_result["accepted"] == false
     assert terminal_result["execution_resolution"] == "not_started"
-    assert terminal_result["failure_class"] == "model_load_failure"
-    assert terminal_result["failure_code"] == "runtime_unavailable"
+    assert terminal_result["failure_class"] == "pre_acceptance_unavailable"
+    assert terminal_result["failure_code"] == "node_unavailable"
     assert terminal_result["retry_decision"] == "no_alternative_node"
     refute Enum.any?(step_events, &(&1.attempt == 2))
+
+    assert {:ok, node_breaker} =
+             CircuitBreakers.evaluate({:node, StubUnreachableScheduler.scheduled_node_id()})
+
+    assert node_breaker.contribution_count == 1
+
+    assert {:ok, placement_breaker} =
+             CircuitBreakers.evaluate(
+               {:placement, StubUnreachableScheduler.scheduled_node_id(), model.id}
+             )
+
+    assert placement_breaker.contribution_count == 0
   end
 
   test "execute/3 persists inference-turn started and completed request_step events around dispatch",
@@ -2861,6 +2879,70 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_result["failure_code"] == "load_timeout"
     assert terminal_result["retry_decision"] == "no_alternative_node"
     refute Map.has_key?(terminal_result, "runtime_retryable")
+  end
+
+  test "SPEC.md section 5.10 records attempt breaker effects before terminal orchestration", %{
+    bundle: bundle
+  } do
+    target = [host: "10.0.0.2", port: 50_062]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+    Process.put({StubRuntimeEndpointClient, :ensure_model_loaded_result}, {:error, :node_timeout})
+
+    model = create_active_model!(bundle, "request-orchestrator-breaker-ordering")
+    canonical = canonical_request("request-orchestrator-breaker-ordering", stream?: false)
+    owner = self()
+
+    terminal_persister = fn request, terminal_attrs, step_events ->
+      send(
+        owner,
+        {:breaker_before_terminal, CircuitBreakers.evaluate({:placement, node.id, model.id})}
+      )
+
+      Requests.mark_terminal_with_step_events(request, terminal_attrs, step_events)
+    end
+
+    assert {:error, {:model_load_failed, %ModelLoadFailure{category: :timeout}}} =
+             RequestOrchestrator.execute(canonical, model, terminal_persister: terminal_persister)
+
+    assert_receive {:breaker_before_terminal, {:ok, decision}}
+    assert decision.kind == :placement
+    assert decision.node_id == node.id
+    assert decision.model_id == model.id
+    assert decision.contribution_count == 1
+  end
+
+  test "SPEC.md section 5.10 attributes worker loss once without counting the retry decision", %{
+    bundle: bundle
+  } do
+    target = [host: "10.0.0.3", port: 50_063]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+
+    stub_runtime_events([
+      InferenceEvent.failed("worker_down", "worker exited", true)
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-worker-loss-breaker")
+    canonical = canonical_request("request-orchestrator-worker-loss-breaker", stream?: false)
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["failure_class"] == "worker_or_node_loss"
+    assert terminal_result["failure_code"] == "worker_down"
+    assert terminal_result["retry_decision"] == "no_alternative_node"
+
+    assert {:ok, decision} = CircuitBreakers.evaluate({:node, node.id})
+    assert decision.contribution_count == 1
   end
 
   test "execute/3 aborts before dispatch side effects when request_step.started persistence fails",
@@ -4055,6 +4137,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   end
 
   defp put_unreachable_scheduler_config do
+    ensure_unreachable_scheduler_node!()
+
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
       |> Keyword.merge(
@@ -4063,6 +4147,30 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       )
 
     Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp ensure_unreachable_scheduler_node! do
+    node_id = StubUnreachableScheduler.scheduled_node_id()
+
+    case Repo.get(InventoryNode, node_id) do
+      nil ->
+        %InventoryNode{}
+        |> InventoryNode.changeset(%{
+          id: node_id,
+          hostname: "unreachable-scheduler.local",
+          display_name: "unreachable-scheduler",
+          advertise_addr: "127.0.0.1",
+          rpc_port: 1,
+          state: :active,
+          health: :healthy,
+          capabilities: %{},
+          tool_readiness: %{}
+        })
+        |> Repo.insert!()
+
+      %InventoryNode{} = node ->
+        node
+    end
   end
 
   defp put_function_clause_scheduler_config do

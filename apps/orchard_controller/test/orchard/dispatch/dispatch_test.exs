@@ -977,9 +977,8 @@ defmodule Orchard.Dispatch.DispatchTest do
                delivery_state: :pending,
                delivered_event_count: 0,
                failure: %{
-                 "failure_class" => "model_load_failure",
-                 "failure_code" => "runtime_unavailable",
-                 "raw_source_code" => "node_unavailable"
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "node_unavailable"
                }
              } =
                RequestDispatcher.dispatch(schedule, execute, model_load)
