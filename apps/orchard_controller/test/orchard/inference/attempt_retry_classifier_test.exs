@@ -58,12 +58,29 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
     for runtime_retryable <- [nil, false, true],
         {failure_class, failure_code} <- [
           {"model_load_failure", "load_timeout"},
-          {"pre_acceptance_unavailable", "rpc_unavailable"},
-          {"worker_or_node_loss", "worker_down"}
+          {"pre_acceptance_unavailable", "rpc_unavailable"}
         ] do
       assert decide(%{
                failure_class: failure_class,
                failure_code: failure_code,
+               runtime_retryable: runtime_retryable,
+               alternate_available?: true
+             }) == :retried
+    end
+  end
+
+  test "SPEC.md §5.8 honors explicit runtime retry refusal for worker or node loss" do
+    assert decide(%{
+             failure_class: "worker_or_node_loss",
+             failure_code: "worker_down",
+             runtime_retryable: false,
+             alternate_available?: true
+           }) == :not_retryable
+
+    for runtime_retryable <- [nil, true] do
+      assert decide(%{
+               failure_class: "worker_or_node_loss",
+               failure_code: "worker_down",
                runtime_retryable: runtime_retryable,
                alternate_available?: true
              }) == :retried

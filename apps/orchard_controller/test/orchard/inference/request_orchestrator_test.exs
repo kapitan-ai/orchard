@@ -2945,6 +2945,38 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert decision.contribution_count == 1
   end
 
+  test "SPEC.md sections 5.8 and 5.10 preserve worker-loss attribution when retry is refused", %{
+    bundle: bundle
+  } do
+    target = [host: "10.0.0.3", port: 50_063]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+
+    stub_runtime_events([
+      InferenceEvent.failed("worker_down", "worker exited", false)
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-worker-loss-no-retry")
+    canonical = canonical_request("request-orchestrator-worker-loss-no-retry", stream?: false)
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["failure_class"] == "worker_or_node_loss"
+    assert terminal_result["failure_code"] == "worker_down"
+    assert terminal_result["runtime_retryable"] == false
+    assert terminal_result["retry_decision"] == "not_retryable"
+
+    assert {:ok, decision} = CircuitBreakers.evaluate({:node, node.id})
+    assert decision.contribution_count == 1
+  end
+
   test "execute/3 aborts before dispatch side effects when request_step.started persistence fails",
        %{bundle: bundle} do
     put_capturing_runtime_adapter_config()
