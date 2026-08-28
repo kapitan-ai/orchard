@@ -70,6 +70,10 @@ defmodule Orchard.Governance do
   defdelegate create_portal_invite(tenant, attrs), to: PortalGovernance, as: :create_invite
   defdelegate copy_portal_invite(tenant, user), to: PortalGovernance, as: :copy_invite
 
+  @spec validate_portal_invite(String.t(), String.t()) ::
+          :ok | {:error, :invalid_invite | :https_required}
+  defdelegate validate_portal_invite(slug, token), to: PortalGovernance, as: :validate_invite
+
   defdelegate redeem_portal_invite(slug, token, password),
     to: PortalGovernance,
     as: :redeem_invite
