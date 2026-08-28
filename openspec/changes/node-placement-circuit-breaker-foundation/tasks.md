@@ -42,4 +42,4 @@
 - [x] 6.2 Run the complete applicable Elixir workflow and coverage from `AGENTS.md`
 - [x] 6.3 Validate this change strictly and validate all OpenSpec specs strictly
 - [x] 6.4 Reconcile independent design and Oracle review findings against `SPEC.md` and the final code
-- [ ] 6.5 Record exact local and hosted validation evidence in the pull request without merging it
+- [x] 6.5 Record exact local and hosted validation evidence in the pull request without merging it
