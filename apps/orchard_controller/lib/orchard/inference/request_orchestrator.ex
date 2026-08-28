@@ -15,6 +15,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   alias Orchard.Inference.{
     AdmissionPolicy,
+    AttemptBreakerAttribution,
     AttemptRetryClassifier,
     CacheAffinity,
     CanonicalRequestSerializer,
@@ -664,13 +665,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
             execution_opts.event_handler
           )
 
-        cond do
-          outcome.delivery_state == :failed ->
-            {:error, public_dispatch_reason(outcome),
-             Map.put(step_context, :attempt_outcome, outcome)}
-
-          Enum.any?(outcome.events, &InferenceEvent.terminal?/1) ->
-            finalize_started_inference_turn(
+        case record_attempt_breaker_failure(db_request, model, step_context, outcome) do
+          :ok ->
+            continue_selected_attempt(
               db_request,
               canonical,
               outcome,
@@ -678,14 +675,52 @@ defmodule Orchard.Inference.RequestOrchestrator do
               step_context
             )
 
-          true ->
-            {:error, public_dispatch_reason(outcome),
-             Map.put(step_context, :attempt_outcome, outcome)}
+          {:error, reason} ->
+            {:error, reason, Map.put(step_context, :attempt_outcome, outcome)}
         end
 
       {:error, reason} ->
         outcome = failed_dispatch_outcome(schedule)
         {:error, reason, Map.put(step_context, :attempt_outcome, outcome)}
+    end
+  end
+
+  defp record_attempt_breaker_failure(db_request, model, step_context, outcome) do
+    case AttemptBreakerAttribution.record(
+           db_request.id,
+           step_context.attempt,
+           Map.get(model, :id),
+           outcome
+         ) do
+      {:ok, _decision} -> :ok
+      {:error, reason} -> {:error, {:breaker_attribution_failed, reason}}
+    end
+  end
+
+  defp continue_selected_attempt(
+         db_request,
+         canonical,
+         %AttemptOutcome{} = outcome,
+         execution_opts,
+         step_context
+       ) do
+    cond do
+      outcome.delivery_state == :failed ->
+        {:error, public_dispatch_reason(outcome),
+         Map.put(step_context, :attempt_outcome, outcome)}
+
+      Enum.any?(outcome.events, &InferenceEvent.terminal?/1) ->
+        finalize_started_inference_turn(
+          db_request,
+          canonical,
+          outcome,
+          execution_opts,
+          step_context
+        )
+
+      true ->
+        {:error, public_dispatch_reason(outcome),
+         Map.put(step_context, :attempt_outcome, outcome)}
     end
   end
 
@@ -1244,6 +1279,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
          }
        }) do
     {:model_load_failed, ModelLoadFailure.from_model_load_code(failure_code)}
+  end
+
+  defp public_dispatch_reason(%AttemptOutcome{
+         failure: %{"failure_class" => "pre_acceptance_unavailable"}
+       }) do
+    {:model_load_failed, ModelLoadFailure.from_model_load_code("runtime_unavailable")}
   end
 
   defp public_dispatch_reason(%AttemptOutcome{

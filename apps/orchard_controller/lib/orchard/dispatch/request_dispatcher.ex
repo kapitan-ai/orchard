@@ -448,6 +448,15 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp attempt_failure(_result, _terminal, :completed), do: nil
 
   defp attempt_failure(
+         {:ok, _events, %AttemptEventDelivery{}},
+         %InferenceEvent{event: %InferenceEvent.Failed{code: code}},
+         _outcome
+       )
+       when code in ["node_unavailable", "node_timeout", "worker_unavailable", "worker_down"] do
+    InferenceAttemptFailure.normalize(%{category: :worker_or_node_loss, code: code})
+  end
+
+  defp attempt_failure(
          _result,
          %InferenceEvent{event: %InferenceEvent.Failed{code: code}},
          _outcome
@@ -524,6 +533,16 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               :dispatch_capacity_quarantine_store_unavailable
             ],
        do: %{category: :capacity, code: reason}
+
+  defp failure_source(reason)
+       when reason in [
+              :node_acceptance_missing,
+              :node_unavailable,
+              :node_timeout,
+              :rpc_unavailable,
+              :unavailable
+            ],
+       do: %{category: :pre_acceptance, code: reason}
 
   defp failure_source(reason), do: %{category: :runtime, code: reason}
 
@@ -1190,11 +1209,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp handle_dispatch_connect_failure(target, reason, metrics) do
     mark_transport_failure(target, reason)
 
-    error_metrics = finalize_metrics(metrics, {:error, {:model_load_failed, :node_unavailable}})
+    error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, :node_unavailable}})
     put_dispatch_terminal_context(error_metrics, target)
-    emit_timing_log(error_metrics, {:error, {:model_load_failed, :node_unavailable}})
+    emit_timing_log(error_metrics, {:error, {:dispatch_failed, :node_unavailable}})
 
-    {:error, {:model_load_failed, ModelLoadFailure.from_transport_reason(:node_unavailable)}}
+    {:error, {:dispatch_failed, :node_unavailable}}
   end
 
   defp probe_and_resolve_node(

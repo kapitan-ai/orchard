@@ -602,9 +602,8 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
                attempt_outcome: :failed,
                accepted: false,
                failure: %{
-                 "failure_class" => "model_load_failure",
-                 "failure_code" => "runtime_unavailable",
-                 "raw_source_code" => "node_unavailable"
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "node_unavailable"
                }
              } =
                RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
@@ -666,7 +665,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
                attempt_outcome: :failed,
                accepted: false,
                failure: %{
-                 "failure_class" => "runtime_failure",
+                 "failure_class" => "pre_acceptance_unavailable",
                  "failure_code" => "node_timeout"
                }
              } =
@@ -847,9 +846,8 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
                attempt_outcome: :failed,
                accepted: false,
                failure: %{
-                 "failure_class" => "model_load_failure",
-                 "failure_code" => "runtime_unavailable",
-                 "raw_source_code" => "node_unavailable"
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "node_unavailable"
                }
              } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
@@ -874,9 +872,8 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
                attempt_outcome: :failed,
                accepted: false,
                failure: %{
-                 "failure_class" => "model_load_failure",
-                 "failure_code" => "runtime_unavailable",
-                 "raw_source_code" => "node_unavailable"
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "node_unavailable"
                }
              } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
@@ -908,9 +905,8 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
                attempt_outcome: :failed,
                accepted: false,
                failure: %{
-                 "failure_class" => "model_load_failure",
-                 "failure_code" => "runtime_unavailable",
-                 "raw_source_code" => "node_unavailable"
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "node_unavailable"
                }
              } =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
@@ -956,7 +952,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
                attempt_outcome: :failed,
                accepted: false,
                failure: %{
-                 "failure_class" => "runtime_failure",
+                 "failure_class" => "pre_acceptance_unavailable",
                  "failure_code" => "node_timeout"
                }
              } =

@@ -151,6 +151,12 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
        }),
        do: code in @pre_acceptance_retryable_codes
 
+  defp retry_eligible?(%Boundary{
+         failure_class: "worker_or_node_loss",
+         runtime_retryable: false
+       }),
+       do: false
+
   defp retry_eligible?(%Boundary{failure_class: "worker_or_node_loss"}), do: true
   defp retry_eligible?(%Boundary{}), do: false
 end
