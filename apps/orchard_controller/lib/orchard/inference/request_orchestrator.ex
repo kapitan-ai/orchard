@@ -29,6 +29,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   alias Orchard.Governance
   alias Orchard.InferenceEvent
+  alias Orchard.Nodes
+  alias Orchard.Nodes.ExclusionSet
   alias Orchard.Requests
 
   alias Orchard.Requests.{
@@ -42,6 +44,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   }
 
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheScore, PrefixCacheStatus}
+  alias Orchard.RuntimeEndpoint.Target
   alias Orchard.SentryContext
 
   @type event_handler ::
@@ -74,6 +77,23 @@ defmodule Orchard.Inference.RequestOrchestrator do
       end
     after
       restore_metrics_started_at(previous_started_at)
+    end
+  end
+
+  @doc false
+  @spec validate_scheduler_selection(map(), [Ecto.UUID.t()]) ::
+          :ok | {:error, {:dispatch_failed, :identity_unresolved}}
+  def validate_scheduler_selection(_schedule, []), do: :ok
+
+  def validate_scheduler_selection(schedule, exclude_node_ids)
+      when is_map(schedule) and is_list(exclude_node_ids) do
+    with {:ok, selected_node_id} <- Ecto.UUID.cast(map_value(schedule, :node_id)),
+         :ok <- validate_selected_target_identity(schedule, selected_node_id),
+         {:ok, excluded_node_ids} <- ExclusionSet.canonicalize(exclude_node_ids),
+         false <- MapSet.member?(excluded_node_ids, selected_node_id) do
+      :ok
+    else
+      _identity_unresolved -> {:error, {:dispatch_failed, :identity_unresolved}}
     end
   end
 
@@ -848,19 +868,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp schedule_request(db_request, canonical) do
+    schedule_request(db_request, canonical, [])
+  end
+
+  defp schedule_request(db_request, canonical, exclude_node_ids) do
     if RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) <= 0 do
       {:error, {:dispatch_failed, :request_timeout}}
     else
-      schedule_live_request(db_request, canonical)
+      schedule_live_request(db_request, canonical, exclude_node_ids)
     end
   end
 
-  defp schedule_live_request(db_request, canonical) do
-    case call_scheduler(canonical) do
+  defp schedule_live_request(db_request, canonical, exclude_node_ids) do
+    case call_scheduler(canonical, exclude_node_ids) do
       {:ok, schedule} when is_map(schedule) ->
-        if RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) > 0,
-          do: {:ok, Map.put(schedule, :timeout_at, db_request.timeout_at)},
-          else: {:error, {:dispatch_failed, :request_timeout}}
+        accept_scheduler_selection(db_request, schedule, exclude_node_ids)
 
       {:error, reason, decision} when is_map(decision) ->
         persist_rejected_scheduler_decision(db_request, decision)
@@ -871,6 +893,16 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
       _other ->
         {:error, orchestration_crash(:scheduler, :invalid_return)}
+    end
+  end
+
+  defp accept_scheduler_selection(db_request, schedule, exclude_node_ids) do
+    with :ok <- validate_scheduler_selection(schedule, exclude_node_ids),
+         true <- RequestDeadline.remaining_ms(db_request.timeout_at, DateTime.utc_now()) > 0 do
+      {:ok, Map.put(schedule, :timeout_at, db_request.timeout_at)}
+    else
+      false -> {:error, {:dispatch_failed, :request_timeout}}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -888,8 +920,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp call_scheduler(canonical) do
-    Inference.scheduler().schedule(canonical)
+  defp call_scheduler(canonical, exclude_node_ids) do
+    Inference.scheduler().schedule(canonical, exclude_node_ids: exclude_node_ids)
   rescue
     error ->
       log_warn("scheduler crashed: #{exception_name(error)}")
@@ -903,6 +935,56 @@ defmodule Orchard.Inference.RequestOrchestrator do
       log_warn("scheduler threw")
       {:error, orchestration_crash(:scheduler, :throw)}
   end
+
+  defp validate_selected_target_identity(schedule, selected_node_id) do
+    case map_value(schedule, :runtime_endpoint_target) do
+      nil ->
+        validate_legacy_target_identity(schedule, selected_node_id)
+
+      target ->
+        validate_runtime_endpoint_target_identity(target, selected_node_id)
+    end
+  end
+
+  defp validate_runtime_endpoint_target_identity(
+         %Target{transport: :grpc_compat} = target,
+         selected_node_id
+       ) do
+    with {:ok, ^selected_node_id} <- target_node_id(target),
+         {:ok, %Orchard.Nodes.Node{id: durable_node_id}} <- Nodes.lookup_by_target_result(target),
+         {:ok, ^selected_node_id} <- Ecto.UUID.cast(durable_node_id) do
+      :ok
+    else
+      _missing_or_conflicting -> :error
+    end
+  end
+
+  defp validate_runtime_endpoint_target_identity(target, selected_node_id) do
+    case target_node_id(target) do
+      {:ok, ^selected_node_id} -> :ok
+      _missing_or_conflicting -> :error
+    end
+  end
+
+  defp validate_legacy_target_identity(schedule, selected_node_id) do
+    with target when not is_nil(target) <- map_value(schedule, :runtime_client_target),
+         {:ok, %Orchard.Nodes.Node{id: node_id}} <- Nodes.lookup_by_target_result(target),
+         {:ok, ^selected_node_id} <- Ecto.UUID.cast(node_id) do
+      :ok
+    else
+      _missing_or_conflicting -> :error
+    end
+  end
+
+  defp target_node_id(%Target{node_id: node_id}), do: Ecto.UUID.cast(node_id)
+
+  defp target_node_id(target) when is_map(target) do
+    target
+    |> map_value(:node_id)
+    |> Ecto.UUID.cast()
+  end
+
+  defp target_node_id(_target), do: :error
 
   defp record_scheduler_decision(db_request, metadata) do
     case Requests.record_schedule(db_request, metadata) do

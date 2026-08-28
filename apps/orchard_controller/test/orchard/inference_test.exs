@@ -28,7 +28,7 @@ defmodule Orchard.InferenceTest do
   defmodule FakeScheduler do
     @behaviour Orchard.Scheduler.SingleNode
 
-    def schedule(%CanonicalRequest{} = request) do
+    def schedule(%CanonicalRequest{} = request, _opts) do
       {:ok, %{scheduled_public_id: request.public_id, scheduler: :fake}}
     end
   end
