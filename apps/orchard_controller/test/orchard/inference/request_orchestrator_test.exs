@@ -2733,6 +2733,35 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(terminal_result, "runtime_retryable")
   end
 
+  test "SPEC.md sections 5.10 and 7.2.7 delivery cancellation does not count worker loss",
+       %{bundle: bundle} do
+    target = [host: "10.0.0.4", port: 50_064]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+    stub_runtime_events([InferenceEvent.failed("worker_down", "worker exited", true)])
+
+    model = create_active_model!(bundle, "request-orchestrator-worker-loss-cancel")
+    canonical = canonical_request("request-orchestrator-worker-loss-cancel", stream?: true)
+    handler = fn _request_id, _event -> :cancel end
+
+    assert {:error, {:dispatch_failed, :request_caller_disconnect}} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    terminal_result =
+      Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+    assert terminal_result["attempt_outcome"] == "cancelled"
+    assert terminal_result["failure_class"] == "cancellation"
+    assert terminal_result["retry_decision"] == "cancelled"
+
+    assert {:ok, decision} = CircuitBreakers.evaluate({:node, node.id})
+    assert decision.contribution_count == 0
+  end
+
   test "SPEC.md §§5.8 and 7.2.7 caller cancellation wins when the deadline lapses during delivery",
        %{bundle: bundle} do
     put_capturing_runtime_adapter_config()

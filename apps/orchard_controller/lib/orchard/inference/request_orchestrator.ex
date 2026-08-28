@@ -658,15 +658,15 @@ defmodule Orchard.Inference.RequestOrchestrator do
            Map.get(execution_opts, :queue_grant)
          ) do
       %AttemptOutcome{} = pending_outcome ->
-        case record_attempt_breaker_failure(db_request, model, step_context, pending_outcome) do
-          :ok ->
-            outcome =
-              AttemptOutcome.select(
-                pending_outcome,
-                canonical.public_id,
-                execution_opts.event_handler
-              )
+        outcome =
+          AttemptOutcome.select(
+            pending_outcome,
+            canonical.public_id,
+            execution_opts.event_handler
+          )
 
+        case record_attempt_breaker_failure(db_request, model, step_context, outcome) do
+          :ok ->
             continue_selected_attempt(
               db_request,
               canonical,
@@ -676,7 +676,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
             )
 
           {:error, reason} ->
-            {:error, reason, Map.put(step_context, :attempt_outcome, pending_outcome)}
+            {:error, reason, Map.put(step_context, :attempt_outcome, outcome)}
         end
 
       {:error, reason} ->
