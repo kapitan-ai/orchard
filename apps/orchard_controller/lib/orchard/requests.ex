@@ -269,6 +269,80 @@ defmodule Orchard.Requests do
     end
   end
 
+  @spec start_attempt_two(
+          struct() | Ecto.UUID.t(),
+          map(),
+          [RequestStepEvent.t() | map()]
+        ) ::
+          {:ok,
+           %{
+             request: Request.t(),
+             step_events: [RequestStepEvent.t()],
+             transition_event: struct()
+           }}
+          | {:error,
+             Ecto.Changeset.t()
+             | :request_not_found
+             | :request_not_running
+             | :invalid_attempt_two_boundary
+             | :attempt_two_dispatch_already_started
+             | {:invalid_scheduler_explanation, term()}
+             | {:invalid_step_event, pos_integer(), String.t()}}
+  def start_attempt_two(%Request{id: request_id}, schedule, step_events),
+    do: start_attempt_two(request_id, schedule, step_events)
+
+  def start_attempt_two(request_id, schedule, step_events) do
+    with {:ok, normalized_schedule} <- normalize_schedule(schedule),
+         {:ok, normalized_step_events} <- normalize_request_step_events(step_events) do
+      Repo.transaction(fn ->
+        start_attempt_two_transaction(
+          request_id,
+          schedule,
+          normalized_schedule,
+          normalized_step_events
+        )
+      end)
+      |> unwrap_transaction_result()
+    end
+  end
+
+  defp start_attempt_two_transaction(
+         request_id,
+         schedule,
+         normalized_schedule,
+         normalized_step_events
+       ) do
+    with {:ok, request} <- lock_request(request_id),
+         :ok <- authorize_attempt_two_source_state(request.state),
+         :ok <- authorize_attempt_two_start(request_id, normalized_step_events),
+         {:ok, updated_request} <- persist_schedule(request, schedule, normalized_schedule),
+         {:ok, persisted_step_events} <-
+           insert_request_step_events(updated_request, normalized_step_events),
+         {:ok, transition_event} <-
+           insert_attempt_two_dispatch_transition(updated_request, request_id) do
+      {:ok,
+       %{
+         request: updated_request,
+         step_events: persisted_step_events,
+         transition_event: transition_event
+       }}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp insert_attempt_two_dispatch_transition(request, request_id) do
+    insert_event_and_sync_state(request, request_id, %{
+      event_type: "state_transition",
+      state: :dispatching,
+      payload: %{
+        source: "automatic_attempt_retry",
+        attempt: 2,
+        to_state: "dispatching"
+      }
+    })
+  end
+
   defp insert_event_and_sync_state(request, request_id, attrs) do
     event_attrs =
       attrs
@@ -326,6 +400,63 @@ defmodule Orchard.Requests do
     end)
     |> unwrap_transaction_result()
   end
+
+  defp authorize_attempt_two_source_state(state) when state in [:running, :dispatching], do: :ok
+  defp authorize_attempt_two_source_state(_state), do: {:error, :request_not_running}
+
+  defp authorize_attempt_two_start(request_id, proposed_steps) do
+    events =
+      RequestEvent
+      |> where([event], event.request_id == ^request_id)
+      |> order_by([event], asc: event.seq)
+      |> Repo.all()
+
+    cond do
+      Enum.any?(events, &automatic_attempt_two_dispatch?/1) ->
+        {:error, :attempt_two_dispatch_already_started}
+
+      existing_attempt_two_start?(events) ->
+        {:error, :attempt_two_dispatch_already_started}
+
+      valid_attempt_two_boundary?(proposed_steps) ->
+        :ok
+
+      true ->
+        {:error, :invalid_attempt_two_boundary}
+    end
+  end
+
+  defp automatic_attempt_two_dispatch?(%RequestEvent{
+         event_type: "state_transition",
+         state: :dispatching,
+         payload: payload
+       }) do
+    payload["source"] == "automatic_attempt_retry" and payload["attempt"] == 2 and
+      payload["to_state"] == "dispatching"
+  end
+
+  defp automatic_attempt_two_dispatch?(%RequestEvent{}), do: false
+
+  defp existing_attempt_two_start?(events) do
+    Enum.any?(events, fn event ->
+      case RequestStepEvent.from_request_event(event) do
+        {:ok, %RequestStepEvent{attempt: 2, event_type: "request_step.started"}} -> true
+        _other -> false
+      end
+    end)
+  end
+
+  defp valid_attempt_two_boundary?([
+         %RequestStepEvent{
+           attempt: 1,
+           event_type: terminal_event_type,
+           result: %{"retry_decision" => "retried", "output_committed" => false}
+         },
+         %RequestStepEvent{attempt: 2, event_type: "request_step.started"}
+       ]),
+       do: terminal_event_type in RequestStepEvent.terminal_step_event_types()
+
+  defp valid_attempt_two_boundary?(_step_events), do: false
 
   defp sync_request_state(request, event_attrs, raw_attrs) do
     new_state = Map.get(event_attrs, "state") || Map.get(raw_attrs, :state)
@@ -511,17 +642,27 @@ defmodule Orchard.Requests do
   end
 
   defp persist_schedule(request, schedule, normalized_schedule) do
-    attrs = %{
-      scheduler_decision:
-        CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
-          requested_model: request.requested_model
-        }),
-      node_id: Map.get(schedule, :node_id)
-    }
+    attrs =
+      %{
+        scheduler_decision:
+          CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
+            requested_model: request.requested_model
+          })
+      }
+      |> maybe_put_schedule_node_id(schedule)
 
     request
     |> Request.schedule_changeset(attrs)
     |> Repo.update()
+  end
+
+  defp maybe_put_schedule_node_id(attrs, schedule) do
+    node_id = Map.get(schedule, :node_id, Map.get(schedule, "node_id"))
+
+    case Ecto.UUID.cast(node_id) do
+      {:ok, uuid} -> Map.put(attrs, :node_id, uuid)
+      :error -> attrs
+    end
   end
 
   @doc """
@@ -813,4 +954,6 @@ defmodule Orchard.Requests do
 
   defp unwrap_transaction_result({:error, {:request_changeset, changeset}}),
     do: {:error, changeset}
+
+  defp unwrap_transaction_result({:error, reason}), do: {:error, reason}
 end

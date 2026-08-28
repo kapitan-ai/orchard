@@ -10,7 +10,7 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
   @model_load_codes ~w(acquisition_failed runtime_unavailable resource_exhausted load_timeout)
   @pre_acceptance_codes ~w(node_unavailable node_timeout runtime_unavailable rpc_unavailable)
 
-  test "SPEC.md §5.8 classifies every retry-eligible failure row through the alternate gate" do
+  test "SPEC.md §5.8 classifies every retry-eligible failure before alternate scheduling" do
     cases =
       Enum.map(@runtime_codes, &{"runtime_failure", &1, true}) ++
         Enum.map(@model_load_codes, &{"model_load_failure", &1, nil}) ++
@@ -18,39 +18,39 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
         [{"worker_or_node_loss", "worker_down", nil}]
 
     for {failure_class, failure_code, runtime_retryable} <- cases do
-      assert decide(%{
-               failure_class: failure_class,
-               failure_code: failure_code,
-               runtime_retryable: runtime_retryable,
-               alternate_available?: true
-             }) == :retried
+      boundary =
+        boundary(%{
+          failure_class: failure_class,
+          failure_code: failure_code,
+          runtime_retryable: runtime_retryable
+        })
 
-      assert decide(%{
-               failure_class: failure_class,
-               failure_code: failure_code,
-               runtime_retryable: runtime_retryable,
-               alternate_available?: false
-             }) == :no_alternative_node
+      assert AttemptRetryClassifier.pre_schedule(boundary) == :eligible_for_alternate
+      assert AttemptRetryClassifier.finalize_alternate(boundary, :different_node) == :retried
+
+      assert AttemptRetryClassifier.finalize_alternate(boundary, :no_candidate) ==
+               :no_alternative_node
+
+      assert AttemptRetryClassifier.finalize_alternate(boundary, :identity_unresolved) ==
+               :identity_unresolved
     end
   end
 
   test "SPEC.md §5.8 requires both the runtime retry flag and an allowlisted transient code" do
     for failure_code <- @runtime_codes, runtime_retryable <- [nil, false] do
-      assert decide(%{
+      assert classify(%{
                failure_class: "runtime_failure",
                failure_code: failure_code,
-               runtime_retryable: runtime_retryable,
-               alternate_available?: true
-             }) == :not_retryable
+               runtime_retryable: runtime_retryable
+             }) == {:declined, :not_retryable}
     end
 
     for runtime_retryable <- [nil, false, true] do
-      assert decide(%{
+      assert classify(%{
                failure_class: "runtime_failure",
                failure_code: "model_invalid",
-               runtime_retryable: runtime_retryable,
-               alternate_available?: true
-             }) == :not_retryable
+               runtime_retryable: runtime_retryable
+             }) == {:declined, :not_retryable}
     end
   end
 
@@ -60,30 +60,27 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
           {"model_load_failure", "load_timeout"},
           {"pre_acceptance_unavailable", "rpc_unavailable"}
         ] do
-      assert decide(%{
+      assert classify(%{
                failure_class: failure_class,
                failure_code: failure_code,
-               runtime_retryable: runtime_retryable,
-               alternate_available?: true
-             }) == :retried
+               runtime_retryable: runtime_retryable
+             }) == :eligible_for_alternate
     end
   end
 
   test "SPEC.md §5.8 honors explicit runtime retry refusal for worker or node loss" do
-    assert decide(%{
+    assert classify(%{
              failure_class: "worker_or_node_loss",
              failure_code: "worker_down",
-             runtime_retryable: false,
-             alternate_available?: true
-           }) == :not_retryable
+             runtime_retryable: false
+           }) == {:declined, :not_retryable}
 
     for runtime_retryable <- [nil, true] do
-      assert decide(%{
+      assert classify(%{
                failure_class: "worker_or_node_loss",
                failure_code: "worker_down",
-               runtime_retryable: runtime_retryable,
-               alternate_available?: true
-             }) == :retried
+               runtime_retryable: runtime_retryable
+             }) == :eligible_for_alternate
     end
   end
 
@@ -102,59 +99,94 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
     ]
 
     for {failure_class, failure_code} <- cases do
-      assert decide(%{
+      assert classify(%{
                failure_class: failure_class,
                failure_code: failure_code,
-               runtime_retryable: true,
-               alternate_available?: true
-             }) == :not_retryable
+               runtime_retryable: true
+             }) == {:declined, :not_retryable}
     end
   end
 
   test "SPEC.md §5.8 preserves named unresolved failure classes" do
-    assert decide(%{failure_class: "identity_unresolved"}) == :identity_unresolved
-    assert decide(%{failure_class: "occupancy_unresolved"}) == :occupancy_unresolved
+    assert classify(%{failure_class: "identity_unresolved"}) ==
+             {:declined, :identity_unresolved}
+
+    assert classify(%{failure_class: "occupancy_unresolved"}) ==
+             {:declined, :occupancy_unresolved}
   end
 
   test "SPEC.md §5.8 applies attempt 1 decline gates in order" do
     eligible = %{
       failure_class: "worker_or_node_loss",
       failure_code: "worker_down",
-      runtime_retryable: true,
-      alternate_available?: true
+      runtime_retryable: true
     }
 
-    assert decide(
+    assert classify(
              Map.merge(eligible, %{
                output_committed: true,
-               budget_remaining?: false,
-               cancelled?: true
+               caller_status: :cancelled,
+               deadline_status: :exhausted
              })
            ) ==
-             :output_committed
+             {:declined, :output_committed}
 
-    assert decide(Map.merge(eligible, %{budget_remaining?: false, cancelled?: true})) ==
-             :cancelled
+    assert classify(
+             Map.merge(eligible, %{caller_status: :cancelled, deadline_status: :exhausted})
+           ) ==
+             {:declined, :cancelled}
 
-    assert decide(Map.put(eligible, :budget_remaining?, false)) == :budget_exhausted
+    assert classify(Map.put(eligible, :deadline_status, :exhausted)) ==
+             {:declined, :budget_exhausted}
 
-    assert decide(Map.put(eligible, :cancelled?, true)) == :cancelled
+    assert classify(Map.put(eligible, :caller_status, :cancelled)) == {:declined, :cancelled}
 
-    assert decide(%{
+    assert classify(%{
              failure_class: "identity_unresolved",
              failure_code: "internal_error",
              runtime_retryable: nil,
-             alternate_available?: true,
-             cancelled?: true
-           }) == :cancelled
+             caller_status: :cancelled
+           }) == {:declined, :cancelled}
+  end
+
+  test "SPEC.md §5.8 uses exact identity, execution, and release evidence" do
+    eligible = %{
+      failure_class: "worker_or_node_loss",
+      failure_code: "worker_down",
+      runtime_retryable: true
+    }
+
+    assert classify(Map.put(eligible, :identity_resolution, :unresolved)) ==
+             {:declined, :identity_unresolved}
+
+    assert classify(Map.put(eligible, :execution_resolution, :unresolved)) ==
+             {:declined, :occupancy_unresolved}
+
+    assert classify(Map.put(eligible, :capacity_release_outcome, :unresolved)) ==
+             {:declined, :occupancy_unresolved}
+
+    assert classify(
+             Map.merge(eligible, %{
+               identity_resolution: :unresolved,
+               execution_resolution: :unresolved,
+               capacity_release_outcome: :unresolved
+             })
+           ) == {:declined, :identity_unresolved}
+
+    assert classify(%{
+             failure_class: "terminal_conformance",
+             failure_code: "runtime_endpoint_terminal_invalid",
+             runtime_retryable: true,
+             execution_resolution: :unresolved
+           }) == {:declined, :not_retryable}
   end
 
   test "SPEC.md §7.2.7 bounds attempt 2 to cancellation or retry exhaustion" do
-    assert decide(%{attempt: 2, cancelled?: true}) == :cancelled
-    assert decide(%{attempt: 2, cancelled?: false}) == :retry_exhausted
+    assert classify(%{attempt: 2, caller_status: :cancelled}) == {:declined, :cancelled}
+    assert classify(%{attempt: 2, caller_status: :live}) == {:declined, :retry_exhausted}
   end
 
-  test "classifier rejects raw source codes and crashes on incomplete or mistyped facts" do
+  test "constructor requires every exact fact and rejects raw source codes" do
     assert_raise ArgumentError, fn ->
       base_facts()
       |> Map.put(:raw_source_code, "upstream-free-text")
@@ -170,31 +202,32 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
     assert_raise FunctionClauseError, fn ->
       # Dynamic dispatch avoids a compile-time type warning for this intentional invalid input.
       # credo:disable-for-next-line Credo.Check.Refactor.Apply
-      apply(AttemptRetryClassifier, :new, [Map.delete(base_facts(), :failure_code)])
+      apply(AttemptRetryClassifier, :new, [Map.delete(base_facts(), :capacity_release_outcome)])
     end
 
     assert_raise FunctionClauseError, fn ->
-      AttemptRetryClassifier.new(Map.put(base_facts(), :attempt, 3))
+      # credo:disable-for-next-line Credo.Check.Refactor.Apply
+      apply(AttemptRetryClassifier, :new, [Map.put(base_facts(), :identity_resolution, true)])
     end
   end
 
-  defp decide(overrides) do
-    base_facts()
-    |> Map.merge(overrides)
-    |> AttemptRetryClassifier.new()
-    |> AttemptRetryClassifier.decide()
-  end
+  defp classify(overrides), do: overrides |> boundary() |> AttemptRetryClassifier.pre_schedule()
+
+  defp boundary(overrides),
+    do: base_facts() |> Map.merge(overrides) |> AttemptRetryClassifier.new()
 
   defp base_facts do
     %{
       attempt: 1,
       output_committed: false,
-      budget_remaining?: true,
-      cancelled?: false,
+      caller_status: :live,
+      deadline_status: :remaining,
       failure_class: "runtime_failure",
       failure_code: "runtime_unavailable",
       runtime_retryable: true,
-      alternate_available?: false
+      identity_resolution: :resolved,
+      execution_resolution: :terminated,
+      capacity_release_outcome: :released
     }
   end
 end

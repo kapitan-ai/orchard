@@ -64,14 +64,14 @@
 
 ## 8. Bounded orchestrator retry
 
-- [ ] 8.1 Run attempt 1 and at most one attempt 2 under one logical Request
-- [ ] 8.2 Preserve one admission, queue grant, quota reservation, idempotency scope, capture snapshot, and deadline
-- [ ] 8.3 Require resolved execution and affirmative release before alternate scheduling or acquisition
-- [ ] 8.4 Run the fresh alternate decision only after attempt 1 breaker effects are durable
-- [ ] 8.5 Atomically append attempt 1 terminal evidence and attempt 2 started evidence before dispatch
-- [ ] 8.6 Recheck cancellation and deadline at every retry boundary
-- [ ] 8.7 Preserve attempt 1's public failure when no alternative exists
-- [ ] 8.8 Prevent every post-start failure from queue re-entry
+- [x] 8.1 Run attempt 1 and at most one attempt 2 under one logical Request
+- [x] 8.2 Preserve one admission, queue grant, quota reservation, idempotency scope, capture snapshot, and deadline
+- [x] 8.3 Require resolved execution and affirmative release before alternate scheduling or acquisition
+- [x] 8.4 Run the fresh alternate decision only after attempt 1 breaker effects are durable
+- [x] 8.5 Atomically append attempt 1 terminal evidence and attempt 2 started evidence before dispatch
+- [x] 8.6 Recheck cancellation and deadline at every retry boundary
+- [x] 8.7 Preserve attempt 1's public failure when no alternative exists
+- [x] 8.8 Prevent every post-start failure from queue re-entry
 
 ## 9. Attempt and retry metrics
 

@@ -12,6 +12,9 @@ defmodule Orchard.Requests.RequestServer do
       received → validated → admitted → queued → scheduled
         → dispatching → running → streaming → completed
 
+      bounded Automatic Attempt Retry edge through `start_attempt_two/3`:
+        running → dispatching
+
       failure exits (from any non-terminal state):
         → failed | cancelled | timed_out | interrupted
 
@@ -109,6 +112,25 @@ defmodule Orchard.Requests.RequestServer do
   end
 
   @doc """
+  Atomically starts the sole durable attempt-two boundary.
+  """
+  @spec start_attempt_two(String.t(), map(), [Orchard.Requests.RequestStepEvent.t() | map()]) ::
+          :ok | {:error, term()}
+  def start_attempt_two(request_id, schedule, step_events) do
+    case lookup(request_id) do
+      {:ok, pid} -> call_start_attempt_two(pid, schedule, step_events)
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp call_start_attempt_two(pid, schedule, step_events) do
+    :gen_statem.call(pid, {:start_attempt_two, schedule, step_events})
+  catch
+    :exit, {:noproc, _details} -> {:error, :not_found}
+    :exit, {:normal, _details} -> {:error, :not_found}
+  end
+
+  @doc """
   Returns the current FSM state for a request.
   """
   @spec get_state(String.t()) :: {:ok, atom()} | {:error, :not_found}
@@ -140,6 +162,26 @@ defmodule Orchard.Requests.RequestServer do
   @impl true
   def handle_event({:call, from}, :get_state, state, _data) do
     {:keep_state_and_data, [{:reply, from, state}]}
+  end
+
+  def handle_event({:call, from}, {:start_attempt_two, schedule, step_events}, state, data)
+      when state in [:running, :dispatching] do
+    case Requests.start_attempt_two(data.request_id, schedule, step_events) do
+      {:ok, _boundary} ->
+        {:next_state, :dispatching, data, [{:reply, from, :ok}]}
+
+      {:error, _reason} = error ->
+        {:keep_state_and_data, [{:reply, from, error}]}
+    end
+  end
+
+  def handle_event(
+        {:call, from},
+        {:start_attempt_two, _schedule, _step_events},
+        state,
+        _data
+      ) do
+    {:keep_state_and_data, [{:reply, from, {:error, {:invalid_transition, state, :dispatching}}}]}
   end
 
   def handle_event({:call, from}, {:transition, new_state, payload}, current_state, data) do
