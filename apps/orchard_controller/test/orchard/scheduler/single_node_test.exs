@@ -3,6 +3,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.CircuitBreakers
   alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.SingleNode
@@ -34,8 +35,31 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     def disconnect(_channel), do: :ok
   end
 
+  defmodule CountingClient do
+    @moduledoc false
+
+    def connect(target) do
+      send(Process.get({__MODULE__, :owner}), {:single_node_connect, target})
+      {:ok, target}
+    end
+
+    def status(channel, _opts) do
+      send(Process.get({__MODULE__, :owner}), {:single_node_status, channel})
+      {:ok, %{active_request_count: 0, max_concurrency: 1}}
+    end
+
+    def disconnect(_channel), do: :ok
+  end
+
+  defmodule UnavailableBreakerEvaluator do
+    @moduledoc false
+
+    def evaluate(_target), do: {:error, :breaker_state_invalid}
+  end
+
   setup do
     Process.delete(:single_node_status)
+    Process.put({CountingClient, :owner}, self())
     :ok
   end
 
@@ -119,6 +143,41 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert [rejected] = decision.rejected_candidates
     assert rejected.reason_codes == ["previous_attempt_node_excluded"]
     refute_received {:runtime_endpoint_connect, _target}
+  end
+
+  test "SPEC.md §5.10 rejects an open canonical Node before status probing" do
+    node = insert_breaker_node!()
+    open_node_breaker!(node.id)
+
+    assert {:error, :model_busy, decision} =
+             SingleNode.default_schedule(
+               canonical_request("single-node-open-breaker"),
+               SingleNode.target(),
+               status_client: CountingClient,
+               node_resolver: fn _target -> {:ok, node} end
+             )
+
+    assert hd(hd(decision.rejected_candidates).reason_codes) == "node_circuit_breaker_open"
+    refute_received {:single_node_connect, _target}
+    refute_received {:single_node_status, _channel}
+  end
+
+  test "SPEC.md §5.10 fails closed distinctly when durable breaker state is unavailable" do
+    node = insert_breaker_node!()
+
+    assert {:error, :model_busy, decision} =
+             SingleNode.default_schedule(
+               canonical_request("single-node-breaker-read-failure"),
+               SingleNode.target(),
+               status_client: CountingClient,
+               node_resolver: fn _target -> {:ok, node} end,
+               circuit_breaker_evaluator: UnavailableBreakerEvaluator
+             )
+
+    assert hd(hd(decision.rejected_candidates).reason_codes) ==
+             "dispatch_capacity_facts_unavailable"
+
+    refute_received {:single_node_connect, _target}
   end
 
   test "SPEC.md §5.5 bounds loaded placement capacity by unmanaged aggregate fallback" do
@@ -552,16 +611,14 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   end
 
   test "issue #128 probe failure returns model_busy with stable explanation" do
-    node_id = Ecto.UUID.generate()
+    node = insert_breaker_node!()
 
     assert {:error, :model_busy, decision} =
              SingleNode.default_schedule(
                canonical_request("single-explained-probe-failure"),
                SingleNode.target(),
                status_client: StubClient,
-               node_resolver: fn _target ->
-                 {:ok, %Orchard.Nodes.Node{id: node_id, health: :healthy, state: :active}}
-               end
+               node_resolver: fn _target -> {:ok, node} end
              )
 
     assert decision.strategy == :single_node
@@ -569,7 +626,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
 
     codes = hd(decision.rejected_candidates).reason_codes
     assert "transport_unreachable" in codes
-    assert hd(decision.rejected_candidates).node_id == node_id
+    assert hd(decision.rejected_candidates).node_id == node.id
   end
 
   defp canonical_request(model_id) do
@@ -595,5 +652,40 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     {pid, monitor} = spawn_monitor(fn -> :ok end)
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}
     pid
+  end
+
+  defp insert_breaker_node! do
+    unique = System.unique_integer([:positive])
+
+    %Orchard.Nodes.Node{}
+    |> Orchard.Nodes.Node.changeset(%{
+      id: Ecto.UUID.generate(),
+      hostname: "single-breaker-node-#{unique}.local",
+      display_name: "single-breaker-node-#{unique}",
+      advertise_addr: "10.253.0.#{rem(unique, 254) + 1}",
+      rpc_port: 9444,
+      state: :active,
+      health: :healthy,
+      capabilities: %{},
+      tool_readiness: %{}
+    })
+    |> Repo.insert!()
+  end
+
+  defp open_node_breaker!(node_id) do
+    now = DateTime.utc_now()
+
+    for offset <- [2, 1, 0] do
+      assert {:ok, _decision} =
+               CircuitBreakers.record_failure(
+                 %{
+                   failure_id: Ecto.UUID.generate(),
+                   node_id: node_id,
+                   failure_class: "worker_or_node_loss",
+                   occurred_at: DateTime.add(now, -offset, :second)
+                 },
+                 now: now
+               )
+    end
   end
 end

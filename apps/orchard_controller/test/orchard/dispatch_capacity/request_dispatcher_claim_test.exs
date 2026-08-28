@@ -815,6 +815,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.CircuitBreakers
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
   alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.DispatchCapacity.AllocationAuthority
@@ -824,6 +825,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   alias Orchard.Inference
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
+  alias Orchard.Models.Model
   alias Orchard.NodeHeartbeats.CandidateSnapshot
   alias Orchard.NodeHeartbeats.CandidateSnapshot.Candidate
   alias Orchard.Nodes.{AdmissionDecision, Node}
@@ -876,6 +878,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   @expiring_request_timeout_ms 250
 
   setup do
+    insert_canonical_model!()
+
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     @client.configure(self())
     @gate_client.configure(self())
@@ -2184,6 +2188,46 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node.id) == 0
   end
 
+  test "SPEC 5.10 SingleNode acquisition applies placement suppression only when refreshed status requires load" do
+    authority = start_supervised!({AllocationAuthority, name: nil})
+    target = SingleNode.target()
+    now = DateTime.utc_now()
+    node = insert_admitted_node!(target, now)
+    model = Repo.get_by!(Model, model_id: "test/model", version: "v1")
+    cold_status = production_status(node, target, [])
+
+    @production_fresh_status_client.configure(self(), cold_status, cold_status)
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request(),
+               target,
+               status_client: @production_fresh_status_client,
+               dispatch_capacity_authority: authority
+             )
+
+    open_placement_breaker!(node.id, model.id)
+
+    loaded_status =
+      node
+      |> production_status(target, [%{model_id: "test/model", version: "v1"}])
+      |> Map.put(:runtime_model_placements, [
+        %{
+          model_ref: %{model_id: "test/model", version: "v1"},
+          active_request_count: 0,
+          max_concurrency: 2
+        }
+      ])
+
+    @production_fresh_status_client.configure(self(), loaded_status, loaded_status)
+    loaded_input = schedule.dispatch_capacity_acquisition_input_provider.()
+    assert loaded_input.breaker_eligible?
+
+    @production_fresh_status_client.configure(self(), cold_status, cold_status)
+    cold_input = schedule.dispatch_capacity_acquisition_input_provider.()
+    refute cold_input.breaker_eligible?
+  end
+
   test "SPEC 5.9 SingleNode target remap cannot move a queued claim to another Node" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     target = SingleNode.target()
@@ -3463,6 +3507,44 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       model_ref: %ModelRef{model_id: "test/model", version: "v1"},
       rendered_prompt: "hello orchard"
     })
+  end
+
+  defp insert_canonical_model! do
+    %Model{}
+    |> Model.changeset(%{
+      model_id: "test/model",
+      version: "v1",
+      state: :active,
+      format: "mlx",
+      capabilities: ["text"],
+      tokenizer: %{"type" => "huggingface", "ref" => "test/tokenizer"},
+      artifact_uri: "file:///tmp/request-dispatcher-claim-test-model",
+      artifact_sha256: String.duplicate("a", 64),
+      artifact_size_bytes: 1,
+      resident_memory_bytes: 1,
+      kv_cache_bytes_per_token: 1,
+      prefill_workspace_bytes_per_token: 1,
+      runtime_requirements: %{}
+    })
+    |> Repo.insert!()
+  end
+
+  defp open_placement_breaker!(node_id, model_id) do
+    now = DateTime.utc_now()
+
+    for offset <- [2, 1, 0] do
+      assert {:ok, _decision} =
+               CircuitBreakers.record_failure(
+                 %{
+                   failure_id: Ecto.UUID.generate(),
+                   node_id: node_id,
+                   model_id: model_id,
+                   failure_class: "model_load_failure",
+                   occurred_at: DateTime.add(now, -offset, :second)
+                 },
+                 now: now
+               )
+    end
   end
 
   defp put_inference(overrides) do

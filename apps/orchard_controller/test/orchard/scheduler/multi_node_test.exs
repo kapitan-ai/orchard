@@ -6,6 +6,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.CircuitBreakers
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.ClusterManagement.SchedulerExplanation
   alias Orchard.DispatchCapacity
@@ -29,6 +30,25 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   alias Orchard.Scheduler.MultiNode
   alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
+
+  defmodule SnapshotBreakerEvaluator do
+    @moduledoc false
+
+    def evaluate_many(targets) do
+      send(Process.get({__MODULE__, :owner}), {:breaker_snapshot, targets})
+      {:ok, Enum.map(targets, &decision/1)}
+    end
+
+    def evaluate(target) do
+      send(Process.get({__MODULE__, :owner}), {:breaker_single_read, target})
+      {:error, :unexpected_single_read}
+    end
+
+    defp decision({:node, node_id}), do: %{target: {:node, node_id}, state: :closed}
+
+    defp decision({:placement, node_id, model_id}),
+      do: %{target: {:placement, node_id, model_id}, state: :closed}
+  end
 
   # -- Stub Status Client --
 
@@ -251,6 +271,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   # -- Helpers --
 
   defp canonical_request(model_id \\ "test-model", version \\ "v1", overrides \\ []) do
+    ensure_scheduler_model!(model_id, version)
+
     attrs = %{
       internal_id: "int_#{System.unique_integer([:positive])}",
       public_id: "pub_#{System.unique_integer([:positive])}",
@@ -273,6 +295,31 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       end
 
     CanonicalRequest.new(attrs)
+  end
+
+  defp ensure_scheduler_model!(model_id, version) do
+    Models.get_model_by_identity(model_id, version) ||
+      case Models.create_model(%{
+             model_id: model_id,
+             version: version,
+             state: :active,
+             format: "mlx",
+             capabilities: ["text"],
+             tokenizer: %{"type" => "huggingface", "ref" => "test/tokenizer"},
+             artifact_uri: "file:///tmp/scheduler-model-#{model_id}-#{version}",
+             artifact_sha256: String.duplicate("a", 64),
+             artifact_size_bytes: 1,
+             resident_memory_bytes: 1,
+             kv_cache_bytes_per_token: 1,
+             prefill_workspace_bytes_per_token: 1,
+             runtime_requirements: %{}
+           }) do
+        {:ok, model} ->
+          model
+
+        {:error, changeset} ->
+          raise "failed to create scheduler model: #{inspect(changeset.errors)}"
+      end
   end
 
   defp queue_admission_request(public_id, model_id \\ "test-model", version \\ "v1") do
@@ -795,6 +842,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     do: Application.delete_env(:orchard_controller, key)
 
   setup do
+    Process.put({SnapshotBreakerEvaluator, :owner}, self())
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_stub_client = Application.fetch_env(:orchard_controller, StubClient)
 
@@ -974,6 +1022,250 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert [rejected] = decision.rejected_candidates
       assert rejected.node_id == node.id
       assert rejected.reason_codes == ["previous_attempt_node_excluded"]
+    end
+
+    test "SPEC.md sections 5.10 and 6.2 schedules a deprecated catalog Model" do
+      model = insert_breaker_model!(:deprecated)
+      node = insert_node!(%{advertise_addr: "10.0.0.90", rpc_port: 50_090})
+      target = Target.grpc_compat(host: "10.0.0.90", port: 50_090, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model.model_id, model.version),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert schedule.node_id == node.id
+    end
+
+    test "SPEC.md sections 5.10 and 6.2 fail closed for retired and missing Models" do
+      retired = insert_breaker_model!(:retired)
+
+      model_refs = [
+        {retired.model_id, retired.version, false},
+        {"missing-breaker-model-#{System.unique_integer([:positive])}", "v1", true}
+      ]
+
+      model_refs
+      |> Enum.with_index()
+      |> Enum.each(fn {{model_id, version, delete_after_build?}, index} ->
+        node =
+          insert_node!(%{
+            advertise_addr: "10.0.1.#{index + 1}",
+            rpc_port: 50_101 + index
+          })
+
+        target =
+          Target.grpc_compat(host: node.advertise_addr, port: node.rpc_port, node_id: node.id)
+
+        observed_at = node.last_heartbeat_at
+        snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+        request = canonical_request(model_id, version)
+
+        if delete_after_build? do
+          model_id
+          |> Models.get_model_by_identity(version)
+          |> Orchard.Repo.delete!()
+        end
+
+        persist_snapshot_capacity_evidence!(snapshot)
+
+        assert {:error, :cluster_busy, decision} =
+                 MultiNode.schedule(request,
+                   observed_at: observed_at,
+                   active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                   production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                     {:ok, snapshot}
+                   end
+                 )
+
+        assert hd(hd(decision.rejected_candidates).reason_codes) ==
+                 "dispatch_capacity_facts_unavailable"
+      end)
+    end
+
+    test "SPEC.md section 5.10 reads a request candidate set in one breaker snapshot" do
+      model = insert_breaker_model!()
+      node_a = insert_node!(%{advertise_addr: "10.0.0.95", rpc_port: 50_095})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.96", rpc_port: 50_096})
+      target_a = Target.grpc_compat(host: "10.0.0.95", port: 50_095, node_id: node_a.id)
+      target_b = Target.grpc_compat(host: "10.0.0.96", port: 50_096, node_id: node_b.id)
+      observed_at = node_a.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [
+            production_snapshot_candidate(node_a, target_a),
+            production_snapshot_candidate(node_b, target_b)
+          ],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:ok, _schedule} =
+               MultiNode.schedule(canonical_request(model.model_id, model.version),
+                 observed_at: observed_at,
+                 circuit_breaker_evaluator: SnapshotBreakerEvaluator,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target_a, target_b]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      expected_targets = [
+        {:node, node_a.id},
+        {:placement, node_a.id, model.id},
+        {:node, node_b.id},
+        {:placement, node_b.id, model.id}
+      ]
+
+      assert_received {:breaker_snapshot, ^expected_targets}
+      refute_received {:breaker_snapshot, _targets}
+      refute_received {:breaker_single_read, _target}
+    end
+
+    test "SPEC.md §5.10 excludes a Node with an open durable breaker before ranking" do
+      model = insert_breaker_model!()
+      node = insert_node!(%{advertise_addr: "10.0.0.91", rpc_port: 50_091})
+      target = Target.grpc_compat(host: "10.0.0.91", port: 50_091, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+
+      persist_snapshot_capacity_evidence!(snapshot)
+      open_node_breaker!(node.id, observed_at)
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(model.model_id, model.version),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert [rejected] = decision.rejected_candidates
+      assert rejected.node_id == node.id
+      assert hd(rejected.reason_codes) == "node_circuit_breaker_open"
+      assert decision.scored_candidates == []
+    end
+
+    test "SPEC.md §5.10 placement suppression blocks load but preserves loaded dispatch" do
+      model = insert_breaker_model!()
+      node = insert_node!(%{advertise_addr: "10.0.0.92", rpc_port: 50_092})
+      target = Target.grpc_compat(host: "10.0.0.92", port: 50_092, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      cold_candidate = production_snapshot_candidate(node, target)
+      cold_snapshot = production_snapshot([cold_candidate], observed_at)
+
+      open_placement_breaker!(node.id, model.id, observed_at)
+      persist_snapshot_capacity_evidence!(cold_snapshot)
+
+      schedule_opts = [
+        observed_at: observed_at,
+        active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+        production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+          {:ok, cold_snapshot}
+        end
+      ]
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(
+                 canonical_request(model.model_id, model.version),
+                 schedule_opts
+               )
+
+      assert hd(hd(decision.rejected_candidates).reason_codes) == "model_load_suppressed"
+
+      loaded_placement =
+        Placement.new(%{
+          model_ref: %{model_id: model.model_id, version: model.version},
+          state: :loaded,
+          capacity: %{active_request_count: 0, max_concurrency: 4, status: :available}
+        })
+
+      loaded_snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, placements: [loaded_placement])],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(loaded_snapshot)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model.model_id, model.version),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, loaded_snapshot}
+                 end
+               )
+
+      assert schedule.selected_tier == "loaded"
+      assert schedule.node_id == node.id
+    end
+
+    test "SPEC.md §5.10 re-reads a Node breaker at acquisition and final revalidation" do
+      model = insert_breaker_model!()
+      node = insert_node!(%{advertise_addr: "10.0.0.93", rpc_port: 50_093})
+      target = Target.grpc_compat(host: "10.0.0.93", port: 50_093, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model.model_id, model.version),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      open_node_breaker!(node.id, DateTime.utc_now())
+
+      acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      revalidation = schedule.dispatch_capacity_input_provider.()
+
+      refute acquisition.breaker_eligible?
+      refute revalidation.breaker_eligible?
+      assert :circuit_breaker_open in Evaluator.evaluate(acquisition).reason_codes
+      assert :circuit_breaker_open in Evaluator.evaluate(revalidation).reason_codes
+    end
+
+    test "SPEC.md §5.10 a placement opening after selection blocks load but not post-load dispatch" do
+      model = insert_breaker_model!()
+      node = insert_node!(%{advertise_addr: "10.0.0.94", rpc_port: 50_094})
+      target = Target.grpc_compat(host: "10.0.0.94", port: 50_094, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+      snapshot = production_snapshot([production_snapshot_candidate(node, target)], observed_at)
+
+      persist_snapshot_capacity_evidence!(snapshot)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model.model_id, model.version),
+                 observed_at: observed_at,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      open_placement_breaker!(node.id, model.id, DateTime.utc_now())
+
+      acquisition = schedule.dispatch_capacity_acquisition_input_provider.()
+      revalidation = schedule.dispatch_capacity_input_provider.()
+
+      refute acquisition.breaker_eligible?
+      assert revalidation.breaker_eligible?
     end
 
     test "ADR 0017 production scheduling uses the snapshot without inline status probing" do
@@ -6349,6 +6641,60 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     else
       Process.sleep(20)
       wait_until(fun, attempts - 1)
+    end
+  end
+
+  defp insert_breaker_model!(state \\ :active) do
+    unique = System.unique_integer([:positive])
+
+    {:ok, model} =
+      Models.create_model(%{
+        model_id: "scheduler-breaker-model-#{unique}",
+        version: "v1",
+        state: state,
+        format: "mlx",
+        capabilities: ["text"],
+        tokenizer: %{"type" => "huggingface", "ref" => "test/tokenizer"},
+        artifact_uri: "file:///tmp/scheduler-breaker-model-#{unique}",
+        artifact_sha256: String.duplicate("a", 64),
+        artifact_size_bytes: 1,
+        resident_memory_bytes: 1,
+        kv_cache_bytes_per_token: 1,
+        prefill_workspace_bytes_per_token: 1,
+        runtime_requirements: %{}
+      })
+
+    model
+  end
+
+  defp open_node_breaker!(node_id, now) do
+    for offset <- [2, 1, 0] do
+      assert {:ok, _decision} =
+               CircuitBreakers.record_failure(
+                 %{
+                   failure_id: Ecto.UUID.generate(),
+                   node_id: node_id,
+                   failure_class: "worker_or_node_loss",
+                   occurred_at: DateTime.add(now, -offset, :second)
+                 },
+                 now: now
+               )
+    end
+  end
+
+  defp open_placement_breaker!(node_id, model_id, now) do
+    for offset <- [2, 1, 0] do
+      assert {:ok, _decision} =
+               CircuitBreakers.record_failure(
+                 %{
+                   failure_id: Ecto.UUID.generate(),
+                   node_id: node_id,
+                   model_id: model_id,
+                   failure_class: "model_load_failure",
+                   occurred_at: DateTime.add(now, -offset, :second)
+                 },
+                 now: now
+               )
     end
   end
 
