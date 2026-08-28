@@ -27,6 +27,36 @@ preserved_bundle_path() {
   fi
 }
 
+pinned_python() {
+  (
+    cd "$REPO_ROOT"
+    mise exec -- python "$@"
+  )
+}
+
+ensure_launch_pid_slot() {
+  if [[ ! -f "$PID_FILE" ]]; then
+    return 0
+  fi
+
+  local existing_pid
+  existing_pid="$(cat "$PID_FILE")"
+  if kill -0 "$existing_pid" 2>/dev/null; then
+    echo "error: verification instance already running (pid ${existing_pid})" >&2
+    echo "error: run 'control-orchard stop' first" >&2
+    return 1
+  fi
+
+  rm -f "$PID_FILE"
+}
+
+load_meta_preserving_bundle_path() {
+  local bundle_path
+  bundle_path="$(preserved_bundle_path)"
+  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  ORCHARD_MLX_SMOKE_MODEL_PATH="$bundle_path"
+}
+
 write_meta() {
   local bundle_path
   bundle_path="$(preserved_bundle_path)"
@@ -156,14 +186,7 @@ cmd_launch() {
   require_repo
   write_meta
 
-  if [[ -f "$PID_FILE" ]]; then
-    existing_pid="$(cat "$PID_FILE")"
-    if kill -0 "$existing_pid" 2>/dev/null; then
-      echo "error: verification instance already running (pid ${existing_pid})" >&2
-      echo "error: run 'control-orchard stop' first" >&2
-      exit 1
-    fi
-  fi
+  ensure_launch_pid_slot || exit 1
 
   foreign_pid="$(port_owner_pid)"
   if [[ -n "$foreign_pid" ]]; then
@@ -201,12 +224,7 @@ cmd_launch() {
 
   # Detach into a new session so the BEAM survives this helper returning
   # (agent shells send SIGHUP to the launch process group when the command ends).
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "error: python3 is required to detach the verification server" >&2
-    exit 1
-  fi
-
-  python3 - "$REPO_ROOT" "$LOG_FILE" "$PID_FILE" "$PORT" <<'PY'
+  pinned_python - "$REPO_ROOT" "$LOG_FILE" "$PID_FILE" "$PORT" <<'PY'
 import os
 import sys
 import time
@@ -383,7 +401,7 @@ require_apple_silicon() {
 }
 
 free_tcp_port() {
-  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+  pinned_python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }
 
 cmd_prepare_bundle() {
@@ -416,7 +434,7 @@ cmd_prepare_bundle() {
 cmd_smoke_mlx() {
   require_repo
   require_apple_silicon
-  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  load_meta_preserving_bundle_path
   if [[ -z "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}" || ! -f "${ORCHARD_MLX_SMOKE_MODEL_PATH}/manifest.json" ]]; then
     cmd_prepare_bundle
     source "$META_FILE"
@@ -469,4 +487,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

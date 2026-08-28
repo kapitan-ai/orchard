@@ -19,11 +19,11 @@ Preconditions:
 - `control-orchard doctor` passes.
 
 - **Open settings.** Navigate to `/console/settings` or click **Settings**. Heading `Settings`; nav item Settings has `aria-current="page"`.
-- **Wait for connected data.** The Inference Defaults form (`#settings-inference-defaults-form`) is already on the disconnected shell — form fields alone are not proof. Wait until **Default model** has real options (or **No default model** plus loaded options) **or** `#settings-inference-defaults-error` / `#settings-default-models-error` appears. The Advanced **Runtime / config snapshot** disclosure starts collapsed; inner Worker state is optional after expand.
+- **Wait for connected data.** The Inference Defaults form (`#settings-inference-defaults-form`) is already on the disconnected shell — form fields alone are not proof. Expand **Runtime / config snapshot** and wait until its badge is no longer **Loading**; a worker state or **Unavailable** is settled proof even when the successfully loaded model list is empty. `#settings-inference-defaults-error` / `#settings-default-models-error` is also explicit settled proof.
 - **Proof.** Snapshot includes `Settings` heading, **Appearance**, **Inference Defaults** labels, and **Advanced**. Save `${ARTIFACTS}/settings/settings.aria.txt`, screenshot `${ARTIFACTS}/settings/settings.png`, and `proof.txt`.
 
 ## Gotchas
 
 - Saving inference defaults mutates DB — read-only verification must not submit **Save defaults** unless rollback is planned.
 - **Refresh now** on the debug snapshot is read-only but async; do not require a second refresh for proof.
-- Expanding **Runtime / config snapshot** is optional; a11y snapshots often hide closed `<details>` content.
+- A11y snapshots often hide closed `<details>` content, so expand **Runtime / config snapshot** before checking its badge.
