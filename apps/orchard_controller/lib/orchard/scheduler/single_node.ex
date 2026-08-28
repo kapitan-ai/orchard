@@ -32,15 +32,19 @@ defmodule Orchard.Scheduler.SingleNode do
   @type schedule_result ::
           {:ok, map()} | {:error, term()} | {:error, term(), map()}
 
-  @callback schedule(CanonicalRequest.t()) :: schedule_result()
+  @callback schedule(CanonicalRequest.t(), keyword()) :: schedule_result()
 
   @default_status_timeout_ms 2_000
 
   def schedule(%CanonicalRequest{} = request) do
+    schedule(request, [])
+  end
+
+  def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
     case Inference.configured_scheduler_impl() do
-      nil -> default_schedule(request)
-      __MODULE__ -> default_schedule(request)
-      module -> module.schedule(request)
+      nil -> default_schedule(request, target(), opts)
+      __MODULE__ -> default_schedule(request, target(), opts)
+      module -> module.schedule(request, opts)
     end
   end
 
@@ -58,6 +62,8 @@ defmodule Orchard.Scheduler.SingleNode do
   The 3-arity version accepts test seams for live status probing.
 
   Options:
+  - `:exclude_node_ids` - durable Node UUIDs that are ineligible for this
+    scheduler decision
   - `:probe_status?` - set to `false` to skip live capacity probing
   - `:status_client` - module implementing `connect/1`, `status/2`, and
     `disconnect/1`. Defaults to `GrpcNodeRuntimeClient` for address-style
@@ -83,18 +89,31 @@ defmodule Orchard.Scheduler.SingleNode do
   defp do_default_schedule(request, target, opts) do
     case resolve_node(target, opts) do
       {:ok, node} ->
-        schedule =
-          %{
-            strategy: :single_node,
-            request_id: request.public_id,
-            request_timeout_ms: Inference.request_timeout_ms(),
-            model_load_timeout_ms: model_load_timeout_ms(request),
-            node_id: node && node.id,
-            selected_tier: "cold"
-          }
-          |> put_target(target)
+        case validate_node_exclusion(node, target, opts) do
+          :ok ->
+            schedule =
+              %{
+                strategy: :single_node,
+                request_id: request.public_id,
+                request_timeout_ms: Inference.request_timeout_ms(),
+                model_load_timeout_ms: model_load_timeout_ms(request),
+                node_id: node && node.id,
+                selected_tier: "cold"
+              }
+              |> put_target(target)
 
-        authorize_schedule(schedule, request, target, node, opts)
+            authorize_schedule(schedule, request, target, node, opts)
+
+          {:error, reason_code, fact} ->
+            schedule_failure(
+              request,
+              target,
+              node,
+              :model_busy,
+              [reason_code],
+              %{fact: fact}
+            )
+        end
 
       {:error, :node_inventory_unavailable} ->
         schedule_failure(
@@ -130,6 +149,57 @@ defmodule Orchard.Scheduler.SingleNode do
   catch
     _kind, _reason -> {:error, :node_inventory_unavailable}
   end
+
+  defp validate_node_exclusion(node, target, opts) do
+    case Keyword.get(opts, :exclude_node_ids, []) do
+      [] ->
+        :ok
+
+      exclude_node_ids ->
+        with {:ok, exclusions} <- canonical_exclusion_set(exclude_node_ids),
+             {:ok, node_id} <- resolved_node_id(node),
+             :ok <- validate_target_node_id(target, node_id),
+             false <- MapSet.member?(exclusions, node_id) do
+          :ok
+        else
+          true ->
+            {:error, "previous_attempt_node_excluded", "prior_node_identity_matched"}
+
+          _missing_or_conflicting ->
+            {:error, "runtime_identity_mismatch", "durable_node_identity_unresolved"}
+        end
+    end
+  end
+
+  defp canonical_exclusion_set(node_ids) when is_list(node_ids) do
+    Enum.reduce_while(node_ids, {:ok, MapSet.new()}, fn node_id, {:ok, acc} ->
+      case Ecto.UUID.cast(node_id) do
+        {:ok, canonical} -> {:cont, {:ok, MapSet.put(acc, canonical)}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp canonical_exclusion_set(_node_ids), do: :error
+
+  defp resolved_node_id(%Orchard.Nodes.Node{id: node_id}), do: Ecto.UUID.cast(node_id)
+  defp resolved_node_id(_node), do: :error
+
+  defp validate_target_node_id(target, node_id) do
+    case asserted_target_node_id(target) do
+      nil -> :ok
+      target_node_id -> if Ecto.UUID.cast(target_node_id) == {:ok, node_id}, do: :ok, else: :error
+    end
+  end
+
+  defp asserted_target_node_id(%Target{node_id: node_id}), do: node_id
+  defp asserted_target_node_id(target) when is_list(target), do: Keyword.get(target, :node_id)
+
+  defp asserted_target_node_id(target) when is_map(target) do
+    Map.get(target, :node_id) || Map.get(target, "node_id")
+  end
+
+  defp asserted_target_node_id(_target), do: nil
 
   defp authorize_schedule(schedule, request, target, node, opts) do
     opts = Keyword.put(opts, :canonical_request, request)

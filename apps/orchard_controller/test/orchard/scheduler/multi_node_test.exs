@@ -850,6 +850,132 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   end
 
   describe "production candidate snapshots" do
+    test "SPEC.md §5.5 and ADR 0019 exclude the prior Node before tiering and prefix scoring" do
+      prior_node = insert_node!(%{advertise_addr: "10.0.0.31", rpc_port: 50_061})
+      alternate_node = insert_node!(%{advertise_addr: "10.0.0.32", rpc_port: 50_062})
+
+      prior_target =
+        Target.grpc_compat(host: "10.0.0.31", port: 50_061, node_id: prior_node.id)
+
+      alternate_target =
+        Target.grpc_compat(host: "10.0.0.32", port: 50_062, node_id: alternate_node.id)
+
+      observed_at = prior_node.last_heartbeat_at
+
+      loaded_placement =
+        Placement.new(%{
+          model_ref: %{model_id: "test-model", version: "v1"},
+          state: :loaded,
+          capacity: %{active_request_count: 0, max_concurrency: 4, status: :available}
+        })
+
+      snapshot =
+        production_snapshot(
+          [
+            production_snapshot_candidate(prior_node, prior_target,
+              observed_at: observed_at,
+              placements: [loaded_placement]
+            ),
+            production_snapshot_candidate(alternate_node, alternate_target,
+              observed_at: observed_at
+            )
+          ],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+      put_tie_only_scoring_config()
+      put_inference(runtime_endpoint_targets: [prior_target, alternate_target])
+      stub_score("10.0.0.31", 50_061, ok_resident_score())
+      stub_score("10.0.0.32", 50_062, ok_non_resident_score())
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 observed_at: observed_at,
+                 exclude_node_ids: [String.upcase(prior_node.id)],
+                 active_runtime_endpoint_targets_provider: fn ->
+                   {:ok, [prior_target, alternate_target]}
+                 end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert schedule.node_id == alternate_node.id
+
+      assert Enum.any?(schedule.rejected_candidates, fn rejected ->
+               rejected.node_id == prior_node.id and
+                 rejected.reason_codes == ["previous_attempt_node_excluded"]
+             end)
+
+      refute Enum.any?(score_calls(), fn {{host, port}, _request} ->
+               host == "10.0.0.31" and port == 50_061
+             end)
+    end
+
+    test "SPEC.md §5.5 fails closed before exclusion when snapshot identities conflict" do
+      node = insert_node!(%{advertise_addr: "10.0.0.33", rpc_port: 50_063})
+      conflicting_id = Ecto.UUID.generate()
+      target = Target.grpc_compat(host: "10.0.0.33", port: 50_063, node_id: conflicting_id)
+      observed_at = node.last_heartbeat_at
+
+      snapshot =
+        production_snapshot(
+          [production_snapshot_candidate(node, target, observed_at: observed_at)],
+          observed_at
+        )
+
+      persist_snapshot_capacity_evidence!(snapshot)
+      put_inference(runtime_endpoint_targets: [target])
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 observed_at: observed_at,
+                 exclude_node_ids: [Ecto.UUID.generate()],
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert [rejected] = decision.rejected_candidates
+      assert rejected.node_id == node.id
+      assert rejected.reason_codes == ["runtime_identity_mismatch"]
+    end
+
+    test "SPEC.md §7.3.5 reports an excluded snapshot rejection with the hard-filter reason" do
+      node = insert_node!(%{advertise_addr: "10.0.0.34", rpc_port: 50_064})
+      target = Target.grpc_compat(host: "10.0.0.34", port: 50_064, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      rejection = %Rejection{
+        target: target,
+        node_id: node.id,
+        observed_at: observed_at,
+        reason_codes: ["node_observation_stale"],
+        diagnostics: %{fact: "heartbeat_observation_stale"},
+        candidate_source: "monitor_snapshot"
+      }
+
+      snapshot = production_snapshot([], observed_at, [rejection])
+      put_inference(runtime_endpoint_targets: [target])
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 observed_at: observed_at,
+                 exclude_node_ids: [node.id],
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: fn _effective, _active, _opts ->
+                   {:ok, snapshot}
+                 end
+               )
+
+      assert [rejected] = decision.rejected_candidates
+      assert rejected.node_id == node.id
+      assert rejected.reason_codes == ["previous_attempt_node_excluded"]
+    end
+
     test "ADR 0017 production scheduling uses the snapshot without inline status probing" do
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
@@ -1469,6 +1595,51 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert Enum.map(schedule.rejected_candidates, & &1.target_ref) == [
                "grpc_compat:10.44.0.43:50073"
+             ]
+    end
+
+    test "SPEC.md §5.5 excludes every compatibility address for the same prior Node" do
+      node_id = "00000000-0000-4000-a000-0000000000ef"
+
+      targets = [
+        [host: "10.44.0.51", port: 50_071],
+        [host: "10.44.0.52", port: 50_072]
+      ]
+
+      stub_probe(
+        "10.44.0.51",
+        50_071,
+        make_status(node_id, host: "10.44.0.51", port: 50_071)
+      )
+
+      stub_probe(
+        "10.44.0.52",
+        50_072,
+        make_status(node_id, host: "10.44.0.52", port: 50_072)
+      )
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_endpoint_targets: [],
+        runtime_client_targets: targets
+      )
+
+      assert {:error, :cluster_busy, decision} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 exclude_node_ids: [node_id],
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, []} end,
+                 runtime_endpoint_targets_provider: fn {:ok, []} -> targets end
+               )
+
+      assert Enum.map(decision.rejected_candidates, & &1.target_ref) == [
+               "grpc_compat:10.44.0.51:50071",
+               "grpc_compat:10.44.0.52:50072"
+             ]
+
+      assert Enum.map(decision.rejected_candidates, & &1.reason_codes) == [
+               ["previous_attempt_node_excluded"],
+               ["previous_attempt_node_excluded"]
              ]
     end
 

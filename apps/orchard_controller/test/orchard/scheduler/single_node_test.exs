@@ -39,6 +39,88 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     :ok
   end
 
+  test "SPEC.md §5.5 and ADR 0019 exclude the prior Node before probing" do
+    node_id = Ecto.UUID.generate()
+    target = Target.grpc_compat(host: "10.0.0.8", port: 50_061, node_id: node_id)
+
+    assert {:error, :model_busy, decision} =
+             SingleNode.default_schedule(
+               canonical_request("single-prior-node-exclusion"),
+               target,
+               status_client: RuntimeEndpointStubClient,
+               exclude_node_ids: [node_id],
+               node_resolver: fn _target ->
+                 {:ok, %Orchard.Nodes.Node{id: node_id, health: :healthy, state: :active}}
+               end
+             )
+
+    assert [rejected] = decision.rejected_candidates
+    assert rejected.node_id == node_id
+    assert rejected.reason_codes == ["previous_attempt_node_excluded"]
+    refute_received {:runtime_endpoint_connect, _target}
+  end
+
+  test "SPEC.md §5.5 fails closed when exclusions are present and durable identity is missing" do
+    target = Target.grpc_compat(host: "10.0.0.9", port: 50_061)
+
+    assert {:error, :model_busy, decision} =
+             SingleNode.default_schedule(
+               canonical_request("single-missing-durable-identity"),
+               target,
+               status_client: RuntimeEndpointStubClient,
+               exclude_node_ids: [Ecto.UUID.generate()],
+               node_resolver: fn _target -> {:ok, nil} end
+             )
+
+    assert [rejected] = decision.rejected_candidates
+    assert rejected.node_id == nil
+    assert rejected.reason_codes == ["runtime_identity_mismatch"]
+    refute_received {:runtime_endpoint_connect, _target}
+  end
+
+  test "SPEC.md §5.5 fails closed on conflicting durable identity before exclusion comparison" do
+    resolved_node_id = Ecto.UUID.generate()
+    target_node_id = Ecto.UUID.generate()
+    target = Target.grpc_compat(host: "10.0.0.10", port: 50_061, node_id: target_node_id)
+
+    assert {:error, :model_busy, decision} =
+             SingleNode.default_schedule(
+               canonical_request("single-conflicting-durable-identity"),
+               target,
+               status_client: RuntimeEndpointStubClient,
+               exclude_node_ids: [Ecto.UUID.generate()],
+               node_resolver: fn _target ->
+                 {:ok,
+                  %Orchard.Nodes.Node{id: resolved_node_id, health: :healthy, state: :active}}
+               end
+             )
+
+    assert [rejected] = decision.rejected_candidates
+    assert rejected.node_id == resolved_node_id
+    assert rejected.reason_codes == ["runtime_identity_mismatch"]
+    refute_received {:runtime_endpoint_connect, _target}
+  end
+
+  test "ADR 0019 compares SingleNode exclusions as canonical UUIDs" do
+    node_id = Ecto.UUID.generate()
+    target = Target.grpc_compat(host: "10.0.0.11", port: 50_061)
+
+    assert {:error, :model_busy, decision} =
+             SingleNode.default_schedule(
+               canonical_request("single-canonical-exclusion"),
+               target,
+               status_client: RuntimeEndpointStubClient,
+               exclude_node_ids: [String.upcase(node_id)],
+               node_resolver: fn _target ->
+                 {:ok, %Orchard.Nodes.Node{id: node_id, health: :healthy, state: :active}}
+               end
+             )
+
+    assert [rejected] = decision.rejected_candidates
+    assert rejected.reason_codes == ["previous_attempt_node_excluded"]
+    refute_received {:runtime_endpoint_connect, _target}
+  end
+
   test "SPEC.md §5.5 bounds loaded placement capacity by unmanaged aggregate fallback" do
     Process.put(:single_node_status, %{
       runtime_model_placements: [

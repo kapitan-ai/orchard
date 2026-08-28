@@ -13,6 +13,7 @@ defmodule Orchard.ClusterManagement.ContractTest do
 
   test "reason-code vocabularies expose accepted fixed codes" do
     assert "node_not_active" in ReasonCodes.scheduler_rejection_codes()
+    assert "previous_attempt_node_excluded" in ReasonCodes.scheduler_rejection_codes()
     assert "lower_tier_not_considered" in ReasonCodes.scheduler_skip_codes()
     assert "node_not_pending_admission" in ReasonCodes.action_blocker_codes()
     assert "drain_not_running" in ReasonCodes.action_blocker_codes()
