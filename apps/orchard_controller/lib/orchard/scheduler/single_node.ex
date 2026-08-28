@@ -27,6 +27,7 @@ defmodule Orchard.Scheduler.SingleNode do
   alias Orchard.DomainMetrics
   alias Orchard.Inference
   alias Orchard.Nodes
+  alias Orchard.Nodes.ExclusionSet
   alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
   alias Orchard.Scheduler.CircuitBreakerEligibility
 
@@ -174,7 +175,7 @@ defmodule Orchard.Scheduler.SingleNode do
         :ok
 
       exclude_node_ids ->
-        with {:ok, exclusions} <- canonical_exclusion_set(exclude_node_ids),
+        with {:ok, exclusions} <- ExclusionSet.canonicalize(exclude_node_ids),
              {:ok, node_id} <- resolved_node_id(node),
              :ok <- validate_target_node_id(target, node_id),
              false <- MapSet.member?(exclusions, node_id) do
@@ -188,17 +189,6 @@ defmodule Orchard.Scheduler.SingleNode do
         end
     end
   end
-
-  defp canonical_exclusion_set(node_ids) when is_list(node_ids) do
-    Enum.reduce_while(node_ids, {:ok, MapSet.new()}, fn node_id, {:ok, acc} ->
-      case Ecto.UUID.cast(node_id) do
-        {:ok, canonical} -> {:cont, {:ok, MapSet.put(acc, canonical)}}
-        :error -> {:halt, :error}
-      end
-    end)
-  end
-
-  defp canonical_exclusion_set(_node_ids), do: :error
 
   defp resolved_node_id(%Orchard.Nodes.Node{id: node_id}), do: Ecto.UUID.cast(node_id)
   defp resolved_node_id(_node), do: :error

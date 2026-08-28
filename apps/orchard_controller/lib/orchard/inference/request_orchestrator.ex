@@ -30,6 +30,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Governance
   alias Orchard.InferenceEvent
   alias Orchard.Nodes
+  alias Orchard.Nodes.ExclusionSet
   alias Orchard.Requests
 
   alias Orchard.Requests.{
@@ -88,7 +89,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       when is_map(schedule) and is_list(exclude_node_ids) do
     with {:ok, selected_node_id} <- Ecto.UUID.cast(map_value(schedule, :node_id)),
          :ok <- validate_selected_target_identity(schedule, selected_node_id),
-         {:ok, excluded_node_ids} <- canonical_exclusion_set(exclude_node_ids),
+         {:ok, excluded_node_ids} <- ExclusionSet.canonicalize(exclude_node_ids),
          false <- MapSet.member?(excluded_node_ids, selected_node_id) do
       :ok
     else
@@ -984,15 +985,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp target_node_id(_target), do: :error
-
-  defp canonical_exclusion_set(node_ids) do
-    Enum.reduce_while(node_ids, {:ok, MapSet.new()}, fn node_id, {:ok, acc} ->
-      case Ecto.UUID.cast(node_id) do
-        {:ok, canonical} -> {:cont, {:ok, MapSet.put(acc, canonical)}}
-        :error -> {:halt, :error}
-      end
-    end)
-  end
 
   defp record_scheduler_decision(db_request, metadata) do
     case Requests.record_schedule(db_request, metadata) do

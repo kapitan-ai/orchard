@@ -46,6 +46,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Models
   alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
+  alias Orchard.Nodes.ExclusionSet
   alias Orchard.Scheduler.CircuitBreakerEligibility
   alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
 
@@ -652,7 +653,7 @@ defmodule Orchard.Scheduler.MultiNode do
   defp snapshot_rejections(rejections, opts) do
     opts
     |> Keyword.get(:exclude_node_ids, [])
-    |> canonical_node_id_set()
+    |> ExclusionSet.canonicalize()
     |> map_snapshot_rejections(rejections)
   end
 
@@ -704,22 +705,9 @@ defmodule Orchard.Scheduler.MultiNode do
   defp exclude_prior_nodes(candidates, opts) do
     opts
     |> Keyword.get(:exclude_node_ids, [])
-    |> canonical_node_id_set()
+    |> ExclusionSet.canonicalize()
     |> filter_prior_nodes(candidates)
   end
-
-  defp canonical_node_id_set([]), do: {:ok, MapSet.new()}
-
-  defp canonical_node_id_set(node_ids) when is_list(node_ids) do
-    Enum.reduce_while(node_ids, {:ok, MapSet.new()}, fn node_id, {:ok, acc} ->
-      case Ecto.UUID.cast(node_id) do
-        {:ok, canonical} -> {:cont, {:ok, MapSet.put(acc, canonical)}}
-        :error -> {:halt, :error}
-      end
-    end)
-  end
-
-  defp canonical_node_id_set(_node_ids), do: :error
 
   defp filter_prior_nodes({:ok, excluded_node_ids}, candidates) do
     partition_prior_nodes(candidates, excluded_node_ids)
