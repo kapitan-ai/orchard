@@ -28,6 +28,7 @@ defmodule Orchard.Scheduler.SingleNode do
   alias Orchard.Inference
   alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
+  alias Orchard.Scheduler.CircuitBreakerEligibility
 
   @type schedule_result ::
           {:ok, map()} | {:error, term()} | {:error, term(), map()}
@@ -94,7 +95,20 @@ defmodule Orchard.Scheduler.SingleNode do
           }
           |> put_target(target)
 
-        authorize_schedule(schedule, request, target, node, opts)
+        case CircuitBreakerEligibility.check_node(node && node.id, opts) do
+          :ok ->
+            authorize_schedule(schedule, request, target, node, opts)
+
+          {:error, reason} ->
+            schedule_failure(
+              request,
+              target,
+              node,
+              :model_busy,
+              [Atom.to_string(reason)],
+              %{fact: "circuit_breaker_evaluation_failed"}
+            )
+        end
 
       {:error, :node_inventory_unavailable} ->
         schedule_failure(
@@ -169,26 +183,33 @@ defmodule Orchard.Scheduler.SingleNode do
     placement_capacity = model_placement_capacity_for(response, request.model_ref)
     schedule = Map.put(schedule, :selected_tier, selected_tier(response, request.model_ref))
 
-    case capacity_input(node, target, response, placement_capacity, opts) do
-      {:ok, input} ->
-        authorize_capacity_input(
-          schedule,
-          request,
-          target,
-          node,
-          response,
-          placement_capacity,
-          input,
-          opts
-        )
-
-      {:error, _reason} ->
+    with {:ok, input} <- capacity_input(node, target, response, placement_capacity, opts),
+         {:ok, input, breaker_reason_codes} <-
+           CircuitBreakerEligibility.apply(
+             input,
+             node && node.id,
+             request.model_ref,
+             Map.get(schedule, :selected_tier) != "loaded",
+             opts
+           ) do
+      authorize_capacity_input(
+        schedule,
+        request,
+        target,
+        node,
+        response,
+        placement_capacity,
+        input,
+        Keyword.put(opts, :breaker_reason_codes, breaker_reason_codes)
+      )
+    else
+      {:error, reason} ->
         schedule_failure(
           request,
           target,
           node,
           :model_busy,
-          ["dispatch_capacity_facts_unavailable"],
+          [Atom.to_string(normalize_capacity_reason(reason))],
           %{fact: "capacity_input_unavailable"}
         )
     end
@@ -241,14 +262,7 @@ defmodule Orchard.Scheduler.SingleNode do
 
       {:ok, authorized_schedule}
     else
-      reason_codes =
-        case result do
-          %{reason_codes: codes} when is_list(codes) and codes != [] ->
-            Enum.map(codes, &to_string/1)
-
-          _other ->
-            ["dispatch_capacity_facts_unavailable"]
-        end
+      reason_codes = unauthorized_reason_codes(result, opts)
 
       schedule_failure(
         request,
@@ -313,17 +327,42 @@ defmodule Orchard.Scheduler.SingleNode do
          opts
        ) do
     if Keyword.has_key?(opts, :dispatch_capacity_input_provider) do
-      configured_capacity_input_provider(node, target, response, placement_capacity, opts)
+      configured_capacity_input_provider(
+        request,
+        node,
+        target,
+        response,
+        placement_capacity,
+        phase,
+        opts
+      )
     else
       expected_node_id = if node, do: node.id, else: nil
       fn -> fresh_capacity_input(request, target, expected_node_id, phase, opts) end
     end
   end
 
-  defp configured_capacity_input_provider(node, target, response, placement_capacity, opts) do
+  defp configured_capacity_input_provider(
+         request,
+         node,
+         target,
+         response,
+         placement_capacity,
+         phase,
+         opts
+       ) do
     fn ->
-      case capacity_input(node, target, response, placement_capacity, opts) do
-        {:ok, refreshed_input} -> refreshed_input
+      with {:ok, input} <- capacity_input(node, target, response, placement_capacity, opts),
+           {:ok, input, _reason_codes} <-
+             CircuitBreakerEligibility.apply(
+               input,
+               node && node.id,
+               request.model_ref,
+               phase == :acquisition and selected_tier(response, request.model_ref) != "loaded",
+               opts
+             ) do
+        input
+      else
         {:error, _reason} -> nil
       end
     end
@@ -343,6 +382,14 @@ defmodule Orchard.Scheduler.SingleNode do
              response,
              placement_capacity,
              opts
+           ),
+         {:ok, input, _reason_codes} <-
+           CircuitBreakerEligibility.apply(
+             input,
+             expected_node_id,
+             request.model_ref,
+             phase == :acquisition and selected_tier(response, request.model_ref) != "loaded",
+             opts
            ) do
       input
     else
@@ -353,6 +400,29 @@ defmodule Orchard.Scheduler.SingleNode do
   defp capacity_identity_matches?(%Orchard.Nodes.Node{id: node_id}, node_id), do: true
   defp capacity_identity_matches?(nil, nil), do: true
   defp capacity_identity_matches?(_node, _expected_node_id), do: false
+
+  defp unauthorized_reason_codes(result, opts) do
+    breaker_reason_codes = Keyword.get(opts, :breaker_reason_codes, [])
+
+    capacity_reason_codes =
+      case result do
+        %{reason_codes: codes} when is_list(codes) and codes != [] ->
+          codes
+          |> Enum.reject(&(&1 == :circuit_breaker_open and breaker_reason_codes != []))
+          |> Enum.map(&to_string/1)
+
+        _other ->
+          ["dispatch_capacity_facts_unavailable"]
+      end
+
+    Enum.uniq(Enum.map(breaker_reason_codes, &to_string/1) ++ capacity_reason_codes)
+  end
+
+  defp normalize_capacity_reason(reason)
+       when reason in [:runtime_identity_mismatch, :dispatch_capacity_facts_unavailable],
+       do: reason
+
+  defp normalize_capacity_reason(_reason), do: :dispatch_capacity_facts_unavailable
 
   defp refreshed_placement_capacity(response, model_ref, :acquisition),
     do: model_placement_capacity_for(response, model_ref)

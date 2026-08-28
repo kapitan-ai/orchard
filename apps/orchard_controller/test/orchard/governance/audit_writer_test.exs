@@ -23,6 +23,7 @@ defmodule Orchard.Governance.AuditWriterTest do
     {"node_enrollment.issued", "node_admission", "succeeded"},
     {"node_trust.initialized", "node_admission", "succeeded"},
     {"node_lifecycle.cordoned", "node_lifecycle", "succeeded"},
+    {"circuit_breaker.node.cleared", "circuit_breaker", "succeeded"},
     {"provisioning_batch.failed", "service_account", "failed"},
     {"cluster_admin_bootstrap.minted", "cluster", "succeeded"}
   ]
