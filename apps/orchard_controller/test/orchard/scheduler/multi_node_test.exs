@@ -4376,6 +4376,28 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert [{{"10.0.0.1", 50_061}, _incumbent}] = score_calls()
     end
 
+    test "SPEC.md §7.5.3 observe-only retry preserves base order after score budget is consumed" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123]
+      )
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+      stub_score("10.0.0.1", 50_061, ok_resident_score())
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(request,
+                 status_client: StubClient,
+                 prefix_cache_score_budget_consumed: 1
+               )
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_score_budget_consumed == 1
+      refute Map.has_key?(schedule, :prefix_cache_score)
+      assert score_calls() == []
+    end
+
     test "tie-only scoring promotes authoritative resident challenger over non-resident incumbent" do
       put_inference(
         cache_affinity: [
@@ -4454,6 +4476,38 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
                score_calls()
+    end
+
+    test "SPEC.md §7.5.3 tie-only retry scores only within the remaining Request budget" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+      stub_score("10.0.0.1", 50_061, ok_non_resident_score())
+      stub_score("10.0.0.2", 50_062, ok_resident_score())
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(request,
+                 status_client: StubClient,
+                 prefix_cache_score_budget_consumed: 1
+               )
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_score_budget_consumed == 2
+      assert [{{"10.0.0.1", 50_061}, _incumbent}] = score_calls()
+
+      reset_score_calls()
+
+      assert {:ok, exhausted_schedule} =
+               MultiNode.schedule(request,
+                 status_client: StubClient,
+                 prefix_cache_score_budget_consumed: 2
+               )
+
+      assert exhausted_schedule.node_id == id_a
+      assert exhausted_schedule.prefix_cache_score_budget_consumed == 2
+      refute Map.has_key?(exhausted_schedule, :prefix_cache_score)
+      assert score_calls() == []
     end
 
     test "tie-only scoring preserves base order when incumbent score is non-ok" do

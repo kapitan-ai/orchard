@@ -138,71 +138,126 @@ defmodule Orchard.Requests.RequestServerTest do
                RequestServer.transition(request.id, :dispatching)
     end
 
-    test "attempt two transition requires the durable consecutive attempt pair" do
+    test "attempt two transition requires the consecutive attempt pair" do
       request = running_request!()
+      node_id = Ecto.UUID.generate()
 
-      assert {:error, :attempt_two_boundary_missing} =
-               RequestServer.start_attempt_two(request.id)
+      assert {:error, :invalid_attempt_two_boundary} =
+               RequestServer.start_attempt_two(
+                 request.id,
+                 attempt_two_schedule(node_id),
+                 [attempt_one_retried_step(node_id)]
+               )
 
       assert {:ok, :running} = RequestServer.get_state(request.id)
     end
 
-    test "attempt two transition is authorized once by the durable attempt pair" do
+    test "attempt two transition atomically persists the schedule, steps, and retry edge" do
       request = running_request!()
       node_id = Ecto.UUID.generate()
+      steps = attempt_two_boundary(node_id)
 
-      assert {:ok, _events} = append_attempt_two_boundary(request, node_id)
+      assert :ok =
+               RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), steps)
 
-      assert :ok = RequestServer.start_attempt_two(request.id)
       assert {:ok, :dispatching} = RequestServer.get_state(request.id)
+
+      updated = Requests.get_request!(request.id)
+      assert updated.node_id == node_id
+      assert updated.scheduler_decision["node_id"] == node_id
+
+      [attempt_one_terminal, attempt_two_started] = Requests.list_request_step_events(request)
+      assert attempt_two_started.seq == attempt_one_terminal.seq + 1
+
+      assert List.last(Requests.list_request_events(request)).payload == %{
+               "attempt" => 2,
+               "source" => "automatic_attempt_retry",
+               "to_state" => "dispatching"
+             }
 
       assert :ok = RequestServer.transition(request.id, :running)
 
       assert {:error, :attempt_two_dispatch_already_started} =
-               RequestServer.start_attempt_two(request.id)
+               RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), steps)
     end
 
     test "attempt two start from dispatching stays dispatching" do
       request = dispatching_request!()
       node_id = Ecto.UUID.generate()
+      steps = attempt_two_boundary(node_id)
 
-      assert {:ok, _events} = append_attempt_two_boundary(request, node_id)
-      assert :ok = RequestServer.start_attempt_two(request.id)
+      assert :ok =
+               RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), steps)
+
       assert {:ok, :dispatching} = RequestServer.get_state(request.id)
 
       assert {:error, :attempt_two_dispatch_already_started} =
-               RequestServer.start_attempt_two(request.id)
+               RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), steps)
     end
 
-    test "attempt two transition rejects nonconsecutive and duplicate starts" do
+    test "failed attempt two boundary persists none of the schedule, steps, or retry edge" do
       request = running_request!()
-      node_id = Ecto.UUID.generate()
+      attempt_one_node_id = Ecto.UUID.generate()
+      alternate_node_id = Ecto.UUID.generate()
+      {:ok, _request} = Requests.assign_node(request, attempt_one_node_id)
+      events_before = Requests.list_request_events(request)
 
-      assert {:ok, _events} =
-               Requests.append_request_step_events(request, [attempt_one_retried_step(node_id)])
+      invalid_steps = [
+        attempt_one_retried_step(attempt_one_node_id),
+        attempt_two_started_step(attempt_one_node_id),
+        attempt_two_started_step(attempt_one_node_id)
+      ]
 
-      assert {:ok, _event} =
-               Requests.append_request_event(request, %{
-                 event_type: "state_transition",
-                 state: :running,
-                 payload: %{source: "test_gap", to_state: "running"}
-               })
+      assert {:error, :invalid_attempt_two_boundary} =
+               RequestServer.start_attempt_two(
+                 request.id,
+                 attempt_two_schedule(alternate_node_id),
+                 invalid_steps
+               )
 
-      assert {:ok, _events} =
-               Requests.append_request_step_events(request, [
-                 attempt_two_started_step(node_id),
-                 attempt_two_started_step(node_id)
-               ])
+      unchanged = Requests.get_request!(request.id)
+      assert unchanged.node_id == attempt_one_node_id
+      assert unchanged.scheduler_decision == nil
+      assert unchanged.state == :running
+      assert Requests.list_request_events(request) == events_before
+      assert {:ok, :running} = RequestServer.get_state(request.id)
+    end
 
-      assert {:error, :attempt_two_boundary_missing} =
-               RequestServer.start_attempt_two(request.id)
+    test "transaction rollback removes every durable attempt two boundary write" do
+      request = running_request!()
+      attempt_one_node_id = Ecto.UUID.generate()
+      alternate_node_id = Ecto.UUID.generate()
+      {:ok, _request} = Requests.assign_node(request, attempt_one_node_id)
+      events_before = Requests.list_request_events(request)
+
+      assert {:error, :forced_failure} =
+               Orchard.Repo.transaction(fn ->
+                 assert {:ok, _boundary} =
+                          Requests.start_attempt_two(
+                            request,
+                            attempt_two_schedule(alternate_node_id),
+                            attempt_two_boundary(attempt_one_node_id)
+                          )
+
+                 Orchard.Repo.rollback(:forced_failure)
+               end)
+
+      unchanged = Requests.get_request!(request.id)
+      assert unchanged.node_id == attempt_one_node_id
+      assert unchanged.scheduler_decision == nil
+      assert unchanged.state == :running
+      assert Requests.list_request_events(request) == events_before
+      assert {:ok, :running} = RequestServer.get_state(request.id)
     end
 
     test "durable prior edge remains one-shot after RequestServer restart" do
       request = running_request!()
       node_id = Ecto.UUID.generate()
-      assert {:ok, _events} = append_attempt_two_boundary(request, node_id)
-      assert :ok = RequestServer.start_attempt_two(request.id)
+      steps = attempt_two_boundary(node_id)
+
+      assert :ok =
+               RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), steps)
+
       assert :ok = RequestServer.transition(request.id, :running)
       [{pid, _}] = Registry.lookup(Orchard.Requests.Registry, request.id)
       assert :ok = DynamicSupervisor.terminate_child(Orchard.Requests.Supervisor, pid)
@@ -215,21 +270,18 @@ defmodule Orchard.Requests.RequestServerTest do
                )
 
       assert {:error, :attempt_two_dispatch_already_started} =
-               RequestServer.start_attempt_two(request.id)
+               RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), steps)
     end
 
     test "declined attempt one evidence never authorizes the retry edge" do
       request = running_request!()
       node_id = Ecto.UUID.generate()
 
-      assert {:ok, _events} =
-               Requests.append_request_step_events(request, [
+      assert {:error, :invalid_attempt_two_boundary} =
+               RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), [
                  attempt_one_retried_step(node_id, "no_alternative_node"),
                  attempt_two_started_step(node_id)
                ])
-
-      assert {:error, :attempt_two_boundary_missing} =
-               RequestServer.start_attempt_two(request.id)
     end
 
     test "rejects transitions from terminal states" do
@@ -283,11 +335,19 @@ defmodule Orchard.Requests.RequestServerTest do
     request
   end
 
-  defp append_attempt_two_boundary(request, node_id) do
-    Requests.append_request_step_events(request, [
+  defp attempt_two_boundary(node_id) do
+    [
       attempt_one_retried_step(node_id),
       attempt_two_started_step(node_id)
-    ])
+    ]
+  end
+
+  defp attempt_two_schedule(node_id) do
+    %{
+      strategy: :multi_node,
+      request_id: "attempt-two-boundary",
+      node_id: node_id
+    }
   end
 
   defp attempt_one_retried_step(node_id, retry_decision \\ "retried") do

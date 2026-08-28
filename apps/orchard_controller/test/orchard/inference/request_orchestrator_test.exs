@@ -120,6 +120,54 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubAlternateNodeScheduler d
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheBudgetScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubAlternateNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request, opts) do
+    with {:ok, schedule} <- StubAlternateNodeScheduler.schedule(request, opts) do
+      if Keyword.get(opts, :exclude_node_ids, []) == [] do
+        {:ok, Map.put(schedule, :prefix_cache_score_budget_consumed, 1)}
+      else
+        {:ok, schedule}
+      end
+    end
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubUnmanagedCompatibilityScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.DispatchCapacity.Evaluator
+  alias Orchard.Inference.RequestOrchestratorTest.StubAlternateNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request, opts) do
+    send(Process.whereis(:request_orchestrator_test_pid), {:compatibility_probe_wave, opts})
+    nodes = Process.get(:orchard_alternate_attempt_nodes)
+
+    schedule = StubAlternateNodeScheduler.schedule_for(request, nodes.first)
+    {:ok, classify_unmanaged_compatibility(schedule)}
+  end
+
+  defp classify_unmanaged_compatibility(schedule) do
+    capacity_input = %{
+      schedule.dispatch_capacity_input
+      | management_classification: {:ok, :unmanaged_compatibility}
+    }
+
+    %{
+      schedule
+      | dispatch_capacity_input: capacity_input,
+        dispatch_capacity_evaluation: Evaluator.evaluate(capacity_input),
+        dispatch_capacity_acquisition_input_provider: fn -> capacity_input end,
+        dispatch_capacity_input_provider: fn -> capacity_input end
+    }
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubSameNodeRetryScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -1058,10 +1106,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryTierOnlyScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryUnavailableScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheBudgetScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient
   alias Orchard.Inference.RequestOrchestratorTest.StubSameNodeRetryScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubUnmanagedCompatibilityScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler
 
   alias Orchard.API.Ops.SchedulerExplanationPresenter
@@ -3286,33 +3336,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       :ok
     end
 
-    step_event_appender = fn request, step_events ->
-      if Enum.any?(step_events, &(&1.attempt == 2)) do
-        assert_receive {:runtime_execute_called, ^public_id}
-        refute_receive {:runtime_execute_called, ^public_id}, 0
-
-        assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.attempt}) ==
-                 [
-                   {"request_step.started", 1}
-                 ]
-
-        {:ok, persisted} = Requests.append_request_step_events(request, step_events)
-        [attempt_one_terminal, attempt_two_started] = persisted
-        assert attempt_two_started.seq == attempt_one_terminal.seq + 1
-        {:ok, persisted}
-      else
-        Requests.append_request_step_events(request, step_events)
-      end
-    end
-
     assert {:ok, ^canonical, events} =
-             RequestOrchestrator.execute(canonical, model,
-               event_handler: handler,
-               step_event_appender: step_event_appender
-             )
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
 
     assert Enum.map(events, &InferenceEvent.kind/1) == [:accepted, :completed]
     refute_received {:delivered, :failed}
+    assert_receive {:runtime_execute_called, ^public_id}
     assert_receive {:runtime_execute_called, ^public_id}
     refute_receive {:runtime_execute_called, ^public_id}, 0
 
@@ -3325,6 +3354,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :completed
+    assert request.node_id == nodes.second.node_id
     assert length(Orchard.Repo.all(Orchard.Requests.Request)) == 1
 
     step_events = Requests.list_request_step_events(request)
@@ -3337,6 +3367,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
            ]
 
     [_, attempt_one_terminal, _, attempt_two_terminal] = Enum.map(step_events, & &1.result)
+    [_, persisted_attempt_one, persisted_attempt_two, _] = step_events
+    assert persisted_attempt_two.seq == persisted_attempt_one.seq + 1
 
     assert attempt_one_terminal["retry_decision"] == "retried"
     assert attempt_one_terminal["node_id"] == nodes.first.node_id
@@ -3359,6 +3391,71 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert is_integer(running_idx)
     later_states = Enum.drop(states, running_idx + 1)
     assert :dispatching in later_states
+  end
+
+  test "SPEC.md §§5.5 and 5.9 do not probe compatibility again after attempt 1", %{
+    bundle: bundle
+  } do
+    _nodes = configure_alternate_attempt_nodes!()
+    put_alternate_attempt_scheduler_config(StubUnmanagedCompatibilityScheduler)
+
+    stub_runtime_events([
+      InferenceEvent.failed("worker_down", "worker exited", true)
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-compatibility-no-retry")
+
+    canonical =
+      canonical_request("request-orchestrator-compatibility-no-retry", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.map(events, &InferenceEvent.kind/1) == [:accepted, :failed]
+
+    assert_receive {:compatibility_probe_wave, [exclude_node_ids: []]}
+    refute_receive {:compatibility_probe_wave, _alternate_opts}, 0
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    [started, terminal] = Requests.list_request_step_events(request)
+
+    assert started.attempt == 1
+    assert terminal.attempt == 1
+    assert terminal.result["retry_decision"] == "no_alternative_node"
+  end
+
+  test "SPEC.md §7.5.3 carries attempt 1 prefix-cache score consumption into attempt 2", %{
+    bundle: bundle
+  } do
+    nodes = configure_alternate_attempt_nodes!()
+    put_alternate_attempt_scheduler_config(StubPrefixCacheBudgetScheduler)
+
+    stub_runtime_event_queue([
+      [InferenceEvent.failed("worker_down", "worker exited", true)],
+      [
+        InferenceEvent.completed(
+          :finish_reason_stop,
+          %InferenceEvent.Usage{input_tokens: 1, output_tokens: 0, total_tokens: 1}
+        )
+      ]
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-prefix-cache-retry-budget")
+
+    canonical =
+      canonical_request("request-orchestrator-prefix-cache-retry-budget", stream?: false)
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+    assert_receive {:scheduler_opts, [exclude_node_ids: []]}
+
+    assert_receive {:scheduler_opts,
+                    [
+                      prefix_cache_score_budget_consumed: 1,
+                      exclude_node_ids: [excluded_node_id]
+                    ]}
+
+    assert excluded_node_id == nodes.first.node_id
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    refute Map.has_key?(request.scheduler_decision, "prefix_cache_score_budget_consumed")
   end
 
   test "SPEC.md §5.8 records retry_exhausted when attempt 2 fails", %{bundle: bundle} do
@@ -3572,83 +3669,6 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
-  test "SPEC.md §5.8 does not dispatch attempt 2 when the atomic start boundary fails", %{
-    bundle: bundle
-  } do
-    _nodes = configure_alternate_attempt_nodes!()
-    put_alternate_attempt_scheduler_config()
-
-    stub_runtime_event_queue([
-      [InferenceEvent.failed("worker_down", "worker exited", true)],
-      [InferenceEvent.completed(:finish_reason_stop, nil)]
-    ])
-
-    model = create_active_model!(bundle, "request-orchestrator-alternate-persist-fail")
-    canonical = canonical_request("request-orchestrator-alternate-persist-fail", stream?: false)
-
-    step_event_appender = fn request, step_events ->
-      if Enum.any?(step_events, &(&1.attempt == 2)) do
-        {:error, :request_not_found}
-      else
-        Requests.append_request_step_events(request, step_events)
-      end
-    end
-
-    assert {:error, {:request_step_start_failed, :request_not_found}} =
-             RequestOrchestrator.execute(canonical, model,
-               step_event_appender: step_event_appender
-             )
-
-    request = Requests.get_request_by_public_id(canonical.public_id)
-    assert request.state == :failed
-    refute Enum.any?(Requests.list_request_step_events(request), &(&1.attempt == 2))
-  end
-
-  test "SPEC.md §5.8 terminalizes attempt 2 when the durable retry FSM edge fails", %{
-    bundle: bundle
-  } do
-    _nodes = configure_alternate_attempt_nodes!()
-    put_alternate_attempt_scheduler_config()
-    stub_runtime_events([InferenceEvent.failed("worker_down", "worker exited", true)])
-
-    model = create_active_model!(bundle, "request-orchestrator-attempt-two-fsm-fail")
-    canonical = canonical_request("request-orchestrator-attempt-two-fsm-fail", stream?: false)
-    public_id = canonical.public_id
-
-    step_event_appender = fn request, step_events ->
-      result = Requests.append_request_step_events(request, step_events)
-
-      if Enum.any?(step_events, &(&1.attempt == 2)) do
-        assert_receive {:runtime_execute_called, ^public_id}
-        [{pid, _}] = Registry.lookup(Orchard.Requests.Registry, request.id)
-        assert :ok = DynamicSupervisor.terminate_child(Orchard.Requests.Supervisor, pid)
-      end
-
-      result
-    end
-
-    assert {:error, {:orchestration_crash, %{phase: :attempt_two_start}}} =
-             RequestOrchestrator.execute(canonical, model,
-               step_event_appender: step_event_appender
-             )
-
-    refute_receive {:runtime_execute_called, ^public_id}, 0
-    request = Requests.get_request_by_public_id(canonical.public_id)
-    step_events = Requests.list_request_step_events(request)
-
-    assert Enum.map(step_events, &{&1.event_type, &1.attempt}) == [
-             {"request_step.started", 1},
-             {"request_step.failed", 1},
-             {"request_step.started", 2},
-             {"request_step.failed", 2}
-           ]
-
-    attempt_two = List.last(step_events).result
-    assert attempt_two["failure_class"] == "controller_failure"
-    assert attempt_two["failure_code"] == "orchestration_error"
-    assert attempt_two["retry_decision"] == "retry_exhausted"
-  end
-
   test "SPEC.md §5.8 records cancellation when the caller dies after alternate scheduling", %{
     bundle: bundle
   } do
@@ -3693,7 +3713,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :cancelled
-    assert request.node_id == nodes.second.node_id
+    assert request.node_id == nodes.first.node_id
     refute Enum.any?(Requests.list_request_step_events(request), &(&1.attempt == 2))
 
     assert List.last(Requests.list_request_step_events(request)).result["retry_decision"] ==
@@ -3721,7 +3741,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :failed
     assert request.error_code == "worker_down"
-    assert request.node_id == nodes.second.node_id
+    assert request.node_id == nodes.first.node_id
     refute Enum.any?(Requests.list_request_step_events(request), &(&1.attempt == 2))
 
     assert List.last(Requests.list_request_step_events(request)).result["retry_decision"] ==
@@ -3768,21 +3788,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical = canonical_request("request-orchestrator-started-alternate-cancel", stream?: false)
     public_id = canonical.public_id
 
-    step_event_appender = fn request, step_events ->
-      result = Requests.append_request_step_events(request, step_events)
-
-      if Enum.any?(step_events, &(&1.attempt == 2)) do
-        Process.exit(caller, :kill)
-      end
-
-      result
-    end
+    Process.put(:orchard_retry_started_probe, fn _request -> Process.exit(caller, :kill) end)
 
     assert {:error, {:dispatch_failed, :request_caller_disconnect}} =
-             RequestOrchestrator.execute(canonical, model,
-               caller: caller,
-               step_event_appender: step_event_appender
-             )
+             RequestOrchestrator.execute(canonical, model, caller: caller)
 
     assert_receive {:runtime_execute_called, ^public_id}
     refute_receive {:runtime_execute_called, ^public_id}, 0
@@ -3813,20 +3822,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     public_id = canonical.public_id
 
-    step_event_appender = fn request, step_events ->
-      result = Requests.append_request_step_events(request, step_events)
-
-      if Enum.any?(step_events, &(&1.attempt == 2)) do
-        Process.sleep(80)
-      end
-
-      result
-    end
+    Process.put(:orchard_retry_started_probe, fn _request -> Process.sleep(80) end)
 
     assert {:error, {:dispatch_failed, :request_timeout}} =
-             RequestOrchestrator.execute(canonical, model,
-               step_event_appender: step_event_appender
-             )
+             RequestOrchestrator.execute(canonical, model)
 
     assert_receive {:runtime_execute_called, ^public_id}
     refute_receive {:runtime_execute_called, ^public_id}, 0
@@ -3865,31 +3864,22 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     owner = self()
 
-    step_event_appender = fn request, step_events ->
-      result = Requests.append_request_step_events(request, step_events)
-
-      if Enum.any?(step_events, &(&1.attempt == 2 and &1.event_type == "request_step.started")) do
-        duplicate =
-          canonical_request("request-orchestrator-alternate-idem",
-            tenant_id: tenant_id,
-            public_id: "req_alternate_duplicate"
-          )
-
-        send(
-          owner,
-          {:duplicate_during_attempt_two,
-           RequestOrchestrator.execute(duplicate, model, idempotency: idempotency)}
+    Process.put(:orchard_retry_started_probe, fn _request ->
+      duplicate =
+        canonical_request("request-orchestrator-alternate-idem",
+          tenant_id: tenant_id,
+          public_id: "req_alternate_duplicate"
         )
-      end
 
-      result
-    end
+      send(
+        owner,
+        {:duplicate_during_attempt_two,
+         RequestOrchestrator.execute(duplicate, model, idempotency: idempotency)}
+      )
+    end)
 
     assert {:ok, ^canonical, _events} =
-             RequestOrchestrator.execute(canonical, model,
-               idempotency: idempotency,
-               step_event_appender: step_event_appender
-             )
+             RequestOrchestrator.execute(canonical, model, idempotency: idempotency)
 
     assert_receive {:duplicate_during_attempt_two,
                     {:error, {:idempotency_conflict, :request_in_progress}}}

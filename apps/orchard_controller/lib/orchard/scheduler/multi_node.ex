@@ -87,6 +87,8 @@ defmodule Orchard.Scheduler.MultiNode do
   Options:
   - `:exclude_node_ids` - durable Node UUIDs removed before capacity
     annotation, tiering, ranking, and scoring
+  - `:prefix_cache_score_budget_consumed` - number of score candidates already
+    consumed by an earlier attempt of the same logical Request
   - `:status_client` - module implementing the Runtime Endpoint client callbacks
     (default: `Inference.runtime_endpoint_client/0`)
   - `:status_timeout_ms` - timeout for each status probe (default: #{@default_status_timeout_ms})
@@ -376,14 +378,15 @@ defmodule Orchard.Scheduler.MultiNode do
 
     ranked = rank_candidates(annotated_candidates, ranking_opts)
 
-    {selected, selected_score} =
+    {selected, selected_score, score_budget_consumed} =
       select_candidate_with_prefix_cache_score(
         request,
         ranked,
         client,
         cache_affinity_config,
         prefix_cache_scoring_enabled?,
-        ranking_opts
+        ranking_opts,
+        Keyword.get(opts, :prefix_cache_score_budget_consumed, 0)
       )
 
     selected_tier = if(selected.loaded_model?, do: "loaded", else: "cold")
@@ -424,6 +427,7 @@ defmodule Orchard.Scheduler.MultiNode do
       |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
       |> maybe_put_prefix_cache_fingerprint_match(selected, live_fingerprint_match_enabled?)
       |> maybe_put_prefix_cache_score(selected_score)
+      |> maybe_put_prefix_cache_score_budget_consumed(score_budget_consumed)
       |> maybe_put_memory_admission(selected, memory_admission_enabled?)
       |> Map.merge(
         scheduler_explanation(
@@ -1789,15 +1793,23 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp maybe_put_prefix_cache_score(map, score), do: Map.put(map, :prefix_cache_score, score)
 
+  defp maybe_put_prefix_cache_score_budget_consumed(map, 0), do: map
+
+  defp maybe_put_prefix_cache_score_budget_consumed(map, consumed),
+    do: Map.put(map, :prefix_cache_score_budget_consumed, consumed)
+
   defp select_candidate_with_prefix_cache_score(
          request,
          ranked,
          client,
          cache_affinity_config,
          prefix_cache_scoring_enabled?,
-         ranking_opts
+         ranking_opts,
+         score_budget_consumed
        ) do
     selected = hd(ranked)
+
+    score_budget = prefix_cache_score_budget(score_budget_consumed)
 
     scoring_context =
       prefix_cache_scoring_context(
@@ -1807,7 +1819,8 @@ defmodule Orchard.Scheduler.MultiNode do
         Keyword.get(ranking_opts, :live_fingerprint_match?, false)
       )
 
-    selected_score = score_prefix_cache_candidate(request, selected, client, scoring_context)
+    {selected_score, score_budget} =
+      score_prefix_cache_candidate(request, selected, client, scoring_context, score_budget)
 
     maybe_reselect_prefix_cache_candidate(
       request,
@@ -1815,9 +1828,22 @@ defmodule Orchard.Scheduler.MultiNode do
       client,
       scoring_context,
       selected_score,
-      ranking_opts
+      ranking_opts,
+      score_budget
     )
   end
+
+  defp prefix_cache_score_budget(consumed) when is_integer(consumed) and consumed >= 0 do
+    maximum =
+      if Inference.prefix_cache_scoring_ranking_active?(),
+        do: Inference.prefix_cache_scoring_max_ranking_candidates(),
+        else: 1
+
+    consumed = min(consumed, maximum)
+    %{consumed: consumed, remaining: max(maximum - consumed, 0)}
+  end
+
+  defp prefix_cache_score_budget(_consumed), do: prefix_cache_score_budget(0)
 
   defp prefix_cache_scoring_context(
          _request,
@@ -1845,9 +1871,21 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp score_prefix_cache_candidate(_request, _candidate, _client, nil), do: nil
+  defp score_prefix_cache_candidate(_request, _candidate, _client, nil, score_budget),
+    do: {nil, score_budget}
 
-  defp score_prefix_cache_candidate(request, candidate, client, scoring_context) do
+  defp score_prefix_cache_candidate(
+         _request,
+         _candidate,
+         _client,
+         _scoring_context,
+         %{
+           remaining: 0
+         } = score_budget
+       ),
+       do: {nil, score_budget}
+
+  defp score_prefix_cache_candidate(request, candidate, client, scoring_context, score_budget) do
     timeout_ms = scoring_context.timeout_ms
 
     response =
@@ -1860,7 +1898,10 @@ defmodule Orchard.Scheduler.MultiNode do
       }
       |> score_prefix_cache_response(client, candidate.target, timeout_ms)
 
-    PrefixCacheScore.normalize_for_scheduler(response)
+    normalized = PrefixCacheScore.normalize_for_scheduler(response)
+
+    {normalized,
+     %{score_budget | consumed: score_budget.consumed + 1, remaining: score_budget.remaining - 1}}
   end
 
   defp maybe_reselect_prefix_cache_candidate(
@@ -1869,9 +1910,10 @@ defmodule Orchard.Scheduler.MultiNode do
          _client,
          _scoring_context,
          nil,
-         _ranking_opts
+         _ranking_opts,
+         score_budget
        ),
-       do: {hd(ranked), nil}
+       do: {hd(ranked), nil, score_budget.consumed}
 
   defp maybe_reselect_prefix_cache_candidate(
          request,
@@ -1879,7 +1921,8 @@ defmodule Orchard.Scheduler.MultiNode do
          client,
          scoring_context,
          selected_score,
-         ranking_opts
+         ranking_opts,
+         score_budget
        ) do
     if Inference.prefix_cache_scoring_ranking_active?() do
       maybe_reselect_tied_candidate(
@@ -1888,10 +1931,11 @@ defmodule Orchard.Scheduler.MultiNode do
         client,
         scoring_context,
         selected_score,
-        ranking_opts
+        ranking_opts,
+        score_budget
       )
     else
-      {hd(ranked), selected_score}
+      {hd(ranked), selected_score, score_budget.consumed}
     end
   end
 
@@ -1901,21 +1945,28 @@ defmodule Orchard.Scheduler.MultiNode do
          client,
          scoring_context,
          selected_score,
-         ranking_opts
+         ranking_opts,
+         score_budget
        ) do
     case leading_tie_group(ranked, ranking_opts) do
       [incumbent, challenger] ->
-        challenger_score =
-          score_prefix_cache_candidate(request, challenger, client, scoring_context)
+        {challenger_score, score_budget} =
+          score_prefix_cache_candidate(
+            request,
+            challenger,
+            client,
+            scoring_context,
+            score_budget
+          )
 
         if prefix_cache_score_promotes?(selected_score, challenger_score) do
-          {challenger, challenger_score}
+          {challenger, challenger_score, score_budget.consumed}
         else
-          {incumbent, selected_score}
+          {incumbent, selected_score, score_budget.consumed}
         end
 
       _no_two_candidate_tie ->
-        {hd(ranked), selected_score}
+        {hd(ranked), selected_score, score_budget.consumed}
     end
   end
 

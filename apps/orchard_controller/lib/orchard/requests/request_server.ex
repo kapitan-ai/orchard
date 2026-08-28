@@ -12,7 +12,7 @@ defmodule Orchard.Requests.RequestServer do
       received → validated → admitted → queued → scheduled
         → dispatching → running → streaming → completed
 
-      bounded Automatic Attempt Retry edge through `start_attempt_two/1`:
+      bounded Automatic Attempt Retry edge through `start_attempt_two/3`:
         running → dispatching
 
       failure exits (from any non-terminal state):
@@ -112,18 +112,19 @@ defmodule Orchard.Requests.RequestServer do
   end
 
   @doc """
-  Starts the sole durable attempt-two dispatch transition.
+  Atomically starts the sole durable attempt-two boundary.
   """
-  @spec start_attempt_two(String.t()) :: :ok | {:error, term()}
-  def start_attempt_two(request_id) do
+  @spec start_attempt_two(String.t(), map(), [Orchard.Requests.RequestStepEvent.t() | map()]) ::
+          :ok | {:error, term()}
+  def start_attempt_two(request_id, schedule, step_events) do
     case lookup(request_id) do
-      {:ok, pid} -> call_start_attempt_two(pid)
+      {:ok, pid} -> call_start_attempt_two(pid, schedule, step_events)
       :error -> {:error, :not_found}
     end
   end
 
-  defp call_start_attempt_two(pid) do
-    :gen_statem.call(pid, :start_attempt_two)
+  defp call_start_attempt_two(pid, schedule, step_events) do
+    :gen_statem.call(pid, {:start_attempt_two, schedule, step_events})
   catch
     :exit, {:noproc, _details} -> {:error, :not_found}
     :exit, {:normal, _details} -> {:error, :not_found}
@@ -163,10 +164,10 @@ defmodule Orchard.Requests.RequestServer do
     {:keep_state_and_data, [{:reply, from, state}]}
   end
 
-  def handle_event({:call, from}, :start_attempt_two, state, data)
+  def handle_event({:call, from}, {:start_attempt_two, schedule, step_events}, state, data)
       when state in [:running, :dispatching] do
-    case Requests.append_attempt_two_dispatch_transition(data.request_id) do
-      {:ok, _event} ->
+    case Requests.start_attempt_two(data.request_id, schedule, step_events) do
+      {:ok, _boundary} ->
         {:next_state, :dispatching, data, [{:reply, from, :ok}]}
 
       {:error, _reason} = error ->
@@ -174,7 +175,12 @@ defmodule Orchard.Requests.RequestServer do
     end
   end
 
-  def handle_event({:call, from}, :start_attempt_two, state, _data) do
+  def handle_event(
+        {:call, from},
+        {:start_attempt_two, _schedule, _step_events},
+        state,
+        _data
+      ) do
     {:keep_state_and_data, [{:reply, from, {:error, {:invalid_transition, state, :dispatching}}}]}
   end
 

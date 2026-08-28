@@ -665,6 +665,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
               db_request,
               canonical,
               model,
+              schedule,
               execution_opts,
               context,
               pending_outcome
@@ -700,6 +701,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          db_request,
          canonical,
          model,
+         schedule,
          execution_opts,
          %AttemptContext{attempt: 1} = context,
          %AttemptOutcome{attempt_outcome: attempt_outcome, delivery_state: :pending} =
@@ -710,6 +712,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       db_request,
       canonical,
       model,
+      schedule,
       execution_opts,
       context,
       pending_outcome
@@ -720,6 +723,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          db_request,
          canonical,
          _model,
+         _schedule,
          execution_opts,
          %AttemptContext{} = context,
          %AttemptOutcome{} = pending_outcome
@@ -741,6 +745,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          db_request,
          canonical,
          model,
+         schedule,
          execution_opts,
          %AttemptContext{} = context,
          %AttemptOutcome{} = pending_outcome
@@ -759,21 +764,73 @@ defmodule Orchard.Inference.RequestOrchestrator do
         )
 
       :eligible_for_alternate ->
-        case persist_attempt_one_state(db_request.id, pending_outcome) do
-          :ok ->
-            start_alternate_attempt(
-              db_request,
-              canonical,
-              model,
-              execution_opts,
-              context,
-              pending_outcome
-            )
+        continue_eligible_attempt_one(
+          db_request,
+          canonical,
+          model,
+          schedule,
+          execution_opts,
+          context,
+          pending_outcome
+        )
+    end
+  end
 
-          {:error, reason} ->
-            {:error, {:attempt_one_state_transition_failed, reason},
-             terminal_evidence(context, pending_outcome, :not_retryable)}
-        end
+  defp continue_eligible_attempt_one(
+         db_request,
+         canonical,
+         model,
+         schedule,
+         execution_opts,
+         context,
+         pending_outcome
+       ) do
+    if unmanaged_compatibility_schedule?(schedule) do
+      decline_attempt_one(
+        db_request,
+        canonical,
+        pending_outcome,
+        execution_opts,
+        context,
+        :no_alternative_node
+      )
+    else
+      continue_schedulable_attempt_one(
+        db_request,
+        canonical,
+        model,
+        schedule,
+        execution_opts,
+        context,
+        pending_outcome
+      )
+    end
+  end
+
+  defp continue_schedulable_attempt_one(
+         db_request,
+         canonical,
+         model,
+         schedule,
+         execution_opts,
+         context,
+         pending_outcome
+       ) do
+    case persist_attempt_one_state(db_request.id, pending_outcome) do
+      :ok ->
+        start_alternate_attempt(
+          db_request,
+          canonical,
+          model,
+          schedule,
+          execution_opts,
+          context,
+          pending_outcome
+        )
+
+      {:error, reason} ->
+        {:error, {:attempt_one_state_transition_failed, reason},
+         terminal_evidence(context, pending_outcome, :not_retryable)}
     end
   end
 
@@ -796,6 +853,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          db_request,
          canonical,
          model,
+         attempt_one_schedule,
          execution_opts,
          %AttemptContext{} = context,
          %AttemptOutcome{} = pending_outcome
@@ -807,8 +865,16 @@ defmodule Orchard.Inference.RequestOrchestrator do
       execution_opts,
       context,
       fn _boundary ->
+        prefix_cache_score_budget_consumed =
+          prefix_cache_score_budget_consumed(attempt_one_schedule)
+
         result =
-          schedule_alternate_request(canonical, [pending_outcome.node_id], db_request.timeout_at)
+          schedule_alternate_request(
+            canonical,
+            [pending_outcome.node_id],
+            db_request.timeout_at,
+            prefix_cache_score_budget_consumed
+          )
 
         with_live_retry_boundary(
           db_request,
@@ -841,34 +907,27 @@ defmodule Orchard.Inference.RequestOrchestrator do
          context,
          pending_outcome
        ) do
-    case record_scheduler_decision(db_request, persistence_metadata) do
-      {:ok, _request} ->
-        run_retry_persist_probe()
+    run_retry_persist_probe()
 
-        with_live_retry_boundary(
+    with_live_retry_boundary(
+      db_request,
+      canonical,
+      pending_outcome,
+      execution_opts,
+      context,
+      fn boundary ->
+        persist_and_dispatch_alternate(
           db_request,
           canonical,
-          pending_outcome,
+          model,
+          {alternate_schedule, persistence_metadata},
           execution_opts,
           context,
-          fn boundary ->
-            persist_and_dispatch_alternate(
-              db_request,
-              canonical,
-              model,
-              alternate_schedule,
-              execution_opts,
-              context,
-              pending_outcome,
-              AttemptRetryClassifier.finalize_alternate(boundary, :different_node)
-            )
-          end
+          pending_outcome,
+          AttemptRetryClassifier.finalize_alternate(boundary, :different_node)
         )
-
-      {:error, reason} ->
-        {:error, {:alternate_schedule_persist_failed, reason},
-         terminal_evidence(context, pending_outcome, :not_retryable)}
-    end
+      end
+    )
   end
 
   defp handle_alternate_schedule_result(
@@ -950,7 +1009,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          db_request,
          canonical,
          model,
-         alternate_schedule,
+         {alternate_schedule, persistence_metadata},
          execution_opts,
          %AttemptContext{} = attempt_one_context,
          %AttemptOutcome{} = pending_outcome,
@@ -963,7 +1022,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
            pending_outcome,
            attempt_one_context,
            attempt_two_context,
-           execution_opts
+           persistence_metadata
          ) do
       {:ok, {:attempt_two_started, persisted_attempt_two_context}} ->
         dispatch_persisted_alternate(
@@ -990,17 +1049,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
          pending_outcome,
          %AttemptContext{} = attempt_two_context
        ) do
-    with :ok <- authorize_attempt_two_fsm(db_request.id),
-         {:ok, _discarded} <- AttemptOutcome.discard(pending_outcome) do
-      dispatch_alternate_if_live(
-        db_request,
-        canonical,
-        model,
-        alternate_schedule,
-        execution_opts,
-        attempt_two_context
-      )
-    else
+    case AttemptOutcome.discard(pending_outcome) do
+      {:ok, _discarded} ->
+        dispatch_alternate_if_live(
+          db_request,
+          canonical,
+          model,
+          alternate_schedule,
+          execution_opts,
+          attempt_two_context
+        )
+
       {:error, reason} ->
         terminalize_started_attempt_two_controller(
           alternate_schedule,
@@ -1009,8 +1068,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
         )
     end
   end
-
-  defp authorize_attempt_two_fsm(request_id), do: RequestServer.start_attempt_two(request_id)
 
   defp dispatch_alternate_if_live(
          db_request,
@@ -1194,8 +1251,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
     outcome
   end
 
-  defp schedule_alternate_request(canonical, exclude_node_ids, timeout_at) do
-    case call_scheduler(canonical, exclude_node_ids) do
+  defp schedule_alternate_request(
+         canonical,
+         exclude_node_ids,
+         timeout_at,
+         prefix_cache_score_budget_consumed
+       ) do
+    case call_scheduler(canonical, exclude_node_ids, prefix_cache_score_budget_consumed) do
       {:ok, schedule} when is_map(schedule) ->
         classify_alternate_scheduler_selection(schedule, exclude_node_ids, timeout_at)
 
@@ -1229,7 +1291,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
          %AttemptOutcome{} = attempt_one_outcome,
          %AttemptContext{} = attempt_one_context,
          %AttemptContext{} = attempt_two_context,
-         execution_opts
+         persistence_metadata
        ) do
     terminal_attrs = unsuccessful_attempt_terminal_attrs(attempt_one_outcome)
 
@@ -1245,9 +1307,32 @@ defmodule Orchard.Inference.RequestOrchestrator do
       inference_turn_started_step(attempt_two_context)
     ]
 
-    case execution_opts.step_event_appender.(db_request, steps) do
-      {:ok, _step_events} -> {:ok, {:attempt_two_started, attempt_two_context}}
-      {:error, reason} -> {:error, {:request_step_start_failed, reason}}
+    case start_attempt_two_fsm(db_request.id, persistence_metadata, steps) do
+      :ok ->
+        run_retry_started_probe(db_request)
+        {:ok, {:attempt_two_started, attempt_two_context}}
+
+      {:error, reason} ->
+        {:error, {:request_step_start_failed, reason}}
+    end
+  end
+
+  defp start_attempt_two_fsm(request_id, persistence_metadata, steps) do
+    case RequestServer.start_attempt_two(request_id, persistence_metadata, steps) do
+      {:error, {:invalid_scheduler_explanation, reason}} ->
+        log_error(
+          "invalid scheduler explanation at attempt 2 start: #{inspect(reason)}; " <>
+            "persisting scheduler decision without explanation candidates"
+        )
+
+        RequestServer.start_attempt_two(
+          request_id,
+          drop_scheduler_explanation(persistence_metadata),
+          steps
+        )
+
+      result ->
+        result
     end
   end
 
@@ -1343,6 +1428,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp run_retry_persist_probe do
     case Process.get(:orchard_retry_persist_probe) do
       fun when is_function(fun, 0) -> fun.()
+      _other -> :ok
+    end
+  end
+
+  defp run_retry_started_probe(db_request) do
+    case Process.get(:orchard_retry_started_probe) do
+      fun when is_function(fun, 1) -> fun.(db_request)
       _other -> :ok
     end
   end
@@ -1610,7 +1702,24 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp call_scheduler(canonical, exclude_node_ids) do
-    Inference.scheduler().schedule(canonical, exclude_node_ids: exclude_node_ids)
+    call_scheduler(canonical, exclude_node_ids, 0)
+  end
+
+  defp call_scheduler(canonical, exclude_node_ids, prefix_cache_score_budget_consumed) do
+    opts = [exclude_node_ids: exclude_node_ids]
+
+    opts =
+      if prefix_cache_score_budget_consumed > 0 do
+        Keyword.put(
+          opts,
+          :prefix_cache_score_budget_consumed,
+          prefix_cache_score_budget_consumed
+        )
+      else
+        opts
+      end
+
+    Inference.scheduler().schedule(canonical, opts)
   rescue
     error ->
       log_warn("scheduler crashed: #{exception_name(error)}")
@@ -1835,6 +1944,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp prefix_cache_metadata_key?("prefix_cache_fingerprint_match?"), do: true
   defp prefix_cache_metadata_key?(:prefix_cache_score), do: true
   defp prefix_cache_metadata_key?("prefix_cache_score"), do: true
+  defp prefix_cache_metadata_key?(:prefix_cache_score_budget_consumed), do: true
+  defp prefix_cache_metadata_key?("prefix_cache_score_budget_consumed"), do: true
 
   defp prefix_cache_metadata_key?(key) when is_atom(key) do
     key
@@ -1847,6 +1958,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp prefix_cache_metadata_key?(_key), do: false
+
+  defp prefix_cache_score_budget_consumed(schedule) do
+    case map_value(schedule, :prefix_cache_score_budget_consumed) do
+      consumed when is_integer(consumed) and consumed > 0 -> consumed
+      _other -> 0
+    end
+  end
+
+  defp unmanaged_compatibility_schedule?(schedule) do
+    case map_value(schedule, :dispatch_capacity_evaluation) do
+      %{authority_decision: :unmanaged_compatibility} -> true
+      %{"authority_decision" => "unmanaged_compatibility"} -> true
+      _other -> false
+    end
+  end
 
   defp strip_memory_admission_metadata(schedule) do
     Map.reject(schedule, fn {key, _value} -> memory_admission_metadata_key?(key) end)

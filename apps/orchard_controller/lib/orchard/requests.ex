@@ -269,36 +269,78 @@ defmodule Orchard.Requests do
     end
   end
 
-  @spec append_attempt_two_dispatch_transition(struct() | Ecto.UUID.t()) ::
-          {:ok, struct()}
+  @spec start_attempt_two(
+          struct() | Ecto.UUID.t(),
+          map(),
+          [RequestStepEvent.t() | map()]
+        ) ::
+          {:ok,
+           %{
+             request: Request.t(),
+             step_events: [RequestStepEvent.t()],
+             transition_event: struct()
+           }}
           | {:error,
              Ecto.Changeset.t()
              | :request_not_found
              | :request_not_running
-             | :attempt_two_boundary_missing
-             | :attempt_two_dispatch_already_started}
-  def append_attempt_two_dispatch_transition(%Request{id: request_id}),
-    do: append_attempt_two_dispatch_transition(request_id)
+             | :invalid_attempt_two_boundary
+             | :attempt_two_dispatch_already_started
+             | {:invalid_scheduler_explanation, term()}
+             | {:invalid_step_event, pos_integer(), String.t()}}
+  def start_attempt_two(%Request{id: request_id}, schedule, step_events),
+    do: start_attempt_two(request_id, schedule, step_events)
 
-  def append_attempt_two_dispatch_transition(request_id) do
-    Repo.transaction(fn ->
-      with {:ok, request} <- lock_request(request_id),
-           :ok <- authorize_attempt_two_source_state(request.state),
-           :ok <- authorize_attempt_two_dispatch(request_id) do
-        insert_event_and_sync_state(request, request_id, %{
-          event_type: "state_transition",
-          state: :dispatching,
-          payload: %{
-            source: "automatic_attempt_retry",
-            attempt: 2,
-            to_state: "dispatching"
-          }
-        })
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> unwrap_transaction_result()
+  def start_attempt_two(request_id, schedule, step_events) do
+    with {:ok, normalized_schedule} <- normalize_schedule(schedule),
+         {:ok, normalized_step_events} <- normalize_request_step_events(step_events) do
+      Repo.transaction(fn ->
+        start_attempt_two_transaction(
+          request_id,
+          schedule,
+          normalized_schedule,
+          normalized_step_events
+        )
+      end)
+      |> unwrap_transaction_result()
+    end
+  end
+
+  defp start_attempt_two_transaction(
+         request_id,
+         schedule,
+         normalized_schedule,
+         normalized_step_events
+       ) do
+    with {:ok, request} <- lock_request(request_id),
+         :ok <- authorize_attempt_two_source_state(request.state),
+         :ok <- authorize_attempt_two_start(request_id, normalized_step_events),
+         {:ok, updated_request} <- persist_schedule(request, schedule, normalized_schedule),
+         {:ok, persisted_step_events} <-
+           insert_request_step_events(updated_request, normalized_step_events),
+         {:ok, transition_event} <-
+           insert_attempt_two_dispatch_transition(updated_request, request_id) do
+      {:ok,
+       %{
+         request: updated_request,
+         step_events: persisted_step_events,
+         transition_event: transition_event
+       }}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp insert_attempt_two_dispatch_transition(request, request_id) do
+    insert_event_and_sync_state(request, request_id, %{
+      event_type: "state_transition",
+      state: :dispatching,
+      payload: %{
+        source: "automatic_attempt_retry",
+        attempt: 2,
+        to_state: "dispatching"
+      }
+    })
   end
 
   defp insert_event_and_sync_state(request, request_id, attrs) do
@@ -362,7 +404,7 @@ defmodule Orchard.Requests do
   defp authorize_attempt_two_source_state(state) when state in [:running, :dispatching], do: :ok
   defp authorize_attempt_two_source_state(_state), do: {:error, :request_not_running}
 
-  defp authorize_attempt_two_dispatch(request_id) do
+  defp authorize_attempt_two_start(request_id, proposed_steps) do
     events =
       RequestEvent
       |> where([event], event.request_id == ^request_id)
@@ -373,11 +415,14 @@ defmodule Orchard.Requests do
       Enum.any?(events, &automatic_attempt_two_dispatch?/1) ->
         {:error, :attempt_two_dispatch_already_started}
 
-      valid_attempt_two_boundary?(events) ->
+      existing_attempt_two_start?(events) ->
+        {:error, :attempt_two_dispatch_already_started}
+
+      valid_attempt_two_boundary?(proposed_steps) ->
         :ok
 
       true ->
-        {:error, :attempt_two_boundary_missing}
+        {:error, :invalid_attempt_two_boundary}
     end
   end
 
@@ -392,36 +437,26 @@ defmodule Orchard.Requests do
 
   defp automatic_attempt_two_dispatch?(%RequestEvent{}), do: false
 
-  defp valid_attempt_two_boundary?(events) do
-    step_events =
-      Enum.flat_map(events, fn event ->
-        case RequestStepEvent.from_request_event(event) do
-          {:ok, step_event} -> [step_event]
-          {:error, _reason} -> []
-        end
-      end)
-
-    attempt_one_terminals =
-      Enum.filter(step_events, fn step ->
-        step.attempt == 1 and
-          step.event_type in RequestStepEvent.terminal_step_event_types() and
-          step.result["retry_decision"] == "retried" and
-          step.result["output_committed"] == false
-      end)
-
-    attempt_two_starts =
-      Enum.filter(step_events, fn step ->
-        step.attempt == 2 and step.event_type == "request_step.started"
-      end)
-
-    case {attempt_one_terminals, attempt_two_starts} do
-      {[%RequestStepEvent{seq: terminal_seq}], [%RequestStepEvent{seq: started_seq}]} ->
-        started_seq == terminal_seq + 1
-
-      _other ->
-        false
-    end
+  defp existing_attempt_two_start?(events) do
+    Enum.any?(events, fn event ->
+      case RequestStepEvent.from_request_event(event) do
+        {:ok, %RequestStepEvent{attempt: 2, event_type: "request_step.started"}} -> true
+        _other -> false
+      end
+    end)
   end
+
+  defp valid_attempt_two_boundary?([
+         %RequestStepEvent{
+           attempt: 1,
+           event_type: terminal_event_type,
+           result: %{"retry_decision" => "retried", "output_committed" => false}
+         },
+         %RequestStepEvent{attempt: 2, event_type: "request_step.started"}
+       ]),
+       do: terminal_event_type in RequestStepEvent.terminal_step_event_types()
+
+  defp valid_attempt_two_boundary?(_step_events), do: false
 
   defp sync_request_state(request, event_attrs, raw_attrs) do
     new_state = Map.get(event_attrs, "state") || Map.get(raw_attrs, :state)
