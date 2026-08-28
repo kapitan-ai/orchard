@@ -1230,8 +1230,14 @@ defmodule Orchard.RequestsTest do
       assert Repo.get!(Orchard.Requests.Request, request.id).scheduler_decision == nil
     end
 
-    test "preserves nil node_id when schedule has no node" do
-      request = create_request!(%{public_id: "req_schedule_3"})
+    test "omits invalid or absent node_id updates and preserves the producing Node" do
+      producing_node_id = Ecto.UUID.generate()
+
+      request =
+        create_request!(%{
+          public_id: "req_schedule_3",
+          node_id: producing_node_id
+        })
 
       schedule = %{
         strategy: :single_node,
@@ -1243,7 +1249,22 @@ defmodule Orchard.RequestsTest do
       }
 
       assert {:ok, updated} = Requests.record_schedule(request, schedule)
-      assert updated.node_id == nil
+      assert updated.node_id == producing_node_id
+
+      assert {:ok, updated} =
+               Requests.record_schedule(updated, Map.put(schedule, "node_id", "not-a-uuid"))
+
+      assert updated.node_id == producing_node_id
+
+      alternate_node_id = Ecto.UUID.generate()
+
+      assert {:ok, updated} =
+               Requests.record_schedule(
+                 updated,
+                 schedule |> Map.delete(:node_id) |> Map.put("node_id", alternate_node_id)
+               )
+
+      assert updated.node_id == alternate_node_id
     end
 
     test "returns error for unknown request" do

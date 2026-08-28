@@ -233,6 +233,52 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
                  "retry_decision" => "retry_exhausted"
                })
              )
+
+    assert {:ok, _result} =
+             InferenceAttemptResult.new(
+               "request_step.failed",
+               2,
+               failed_result(%{
+                 "accepted" => true,
+                 "output_committed" => true,
+                 "output_commitment_kind" => "text",
+                 "execution_resolution" => "terminated",
+                 "capacity_release_outcome" => "released",
+                 "node_id" => @node_2,
+                 "excluded_node_ids" => [@node_1],
+                 "retry_decision" => "retry_exhausted"
+               })
+             )
+  end
+
+  test "retry resolution preserves the attempt's producing failure evidence" do
+    assert {:ok, identity_unresolved} =
+             InferenceAttemptResult.new(
+               "request_step.failed",
+               1,
+               failed_result(%{
+                 "failure_class" => "worker_or_node_loss",
+                 "failure_code" => "worker_down",
+                 "retry_decision" => "identity_unresolved"
+               })
+             )
+
+    assert identity_unresolved["failure_class"] == "worker_or_node_loss"
+
+    assert {:ok, occupancy_unresolved} =
+             InferenceAttemptResult.new(
+               "request_step.failed",
+               1,
+               failed_result(%{
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "runtime_unavailable",
+                 "execution_resolution" => "unresolved",
+                 "capacity_release_outcome" => "unresolved",
+                 "retry_decision" => "occupancy_unresolved"
+               })
+             )
+
+    assert occupancy_unresolved["failure_class"] == "pre_acceptance_unavailable"
   end
 
   test "event outcome and attempt 2 exclusions fail closed" do

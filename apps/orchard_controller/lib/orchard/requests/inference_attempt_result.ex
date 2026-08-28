@@ -92,7 +92,7 @@ defmodule Orchard.Requests.InferenceAttemptResult do
          :ok <- validate_acceptance_resolution(normalized),
          :ok <- validate_outcome_fields(attempt, normalized),
          :ok <- validate_outcome_failure_consistency(normalized),
-         :ok <- validate_retry_consistency(normalized) do
+         :ok <- validate_retry_consistency(attempt, normalized) do
       validate_node_evidence(attempt, normalized)
     end
   end
@@ -282,12 +282,14 @@ defmodule Orchard.Requests.InferenceAttemptResult do
 
   defp validate_outcome_failure_consistency(_result), do: :ok
 
-  defp validate_retry_consistency(%{
+  defp validate_retry_consistency(1, %{
          "output_committed" => true,
          "retry_decision" => decision
        })
        when decision != "output_committed",
        do: {:error, "committed output requires output_committed retry decision"}
+
+  defp validate_retry_consistency(_attempt, result), do: validate_retry_consistency(result)
 
   defp validate_retry_consistency(%{
          "attempt_outcome" => "cancelled",
@@ -329,20 +331,6 @@ defmodule Orchard.Requests.InferenceAttemptResult do
        })
        when outcome != "cancelled" or failure_class != "cancellation",
        do: {:error, "cancelled retry decision requires a cancelled attempt"}
-
-  defp validate_retry_consistency(%{
-         "retry_decision" => "identity_unresolved",
-         "failure_class" => failure_class
-       })
-       when failure_class != "identity_unresolved",
-       do: {:error, "identity_unresolved retry decision requires matching failure class"}
-
-  defp validate_retry_consistency(%{
-         "retry_decision" => "occupancy_unresolved",
-         "failure_class" => failure_class
-       })
-       when failure_class != "occupancy_unresolved",
-       do: {:error, "occupancy_unresolved retry decision requires matching failure class"}
 
   defp validate_retry_consistency(_result), do: :ok
 

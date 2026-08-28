@@ -481,10 +481,31 @@ defmodule Orchard.Requests.CapturePolicy do
       |> put_enum_value(payload, "step_type", @step_types)
       |> put_step_identity(payload)
       |> maybe_put_sanitized_result(payload)
+      |> maybe_put_automatic_retry_transition(payload, event_type)
     end
   end
 
   defp sanitize_event_payload(_payload, _event_type), do: %{}
+
+  defp maybe_put_automatic_retry_transition(
+         sanitized,
+         payload,
+         "state_transition"
+       ) do
+    if fetch_value(payload, :source) == "automatic_attempt_retry" and
+         fetch_value(payload, :attempt) == 2 and
+         fetch_value(payload, :to_state) == "dispatching" do
+      Map.merge(sanitized, %{
+        "source" => "automatic_attempt_retry",
+        "attempt" => 2,
+        "to_state" => "dispatching"
+      })
+    else
+      sanitized
+    end
+  end
+
+  defp maybe_put_automatic_retry_transition(sanitized, _payload, _event_type), do: sanitized
 
   defp sanitize_step_event_payload(payload, event_type) do
     sanitized =

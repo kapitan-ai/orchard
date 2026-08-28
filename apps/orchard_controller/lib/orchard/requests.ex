@@ -269,6 +269,38 @@ defmodule Orchard.Requests do
     end
   end
 
+  @spec append_attempt_two_dispatch_transition(struct() | Ecto.UUID.t()) ::
+          {:ok, struct()}
+          | {:error,
+             Ecto.Changeset.t()
+             | :request_not_found
+             | :request_not_running
+             | :attempt_two_boundary_missing
+             | :attempt_two_dispatch_already_started}
+  def append_attempt_two_dispatch_transition(%Request{id: request_id}),
+    do: append_attempt_two_dispatch_transition(request_id)
+
+  def append_attempt_two_dispatch_transition(request_id) do
+    Repo.transaction(fn ->
+      with {:ok, request} <- lock_request(request_id),
+           :ok <- authorize_attempt_two_source_state(request.state),
+           :ok <- authorize_attempt_two_dispatch(request_id) do
+        insert_event_and_sync_state(request, request_id, %{
+          event_type: "state_transition",
+          state: :dispatching,
+          payload: %{
+            source: "automatic_attempt_retry",
+            attempt: 2,
+            to_state: "dispatching"
+          }
+        })
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
   defp insert_event_and_sync_state(request, request_id, attrs) do
     event_attrs =
       attrs
@@ -325,6 +357,70 @@ defmodule Orchard.Requests do
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  defp authorize_attempt_two_source_state(state) when state in [:running, :dispatching], do: :ok
+  defp authorize_attempt_two_source_state(_state), do: {:error, :request_not_running}
+
+  defp authorize_attempt_two_dispatch(request_id) do
+    events =
+      RequestEvent
+      |> where([event], event.request_id == ^request_id)
+      |> order_by([event], asc: event.seq)
+      |> Repo.all()
+
+    cond do
+      Enum.any?(events, &automatic_attempt_two_dispatch?/1) ->
+        {:error, :attempt_two_dispatch_already_started}
+
+      valid_attempt_two_boundary?(events) ->
+        :ok
+
+      true ->
+        {:error, :attempt_two_boundary_missing}
+    end
+  end
+
+  defp automatic_attempt_two_dispatch?(%RequestEvent{
+         event_type: "state_transition",
+         state: :dispatching,
+         payload: payload
+       }) do
+    payload["source"] == "automatic_attempt_retry" and payload["attempt"] == 2 and
+      payload["to_state"] == "dispatching"
+  end
+
+  defp automatic_attempt_two_dispatch?(%RequestEvent{}), do: false
+
+  defp valid_attempt_two_boundary?(events) do
+    step_events =
+      Enum.flat_map(events, fn event ->
+        case RequestStepEvent.from_request_event(event) do
+          {:ok, step_event} -> [step_event]
+          {:error, _reason} -> []
+        end
+      end)
+
+    attempt_one_terminals =
+      Enum.filter(step_events, fn step ->
+        step.attempt == 1 and
+          step.event_type in RequestStepEvent.terminal_step_event_types() and
+          step.result["retry_decision"] == "retried" and
+          step.result["output_committed"] == false
+      end)
+
+    attempt_two_starts =
+      Enum.filter(step_events, fn step ->
+        step.attempt == 2 and step.event_type == "request_step.started"
+      end)
+
+    case {attempt_one_terminals, attempt_two_starts} do
+      {[%RequestStepEvent{seq: terminal_seq}], [%RequestStepEvent{seq: started_seq}]} ->
+        started_seq == terminal_seq + 1
+
+      _other ->
+        false
+    end
   end
 
   defp sync_request_state(request, event_attrs, raw_attrs) do
@@ -511,17 +607,27 @@ defmodule Orchard.Requests do
   end
 
   defp persist_schedule(request, schedule, normalized_schedule) do
-    attrs = %{
-      scheduler_decision:
-        CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
-          requested_model: request.requested_model
-        }),
-      node_id: Map.get(schedule, :node_id)
-    }
+    attrs =
+      %{
+        scheduler_decision:
+          CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
+            requested_model: request.requested_model
+          })
+      }
+      |> maybe_put_schedule_node_id(schedule)
 
     request
     |> Request.schedule_changeset(attrs)
     |> Repo.update()
+  end
+
+  defp maybe_put_schedule_node_id(attrs, schedule) do
+    node_id = Map.get(schedule, :node_id, Map.get(schedule, "node_id"))
+
+    case Ecto.UUID.cast(node_id) do
+      {:ok, uuid} -> Map.put(attrs, :node_id, uuid)
+      :error -> attrs
+    end
   end
 
   @doc """
@@ -813,4 +919,6 @@ defmodule Orchard.Requests do
 
   defp unwrap_transaction_result({:error, {:request_changeset, changeset}}),
     do: {:error, changeset}
+
+  defp unwrap_transaction_result({:error, reason}), do: {:error, reason}
 end

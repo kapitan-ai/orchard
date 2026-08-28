@@ -12,6 +12,9 @@ defmodule Orchard.Requests.RequestServer do
       received → validated → admitted → queued → scheduled
         → dispatching → running → streaming → completed
 
+      bounded Automatic Attempt Retry edge through `start_attempt_two/1`:
+        running → dispatching
+
       failure exits (from any non-terminal state):
         → failed | cancelled | timed_out | interrupted
 
@@ -109,6 +112,24 @@ defmodule Orchard.Requests.RequestServer do
   end
 
   @doc """
+  Starts the sole durable attempt-two dispatch transition.
+  """
+  @spec start_attempt_two(String.t()) :: :ok | {:error, term()}
+  def start_attempt_two(request_id) do
+    case lookup(request_id) do
+      {:ok, pid} -> call_start_attempt_two(pid)
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp call_start_attempt_two(pid) do
+    :gen_statem.call(pid, :start_attempt_two)
+  catch
+    :exit, {:noproc, _details} -> {:error, :not_found}
+    :exit, {:normal, _details} -> {:error, :not_found}
+  end
+
+  @doc """
   Returns the current FSM state for a request.
   """
   @spec get_state(String.t()) :: {:ok, atom()} | {:error, :not_found}
@@ -140,6 +161,21 @@ defmodule Orchard.Requests.RequestServer do
   @impl true
   def handle_event({:call, from}, :get_state, state, _data) do
     {:keep_state_and_data, [{:reply, from, state}]}
+  end
+
+  def handle_event({:call, from}, :start_attempt_two, state, data)
+      when state in [:running, :dispatching] do
+    case Requests.append_attempt_two_dispatch_transition(data.request_id) do
+      {:ok, _event} ->
+        {:next_state, :dispatching, data, [{:reply, from, :ok}]}
+
+      {:error, _reason} = error ->
+        {:keep_state_and_data, [{:reply, from, error}]}
+    end
+  end
+
+  def handle_event({:call, from}, :start_attempt_two, state, _data) do
+    {:keep_state_and_data, [{:reply, from, {:error, {:invalid_transition, state, :dispatching}}}]}
   end
 
   def handle_event({:call, from}, {:transition, new_state, payload}, current_state, data) do
