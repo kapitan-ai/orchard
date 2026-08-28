@@ -60,6 +60,27 @@ defmodule Orchard.Governance.PortalGovernance do
     end
   end
 
+  @spec validate_invite(String.t(), String.t()) ::
+          :ok | {:error, :invalid_invite | :https_required}
+  def validate_invite(slug, token) do
+    current = now()
+
+    with :ok <- require_https() do
+      valid? =
+        PortalInviteToken
+        |> join(:inner, [invite], user in PortalUser, on: user.id == invite.portal_user_id)
+        |> join(:inner, [_invite, user], tenant in Tenant, on: tenant.id == user.tenant_id)
+        |> where([invite, user, tenant], invite.token_hash == ^digest(token))
+        |> where([_invite, _user, tenant], tenant.slug == ^normalize_slug(slug))
+        |> where([invite, user, _tenant], user.status == "invited")
+        |> where([invite, _user, _tenant], is_nil(invite.redeemed_at))
+        |> where([invite, _user, _tenant], invite.expires_at > ^current)
+        |> Repo.exists?()
+
+      if valid?, do: :ok, else: {:error, :invalid_invite}
+    end
+  end
+
   def disable_user(tenant_or_id, user_or_id) do
     with {:ok, tenant} <- tenant(tenant_or_id) do
       Repo.transaction(fn -> disable_user_transaction(tenant.id, id(user_or_id)) end)

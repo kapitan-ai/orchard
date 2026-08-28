@@ -82,12 +82,26 @@ defmodule Orchard.Portal.SessionController do
 
   @spec invite(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def invite(conn, %{"organization_slug" => slug, "token" => token}) do
-    conn
-    |> assign(:page_title, "Set your password")
-    |> assign(:organization_slug, normalize_slug(slug))
-    |> assign(:invite_token, token)
-    |> assign(:invite_error, nil)
-    |> render(:invite)
+    slug = normalize_slug(slug)
+
+    case Governance.validate_portal_invite(slug, token) do
+      :ok ->
+        conn
+        |> assign(:page_title, "Set your password")
+        |> assign(:organization_slug, slug)
+        |> assign(:invite_token, token)
+        |> assign(:invite_error, nil)
+        |> render(:invite)
+
+      {:error, _reason} ->
+        conn
+        |> assign(:page_title, "Invite unavailable")
+        |> assign(:organization_slug, slug)
+        |> assign(:invite_token, nil)
+        |> assign(:invite_error, :invalid_invite)
+        |> put_status(:unprocessable_entity)
+        |> render(:invite)
+    end
   end
 
   @spec redeem(Plug.Conn.t(), map()) :: Plug.Conn.t()
