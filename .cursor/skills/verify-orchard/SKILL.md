@@ -38,6 +38,7 @@ Verification launch sets `ORCHARD_VERIFY_MODE=1`, which disables Phoenix code re
 - Do **not** launch if the user already has `make dev` on the same port — `control-orchard launch` refuses occupied ports.
 - Do **not** run two verification launches with the same `ORCHARD_VERIFY_STATE_DIR`.
 - Prefer a fresh `ORCHARD_VERIFY_RUN_ID` per proof run.
+- `control-orchard smoke-mlx` is an isolated CLI session. It does not need `launch`. If `launch` is already up, smoke rebinds the Elixir test gRPC port.
 - Inference/API proofs that mutate tenants or models share the dev DB; restore or use disposable slugs when mutating.
 
 **Teardown:**
@@ -119,9 +120,9 @@ ${ORCHARD_VERIFY_STATE_DIR}/artifacts/overview/
 ```
 
 **API / inference proofs** (optional, heavier setup):
-- Prepare a local Orchard bundle with `scripts/prepare-mlx-smoke-bundle.sh` and export `ORCHARD_MLX_SMOKE_MODEL_PATH` from `--print-path`. That helper is not a CI gate.
-- Import/activate a model and grant tenant access per `docs/local-dev.md` before Playground or `/v1/chat/completions` checks.
-- Never commit API tokens; pass via env (`ORCHARD_API_KEY`) only for the run.
+- `control-orchard prepare-bundle` wraps `scripts/prepare-mlx-smoke-bundle.sh` and records `ORCHARD_MLX_SMOKE_MODEL_PATH` in meta. Not a CI gate.
+- `control-orchard smoke-mlx` runs `scripts/smoke-mlx.sh` (Python worker + Elixir node-agent). Isolated CLI; does not require `launch`.
+- Playground and `/v1/chat/completions` still need import, tenant grants, and `ORCHARD_API_KEY` per `docs/local-dev.md`. Never commit API tokens.
 
 ## Cleanup
 
@@ -143,6 +144,8 @@ If launch failed mid-boot, still run `control-orchard stop` to clear a partial P
 | `control-orchard stop` | Stop the launched instance |
 | `control-orchard meta` | Print `BASE_URL`, pid, log, artifacts paths |
 | `control-orchard curl /health/live` | HTTP GET against verification base URL |
+| `control-orchard prepare-bundle` | Prepare pinned Qwen3 MLX bundle; record `ORCHARD_MLX_SMOKE_MODEL_PATH` |
+| `control-orchard smoke-mlx` | Run `scripts/smoke-mlx.sh` against that bundle |
 
 Script path: `.cursor/skills/verify-orchard/scripts/control-orchard.sh`
 

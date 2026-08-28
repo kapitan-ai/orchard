@@ -17,7 +17,19 @@ READY_TIMEOUT_SEC="${ORCHARD_VERIFY_READY_TIMEOUT_SEC:-300}"
 
 mkdir -p "$STATE_DIR"
 
+preserved_bundle_path() {
+  if [[ -n "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}" ]]; then
+    printf '%s' "$ORCHARD_MLX_SMOKE_MODEL_PATH"
+    return
+  fi
+  if [[ -f "$META_FILE" ]]; then
+    sed -n 's/^ORCHARD_MLX_SMOKE_MODEL_PATH=//p' "$META_FILE" | tail -n 1
+  fi
+}
+
 write_meta() {
+  local bundle_path
+  bundle_path="$(preserved_bundle_path)"
   cat >"$META_FILE" <<EOF
 ORCHARD_VERIFY_RUN_ID=${RUN_ID}
 ORCHARD_VERIFY_STATE_DIR=${STATE_DIR}
@@ -26,6 +38,7 @@ ORCHARD_VERIFY_BASE_URL=${BASE_URL}
 ORCHARD_VERIFY_PID_FILE=${PID_FILE}
 ORCHARD_VERIFY_LOG_FILE=${LOG_FILE}
 ORCHARD_VERIFY_ARTIFACTS_DIR=${STATE_DIR}/artifacts
+ORCHARD_MLX_SMOKE_MODEL_PATH=${bundle_path}
 EOF
 }
 
@@ -34,12 +47,14 @@ usage() {
 Usage: control-orchard <command>
 
 Commands:
-  bootstrap Ensure tmp/dev/node-trust exists (opt-in orphan recover)
-  launch    Start source-dev in the background (mix phx.server)
-  doctor    Read-only health check for the verification instance
-  stop      Stop the instance started by launch (PID file only)
-  meta      Print state paths for the current run
-  curl      curl wrapper against the verification base URL
+  bootstrap       Ensure tmp/dev/node-trust exists (opt-in orphan recover)
+  launch          Start source-dev in the background (mix phx.server)
+  doctor          Read-only health check for the verification instance
+  stop            Stop the instance started by launch (PID file only)
+  meta            Print state paths for the current run
+  curl            curl wrapper against the verification base URL
+  prepare-bundle  Prepare the pinned Qwen3 MLX smoke bundle (not a CI gate)
+  smoke-mlx       Run scripts/smoke-mlx.sh against that bundle
 
 Environment:
   ORCHARD_VERIFY_PORT          HTTP port (default: 4000)
@@ -48,6 +63,7 @@ Environment:
   ORCHARD_VERIFY_READY_TIMEOUT_SEC  Launch wait timeout (default: 300)
   ORCHARD_VERIFY_TRUST_RECOVER      Set to 1 to allow wiping orphaned DB trust
                                     when local node-trust files are missing
+  ORCHARD_MLX_SMOKE_MODEL_PATH      Absolute Orchard bundle dir (set by prepare-bundle)
 EOF
 }
 
@@ -359,6 +375,73 @@ cmd_curl() {
   curl -sS "${BASE_URL}$*"
 }
 
+require_apple_silicon() {
+  if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+    echo "error: MLX smoke requires Apple Silicon macOS (detected $(uname -s) $(uname -m))" >&2
+    exit 1
+  fi
+}
+
+free_tcp_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+cmd_prepare_bundle() {
+  require_repo
+  write_meta
+  local prepare="${REPO_ROOT}/scripts/prepare-mlx-smoke-bundle.sh"
+  [[ -f "$prepare" ]] || {
+    echo "error: missing ${prepare}" >&2
+    exit 1
+  }
+
+  echo "==> Preparing pinned Qwen3 MLX smoke bundle (not a CI gate)"
+  local out
+  out="$(
+    cd "$REPO_ROOT"
+    mise exec -- ./scripts/prepare-mlx-smoke-bundle.sh "$@"
+  )"
+  printf '%s\n' "$out"
+  local export_line
+  export_line="$(printf '%s\n' "$out" | grep '^export ORCHARD_MLX_SMOKE_MODEL_PATH=' | tail -n 1 || true)"
+  if [[ -z "$export_line" ]]; then
+    echo "error: prepare-mlx-smoke-bundle.sh did not print export ORCHARD_MLX_SMOKE_MODEL_PATH=..." >&2
+    exit 1
+  fi
+  eval "$export_line"
+  write_meta
+  echo "==> Bundle ready: ${ORCHARD_MLX_SMOKE_MODEL_PATH}"
+}
+
+cmd_smoke_mlx() {
+  require_repo
+  require_apple_silicon
+  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  if [[ -z "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}" || ! -f "${ORCHARD_MLX_SMOKE_MODEL_PATH}/manifest.json" ]]; then
+    cmd_prepare_bundle
+    source "$META_FILE"
+  fi
+
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    ORCHARD_TEST_NODE_AGENT_PORT="$(free_tcp_port)"
+    export ORCHARD_TEST_NODE_AGENT_PORT
+    echo "==> Verification instance is running; Elixir smoke will use ORCHARD_TEST_NODE_AGENT_PORT=${ORCHARD_TEST_NODE_AGENT_PORT}"
+  fi
+
+  local art="${STATE_DIR}/artifacts/mlx-smoke"
+  mkdir -p "$art"
+  echo "==> Running scripts/smoke-mlx.sh"
+  echo "    bundle: ${ORCHARD_MLX_SMOKE_MODEL_PATH}"
+  (
+    cd "$REPO_ROOT"
+    export ORCHARD_MLX_SMOKE_MODEL_PATH
+    if [[ -n "${ORCHARD_TEST_NODE_AGENT_PORT:-}" ]]; then
+      export ORCHARD_TEST_NODE_AGENT_PORT
+    fi
+    mise exec -- ./scripts/smoke-mlx.sh
+  ) | tee "${art}/smoke.log"
+}
+
 main() {
   cmd="${1:-}"
   shift || true
@@ -368,6 +451,8 @@ main() {
     doctor) cmd_doctor "$@" ;;
     stop) cmd_stop "$@" ;;
     meta) cmd_meta "$@" ;;
+    prepare-bundle) cmd_prepare_bundle "$@" ;;
+    smoke-mlx) cmd_smoke_mlx "$@" ;;
     curl)
       if (($# == 0)); then
         echo "error: control-orchard curl expects a path such as /health/live" >&2
