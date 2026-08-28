@@ -87,6 +87,20 @@ defmodule Orchard.API.Router do
 
     get("/health", HealthController, :show)
     get("/scheduler/explanations/:request_id", SchedulerExplanationsController, :show)
+    get("/circuit-breakers/nodes/:node_id", CircuitBreakersController, :show_node)
+    post("/circuit-breakers/nodes/:node_id/clear", CircuitBreakersController, :clear_node)
+
+    get(
+      "/circuit-breakers/placements/:node_id/:model_id",
+      CircuitBreakersController,
+      :show_placement
+    )
+
+    post(
+      "/circuit-breakers/placements/:node_id/:model_id/clear",
+      CircuitBreakersController,
+      :clear_placement
+    )
   end
 
   scope "/admin/v1", Orchard.API.Admin do

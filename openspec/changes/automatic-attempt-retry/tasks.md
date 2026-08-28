@@ -56,6 +56,7 @@
 
 ## 7. Breaker attribution prerequisite
 
+- [x] 7.0 Implement the durable Node and placement breaker foundation separately through #296 and `node-placement-circuit-breaker-foundation`
 - [ ] 7.1 Attribute each actual breaker-eligible failure to its producing Node or placement using the `SPEC.md` §5.10 eligible failure-class mapping, excluding `capacity_rejection`
 - [ ] 7.2 Make attempt 1 breaker effects durable and visible before alternate scheduling
 - [ ] 7.3 Prove retry decisions and declined retries add no breaker events

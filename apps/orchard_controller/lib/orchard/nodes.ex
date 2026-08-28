@@ -105,6 +105,11 @@ defmodule Orchard.Nodes do
   @snapshot_truncation_key "__orchard_snapshot_truncation__"
   @authenticated_observation_future_skew_ms 5_000
   @reserved_actor_provenance_keys ~w(actor_id actor_type)
+  @dispatch_database_errors [
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
 
   # -- Read APIs --
 
@@ -918,6 +923,43 @@ defmodule Orchard.Nodes do
     end
   rescue
     _ -> :noop
+  end
+
+  @doc """
+  Atomically records one actually-run transport failure against Node health and
+  the durable circuit-breaker ledger.
+
+  Unlike `record_transport_failure/3`, this seam requires the caller's stable,
+  durable failure identity and canonical Node identity. It is reserved for
+  actually-run attempt failures whose stable failure class is breaker-eligible.
+  Activation, discovery, and compatibility probes must continue to use
+  `record_transport_failure/3`, which remains health-only.
+
+  The target must resolve to the same Node as `failure.node_id`. A mismatch
+  fails before either health or breaker state is mutated. Re-delivery of the
+  same failure is idempotent: the breaker reports `:duplicate`, and the Node
+  transport watermark prevents a second health write.
+  """
+  @spec record_dispatch_transport_failure(keyword() | Target.t(), term(), map()) ::
+          {:ok, %{node: Node.t(), breaker: Orchard.CircuitBreakers.Decision.t()}}
+          | {:error, atom()}
+  def record_dispatch_transport_failure(target, reason, failure) do
+    cond do
+      not repo_available?() ->
+        {:error, :node_inventory_unavailable}
+
+      not transport_failure_reason?(reason) ->
+        {:error, :transport_failure_reason_not_eligible}
+
+      true ->
+        with {:ok, failure} <- normalize_dispatch_transport_failure(failure),
+             {:ok, target_lookup} <- target_lookup(target) do
+          record_dispatch_transport_failure_transaction(target_lookup, failure)
+        else
+          :error -> {:error, :transport_failure_target_invalid}
+          {:error, reason} -> {:error, reason}
+        end
+    end
   end
 
   @doc """
@@ -2723,6 +2765,116 @@ defmodule Orchard.Nodes do
     end
   end
 
+  defp record_dispatch_transport_failure_transaction(target_lookup, failure) do
+    normalize_dispatch_database_failure(fn ->
+      Repo.transaction(fn ->
+        validate_dispatch_transport_identity(target_lookup, failure.node_id)
+        record_dispatch_transport_breaker(target_lookup, failure)
+      end)
+      |> case do
+        {:ok, {node, breaker, true}} ->
+          clear_dispatch_capacity_sources(node.id)
+          {:ok, %{node: node, breaker: breaker}}
+
+        {:ok, {node, breaker, false}} ->
+          {:ok, %{node: node, breaker: breaker}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
+  end
+
+  defp normalize_dispatch_database_failure(fun) do
+    fun.()
+  rescue
+    _exception in @dispatch_database_errors ->
+      {:error, :circuit_breaker_unavailable}
+  catch
+    :exit, reason ->
+      if dispatch_database_exit?(reason),
+        do: {:error, :circuit_breaker_unavailable},
+        else: exit(reason)
+  end
+
+  defp dispatch_database_exit?(reason) when is_struct(reason),
+    do: reason.__struct__ in @dispatch_database_errors
+
+  defp dispatch_database_exit?(reason) when is_tuple(reason),
+    do: reason |> Tuple.to_list() |> Enum.any?(&dispatch_database_exit?/1)
+
+  defp dispatch_database_exit?(reason) when is_list(reason),
+    do: Enum.any?(reason, &dispatch_database_exit?/1)
+
+  defp dispatch_database_exit?(_reason), do: false
+
+  defp validate_dispatch_transport_identity(target_lookup, expected_node_id) do
+    case lookup_node_by_target_lookup(target_lookup) do
+      nil ->
+        Repo.rollback(:transport_failure_target_unknown)
+
+      %Node{id: node_id} when node_id != expected_node_id ->
+        Repo.rollback(:transport_failure_target_mismatch)
+
+      %Node{} ->
+        :ok
+    end
+  end
+
+  defp refetch_dispatch_transport_node(target_lookup, node_id) do
+    case fetch_node_for_transport_update({:node_id, node_id}) do
+      nil ->
+        Repo.rollback(:transport_failure_target_unknown)
+
+      %Node{} = node ->
+        validate_dispatch_transport_target(node, target_lookup)
+    end
+  end
+
+  defp validate_dispatch_transport_target(node, target_lookup) do
+    if dispatch_transport_target_match?(node, target_lookup),
+      do: node,
+      else: Repo.rollback(:transport_failure_target_mismatch)
+  end
+
+  defp dispatch_transport_target_match?(%Node{id: node_id}, {:node_id, node_id}), do: true
+
+  defp dispatch_transport_target_match?(node, {:connect_target, host, port}) do
+    (node.connect_host == host and node.connect_port == port) or
+      (is_nil(node.connect_host) and is_nil(node.connect_port) and
+         node.advertise_addr == host and node.rpc_port == port)
+  end
+
+  defp record_dispatch_transport_breaker(target_lookup, failure) do
+    case Orchard.CircuitBreakers.record_failure(failure) do
+      {:ok, :not_eligible} ->
+        Repo.rollback(:transport_failure_class_not_breaker_eligible)
+
+      {:ok, breaker} ->
+        node = refetch_dispatch_transport_node(target_lookup, failure.node_id)
+        {node, health_changed?} = apply_dispatch_transport_health(node, failure.occurred_at)
+        {node, breaker, health_changed?}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp apply_dispatch_transport_health(node, occurred_at) do
+    case resolve_transport_failure_health(node, occurred_at) do
+      :noop ->
+        {node, false}
+
+      health ->
+        node =
+          node
+          |> Ecto.Changeset.change(demotion_changes(health, occurred_at, :transport_failure))
+          |> Repo.update!()
+
+        {node, true}
+    end
+  end
+
   defp fetch_node_for_transport_update({:connect_target, host, port}) do
     fetch_node_by_connect_target(host, port) ||
       fetch_legacy_node_by_advertise_target(host, port)
@@ -3282,4 +3434,24 @@ defmodule Orchard.Nodes do
   defp transport_failure_reason?(:authenticated_transport_failed), do: true
   defp transport_failure_reason?(:beam_peer_grant_authorization_unavailable), do: true
   defp transport_failure_reason?(_reason), do: false
+
+  defp normalize_dispatch_transport_failure(failure) when is_map(failure) do
+    with {:ok, failure_id} <- Ecto.UUID.cast(map_get(failure, :failure_id)),
+         {:ok, node_id} <- Ecto.UUID.cast(map_get(failure, :node_id)),
+         failure_class when is_binary(failure_class) or is_atom(failure_class) <-
+           map_get(failure, :failure_class),
+         %DateTime{} = occurred_at <- map_get(failure, :occurred_at) do
+      {:ok,
+       failure
+       |> Map.put(:failure_id, failure_id)
+       |> Map.put(:node_id, node_id)
+       |> Map.put(:failure_class, failure_class)
+       |> Map.put(:occurred_at, occurred_at)}
+    else
+      _invalid -> {:error, :transport_failure_identity_invalid}
+    end
+  end
+
+  defp normalize_dispatch_transport_failure(_failure),
+    do: {:error, :transport_failure_identity_invalid}
 end

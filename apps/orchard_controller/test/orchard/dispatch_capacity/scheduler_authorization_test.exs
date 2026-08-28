@@ -7,6 +7,7 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
   alias Orchard.DispatchCapacity.AllocationAuthority
   alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.DispatchCapacity.Policy
+  alias Orchard.Models
   alias Orchard.NodeHeartbeats
   alias Orchard.Nodes.{AdmissionDecision, Node}
   alias Orchard.RuntimeEndpoint.Target
@@ -22,6 +23,8 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
   end
 
   setup do
+    ensure_model!()
+
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
     previous_artifact_provider =
@@ -348,6 +351,28 @@ defmodule Orchard.DispatchCapacity.SchedulerAuthorizationTest do
       model_ref: %ModelRef{model_id: "test/model", version: "v1"},
       rendered_prompt: "hello"
     })
+  end
+
+  defp ensure_model! do
+    Models.get_model_by_identity("test/model", "v1") ||
+      case Models.create_model(%{
+             model_id: "test/model",
+             version: "v1",
+             state: :active,
+             format: "mlx",
+             capabilities: ["text"],
+             tokenizer: %{"type" => "huggingface", "ref" => "test/tokenizer"},
+             artifact_uri: "file:///tmp/dispatch-capacity-test-model",
+             artifact_sha256: String.duplicate("a", 64),
+             artifact_size_bytes: 1,
+             resident_memory_bytes: 1,
+             kv_cache_bytes_per_token: 1,
+             prefill_workspace_bytes_per_token: 1,
+             runtime_requirements: %{}
+           }) do
+        {:ok, model} -> model
+        {:error, changeset} -> raise "failed to create test model: #{inspect(changeset.errors)}"
+      end
   end
 
   defp enforcing_input(ceiling) do

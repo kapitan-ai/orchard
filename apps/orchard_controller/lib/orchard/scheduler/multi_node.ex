@@ -46,6 +46,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Models
   alias Orchard.NodeHeartbeats
   alias Orchard.Nodes
+  alias Orchard.Scheduler.CircuitBreakerEligibility
   alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
 
   alias Orchard.RuntimeEndpoint.{
@@ -194,12 +195,28 @@ defmodule Orchard.Scheduler.MultiNode do
   defp schedule_production_candidates(request, targets, active_targets, opts) do
     case production_candidate_snapshot(targets, active_targets, opts) do
       {:ok, snapshot} ->
-        candidates =
+        base_candidates =
           snapshot.candidates
           |> Enum.map(&snapshot_candidate(&1, request))
+
+        breaker_snapshot =
+          CircuitBreakerEligibility.snapshot(
+            Enum.map(base_candidates, &{&1.node_id, not &1.loaded_model?}),
+            request.model_ref,
+            opts
+          )
+
+        breaker_opts = Keyword.put(opts, :circuit_breaker_snapshot, breaker_snapshot)
+
+        candidates =
+          base_candidates
           |> Enum.map(fn candidate ->
             candidate
-            |> annotate_dispatch_capacity(opts, candidate.observation.observed_at)
+            |> annotate_dispatch_capacity(
+              request,
+              breaker_opts,
+              candidate.observation.observed_at
+            )
             |> annotate_residency_policy(request, opts)
           end)
 
@@ -258,7 +275,7 @@ defmodule Orchard.Scheduler.MultiNode do
           {:ok, {:candidate, candidate}} ->
             annotated =
               candidate
-              |> annotate_dispatch_capacity(opts, observed_at)
+              |> annotate_dispatch_capacity(request, opts, observed_at)
               |> annotate_residency_policy(request, opts)
 
             {[annotated | candidates], rejections}
@@ -732,11 +749,20 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp ineligible_reason_codes(candidate) do
+    breaker_reason_codes = Map.get(candidate, :breaker_reason_codes, [])
+
     capacity_reason_codes =
       case Map.get(candidate, :dispatch_capacity_evaluation) do
-        %{eligible?: true} -> []
-        %{reason_codes: reason_codes} -> Enum.map(reason_codes, &Atom.to_string/1)
-        _missing -> ["dispatch_capacity_facts_unavailable"]
+        %{eligible?: true} ->
+          []
+
+        %{reason_codes: reason_codes} ->
+          reason_codes
+          |> Enum.reject(&(&1 == :circuit_breaker_open and breaker_reason_codes != []))
+          |> Enum.map(&Atom.to_string/1)
+
+        _missing ->
+          ["dispatch_capacity_facts_unavailable"]
       end
 
     residency_reason_codes = Map.get(candidate, :residency_reason_codes, [])
@@ -754,7 +780,12 @@ defmodule Orchard.Scheduler.MultiNode do
       ]
       |> Enum.reject(&is_nil/1)
 
-    Enum.uniq(capacity_reason_codes ++ residency_reason_codes ++ legacy_reason_codes)
+    Enum.uniq(
+      breaker_reason_codes ++
+        capacity_reason_codes ++
+        residency_reason_codes ++
+        legacy_reason_codes
+    )
   end
 
   defp rejection_reason(candidate, predicate, code) do
@@ -1012,25 +1043,34 @@ defmodule Orchard.Scheduler.MultiNode do
       :ok
   end
 
-  defp annotate_dispatch_capacity(candidate, opts, observed_at) do
+  defp annotate_dispatch_capacity(candidate, request, opts, observed_at) do
     placement_capacity =
       Map.get(candidate, :model_placement_capacity, placement_default(candidate, :acquisition))
 
-    case dispatch_capacity_input(candidate, placement_capacity, opts, observed_at) do
-      {:ok, input} ->
-        authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
+    with {:ok, input} <- dispatch_capacity_input(candidate, placement_capacity, opts, observed_at),
+         {:ok, input, breaker_reason_codes} <-
+           CircuitBreakerEligibility.apply(
+             input,
+             candidate.node_id,
+             request.model_ref,
+             not candidate.loaded_model?,
+             opts
+           ) do
+      authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
 
-        candidate
-        |> Map.put(:dispatch_capacity_input, input)
-        |> Map.put(
-          :dispatch_capacity_evaluation,
-          safe_evaluate_dispatch_capacity(authority, candidate.node_id, input)
-        )
-
-      {:error, _reason} ->
+      candidate
+      |> Map.put(:dispatch_capacity_input, input)
+      |> Map.put(:breaker_reason_codes, Enum.map(breaker_reason_codes, &Atom.to_string/1))
+      |> Map.put(
+        :dispatch_capacity_evaluation,
+        safe_evaluate_dispatch_capacity(authority, candidate.node_id, input)
+      )
+    else
+      {:error, reason} ->
         candidate
         |> Map.put(:dispatch_capacity_input, nil)
         |> Map.put(:dispatch_capacity_evaluation, nil)
+        |> Map.put(:breaker_reason_codes, [Atom.to_string(reason)])
     end
   end
 
@@ -1107,7 +1147,13 @@ defmodule Orchard.Scheduler.MultiNode do
 
     case {Keyword.has_key?(opts, :dispatch_capacity_input_provider), refresh_strategy} do
       {true, _strategy} ->
-        configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts)
+        configured_dispatch_capacity_input_provider(
+          candidate,
+          request,
+          phase,
+          placement_capacity,
+          opts
+        )
 
       {false, :snapshot} ->
         snapshot_dispatch_capacity_input_provider(candidate, request, phase, opts)
@@ -1125,12 +1171,18 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp inline_status_dispatch_capacity_input_provider(
          candidate,
-         _request,
+         request,
          :acquisition,
          placement_capacity,
          opts
        ) do
-    configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts)
+    configured_dispatch_capacity_input_provider(
+      candidate,
+      request,
+      :acquisition,
+      placement_capacity,
+      opts
+    )
   end
 
   defp inline_status_dispatch_capacity_input_provider(
@@ -1253,10 +1305,26 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp valid_matching_placement(_capacity, _model_ref), do: nil
 
-  defp configured_dispatch_capacity_input_provider(candidate, placement_capacity, opts) do
+  defp configured_dispatch_capacity_input_provider(
+         candidate,
+         request,
+         phase,
+         placement_capacity,
+         opts
+       ) do
     fn ->
-      case dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()) do
-        {:ok, input} -> input
+      with {:ok, input} <-
+             dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()),
+           {:ok, input, _reason_codes} <-
+             CircuitBreakerEligibility.apply(
+               input,
+               candidate.node_id,
+               request.model_ref,
+               phase == :acquisition and not candidate.loaded_model?,
+               opts
+             ) do
+        input
+      else
         {:error, _reason} -> nil
       end
     end
@@ -1287,6 +1355,14 @@ defmodule Orchard.Scheduler.MultiNode do
              refreshed_placement,
              opts,
              snapshot_candidate.observed_at
+           ),
+         {:ok, input, _reason_codes} <-
+           CircuitBreakerEligibility.apply(
+             input,
+             refreshed.node_id,
+             request.model_ref,
+             phase == :acquisition and not refreshed.loaded_model?,
+             opts
            ) do
       input
     else
