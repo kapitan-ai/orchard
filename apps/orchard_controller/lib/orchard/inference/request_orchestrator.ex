@@ -1146,6 +1146,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     attrs = %{
       outcome
       | attempt_outcome: :cancelled,
+        model_load_category: nil,
         failure:
           InferenceAttemptFailure.normalize(%{
             category: :cancellation,
@@ -1453,6 +1454,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       deadline_status: snapshot.deadline_status,
       failure_class: Map.fetch!(outcome.failure, "failure_class"),
       failure_code: Map.fetch!(outcome.failure, "failure_code"),
+      model_load_category: outcome.model_load_category,
       runtime_retryable: outcome.runtime_retryable,
       identity_resolution: identity_resolution(outcome),
       execution_resolution: outcome.execution_resolution,

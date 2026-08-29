@@ -3,6 +3,10 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   Pure fail-closed classification of unsuccessful inference attempts.
   """
 
+  alias Orchard.Inference.ModelLoadFailure
+
+  @type model_load_category :: Orchard.Inference.ModelLoadFailure.category() | nil
+
   defmodule Boundary do
     @moduledoc false
 
@@ -13,6 +17,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
       :deadline_status,
       :failure_class,
       :failure_code,
+      :model_load_category,
       :runtime_retryable,
       :identity_resolution,
       :execution_resolution,
@@ -27,6 +32,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
             deadline_status: :remaining | :exhausted,
             failure_class: String.t(),
             failure_code: String.t(),
+            model_load_category: Orchard.Inference.AttemptRetryClassifier.model_load_category(),
             runtime_retryable: boolean() | nil,
             identity_resolution: :resolved | :unresolved,
             execution_resolution: :not_started | :terminated | :unresolved,
@@ -39,9 +45,13 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
     node_unavailable node_timeout runtime_unavailable resource_exhausted timeout
     worker_unavailable worker_down
   )
-  @model_load_retryable_codes ~w(
-    acquisition_failed runtime_unavailable resource_exhausted load_timeout
-  )
+  @model_load_retryable_categories [
+    :acquisition_failed,
+    :runtime_unavailable,
+    :resource_exhausted,
+    :timeout
+  ]
+  @model_load_categories ModelLoadFailure.categories()
   @pre_acceptance_retryable_codes ~w(
     node_unavailable node_timeout runtime_unavailable rpc_unavailable
   )
@@ -76,6 +86,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
           deadline_status: :remaining | :exhausted,
           failure_class: String.t(),
           failure_code: String.t(),
+          model_load_category: model_load_category(),
           runtime_retryable: boolean() | nil,
           identity_resolution: :resolved | :unresolved,
           execution_resolution: :not_started | :terminated | :unresolved,
@@ -118,13 +129,22 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
          deadline_status: deadline_status,
          failure_class: failure_class,
          failure_code: failure_code,
+         model_load_category: model_load_category,
          runtime_retryable: runtime_retryable,
          identity_resolution: identity_resolution,
          execution_resolution: execution_resolution,
          capacity_release_outcome: capacity_release_outcome
        }) do
     :ok = validate_request_facts(attempt, output_committed, caller_status, deadline_status)
-    :ok = validate_failure_facts(failure_class, failure_code, runtime_retryable)
+
+    :ok =
+      validate_failure_facts(
+        failure_class,
+        failure_code,
+        model_load_category,
+        runtime_retryable
+      )
+
     :ok = validate_identity_fact(identity_resolution)
     :ok = validate_occupancy_facts(execution_resolution, capacity_release_outcome)
 
@@ -135,6 +155,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
       deadline_status: deadline_status,
       failure_class: failure_class,
       failure_code: failure_code,
+      model_load_category: model_load_category,
       runtime_retryable: runtime_retryable,
       identity_resolution: identity_resolution,
       execution_resolution: execution_resolution,
@@ -148,8 +169,19 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
               deadline_status in [:remaining, :exhausted],
        do: :ok
 
-  defp validate_failure_facts(failure_class, failure_code, runtime_retryable)
-       when is_binary(failure_class) and is_binary(failure_code) and
+  defp validate_failure_facts(
+         "model_load_failure",
+         failure_code,
+         model_load_category,
+         runtime_retryable
+       )
+       when is_binary(failure_code) and model_load_category in @model_load_categories and
+              (is_boolean(runtime_retryable) or is_nil(runtime_retryable)),
+       do: :ok
+
+  defp validate_failure_facts(failure_class, failure_code, nil, runtime_retryable)
+       when is_binary(failure_class) and failure_class != "model_load_failure" and
+              is_binary(failure_code) and
               (is_boolean(runtime_retryable) or is_nil(runtime_retryable)),
        do: :ok
 
@@ -178,8 +210,14 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
   defp gate_decision(:taxonomy, boundary), do: taxonomy_verdict(boundary)
 
+  defp gate_decision(:identity, %Boundary{failure_class: "identity_unresolved"}),
+    do: {:declined, :identity_unresolved}
+
   defp gate_decision(:identity, %Boundary{identity_resolution: :unresolved}),
     do: {:declined, :identity_unresolved}
+
+  defp gate_decision(:execution, %Boundary{failure_class: "occupancy_unresolved"}),
+    do: {:declined, :occupancy_unresolved}
 
   defp gate_decision(:execution, %Boundary{execution_resolution: :unresolved}),
     do: {:declined, :occupancy_unresolved}
@@ -189,11 +227,9 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
   defp gate_decision(_gate, %Boundary{}), do: nil
 
-  defp taxonomy_verdict(%Boundary{failure_class: "identity_unresolved"}),
-    do: {:declined, :identity_unresolved}
-
-  defp taxonomy_verdict(%Boundary{failure_class: "occupancy_unresolved"}),
-    do: {:declined, :occupancy_unresolved}
+  defp taxonomy_verdict(%Boundary{failure_class: failure_class})
+       when failure_class in ["identity_unresolved", "occupancy_unresolved"],
+       do: nil
 
   defp taxonomy_verdict(%Boundary{} = boundary) do
     if retry_eligible?(boundary), do: nil, else: {:declined, :not_retryable}
@@ -210,8 +246,11 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
        }),
        do: code in @runtime_retryable_codes
 
-  defp retry_eligible?(%Boundary{failure_class: "model_load_failure", failure_code: code}),
-    do: code in @model_load_retryable_codes
+  defp retry_eligible?(%Boundary{
+         failure_class: "model_load_failure",
+         model_load_category: category
+       }),
+       do: category in @model_load_retryable_categories
 
   defp retry_eligible?(%Boundary{
          failure_class: "pre_acceptance_unavailable",

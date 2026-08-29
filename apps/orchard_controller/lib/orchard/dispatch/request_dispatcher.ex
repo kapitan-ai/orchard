@@ -336,7 +336,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       output_commitment_kind: delivery_commitment_kind(delivery),
       delivery_state: delivery_state(delivery),
       delivered_event_count: delivered_event_count(delivery),
-      runtime_retryable: attempt_runtime_retryable(terminal)
+      runtime_retryable: attempt_runtime_retryable(terminal),
+      model_load_category: attempt_model_load_category(result)
     }
 
     {:ok, outcome} = AttemptOutcome.new(attrs)
@@ -412,6 +413,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        do: retryable
 
   defp attempt_runtime_retryable(_terminal), do: nil
+
+  defp attempt_model_load_category(
+         {:error, {:model_load_failed, %ModelLoadFailure{category: category}}}
+       ),
+       do: category
+
+  defp attempt_model_load_category(_result), do: nil
 
   defp attempt_outcome(_result, %InferenceEvent{event: %InferenceEvent.Completed{}}),
     do: :completed

@@ -1011,6 +1011,7 @@ defmodule Orchard.Dispatch.DispatchTest do
                output_commitment_kind: nil,
                delivery_state: :pending,
                delivered_event_count: 0,
+               model_load_category: :model_invalid,
                failure: %{
                  "failure_class" => "model_load_failure",
                  "failure_code" => "model_invalid",
@@ -1042,6 +1043,7 @@ defmodule Orchard.Dispatch.DispatchTest do
 
       assert %AttemptOutcome{
                attempt_outcome: :failed,
+               model_load_category: :timeout,
                failure: %{
                  "failure_class" => "model_load_failure",
                  "failure_code" => "load_timeout"

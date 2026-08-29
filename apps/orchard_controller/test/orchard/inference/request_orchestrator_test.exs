@@ -3733,7 +3733,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   } do
     nodes = configure_alternate_attempt_nodes!()
     put_alternate_attempt_scheduler_config()
-    stub_runtime_events([InferenceEvent.failed("worker_down", "worker exited", true)])
+
+    first_key =
+      {Keyword.fetch!(nodes.first.target, :host), Keyword.fetch!(nodes.first.target, :port)}
+
+    Process.put(
+      {StubRuntimeEndpointClient, {:ensure_model_loaded_result, first_key}},
+      {:error, :node_timeout}
+    )
 
     caller = spawn(fn -> Process.sleep(60_000) end)
     Process.put(:orchard_retry_caller, caller)
