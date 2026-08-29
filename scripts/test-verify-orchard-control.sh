@@ -45,6 +45,16 @@ load_meta_preserving_bundle_path
 [[ "$ORCHARD_MLX_SMOKE_MODEL_PATH" == "$TMP_ROOT/operator-override" ]] ||
   fail "operator bundle path was overwritten by empty meta"
 
+sentinel="$TMP_ROOT/meta-executed"
+hostile_bundle="$TMP_ROOT/bundle with spaces;\$(touch $sentinel)"
+ORCHARD_MLX_SMOKE_MODEL_PATH="$hostile_bundle"
+write_meta
+unset ORCHARD_MLX_SMOKE_MODEL_PATH
+load_meta_preserving_bundle_path
+[[ "$ORCHARD_MLX_SMOKE_MODEL_PATH" == "$hostile_bundle" ]] ||
+  fail "shell-sensitive bundle path did not round trip through meta"
+[[ ! -e "$sentinel" ]] || fail "bundle path executed as shell code"
+
 python_version="$(pinned_python -c 'import sys; print(sys.version_info[:2])')"
 [[ "$python_version" == "(3, 11)" ]] || fail "pinned Python 3.11 was not used"
 

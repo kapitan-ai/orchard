@@ -23,7 +23,12 @@ preserved_bundle_path() {
     return
   fi
   if [[ -f "$META_FILE" ]]; then
-    sed -n 's/^ORCHARD_MLX_SMOKE_MODEL_PATH=//p' "$META_FILE" | tail -n 1
+    (
+      unset ORCHARD_MLX_SMOKE_MODEL_PATH
+      # shellcheck disable=SC1090
+      source "$META_FILE"
+      printf '%s' "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}"
+    )
   fi
 }
 
@@ -60,16 +65,16 @@ load_meta_preserving_bundle_path() {
 write_meta() {
   local bundle_path
   bundle_path="$(preserved_bundle_path)"
-  cat >"$META_FILE" <<EOF
-ORCHARD_VERIFY_RUN_ID=${RUN_ID}
-ORCHARD_VERIFY_STATE_DIR=${STATE_DIR}
-ORCHARD_VERIFY_PORT=${PORT}
-ORCHARD_VERIFY_BASE_URL=${BASE_URL}
-ORCHARD_VERIFY_PID_FILE=${PID_FILE}
-ORCHARD_VERIFY_LOG_FILE=${LOG_FILE}
-ORCHARD_VERIFY_ARTIFACTS_DIR=${STATE_DIR}/artifacts
-ORCHARD_MLX_SMOKE_MODEL_PATH=${bundle_path}
-EOF
+  {
+    printf 'ORCHARD_VERIFY_RUN_ID=%q\n' "$RUN_ID"
+    printf 'ORCHARD_VERIFY_STATE_DIR=%q\n' "$STATE_DIR"
+    printf 'ORCHARD_VERIFY_PORT=%q\n' "$PORT"
+    printf 'ORCHARD_VERIFY_BASE_URL=%q\n' "$BASE_URL"
+    printf 'ORCHARD_VERIFY_PID_FILE=%q\n' "$PID_FILE"
+    printf 'ORCHARD_VERIFY_LOG_FILE=%q\n' "$LOG_FILE"
+    printf 'ORCHARD_VERIFY_ARTIFACTS_DIR=%q\n' "${STATE_DIR}/artifacts"
+    printf 'ORCHARD_MLX_SMOKE_MODEL_PATH=%q\n' "$bundle_path"
+  } >"$META_FILE"
 }
 
 usage() {
