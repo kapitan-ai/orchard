@@ -28,6 +28,16 @@ defmodule Orchard.Inference.OutputCommitment do
 
   def observe(%__MODULE__{} = commitment, %InferenceEvent{}), do: commitment
 
+  @spec observe_structured_output(t(), String.t()) :: t()
+  def observe_structured_output(%__MODULE__{kind: kind} = commitment, _delta)
+      when not is_nil(kind),
+      do: commitment
+
+  def observe_structured_output(%__MODULE__{} = commitment, ""), do: commitment
+
+  def observe_structured_output(%__MODULE__{} = commitment, delta) when is_binary(delta),
+    do: %__MODULE__{commitment | kind: :structured_output}
+
   @spec committed?(t()) :: boolean()
   def committed?(%__MODULE__{kind: nil}), do: false
   def committed?(%__MODULE__{}), do: true
