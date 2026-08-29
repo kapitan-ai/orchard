@@ -10,14 +10,115 @@ RUN_ID="${ORCHARD_VERIFY_RUN_ID:-$(date +%Y%m%d%H%M%S)-$$}"
 STATE_DIR="${ORCHARD_VERIFY_STATE_DIR:-/tmp/orchard-verify-${RUN_ID}}"
 PID_FILE="${STATE_DIR}/dev.pid"
 LOG_FILE="${STATE_DIR}/dev.log"
-META_FILE="${STATE_DIR}/meta.env"
+META_FILE="${STATE_DIR}/meta.json"
+LEGACY_META_FILE="${STATE_DIR}/meta.env"
 PORT="${ORCHARD_VERIFY_PORT:-4000}"
 BASE_URL="http://127.0.0.1:${PORT}"
 READY_TIMEOUT_SEC="${ORCHARD_VERIFY_READY_TIMEOUT_SEC:-300}"
 
 mkdir -p "$STATE_DIR"
 
+pinned_python() {
+  (
+    cd "$REPO_ROOT"
+    mise exec -- python "$@"
+  )
+}
+
+reject_legacy_meta() {
+  if [[ -e "$LEGACY_META_FILE" ]]; then
+    echo "error: legacy metadata at ${LEGACY_META_FILE} is rejected; remove the state directory and start a new verification run" >&2
+    return 1
+  fi
+}
+
+load_meta() {
+  reject_legacy_meta || return 1
+  if [[ ! -f "$META_FILE" ]]; then
+    echo "error: metadata not found at ${META_FILE}" >&2
+    return 1
+  fi
+
+  local values_file
+  values_file="$(mktemp "${STATE_DIR}/.meta-values.XXXXXX")"
+  if ! pinned_python - "$META_FILE" "$STATE_DIR" >"$values_file" <<'PY'
+import json
+import pathlib
+import sys
+
+meta_path = pathlib.Path(sys.argv[1])
+expected_state_dir = sys.argv[2]
+
+try:
+    with meta_path.open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"error: invalid verification metadata: {error}")
+
+expected_keys = {
+    "ORCHARD_MLX_SMOKE_MODEL_PATH",
+    "ORCHARD_VERIFY_ARTIFACTS_DIR",
+    "ORCHARD_VERIFY_BASE_URL",
+    "ORCHARD_VERIFY_LOG_FILE",
+    "ORCHARD_VERIFY_PID_FILE",
+    "ORCHARD_VERIFY_PORT",
+    "ORCHARD_VERIFY_RUN_ID",
+    "ORCHARD_VERIFY_STATE_DIR",
+    "format_version",
+}
+if not isinstance(metadata, dict) or set(metadata) != expected_keys:
+    raise SystemExit("error: invalid verification metadata schema")
+if metadata["format_version"] != 1:
+    raise SystemExit("error: unsupported verification metadata format")
+if not isinstance(metadata["ORCHARD_VERIFY_RUN_ID"], str) or not metadata["ORCHARD_VERIFY_RUN_ID"]:
+    raise SystemExit("error: invalid verification run id")
+if metadata["ORCHARD_VERIFY_STATE_DIR"] != expected_state_dir:
+    raise SystemExit("error: verification metadata state directory mismatch")
+if not isinstance(metadata["ORCHARD_VERIFY_PORT"], int) or isinstance(metadata["ORCHARD_VERIFY_PORT"], bool):
+    raise SystemExit("error: invalid verification port")
+if not 1 <= metadata["ORCHARD_VERIFY_PORT"] <= 65535:
+    raise SystemExit("error: invalid verification port")
+if not isinstance(metadata["ORCHARD_MLX_SMOKE_MODEL_PATH"], str):
+    raise SystemExit("error: invalid MLX smoke model path")
+
+derived_values = {
+    "ORCHARD_VERIFY_ARTIFACTS_DIR": str(pathlib.Path(expected_state_dir) / "artifacts"),
+    "ORCHARD_VERIFY_BASE_URL": f"http://127.0.0.1:{metadata['ORCHARD_VERIFY_PORT']}",
+    "ORCHARD_VERIFY_LOG_FILE": str(pathlib.Path(expected_state_dir) / "dev.log"),
+    "ORCHARD_VERIFY_PID_FILE": str(pathlib.Path(expected_state_dir) / "dev.pid"),
+}
+for key, expected_value in derived_values.items():
+    if metadata[key] != expected_value:
+        raise SystemExit(f"error: verification metadata {key} mismatch")
+
+values = (
+    metadata["ORCHARD_VERIFY_RUN_ID"],
+    metadata["ORCHARD_VERIFY_STATE_DIR"],
+    str(metadata["ORCHARD_VERIFY_PORT"]),
+    metadata["ORCHARD_MLX_SMOKE_MODEL_PATH"],
+)
+sys.stdout.buffer.write(b"".join(value.encode() + b"\0" for value in values))
+PY
+  then
+    rm -f "$values_file"
+    return 1
+  fi
+
+  exec 9<"$values_file"
+  IFS= read -r -d '' RUN_ID <&9
+  IFS= read -r -d '' STATE_DIR <&9
+  IFS= read -r -d '' PORT <&9
+  IFS= read -r -d '' ORCHARD_MLX_SMOKE_MODEL_PATH <&9
+  exec 9<&-
+  rm -f "$values_file"
+
+  PID_FILE="${STATE_DIR}/dev.pid"
+  LOG_FILE="${STATE_DIR}/dev.log"
+  BASE_URL="http://127.0.0.1:${PORT}"
+}
+
 preserved_bundle_path() {
+  reject_legacy_meta || return 1
   if [[ -n "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}" ]]; then
     printf '%s' "$ORCHARD_MLX_SMOKE_MODEL_PATH"
     return
@@ -25,18 +126,10 @@ preserved_bundle_path() {
   if [[ -f "$META_FILE" ]]; then
     (
       unset ORCHARD_MLX_SMOKE_MODEL_PATH
-      # shellcheck disable=SC1090
-      source "$META_FILE"
+      load_meta
       printf '%s' "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}"
     )
   fi
-}
-
-pinned_python() {
-  (
-    cd "$REPO_ROOT"
-    mise exec -- python "$@"
-  )
 }
 
 ensure_launch_pid_slot() {
@@ -57,24 +150,43 @@ ensure_launch_pid_slot() {
 
 load_meta_preserving_bundle_path() {
   local bundle_path
-  bundle_path="$(preserved_bundle_path)"
-  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  if ! bundle_path="$(preserved_bundle_path)"; then
+    return 1
+  fi
+  [[ -f "$META_FILE" ]] && load_meta
   ORCHARD_MLX_SMOKE_MODEL_PATH="$bundle_path"
 }
 
 write_meta() {
   local bundle_path
-  bundle_path="$(preserved_bundle_path)"
-  {
-    printf 'ORCHARD_VERIFY_RUN_ID=%q\n' "$RUN_ID"
-    printf 'ORCHARD_VERIFY_STATE_DIR=%q\n' "$STATE_DIR"
-    printf 'ORCHARD_VERIFY_PORT=%q\n' "$PORT"
-    printf 'ORCHARD_VERIFY_BASE_URL=%q\n' "$BASE_URL"
-    printf 'ORCHARD_VERIFY_PID_FILE=%q\n' "$PID_FILE"
-    printf 'ORCHARD_VERIFY_LOG_FILE=%q\n' "$LOG_FILE"
-    printf 'ORCHARD_VERIFY_ARTIFACTS_DIR=%q\n' "${STATE_DIR}/artifacts"
-    printf 'ORCHARD_MLX_SMOKE_MODEL_PATH=%q\n' "$bundle_path"
-  } >"$META_FILE"
+  if ! bundle_path="$(preserved_bundle_path)"; then
+    return 1
+  fi
+  pinned_python - "$META_FILE" "$RUN_ID" "$STATE_DIR" "$PORT" "$bundle_path" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+meta_path = pathlib.Path(sys.argv[1])
+metadata = {
+    "ORCHARD_MLX_SMOKE_MODEL_PATH": sys.argv[5],
+    "ORCHARD_VERIFY_ARTIFACTS_DIR": str(pathlib.Path(sys.argv[3]) / "artifacts"),
+    "ORCHARD_VERIFY_BASE_URL": f"http://127.0.0.1:{int(sys.argv[4])}",
+    "ORCHARD_VERIFY_LOG_FILE": str(pathlib.Path(sys.argv[3]) / "dev.log"),
+    "ORCHARD_VERIFY_PID_FILE": str(pathlib.Path(sys.argv[3]) / "dev.pid"),
+    "ORCHARD_VERIFY_PORT": int(sys.argv[4]),
+    "ORCHARD_VERIFY_RUN_ID": sys.argv[2],
+    "ORCHARD_VERIFY_STATE_DIR": sys.argv[3],
+    "format_version": 1,
+}
+temporary_path = meta_path.with_name(f".{meta_path.name}.{os.getpid()}.tmp")
+with temporary_path.open("w", encoding="utf-8") as handle:
+    json.dump(metadata, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.chmod(temporary_path, 0o600)
+temporary_path.replace(meta_path)
+PY
 }
 
 usage() {
@@ -306,9 +418,7 @@ PY
 
 cmd_doctor() {
   [[ -f "$META_FILE" ]] || write_meta
-
-  # shellcheck disable=SC1090
-  source "$META_FILE"
+  load_meta
 
   echo "==> Doctor for ${BASE_URL}"
 
@@ -361,7 +471,8 @@ cmd_doctor() {
 }
 
 cmd_stop() {
-  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  reject_legacy_meta
+  [[ -f "$META_FILE" ]] && load_meta
 
   if [[ ! -f "$PID_FILE" ]]; then
     echo "==> No pid file; nothing to stop"
@@ -394,7 +505,8 @@ cmd_meta() {
 }
 
 cmd_curl() {
-  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  reject_legacy_meta
+  [[ -f "$META_FILE" ]] && load_meta
   curl -sS "${BASE_URL}$*"
 }
 
@@ -442,7 +554,7 @@ cmd_smoke_mlx() {
   load_meta_preserving_bundle_path
   if [[ -z "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}" || ! -f "${ORCHARD_MLX_SMOKE_MODEL_PATH}/manifest.json" ]]; then
     cmd_prepare_bundle
-    source "$META_FILE"
+    load_meta
   fi
 
   if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
