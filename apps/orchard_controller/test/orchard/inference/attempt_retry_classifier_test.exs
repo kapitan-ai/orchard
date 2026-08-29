@@ -7,21 +7,29 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
     node_unavailable node_timeout runtime_unavailable resource_exhausted timeout
     worker_unavailable worker_down
   )
-  @model_load_codes ~w(acquisition_failed runtime_unavailable resource_exhausted load_timeout)
+  @model_load_cases [
+    {:acquisition_failed, "acquisition_failed"},
+    {:runtime_unavailable, "runtime_unavailable"},
+    {:resource_exhausted, "resource_exhausted"},
+    {:timeout, "load_timeout"}
+  ]
   @pre_acceptance_codes ~w(node_unavailable node_timeout runtime_unavailable rpc_unavailable)
 
   test "SPEC.md §5.8 classifies every retry-eligible failure before alternate scheduling" do
     cases =
-      Enum.map(@runtime_codes, &{"runtime_failure", &1, true}) ++
-        Enum.map(@model_load_codes, &{"model_load_failure", &1, nil}) ++
-        Enum.map(@pre_acceptance_codes, &{"pre_acceptance_unavailable", &1, false}) ++
-        [{"worker_or_node_loss", "worker_down", nil}]
+      Enum.map(@runtime_codes, &{"runtime_failure", &1, nil, true}) ++
+        Enum.map(@model_load_cases, fn {category, code} ->
+          {"model_load_failure", code, category, nil}
+        end) ++
+        Enum.map(@pre_acceptance_codes, &{"pre_acceptance_unavailable", &1, nil, false}) ++
+        [{"worker_or_node_loss", "worker_down", nil, nil}]
 
-    for {failure_class, failure_code, runtime_retryable} <- cases do
+    for {failure_class, failure_code, model_load_category, runtime_retryable} <- cases do
       boundary =
         boundary(%{
           failure_class: failure_class,
           failure_code: failure_code,
+          model_load_category: model_load_category,
           runtime_retryable: runtime_retryable
         })
 
@@ -56,16 +64,33 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
 
   test "SPEC.md §5.8 ignores the runtime flag for model-load and pre-acceptance eligibility" do
     for runtime_retryable <- [nil, false, true],
-        {failure_class, failure_code} <- [
-          {"model_load_failure", "load_timeout"},
-          {"pre_acceptance_unavailable", "rpc_unavailable"}
+        {failure_class, failure_code, model_load_category} <- [
+          {"model_load_failure", "load_timeout", :timeout},
+          {"pre_acceptance_unavailable", "rpc_unavailable", nil}
         ] do
       assert classify(%{
                failure_class: failure_class,
                failure_code: failure_code,
+               model_load_category: model_load_category,
                runtime_retryable: runtime_retryable
              }) == :eligible_for_alternate
     end
+  end
+
+  test "SPEC.md §5.8 authorizes model-load retry from the normalized category only" do
+    assert classify(%{
+             failure_class: "model_load_failure",
+             failure_code: "load_timeout",
+             model_load_category: :model_invalid,
+             runtime_retryable: nil
+           }) == {:declined, :not_retryable}
+
+    assert classify(%{
+             failure_class: "model_load_failure",
+             failure_code: "internal_error",
+             model_load_category: :timeout,
+             runtime_retryable: nil
+           }) == :eligible_for_alternate
   end
 
   test "SPEC.md §5.8 honors explicit runtime retry refusal for worker or node loss" do
@@ -86,22 +111,23 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
 
   test "SPEC.md §5.8 fails closed for deterministic and unknown taxonomy rows" do
     cases = [
-      {"model_load_failure", "model_invalid"},
-      {"model_load_failure", "internal_error"},
-      {"pre_acceptance_unavailable", "internal_error"},
-      {"terminal_conformance", "runtime_endpoint_terminal_invalid"},
-      {"capacity_rejection", "model_busy"},
-      {"controller_failure", "orchestration_error"},
-      {"controller_failure", "request_controller_restarted"},
-      {"unknown", "internal_error"},
-      {"cancellation", "request_cancelled"},
-      {"deadline", "request_timeout"}
+      {"model_load_failure", "model_invalid", :model_invalid},
+      {"model_load_failure", "internal_error", :internal},
+      {"pre_acceptance_unavailable", "internal_error", nil},
+      {"terminal_conformance", "runtime_endpoint_terminal_invalid", nil},
+      {"capacity_rejection", "model_busy", nil},
+      {"controller_failure", "orchestration_error", nil},
+      {"controller_failure", "request_controller_restarted", nil},
+      {"unknown", "internal_error", nil},
+      {"cancellation", "request_cancelled", nil},
+      {"deadline", "request_timeout", nil}
     ]
 
-    for {failure_class, failure_code} <- cases do
+    for {failure_class, failure_code, model_load_category} <- cases do
       assert classify(%{
                failure_class: failure_class,
                failure_code: failure_code,
+               model_load_category: model_load_category,
                runtime_retryable: true
              }) == {:declined, :not_retryable}
     end
@@ -181,6 +207,17 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
            }) == {:declined, :not_retryable}
   end
 
+  test "SPEC.md §5.8 resolves identity before occupancy for combined unresolved evidence" do
+    assert classify(%{
+             failure_class: "occupancy_unresolved",
+             failure_code: "internal_error",
+             runtime_retryable: nil,
+             identity_resolution: :unresolved,
+             execution_resolution: :unresolved,
+             capacity_release_outcome: :unresolved
+           }) == {:declined, :identity_unresolved}
+  end
+
   test "SPEC.md §7.2.7 bounds attempt 2 to cancellation or retry exhaustion" do
     assert classify(%{attempt: 2, caller_status: :cancelled}) == {:declined, :cancelled}
     assert classify(%{attempt: 2, caller_status: :live}) == {:declined, :retry_exhausted}
@@ -224,6 +261,7 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
       deadline_status: :remaining,
       failure_class: "runtime_failure",
       failure_code: "runtime_unavailable",
+      model_load_category: nil,
       runtime_retryable: true,
       identity_resolution: :resolved,
       execution_resolution: :terminated,

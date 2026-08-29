@@ -169,4 +169,51 @@ defmodule Orchard.Dispatch.AttemptOutcomeTest do
                delivered_event_count: 0
              })
   end
+
+  test "SPEC 5.8 preserves normalized model-load retry authority only on model-load failures" do
+    started_at = ~U[2026-08-14 10:00:00.000000Z]
+    ended_at = DateTime.add(started_at, 1, :second)
+
+    attrs = %{
+      attempt_outcome: :failed,
+      node_id: Ecto.UUID.generate(),
+      accepted: false,
+      events: [],
+      failure:
+        InferenceAttemptFailure.normalize(%{
+          category: :model_load,
+          code: :timeout,
+          phase: :model_load
+        }),
+      execution_resolution: :not_started,
+      capacity_release_outcome: :not_applicable,
+      started_at: started_at,
+      ended_at: ended_at,
+      first_token_at: nil,
+      output_committed: false,
+      output_commitment_kind: nil,
+      delivery_state: :pending,
+      delivered_event_count: 0,
+      model_load_category: :timeout
+    }
+
+    assert {:ok, outcome} = AttemptOutcome.new(attrs)
+    assert outcome.model_load_category == :timeout
+
+    assert {:error, :invalid_attempt_outcome} =
+             attrs |> Map.delete(:model_load_category) |> AttemptOutcome.new()
+
+    assert {:error, :invalid_attempt_outcome} =
+             attrs
+             |> Map.put(
+               :failure,
+               InferenceAttemptFailure.normalize(%{
+                 category: :controller,
+                 code: :orchestration_error
+               })
+             )
+             |> AttemptOutcome.new()
+
+    assert AttemptOutcome.fail_attempt(outcome).model_load_category == nil
+  end
 end

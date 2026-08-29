@@ -4,6 +4,7 @@ defmodule Orchard.Dispatch.AttemptOutcome do
   """
 
   alias Orchard.Dispatch.AttemptEventDelivery
+  alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
   alias Orchard.Requests.InferenceAttemptFailure
 
@@ -23,13 +24,14 @@ defmodule Orchard.Dispatch.AttemptOutcome do
     :delivery_state,
     :delivered_event_count
   ]
-  defstruct @enforce_keys ++ [runtime_retryable: nil]
+  defstruct @enforce_keys ++ [runtime_retryable: nil, model_load_category: nil]
 
   @attempt_outcomes [:completed, :failed, :cancelled, :timed_out, :interrupted]
   @execution_resolutions [:not_started, :terminated, :unresolved]
   @capacity_release_outcomes [:released, :already_released, :not_applicable, :unresolved]
   @commitment_kinds [:text, :tool_call, :structured_output]
   @non_text_commitment_kinds @commitment_kinds -- [:text]
+  @model_load_categories ModelLoadFailure.categories()
 
   @type attempt_outcome :: :completed | :failed | :cancelled | :timed_out | :interrupted
   @type execution_resolution :: :not_started | :terminated | :unresolved
@@ -56,7 +58,8 @@ defmodule Orchard.Dispatch.AttemptOutcome do
           output_commitment_kind: commitment_kind() | nil,
           delivery_state: delivery_state(),
           delivered_event_count: non_neg_integer(),
-          runtime_retryable: boolean() | nil
+          runtime_retryable: boolean() | nil,
+          model_load_category: ModelLoadFailure.category() | nil
         }
 
   @spec new(map()) :: {:ok, t()} | {:error, :invalid_attempt_outcome}
@@ -81,6 +84,7 @@ defmodule Orchard.Dispatch.AttemptOutcome do
     if valid_identity?(attempt_outcome, node_id, accepted, events) and
          valid_result?(attempt_outcome, failure, execution_resolution, capacity_release_outcome) and
          valid_runtime_retryable?(attempt_outcome, Map.get(attrs, :runtime_retryable)) and
+         valid_model_load_category?(failure, Map.get(attrs, :model_load_category)) and
          ordered_timestamps?(started_at, ended_at, first_token_at) and
          valid_commitment?(accepted, output_committed, output_commitment_kind, first_token_at) and
          valid_delivery?(
@@ -140,6 +144,7 @@ defmodule Orchard.Dispatch.AttemptOutcome do
     attrs = %{
       outcome
       | attempt_outcome: :failed,
+        model_load_category: nil,
         failure:
           InferenceAttemptFailure.normalize(%{
             category: :controller,
@@ -180,6 +185,7 @@ defmodule Orchard.Dispatch.AttemptOutcome do
       | attempt_outcome: attempt_outcome,
         delivery_state: :failed,
         delivered_event_count: delivered_event_count,
+        model_load_category: nil,
         failure: failure
     }
 
@@ -224,6 +230,19 @@ defmodule Orchard.Dispatch.AttemptOutcome do
        do: is_boolean(runtime_retryable) or is_nil(runtime_retryable)
 
   defp valid_runtime_retryable?(_attempt_outcome, _runtime_retryable), do: false
+
+  defp valid_model_load_category?(
+         %{"failure_class" => "model_load_failure"},
+         model_load_category
+       ),
+       do: model_load_category in @model_load_categories
+
+  defp valid_model_load_category?(%{"failure_class" => failure_class}, nil)
+       when failure_class != "model_load_failure",
+       do: true
+
+  defp valid_model_load_category?(nil, nil), do: true
+  defp valid_model_load_category?(_failure, _model_load_category), do: false
 
   defp valid_commitment?(true, true, :text, %DateTime{}), do: true
 

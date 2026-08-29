@@ -22,6 +22,15 @@ defmodule Orchard.Inference.ModelLoadFailure do
   @enforce_keys [:category, :code, :message]
   defstruct [:category, :code, :message]
 
+  @categories [
+    :model_invalid,
+    :acquisition_failed,
+    :runtime_unavailable,
+    :timeout,
+    :resource_exhausted,
+    :internal
+  ]
+
   @type category ::
           :model_invalid
           | :acquisition_failed
@@ -37,6 +46,10 @@ defmodule Orchard.Inference.ModelLoadFailure do
         }
 
   # -- Public API ------------------------------------------------------------
+
+  @doc "Returns the closed normalized model-load failure category vocabulary."
+  @spec categories() :: [category()]
+  def categories, do: @categories
 
   @doc """
   Extracts a failure struct from an `EnsureModelLoadedResponse` with
@@ -98,15 +111,7 @@ defmodule Orchard.Inference.ModelLoadFailure do
   def from_category("resource_exhausted"), do: from_category(:resource_exhausted)
   def from_category("internal_error"), do: from_category(:internal)
 
-  def from_category(category)
-      when category in [
-             :model_invalid,
-             :acquisition_failed,
-             :runtime_unavailable,
-             :timeout,
-             :resource_exhausted,
-             :internal
-           ] do
+  def from_category(category) when category in @categories do
     {code, message} = defaults_for_category(category)
     %__MODULE__{category: category, code: code, message: message}
   end

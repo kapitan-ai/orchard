@@ -102,6 +102,7 @@ defmodule Orchard.Inference.AttemptBreakerAttributionTest do
 
   defp failed_outcome(node_id, failure_class) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    model_load? = failure_class == "model_load_failure"
 
     {:ok, outcome} =
       AttemptOutcome.new(%{
@@ -109,7 +110,10 @@ defmodule Orchard.Inference.AttemptBreakerAttributionTest do
         node_id: node_id,
         accepted: failure_class != "pre_acceptance_unavailable",
         events: [],
-        failure: %{"failure_class" => failure_class, "failure_code" => "internal_error"},
+        failure: %{
+          "failure_class" => failure_class,
+          "failure_code" => if(model_load?, do: "load_timeout", else: "internal_error")
+        },
         execution_resolution: :terminated,
         capacity_release_outcome: :released,
         started_at: DateTime.add(now, -1, :second),
@@ -119,7 +123,8 @@ defmodule Orchard.Inference.AttemptBreakerAttributionTest do
         output_commitment_kind: nil,
         delivery_state: :selected,
         delivered_event_count: 0,
-        runtime_retryable: true
+        runtime_retryable: true,
+        model_load_category: if(model_load?, do: :timeout, else: nil)
       })
 
     outcome
