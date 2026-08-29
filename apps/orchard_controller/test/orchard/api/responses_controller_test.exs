@@ -5,6 +5,7 @@ defmodule Orchard.API.ResponsesControllerTest do
 
   import Orchard.TestSupport.ModelRequestFixtures
   import Orchard.TestSupport.QueueAdmissionAPI
+  import Orchard.TestSupport.RetryAPI
   import Orchard.TestSupport.ToolRegistryTestSupport
 
   alias Orchard.API.Router
@@ -41,11 +42,15 @@ defmodule Orchard.API.ResponsesControllerTest do
     |> Router.call(Router.init([]))
   end
 
-  defp post_responses_endpoint(params, token, accept) do
-    build_conn()
-    |> put_req_header("accept", accept)
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("authorization", "Bearer #{token}")
+  defp post_responses_endpoint(params, token, accept, headers \\ []) do
+    conn =
+      build_conn()
+      |> put_req_header("accept", accept)
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer #{token}")
+
+    headers
+    |> Enum.reduce(conn, fn {name, value}, acc -> put_req_header(acc, name, value) end)
     |> post("/v1/responses", params)
   end
 
@@ -68,6 +73,7 @@ defmodule Orchard.API.ResponsesControllerTest do
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
       QueueManager.reset()
+      clear()
       clear_responses_stub_config()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
@@ -1041,6 +1047,243 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     assert Enum.at(events, 1).data["delta"] == ""
     assert Enum.at(events, 2).data["text"] == ""
+  end
+
+  @tag :live
+  test "SPEC.md M4 retries one uncommitted attempt across JSON and typed SSE", %{bundle: bundle} do
+    create_queue_model!(bundle, "responses-bounded-retry")
+    %{token: token, tenant: tenant} = create_api_key_with_token!("responses-bounded-retry")
+    grant_active_models!(tenant)
+
+    for stream? <- [false, true] do
+      idempotency_key = "responses-bounded-retry-#{stream?}"
+
+      nodes = configure_retry_nodes!(successful_retry_events())
+
+      Process.put(:orchard_retry_started_probe, fn request ->
+        send(self(), {:retry_api_reservation_at_attempt_two, request.reserved_output_tokens})
+      end)
+
+      conn =
+        post_responses_endpoint(
+          %{
+            "model" => "responses-bounded-retry@v1",
+            "input" => "hello",
+            "max_output_tokens" => 7,
+            "stream" => stream?
+          },
+          token,
+          if(stream?, do: "text/event-stream", else: "application/json"),
+          [{"idempotency-key", idempotency_key}]
+        )
+
+      assert conn.status == 200
+
+      public_id =
+        if stream? do
+          events = parse_typed_sse_events(conn)
+
+          assert Enum.map(events, & &1.type) == [
+                   "response.created",
+                   "response.output_text.delta",
+                   "response.output_text.done",
+                   "response.completed"
+                 ]
+
+          assert Enum.map_join(events, "", &Map.get(&1.data, "delta", "")) ==
+                   "attempt-two-only"
+
+          assert List.last(events).type == "response.completed"
+          refute collect_chunked_body(conn) =~ "attempt-one-only"
+          get_in(List.last(events).data, ["response", "id"])
+        else
+          body = Jason.decode!(conn.resp_body)
+          assert body["output_text"] == "attempt-two-only"
+          refute conn.resp_body =~ "attempt-one-only"
+          body["id"]
+        end
+
+      request = Requests.get_request_by_public_id(public_id)
+      assert request.stream == stream?
+      assert_receive {:retry_api_reservation_at_attempt_two, 7}
+      assert request.reserved_output_tokens == 0
+      assert_logical_identity!(request, idempotency_key, :metadata)
+      assert_successful_retry!(request, nodes)
+    end
+  end
+
+  @tag :live
+  test "SPEC.md M4 exposes attempt 2 failure without a third Responses attempt", %{
+    bundle: bundle
+  } do
+    create_queue_model!(bundle, "responses-bounded-retry-failure")
+
+    %{token: token, tenant: tenant} =
+      create_api_key_with_token!("responses-bounded-retry-failure")
+
+    grant_active_models!(tenant)
+
+    for stream? <- [false, true] do
+      nodes = configure_retry_nodes!(exhausted_retry_events())
+
+      conn =
+        post_responses_endpoint(
+          %{
+            "model" => "responses-bounded-retry-failure@v1",
+            "input" => "hello",
+            "stream" => stream?
+          },
+          token,
+          if(stream?, do: "text/event-stream", else: "application/json")
+        )
+
+      if stream? do
+        assert conn.status == 200
+        terminal = conn |> parse_typed_sse_events() |> List.last()
+        assert terminal.type == "response.failed"
+        assert terminal.data["response"]["error"]["code"] == "runtime_unavailable"
+      else
+        assert conn.status == 500
+        assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+      end
+
+      request = latest_request!("responses-bounded-retry-failure@v1", stream?)
+      assert request.reserved_output_tokens == 0
+      assert_failed_retry!(request, nodes)
+    end
+  end
+
+  @tag :live
+  test "SPEC.md M4 blocks Responses retry after text or tool identity commitment", %{
+    bundle: bundle
+  } do
+    for {kind, commitment_event} <- commitment_cases() do
+      model_id = "responses-bounded-retry-committed-#{kind}"
+      create_queue_model!(bundle, model_id)
+      %{token: token, tenant: tenant} = create_api_key_with_token!(model_id)
+      grant_active_models!(tenant)
+
+      for stream? <- [false, true] do
+        nodes =
+          configure_retry_nodes!(
+            [
+              [
+                commitment_event,
+                InferenceEvent.failed("worker_down", "committed attempt failed", true)
+              ]
+            ],
+            node_count: 1
+          )
+
+        conn =
+          post_responses_endpoint(
+            %{
+              "model" => "#{model_id}@v1",
+              "input" => "hello",
+              "stream" => stream?
+            },
+            token,
+            if(stream?, do: "text/event-stream", else: "application/json")
+          )
+
+        if stream? do
+          assert conn.status == 200
+          terminal = conn |> parse_typed_sse_events() |> List.last()
+          assert terminal.type == "response.failed"
+          assert terminal.data["response"]["error"]["code"] == "worker_down"
+        else
+          assert conn.status == 500
+          assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+        end
+
+        request = latest_request!("#{model_id}@v1", stream?)
+        assert_declined_retry!(request, nodes, "output_committed", "worker_or_node_loss", kind)
+      end
+    end
+  end
+
+  @tag :live
+  test "SPEC.md M4 preserves Responses attempt 1 when no safe alternate exists", %{
+    bundle: bundle
+  } do
+    for {suffix, selection_mode, retry_decision} <- alternate_refusal_cases() do
+      model_id = "responses-bounded-retry-#{suffix}"
+      create_queue_model!(bundle, model_id)
+      %{token: token, tenant: tenant} = create_api_key_with_token!(model_id)
+      grant_active_models!(tenant)
+
+      for stream? <- [false, true] do
+        nodes =
+          configure_retry_nodes!(
+            [[InferenceEvent.failed("worker_down", "attempt one failed", true)]],
+            selection_mode: selection_mode,
+            node_count: 1
+          )
+
+        conn =
+          post_responses_endpoint(
+            %{
+              "model" => "#{model_id}@v1",
+              "input" => "hello",
+              "stream" => stream?
+            },
+            token,
+            if(stream?, do: "text/event-stream", else: "application/json")
+          )
+
+        if stream? do
+          terminal = conn |> parse_typed_sse_events() |> List.last()
+          assert terminal.type == "response.failed"
+          assert terminal.data["response"]["error"]["code"] == "worker_down"
+        else
+          assert conn.status == 500
+          assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+        end
+
+        request = latest_request!("#{model_id}@v1", stream?)
+        assert request.error_code == "worker_down"
+        assert_declined_retry!(request, nodes, retry_decision, "worker_or_node_loss")
+      end
+    end
+  end
+
+  @tag :live
+  test "SPEC.md M4 keeps Responses terminal-conformance failures non-retryable", %{
+    bundle: bundle
+  } do
+    create_queue_model!(bundle, "responses-bounded-retry-conformance")
+
+    %{token: token, tenant: tenant} =
+      create_api_key_with_token!("responses-bounded-retry-conformance")
+
+    grant_active_models!(tenant)
+
+    for stream? <- [false, true] do
+      nodes = configure_retry_nodes!([[]], node_count: 1)
+
+      conn =
+        post_responses_endpoint(
+          %{
+            "model" => "responses-bounded-retry-conformance@v1",
+            "input" => "hello",
+            "stream" => stream?
+          },
+          token,
+          if(stream?, do: "text/event-stream", else: "application/json")
+        )
+
+      if stream? do
+        terminal = conn |> parse_typed_sse_events() |> List.last()
+        assert terminal.type == "response.failed"
+        assert terminal.data["response"]["error"]["code"] == "internal_error"
+      else
+        assert conn.status == 500
+        assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+      end
+
+      request = latest_request!("responses-bounded-retry-conformance@v1", stream?)
+      assert_declined_retry!(request, nodes, "not_retryable", "terminal_conformance")
+    end
   end
 
   test "streaming terminal includes assembled function_call items without new SSE event types" do

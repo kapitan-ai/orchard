@@ -539,7 +539,10 @@ defmodule Orchard.Requests do
   end
 
   defp apply_terminal_update(%Request{} = request, attrs) do
-    attrs = CapturePolicy.terminal_attrs(request.payload_capture_mode, attrs)
+    attrs =
+      request.payload_capture_mode
+      |> CapturePolicy.terminal_attrs(attrs)
+      |> Map.put(:reserved_output_tokens, 0)
 
     # Allow idempotent terminal updates: if the row is already in a terminal
     # state (set by append_request_event's atomic state sync), still apply

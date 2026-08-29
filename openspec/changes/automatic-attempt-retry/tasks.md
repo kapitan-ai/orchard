@@ -20,20 +20,20 @@
 ## 3. Typed single-attempt dispatcher outcome and release acknowledgement
 
 - [x] 3.1 Return a typed dispatcher outcome with identity, acceptance, events, failure, execution resolution, release outcome, and timing
-- [ ] 3.2 Make allocation release distinguish released, already released, not applicable, and unresolved
-- [ ] 3.3 Preserve idempotent defensive cleanup without converting authority failure into confirmed release
-- [ ] 3.4 Preserve quarantine for unresolved accepted execution
-- [ ] 3.5 Keep the dispatcher single-target and single-attempt
+- [x] 3.2 Make allocation release distinguish released, already released, not applicable, and unresolved
+- [x] 3.3 Preserve idempotent defensive cleanup without converting authority failure into confirmed release
+- [x] 3.4 Preserve quarantine for unresolved accepted execution
+- [x] 3.5 Keep the dispatcher single-target and single-attempt
 
 ## 4. Output Commitment and event isolation
 
 - [x] 4.1 Add a pure monotonic Output Commitment classifier
 - [x] 4.2 Commit on non-empty text and stable tool-call identity
-- [ ] 4.2a Commit on future content-bearing structured output
+- [x] 4.2a Commit on future content-bearing structured output
 - [x] 4.3 Keep accepted, progress, usage, model-load, empty text, and terminal events uncommitted
 - [x] 4.4 Record commitment before public handler or serializer delivery
 - [x] 4.5 Buffer pre-commit attempt events, flush earlier events before a committing event, expose a safe discard seam, and flush the final uncommitted attempt in order
-- [ ] 4.5a Discard attempt 1 events when attempt 2 is integrated
+- [x] 4.5a Discard attempt 1 events when attempt 2 is integrated
 - [x] 4.6 Preserve text-specific `first_token_at`
 
 ## 5. Closed failure taxonomy and cancellation
@@ -51,8 +51,8 @@
 - [x] 6.3 Record the `SPEC.md` §7.3.5 rejection reason code `previous_attempt_node_excluded` in scheduler explanations
 - [x] 6.4 Make admitted single-target scheduling fail when its Node is excluded
 - [x] 6.5 Recheck the selected Node in the orchestrator before dispatch
-- [ ] 6.6 Keep the §7.5.3 `ScorePrefixCache` caps per logical Request so attempt 2 uses only their unconsumed remainder and otherwise ranks fail-open
-- [ ] 6.7 Prove alternate scheduling runs no second compatibility status-probe wave and records `no_alternative_node` on that branch
+- [x] 6.6 Keep the §7.5.3 `ScorePrefixCache` caps per logical Request so attempt 2 uses only their unconsumed remainder and otherwise ranks fail-open
+- [x] 6.7 Prove alternate scheduling runs no second compatibility status-probe wave and records `no_alternative_node` on that branch
 
 ## 7. Breaker attribution prerequisite
 
@@ -82,13 +82,13 @@
 
 ## 10. End-to-end acceptance
 
-- [ ] 10.1 Cover attempt 1 transient failure followed by attempt 2 success and failure
-- [ ] 10.2 Cover text, tool-call, empty-text, and structured-output commitment boundaries
-- [ ] 10.3 Cover no alternative, deadline exhaustion, cancellation races, unresolved release, and same-Node defense
-- [ ] 10.4 Cover one quota reservation, idempotent duplicate observation, unchanged capture policy, and attempt-event ordering
-- [ ] 10.5 Cover breaker attribution and logical-versus-attempt metrics
+- [x] 10.1 Cover attempt 1 transient failure followed by attempt 2 success and failure
+- [x] 10.2 Cover text, tool-call, empty-text, and structured-output commitment boundaries
+- [x] 10.3 Cover no alternative, deadline exhaustion, cancellation races, unresolved release, and same-Node defense
+- [x] 10.4 Cover one quota reservation, idempotent duplicate observation, unchanged capture policy, and attempt-event ordering
+- [x] 10.5 Cover breaker attribution and logical-versus-attempt metrics
 - [x] 10.6 Cover Chat Completions and Responses in streaming and non-streaming modes
-- [ ] 10.7 Cover terminal-conformance failures as non-retryable
+- [x] 10.7 Cover terminal-conformance failures as non-retryable
 
 ## 11. Quality and completion
 

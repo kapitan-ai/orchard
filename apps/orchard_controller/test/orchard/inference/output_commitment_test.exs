@@ -48,4 +48,16 @@ defmodule Orchard.Inference.OutputCommitmentTest do
 
     assert_raise ArgumentError, fn -> InferenceEvent.tool_call_delta("", "{}") end
   end
+
+  test "SPEC 5.8 commits future structured output only when the delta carries content" do
+    uncommitted = OutputCommitment.new()
+
+    assert uncommitted == OutputCommitment.observe_structured_output(uncommitted, "")
+
+    committed = OutputCommitment.observe_structured_output(uncommitted, "{")
+    assert OutputCommitment.committed?(committed)
+    assert OutputCommitment.kind(committed) == :structured_output
+
+    assert committed == OutputCommitment.observe_structured_output(committed, "ignored")
+  end
 end

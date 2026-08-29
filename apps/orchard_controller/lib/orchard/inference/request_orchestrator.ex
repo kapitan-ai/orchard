@@ -1578,6 +1578,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       sampling_params: CanonicalRequestSerializer.sampling_params(canonical.sampling),
       response_format: %{"type" => Atom.to_string(canonical.response_format.type)},
       input_tokens: canonical.input_token_count,
+      reserved_output_tokens: effective_max_output_tokens(canonical.sampling),
       timeout_at:
         RequestDeadline.timeout_at(
           canonical.admission.timeout_ms,

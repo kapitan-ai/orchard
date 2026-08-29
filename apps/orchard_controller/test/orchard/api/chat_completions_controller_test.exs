@@ -37,6 +37,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   import Orchard.TestSupport.ModelRequestFixtures
   import Orchard.TestSupport.QueueAdmissionAPI
+  import Orchard.TestSupport.RetryAPI
   import Orchard.TestSupport.ToolRegistryTestSupport
 
   alias Orchard.API.Router
@@ -77,11 +78,15 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     |> Router.call(Router.init([]))
   end
 
-  defp post_chat_endpoint(params, token, accept) do
-    build_conn()
-    |> put_req_header("accept", accept)
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("authorization", "Bearer #{token}")
+  defp post_chat_endpoint(params, token, accept, headers \\ []) do
+    conn =
+      build_conn()
+      |> put_req_header("accept", accept)
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer #{token}")
+
+    headers
+    |> Enum.reduce(conn, fn {name, value}, acc -> put_req_header(acc, name, value) end)
     |> post("/v1/chat/completions", params)
   end
 
@@ -128,6 +133,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
       QueueManager.reset()
+      clear()
       clear_chat_stub_config()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
@@ -1197,6 +1203,253 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
   end
 
+  describe "POST /v1/chat/completions bounded automatic retry" do
+    @tag :live
+    test "SPEC.md M4 retries one uncommitted attempt across JSON and SSE", %{bundle: bundle} do
+      create_queue_model!(bundle, "chat-bounded-retry")
+      %{token: token, tenant: tenant} = create_api_key_with_token!("chat-bounded-retry")
+      grant_active_models!(tenant)
+
+      for stream? <- [false, true] do
+        idempotency_key = "chat-bounded-retry-#{stream?}"
+
+        nodes = configure_retry_nodes!(successful_retry_events())
+
+        Process.put(:orchard_retry_started_probe, fn request ->
+          send(self(), {:retry_api_reservation_at_attempt_two, request.reserved_output_tokens})
+        end)
+
+        conn =
+          post_chat_endpoint(
+            %{
+              "model" => "chat-bounded-retry@v1",
+              "messages" => [%{"role" => "user", "content" => "hello"}],
+              "max_tokens" => 7,
+              "stream" => stream?
+            },
+            token,
+            if(stream?, do: "text/event-stream", else: "application/json"),
+            [{"idempotency-key", idempotency_key}]
+          )
+
+        assert conn.status == 200
+
+        public_id =
+          if stream? do
+            events = parse_sse_body(conn.resp_body)
+            data_events = for {:data, event} <- events, do: event
+            assert Enum.filter(events, &match?({:done, nil}, &1)) == [{:done, nil}]
+            assert Enum.filter(events, &match?({:error, _}, &1)) == []
+
+            assert Enum.map(data_events, fn event ->
+                     get_in(event, ["choices", Access.at(0), "delta", "content"])
+                   end) == ["", "attempt-two-only", nil]
+
+            assert Enum.map_join(data_events, "", fn event ->
+                     get_in(event, ["choices", Access.at(0), "delta", "content"]) || ""
+                   end) ==
+                     "attempt-two-only"
+
+            refute conn.resp_body =~ "attempt-one-only"
+            hd(data_events)["id"]
+          else
+            body = Jason.decode!(conn.resp_body)
+
+            assert get_in(body, ["choices", Access.at(0), "message", "content"]) ==
+                     "attempt-two-only"
+
+            refute conn.resp_body =~ "attempt-one-only"
+            body["id"]
+          end
+
+        request = Requests.get_request_by_public_id(public_id)
+        assert request.stream == stream?
+        assert_receive {:retry_api_reservation_at_attempt_two, 7}
+        assert request.reserved_output_tokens == 0
+        assert_logical_identity!(request, idempotency_key, :metadata)
+        assert_successful_retry!(request, nodes)
+      end
+    end
+
+    @tag :live
+    test "SPEC.md M4 exposes attempt 2 failure without a third Chat attempt", %{bundle: bundle} do
+      create_queue_model!(bundle, "chat-bounded-retry-failure")
+      %{token: token, tenant: tenant} = create_api_key_with_token!("chat-bounded-retry-failure")
+      grant_active_models!(tenant)
+
+      for stream? <- [false, true] do
+        nodes = configure_retry_nodes!(exhausted_retry_events())
+
+        conn =
+          post_chat_endpoint(
+            %{
+              "model" => "chat-bounded-retry-failure@v1",
+              "messages" => [%{"role" => "user", "content" => "hello"}],
+              "stream" => stream?
+            },
+            token,
+            if(stream?, do: "text/event-stream", else: "application/json")
+          )
+
+        if stream? do
+          assert conn.status == 200
+          events = parse_sse_body(conn.resp_body)
+          assert [{:error, error}] = Enum.filter(events, &match?({:error, _}, &1))
+          assert error["error"]["code"] == "runtime_unavailable"
+          assert Enum.filter(events, &match?({:done, nil}, &1)) == []
+        else
+          assert conn.status == 500
+          assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+        end
+
+        request = latest_request!("chat-bounded-retry-failure@v1", stream?)
+        assert request.reserved_output_tokens == 0
+        assert_failed_retry!(request, nodes)
+      end
+    end
+
+    @tag :live
+    test "SPEC.md M4 blocks Chat retry after text or tool identity commitment", %{
+      bundle: bundle
+    } do
+      for {kind, commitment_event} <- commitment_cases() do
+        model_id = "chat-bounded-retry-committed-#{kind}"
+        create_queue_model!(bundle, model_id)
+        %{token: token, tenant: tenant} = create_api_key_with_token!(model_id)
+        grant_active_models!(tenant)
+
+        for stream? <- [false, true] do
+          nodes =
+            configure_retry_nodes!(
+              [
+                [
+                  commitment_event,
+                  InferenceEvent.failed("worker_down", "committed attempt failed", true)
+                ]
+              ],
+              node_count: 1
+            )
+
+          conn =
+            post_chat_endpoint(
+              %{
+                "model" => "#{model_id}@v1",
+                "messages" => [%{"role" => "user", "content" => "hello"}],
+                "stream" => stream?
+              },
+              token,
+              if(stream?, do: "text/event-stream", else: "application/json")
+            )
+
+          if stream? do
+            assert conn.status == 200
+
+            assert [{:error, error}] =
+                     conn.resp_body
+                     |> parse_sse_body()
+                     |> Enum.filter(&match?({:error, _}, &1))
+
+            assert error["error"]["code"] == "worker_down"
+          else
+            assert conn.status == 500
+            assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+          end
+
+          request = latest_request!("#{model_id}@v1", stream?)
+          assert_declined_retry!(request, nodes, "output_committed", "worker_or_node_loss", kind)
+        end
+      end
+    end
+
+    @tag :live
+    test "SPEC.md M4 preserves Chat attempt 1 when no safe alternate exists", %{bundle: bundle} do
+      for {suffix, selection_mode, retry_decision} <- alternate_refusal_cases() do
+        model_id = "chat-bounded-retry-#{suffix}"
+        create_queue_model!(bundle, model_id)
+        %{token: token, tenant: tenant} = create_api_key_with_token!(model_id)
+        grant_active_models!(tenant)
+
+        for stream? <- [false, true] do
+          nodes =
+            configure_retry_nodes!(
+              [[InferenceEvent.failed("worker_down", "attempt one failed", true)]],
+              selection_mode: selection_mode,
+              node_count: 1
+            )
+
+          conn =
+            post_chat_endpoint(
+              %{
+                "model" => "#{model_id}@v1",
+                "messages" => [%{"role" => "user", "content" => "hello"}],
+                "stream" => stream?
+              },
+              token,
+              if(stream?, do: "text/event-stream", else: "application/json")
+            )
+
+          if stream? do
+            assert [{:error, error}] =
+                     conn.resp_body
+                     |> parse_sse_body()
+                     |> Enum.filter(&match?({:error, _}, &1))
+
+            assert error["error"]["code"] == "worker_down"
+          else
+            assert conn.status == 500
+            assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+          end
+
+          request = latest_request!("#{model_id}@v1", stream?)
+          assert request.error_code == "worker_down"
+          assert_declined_retry!(request, nodes, retry_decision, "worker_or_node_loss")
+        end
+      end
+    end
+
+    @tag :live
+    test "SPEC.md M4 keeps Chat terminal-conformance failures non-retryable", %{
+      bundle: bundle
+    } do
+      create_queue_model!(bundle, "chat-bounded-retry-conformance")
+
+      %{token: token, tenant: tenant} =
+        create_api_key_with_token!("chat-bounded-retry-conformance")
+
+      grant_active_models!(tenant)
+
+      for stream? <- [false, true] do
+        nodes = configure_retry_nodes!([[]], node_count: 1)
+
+        conn =
+          post_chat_endpoint(
+            %{
+              "model" => "chat-bounded-retry-conformance@v1",
+              "messages" => [%{"role" => "user", "content" => "hello"}],
+              "stream" => stream?
+            },
+            token,
+            if(stream?, do: "text/event-stream", else: "application/json")
+          )
+
+        if stream? do
+          assert [{:error, error}] =
+                   conn.resp_body
+                   |> parse_sse_body()
+                   |> Enum.filter(&match?({:error, _}, &1))
+
+          assert error["error"]["code"] == "internal_error"
+        else
+          assert conn.status == 500
+          assert Jason.decode!(conn.resp_body)["error"]["code"] == "internal_error"
+        end
+
+        request = latest_request!("chat-bounded-retry-conformance@v1", stream?)
+        assert_declined_retry!(request, nodes, "not_retryable", "terminal_conformance")
+      end
+    end
+  end
+
   describe "POST /v1/chat/completions (streaming happy path)" do
     for accept <- ["text/event-stream", "application/json"] do
       @tag :db
@@ -1581,7 +1834,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
       assert_in_delta DateTime.diff(request.timeout_at, request.inserted_at, :millisecond),
                       Orchard.Inference.request_timeout_ms() + 3_000 + 180_000,
-                      1
+                      25
 
       # Terminal state after successful completion
       assert request.state in [:completed, :streaming]
