@@ -12,6 +12,9 @@ defmodule Orchard.DomainMetricsTest do
       [
         :inference_requests,
         :inference_request_duration,
+        :inference_attempts,
+        :inference_attempt_duration,
+        :inference_retries,
         :input_tokens,
         :output_tokens,
         :decode_tokens_per_second,
@@ -88,6 +91,31 @@ defmodule Orchard.DomainMetricsTest do
     })
 
     assert_metric(:output_tokens, 0, %{tenant: "tenant-1", model: "model-1"})
+  end
+
+  test "SPEC.md §9.1 one terminal attempt emits one count and one duration observation" do
+    DomainMetrics.inference_attempt(2, :completed, :none, 1.25)
+
+    assert_metric(:inference_attempts, 1, %{
+      attempt: "2",
+      outcome: "completed",
+      failure_class: "none"
+    })
+
+    assert_metric(:inference_attempt_duration, 1.25, %{
+      attempt: "2",
+      outcome: "completed"
+    })
+
+    refute_receive {:metric, [:orchard, :metrics, :inference_attempts], _, _}
+    refute_receive {:metric, [:orchard, :metrics, :inference_attempt_duration], _, _}
+  end
+
+  test "SPEC.md §9.1 one finalized retry emits one bounded observation" do
+    DomainMetrics.inference_retry(:retried, :succeeded)
+
+    assert_metric(:inference_retries, 1, %{reason: "retried", result: "succeeded"})
+    refute_receive {:metric, [:orchard, :metrics, :inference_retries], _, _}
   end
 
   test "SPEC.md §9.1 scheduler decisions, duration, and rejection labels are exact" do

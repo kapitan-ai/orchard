@@ -38,6 +38,25 @@ defmodule Orchard.DomainMetrics do
     emit(:output_tokens, output_tokens, %{tenant: tenant_id, model: model_id})
   end
 
+  @spec inference_attempt(1 | 2, atom() | String.t(), atom() | String.t(), number()) :: :ok
+  def inference_attempt(attempt, outcome, failure_class, duration_seconds) do
+    emit(:inference_attempts, 1, %{
+      attempt: attempt,
+      outcome: outcome,
+      failure_class: failure_class
+    })
+
+    emit(:inference_attempt_duration, duration_seconds, %{
+      attempt: attempt,
+      outcome: outcome
+    })
+  end
+
+  @spec inference_retry(atom() | String.t(), atom() | String.t()) :: :ok
+  def inference_retry(reason, result) do
+    emit(:inference_retries, 1, %{reason: reason, result: result})
+  end
+
   @spec scheduler_decision(term(), number()) :: :ok
   def scheduler_decision(result, duration_seconds) do
     emit(:scheduler_duration, duration_seconds, %{})

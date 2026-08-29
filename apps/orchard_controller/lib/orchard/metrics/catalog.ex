@@ -42,6 +42,28 @@ defmodule Orchard.Metrics.Catalog do
       buckets: @request_buckets
     },
     %{
+      family: :inference_attempts,
+      name: "orchard_inference_attempts_total",
+      type: :counter,
+      labels: [:attempt, :outcome, :failure_class],
+      ceiling: 90
+    },
+    %{
+      family: :inference_attempt_duration,
+      name: "orchard_inference_attempt_duration_seconds",
+      type: :histogram,
+      labels: [:attempt, :outcome],
+      ceiling: 10,
+      buckets: @request_buckets
+    },
+    %{
+      family: :inference_retries,
+      name: "orchard_inference_retries_total",
+      type: :counter,
+      labels: [:reason, :result],
+      ceiling: 9
+    },
+    %{
       family: :input_tokens,
       name: "orchard_input_tokens_total",
       type: :counter,
@@ -165,7 +187,7 @@ defmodule Orchard.Metrics.Catalog do
     }
   ]
 
-  @worksheet_total 2_588
+  @worksheet_total 2_817
   @series_ceiling 5_000
 
   @spec descriptors() :: [map()]
@@ -179,7 +201,7 @@ defmodule Orchard.Metrics.Catalog do
     end
   end
 
-  @spec worksheet_total() :: 2_588
+  @spec worksheet_total() :: 2_817
   def worksheet_total, do: @worksheet_total
 
   @spec series_ceiling() :: 5_000

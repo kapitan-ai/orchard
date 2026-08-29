@@ -3281,6 +3281,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   test "SPEC.md sections 5.8 and 5.10 preserve worker-loss attribution when retry is refused", %{
     bundle: bundle
   } do
+    metric_ref = attach_terminal_metrics()
     target = [host: "10.0.0.3", port: 50_063]
     node = insert_runtime_node!(target)
 
@@ -3308,11 +3309,25 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     assert {:ok, decision} = CircuitBreakers.evaluate({:node, node.id})
     assert decision.contribution_count == 1
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempts], %{value: 1},
+                    %{attempt: "1", outcome: "failed", failure_class: "worker_or_node_loss"}}
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempt_duration],
+                    %{value: duration}, %{attempt: "1", outcome: "failed"}}
+
+    assert duration >= 0
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_retries], %{value: 1},
+                    %{reason: "not_retryable", result: "declined"}}
+
+    assert_logical_terminal_metrics_once(metric_ref, canonical, "failed", 0)
   end
 
   test "SPEC.md §5.8 retries a pre-commit failure once on a different Node under one Request", %{
     bundle: bundle
   } do
+    metric_ref = attach_terminal_metrics()
     nodes = configure_alternate_attempt_nodes!()
     put_alternate_attempt_scheduler_config()
 
@@ -3385,6 +3400,27 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert attempt_two_terminal["node_id"] == nodes.second.node_id
     assert attempt_two_terminal["excluded_node_ids"] == [nodes.first.node_id]
     refute Map.has_key?(attempt_two_terminal, "retry_decision")
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempts], %{value: 1},
+                    %{attempt: "1", outcome: "failed", failure_class: "worker_or_node_loss"}}
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempt_duration],
+                    %{value: attempt_one_duration}, %{attempt: "1", outcome: "failed"}}
+
+    assert attempt_one_duration >= 0
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempts], %{value: 1},
+                    %{attempt: "2", outcome: "completed", failure_class: "none"}}
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempt_duration],
+                    %{value: attempt_two_duration}, %{attempt: "2", outcome: "completed"}}
+
+    assert attempt_two_duration >= 0
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_retries], %{value: 1},
+                    %{reason: "retried", result: "succeeded"}}
+
+    assert_logical_terminal_metrics_once(metric_ref, canonical, "completed", 0)
 
     states = request_event_states(request)
     running_idx = Enum.find_index(states, &(&1 == :running))
@@ -3459,6 +3495,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   end
 
   test "SPEC.md §5.8 records retry_exhausted when attempt 2 fails", %{bundle: bundle} do
+    metric_ref = attach_terminal_metrics()
     nodes = configure_alternate_attempt_nodes!()
     put_alternate_attempt_scheduler_config()
 
@@ -3489,6 +3526,28 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert attempt_two["retry_decision"] == "retry_exhausted"
     assert attempt_two["excluded_node_ids"] == [nodes.first.node_id]
     assert attempt_two["node_id"] == nodes.second.node_id
+
+    for attempt <- ["1", "2"] do
+      assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempts], %{value: 1},
+                      %{
+                        attempt: ^attempt,
+                        outcome: "failed",
+                        failure_class: "worker_or_node_loss"
+                      }}
+
+      assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempt_duration],
+                      %{value: duration}, %{attempt: ^attempt, outcome: "failed"}}
+
+      assert duration >= 0
+    end
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_retries], %{value: 1},
+                    %{reason: "retried", result: "failed"}}
+
+    refute_receive {^metric_ref, [:orchard, :metrics, :inference_retries], _,
+                    %{reason: "retry_exhausted"}}
+
+    assert_logical_terminal_metrics_once(metric_ref, canonical, "failed", 0)
   end
 
   test "SPEC.md §5.8 dispatches attempt 2 from dispatching after a pre-acceptance failure", %{
@@ -3779,6 +3838,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   test "SPEC.md §5.8 terminalizes attempt 2 when its caller dies after durable start", %{
     bundle: bundle
   } do
+    metric_ref = attach_terminal_metrics()
     _nodes = configure_alternate_attempt_nodes!()
     put_alternate_attempt_scheduler_config()
     stub_runtime_events([InferenceEvent.failed("worker_down", "worker exited", true)])
@@ -3803,11 +3863,20 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     assert attempt_one["retry_decision"] == "retried"
     assert attempt_two["retry_decision"] == "cancelled"
+
+    assert_failed_retry_metrics_once(
+      metric_ref,
+      canonical,
+      "cancelled",
+      "cancellation",
+      "cancelled"
+    )
   end
 
   test "SPEC.md §5.8 terminalizes attempt 2 when its deadline lapses after durable start", %{
     bundle: bundle
   } do
+    metric_ref = attach_terminal_metrics()
     _nodes = configure_alternate_attempt_nodes!()
     put_alternate_attempt_scheduler_config()
     stub_runtime_events([InferenceEvent.failed("worker_down", "worker exited", true)])
@@ -3837,6 +3906,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     assert attempt_one["retry_decision"] == "retried"
     assert attempt_two["retry_decision"] == "retry_exhausted"
+
+    assert_failed_retry_metrics_once(metric_ref, canonical, "timed_out", "deadline", "timed_out")
   end
 
   test "SPEC.md §5.8 observes the original Request as in progress throughout attempt 2 start", %{
@@ -5605,6 +5676,95 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
     ref
+  end
+
+  defp attach_terminal_metrics do
+    case Process.whereis(Orchard.Metrics.Supervisor) do
+      nil -> :ok
+      pid -> Supervisor.stop(pid)
+    end
+
+    start_supervised!(Orchard.Metrics.Supervisor)
+
+    owner = self()
+    ref = make_ref()
+    handler_id = {__MODULE__, ref}
+
+    events =
+      ~w(inference_requests inference_request_duration inference_attempts inference_attempt_duration inference_retries input_tokens output_tokens)a
+      |> Enum.map(&[:orchard, :metrics, &1])
+
+    :ok =
+      :telemetry.attach_many(
+        handler_id,
+        events,
+        fn event, measurements, metadata, _config ->
+          send(owner, {ref, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    ref
+  end
+
+  defp assert_logical_terminal_metrics_once(metric_ref, canonical, status, output_tokens) do
+    tenant = canonical.tenant_id
+    model = canonical.model_ref.model_id
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :input_tokens], %{value: _input_tokens},
+                    %{tenant: ^tenant, model: ^model}}
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_requests], %{value: 1},
+                    %{endpoint: _endpoint, tenant: ^tenant, model: ^model, status: ^status}}
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_request_duration],
+                    %{value: request_duration},
+                    %{tenant: ^tenant, model: ^model, status: ^status}}
+
+    assert request_duration >= 0
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :output_tokens], %{value: ^output_tokens},
+                    %{tenant: ^tenant, model: ^model}}
+
+    refute_receive {^metric_ref, _event, _measurements, _metadata}, 0
+  end
+
+  defp assert_failed_retry_metrics_once(
+         metric_ref,
+         canonical,
+         attempt_two_outcome,
+         attempt_two_failure_class,
+         logical_status
+       ) do
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempts], %{value: 1},
+                    %{attempt: "1", outcome: "failed", failure_class: "worker_or_node_loss"}}
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempt_duration],
+                    %{value: attempt_one_duration}, %{attempt: "1", outcome: "failed"}}
+
+    assert attempt_one_duration >= 0
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempts], %{value: 1},
+                    %{
+                      attempt: "2",
+                      outcome: ^attempt_two_outcome,
+                      failure_class: ^attempt_two_failure_class
+                    }}
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_attempt_duration],
+                    %{value: attempt_two_duration},
+                    %{attempt: "2", outcome: ^attempt_two_outcome}}
+
+    assert attempt_two_duration >= 0
+
+    assert_receive {^metric_ref, [:orchard, :metrics, :inference_retries], %{value: 1},
+                    %{reason: "retried", result: "failed"}}
+
+    refute_receive {^metric_ref, [:orchard, :metrics, :inference_retries], _,
+                    %{reason: "retry_exhausted"}}
+
+    assert_logical_terminal_metrics_once(metric_ref, canonical, logical_status, 0)
   end
 
   defp restore_runtime_events(nil),
