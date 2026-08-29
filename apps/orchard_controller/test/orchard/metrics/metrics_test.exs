@@ -83,13 +83,16 @@ defmodule Orchard.MetricsTest do
   test "SPEC.md §9.1 descriptor catalog and immutable histogram buckets are exact" do
     descriptors = Catalog.descriptors()
 
-    assert length(descriptors) == 21
+    assert length(descriptors) == 24
 
     assert Enum.map(descriptors, & &1.name) == [
              "orchard_http_requests_total",
              "orchard_http_request_duration_seconds",
              "orchard_inference_requests_total",
              "orchard_inference_request_duration_seconds",
+             "orchard_inference_attempts_total",
+             "orchard_inference_attempt_duration_seconds",
+             "orchard_inference_retries_total",
              "orchard_input_tokens_total",
              "orchard_output_tokens_total",
              "orchard_decode_tokens_per_second",
@@ -115,6 +118,9 @@ defmodule Orchard.MetricsTest do
     assert descriptor!(:inference_request_duration).buckets ==
              [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120]
 
+    assert descriptor!(:inference_attempt_duration).buckets ==
+             [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120]
+
     assert descriptor!(:decode_tokens_per_second).buckets == [1, 2, 5, 10, 20, 40, 80, 120]
 
     assert descriptor!(:scheduler_duration).buckets ==
@@ -122,19 +128,23 @@ defmodule Orchard.MetricsTest do
 
     assert descriptor!(:model_load_duration).buckets ==
              [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120]
+
+    assert Enum.uniq_by(descriptors, & &1.family) == descriptors
+    assert Enum.uniq_by(descriptors, & &1.name) == descriptors
+    assert Enum.uniq_by(descriptors, &Catalog.event_name(&1.family)) == descriptors
   end
 
-  test "SPEC.md §9.1 worksheet is exactly 2,588 below the 5,000 ceiling" do
+  test "SPEC.md §9.1 worksheet includes bounded attempt and retry families" do
     calculated =
       Enum.reduce(Catalog.descriptors(), 0, fn descriptor, total ->
         cost = if descriptor.type == :histogram, do: length(descriptor.buckets) + 3, else: 1
         total + descriptor.ceiling * cost
       end)
 
-    assert calculated == 2_588
-    assert Catalog.worksheet_total() == 2_588
+    assert calculated == 2_817
+    assert Catalog.worksheet_total() == 2_817
     assert Catalog.series_ceiling() == 5_000
-    assert Catalog.series_ceiling() - calculated == 2_412
+    assert Catalog.series_ceiling() - calculated == 2_183
   end
 
   test "bounded normalization rejects unknown categorical values and preserves identifiers" do
@@ -150,6 +160,67 @@ defmodule Orchard.MetricsTest do
 
     assert {:error, :invalid_labels} =
              Normalizer.normalize(:quota_rejections, %{tenant: "t1", reason: "arbitrary"})
+  end
+
+  test "SPEC.md §9.1 attempt and retry labels accept only closed legal combinations" do
+    failure_classes =
+      ~w(
+        pre_acceptance_unavailable model_load_failure worker_or_node_loss runtime_failure
+        terminal_conformance capacity_rejection cancellation deadline controller_failure
+        occupancy_unresolved identity_unresolved
+      )
+
+    for attempt <- [1, 2] do
+      assert {:ok, %{attempt: attempt_label, outcome: "completed", failure_class: "none"}} =
+               Normalizer.normalize(:inference_attempts, %{
+                 attempt: attempt,
+                 outcome: :completed,
+                 failure_class: :none
+               })
+
+      assert attempt_label == Integer.to_string(attempt)
+
+      for outcome <- ~w(failed cancelled timed_out interrupted),
+          failure_class <- failure_classes do
+        assert {:ok, _labels} =
+                 Normalizer.normalize(:inference_attempts, %{
+                   attempt: attempt,
+                   outcome: outcome,
+                   failure_class: failure_class
+                 })
+      end
+    end
+
+    legal_retry_pairs = [
+      {:retried, :succeeded},
+      {:retried, :failed},
+      {:not_retryable, :declined},
+      {:output_committed, :declined},
+      {:cancelled, :declined},
+      {:budget_exhausted, :declined},
+      {:identity_unresolved, :declined},
+      {:occupancy_unresolved, :declined},
+      {:no_alternative_node, :declined}
+    ]
+
+    for {reason, result} <- legal_retry_pairs do
+      assert {:ok, _labels} =
+               Normalizer.normalize(:inference_retries, %{reason: reason, result: result})
+    end
+
+    invalid_labels = [
+      {:inference_attempts, %{attempt: 3, outcome: :failed, failure_class: :runtime_failure}},
+      {:inference_attempts, %{attempt: 1, outcome: :completed, failure_class: :runtime_failure}},
+      {:inference_attempts, %{attempt: 1, outcome: :failed, failure_class: :none}},
+      {:inference_retries, %{reason: :retried, result: :declined}},
+      {:inference_retries, %{reason: :no_alternative_node, result: :succeeded}},
+      {:inference_retries, %{reason: :retry_exhausted, result: :failed}},
+      {:inference_retries, %{reason: :retried, result: :succeeded, request_id: "req-1"}}
+    ]
+
+    for {family, labels} <- invalid_labels do
+      assert {:error, :invalid_labels} = Normalizer.normalize(family, labels)
+    end
   end
 
   test "series admission charges complete histogram cost and fails closed at identifier ceiling" do
@@ -350,6 +421,41 @@ defmodule Orchard.MetricsTest do
 
     assert exposition =~
              ~s(orchard_http_request_duration_seconds_count{endpoint="health",status="success"} 1)
+  end
+
+  test "SPEC.md §9.1 attempt and retry exposition uses only bounded labels" do
+    assert :ok =
+             SeriesAdmission.emit(:inference_attempts, 1, %{
+               attempt: 2,
+               outcome: :completed,
+               failure_class: :none
+             })
+
+    assert :ok =
+             SeriesAdmission.emit(:inference_attempt_duration, 1.25, %{
+               attempt: 2,
+               outcome: :completed
+             })
+
+    assert :ok =
+             SeriesAdmission.emit(:inference_retries, 1, %{
+               reason: :retried,
+               result: :succeeded
+             })
+
+    assert {:ok, exposition} = Renderer.render()
+
+    assert exposition =~
+             ~s(orchard_inference_attempts_total{attempt="2",failure_class="none",outcome="completed"} 1)
+
+    assert exposition =~
+             ~s(orchard_inference_attempt_duration_seconds_bucket{attempt="2",outcome="completed",le="2.5"} 1)
+
+    assert exposition =~
+             ~s(orchard_inference_attempt_duration_seconds_count{attempt="2",outcome="completed"} 1)
+
+    assert exposition =~
+             ~s(orchard_inference_retries_total{reason="retried",result="succeeded"} 1)
   end
 
   test "combined renderer returns core plus gauge exposition and fails closed when degraded" do

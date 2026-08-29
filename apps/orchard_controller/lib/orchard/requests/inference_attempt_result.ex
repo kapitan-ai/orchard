@@ -56,6 +56,12 @@ defmodule Orchard.Requests.InferenceAttemptResult do
   @spec fields() :: [String.t()]
   def fields, do: @fields
 
+  @spec attempt_outcomes() :: [String.t()]
+  def attempt_outcomes, do: @attempt_outcomes
+
+  @spec attempt_one_retry_decisions() :: [String.t()]
+  def attempt_one_retry_decisions, do: @attempt_one_decisions
+
   @spec new(String.t(), 1 | 2, map()) :: {:ok, t()} | {:error, String.t()}
   def new(event_type, attempt, result) when is_map(result) do
     with :ok <- validate_attempt(attempt),

@@ -6,6 +6,19 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
   @node_1 "00000000-0000-4000-a000-000000000001"
   @node_2 "00000000-0000-4000-a000-000000000002"
 
+  test "SPEC.md §9.1 exposes the durable attempt and attempt-1 retry vocabularies" do
+    assert InferenceAttemptResult.attempt_outcomes() ==
+             ~w(completed failed cancelled timed_out interrupted)
+
+    assert InferenceAttemptResult.attempt_one_retry_decisions() ==
+             ~w(
+               retried not_retryable output_committed cancelled budget_exhausted
+               identity_unresolved occupancy_unresolved no_alternative_node
+             )
+
+    refute "retry_exhausted" in InferenceAttemptResult.attempt_one_retry_decisions()
+  end
+
   test "valid attempt 1 and attempt 2 terminal evidence normalize to JSON-safe maps" do
     assert {:ok, attempt_1} =
              InferenceAttemptResult.new(

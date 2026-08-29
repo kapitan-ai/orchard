@@ -2,6 +2,7 @@ defmodule Orchard.Metrics.Normalizer do
   @moduledoc false
 
   alias Orchard.Metrics.Catalog
+  alias Orchard.Requests.{InferenceAttemptFailure, InferenceAttemptResult}
 
   @values %{
     http_endpoint: ~w(public_api operator_api admin_api console health metrics static unmatched),
@@ -64,6 +65,24 @@ defmodule Orchard.Metrics.Normalizer do
        when family in [:inference_requests, :inference_request_duration],
        do: bounded(:inference_status, value)
 
+  defp normalize_value(family, :attempt, value)
+       when family in [:inference_attempts, :inference_attempt_duration],
+       do: bounded_values(~w(1 2), value)
+
+  defp normalize_value(family, :outcome, value)
+       when family in [:inference_attempts, :inference_attempt_duration],
+       do: bounded_values(InferenceAttemptResult.attempt_outcomes(), value)
+
+  defp normalize_value(:inference_attempts, :failure_class, value) do
+    bounded_values(InferenceAttemptFailure.failure_classes() ++ ["none"], value)
+  end
+
+  defp normalize_value(:inference_retries, :reason, value),
+    do: bounded_values(InferenceAttemptResult.attempt_one_retry_decisions(), value)
+
+  defp normalize_value(:inference_retries, :result, value),
+    do: bounded_values(~w(succeeded failed declined), value)
+
   defp normalize_value(:scheduler_decisions, :result, value),
     do: bounded(:scheduler_result, value)
 
@@ -78,8 +97,12 @@ defmodule Orchard.Metrics.Normalizer do
   defp normalize_value(_family, _key, _value), do: :error
 
   defp bounded(kind, value) do
+    bounded_values(Map.fetch!(@values, kind), value)
+  end
+
+  defp bounded_values(values, value) do
     value = to_string(value)
-    if value in Map.fetch!(@values, kind), do: {:ok, value}, else: :error
+    if value in values, do: {:ok, value}, else: :error
   end
 
   defp method(value) do
@@ -98,5 +121,19 @@ defmodule Orchard.Metrics.Normalizer do
 
   defp valid_pair?(:scheduler_decisions, %{tier: "none"}), do: true
   defp valid_pair?(:scheduler_decisions, _labels), do: false
+
+  defp valid_pair?(:inference_attempts, %{outcome: "completed", failure_class: "none"}),
+    do: true
+
+  defp valid_pair?(:inference_attempts, %{outcome: outcome, failure_class: failure_class}),
+    do: outcome != "completed" and failure_class != "none"
+
+  defp valid_pair?(:inference_retries, %{reason: "retried", result: result}),
+    do: result in ~w(succeeded failed)
+
+  defp valid_pair?(:inference_retries, %{reason: reason, result: "declined"}),
+    do: reason != "retried"
+
+  defp valid_pair?(:inference_retries, _labels), do: false
   defp valid_pair?(_family, _labels), do: true
 end

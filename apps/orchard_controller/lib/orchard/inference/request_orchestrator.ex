@@ -12,6 +12,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Dispatch.{AttemptOutcome, RequestDispatcher}
   alias Orchard.DomainMetrics
   alias Orchard.Inference
+  alias Orchard.Metrics.{InferenceAttemptProjection, Status}
 
   alias Orchard.Inference.{
     AdmissionPolicy,
@@ -3084,6 +3085,40 @@ defmodule Orchard.Inference.RequestOrchestrator do
       request_duration_seconds(),
       terminal_output_tokens(attrs, db_request)
     )
+
+    emit_attempt_metrics(db_request)
+  end
+
+  defp emit_attempt_metrics(db_request) do
+    result =
+      db_request
+      |> Requests.list_request_step_events()
+      |> InferenceAttemptProjection.project()
+
+    case result do
+      {:ok, projection} -> emit_attempt_projection(projection)
+      {:error, reason} -> Status.degrade({:inference_attempt_projection, reason})
+    end
+  rescue
+    _exception -> Status.degrade({:inference_attempt_projection, :unavailable})
+  catch
+    _kind, _reason -> Status.degrade({:inference_attempt_projection, :unavailable})
+  end
+
+  defp emit_attempt_projection(projection) do
+    Enum.each(projection.attempts, fn attempt ->
+      DomainMetrics.inference_attempt(
+        attempt.attempt,
+        attempt.outcome,
+        attempt.failure_class,
+        attempt.duration_seconds
+      )
+    end)
+
+    case projection.retry do
+      %{reason: reason, result: result} -> DomainMetrics.inference_retry(reason, result)
+      nil -> :ok
+    end
   end
 
   defp terminal_model_id(_db_request, %CanonicalRequest{} = canonical),

@@ -75,10 +75,10 @@
 
 ## 9. Attempt and retry metrics
 
-- [ ] 9.1 Emit attempt count and duration metrics with closed labels
-- [ ] 9.2 Finalize the retry counter once per logical Request using only valid reason/result combinations
-- [ ] 9.3 Prove logical admission, quota, token, outcome, and duration metrics remain once per Request
-- [ ] 9.4 Prove metric labels exclude high-cardinality identifiers
+- [x] 9.1 Emit attempt count and duration metrics with closed labels
+- [x] 9.2 Finalize the retry counter once per logical Request using only valid reason/result combinations
+- [x] 9.3 Prove logical admission, quota, token, outcome, and duration metrics remain once per Request
+- [x] 9.4 Prove metric labels exclude high-cardinality identifiers
 
 ## 10. End-to-end acceptance
 
