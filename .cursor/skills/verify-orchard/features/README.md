@@ -19,7 +19,7 @@ This directory is the maintained source for verifying user-facing Orchard operat
 - Console dev auth is `:none` — no Basic Auth prompt locally.
 - Run browser actions through **cursor-ide-browser** MCP tools.
 - Run HTTP probes through `control-orchard curl` or `curl` against `ORCHARD_VERIFY_BASE_URL`.
-- LiveView pages may show a brief loading panel on first connect; wait for the page `<h1>` or a stable content card before proof.
+- LiveView first paint can include the page `<h1>` before connected data; wait for the feature file's settled-content signal (Overview **Last updated**, Models catalog/error card, Settings model options or error).
 - Do not remove proof artifacts during cleanup.
 
 ## Proof and skip reporting
@@ -37,7 +37,7 @@ Each feature file starts with an H1 title and one paragraph describing user-visi
 
 1. `Sub-features` — short IDs with one line each.
 2. `How to get to it (user POV)` — every user entry point.
-3. `Driving it with cursor-ide-browser` — starts with `Preconditions:` and pairs actions with observable results.
+3. `Driving it with cursor-ide-browser` or `Driving it with control-orchard` — starts with `Preconditions:` and pairs actions with observable results.
 4. `Gotchas` — traps that invalidate a run.
 
 ## Features
@@ -46,8 +46,10 @@ Each feature file starts with an H1 title and one paragraph describing user-visi
 - [Console navigation](./console-navigation.md) — sidebar routes to major Console pages.
 - [Public health probes](./health-probes.md) — `/health/live` and `/health/ready` without auth.
 - [Models catalog](./models-catalog.md) — Models page catalog or explicit empty/error state.
-- [Settings page](./settings.md) — inference defaults and debug snapshot panel load.
+- [Settings page](./settings.md) — appearance notes, inference defaults, and debug snapshot.
+- [MLX smoke](./mlx-smoke.md) — pinned Qwen3 bundle plus Python/Elixir MLX smoke (opt-in, not a CI gate).
 
 ## Optional (heavy setup)
 
-- Playground chat and `/v1/chat/completions` require an imported model, tenant grants, and API token per `docs/local-dev.md`. Prepare the pinned Qwen3 bundle with `scripts/prepare-mlx-smoke-bundle.sh` and `ORCHARD_MLX_SMOKE_MODEL_PATH`; that script is not a CI gate. Add a feature file when import/grants/token are scripted for verification.
+- Playground chat and `/v1/chat/completions` still need `orchardctl models import`, tenant grants, and an API token per `docs/local-dev.md`. `control-orchard prepare-bundle` only prepares the local bundle; it does not import or grant.
+- Authenticated `GET /ops/v1/health` needs an operator/admin Bearer token. Do not treat a 401 here as a public-probe failure.

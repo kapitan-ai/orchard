@@ -10,23 +10,183 @@ RUN_ID="${ORCHARD_VERIFY_RUN_ID:-$(date +%Y%m%d%H%M%S)-$$}"
 STATE_DIR="${ORCHARD_VERIFY_STATE_DIR:-/tmp/orchard-verify-${RUN_ID}}"
 PID_FILE="${STATE_DIR}/dev.pid"
 LOG_FILE="${STATE_DIR}/dev.log"
-META_FILE="${STATE_DIR}/meta.env"
+META_FILE="${STATE_DIR}/meta.json"
+LEGACY_META_FILE="${STATE_DIR}/meta.env"
 PORT="${ORCHARD_VERIFY_PORT:-4000}"
 BASE_URL="http://127.0.0.1:${PORT}"
 READY_TIMEOUT_SEC="${ORCHARD_VERIFY_READY_TIMEOUT_SEC:-300}"
 
 mkdir -p "$STATE_DIR"
 
+pinned_python() {
+  (
+    cd "$REPO_ROOT"
+    mise exec -- python "$@"
+  )
+}
+
+reject_legacy_meta() {
+  if [[ -e "$LEGACY_META_FILE" ]]; then
+    echo "error: legacy metadata at ${LEGACY_META_FILE} is rejected; remove the state directory and start a new verification run" >&2
+    return 1
+  fi
+}
+
+load_meta() {
+  reject_legacy_meta || return 1
+  if [[ ! -f "$META_FILE" ]]; then
+    echo "error: metadata not found at ${META_FILE}" >&2
+    return 1
+  fi
+
+  local values_file
+  values_file="$(mktemp "${STATE_DIR}/.meta-values.XXXXXX")"
+  if ! pinned_python - "$META_FILE" "$STATE_DIR" >"$values_file" <<'PY'
+import json
+import pathlib
+import sys
+
+meta_path = pathlib.Path(sys.argv[1])
+expected_state_dir = sys.argv[2]
+
+try:
+    with meta_path.open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"error: invalid verification metadata: {error}")
+
+expected_keys = {
+    "ORCHARD_MLX_SMOKE_MODEL_PATH",
+    "ORCHARD_VERIFY_ARTIFACTS_DIR",
+    "ORCHARD_VERIFY_BASE_URL",
+    "ORCHARD_VERIFY_LOG_FILE",
+    "ORCHARD_VERIFY_PID_FILE",
+    "ORCHARD_VERIFY_PORT",
+    "ORCHARD_VERIFY_RUN_ID",
+    "ORCHARD_VERIFY_STATE_DIR",
+    "format_version",
+}
+if not isinstance(metadata, dict) or set(metadata) != expected_keys:
+    raise SystemExit("error: invalid verification metadata schema")
+if metadata["format_version"] != 1:
+    raise SystemExit("error: unsupported verification metadata format")
+if not isinstance(metadata["ORCHARD_VERIFY_RUN_ID"], str) or not metadata["ORCHARD_VERIFY_RUN_ID"]:
+    raise SystemExit("error: invalid verification run id")
+if metadata["ORCHARD_VERIFY_STATE_DIR"] != expected_state_dir:
+    raise SystemExit("error: verification metadata state directory mismatch")
+if not isinstance(metadata["ORCHARD_VERIFY_PORT"], int) or isinstance(metadata["ORCHARD_VERIFY_PORT"], bool):
+    raise SystemExit("error: invalid verification port")
+if not 1 <= metadata["ORCHARD_VERIFY_PORT"] <= 65535:
+    raise SystemExit("error: invalid verification port")
+if not isinstance(metadata["ORCHARD_MLX_SMOKE_MODEL_PATH"], str):
+    raise SystemExit("error: invalid MLX smoke model path")
+
+derived_values = {
+    "ORCHARD_VERIFY_ARTIFACTS_DIR": str(pathlib.Path(expected_state_dir) / "artifacts"),
+    "ORCHARD_VERIFY_BASE_URL": f"http://127.0.0.1:{metadata['ORCHARD_VERIFY_PORT']}",
+    "ORCHARD_VERIFY_LOG_FILE": str(pathlib.Path(expected_state_dir) / "dev.log"),
+    "ORCHARD_VERIFY_PID_FILE": str(pathlib.Path(expected_state_dir) / "dev.pid"),
+}
+for key, expected_value in derived_values.items():
+    if metadata[key] != expected_value:
+        raise SystemExit(f"error: verification metadata {key} mismatch")
+
+values = (
+    metadata["ORCHARD_VERIFY_RUN_ID"],
+    metadata["ORCHARD_VERIFY_STATE_DIR"],
+    str(metadata["ORCHARD_VERIFY_PORT"]),
+    metadata["ORCHARD_MLX_SMOKE_MODEL_PATH"],
+)
+sys.stdout.buffer.write(b"".join(value.encode() + b"\0" for value in values))
+PY
+  then
+    rm -f "$values_file"
+    return 1
+  fi
+
+  exec 9<"$values_file"
+  IFS= read -r -d '' RUN_ID <&9
+  IFS= read -r -d '' STATE_DIR <&9
+  IFS= read -r -d '' PORT <&9
+  IFS= read -r -d '' ORCHARD_MLX_SMOKE_MODEL_PATH <&9
+  exec 9<&-
+  rm -f "$values_file"
+
+  PID_FILE="${STATE_DIR}/dev.pid"
+  LOG_FILE="${STATE_DIR}/dev.log"
+  BASE_URL="http://127.0.0.1:${PORT}"
+}
+
+preserved_bundle_path() {
+  reject_legacy_meta || return 1
+  if [[ -n "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}" ]]; then
+    printf '%s' "$ORCHARD_MLX_SMOKE_MODEL_PATH"
+    return
+  fi
+  if [[ -f "$META_FILE" ]]; then
+    (
+      unset ORCHARD_MLX_SMOKE_MODEL_PATH
+      load_meta
+      printf '%s' "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}"
+    )
+  fi
+}
+
+ensure_launch_pid_slot() {
+  if [[ ! -f "$PID_FILE" ]]; then
+    return 0
+  fi
+
+  local existing_pid
+  existing_pid="$(cat "$PID_FILE")"
+  if kill -0 "$existing_pid" 2>/dev/null; then
+    echo "error: verification instance already running (pid ${existing_pid})" >&2
+    echo "error: run 'control-orchard stop' first" >&2
+    return 1
+  fi
+
+  rm -f "$PID_FILE"
+}
+
+load_meta_preserving_bundle_path() {
+  local bundle_path
+  if ! bundle_path="$(preserved_bundle_path)"; then
+    return 1
+  fi
+  [[ -f "$META_FILE" ]] && load_meta
+  ORCHARD_MLX_SMOKE_MODEL_PATH="$bundle_path"
+}
+
 write_meta() {
-  cat >"$META_FILE" <<EOF
-ORCHARD_VERIFY_RUN_ID=${RUN_ID}
-ORCHARD_VERIFY_STATE_DIR=${STATE_DIR}
-ORCHARD_VERIFY_PORT=${PORT}
-ORCHARD_VERIFY_BASE_URL=${BASE_URL}
-ORCHARD_VERIFY_PID_FILE=${PID_FILE}
-ORCHARD_VERIFY_LOG_FILE=${LOG_FILE}
-ORCHARD_VERIFY_ARTIFACTS_DIR=${STATE_DIR}/artifacts
-EOF
+  local bundle_path
+  if ! bundle_path="$(preserved_bundle_path)"; then
+    return 1
+  fi
+  pinned_python - "$META_FILE" "$RUN_ID" "$STATE_DIR" "$PORT" "$bundle_path" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+meta_path = pathlib.Path(sys.argv[1])
+metadata = {
+    "ORCHARD_MLX_SMOKE_MODEL_PATH": sys.argv[5],
+    "ORCHARD_VERIFY_ARTIFACTS_DIR": str(pathlib.Path(sys.argv[3]) / "artifacts"),
+    "ORCHARD_VERIFY_BASE_URL": f"http://127.0.0.1:{int(sys.argv[4])}",
+    "ORCHARD_VERIFY_LOG_FILE": str(pathlib.Path(sys.argv[3]) / "dev.log"),
+    "ORCHARD_VERIFY_PID_FILE": str(pathlib.Path(sys.argv[3]) / "dev.pid"),
+    "ORCHARD_VERIFY_PORT": int(sys.argv[4]),
+    "ORCHARD_VERIFY_RUN_ID": sys.argv[2],
+    "ORCHARD_VERIFY_STATE_DIR": sys.argv[3],
+    "format_version": 1,
+}
+temporary_path = meta_path.with_name(f".{meta_path.name}.{os.getpid()}.tmp")
+with temporary_path.open("w", encoding="utf-8") as handle:
+    json.dump(metadata, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.chmod(temporary_path, 0o600)
+temporary_path.replace(meta_path)
+PY
 }
 
 usage() {
@@ -34,12 +194,14 @@ usage() {
 Usage: control-orchard <command>
 
 Commands:
-  bootstrap Ensure tmp/dev/node-trust exists (opt-in orphan recover)
-  launch    Start source-dev in the background (mix phx.server)
-  doctor    Read-only health check for the verification instance
-  stop      Stop the instance started by launch (PID file only)
-  meta      Print state paths for the current run
-  curl      curl wrapper against the verification base URL
+  bootstrap       Ensure tmp/dev/node-trust exists (opt-in orphan recover)
+  launch          Start source-dev in the background (mix phx.server)
+  doctor          Read-only health check for the verification instance
+  stop            Stop the instance started by launch (PID file only)
+  meta            Print state paths for the current run
+  curl            curl wrapper against the verification base URL
+  prepare-bundle  Prepare the pinned Qwen3 MLX smoke bundle (not a CI gate)
+  smoke-mlx       Run scripts/smoke-mlx.sh against that bundle
 
 Environment:
   ORCHARD_VERIFY_PORT          HTTP port (default: 4000)
@@ -48,6 +210,7 @@ Environment:
   ORCHARD_VERIFY_READY_TIMEOUT_SEC  Launch wait timeout (default: 300)
   ORCHARD_VERIFY_TRUST_RECOVER      Set to 1 to allow wiping orphaned DB trust
                                     when local node-trust files are missing
+  ORCHARD_MLX_SMOKE_MODEL_PATH      Absolute Orchard bundle dir (set by prepare-bundle)
 EOF
 }
 
@@ -140,14 +303,7 @@ cmd_launch() {
   require_repo
   write_meta
 
-  if [[ -f "$PID_FILE" ]]; then
-    existing_pid="$(cat "$PID_FILE")"
-    if kill -0 "$existing_pid" 2>/dev/null; then
-      echo "error: verification instance already running (pid ${existing_pid})" >&2
-      echo "error: run 'control-orchard stop' first" >&2
-      exit 1
-    fi
-  fi
+  ensure_launch_pid_slot || exit 1
 
   foreign_pid="$(port_owner_pid)"
   if [[ -n "$foreign_pid" ]]; then
@@ -183,19 +339,62 @@ cmd_launch() {
   echo "    state: ${STATE_DIR}"
   echo "    log:   ${LOG_FILE}"
 
-  (
-    cd "$REPO_ROOT"
-    export MIX_ENV=dev
-    export ORCHARD_VERIFY_MODE=1
-    export PORT="$PORT"
-    export ORCHARD_SOURCE_DEV_ROLE=all_in_one
-    export ORCHARD_NODE_AGENT_LISTEN_PORT=50071
-    export ORCHARD_RUNTIME_CLIENT_PORT=50071
-    exec mise exec -- mix phx.server
-  ) >"$LOG_FILE" 2>&1 &
+  # Detach into a new session so the BEAM survives this helper returning
+  # (agent shells send SIGHUP to the launch process group when the command ends).
+  pinned_python - "$REPO_ROOT" "$LOG_FILE" "$PID_FILE" "$PORT" <<'PY'
+import os
+import sys
+import time
 
-  pid=$!
-  echo "$pid" >"$PID_FILE"
+repo, log_path, pid_path, port = sys.argv[1:5]
+env_update = {
+    "MIX_ENV": "dev",
+    "ORCHARD_VERIFY_MODE": "1",
+    "PORT": port,
+    "ORCHARD_SOURCE_DEV_ROLE": "all_in_one",
+    "ORCHARD_NODE_AGENT_LISTEN_PORT": "50071",
+    "ORCHARD_RUNTIME_CLIENT_PORT": "50071",
+}
+
+pid = os.fork()
+if pid > 0:
+    for _ in range(100):
+        try:
+            with open(pid_path, encoding="utf-8") as handle:
+                child = int(handle.read().strip())
+            os.kill(child, 0)
+            os._exit(0)
+        except (OSError, ValueError):
+            time.sleep(0.05)
+    sys.stderr.write("error: detached server did not record a live pid\n")
+    os._exit(1)
+
+os.setsid()
+pid = os.fork()
+if pid > 0:
+    os._exit(0)
+
+os.chdir(repo)
+os.environ.update(env_update)
+devnull = os.open(os.devnull, os.O_RDONLY)
+log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+os.dup2(devnull, 0)
+os.dup2(log_fd, 1)
+os.dup2(log_fd, 2)
+if devnull > 2:
+    os.close(devnull)
+if log_fd > 2:
+    os.close(log_fd)
+
+child = os.fork()
+if child == 0:
+    os.execvp("mise", ["mise", "exec", "--", "mix", "phx.server"])
+with open(pid_path, "w", encoding="utf-8") as handle:
+    handle.write(f"{child}\n")
+os._exit(0)
+PY
+
+  pid="$(cat "$PID_FILE")"
 
   deadline=$((SECONDS + READY_TIMEOUT_SEC))
   while (( SECONDS < deadline )); do
@@ -219,9 +418,7 @@ cmd_launch() {
 
 cmd_doctor() {
   [[ -f "$META_FILE" ]] || write_meta
-
-  # shellcheck disable=SC1090
-  source "$META_FILE"
+  load_meta
 
   echo "==> Doctor for ${BASE_URL}"
 
@@ -274,7 +471,8 @@ cmd_doctor() {
 }
 
 cmd_stop() {
-  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  reject_legacy_meta
+  [[ -f "$META_FILE" ]] && load_meta
 
   if [[ ! -f "$PID_FILE" ]]; then
     echo "==> No pid file; nothing to stop"
@@ -307,8 +505,76 @@ cmd_meta() {
 }
 
 cmd_curl() {
-  [[ -f "$META_FILE" ]] && source "$META_FILE"
+  reject_legacy_meta
+  [[ -f "$META_FILE" ]] && load_meta
   curl -sS "${BASE_URL}$*"
+}
+
+require_apple_silicon() {
+  if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+    echo "error: MLX smoke requires Apple Silicon macOS (detected $(uname -s) $(uname -m))" >&2
+    exit 1
+  fi
+}
+
+free_tcp_port() {
+  pinned_python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+cmd_prepare_bundle() {
+  require_repo
+  write_meta
+  local prepare="${REPO_ROOT}/scripts/prepare-mlx-smoke-bundle.sh"
+  [[ -f "$prepare" ]] || {
+    echo "error: missing ${prepare}" >&2
+    exit 1
+  }
+
+  echo "==> Preparing pinned Qwen3 MLX smoke bundle (not a CI gate)"
+  local out
+  out="$(
+    cd "$REPO_ROOT"
+    mise exec -- ./scripts/prepare-mlx-smoke-bundle.sh "$@"
+  )"
+  printf '%s\n' "$out"
+  local export_line
+  export_line="$(printf '%s\n' "$out" | grep '^export ORCHARD_MLX_SMOKE_MODEL_PATH=' | tail -n 1 || true)"
+  if [[ -z "$export_line" ]]; then
+    echo "error: prepare-mlx-smoke-bundle.sh did not print export ORCHARD_MLX_SMOKE_MODEL_PATH=..." >&2
+    exit 1
+  fi
+  eval "$export_line"
+  write_meta
+  echo "==> Bundle ready: ${ORCHARD_MLX_SMOKE_MODEL_PATH}"
+}
+
+cmd_smoke_mlx() {
+  require_repo
+  require_apple_silicon
+  load_meta_preserving_bundle_path
+  if [[ -z "${ORCHARD_MLX_SMOKE_MODEL_PATH:-}" || ! -f "${ORCHARD_MLX_SMOKE_MODEL_PATH}/manifest.json" ]]; then
+    cmd_prepare_bundle
+    load_meta
+  fi
+
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    ORCHARD_TEST_NODE_AGENT_PORT="$(free_tcp_port)"
+    export ORCHARD_TEST_NODE_AGENT_PORT
+    echo "==> Verification instance is running; Elixir smoke will use ORCHARD_TEST_NODE_AGENT_PORT=${ORCHARD_TEST_NODE_AGENT_PORT}"
+  fi
+
+  local art="${STATE_DIR}/artifacts/mlx-smoke"
+  mkdir -p "$art"
+  echo "==> Running scripts/smoke-mlx.sh"
+  echo "    bundle: ${ORCHARD_MLX_SMOKE_MODEL_PATH}"
+  (
+    cd "$REPO_ROOT"
+    export ORCHARD_MLX_SMOKE_MODEL_PATH
+    if [[ -n "${ORCHARD_TEST_NODE_AGENT_PORT:-}" ]]; then
+      export ORCHARD_TEST_NODE_AGENT_PORT
+    fi
+    mise exec -- ./scripts/smoke-mlx.sh
+  ) | tee "${art}/smoke.log"
 }
 
 main() {
@@ -320,6 +586,8 @@ main() {
     doctor) cmd_doctor "$@" ;;
     stop) cmd_stop "$@" ;;
     meta) cmd_meta "$@" ;;
+    prepare-bundle) cmd_prepare_bundle "$@" ;;
+    smoke-mlx) cmd_smoke_mlx "$@" ;;
     curl)
       if (($# == 0)); then
         echo "error: control-orchard curl expects a path such as /health/live" >&2
@@ -336,4 +604,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

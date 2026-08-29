@@ -19,13 +19,13 @@ Preconditions:
 - `control-orchard doctor` passes.
 - Browser is on any Console page (start at `/console` if needed).
 
-- **Nodes.** Click link `Nodes`. Run `browser_click` on the `Nodes` link from snapshot ref. Heading becomes `Nodes`; URL path is `/console/nodes`.
-- **Models.** Click link `Models`. Heading becomes `Models`; URL path is `/console/models`.
-- **Settings.** Click link `Settings`. Heading becomes `Settings`; URL path is `/console/settings`.
+- **Nodes.** Click link `Nodes`. Heading becomes `Nodes`; URL path is `/console/nodes`. Inner inventory may still hydrate; heading + `aria-current="page"` is enough for this sub-feature.
+- **Models.** Click link `Models`. Heading becomes `Models`; URL path is `/console/models`. Do **not** stop at the loading panel titled **Model Catalog**. Wait until `#models-catalog-card` or `#models-error-card` (`Models unavailable`).
+- **Settings.** Click link `Settings`. Heading becomes `Settings`; URL path is `/console/settings`. Wait until inference-defaults **Default model** options or `#settings-inference-defaults-error` appear — the Appearance card and empty form are already on the disconnected shell.
 - **Proof.** After each navigation, capture snapshot lines showing the new heading and `aria-current="page"` on the clicked nav item. Save combined snapshot to `${ARTIFACTS}/console-navigation/nav.aria.txt` and screenshot to `${ARTIFACTS}/console-navigation/nav.png`. Record visited paths in `proof.txt`.
 
 ## Gotchas
 
-- All sidebar items are enabled in dev; none should show `aria-disabled="true"`.
-- Wide pages (Models) may take a moment to exit the loading panel — wait for `Model Catalog` title or an explicit error card.
-- Settings triggers connected fetches; wait past the initial shell before proof.
+- All eight sidebar items are enabled (Overview, Nodes, Playground, Models, Model Hub, Organizations, Requests, Settings); none should show `aria-disabled="true"`. This feature only proves Nodes, Models, and Settings.
+- Direct URLs under `/console/...` are valid page proofs but do not replace the click path for this feature.
+- Settings **Advanced** / **Runtime / config snapshot** starts collapsed; expanding it is optional for nav proof.

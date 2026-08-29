@@ -24,6 +24,8 @@ control-orchard meta
 
 **Ready when:** `GET http://127.0.0.1:${ORCHARD_VERIFY_PORT:-4000}/health/live` returns exactly `{"status":"ok"}`.
 
+`launch` detaches the BEAM into a new session so the helper can return without SIGHUP-killing the server. `stop` still targets only the recorded PID.
+
 Verification launch sets `ORCHARD_VERIFY_MODE=1`, which disables Phoenix code reload and asset watchers in `config/dev.exs` so health probes stay stable. It runs `mix assets.build` before boot. Launch checks the HTTP port is free before bootstrap, so an existing `make dev` is not disrupted by trust recovery.
 
 **Defaults:**
@@ -36,6 +38,7 @@ Verification launch sets `ORCHARD_VERIFY_MODE=1`, which disables Phoenix code re
 - Do **not** launch if the user already has `make dev` on the same port — `control-orchard launch` refuses occupied ports.
 - Do **not** run two verification launches with the same `ORCHARD_VERIFY_STATE_DIR`.
 - Prefer a fresh `ORCHARD_VERIFY_RUN_ID` per proof run.
+- `control-orchard smoke-mlx` is an isolated CLI session. It does not need `launch`. If `launch` is already up, smoke rebinds the Elixir test gRPC port.
 - Inference/API proofs that mutate tenants or models share the dev DB; restore or use disposable slugs when mutating.
 
 **Teardown:**
@@ -60,11 +63,11 @@ Pass criteria:
 3. `/health/live` body is `{"status":"ok"}`
 4. `/console` returns HTTP 200 and HTML containing `Orchard Console`
 
-`/health/ready` may be non-200 while runtime/worker subsystems are still warming — log it, but do not treat it alone as launch failure.
+`/health/ready` may be HTTP 503 with exactly `{"status":"error"}` on source-dev (`plain_http_localhost` fails the public HTTPS check). Log it; do not treat it alone as launch failure.
 
 ## Drive
 
-**Harness:** `cursor-ide-browser` MCP (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_take_screenshot`).
+**Harness:** `cursor-ide-browser` MCP (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_take_screenshot`). If that MCP is unavailable mid-run, the same URLs, sidebar labels, and wait conditions can be driven with another Chromium CDP session (for example `agent-browser open|snapshot|click|screenshot`) against `ORCHARD_VERIFY_BASE_URL`.
 
 **Conventions:**
 1. Run `control-orchard doctor` first.
@@ -117,9 +120,9 @@ ${ORCHARD_VERIFY_STATE_DIR}/artifacts/overview/
 ```
 
 **API / inference proofs** (optional, heavier setup):
-- Prepare a local Orchard bundle with `scripts/prepare-mlx-smoke-bundle.sh` and export `ORCHARD_MLX_SMOKE_MODEL_PATH` from `--print-path`. That helper is not a CI gate.
-- Import/activate a model and grant tenant access per `docs/local-dev.md` before Playground or `/v1/chat/completions` checks.
-- Never commit API tokens; pass via env (`ORCHARD_API_KEY`) only for the run.
+- `control-orchard prepare-bundle` wraps `scripts/prepare-mlx-smoke-bundle.sh` and records `ORCHARD_MLX_SMOKE_MODEL_PATH` in meta. Not a CI gate.
+- `control-orchard smoke-mlx` runs `scripts/smoke-mlx.sh` (Python worker + Elixir node-agent). Isolated CLI; does not require `launch`.
+- Playground and `/v1/chat/completions` still need import, tenant grants, and `ORCHARD_API_KEY` per `docs/local-dev.md`. Never commit API tokens.
 
 ## Cleanup
 
@@ -136,11 +139,13 @@ If launch failed mid-boot, still run `control-orchard stop` to clear a partial P
 | Command | Purpose |
 |---------|---------|
 | `control-orchard bootstrap` | Ensure `tmp/dev/node-trust` exists; opt-in orphan recover via `ORCHARD_VERIFY_TRUST_RECOVER=1` |
-| `control-orchard launch` | Background source-dev with log + pid files |
+| `control-orchard launch` | Detach source-dev (new session) with log + pid files |
 | `control-orchard doctor` | Readiness gate before driving |
 | `control-orchard stop` | Stop the launched instance |
 | `control-orchard meta` | Print `BASE_URL`, pid, log, artifacts paths |
 | `control-orchard curl /health/live` | HTTP GET against verification base URL |
+| `control-orchard prepare-bundle` | Prepare pinned Qwen3 MLX bundle; record `ORCHARD_MLX_SMOKE_MODEL_PATH` |
+| `control-orchard smoke-mlx` | Run `scripts/smoke-mlx.sh` against that bundle |
 
 Script path: `.cursor/skills/verify-orchard/scripts/control-orchard.sh`
 
