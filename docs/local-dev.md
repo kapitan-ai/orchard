@@ -1039,9 +1039,12 @@ its own location.
    then runs `pytest tests/test_cli.py -k mlx_backend_real -v` in the worker
    package — exercises real model load/unload and streaming generation via gRPC
 3. **Elixir smoke** (step 2/2): runs
-   `mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke`
-   from the repo root — exercises the full node-agent stack including acquisition,
-   worker lifecycle, and gRPC inference
+   `mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke --timeout 455000`
+   from the repo root.
+   It exercises the full node-agent stack including acquisition, worker lifecycle, and gRPC inference.
+   The script derives this command-scoped timeout from its source hashing, acquisition/cache verification, sequential worker readiness and model load, RPC headroom, inference, and cleanup phase budgets instead of changing ExUnit's global default.
+   Those exported budgets also configure the real test's worker, request, and RPC deadlines, so the harness and operation limits cannot drift independently.
+   The Elixir smoke reports both the initial bundle tree-hash duration and the elapsed acquisition/readiness/load phase.
 
 Python runs first because it tests the lower-level worker directly. If Python
 fails, Elixir smoke is skipped (the full stack depends on a working worker).
@@ -1086,10 +1089,12 @@ cd native/orchard_worker_mlx
 mise exec -- uv sync --locked --extra mlx
 mise exec -- uv run pytest tests/test_cli.py -k mlx_backend_real -v
 
-# Elixir only, from the repo root
+# Elixir full-stack smoke, from the repo root
 cd ../..
-mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
+mise exec -- ./scripts/smoke-mlx.sh
 ```
+
+Use the repository-owned script for the real Elixir path so it exports the shared phase budgets and passes their derived timeout to ExUnit.
 
 ## Preparing a Smoke Test Bundle from HuggingFace
 

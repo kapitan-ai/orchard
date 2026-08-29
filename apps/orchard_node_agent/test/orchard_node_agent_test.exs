@@ -4549,6 +4549,14 @@ defmodule OrchardNodeAgentTest do
     @tag :mlx_smoke
     test "opt-in MLX real generation through full node-agent path" do
       mlx_bundle_path = unquote(@mlx_smoke_model_path)
+      worker_load_timeout_ms = mlx_smoke_budget_ms!("MLX_SMOKE_WORKER_LOAD_TIMEOUT_MS")
+      worker_ready_timeout_ms = mlx_smoke_budget_ms!("MLX_SMOKE_WORKER_READY_TIMEOUT_MS")
+      ensure_loaded_timeout_ms = mlx_smoke_budget_ms!("MLX_SMOKE_ENSURE_LOADED_TIMEOUT_MS")
+
+      ensure_loaded_rpc_timeout_ms =
+        mlx_smoke_budget_ms!("MLX_SMOKE_ENSURE_LOADED_RPC_TIMEOUT_MS")
+
+      inference_timeout_ms = mlx_smoke_budget_ms!("MLX_SMOKE_INFERENCE_TIMEOUT_MS")
 
       # Read manifest from the real bundle
       manifest_json = File.read!(Path.join(mlx_bundle_path, "manifest.json"))
@@ -4556,8 +4564,11 @@ defmodule OrchardNodeAgentTest do
       model_id = manifest_data["model_id"]
       version = manifest_data["version"]
 
-      # Compute hash for the real bundle
-      {:ok, hash} = ArtifactBundle.tree_sha256(mlx_bundle_path)
+      {hash_elapsed_us, hash_result} =
+        :timer.tc(fn -> ArtifactBundle.tree_sha256(mlx_bundle_path) end)
+
+      IO.puts("MLX smoke bundle hash completed in #{div(hash_elapsed_us, 1_000)} ms")
+      assert {:ok, hash} = hash_result
 
       source_uri = "file://#{mlx_bundle_path}"
 
@@ -4566,8 +4577,8 @@ defmodule OrchardNodeAgentTest do
           runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter,
           fake_runtime?: false,
           worker_backend: "mlx",
-          worker_load_timeout_ms: 120_000,
-          worker_ready_timeout_ms: 30_000
+          worker_load_timeout_ms: worker_load_timeout_ms,
+          worker_ready_timeout_ms: worker_ready_timeout_ms
         ],
         fn ->
           with_channel(fn channel ->
@@ -4578,15 +4589,25 @@ defmodule OrchardNodeAgentTest do
               version: version,
               artifact_sha256: hash,
               preload: true,
-              deadline_unix_ms: System.system_time(:millisecond) + 120_000,
+              deadline_unix_ms: System.system_time(:millisecond) + ensure_loaded_timeout_ms,
               artifact_source_uri: source_uri
             }
+
+            {ensure_loaded_elapsed_us, ensure_loaded_result} =
+              :timer.tc(fn ->
+                NodeRuntimeStub.ensure_model_loaded(channel, ensure_req,
+                  timeout: ensure_loaded_rpc_timeout_ms
+                )
+              end)
+
+            IO.puts(
+              "MLX smoke acquisition, worker readiness, and model load completed in #{div(ensure_loaded_elapsed_us, 1_000)} ms"
+            )
 
             assert {:ok,
                     %EnsureModelLoadedResponse{
                       placement_state: :PLACEMENT_STATE_LOADED
-                    }} =
-                     NodeRuntimeStub.ensure_model_loaded(channel, ensure_req, timeout: 125_000)
+                    }} = ensure_loaded_result
 
             # Execute real generation
             gen_req = %ExecuteInferenceRequest{
@@ -4597,7 +4618,7 @@ defmodule OrchardNodeAgentTest do
               rendered_prompt_utf8: "The capital of France is",
               input_tokens: 6,
               params: %GenerationParams{max_output_tokens: 8, temperature: 0.0},
-              deadline_unix_ms: System.system_time(:millisecond) + 60_000,
+              deadline_unix_ms: System.system_time(:millisecond) + inference_timeout_ms,
               metadata_json: ~s({"source":"mlx_smoke"})
             }
 
@@ -4644,6 +4665,13 @@ defmodule OrchardNodeAgentTest do
           end)
         end
       )
+    end
+
+    defp mlx_smoke_budget_ms!(name) do
+      case System.fetch_env!(name) |> Integer.parse() do
+        {value, ""} when value >= 0 -> value
+        _ -> raise ArgumentError, "#{name} must be a non-negative integer millisecond budget"
+      end
     end
   end
 
