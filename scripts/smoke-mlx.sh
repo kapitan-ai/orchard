@@ -12,6 +12,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=support/mlx-smoke-budget.sh
+source "$SCRIPT_DIR/support/mlx-smoke-budget.sh"
+mlx_smoke_configure_budgets
+
 # ---------------------------------------------------------------------------
 # Status tracking
 # ---------------------------------------------------------------------------
@@ -147,13 +151,15 @@ echo ""
 # Step 2: Elixir node-agent smoke tests
 # ---------------------------------------------------------------------------
 echo "==> [2/2] Elixir node-agent MLX smoke tests"
-echo "    mise exec -- mix test --only mlx_smoke"
+echo "    mise exec -- mix test --only mlx_smoke --timeout $MLX_SMOKE_EXUNIT_TIMEOUT_MS"
 echo ""
 
 set +e
 (
   cd "$REPO_ROOT" && \
-  mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
+  mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs \
+    --only mlx_smoke \
+    --timeout "$MLX_SMOKE_EXUNIT_TIMEOUT_MS"
 )
 ELIXIR_EXIT=$?
 set -e
