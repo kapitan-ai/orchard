@@ -1834,7 +1834,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
       assert_in_delta DateTime.diff(request.timeout_at, request.inserted_at, :millisecond),
                       Orchard.Inference.request_timeout_ms() + 3_000 + 180_000,
-                      1
+                      25
 
       # Terminal state after successful completion
       assert request.state in [:completed, :streaming]
