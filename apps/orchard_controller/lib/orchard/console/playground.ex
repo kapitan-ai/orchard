@@ -82,10 +82,14 @@ defmodule OrchardConsole.Playground do
   """
   @spec list_models() :: {:ok, [model_option()]} | {:error, map()}
   def list_models do
+    list_models_for_tenant(effective_tenant_id())
+  end
+
+  defp list_models_for_tenant(tenant_id) do
     readiness_index = runtime_readiness_index()
 
     models =
-      effective_tenant_id()
+      tenant_id
       |> models_impl().list_active_models_for_tenant()
       |> Enum.map(fn model ->
         project_model_option(
@@ -164,7 +168,7 @@ defmodule OrchardConsole.Playground do
   # ===========================================================================
 
   defp run_stream(orchestrator, owner, run_ref, params, caller_context) do
-    case ensure_model_inference_ready(params) do
+    case ensure_model_inference_ready(params, Keyword.fetch!(caller_context, :tenant_id)) do
       :ok ->
         do_run_stream(orchestrator, owner, run_ref, params, caller_context)
 
@@ -215,10 +219,10 @@ defmodule OrchardConsole.Playground do
     end
   end
 
-  defp ensure_model_inference_ready(params) when is_map(params) do
+  defp ensure_model_inference_ready(params, tenant_id) when is_map(params) do
     model_value = params |> Map.get("model", "") |> to_string() |> String.trim()
 
-    case list_models() do
+    case list_models_for_tenant(tenant_id) do
       {:ok, models} ->
         case find_model_option(models, model_value) do
           %{inference_ready: true} ->
@@ -243,7 +247,7 @@ defmodule OrchardConsole.Playground do
     end
   end
 
-  defp ensure_model_inference_ready(_params) do
+  defp ensure_model_inference_ready(_params, _tenant_id) do
     {:error, unready_stream_error("Selected model is not inference-ready.")}
   end
 

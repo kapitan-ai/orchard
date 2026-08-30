@@ -427,6 +427,25 @@ defmodule OrchardConsole.PlaygroundTest do
       assert Keyword.get(caller_context, :tenant_id) == tenant_id
     end
 
+    test "uses an explicit caller tenant for readiness and preparation" do
+      ref = make_ref()
+      tenant_id = Ecto.UUID.generate()
+
+      stub_models(%{tenant_id => [%{model_id: "test-model", version: "v1"}]})
+
+      stub_orchestrator(
+        prepare: {:ok, fake_canonical(), %{}},
+        execute: {:ok, fake_canonical(), []},
+        capture_caller_context: true
+      )
+
+      {:ok, _pid} = Playground.start_stream(self(), ref, valid_params(), tenant_id: tenant_id)
+
+      assert_receive {:captured_caller_context, caller_context}, 1000
+      assert Keyword.get(caller_context, :tenant_id) == tenant_id
+      assert_receive {:playground, ^ref, :finished, {:ok, _}}, 1000
+    end
+
     test "rescues unexpected task exceptions" do
       ref = make_ref()
       stub_orchestrator(prepare: :raise)
