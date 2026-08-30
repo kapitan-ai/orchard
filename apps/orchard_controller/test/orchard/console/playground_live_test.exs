@@ -411,6 +411,50 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   end
 
   # ===========================================================================
+  # Reasoning containment (issue #189)
+  # ===========================================================================
+
+  describe "reasoning containment in transcript display" do
+    test "keeps only content after a bare first </think>", %{conn: conn} do
+      html =
+        stream_assistant_text(
+          conn,
+          "Here's a thinking process:\nThe user wants an exact string.\n</think>\n\nconsole-smoke-ok"
+        )
+
+      assert html =~ "console-smoke-ok"
+      refute html =~ "thinking process"
+      refute html =~ "&lt;/think&gt;"
+    end
+
+    test "falls back to full text when post-close content is blank", %{conn: conn} do
+      html = stream_assistant_text(conn, "Reasoning about the answer.\n</think>\n  \n")
+
+      assert html =~ "Reasoning about the answer."
+    end
+
+    test "does not render an empty bubble for close-tag-only content", %{conn: conn} do
+      html = stream_assistant_text(conn, "</think>")
+
+      assert html =~ "&lt;/think&gt;"
+      refute html =~ "Waiting for response"
+    end
+
+    test "leaves content unchanged when no </think> is present", %{conn: conn} do
+      html = stream_assistant_text(conn, "Plain answer with no reasoning delimiter.")
+
+      assert html =~ "Plain answer with no reasoning delimiter."
+    end
+
+    test "still strips a closed <think> block", %{conn: conn} do
+      html = stream_assistant_text(conn, "<think>hidden reasoning</think>visible answer")
+
+      assert html =~ "visible answer"
+      refute html =~ "hidden reasoning"
+    end
+  end
+
+  # ===========================================================================
   # Controls & Reset
   # ===========================================================================
 
@@ -896,9 +940,14 @@ defmodule OrchardConsole.PlaygroundLiveTest do
     {ref, params}
   end
 
-  defp complete_run(view, ref) do
+  defp stream_assistant_text(conn, text) do
+    {:ok, view, _html} = live(conn, "/console/playground")
+    complete_run(view, submit_prompt(view), text)
+  end
+
+  defp complete_run(view, ref, text \\ "Response") do
     send(view.pid, {:playground, ref, :started, %{request_id: "r1"}})
-    send(view.pid, {:playground, ref, :event, InferenceEvent.output_text_delta("Response")})
+    send(view.pid, {:playground, ref, :event, InferenceEvent.output_text_delta(text)})
 
     completed =
       InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{
