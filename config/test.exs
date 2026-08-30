@@ -2,18 +2,16 @@ import Config
 
 Code.require_file("m1_runtime_defaults.exs", __DIR__)
 Code.require_file("source_postgres.exs", __DIR__)
+Code.require_file("test_node_agent_port.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 test_root = Path.join([repo_root, "tmp", "test"])
 
 test_node_agent_port =
-  case Integer.parse(System.get_env("ORCHARD_TEST_NODE_AGENT_PORT") || "50071") do
-    {port, ""} when port in 1..65_535 ->
-      port
-
-    _ ->
-      raise "ORCHARD_TEST_NODE_AGENT_PORT must be an integer between 1 and 65535"
-  end
+  Orchard.Config.TestNodeAgentPort.resolve!(
+    System.get_env("ORCHARD_TEST_NODE_AGENT_PORT"),
+    Orchard.Config.TestNodeAgentPort.local_ephemeral_range()
+  )
 
 worker_socket_dir_hash =
   :crypto.hash(:sha256, repo_root)

@@ -5659,7 +5659,7 @@ defmodule OrchardNodeAgentTest do
   end
 
   defp test_node_agent_port do
-    System.get_env("ORCHARD_TEST_NODE_AGENT_PORT", "50071")
+    System.get_env("ORCHARD_TEST_NODE_AGENT_PORT", "15071")
     |> String.to_integer()
   end
 

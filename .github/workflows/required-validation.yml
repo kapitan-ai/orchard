@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ORCHARD_TEST_NODE_AGENT_PORT: "50171"
+  ORCHARD_TEST_NODE_AGENT_PORT: "15171"
   PGHOST: localhost
   PGPORT: "5432"
   PGUSER: postgres
