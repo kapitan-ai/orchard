@@ -48,19 +48,28 @@ defmodule OrchardConsole.RequestLiveTest do
 
       segments = LazyHTML.query(document, "#request-requested-model-value > span")
       segment_texts = Enum.map(segments, &LazyHTML.text/1)
-      segment_classes = Enum.map(segments, &LazyHTML.attribute(&1, "class"))
+
+      pinned_segments =
+        LazyHTML.query(document, "#request-requested-model-value > span.whitespace-nowrap")
 
       assert LazyHTML.text(requested_model_field) == requested_model
+      assert LazyHTML.attribute(requested_model_field, "class") == ["wrap-anywhere"]
 
       assert segment_texts == [
-               "mlx-community/",
-               "Qwen3.6-35B-A3B-4bit@",
+               "mlx",
+               "-c",
+               "ommunity/",
+               "Qwen3.6",
+               "-3",
+               "5B",
+               "-A",
+               "3B",
+               "-4",
+               "bit@",
                "38740b847e4cb78f352aba30aa41c76e08e6eb46"
              ]
 
-      assert Enum.at(segment_classes, 0) == ["whitespace-nowrap"]
-      assert Enum.at(segment_classes, 1) == ["whitespace-nowrap"]
-      assert Enum.at(segment_classes, 2) == ["wrap-anywhere"]
+      assert Enum.map(pinned_segments, &LazyHTML.text/1) == ["-c", "-3", "-A", "-4"]
       wbrs = LazyHTML.query(requested_model_field, "wbr")
       assert Enum.at(wbrs, 0)
       assert Enum.at(wbrs, 1)

@@ -600,7 +600,7 @@ defmodule OrchardConsole.CoreComponentsTest do
   end
 
   describe "model_identity/1" do
-    test "wraps a model identity after separators and preserves exact text" do
+    test "pins hyphen opportunities while preserving separator breaks and exact text" do
       value = "mlx-community/Qwen3.6-35B-A3B-4bit@38740b847e4cb78f352aba30aa41c76e08e6eb46"
       assigns = %{value: value}
 
@@ -614,26 +614,39 @@ defmodule OrchardConsole.CoreComponentsTest do
       segments = LazyHTML.query(document, "#model-identity > span")
 
       assert LazyHTML.text(identity) == value
+      assert LazyHTML.attribute(identity, "class") == ["wrap-anywhere"]
 
       assert Enum.map(segments, &LazyHTML.text/1) == [
-               "mlx-community/",
-               "Qwen3.6-35B-A3B-4bit@",
+               "mlx",
+               "-c",
+               "ommunity/",
+               "Qwen3.6",
+               "-3",
+               "5B",
+               "-A",
+               "3B",
+               "-4",
+               "bit@",
                "38740b847e4cb78f352aba30aa41c76e08e6eb46"
              ]
 
-      assert Enum.map(segments, &LazyHTML.attribute(&1, "class")) == [
-               ["whitespace-nowrap"],
-               ["whitespace-nowrap"],
-               ["wrap-anywhere"]
-             ]
+      pinned_segments = LazyHTML.query(document, "#model-identity > span.whitespace-nowrap")
+
+      assert Enum.map(pinned_segments, &LazyHTML.text/1) == ["-c", "-3", "-A", "-4"]
+      refute Enum.any?(pinned_segments, &(LazyHTML.text(&1) == "-"))
 
       wbrs = LazyHTML.query(identity, "wbr")
       assert Enum.at(wbrs, 0)
       assert Enum.at(wbrs, 1)
       refute Enum.at(wbrs, 2)
+
+      assert Enum.all?(segments, fn segment ->
+               not String.contains?(LazyHTML.text(segment), "-") or
+                 "whitespace-nowrap" in LazyHTML.attribute(segment, "class")
+             end)
     end
 
-    test "renders a separator-free value as one wrap-anywhere segment" do
+    test "renders a separator-free value with pinned hyphen text" do
       assigns = %{}
 
       html =
@@ -646,8 +659,14 @@ defmodule OrchardConsole.CoreComponentsTest do
       segments = LazyHTML.query(document, "#model-identity > span")
 
       assert LazyHTML.text(identity) == "gpt-4"
-      assert Enum.map(segments, &LazyHTML.text/1) == ["gpt-4"]
-      assert Enum.map(segments, &LazyHTML.attribute(&1, "class")) == [["wrap-anywhere"]]
+      assert LazyHTML.attribute(identity, "class") == ["wrap-anywhere"]
+      assert Enum.map(segments, &LazyHTML.text/1) == ["gpt", "-4"]
+
+      assert Enum.map(
+               LazyHTML.query(document, "#model-identity > span.whitespace-nowrap"),
+               &LazyHTML.text/1
+             ) == ["-4"]
+
       assert Enum.empty?(LazyHTML.query(identity, "wbr"))
     end
 
@@ -664,9 +683,41 @@ defmodule OrchardConsole.CoreComponentsTest do
       segments = LazyHTML.query(document, "#model-identity > span")
 
       assert LazyHTML.text(identity) == "mlx-community/"
-      assert Enum.map(segments, &LazyHTML.text/1) == ["mlx-community/"]
-      assert Enum.map(segments, &LazyHTML.attribute(&1, "class")) == [["wrap-anywhere"]]
+      assert Enum.map(segments, &LazyHTML.text/1) == ["mlx", "-c", "ommunity/"]
       assert Enum.empty?(LazyHTML.query(identity, "wbr"))
+    end
+
+    test "renders separator breaks without pinned chunks" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.model_identity id="model-identity" value="abc@def" />
+        """)
+
+      document = LazyHTML.from_fragment(html)
+      identity = LazyHTML.query(document, "#model-identity")
+
+      assert LazyHTML.text(identity) == "abc@def"
+      assert Enum.empty?(LazyHTML.query(document, "#model-identity > span.whitespace-nowrap"))
+      assert Enum.at(LazyHTML.query(identity, "wbr"), 0)
+      refute Enum.at(LazyHTML.query(identity, "wbr"), 1)
+    end
+
+    test "preserves a trailing hyphen" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.model_identity id="model-identity" value="abc-" />
+        """)
+
+      identity =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#model-identity")
+
+      assert LazyHTML.text(identity) == "abc-"
     end
   end
 

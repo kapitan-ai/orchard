@@ -744,20 +744,20 @@ defmodule OrchardConsole.CoreComponents do
   end
 
   @doc """
-  Renders a model identity with break opportunities only after `/` and `@`.
+  Renders a model identity with preferred break opportunities after `/` and `@`.
 
   The full value remains text so it stays visible, selectable, and copyable.
-  Only the trailing segment may break mid-token when it is wider than its
-  column.
+  Hyphens stay pinned to their following character, while the full value can
+  wrap anywhere as a last resort when a segment is wider than its column.
   """
   attr(:id, :string, default: nil)
   attr(:value, :string, required: true)
 
   def model_identity(assigns) do
-    assigns = assign(assigns, :segments, model_identity_segments(assigns.value))
+    assigns = assign(assigns, :chunks, model_identity_chunks(assigns.value))
 
     ~H"""
-    <span id={@id}><%= for {segment, index} <- Enum.with_index(@segments) do %><wbr :if={index > 0} /><span class={model_identity_segment_class(index, @segments)}>{segment}</span><% end %></span>
+    <span id={@id} class="wrap-anywhere"><%= for chunk <- @chunks do %><wbr :if={chunk.break_before?} /><%= if chunk.pinned? do %><span class="whitespace-nowrap">{chunk.text}</span><% else %><span>{chunk.text}</span><% end %><% end %></span>
     """
   end
 
@@ -808,12 +808,24 @@ defmodule OrchardConsole.CoreComponents do
   defp compact_metric_tone_class(:error),
     do: "border-red-200 dark:border-red-800"
 
-  defp model_identity_segments(value) do
-    Regex.split(~r{(?<=[/@])}, value, trim: true)
+  defp model_identity_chunks(value) do
+    ~r{(?<=[/@])}
+    |> Regex.split(value, trim: true)
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {segment, index} -> segment_chunks(segment, index > 0) end)
   end
 
-  defp model_identity_segment_class(index, segments) do
-    if index == length(segments) - 1, do: "wrap-anywhere", else: "whitespace-nowrap"
+  defp segment_chunks(segment, break_before?) do
+    ~r/-./u
+    |> Regex.split(segment, include_captures: true, trim: true)
+    |> Enum.with_index()
+    |> Enum.map(fn {text, index} ->
+      %{
+        text: text,
+        pinned?: String.starts_with?(text, "-"),
+        break_before?: break_before? and index == 0
+      }
+    end)
   end
 
   # ===========================================================================

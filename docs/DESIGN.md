@@ -472,10 +472,12 @@ information density. Model Hub long IDs stay legible through `font-mono` plus
 #### `model_identity/1`
 
 `<.model_identity>` renders a full `model_id@version` value as text with break
-opportunities only after `/` and `@`. Non-final segments use
-`whitespace-nowrap`, so the identity never breaks at a `-`. The final segment
-uses `wrap-anywhere`, so an over-wide version hash breaks only as a last resort
-instead of painting past its grid column.
+opportunities after `/` and `@` via explicit `<wbr>` markers; Chrome offers no
+natural break opportunity for those separators. Each `-` is pinned to its
+following character with `whitespace-nowrap`, so the identity never breaks at a
+hyphen. The value uses `wrap-anywhere` as a last resort, allowing a segment
+that is wider than its column to wrap instead of painting over the neighboring
+column.
 
 #### `detail_grid/1`
 
