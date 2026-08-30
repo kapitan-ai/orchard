@@ -65,6 +65,15 @@ Native PKG is not supported; restoring it requires a fresh OpenSpec proposal and
 - [`local-dev.md`](local-dev.md) — Phase 0 observability probe invocation and
   exit semantics.
 
+### I want to qualify or claim support for a local model
+
+- [`model-qualification.md`](model-qualification.md) - mandatory manual
+  qualification and scoped support-claim policy.
+- [`templates/local-model-qualification-record.md`](templates/local-model-qualification-record.md)
+  - qualification-record template.
+- [`templates/local-model-support-claim.md`](templates/local-model-support-claim.md)
+  - scoped support-claim template.
+
 ### I need to make a durable decision
 
 - [`decisions/README.md`](decisions/README.md) — ADR policy.

@@ -619,6 +619,27 @@ _Avoid_: Runtime status, hashed artifact contents
 A filesystem copy and hash unit for model contents after Orchard validates and imports a Model Bundle.
 _Avoid_: Model Manifest, Model Catalog record
 
+**Qualification Tuple**:
+The exact model checkpoint, quantization, tokenizer or renderer, Worker Runtime, Orchard revision, Artifact Bundle digest, hardware, operating system, configuration, topology, and tested capability envelope to which qualification evidence applies.
+_Avoid_: model name alone, Catalog entry, loaded placement
+
+**Model Qualification**:
+Reviewed evidence for one Qualification Tuple and its tested capability envelope, independent of Catalog state, Tenant publication, and runtime availability.
+_Avoid_: import success, loadedness, plausible response, support claim
+
+**Support Claim**:
+A published, capability-scoped summary of approved Model Qualification evidence, operating limits, and exclusions.
+A Support Claim does not change Catalog state, Tenant publication, Model Placement state, or runtime behavior.
+_Avoid_: unqualified supported-model statement, Catalog activation, pilot default
+
+**Hold for Review**:
+A Model Qualification outcome used when trustworthy evidence cannot support either approval or rejection because a named model defect, Orchard defect, environment deviation, or evidence gap blocks the decision.
+_Avoid_: pass, support claim, silent failure
+
+**Tested Capability Envelope**:
+The exact interfaces, modes, input and output limits, sample counts, concurrency, serving mode, topology, configuration, and acceptance rules exercised by qualification evidence.
+_Avoid_: manifest capability list, theoretical context window, untested support
+
 **Prewarming**:
 Policy-driven effort to keep selected Model Placements cached or loaded before demand.
 _Avoid_: loadedness guarantee, first request cold load
