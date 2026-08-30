@@ -459,6 +459,8 @@ wrapper `class`, and additive value `value_class` for the `<dd>`.
 - Value / `<dd>`: `mt-1 text-sm text-slate-900 dark:text-slate-100`.
 - `mono={true}` adds `font-mono` to the value only.
 - `break_all={true}` adds `break-all` to the value only for long IDs or hashes.
+- Long `model_id@version` identities render via `<.model_identity>` rather
+  than `break_all` or `truncate`.
 - `value_class` adds caller-provided tokens to the value only.
 
 The canonical value typography is intentionally `text-sm`. Some planned copy
@@ -466,6 +468,16 @@ mentioned bumping Model Hub detail values to `text-base`, but PR3 keeps the
 Request Detail parity contract so migrating ~30 fields does not silently change
 information density. Model Hub long IDs stay legible through `font-mono` plus
 `break-all` rather than a larger detail value size.
+
+#### `model_identity/1`
+
+`<.model_identity>` renders a full `model_id@version` value as text with break
+opportunities after `/` and `@` via explicit `<wbr>` markers; Chrome offers no
+natural break opportunity for those separators. Each `-` is pinned to its
+following character with `whitespace-nowrap`, so the identity never breaks at a
+hyphen. The value uses `wrap-anywhere` as a last resort, allowing a segment
+that is wider than its column to wrap instead of painting over the neighboring
+column.
 
 #### `detail_grid/1`
 

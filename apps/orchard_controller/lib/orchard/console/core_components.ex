@@ -744,6 +744,24 @@ defmodule OrchardConsole.CoreComponents do
   end
 
   @doc """
+  Renders a model identity with preferred break opportunities after `/` and `@`.
+
+  The full value remains text so it stays visible, selectable, and copyable.
+  Hyphens stay pinned to their following character, while the full value can
+  wrap anywhere as a last resort when a segment is wider than its column.
+  """
+  attr(:id, :string, default: nil)
+  attr(:value, :string, required: true)
+
+  def model_identity(assigns) do
+    assigns = assign(assigns, :chunks, model_identity_chunks(assigns.value))
+
+    ~H"""
+    <span id={@id} class="wrap-anywhere"><%= for chunk <- @chunks do %><wbr :if={chunk.break_before?} /><%= if chunk.pinned? do %><span class="whitespace-nowrap">{chunk.text}</span><% else %><span>{chunk.text}</span><% end %><% end %></span>
+    """
+  end
+
+  @doc """
   Renders a thin detail grid wrapper as a `<dl>`.
   """
   attr(:id, :string, default: nil)
@@ -789,6 +807,26 @@ defmodule OrchardConsole.CoreComponents do
 
   defp compact_metric_tone_class(:error),
     do: "border-red-200 dark:border-red-800"
+
+  defp model_identity_chunks(value) do
+    ~r{(?<=[/@])}
+    |> Regex.split(value, trim: true)
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {segment, index} -> segment_chunks(segment, index > 0) end)
+  end
+
+  defp segment_chunks(segment, break_before?) do
+    ~r/-./u
+    |> Regex.split(segment, include_captures: true, trim: true)
+    |> Enum.with_index()
+    |> Enum.map(fn {text, index} ->
+      %{
+        text: text,
+        pinned?: String.starts_with?(text, "-"),
+        break_before?: break_before? and index == 0
+      }
+    end)
+  end
 
   # ===========================================================================
   # State Message
