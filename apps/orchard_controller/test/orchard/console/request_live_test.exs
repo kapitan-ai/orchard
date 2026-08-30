@@ -33,6 +33,33 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "request summary" do
+    test "keeps a long model identity on one line with the full value in a title (issue #194)", %{
+      conn: conn
+    } do
+      requested_model =
+        "mlx-community/Qwen3.6-35B-A3B-4bit@38740b847e4cb78f352aba30aa41c76e08e6eb46"
+
+      request = create_request!(%{requested_model: requested_model})
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      requested_model_field =
+        html
+        |> LazyHTML.from_document()
+        |> LazyHTML.query("#request-requested-model dd")
+
+      classes =
+        requested_model_field
+        |> LazyHTML.attribute("class")
+        |> List.first()
+        |> String.split()
+
+      assert "truncate" in classes
+      refute "break-all" in classes
+      assert LazyHTML.attribute(requested_model_field, "title") == [requested_model]
+      assert LazyHTML.text(requested_model_field) =~ requested_model
+    end
+
     test "renders summary card with request metadata", %{conn: conn} do
       request =
         create_request!(%{

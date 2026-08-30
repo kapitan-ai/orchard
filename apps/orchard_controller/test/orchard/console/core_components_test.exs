@@ -600,6 +600,25 @@ defmodule OrchardConsole.CoreComponentsTest do
   end
 
   describe "detail_field/1" do
+    test "renders title on the dd when provided and omits it otherwise" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.detail_field id="with-title" label="Model" title="model@version">
+          model@version
+        </.detail_field>
+        <.detail_field id="without-title" label="State">Completed</.detail_field>
+        """)
+
+      document = LazyHTML.from_fragment(html)
+      titled_dd = LazyHTML.query(document, "#with-title dd")
+      untitled_dd = LazyHTML.query(document, "#without-title dd")
+
+      assert LazyHTML.attribute(titled_dd, "title") == ["model@version"]
+      assert LazyHTML.attribute(untitled_dd, "title") == []
+    end
+
     test "renders dt and dd with default text-sm value typography" do
       assigns = %{}
 

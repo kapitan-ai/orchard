@@ -723,6 +723,7 @@ defmodule OrchardConsole.CoreComponents do
   attr(:break_all, :boolean, default: false)
   attr(:class, :string, default: nil)
   attr(:value_class, :string, default: nil)
+  attr(:title, :string, default: nil)
   slot(:inner_block, required: true)
 
   def detail_field(assigns) do
@@ -736,7 +737,7 @@ defmodule OrchardConsole.CoreComponents do
         @mono && "font-mono",
         @break_all && "break-all",
         @value_class
-      ]}>
+      ]} title={@title}>
         {render_slot(@inner_block)}
       </dd>
     </div>

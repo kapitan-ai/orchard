@@ -451,14 +451,18 @@ bake in column counts, and callers must not pass gap utilities through `class`.
 #### `detail_field/1`
 
 `<.detail_field>` renders a wrapper `<div id={...}>` containing a `<dt>` and
-`<dd>`. It accepts `id`, `label`, optional `mono`, optional `break_all`, additive
-wrapper `class`, and additive value `value_class` for the `<dd>`.
+`<dd>`. It accepts `id`, `label`, optional `mono`, optional `break_all`, optional
+`title`, additive wrapper `class`, and additive value `value_class` for the
+`<dd>`.
 
 - Label / `<dt>`: `text-xs font-medium uppercase tracking-wide text-slate-500
   dark:text-slate-400`.
 - Value / `<dd>`: `mt-1 text-sm text-slate-900 dark:text-slate-100`.
 - `mono={true}` adds `font-mono` to the value only.
 - `break_all={true}` adds `break-all` to the value only for long IDs or hashes.
+- Long single-token identities such as `model_id@version` use
+  `value_class="truncate"` with `title` carrying the full value rather than
+  `break_all`, which would break mid-token.
 - `value_class` adds caller-provided tokens to the value only.
 
 The canonical value typography is intentionally `text-sm`. Some planned copy
