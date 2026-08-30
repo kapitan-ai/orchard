@@ -202,7 +202,8 @@ defmodule Orchard.Models.ManifestParser do
   end
 
   defp atomize_and_build(string_map) do
-    with {:ok, atom_map} <- atomize_top_level(string_map),
+    with :ok <- validate_legacy_sha256(string_map),
+         {:ok, atom_map} <- atomize_top_level(string_map),
          {:ok, atom_map} <- atomize_nested(atom_map, :tokenizer, @tokenizer_key_map),
          {:ok, atom_map} <- atomize_nested(atom_map, :chat_template, @chat_template_key_map),
          {:ok, atom_map} <- atomize_safe_tokenization(atom_map),
@@ -210,6 +211,21 @@ defmodule Orchard.Models.ManifestParser do
            atomize_nested(atom_map, :runtime_requirements, @runtime_requirements_key_map),
          :ok <- validate_safe_tokenization(atom_map) do
       build_manifest(atom_map)
+    end
+  end
+
+  defp validate_legacy_sha256(string_map) do
+    case Map.fetch(string_map, "sha256") do
+      :error ->
+        :ok
+
+      {:ok, value} when is_binary(value) and value != "" ->
+        :ok
+
+      {:ok, value} ->
+        {:error,
+         {:validation,
+          "sha256 must be omitted or contain a non-empty string, got: #{inspect(value)}"}}
     end
   end
 

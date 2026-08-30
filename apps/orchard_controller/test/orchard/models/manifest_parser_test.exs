@@ -68,6 +68,27 @@ defmodule Orchard.Models.ManifestParserTest do
                ManifestParser.parse_json(json)
     end
 
+    test "SPEC 6.4 accepts a manifest without deprecated top-level sha256" do
+      json =
+        valid_manifest_json()
+        |> Jason.decode!()
+        |> Map.delete("sha256")
+        |> Jason.encode!()
+
+      assert {:ok, %ModelManifest{sha256: nil}} = ManifestParser.parse_json(json)
+    end
+
+    test "SPEC 6.4 rejects an explicitly null deprecated top-level sha256" do
+      json =
+        valid_manifest_json()
+        |> Jason.decode!()
+        |> Map.put("sha256", nil)
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "sha256"
+    end
+
     test "parses safe_tokenization and defaults compatible=true when absent" do
       json =
         valid_manifest_json_with_safe_tokenization()

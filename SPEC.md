@@ -1827,7 +1827,7 @@ The target model contract SHALL represent artifact format independently from com
 An artifact MAY declare more than one compatible provider or acceleration requirement set.
 Portable model policy MUST NOT rewrite artifact format as a runtime-provider name.
 
-The current `format`, `adapter`, `min_agent_capability`, MLX manifest values, database constraints, and accepted model bundles remain valid migration inputs.
+The current `format`, `adapter`, `min_agent_capability`, MLX manifest values other than the explicitly deprecated top-level `sha256`, database constraints, and accepted model bundles remain valid migration inputs.
 They SHALL NOT be removed, reinterpreted, or made non-authoritative until additive replacements, backward decoding, data migration, and scheduler cutover pass separate review and acceptance.
 
 Offline-importable model bundle SHALL be a tarball or directory with manifest:
@@ -1839,7 +1839,6 @@ Offline-importable model bundle SHALL be a tarball or directory with manifest:
   "format": "mlx",
   "artifact_layout": "directory",
   "entrypoint": "weights/",
-  "sha256": "hex",
   "size_bytes": 1234567890,
   "resident_memory_bytes": 6442450944,
   "kv_cache_bytes_per_token": 16384,
@@ -1876,6 +1875,18 @@ Offline-importable model bundle SHALL be a tarball or directory with manifest:
   }
 }
 ```
+
+Top-level Model Manifest `sha256` is optional, deprecated compatibility metadata.
+Supported consumers SHALL accept otherwise valid manifests with or without it and SHALL continue rejecting unknown keys.
+When present, it SHALL be a non-empty string but SHALL NOT supply, override, or be compared with the authoritative Catalog Artifact Bundle digest.
+BundleBuilder SHALL retain its current legacy emission during this compatibility phase.
+Producer omission MUST be implemented only in a separate accepted change that cites repo-owned minimum-consumer-version evidence proving every supported consumer accepts omission.
+
+`models.artifact_sha256` SHALL remain the authoritative lowercase SHA-256 digest of the final stored Artifact Bundle after secure staging and all importer-owned mutations.
+The existing digest algorithm recursively collects regular files, rejects symlinks and unsupported entries, sorts bundle-relative paths, and hashes each relative path followed by the file's exact bytes.
+The digest domain SHALL include the relative path and exact final bytes of `manifest.json`.
+The authoritative value SHALL NOT be written into `manifest.json`, because doing so would make the digest depend on its own encoded value.
+This contract change SHALL NOT rehash existing Catalog rows or introduce a new digest algorithm.
 
 Manifest fields added for safe tokenization are optional and SHALL NOT require a
 manifest version bump in the Phase 1 compatibility posture. Older manifests
@@ -2019,13 +2030,18 @@ Models SHALL be imported via:
 
 Import steps:
 
-1. parse manifest
-2. verify required fields
-3. compute sha256
-4. optionally verify detached signature
-5. insert catalog record
-6. store artifact in controller artifact root
-7. mark catalog state `registered`
+1. optionally verify transferred Model Bundle media against detached evidence obtained through an independently trusted channel
+2. parse the manifest
+3. verify required fields
+4. securely stage the bundle and apply importer-owned manifest mutations
+5. compute `models.artifact_sha256` over the final staged Artifact Bundle
+6. store the Artifact Bundle in the controller artifact root
+7. insert the Catalog record with the independently computed digest
+8. mark Catalog state `registered`
+
+Post-import verification SHALL recompute the digest over the final stored Artifact Bundle and compare it with the authoritative Catalog value or a trusted external export.
+The importer SHALL NOT copy the legacy manifest `sha256` into the Catalog or compare that value with the Catalog digest.
+Pre-import detached media verification and post-import Catalog verification are distinct checkpoints because importer-owned mutations may change the final stored tree.
 
 ### 6.6 Model publication
 
@@ -2034,6 +2050,8 @@ A model becomes tenant-visible only when:
 * catalog state transitions `registered -> active`
 * at least one tenant is granted access
 * routing policy resolution exists or default applies
+
+Publication SHALL NOT change `models.artifact_sha256` or promote legacy manifest `sha256` to authoritative state.
 
 ### 6.7 Model distribution
 
@@ -2050,6 +2068,8 @@ Distribution modes:
    * optional mounted path identical on all nodes
 
 Air-gapped systems MUST support mode 1 and mode 2.
+Operator-controlled pre-import media verification and post-import verification of the final controller-stored Artifact Bundle SHALL use the distinct checkpoints defined in §6.5 and §11.7, never the deprecated manifest field.
+This change does not define Runtime Endpoint distribution, Node acquisition enforcement, signature verification, or archive-container digest requirements.
 
 ### 6.8 Load/unload semantics
 
@@ -4954,10 +4974,15 @@ Air-gapped install SHALL support:
 Offline install flow:
 
 1. transfer the signed DMG distribution set and model bundles
-2. install `Orchard.app` and run its root-authorized lifecycle for the selected role
-3. run `orchardctl cluster init`
-4. import model bundles from removable media
-5. bootstrap/join nodes via offline-generated token or imported certs
+2. verify transferred model media against detached evidence obtained through an independently trusted channel
+3. install `Orchard.app` and run its root-authorized lifecycle for the selected role
+4. run `orchardctl cluster init`
+5. import model bundles from removable media
+6. recompute each final stored Artifact Bundle digest and compare it with the authoritative Catalog value or a trusted external export
+7. bootstrap/join nodes via offline-generated token or imported certs
+
+Top-level Model Manifest `sha256` SHALL NOT be used for either verification checkpoint.
+Pre-import media evidence and the final post-import Artifact Bundle digest may differ when import rewrites `manifest.json`.
 
 ### 11.8 Tray/menu bar app
 

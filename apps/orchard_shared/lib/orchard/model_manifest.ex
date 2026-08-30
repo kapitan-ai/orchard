@@ -116,7 +116,6 @@ defmodule Orchard.ModelManifest do
     :format,
     :artifact_layout,
     :entrypoint,
-    :sha256,
     :capabilities,
     :tokenizer,
     :runtime_requirements
@@ -144,7 +143,7 @@ defmodule Orchard.ModelManifest do
           format: String.t(),
           artifact_layout: String.t(),
           entrypoint: String.t(),
-          sha256: String.t(),
+          sha256: String.t() | nil,
           size_bytes: non_neg_integer() | nil,
           resident_memory_bytes: non_neg_integer() | nil,
           kv_cache_bytes_per_token: non_neg_integer() | nil,
@@ -179,7 +178,6 @@ defmodule Orchard.ModelManifest do
       :format,
       :artifact_layout,
       :entrypoint,
-      :sha256,
       :capabilities,
       :tokenizer,
       :runtime_requirements
@@ -189,9 +187,9 @@ defmodule Orchard.ModelManifest do
       :version,
       :format,
       :artifact_layout,
-      :entrypoint,
-      :sha256
+      :entrypoint
     ])
+    |> validate_optional_string_field!(:sha256)
     |> validate_max_context_tokens!()
     |> validate_optional_non_negative_integers!([
       :size_bytes,
@@ -231,6 +229,20 @@ defmodule Orchard.ModelManifest do
     end)
 
     struct
+  end
+
+  defp validate_optional_string_field!(struct, key) do
+    case Map.fetch!(struct, key) do
+      nil ->
+        struct
+
+      value when is_binary(value) and value != "" ->
+        struct
+
+      value ->
+        raise ArgumentError,
+              "#{inspect(__MODULE__)} requires #{inspect(key)} to be nil or a non-empty binary, got: #{inspect(value)}"
+    end
   end
 
   defp validate_max_context_tokens!(%__MODULE__{max_context_tokens: nil} = struct), do: struct

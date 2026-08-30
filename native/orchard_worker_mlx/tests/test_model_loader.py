@@ -246,6 +246,15 @@ def test_parse_manifest_json_without_optional_fields() -> None:
     assert manifest.resident_memory_bytes is None
 
 
+def test_spec_6_4_parse_manifest_json_without_deprecated_sha256() -> None:
+    data = _read_fixture_manifest_dict()
+    del data["sha256"]
+
+    manifest = parse_manifest_json(json.dumps(data))
+
+    assert manifest.sha256 is None
+
+
 def test_manifest_is_frozen() -> None:
     manifest = parse_manifest_json(_read_fixture_manifest())
     with pytest.raises(AttributeError):
@@ -309,6 +318,18 @@ def test_manifest_empty_string_required_field() -> None:
         parse_manifest_json(json.dumps(data))
     assert exc_info.value.code == "manifest_validation_error"
     assert "version" in exc_info.value.message
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_manifest_present_deprecated_sha256_must_remain_non_empty(value: object) -> None:
+    data = _read_fixture_manifest_dict()
+    data["sha256"] = value
+
+    with pytest.raises(ModelLoaderError) as exc_info:
+        parse_manifest_json(json.dumps(data))
+
+    assert exc_info.value.code == "manifest_validation_error"
+    assert "sha256" in exc_info.value.message
 
 
 def test_manifest_bad_max_context_tokens() -> None:

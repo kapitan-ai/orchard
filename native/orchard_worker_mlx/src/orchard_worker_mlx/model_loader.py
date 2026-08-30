@@ -283,7 +283,7 @@ class BundleManifest:
     format: str
     artifact_layout: str
     entrypoint: str
-    sha256: str
+    sha256: str | None
     max_context_tokens: int | None
     capabilities: tuple[str, ...]
     tokenizer: TokenizerSpec
@@ -330,7 +330,6 @@ _REQUIRED_STRING_FIELDS = (
     "format",
     "artifact_layout",
     "entrypoint",
-    "sha256",
 )
 
 _OPTIONAL_NON_NEGATIVE_INT_FIELDS = (
@@ -384,6 +383,9 @@ def parse_manifest_json(payload: str) -> BundleManifest:
     # --- required string fields ---
     for field in _REQUIRED_STRING_FIELDS:
         _require_non_empty_string(data, field)
+
+    if "sha256" in data:
+        _require_non_empty_string(data, "sha256")
 
     # --- max_context_tokens (optional — nil for models without declared context window) ---
     max_ctx = data.get("max_context_tokens")
@@ -446,7 +448,7 @@ def parse_manifest_json(payload: str) -> BundleManifest:
         format=data["format"],
         artifact_layout=data["artifact_layout"],
         entrypoint=data["entrypoint"],
-        sha256=data["sha256"],
+        sha256=data.get("sha256"),
         max_context_tokens=max_ctx,
         capabilities=tuple(caps),
         tokenizer=tokenizer_spec,

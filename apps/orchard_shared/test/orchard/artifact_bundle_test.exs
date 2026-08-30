@@ -42,6 +42,22 @@ defmodule Orchard.ArtifactBundleTest do
       assert hash_a == @fixture_hash
     end
 
+    test "SPEC 6.4 includes the exact final manifest.json bytes", %{tmp_dir: tmp_dir} do
+      bundle = Path.join(tmp_dir, "manifest_bytes_bundle")
+      manifest_path = Path.join(bundle, "manifest.json")
+      File.mkdir_p!(bundle)
+
+      File.write!(manifest_path, ~s({"sha256":"legacy-a"}))
+
+      assert {:ok, "dc47c752f00aa0aeb5bf2bca15e2a93d3e2a52cf1fe184e1d150415a695517e7"} =
+               ArtifactBundle.tree_sha256(bundle)
+
+      File.write!(manifest_path, ~s({"sha256":"legacy-b"}))
+
+      assert {:ok, "f02a56e9dbd23c8fb9c3e60eb668246551c7eef8e876d8555bece25432f50129"} =
+               ArtifactBundle.tree_sha256(bundle)
+    end
+
     test "returns error for nonexistent directory" do
       assert {:error, {:hash_failed, _}} = ArtifactBundle.tree_sha256("/nonexistent/path")
     end

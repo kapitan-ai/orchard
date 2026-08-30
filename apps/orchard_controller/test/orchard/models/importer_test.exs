@@ -910,8 +910,11 @@ defmodule Orchard.Models.ImporterTest do
       end)
     end
 
-    test "eager preflight runs before SHA computation", %{artifacts_root: artifacts_root} do
-      source_dir = create_safe_bundle(artifacts_root)
+    test "SPEC 6.5 stores the final post-rewrite tree digest independently of legacy sha256", %{
+      artifacts_root: artifacts_root
+    } do
+      legacy_sha256 = String.duplicate("f", 64)
+      source_dir = create_safe_bundle(artifacts_root, %{"sha256" => legacy_sha256})
       write_tokenizer_config!(source_dir)
       {:ok, pre_rewrite_sha} = Orchard.ArtifactBundle.tree_sha256(source_dir)
       helper = write_preflight_helper!(artifacts_root, compatible_preflight_response())
@@ -922,6 +925,7 @@ defmodule Orchard.Models.ImporterTest do
 
         assert model.artifact_sha256 == imported_sha
         refute model.artifact_sha256 == pre_rewrite_sha
+        refute model.artifact_sha256 == legacy_sha256
       end)
     end
   end
