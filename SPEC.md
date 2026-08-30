@@ -2069,7 +2069,19 @@ Distribution modes:
 
 Air-gapped systems MUST support mode 1 and mode 2.
 Operator-controlled pre-import media verification and post-import verification of the final controller-stored Artifact Bundle SHALL use the distinct checkpoints defined in §6.5 and §11.7, never the deprecated manifest field.
-This change does not define Runtime Endpoint distribution, Node acquisition enforcement, signature verification, or archive-container digest requirements.
+Node acquisition SHALL perform authoritative `Orchard.ArtifactBundle.tree_sha256/1` verification against the Catalog digest on first acquisition and whenever durable verification evidence is absent, invalid, path- or digest-mismatched, or inconsistent with the current cache inventory.
+A Node MAY skip the full byte rehash only when a versioned receipt outside the Artifact Bundle binds the authoritative Catalog digest and canonical cache path to a complete, unchanged filesystem inventory of every directory and regular file.
+The inventory SHALL reject symlinks and unsupported entries and SHALL include relative paths, types, sizes, modes, ownership, device and inode identity, link counts, and modification and change times.
+Before authoritative hashing, the Node SHALL normalize every bundle directory and regular-file modification time to a reserved historical value without changing bundle bytes, then bind the resulting complete inventory after hashing.
+An ordinary later write SHALL therefore change the bound metadata even when the portable filesystem change-time surface reports only whole-second resolution and the write occurs immediately.
+Staging promotion MAY treat the cache-root directory metadata changed by the trusted rename as a one-time transition, but descendant inventory evidence SHALL remain stable and the published receipt SHALL bind the complete final root metadata.
+The receipt is an acceleration hint, not a competing digest or trust root, and SHALL NOT be stored inside or otherwise alter the authoritative Artifact Bundle digest domain.
+Any receipt read, validation, inventory, or stability failure SHALL fail closed to authoritative tree hashing.
+Receipt content SHALL receive owner-only permissions before atomic publication, and any authoritative verification failure SHALL invalidate prior acceleration evidence.
+Before normalizing an existing cache for full verification, the Node SHALL successfully remove its prior receipt and SHALL fail closed if revocation cannot be confirmed.
+An operator SHALL be able to force authoritative verification for every cache load, bypassing receipts and refreshing them only after success.
+Logs SHALL distinguish first or forced full verification, receipt-matched fast-path verification, receipt invalidation, and verification failure without including local artifact paths, source URIs, digests, or file inventory contents.
+Signature verification and archive-container digest requirements remain outside this change.
 
 ### 6.8 Load/unload semantics
 

@@ -76,6 +76,11 @@ defmodule Orchard.Node do
   def listen_host, do: listen_address()[:host]
   def listen_port, do: listen_address()[:port]
   def models_root, do: runtime_config()[:models_root]
+
+  @spec force_full_model_verification?() :: boolean()
+  def force_full_model_verification?,
+    do: runtime_value(:force_full_model_verification, false) == true
+
   def worker_socket_dir, do: runtime_config()[:worker_socket_dir]
   def worker_executable, do: runtime_config()[:worker_executable] || @default_worker_executable
   def worker_backend, do: runtime_config()[:worker_backend] || @default_worker_backend

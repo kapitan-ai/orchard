@@ -81,6 +81,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       display_name: nil,
       listen_address: [host: @default_runtime_host, port: @default_runtime_port],
       models_root: Path.join(root, "models"),
+      force_full_model_verification: false,
       worker_socket_dir: Path.join([root, "data", "worker-sockets"]),
       worker_executable: "orchard-worker-mlx",
       worker_backend: "mlx",

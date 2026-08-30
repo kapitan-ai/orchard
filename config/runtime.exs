@@ -561,6 +561,7 @@ default_node_runtime = fn root ->
     display_name: nil,
     listen_address: [host: "127.0.0.1", port: 50_061],
     models_root: Path.join(root, "models"),
+    force_full_model_verification: false,
     worker_socket_dir: Path.join([root, "data", "worker-sockets"]),
     worker_executable: "orchard-worker-mlx",
     worker_backend: "mlx",
@@ -1440,6 +1441,8 @@ if config_env() == :prod do
             ],
             models_root:
               System.get_env("ORCHARD_MODELS_ROOT") || Path.join(orchard_support_root, "models"),
+            force_full_model_verification:
+              env_bool.("ORCHARD_FORCE_FULL_MODEL_VERIFICATION", false),
             worker_socket_dir:
               System.get_env("ORCHARD_WORKER_SOCKET_DIR") ||
                 Path.join([orchard_support_root, "data", "worker-sockets"]),

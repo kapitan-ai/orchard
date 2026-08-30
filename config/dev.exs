@@ -576,6 +576,7 @@ config :orchard_node_agent,
       node_runtime_defaults,
       node_identity_root: dev_node_identity_root,
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
+      force_full_model_verification: env_bool.("ORCHARD_FORCE_FULL_MODEL_VERIFICATION", false),
       worker_executable:
         env_source_dev_path.("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
