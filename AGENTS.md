@@ -337,7 +337,7 @@ the "Source-dev BEAM Peer Grant tracer" section in `docs/local-dev.md`.
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
-- `make test` - test suite (stages the macOS test helpers and runs every test on Darwin; skips helper staging and excludes the `macos` tag on non-Darwin hosts; uses its own DB and defaults to port 50071 via `test.exs`; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` first when invoking `mise exec -- mix test` directly on Darwin.
+- `make test` - test suite (stages the macOS test helpers and runs every test on Darwin; skips helper staging and excludes the `macos` tag on non-Darwin hosts; uses its own DB and defaults to port 15071 via `test.exs`, deliberately below the Linux ephemeral range so the kernel cannot hand the listener port to an unrelated socket; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` first when invoking `mise exec -- mix test` directly on Darwin.
 
 See `docs/local-dev.md` for full environment setup and configuration.
 

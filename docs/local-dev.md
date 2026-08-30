@@ -944,7 +944,7 @@ Invoke `mix test` directly on Darwin only after `make macos-native-test-helpers`
 make test
 
 # If another worktree already owns the default test node-agent port
-ORCHARD_TEST_NODE_AGENT_PORT=50171 make test
+ORCHARD_TEST_NODE_AGENT_PORT=15171 make test
 
 # With coverage
 make cover
@@ -957,6 +957,13 @@ mise exec -- mix test apps/orchard_cli/test/orchard_cli/lifecycle_native_test.ex
 mise exec -- mix credo --strict
 mise exec -- mix dialyzer
 ```
+
+The test node-agent listener defaults to `15071`, below the Linux ephemeral
+range (`/proc/sys/net/ipv4/ip_local_port_range`, commonly `32768 60999`), so
+the kernel cannot assign that port to an unrelated outbound socket mid-run.
+`config/test.exs` fails fast on Linux when `ORCHARD_TEST_NODE_AGENT_PORT` falls
+inside the host range, printing the chosen port and the detected range. Hosts
+without `/proc` (macOS) skip the check.
 
 ## Node Agent Shutdown Custody Smoke
 
