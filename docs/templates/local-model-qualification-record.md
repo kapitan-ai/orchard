@@ -110,10 +110,11 @@ Preloaded evidence must not be summarized as a cold pass.
 ## Tested capability envelope
 
 Use separate rows for endpoint and streaming modes.
+Every row references one measured cell so its serving mode and request budgets remain explicit.
 
-| Capability | Endpoint or interface | Mode | Input and output limits | Sample count | Concurrency | Topology | Acceptance rule | Result |
-| --- | --- | --- | --- | ---: | ---: | --- | --- | --- |
-| `<capability>` | `<interface>` | `<streaming, non-streaming, or other>` | `<limits>` | `<count>` | `<count>` | `<topology>` | `<rule>` | `<pass | fail | blocked | not_tested>` |
+| Capability | Cell ID | Endpoint or interface | Mode | Input and output limits | Sample count | Concurrency | Topology | Acceptance rule | Result |
+| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |
+| `<capability>` | `<cell>` | `<interface>` | `<streaming, non-streaming, or other>` | `<limits>` | `<count>` | `<count>` | `<topology>` | `<rule>` | `<pass | fail | blocked | not_tested>` |
 
 ## Capability classification for the proposed claim
 

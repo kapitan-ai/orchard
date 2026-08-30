@@ -9,8 +9,8 @@
 
 - [x] 2.1 Walk a fully qualified synthetic scoped claim through both templates.
 - [x] 2.2 Walk the sanitized 8-bit cold-start hold case through the qualification template.
-- [x] 2.3 Obtain a bounded RepoPrompt Oracle review of policy coherence, authority, and contract boundaries.
-- [x] 2.4 Resolve the Oracle findings for profile gates, linked-claim lifecycle, held-record retention, and held-pass labeling.
+- [x] 2.3 Obtain a bounded independent review of policy coherence, authority, and contract boundaries.
+- [x] 2.4 Resolve the independent-review findings for profile gates, linked-claim lifecycle, held-record retention, and held-pass labeling.
 
 ## 3. Validate and hand off
 
