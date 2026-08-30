@@ -355,7 +355,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       receive do
         :stop -> :ok
       after
-        5_000 -> :ok
+        30_000 -> :ok
       end
     end)
   end

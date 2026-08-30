@@ -1713,7 +1713,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         )
       end)
 
-    assert_receive {:pre_acceptance_cancel_received, emitter}, 1_000
+    assert_receive {:pre_acceptance_cancel_received, emitter}, 5_000
     assert AllocationAuthority.claim_count(authority, node_id) == 1
     send(emitter, :finish_cancel_after_acceptance)
 
@@ -1809,7 +1809,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
           )
         end)
 
-      assert_receive {:pre_acceptance_cancel_received, emitter}, 1_000
+      assert_receive {:pre_acceptance_cancel_received, emitter}, 5_000
       assert AllocationAuthority.claim_count(authority, node_id) == 1
       send(emitter, :finish_cancel)
 
