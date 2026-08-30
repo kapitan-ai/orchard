@@ -183,14 +183,11 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-endpoint" label="Endpoint">
             {format_atom(@request.endpoint)}
           </.detail_field>
-          <.detail_field
-            id="request-requested-model"
-            label="Model"
-            mono
-            value_class="truncate"
-            title={@request.requested_model}
-          >
-            {format_text(@request.requested_model)}
+          <.detail_field id="request-requested-model" label="Model" mono>
+            <.model_identity
+              id="request-requested-model-value"
+              value={format_text(@request.requested_model)}
+            />
           </.detail_field>
           <.detail_field id="request-stream" label="Stream">
             {format_bool(@request.stream)}

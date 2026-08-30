@@ -723,7 +723,6 @@ defmodule OrchardConsole.CoreComponents do
   attr(:break_all, :boolean, default: false)
   attr(:class, :string, default: nil)
   attr(:value_class, :string, default: nil)
-  attr(:title, :string, default: nil)
   slot(:inner_block, required: true)
 
   def detail_field(assigns) do
@@ -737,10 +736,28 @@ defmodule OrchardConsole.CoreComponents do
         @mono && "font-mono",
         @break_all && "break-all",
         @value_class
-      ]} title={@title}>
+      ]}>
         {render_slot(@inner_block)}
       </dd>
     </div>
+    """
+  end
+
+  @doc """
+  Renders a model identity with break opportunities only after `/` and `@`.
+
+  The full value remains text so it stays visible, selectable, and copyable.
+  Only the trailing segment may break mid-token when it is wider than its
+  column.
+  """
+  attr(:id, :string, default: nil)
+  attr(:value, :string, required: true)
+
+  def model_identity(assigns) do
+    assigns = assign(assigns, :segments, model_identity_segments(assigns.value))
+
+    ~H"""
+    <span id={@id}><%= for {segment, index} <- Enum.with_index(@segments) do %><wbr :if={index > 0} /><span class={model_identity_segment_class(index, @segments)}>{segment}</span><% end %></span>
     """
   end
 
@@ -790,6 +807,14 @@ defmodule OrchardConsole.CoreComponents do
 
   defp compact_metric_tone_class(:error),
     do: "border-red-200 dark:border-red-800"
+
+  defp model_identity_segments(value) do
+    Regex.split(~r{(?<=[/@])}, value, trim: true)
+  end
+
+  defp model_identity_segment_class(index, segments) do
+    if index == length(segments) - 1, do: "wrap-anywhere", else: "whitespace-nowrap"
+  end
 
   # ===========================================================================
   # State Message

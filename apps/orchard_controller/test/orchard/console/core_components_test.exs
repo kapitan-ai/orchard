@@ -599,26 +599,78 @@ defmodule OrchardConsole.CoreComponentsTest do
     end
   end
 
-  describe "detail_field/1" do
-    test "renders title on the dd when provided and omits it otherwise" do
+  describe "model_identity/1" do
+    test "wraps a model identity after separators and preserves exact text" do
+      value = "mlx-community/Qwen3.6-35B-A3B-4bit@38740b847e4cb78f352aba30aa41c76e08e6eb46"
+      assigns = %{value: value}
+
+      html =
+        render_heex(~H"""
+        <.model_identity id="model-identity" value={@value} />
+        """)
+
+      document = LazyHTML.from_fragment(html)
+      identity = LazyHTML.query(document, "#model-identity")
+      segments = LazyHTML.query(document, "#model-identity > span")
+
+      assert LazyHTML.text(identity) == value
+
+      assert Enum.map(segments, &LazyHTML.text/1) == [
+               "mlx-community/",
+               "Qwen3.6-35B-A3B-4bit@",
+               "38740b847e4cb78f352aba30aa41c76e08e6eb46"
+             ]
+
+      assert Enum.map(segments, &LazyHTML.attribute(&1, "class")) == [
+               ["whitespace-nowrap"],
+               ["whitespace-nowrap"],
+               ["wrap-anywhere"]
+             ]
+
+      wbrs = LazyHTML.query(identity, "wbr")
+      assert Enum.at(wbrs, 0)
+      assert Enum.at(wbrs, 1)
+      refute Enum.at(wbrs, 2)
+    end
+
+    test "renders a separator-free value as one wrap-anywhere segment" do
       assigns = %{}
 
       html =
         render_heex(~H"""
-        <.detail_field id="with-title" label="Model" title="model@version">
-          model@version
-        </.detail_field>
-        <.detail_field id="without-title" label="State">Completed</.detail_field>
+        <.model_identity id="model-identity" value="gpt-4" />
         """)
 
       document = LazyHTML.from_fragment(html)
-      titled_dd = LazyHTML.query(document, "#with-title dd")
-      untitled_dd = LazyHTML.query(document, "#without-title dd")
+      identity = LazyHTML.query(document, "#model-identity")
+      segments = LazyHTML.query(document, "#model-identity > span")
 
-      assert LazyHTML.attribute(titled_dd, "title") == ["model@version"]
-      assert LazyHTML.attribute(untitled_dd, "title") == []
+      assert LazyHTML.text(identity) == "gpt-4"
+      assert Enum.map(segments, &LazyHTML.text/1) == ["gpt-4"]
+      assert Enum.map(segments, &LazyHTML.attribute(&1, "class")) == [["wrap-anywhere"]]
+      assert Enum.empty?(LazyHTML.query(identity, "wbr"))
     end
 
+    test "omits an empty trailing segment after a separator" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.model_identity id="model-identity" value="mlx-community/" />
+        """)
+
+      document = LazyHTML.from_fragment(html)
+      identity = LazyHTML.query(document, "#model-identity")
+      segments = LazyHTML.query(document, "#model-identity > span")
+
+      assert LazyHTML.text(identity) == "mlx-community/"
+      assert Enum.map(segments, &LazyHTML.text/1) == ["mlx-community/"]
+      assert Enum.map(segments, &LazyHTML.attribute(&1, "class")) == [["wrap-anywhere"]]
+      assert Enum.empty?(LazyHTML.query(identity, "wbr"))
+    end
+  end
+
+  describe "detail_field/1" do
     test "renders dt and dd with default text-sm value typography" do
       assigns = %{}
 

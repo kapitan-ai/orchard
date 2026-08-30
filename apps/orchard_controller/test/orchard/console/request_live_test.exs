@@ -33,7 +33,7 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "request summary" do
-    test "keeps a long model identity on one line with the full value in a title (issue #194)", %{
+    test "allows model identity wrapping only after separators (issue #194)", %{
       conn: conn
     } do
       requested_model =
@@ -43,21 +43,40 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      requested_model_field =
-        html
-        |> LazyHTML.from_document()
-        |> LazyHTML.query("#request-requested-model dd")
+      document = LazyHTML.from_document(html)
+      requested_model_field = LazyHTML.query(document, "#request-requested-model-value")
 
-      classes =
-        requested_model_field
+      segments = LazyHTML.query(document, "#request-requested-model-value > span")
+      segment_texts = Enum.map(segments, &LazyHTML.text/1)
+      segment_classes = Enum.map(segments, &LazyHTML.attribute(&1, "class"))
+
+      assert LazyHTML.text(requested_model_field) == requested_model
+
+      assert segment_texts == [
+               "mlx-community/",
+               "Qwen3.6-35B-A3B-4bit@",
+               "38740b847e4cb78f352aba30aa41c76e08e6eb46"
+             ]
+
+      assert Enum.at(segment_classes, 0) == ["whitespace-nowrap"]
+      assert Enum.at(segment_classes, 1) == ["whitespace-nowrap"]
+      assert Enum.at(segment_classes, 2) == ["wrap-anywhere"]
+      wbrs = LazyHTML.query(requested_model_field, "wbr")
+      assert Enum.at(wbrs, 0)
+      assert Enum.at(wbrs, 1)
+      refute Enum.at(wbrs, 2)
+
+      requested_model_dd = LazyHTML.query(document, "#request-requested-model dd")
+
+      dd_classes =
+        requested_model_dd
         |> LazyHTML.attribute("class")
         |> List.first()
         |> String.split()
 
-      assert "truncate" in classes
-      refute "break-all" in classes
-      assert LazyHTML.attribute(requested_model_field, "title") == [requested_model]
-      assert LazyHTML.text(requested_model_field) =~ requested_model
+      refute "truncate" in dd_classes
+      refute "break-all" in dd_classes
+      assert LazyHTML.attribute(requested_model_dd, "title") == []
     end
 
     test "renders summary card with request metadata", %{conn: conn} do
@@ -74,7 +93,12 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "Request Summary"
       assert html =~ request.public_id
       assert html =~ "running"
-      assert html =~ "mlx-community/phi-3@main"
+
+      assert LazyHTML.text(
+               LazyHTML.query(LazyHTML.from_document(html), "#request-requested-model-value")
+             ) ==
+               "mlx-community/phi-3@main"
+
       assert html =~ "Yes"
       assert html =~ "chat_completions"
     end
