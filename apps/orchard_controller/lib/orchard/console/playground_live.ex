@@ -633,7 +633,21 @@ defmodule OrchardConsole.PlaygroundLive do
     |> then(&Regex.replace(@think_block_re, &1, ""))
     |> then(&Regex.replace(@think_open_re, &1, ""))
     |> then(&Regex.replace(@model_turn_tag_re, &1, ""))
+    |> contain_reasoning_preamble()
     |> String.trim_leading()
+  end
+
+  # Qwen3-family chat templates open the think block in the generation prompt, so a
+  # completion can carry reasoning prose terminated by a bare `</think>` with no opener.
+  defp contain_reasoning_preamble(text) do
+    case String.split(text, "</think>", parts: 2) do
+      [_reasoning, final] ->
+        trimmed = String.trim(final)
+        if trimmed == "", do: text, else: trimmed
+
+      [unchanged] ->
+        unchanged
+    end
   end
 
   # ===========================================================================
