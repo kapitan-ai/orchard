@@ -1138,7 +1138,7 @@ replace the script's `cp -L` copy with `ln -s`.
 | `format` | `"mlx"` | Required |
 | `artifact_layout` | `"directory"` | Required |
 | `entrypoint` | `"."` | Path to model weights dir (`.` = bundle root) |
-| `sha256` | 64-char hex | `BundleBuilder` computes this from bundle files |
+| `sha256` | Optional deprecated string | Compatibility metadata only. `BundleBuilder` currently emits `"pending"`; do not use it as integrity evidence. |
 | `max_context_tokens` | From `config.json` `max_position_embeddings` | |
 | `tokenizer.kind` | `"huggingface_tokenizer_json"` | Required |
 | `tokenizer.path` | `"tokenizer.json"` | Relative to bundle root |
@@ -1146,6 +1146,28 @@ replace the script's `cp -L` copy with `ln -s`.
 | `chat_template.sha256` | SHA-256 of template bytes | Auto-filled on import when the template file exists |
 | `runtime_requirements.adapter` | `"mlx_lm"` | Required |
 | `runtime_requirements.min_agent_capability` | `"mlx"` | Required |
+
+### Verifying Model Bundle Media And Imported Artifacts
+
+Pre-import media verification and post-import Catalog verification protect different byte sets.
+Do not compare either checkpoint with top-level manifest `sha256`.
+
+Before import, verify the transferred archive or directory against detached evidence obtained through an independently trusted channel.
+For an archive, this can be a sidecar digest checked with the platform's SHA-256 tool before extraction.
+Orchard does not currently derive trusted pre-import evidence from `manifest.json`.
+
+After import, recompute the digest over the final stored Artifact Bundle and compare it with `models.artifact_sha256` in the Catalog:
+
+```elixir
+model = Orchard.Models.get_model_by_identity("model-id", "version")
+artifact_path = String.replace_prefix(model.artifact_uri, "file://", "")
+{:ok, stored_tree_sha256} = Orchard.ArtifactBundle.tree_sha256(artifact_path)
+stored_tree_sha256 == model.artifact_sha256
+```
+
+The final digest includes every regular file's bundle-relative path and exact bytes, including the final `manifest.json` after importer-owned rewrites.
+It may legitimately differ from detached pre-import media evidence.
+BundleBuilder will keep emitting the legacy field until a separate accepted change cites repo-owned minimum-consumer-version evidence proving omission safe.
 
 ### Recommended Smoke Models
 

@@ -33,6 +33,16 @@ def test_worker_known_keys_match_manifest_schema_contract() -> None:
     assert contract["worker_validates_top_level_keys"] is True
     assert _KNOWN_TOP_LEVEL_KEYS == set(contract["top_level_keys"])
 
+    required_keys = set(contract["required_top_level_keys"])
+    optional_keys = set(contract["optional_top_level_keys"])
+    deprecated_keys = set(contract["deprecated_top_level_keys"])
+
+    assert required_keys | optional_keys == _KNOWN_TOP_LEVEL_KEYS
+    assert required_keys.isdisjoint(optional_keys)
+    assert "sha256" not in required_keys
+    assert "sha256" in optional_keys
+    assert deprecated_keys == {"sha256"}
+
     nested_keys = contract["nested_keys"]
     assert _KNOWN_TOKENIZER_KEYS == set(nested_keys["tokenizer"])
     assert _KNOWN_CHAT_TEMPLATE_KEYS == set(nested_keys["chat_template"])

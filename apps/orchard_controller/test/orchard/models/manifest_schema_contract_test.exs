@@ -38,6 +38,21 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
            ]
   end
 
+  test "SPEC 6.4 top-level manifest fields distinguish required optional and deprecated keys" do
+    contract = load_contract!()
+
+    assert contract["required_top_level_keys"] ==
+             ~w(artifact_layout capabilities entrypoint format model_id runtime_requirements tokenizer version)
+
+    assert contract["optional_top_level_keys"] ==
+             ~w(chat_template kv_cache_bytes_per_token max_context_tokens prefill_workspace_bytes_per_token resident_memory_bytes safe_tokenization sha256 size_bytes)
+
+    assert contract["deprecated_top_level_keys"] == ["sha256"]
+
+    assert Enum.sort(contract["required_top_level_keys"] ++ contract["optional_top_level_keys"]) ==
+             contract["top_level_keys"]
+  end
+
   test "SPEC 6.4 safe-tokenization incompatibility category enum contract is sorted and partitioned" do
     contract = load_contract!()
     category_sets = contract_category_sets(contract)

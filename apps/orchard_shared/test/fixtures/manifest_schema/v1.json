@@ -18,6 +18,29 @@
     "tokenizer",
     "version"
   ],
+  "required_top_level_keys": [
+    "artifact_layout",
+    "capabilities",
+    "entrypoint",
+    "format",
+    "model_id",
+    "runtime_requirements",
+    "tokenizer",
+    "version"
+  ],
+  "optional_top_level_keys": [
+    "chat_template",
+    "kv_cache_bytes_per_token",
+    "max_context_tokens",
+    "prefill_workspace_bytes_per_token",
+    "resident_memory_bytes",
+    "safe_tokenization",
+    "sha256",
+    "size_bytes"
+  ],
+  "deprecated_top_level_keys": [
+    "sha256"
+  ],
   "nested_keys": {
     "chat_template": [
       "path",

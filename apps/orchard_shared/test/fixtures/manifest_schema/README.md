@@ -2,6 +2,11 @@
 
 `v1.json` is a product-owned contract fixture for Orchard model-manifest schema behavior described by SPEC §6.4. The fixture is consumed by product tests to keep manifest parser, controller, and worker assumptions aligned without changing canonical bundle fixture manifests.
 
+`top_level_keys` is the closed set accepted by supported consumers.
+`required_top_level_keys` and `optional_top_level_keys` partition that set.
+`deprecated_top_level_keys` identifies accepted compatibility metadata that is not authoritative product state.
+Top-level `sha256` is optional and deprecated because the Catalog's `models.artifact_sha256` is computed independently over the final stored Artifact Bundle.
+
 ## Safe-tokenization incompatibility categories
 
 The manifest verdict enum `safe_tokenization.incompatibility_reason.category` is jointly owned by:
