@@ -695,7 +695,8 @@ defmodule OrchardApplicationTest do
 
     assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
     assert config.capture_log_messages == false
-    assert config.metadata == [:request_id, :worker_model, :model_backend]
+    assert config.capture_excluded_domains == [:cowboy]
+    assert config.capture_metadata == [:request_id, :worker_model, :model_backend]
     assert config.rate_limiting == [max_events: 50, interval: 60_000]
   end
 

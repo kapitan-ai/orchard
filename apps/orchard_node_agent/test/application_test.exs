@@ -142,6 +142,7 @@ defmodule OrchardNodeAgentApplicationTest do
 
     stop_controller_app()
     stop_node_agent_app()
+    stop_sentry_app()
     remove_sentry_handler()
     SentryTelemetryBridge.detach()
 
@@ -379,7 +380,8 @@ defmodule OrchardNodeAgentApplicationTest do
 
     assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
     assert config.capture_log_messages == false
-    assert config.metadata == [:request_id, :worker_model, :model_backend]
+    assert config.capture_excluded_domains == [:cowboy]
+    assert config.capture_metadata == [:request_id, :worker_model, :model_backend]
     assert config.rate_limiting == [max_events: 50, interval: 60_000]
     assert :ok = SentryTelemetryBridge.attach()
   end
@@ -405,6 +407,7 @@ defmodule OrchardNodeAgentApplicationTest do
     Application.put_env(:sentry, :test_mode, true)
     persist_sentry_config()
 
+    {:ok, _apps} = Application.ensure_all_started(:sentry)
     :ok = Sentry.Test.start_collecting_sentry_reports()
     :ok = Orchard.SentryLogger.install_handler()
     _flushed_reports = Sentry.Test.pop_sentry_reports()
@@ -448,7 +451,8 @@ defmodule OrchardNodeAgentApplicationTest do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
 
     assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
-    assert config.metadata == [:request_id, :worker_model, :model_backend]
+    assert config.capture_excluded_domains == [:cowboy]
+    assert config.capture_metadata == [:request_id, :worker_model, :model_backend]
 
     handler_count =
       :logger.get_handler_ids()
@@ -460,6 +464,7 @@ defmodule OrchardNodeAgentApplicationTest do
 
   test "concurrent install_handler/0 calls keep exactly one Sentry handler" do
     Application.put_env(:sentry, :dsn, @sentry_dsn)
+    assert {:ok, _apps} = Application.ensure_all_started(:sentry)
 
     1..16
     |> Task.async_stream(fn _ -> Orchard.SentryLogger.install_handler() end,
@@ -488,6 +493,13 @@ defmodule OrchardNodeAgentApplicationTest do
     case Application.stop(:orchard_node_agent) do
       :ok -> :ok
       {:error, {:not_started, :orchard_node_agent}} -> :ok
+    end
+  end
+
+  defp stop_sentry_app do
+    case Application.stop(:sentry) do
+      :ok -> :ok
+      {:error, {:not_started, :sentry}} -> :ok
     end
   end
 

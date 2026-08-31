@@ -103,6 +103,8 @@ defmodule Orchard.API.SentryCrashCaptureTest do
       hash_secret: "controller-sentry-crash-test-secret"
     )
 
+    stop_sentry_app()
+    {:ok, _apps} = Application.ensure_all_started(:sentry)
     :ok = Sentry.Test.start_collecting_sentry_reports()
     :ok = SentryLogger.install_handler()
     _flushed_reports = Sentry.Test.pop_sentry_reports()
@@ -271,6 +273,13 @@ defmodule Orchard.API.SentryCrashCaptureTest do
       :ok -> remove_sentry_handler()
       {:error, :not_found} -> :ok
       {:error, {:not_found, Sentry.LoggerHandler}} -> :ok
+    end
+  end
+
+  defp stop_sentry_app do
+    case Application.stop(:sentry) do
+      :ok -> :ok
+      {:error, {:not_started, :sentry}} -> :ok
     end
   end
 
