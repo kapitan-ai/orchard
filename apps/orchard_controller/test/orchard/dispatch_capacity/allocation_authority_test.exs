@@ -638,6 +638,65 @@ defmodule Orchard.DispatchCapacity.AllocationAuthorityTest do
     assert :ok = QueueManager.release_acceptance_gate(lease, authority: authority)
   end
 
+  test "SPEC 5.9 a dead queued caller is skipped before later FIFO waiters" do
+    test_pid = self()
+    observer_tag = make_ref()
+
+    authority =
+      start_supervised!(
+        {AllocationAuthority, name: nil, acceptance_gate_queue_observer: {test_pid, observer_tag}}
+      )
+
+    node_id = Ecto.UUID.generate()
+    caller = spawn(fn -> Process.sleep(:infinity) end)
+    caller_ref = Process.monitor(caller)
+
+    assert {:ok, holder} =
+             AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, 100)
+
+    waiter =
+      Task.async(fn ->
+        AllocationAuthority.try_acquire_acceptance_gate(
+          authority,
+          node_id,
+          1_000,
+          nil,
+          caller
+        )
+      end)
+
+    assert_receive {^observer_tag, :acceptance_gate_waiter_queued, ^node_id}
+
+    successor =
+      Task.async(fn ->
+        {:ok, lease} = AllocationAuthority.acquire_acceptance_gate(authority, node_id)
+        send(test_pid, {:successor_granted, self()})
+
+        receive do
+          :release -> AllocationAuthority.release_acceptance_gate(authority, lease)
+        end
+      end)
+
+    assert_receive {^observer_tag, :acceptance_gate_waiter_queued, ^node_id}
+
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^caller_ref, :process, ^caller, :killed}
+
+    assert :ok = AllocationAuthority.release_acceptance_gate(authority, holder)
+
+    assert {:error, :dispatch_capacity_caller_down} = Task.await(waiter)
+    assert_receive {:successor_granted, successor_pid}
+    assert successor_pid == successor.pid
+
+    send(successor.pid, :release)
+    assert :ok = Task.await(successor)
+
+    assert {:ok, next_lease} =
+             AllocationAuthority.try_acquire_acceptance_gate(authority, node_id, 100)
+
+    assert :ok = AllocationAuthority.release_acceptance_gate(authority, next_lease)
+  end
+
   test "SPEC 5.9 a policy mutation gives up bounded instead of waiting out a dispatch" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = Ecto.UUID.generate()

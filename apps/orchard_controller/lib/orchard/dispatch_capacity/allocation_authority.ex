@@ -77,7 +77,10 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    init_arg = %{quarantine_store: Keyword.get(opts, :quarantine_store, QuarantineStore)}
+    init_arg = %{
+      quarantine_store: Keyword.get(opts, :quarantine_store, QuarantineStore),
+      acceptance_gate_queue_observer: Keyword.get(opts, :acceptance_gate_queue_observer)
+    }
 
     case Keyword.get(opts, :name, __MODULE__) do
       nil -> GenServer.start_link(__MODULE__, init_arg)
@@ -407,7 +410,10 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
   defp release_guardian(%AcceptanceLease{}), do: :ok
 
   @impl true
-  def init(%{quarantine_store: quarantine_store}) do
+  def init(%{
+        acceptance_gate_queue_observer: acceptance_gate_queue_observer,
+        quarantine_store: quarantine_store
+      }) do
     base = %{
       authority_incarnation: make_ref(),
       claims: %{},
@@ -415,7 +421,8 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
       request_claims: %{},
       monitors: %{},
       gates: %{},
-      gate_monitors: %{}
+      gate_monitors: %{},
+      acceptance_gate_queue_observer: acceptance_gate_queue_observer
     }
 
     case resolve_quarantine_store(quarantine_store) do
@@ -533,7 +540,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
         {:reply, {:ok, lease}, state}
 
       gate ->
-        {:noreply, enqueue_gate_waiter(state, node_id, gate, {from, :infinity})}
+        {:noreply, enqueue_gate_waiter(state, node_id, gate, {from, :infinity, nil})}
     end
   end
 
@@ -550,7 +557,7 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
         {:reply, :expired, state}
 
       gate = Map.get(state.gates, node_id) ->
-        {:noreply, enqueue_gate_waiter(state, node_id, gate, {from, deadline})}
+        {:noreply, enqueue_gate_waiter(state, node_id, gate, {from, deadline, abort_pid})}
 
       true ->
         {lease, state} = put_gate_owner(state, node_id, from, :queue.new())
@@ -813,27 +820,49 @@ defmodule Orchard.DispatchCapacity.AllocationAuthority do
 
   defp enqueue_gate_waiter(state, node_id, gate, waiter) do
     waiters = :queue.in(waiter, gate.waiters)
-    %{state | gates: Map.put(state.gates, node_id, %{gate | waiters: waiters})}
+    state = %{state | gates: Map.put(state.gates, node_id, %{gate | waiters: waiters})}
+    notify_gate_queue_observer(state.acceptance_gate_queue_observer, node_id)
+    state
   end
+
+  defp notify_gate_queue_observer({observer, tag}, node_id) when is_pid(observer) do
+    send(observer, {tag, :acceptance_gate_waiter_queued, node_id})
+    :ok
+  end
+
+  defp notify_gate_queue_observer(_observer, _node_id), do: :ok
 
   defp advance_gate(state, node_id, waiters) do
     case :queue.out(waiters) do
       {:empty, _waiters} ->
         %{state | gates: Map.delete(state.gates, node_id)}
 
-      {{:value, {from, deadline}}, remaining_waiters} ->
-        grant_gate_to_waiter(state, node_id, from, deadline, remaining_waiters)
+      {{:value, {from, deadline, abort_pid}}, remaining_waiters} ->
+        grant_gate_to_waiter(state, node_id, from, deadline, abort_pid, remaining_waiters)
     end
   end
 
-  defp grant_gate_to_waiter(state, node_id, {owner, _tag} = from, deadline, remaining_waiters) do
-    if gate_waiter_live?(owner, deadline) do
-      {lease, state} = put_gate_owner(state, node_id, from, remaining_waiters)
-      GenServer.reply(from, {:ok, lease})
-      state
-    else
-      GenServer.reply(from, :expired)
-      advance_gate(state, node_id, remaining_waiters)
+  defp grant_gate_to_waiter(
+         state,
+         node_id,
+         {owner, _tag} = from,
+         deadline,
+         abort_pid,
+         remaining_waiters
+       ) do
+    cond do
+      is_pid(abort_pid) and not Process.alive?(abort_pid) ->
+        GenServer.reply(from, :caller_down)
+        advance_gate(state, node_id, remaining_waiters)
+
+      gate_waiter_live?(owner, deadline) ->
+        {lease, state} = put_gate_owner(state, node_id, from, remaining_waiters)
+        GenServer.reply(from, {:ok, lease})
+        state
+
+      true ->
+        GenServer.reply(from, :expired)
+        advance_gate(state, node_id, remaining_waiters)
     end
   end
 

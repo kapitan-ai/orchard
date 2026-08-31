@@ -2963,10 +2963,17 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   end
 
   test "SPEC 5.9 caller death while waiting for acceptance prevents execution" do
-    authority = start_supervised!({AllocationAuthority, name: nil})
+    observer_tag = make_ref()
+
+    authority =
+      start_supervised!(
+        {AllocationAuthority, name: nil, acceptance_gate_queue_observer: {self(), observer_tag}}
+      )
+
     node_id = claim_node_id()
     request_id = "request-caller-death-during-acceptance-wait"
     caller = spawn(fn -> Process.sleep(:infinity) end)
+    caller_ref = Process.monitor(caller)
 
     {:ok, held_lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
 
@@ -2983,11 +2990,25 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     try do
       assert_receive :model_loaded
+      assert_receive {^observer_tag, :acceptance_gate_waiter_queued, ^node_id}
       Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^caller_ref, :process, ^caller, :killed}
+
       assert :ok = QueueManager.release_acceptance_gate(held_lease, authority: authority)
 
-      assert {:ok, outcome} = Task.yield(dispatch, 250)
-      assert_dispatch_failure(outcome, :request_caller_disconnect)
+      assert %AttemptOutcome{
+               attempt_outcome: :cancelled,
+               node_id: ^node_id,
+               accepted: false,
+               events: [],
+               failure: %{
+                 "failure_class" => "cancellation",
+                 "failure_code" => "request_caller_disconnect"
+               },
+               execution_resolution: :not_started,
+               capacity_release_outcome: :released,
+               output_committed: false
+             } = Task.await(dispatch)
 
       refute_receive :execute_called
       assert AllocationAuthority.claim_count(authority, node_id) == 0
