@@ -67,7 +67,7 @@ config :orchard_node_agent,
 
 # esbuild (JS bundling for LiveView client hooks)
 config :esbuild,
-  version: "0.25.0",
+  version: "0.28.2",
   version_check: false,
   path: Path.expand("../node_modules/.bin/esbuild", __DIR__),
   orchard: [
