@@ -3790,7 +3790,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
        %{bundle: bundle} do
     nodes = configure_alternate_attempt_nodes!()
     put_alternate_attempt_scheduler_config()
-    Process.put(:orchard_retry_persist_probe, fn -> Process.sleep(80) end)
+    Process.put(:orchard_retry_persist_probe, fn -> Process.sleep(800) end)
     stub_runtime_events([InferenceEvent.failed("worker_down", "worker exited", true)])
 
     model = create_active_model!(bundle, "request-orchestrator-persist-budget")
@@ -3798,7 +3798,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical =
       canonical_request("request-orchestrator-persist-budget",
         stream?: false,
-        admission: %{timeout_ms: 40}
+        admission: %{timeout_ms: 500}
       )
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
@@ -3818,7 +3818,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
        %{bundle: bundle} do
     nodes = configure_alternate_attempt_nodes!()
     put_alternate_attempt_scheduler_config()
-    Process.put(:orchard_alternate_schedule_sleep_ms, 80)
+    Process.put(:orchard_alternate_schedule_sleep_ms, 800)
     stub_runtime_events([InferenceEvent.failed("worker_down", "worker exited", true)])
 
     model = create_active_model!(bundle, "request-orchestrator-alternate-budget")
@@ -3826,7 +3826,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical =
       canonical_request("request-orchestrator-alternate-budget",
         stream?: false,
-        admission: %{timeout_ms: 40}
+        admission: %{timeout_ms: 500}
       )
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)

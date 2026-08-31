@@ -21,6 +21,14 @@ defmodule Orchard.FSTest do
     refute Enum.any?(File.ls!(ctx.root), &String.starts_with?(&1, ".tmp-"))
   end
 
+  test "applies requested permissions before publishing content", ctx do
+    assert :ok =
+             FS.atomic_write!(ctx.manifest_path, ~s({"private":true}), permissions: 0o600)
+
+    assert %File.Stat{mode: mode} = File.stat!(ctx.manifest_path)
+    assert Bitwise.band(mode, 0o777) == 0o600
+  end
+
   test "concurrent writers never leave half-written content", ctx do
     payloads =
       for index <- 1..24 do

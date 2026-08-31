@@ -3,7 +3,7 @@ defmodule Orchard.FS do
   Shared filesystem helpers for artifact-safe writes.
   """
 
-  @type atomic_write_opts :: [modes: [File.mode()]]
+  @type atomic_write_opts :: [modes: [File.mode()], permissions: non_neg_integer()]
 
   @doc """
   Writes `content` to `path` through a same-filesystem temporary file.
@@ -16,8 +16,10 @@ defmodule Orchard.FS do
   def atomic_write!(path, content, opts \\ []) when is_binary(path) do
     tmp_path = atomic_temp_path(path)
     modes = Keyword.get(opts, :modes, [:binary])
+    permissions = Keyword.get(opts, :permissions)
 
     try do
+      prepare_temp_file!(tmp_path, permissions)
       File.write!(tmp_path, content, modes)
       File.rename!(tmp_path, path)
       :ok
@@ -26,6 +28,13 @@ defmodule Orchard.FS do
         File.rm(tmp_path)
         reraise(error, __STACKTRACE__)
     end
+  end
+
+  defp prepare_temp_file!(_tmp_path, nil), do: :ok
+
+  defp prepare_temp_file!(tmp_path, permissions) do
+    File.open!(tmp_path, [:write, :exclusive], fn _file -> :ok end)
+    File.chmod!(tmp_path, permissions)
   end
 
   @spec atomic_temp_path(Path.t()) :: Path.t()

@@ -44,6 +44,23 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_memory_budget_mode] == "enforce"
   end
 
+  test "runtime.exs enables forced full model verification in prod" do
+    runtime =
+      read_runtime_config!(%{"ORCHARD_FORCE_FULL_MODEL_VERIFICATION" => "true"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:force_full_model_verification]
+  end
+
+  test "runtime.exs rejects an invalid forced-verification boolean in prod" do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_FORCE_FULL_MODEL_VERIFICATION must be a boolean/,
+                 fn ->
+                   read_runtime_config!(%{"ORCHARD_FORCE_FULL_MODEL_VERIFICATION" => "sometimes"})
+                 end
+  end
+
   test "runtime.exs rejects invalid ORCHARD_WORKER_MEMORY_BUDGET_MODE in prod" do
     assert_raise RuntimeError,
                  ~r/ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled\|observe\|enforce/,
@@ -100,6 +117,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_memory_budget_mode] == "observe"
     assert runtime[:worker_memory_budget_utilization] == 0.90
     assert runtime[:worker_memory_budget_overhead_bytes] == 1_073_741_824
+    refute runtime[:force_full_model_verification]
   end
 
   test "runtime.exs preserves packaged BEAM default without requiring gRPC identity" do
@@ -222,6 +240,15 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
 
     assert runtime[:worker_backend] == "stub"
     assert runtime[:worker_generation_mode] == "stream"
+  end
+
+  test "dev.exs enables forced full model verification" do
+    runtime =
+      read_dev_config!(%{"ORCHARD_FORCE_FULL_MODEL_VERIFICATION" => "true"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:force_full_model_verification]
   end
 
   test "dev.exs keeps worker sockets under a short worktree-specific root" do

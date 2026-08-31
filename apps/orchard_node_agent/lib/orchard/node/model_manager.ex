@@ -602,7 +602,10 @@ defmodule Orchard.Node.ModelManager do
 
     result =
       with {:ok, acq_request} <- AcquisitionRequest.from_proto(request, models_root),
-           {:ok, _path, _outcome} <- ModelAcquisition.ensure_cached(acq_request),
+           {:ok, _path, _outcome} <-
+             ModelAcquisition.ensure_cached(acq_request,
+               force_full?: Node.force_full_model_verification?()
+             ),
            {:ok, remaining_ms} <- remaining_load_budget(request) do
         start_and_load_worker(key, request, remaining_ms, manager)
       end

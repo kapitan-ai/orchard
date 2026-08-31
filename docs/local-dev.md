@@ -298,6 +298,7 @@ ELIXIR
 | `ORCHARD_NODE_IDENTITY_ROOT` | `tmp/dev/config/node-identity` | Owner-only root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`. Override only when the support-root layout is intentionally changed. |
 | `ORCHARD_RUNTIME_CLIENT_PORT` | Same as listen port | Controller gRPC client port (must match listen port) |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
+| `ORCHARD_FORCE_FULL_MODEL_VERIFICATION` | `false` | Bypass verification receipts and recompute the authoritative Catalog tree digest on every cache load. Restart the Node Agent after changing it. |
 | `ORCHARD_WORKER_SOCKET_DIR` | `/tmp/od-<hash>/ws` | Worker UDS directory |
 | `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Worker backend (`mlx` or `stub`) |
@@ -312,6 +313,12 @@ bin/dev-node-agent` after changing them. Use `ORCHARD_WORKER_BACKEND=stub` for
 cluster mechanics or rollback testing when real MLX inference is not required;
 when `ORCHARD_WORKER_GENERATION_MODE` is unset, the stub backend resolves to
 stream mode automatically.
+Set `ORCHARD_FORCE_FULL_MODEL_VERIFICATION=true` when an operator needs every
+cache load to ignore durable verification receipts and recompute the full
+Catalog-authoritative Artifact Bundle digest.
+The default fast path still performs a complete metadata inventory and falls
+back to that same full digest whenever the receipt is missing, invalid, or no
+longer matches the cache tree.
 By default, source-dev worker Unix sockets live under a short, worktree-specific `/tmp/od-<hash>/ws` directory to avoid macOS Unix socket path length limits.
 Set `ORCHARD_WORKER_SOCKET_DIR` to override that location.
 `ORCHARD_FAKE_RUNTIME` is a release/runtime config knob; source-dev tests use
