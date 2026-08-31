@@ -447,6 +447,24 @@ All public inference requests SHALL normalize into one internal struct:
   response_format: %{
     type: :text | :json_object
   },
+  reasoning: %{
+    generation_policy: :model_default | :disabled | :enabled,
+    projection: :legacy_blended | :final_only | :reasoning_structured,
+    source: :omitted_public | :explicit_public | :console_default | :console_explicit,
+    effective_contract:
+      %{mode: :legacy}
+      | %{
+          mode: :negotiated,
+          model_artifact_digest: String.t(),
+          chat_template_digest: String.t(),
+          render_contract: String.t(),
+          render_contract_version: String.t(),
+          parser_family: String.t(),
+          parser_version: String.t(),
+          runtime_contract_version: String.t(),
+          event_binding_version: String.t()
+        }
+  },
   tooling: %{
     tools: [map()],
     requested_tools: [map()],
@@ -473,6 +491,38 @@ All public inference requests SHALL normalize into one internal struct:
   }
 }
 ```
+
+Reasoning generation and public projection are independent canonical axes.
+`generation_policy` controls whether the selected model is allowed to use its template-owned default, is required not to generate reasoning, or is required to generate reasoning.
+`projection` controls whether decoded output remains one legacy blended text channel, exposes final answer text only, or selects structured reasoning as public output in addition to final answer text.
+The Controller SHALL preserve the policy source and resolve the complete effective contract before dispatch.
+The effective contract SHALL remain pinned for every attempt of the logical Request and SHALL NOT be inferred again after scheduling.
+The Controller MUST NOT derive either axis from the other.
+The outer `generation_policy` and `projection` fields are the sole authority for those axes and MUST NOT be duplicated inside `effective_contract`.
+An omitted legacy Request SHALL use exactly `%{mode: :legacy}` and SHALL retain no nullable negotiated identity fields.
+An explicit negotiated Request SHALL use `mode = negotiated` and SHALL carry every listed identity field as a non-empty value.
+Missing or nullable negotiated identity SHALL fail validation before scheduling.
+
+The currently valid source, generation, and projection combinations are closed:
+
+* `omitted_public` requires `model_default + legacy_blended`
+* `console_default` requires `disabled + final_only`
+* `console_explicit` may select `model_default`, `disabled`, or `enabled` only with `final_only`
+* `explicit_public` may select `model_default`, `disabled`, or `enabled` only with `final_only`, and only after the concrete public input contract is accepted
+* `reasoning_structured` remains unavailable until its separate public contract expands this matrix
+
+Every other combination SHALL fail before the first Request write and MUST NOT reach scheduling or dispatch.
+
+When both Chat Completions and Responses omit reasoning control, Orchard SHALL normalize the Request to `generation_policy = model_default`, `projection = legacy_blended`, and `source = omitted_public`.
+That omitted mode SHALL preserve the complete current legacy pipeline, including template rendering, Worker Runtime text processing, tool classification, stop-sequence behavior, Output Commitment, public blended output, capture, hashing, and replay.
+An omitted control MUST NOT silently enter the negotiated reasoning pipeline merely because a model, template, tokenizer, Worker Runtime, or Runtime Endpoint advertises reasoning support.
+For an omitted public control, the `body_hash` domain SHALL remain the exact pre-reasoning-control domain.
+The synthesized reasoning defaults and `%{mode: :legacy}` marker MUST NOT be added to that hash input, so an otherwise identical public body retains its existing idempotency and integrity identity.
+An accepted explicit public control remains part of the normalized public request body and therefore participates in the existing public-body idempotency hash.
+
+Ordinary assistant input content is opaque caller-authored content.
+Orchard MUST NOT infer, strip, restore, or promote prior reasoning from ordinary assistant text.
+Explicit structured prior-reasoning input is unsupported in the first reasoning-control release and SHALL fail request validation rather than being silently flattened or re-fed.
 
 Tooling contract rules:
 
@@ -514,6 +564,14 @@ Tokenizer contract v2 requirements:
 * tokenizer modes that cannot represent tool context SHALL reject tool-calling requests rather than silently dropping tool metadata
 
 Tokenizer contract v3 adds controller-authoritative prompt token IDs for safe-tokenization-capable workers. When controller safe tokenization produces `prompt_token_ids`, capable workers must use those IDs directly rather than re-encoding rendered prompt text. Manifest compatibility trust remains governed by §6.4 and the runtime manifest-trust configuration; worker capability is advertised by the worker, not by the manifest.
+
+For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, parser-family selection, and version selection.
+The public API MUST NOT accept arbitrary chat-template keyword arguments.
+The tokenizer SHALL map the typed generation policy through a closed contract for the exact model artifact and chat-template digest.
+The tokenizer SHALL return effective render metadata sufficient for the Controller to prove the generation policy, projection, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and policy provenance used for that Request.
+The Controller SHALL reject an explicit reasoning control before dispatch when the exact model and template contract cannot honor it.
+The Controller MUST NOT guess support from a model name, family-name substring, unversioned parser heuristic, or unqualified template inspection.
+`model_default` in omitted legacy mode means the existing template behavior and MUST NOT be rewritten into an explicit enabled or disabled template argument.
 
 Safe-tokenization caller-string segmentation SHALL protect free-form caller-authored prompt material, including message content text, multimodal text parts, message names, tool descriptions, tool schema strings, tool call identifiers, function names, function arguments, and named tool-choice fields. Fixed protocol role values (`system`, `developer`, `user`, `assistant`, `tool`) SHALL remain unwrapped during marker-based dual rendering because chat templates commonly use roles for control flow; roles are validated request metadata rather than free-form prompt text. This role exemption MUST NOT exempt message content or tool/schema text from control-token detection.
 
@@ -565,7 +623,7 @@ failure exits:
 Rules:
 
 * `running` means node accepted and worker prefill began
-* `streaming` means Output Commitment has occurred through a validated externally meaningful text, tool-call, or structured-output delta
+* `streaming` means Output Commitment has occurred through a validated selected public reasoning, final-text, tool-call, or structured-output delta
 * one coarse Request FSM SHALL span both Inference Attempts of one logical Request; Automatic Attempt Retry SHALL NOT add a retry-specific state
 * a Request whose attempt 1 has not reached `running` SHALL remain in `dispatching` through attempt 1 resolution, the retry decision, alternate scheduling, and attempt 2's dispatch sequence
 * a Request whose attempt 1 reached `running` SHALL remain in `running` through attempt 1 resolution, the retry decision, and alternate scheduling, and SHALL take the `running -> dispatching` edge exactly once at the atomic attempt 2 start boundary in §5.8; this is the only backward edge in this FSM and it SHALL NOT be taken after Output Commitment
@@ -655,7 +713,9 @@ The dispatcher SHALL consume that existing attempt context and SHALL NOT append 
 
 A terminal Inference Attempt result SHALL record `attempt_outcome`, `started_at`, `ended_at`, `accepted`, `output_committed`, `execution_resolution`, `capacity_release_outcome`, and the stable Node identity when resolved.
 The closed `attempt_outcome` vocabulary is `completed`, `failed`, `cancelled`, `timed_out`, and `interrupted`.
-The optional `output_commitment_kind` SHALL be absent when `output_committed = false` and otherwise SHALL be one of `text`, `tool_call`, or `structured_output`.
+The optional `output_commitment_kind` SHALL be absent when `output_committed = false` and otherwise SHALL be one of `reasoning`, `text`, `tool_call`, or `structured_output`.
+`reasoning` SHALL be recorded only for a non-empty reasoning delta selected by `projection = reasoning_structured`.
+Hidden reasoning under `projection = final_only` and reasoning embedded in the undifferentiated legacy text channel under `projection = legacy_blended` SHALL NOT use the `reasoning` commitment kind.
 The closed `execution_resolution` vocabulary is `not_started`, `terminated`, and `unresolved`.
 The closed `capacity_release_outcome` vocabulary is `released`, `already_released`, `not_applicable`, and `unresolved`.
 The closed `failure_class` vocabulary is `pre_acceptance_unavailable`, `model_load_failure`, `worker_or_node_loss`, `runtime_failure`, `terminal_conformance`, `capacity_rejection`, `cancellation`, `deadline`, `controller_failure`, `occupancy_unresolved`, and `identity_unresolved`.
@@ -663,6 +723,11 @@ A non-completed attempt SHALL carry one `failure_class` and a Controller-normali
 The normalization SHALL retain an allowlisted stable inference Runtime Endpoint code, map a model-load category to its Controller-owned default stable code, map caller disconnect to `request_caller_disconnect`, map logical deadline exhaustion to `request_timeout`, preserve the existing stable `cluster_busy` or `model_busy` public mapping for ordinary post-start capacity scarcity, and map terminal-conformance, unresolved occupancy, unresolved identity, unknown, or untrusted source codes to `internal_error` or `orchestration_error` according to the existing Controller-owned public failure mapping.
 A raw source failure code MAY persist separately only under `full`; it SHALL NOT control retry, public mapping, or metric labels.
 A runtime-provided retryability assertion MAY persist as a boolean only when present.
+Every terminal Inference Attempt result SHALL carry `output_tokens` as a non-negative cumulative count and `output_usage_status` as `exact` or `lower_bound`.
+A Worker-originated terminal result SHALL use `exact` and SHALL include the complete attempt total.
+A Controller-synthesized terminal result SHALL use `lower_bound` when it can prove only the latest validated cumulative count.
+The optional `reasoning_tokens` field SHALL be present only when an exact subset is proven, including when that exact value is zero, and SHALL be absent when the subset is unknown or unproven.
+These fields are closed non-content evidence and SHALL remain durable under every Payload Capture Mode.
 The closed `retry_decision` vocabulary is `retried`, `not_retryable`, `output_committed`, `cancelled`, `budget_exhausted`, `identity_unresolved`, `occupancy_unresolved`, `no_alternative_node`, and `retry_exhausted`.
 A successful attempt SHALL omit `retry_decision`; every unsuccessful attempt SHALL carry one.
 The optional `target_ref` SHALL be an approved stable identifier under `full` or a deterministic hash outside `full`, never a raw target address.
@@ -1397,15 +1462,26 @@ Admission accounting:
 * on an unsuccessful attempt before Output Commitment:
 
   * the reservation remains held when Automatic Attempt Retry will start
-  * the reservation is fully released only when the logical Request terminalizes without committed output
+  * when the logical Request terminalizes, proven generated output tokens from the selected attempt remain charged even if no output committed, and only the unused reservation is released
+  * the reservation is fully released only when the selected attempt generated zero output tokens
 * on partial failure after Output Commitment:
 
-  * already emitted output tokens remain charged
+  * output tokens generated by the selected attempt remain charged, including hidden or selected public reasoning tokens
   * unused reserved output tokens released
 
 Input-token accounting SHALL occur once for the logical Request.
 Attempt 1 SHALL NOT release or reacquire quota when attempt 2 will run.
 Final usage and quota reconciliation SHALL occur exactly once when the logical Request terminalizes, using the terminal attempt under the existing quota policy.
+Logical Request output usage SHALL be the exact total output-token count generated by the selected terminal attempt when the terminal contract proves it, including both reasoning and final-answer tokens.
+A Controller-synthesized failure that cannot prove the terminal total SHALL use the latest validated cumulative count with `output_usage_status = lower_bound`.
+Logical Request accounting SHALL copy the selected terminal attempt's `output_usage_status`, and quota reconciliation SHALL use the associated count without presenting a lower bound as exact.
+Successful public responses SHALL report exact usage only.
+A failed Request with lower-bound usage SHALL retain that non-content status for quota reconciliation, metrics, and audit, but MUST NOT serialize the lower bound through an existing public field that implies an exact total.
+Tokens from a discarded retry attempt SHALL remain physical attempt telemetry and MUST NOT be added to the logical Request's public usage or charged a second time.
+When the selected Worker Runtime can report an exact reasoning-token subset, Orchard MAY retain that subset as internal additive non-content usage detail.
+Orchard MUST NOT transmit or expose a reasoning-token subset until separately accepted presence-aware Runtime Endpoint and public API usage contracts define the encoding and preserve exact zero versus unknown across `N` and `N-1`, hashing, and replay.
+An exact reasoning-token count of zero SHALL remain distinct from an unavailable or unproven reasoning-token count.
+Orchard MUST NOT estimate reasoning-token usage by retokenizing decoded text or subtracting an unproven final-answer count from the total.
 
 ### 5.4 Queue model
 
@@ -1662,16 +1738,21 @@ Model loading SHALL NOT extend the logical deadline, and a non-positive remainin
 The same Request ID, canonical payload, body hash, idempotency scope, admission result, queue grant, quota reservation, Payload Capture Mode snapshot, and caller-visible response SHALL span both attempts.
 A duplicate idempotent submission SHALL observe the existing Request as in progress throughout both attempts.
 
-Output Commitment is the transport-independent point at which the Controller validates and observes the first non-empty `OutputTextDelta`, including JSON text used for structured output, any valid `ToolCallDelta` with a stable non-empty tool-call identity, or the first content-bearing future structured-output delta.
+Output Commitment is the transport-independent point at which the Controller validates and observes the first non-empty delta selected for the logical public response.
+For `projection = reasoning_structured`, the first selected public reasoning delta commits with `output_commitment_kind = reasoning`.
+For `projection = final_only`, hidden reasoning does not commit output; the first non-empty final-text delta, valid tool-call delta with a stable non-empty tool-call identity, or content-bearing structured-output delta commits under the existing kind.
+For `projection = legacy_blended`, the existing undifferentiated `OutputTextDelta` behavior remains unchanged, including JSON text used for structured output.
 The Controller SHALL record Output Commitment before invoking the public event handler or serializer.
-`Accepted`, `Progress`, `UsageUpdate`, empty text deltas, model-load events, and terminal failures SHALL NOT commit output.
+`Accepted`, `Progress`, `UsageUpdate`, empty deltas, hidden reasoning deltas, model-load events, and terminal failures SHALL NOT commit output.
 Once output commits, Orchard SHALL NOT retry even when handler, serializer, or client delivery later fails.
 Validated pre-commit events SHALL remain attempt-local until the retry decision is known.
 When an event establishes Output Commitment, Orchard SHALL deliver all earlier buffered validated events in original order before exposing the committing event downstream.
 When attempt 2 starts, attempt 1 buffered events SHALL be discarded from the logical public response.
 When retry is declined or the final attempt completes without commitment, that final attempt's buffered events SHALL be delivered in original order.
 A handler or serializer failure during a final buffered flush SHALL be a terminal non-retryable orchestration failure.
-`first_token_at` SHALL remain the timestamp of the first non-empty text delta and SHALL NOT be redefined as the generic commitment timestamp.
+`first_token_at` SHALL remain a public-output timing field.
+It SHALL record the first non-empty final-text delta for `final_only`, the first selected public reasoning or final-text delta for `reasoning_structured`, and the first non-empty legacy text delta for `legacy_blended`.
+Hidden reasoning SHALL NOT set `first_token_at`, and tool or control events SHALL NOT redefine it as a generic commitment timestamp.
 
 Retry SHALL fail closed and SHALL require attempt 1, no Output Commitment, remaining deadline, a live caller, resolved first-Node identity, resolved execution, affirmative capacity release, an explicitly retryable failure, and a different eligible Node.
 A structured inference Runtime Endpoint `Failed` event SHALL require both `retryable: true` and one of the allowlisted stable transient codes `node_unavailable`, `node_timeout`, `runtime_unavailable`, `resource_exhausted`, `timeout`, `worker_unavailable`, or `worker_down`.
@@ -1887,6 +1968,14 @@ The existing digest algorithm recursively collects regular files, rejects symlin
 The digest domain SHALL include the relative path and exact final bytes of `manifest.json`.
 The authoritative value SHALL NOT be written into `manifest.json`, because doing so would make the digest depend on its own encoded value.
 This contract change SHALL NOT rehash existing Catalog rows or introduce a new digest algorithm.
+
+Reasoning-generation support is an additive, versioned runtime capability bound to an exact model artifact and chat-template digest.
+Its contract SHALL enumerate complete supported tuples containing generation policy, projection, parser family and version, template-render contract and version, Runtime Endpoint contract version, and event-binding version without relying on a model-name heuristic or a Cartesian product of independent lists.
+Manifest compatibility and strict unknown-key handling SHALL follow the existing additive migration rules until an accepted manifest schema extension supplies typed fields.
+An older manifest that omits reasoning capability remains valid but SHALL NOT prove support for an explicitly negotiated reasoning mode.
+Repository-owned manual model qualification evidence is governance evidence only.
+It is independent of runtime reasoning capability and MUST NOT become a manifest field, Runtime Endpoint capability, scheduling fact, or dispatch authority.
+Conversely, an advertised runtime reasoning capability MUST NOT be interpreted as satisfying any separate manual qualification gate.
 
 Manifest fields added for safe tokenization are optional and SHALL NOT require a
 manifest version bump in the Phase 1 compatibility posture. Older manifests
@@ -2196,6 +2285,13 @@ The Public Inference API SHALL prioritize wire compatibility with OpenAI for:
 
 `/v1/models` SHALL return objects shaped like OpenAI model list entries with `id`, `object`, `created`, and `owned_by`. ([OpenAI Developers][5])
 
+Reasoning control is an Orchard extension whose canonical semantics are defined in §3.4.
+The first reasoning-control release SHALL support an explicit request for `projection = final_only` on both Chat Completions and Responses when the exact model, template, parser, and Runtime Endpoint contract is compatible.
+This specification intentionally reserves the concrete public request field names until an accepted API contract defines them, and Orchard MUST NOT expose an ad hoc field before that contract is accepted.
+When the control is omitted, both endpoints SHALL preserve `model_default + legacy_blended` behavior across sync and streaming responses.
+The first release SHALL reject Chat requests for raw structured reasoning output.
+Public Responses structured reasoning items and events SHALL remain disabled until a later accepted contract defines their wire names, raw-versus-summary semantics, sync representation, event ordering, terminal behavior, capture, and replay.
+
 #### 7.2.2 Authentication
 
 Header:
@@ -2292,8 +2388,14 @@ Unsupported request fields SHALL return `400 unsupported_parameter`. Explicitly 
 * platform-hosted or server-executed tools in chat completions
 * `json_schema`
 * `parallel_tool_calls=true`
+* explicit structured prior-reasoning message content
+* raw structured reasoning output
 
 The internal runtime `TokenDelta` capability (§7.5.3 internal token-streaming wire semantics) SHALL NOT expose `logprobs` or `top_logprobs` on the public `/v1` API in v1; the restriction above remains in force regardless of that internal capability.
+
+An accepted explicit final-only control SHALL cause `message.content` and `choices[0].delta.content` to contain final-answer text only.
+An omitted control SHALL preserve the existing blended content behavior byte-for-byte at the public serializer boundary.
+Orchard SHALL treat every ordinary assistant message as opaque caller content and SHALL NOT reinterpret delimiter-like text as structured prior reasoning.
 
 Non-streaming response rules:
 
@@ -2409,6 +2511,11 @@ Supported output object subset:
 * `error`
 * `metadata`
 
+An accepted explicit final-only control SHALL cause `output_text` and `response.output_text.*` streaming events to contain final-answer text only.
+An omitted control SHALL preserve the existing blended output object and event behavior.
+The first release SHALL reject explicit structured prior-reasoning input items.
+`reasoning_structured` SHALL remain unavailable on the public Responses surface until the later contract required by §7.2.1 is accepted.
+
 Tool-calling response rules:
 
 * sync responses MAY include `function_call` output items in `output`
@@ -2494,6 +2601,31 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `499` caller cancelled or disconnected when a response remains deliverable
 * `503` cluster busy / model busy / no eligible node
 * `504` request timeout
+
+Reasoning-control failures use this closed mapping:
+
+| Failure phase | Public status, type, and code | `param` | Durable attempt evidence | Retry behavior |
+|---|---|---|---|---|
+| The exact model artifact and chat-template contract cannot honor an accepted explicit control | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public reasoning-control field; `nil` for the Console | no attempt and no Request write | non-retryable |
+| No eligible endpoint proves the exact negotiated tuple, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists | non-retryable |
+| Parser or generation-policy conformance fails after model invocation | `500 api_error`, `internal_error` | `nil` | `terminal_conformance` plus `internal_error` | non-retryable |
+
+Messages for these mappings SHALL be bounded, content-free, and Controller-owned.
+Neither parser fragments nor model output may enter the public message, durable error detail outside `full`, or metric labels.
+The later public input-field contract MAY choose the concrete field name but MUST preserve these statuses, codes, and retry semantics.
+
+#### 7.2.8 Console Playground reasoning contract
+
+The Console Playground SHALL use the same canonical reasoning contract as the Public Inference API while preserving its distinct operator-facing defaults.
+Its default request SHALL set `generation_policy = disabled`, `projection = final_only`, and `source = console_default`.
+An operator MAY explicitly enable generation only when the Controller proves that the selected model, exact template, parser contract, and Runtime Endpoint contract can honor the request.
+Unsupported explicit Console control SHALL fail before dispatch and MUST NOT fall back to the template default, legacy blended mode, or display-only stripping.
+
+The Console SHALL keep final-answer and reasoning channels separate in its transcript state.
+It SHALL send only the final-answer channel as assistant history on a later turn unless a future accepted contract adds typed prior-reasoning preservation.
+When an operator explicitly selects public reasoning, the Console MAY render that selected channel as a collapsed secondary disclosure, but it MUST NOT mix the channel into the final answer or silently re-feed it.
+The display-only reasoning heuristic tracked by issue #189 SHALL remain a legacy compatibility fallback for unstructured `legacy_blended` output only.
+That heuristic MUST NOT become generation-policy authority, parser authority, capture authority, replay authority, or assistant-history reconstruction.
 
 ---
 
@@ -2612,6 +2744,9 @@ Rules:
 * `retry_of_request_id` points to original
 * max operator retries per original request default = 3
 * the retry capture mode MUST NOT be wider than either the source Request snapshot or the current Tenant policy
+* a negotiated retry SHALL preserve the source Request's reasoning generation policy, projection, source provenance, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version
+* an omitted legacy source Request SHALL preserve `effective_contract.mode = legacy`, remain omitted `model_default + legacy_blended`, and follow the existing legacy operator-retry semantics without fabricating negotiated identity
+* if a negotiated exact stored reasoning contract is unavailable or no compatible endpoint can honor it, the retry SHALL fail before dispatch rather than rerendering, renegotiating, downgrading, or widening capture
 
 #### 7.3.5 Scheduler explanation
 
@@ -3392,6 +3527,8 @@ Internal token-streaming wire semantics:
 * `TokenDelta` SHALL NOT be emitted after the terminal `Completed`/`Failed` event
 * token-ID and logprob emission is fail-open: an unavailable or failed logprob source SHALL degrade to omitted `logprobs` and SHALL NOT fail the generation
 * this is an internal runtime wire capability only; it is NOT exposed through the public `/v1` API, and the §7.2.4 public-API restriction on `logprobs`/`top_logprobs` remains in force in v1
+* an explicit negotiated reasoning mode SHALL reject `return_token_ids = true` or `return_logprobs = true` before dispatch because the current `TokenDelta` does not carry a projection channel and can expose reconstructable hidden or framing tokens
+* omitted `model_default + legacy_blended` requests preserve the existing `TokenDelta` opt-in behavior; negotiated modes MUST NOT enable either flag until a separately accepted channel-aware token-event contract defines projection, capture, and mixed-version behavior
 
 Hosted-tool capability/readiness wire semantics:
 
@@ -3469,6 +3606,56 @@ Runtime capacity and Placement Capacity observation semantics:
 * when `cache_introspection.enabled=true`, the controller SHALL persist only sanitized flat `selected_prefix_cache_*` scalars for the selected candidate and SHALL NOT persist the raw nested `prefix_cache_status` map; non-`ok` statuses SHALL persist only status code and enabled flag
 * this Phase 4B/4C/4D contract is traceable to the Phase 4 worker-prefix-cache introspection, bounded HMAC fingerprint publication, and score prefix-cache RPC planning artifacts
 
+#### 7.5.3a Negotiated reasoning-generation contract
+
+Reasoning generation and parsing SHALL be a versioned capability of the transport-independent Runtime Endpoint Interface and provider-neutral Worker Runtime contract.
+Reasoning capability SHALL advertise complete supported tuples of generation policy, projection, model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version.
+Separate lists whose Cartesian product could authorize a tuple that was not explicitly advertised are invalid capability evidence.
+Candidate-time observations are advisory selection evidence only.
+The Controller SHALL select an endpoint for an explicit `final_only` or `reasoning_structured` request only when a fresh observation advertises the exact complete tuple.
+Missing, stale, false, malformed, or unknown capability evidence SHALL prove no support.
+An endpoint without a negotiated reasoning contract SHALL receive and emit legacy requests and events only.
+
+For every negotiated dispatch, the loaded Worker Runtime SHALL validate the requested tuple and produce an authoritative execution-acceptance proof before model invocation.
+That proof SHALL echo the complete tuple and identify the loaded worker incarnation that will execute the Request.
+The Node Agent and Worker Runtime MUST NOT begin model execution, emit content, or emit usage before producing that proof.
+The Controller SHALL validate the proof before accepting the attempt as running or forwarding any later event.
+A missing, malformed, stale, or mismatched proof SHALL fail as `runtime_incompatible` before model invocation and SHALL NOT be repaired by a later status observation.
+That Controller-detected acceptance failure SHALL record `retry_decision = not_retryable` and MUST NOT trigger Automatic Attempt Retry.
+An arbitrary Worker or Runtime Endpoint `Failed` event with code `runtime_incompatible` SHALL remain insufficient to authorize retry.
+The concrete additive encoding for the tuple, worker incarnation, and acceptance proof remains blocked behind a separately accepted Runtime Endpoint contract.
+
+For a negotiated mode, the Worker Runtime SHALL run the pinned versioned stateful reasoning parser over the ordered decoded stream before tool-call classification and before caller stop-sequence classification.
+Only final-answer text SHALL enter tool-call parsing.
+Caller stop sequences SHALL apply only to ordinary final-answer text in the negotiated pipeline and SHALL NOT terminate hidden or selected reasoning.
+Once tool-call emission begins, the existing rule preventing stop truncation of tool-call JSON remains in force.
+Parser control markers are framing and MUST NOT be emitted as reasoning, final text, or tool content.
+The legacy pipeline SHALL retain its existing tool and stop ordering and byte behavior when the reasoning control is omitted.
+
+Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
+An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
+That failure MUST NOT fall back to raw blended output, expose the ambiguous bytes through an error, reclassify them as final text, or pass them to tool parsing.
+The terminal failure SHALL be deterministic and non-retryable unless the failure occurred before model execution and independently satisfies the closed retry gates in §5.8.
+For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
+For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
+Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+`generation_policy = model_default` does not require reasoning to be present or absent, but all negotiated parser and projection rules still apply.
+
+The Worker Runtime SHALL discard hidden reasoning content at the Worker contract boundary after accounting and MUST NOT forward it as text, metadata, errors, diagnostics, or an untyped event.
+A typed internal reasoning delta MAY cross the Worker and Runtime Endpoint boundaries only when `projection = reasoning_structured`, the complete contract was negotiated before execution, and both bindings advertise support.
+No new reasoning event SHALL be sent to an older or non-advertising binding.
+
+Every Worker-originated terminal event SHALL carry exact cumulative total output usage for that attempt, including reasoning.
+The Controller SHALL record that Worker-originated total with `output_usage_status = exact` in terminal Inference Attempt evidence.
+When the Worker Runtime can prove an exact reasoning-token subset, it MAY retain that subset as Worker-internal non-content evidence; an unavailable or unproven subset SHALL remain unknown rather than defaulting to zero.
+A Controller-synthesized terminal failure SHALL use the latest validated cumulative usage with `output_usage_status = lower_bound` when the Controller cannot prove the exact terminal total.
+The reasoning-token subset MUST NOT cross the Runtime Endpoint or public API boundary until separate presence-aware contracts are accepted.
+
+Automatic Attempt Retry for a negotiated Request SHALL pin the exact model artifact digest, chat-template digest, render contract and version, parser family and version, projection, generation policy, runtime contract version, and event-binding version from attempt 1.
+Attempt 2 SHALL select a different endpoint that proves support for that same contract or Orchard SHALL decline retry.
+Retry MUST NOT rerender, renegotiate, downgrade, or silently switch to `legacy_blended`.
+An omitted legacy Request SHALL preserve `effective_contract.mode = legacy` and the existing legacy retry semantics rather than fabricating nullable negotiated identity.
+
 #### 7.5.4 Node registration flow
 
 ```text
@@ -3490,6 +3677,7 @@ Admin creates bootstrap token or provisions node
 * return `Accepted` before long prefill starts
 * stream deltas in order
 * allow ordered mixtures of `output_text_delta`, `tool_call_delta`, `usage`, and `progress`
+* allow typed internal reasoning deltas only under the negotiated contract in §7.5.3a
 * include exactly one terminal `Completed` or `Failed`
 * stop emitting additional events after the terminal event
 * preserve tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
@@ -4551,6 +4739,7 @@ Required fields:
 
 No secrets SHALL be logged.
 Prompt/response bodies SHALL only be logged when tenant capture mode = `full`.
+Hidden reasoning content SHALL never be logged, traced, attached to metrics, included in crash evidence, or placed in diagnostic or support-bundle payloads, including when capture mode is `full`.
 
 ### 9.4 Recommended Grafana dashboards
 
@@ -4823,6 +5012,18 @@ For the Responses API, `store=false` SHALL cap `full` at `metadata`, SHALL NOT w
 * store full payloads and final outputs
 * convenience previews remain bounded to 512 Unicode code points without splitting a grapheme cluster
 * a streaming Request stores its assembled final output only at terminal completion and does not durably duplicate individual chunks
+
+Reasoning retention SHALL follow projection rather than generation alone.
+Reasoning hidden by `projection = final_only` is ephemeral under `none`, `metadata`, and `full`.
+Hidden reasoning MUST NOT enter `canonical_request` content, `request_payload`, `response_payload`, `request_events`, `response_preview`, scheduler metadata, logs, traces, metrics, audit payloads, crash evidence, diagnostics, or support bundles.
+The canonical Request MAY retain only the closed non-content reasoning policy, provenance, contract identifiers, and exact or unknown usage detail allowed by its effective capture mode.
+If a later accepted contract enables public `reasoning_structured`, `full` SHALL retain that selected public reasoning in the exact assembled response payload needed for idempotent replay, while `none` and `metadata` SHALL retain no reasoning content.
+For `projection = final_only`, `response_preview` SHALL derive only from final-answer text.
+If a later accepted contract enables `projection = reasoning_structured`, its preview SHALL also derive only from final-answer text and MUST NOT contain selected public reasoning.
+For omitted `projection = legacy_blended`, `response_preview` SHALL preserve the existing derivation from undifferentiated public assistant text without parsing, stripping, or reclassification.
+`response_hash` SHALL hash the exact assembled public terminal response after projection and SHALL be independent of SSE framing and chunk boundaries.
+Idempotent replay SHALL return the retained historical public response payload exactly and MUST NOT rerender, reparse, reproject, or recover hidden reasoning.
+Existing Request rows SHALL NOT be reclassified by delimiter matching, parser heuristics, or model-family inference.
 
 Capture enforcement SHALL cover every content-bearing field on `requests` and `request_events`, including canonical input, request payloads, response payloads, previews, sampling stop text, response-format content, scheduler decisions, error text, model-generated tool arguments, and request-step results.
 Non-`full` Request-event and scheduler metadata SHALL use field-specific type checks and closed operational vocabularies rather than key-only allowlists.
@@ -5166,7 +5367,7 @@ On timeout:
 * if running/streaming: send cancel to node
 * if node fails to cancel within grace period, force kill worker
 * if the cancel drain times out without a resolved execution outcome, the Active Controller SHALL quarantine that Node per §4.6.2 so its unresolved occupancy is never redispatched as free capacity
-* usage charges only for tokens already emitted
+* usage charges the selected terminal attempt's exact generated output tokens when proven, including hidden reasoning, and otherwise uses the latest validated cumulative usage with `output_usage_status = lower_bound`
 
 Default timeout:
 
@@ -5225,6 +5426,16 @@ The system SHALL guarantee:
 * schema migrations are forward-only
 * controller version `N` MUST support node agent versions `N` and `N-1`
 * node agent version `N` MUST support bundled worker version `N` only
+
+The reasoning-generation contract SHALL preserve the `N` and `N-1` support window with explicit capability negotiation.
+A Controller and Node Agent pair that does not negotiate the complete reasoning contract SHALL exchange legacy requests and legacy event variants only.
+When an older Controller communicates with a newer Node Agent through an otherwise supported protocol pairing, the Node Agent MUST NOT infer reasoning mode or emit a new reasoning event.
+A Controller `N` communicating with a Node Agent `N-1` MAY dispatch an omitted public request through the complete legacy pipeline.
+A Controller `N` MUST NOT dispatch an explicit `final_only` or `reasoning_structured` request to a Node Agent `N-1` unless that endpoint affirmatively advertises the exact pinned reasoning contract and compatible event binding as one complete supported tuple.
+If no compatible endpoint exists, Orchard SHALL fail the explicit request before dispatch with the `503 server_error` plus `runtime_incompatible` mapping in §7.2.7.
+An endpoint that advertises the tuple but cannot reproduce it in the authoritative pre-execution acceptance proof SHALL fail under the same mapping before model invocation.
+The Controller MUST NOT send a new request field to an older binding or accept a new event variant from an endpoint that did not advertise it.
+Rolling upgrades SHALL NOT silently downgrade an explicit reasoning mode, change its public projection, or widen capture.
 
 ### 13.2 Migration strategy
 
