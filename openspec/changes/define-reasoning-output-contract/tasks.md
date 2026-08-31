@@ -5,7 +5,7 @@
 - [x] 1.1 Reconcile the issue #190 workshop decisions into `SPEC.md` and this single cross-capability OpenSpec package.
 - [x] 1.2 Run targeted strict OpenSpec validation and resolve every structural finding.
 - [x] 1.3 Complete independent product, API, runtime, retry, capture, and mixed-version review.
-- [ ] 1.4 Record the accepted decision readback and stage implementation child issues only after contract review and validation pass.
+- [x] 1.4 Record the accepted decision readback and stage implementation child issues only after contract review and validation pass.
 - [ ] 1.5 Before archiving this change, confirm `enforce-inference-capture-modes` has been archived into the main `inference-capture` capability.
 
 ## 2. Implement canonical policy and rendering
