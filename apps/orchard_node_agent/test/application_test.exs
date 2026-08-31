@@ -92,6 +92,8 @@ end
 defmodule OrchardNodeAgentApplicationTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias OrchardNodeAgentApplicationTest.{
     BootstrapCookieInstaller,
     BootstrapDescriptorLoader,
@@ -103,6 +105,7 @@ defmodule OrchardNodeAgentApplicationTest do
 
   alias Orchard.Node.Identity
   alias Orchard.Node.SentryTelemetryBridge
+  alias Orchard.SentryHandlerTestSupport
 
   @sentry_dsn "https://public@example.invalid/1"
 
@@ -128,7 +131,7 @@ defmodule OrchardNodeAgentApplicationTest do
 
   setup do
     previous_env = %{
-      sentry_dsn: Application.get_env(:sentry, :dsn),
+      sentry: snapshot_sentry_env(),
       controller_start_repo: Application.get_env(:orchard_controller, :start_repo, true),
       controller_start_endpoint: Application.get_env(:orchard_controller, :start_endpoint, true),
       controller_enable_db_checks:
@@ -139,11 +142,13 @@ defmodule OrchardNodeAgentApplicationTest do
 
     controller_was_started = is_pid(Process.whereis(Orchard.Supervisor))
     node_agent_was_started = is_pid(Process.whereis(Orchard.NodeAgent.Supervisor))
+    sentry_was_started = application_started?(:sentry)
+    previous_handler = :logger.get_handler_config(Sentry.LoggerHandler)
 
     stop_controller_app()
     stop_node_agent_app()
-    stop_sentry_app()
     remove_sentry_handler()
+    stop_sentry_app()
     SentryTelemetryBridge.detach()
 
     Application.put_env(:orchard_controller, :start_repo, false)
@@ -154,8 +159,15 @@ defmodule OrchardNodeAgentApplicationTest do
     on_exit(fn ->
       stop_controller_app()
       stop_node_agent_app()
+      remove_sentry_handler()
+      stop_sentry_app()
+      restore_sentry_env(previous_env.sentry)
 
-      Application.put_env(:sentry, :dsn, previous_env.sentry_dsn)
+      if sentry_was_started do
+        {:ok, _apps} = Application.ensure_all_started(:sentry)
+      end
+
+      SentryHandlerTestSupport.restore_handler(previous_handler)
       Application.put_env(:orchard_controller, :start_repo, previous_env.controller_start_repo)
 
       Application.put_env(
@@ -178,7 +190,6 @@ defmodule OrchardNodeAgentApplicationTest do
         previous_env.node_agent_beam_peer_grants
       )
 
-      remove_sentry_handler()
       SentryTelemetryBridge.detach()
 
       if controller_was_started do
@@ -386,17 +397,42 @@ defmodule OrchardNodeAgentApplicationTest do
     assert :ok = SentryTelemetryBridge.attach()
   end
 
-  test "logger-captured background crash retains static Node Agent identity" do
-    previous_sentry = snapshot_sentry_env()
+  test "Sentry logger installation fails closed when the Sentry supervisor is unavailable" do
+    Application.put_env(:sentry, :dsn, @sentry_dsn)
 
+    _log =
+      capture_log(fn ->
+        assert {:error, _reason} = Orchard.SentryLogger.install_handler()
+      end)
+
+    assert :logger.get_handler_config(Sentry.LoggerHandler) in [
+             {:error, :not_found},
+             {:error, {:not_found, Sentry.LoggerHandler}}
+           ]
+  end
+
+  test "Sentry logger handler configuration survives snapshot restoration" do
+    Application.put_env(:sentry, :dsn, @sentry_dsn)
+    assert {:ok, _apps} = Application.ensure_all_started(:sentry)
+    assert :ok = Orchard.SentryLogger.install_handler()
+    assert {:ok, before} = :logger.get_handler_config(Sentry.LoggerHandler)
+
+    remove_sentry_handler()
+    assert :ok = SentryHandlerTestSupport.restore_handler({:ok, before})
+
+    assert {:ok, after_restore} = :logger.get_handler_config(Sentry.LoggerHandler)
+    assert after_restore.config.capture_excluded_domains == before.config.capture_excluded_domains
+    assert after_restore.config.capture_metadata == before.config.capture_metadata
+    assert after_restore.config.rate_limiting == before.config.rate_limiting
+  end
+
+  test "logger-captured background crash retains static Node Agent identity" do
     identity =
       Orchard.SentryRelease.identity("orchard_node_agent", "0.5.0-dev",
         build_sha: "abcdef1234567890",
         build_date: "2026-07-30",
         build_channel: "internal"
       )
-
-    on_exit(fn -> restore_sentry_env(previous_sentry) end)
 
     Application.put_env(:sentry, :dsn, @sentry_dsn)
     Application.put_env(:sentry, :before_send, {Orchard.SentryFilter, :filter})
@@ -462,9 +498,21 @@ defmodule OrchardNodeAgentApplicationTest do
     assert handler_count == 1
   end
 
-  test "concurrent install_handler/0 calls keep exactly one Sentry handler" do
+  test "concurrent install_handler/0 calls process one crash exactly once" do
+    before_send_calls = :atomics.new(1, signed: false)
+
     Application.put_env(:sentry, :dsn, @sentry_dsn)
+    Application.put_env(:sentry, :send_result, :none)
+    Application.put_env(:sentry, :test_mode, true)
+
+    Application.put_env(:sentry, :before_send, fn event ->
+      _count = :atomics.add_get(before_send_calls, 1, 1)
+      event
+    end)
+
+    persist_sentry_config()
     assert {:ok, _apps} = Application.ensure_all_started(:sentry)
+    :ok = Sentry.Test.start_collecting_sentry_reports()
 
     1..16
     |> Task.async_stream(fn _ -> Orchard.SentryLogger.install_handler() end,
@@ -480,6 +528,16 @@ defmodule OrchardNodeAgentApplicationTest do
       |> Enum.count(&(&1 == Sentry.LoggerHandler))
 
     assert handler_count == 1
+
+    {:ok, pid} = BackgroundCrashProcess.start()
+    :ok = Sentry.Test.allow_sentry_reports(self(), pid)
+
+    ref = Process.monitor(pid)
+    BackgroundCrashProcess.crash(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, {%BackgroundCrash{}, _stack}}, 5_000
+    assert %Sentry.Event{} = pop_node_background_crash_report()
+    assert :atomics.get(before_send_calls, 1) == 1
   end
 
   defp stop_controller_app do
@@ -501,6 +559,12 @@ defmodule OrchardNodeAgentApplicationTest do
       :ok -> :ok
       {:error, {:not_started, :sentry}} -> :ok
     end
+  end
+
+  defp application_started?(app) do
+    Enum.any?(Application.started_applications(), fn {started_app, _description, _version} ->
+      started_app == app
+    end)
   end
 
   defp remove_sentry_handler do

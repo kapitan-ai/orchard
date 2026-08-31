@@ -18,8 +18,10 @@ defmodule Orchard.SentryLogger do
   @spec install_handler() :: :ok | {:error, term()}
   def install_handler do
     if dsn_configured?() do
-      case :global.trans({__MODULE__, @handler}, fn -> ensure_handler_installed() end) do
-        {:aborted, reason} -> {:error, reason}
+      lock = {{__MODULE__, @handler}, self()}
+
+      case :global.trans(lock, fn -> ensure_handler_installed() end) do
+        :aborted -> {:error, :lock_aborted}
         result -> result
       end
     else

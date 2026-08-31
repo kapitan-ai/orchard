@@ -4,6 +4,7 @@ defmodule Orchard.API.SentryWireDeliveryTest do
   alias __MODULE__.NonExceptionCrashProcess
   alias __MODULE__.Receiver
   alias Orchard.SentryFilter
+  alias Orchard.SentryHandlerTestSupport
   alias Orchard.SentryLogger
   alias Orchard.SentryRelease
 
@@ -30,6 +31,29 @@ defmodule Orchard.API.SentryWireDeliveryTest do
         {:ok, body, conn} -> {:ok, acc <> body, conn}
         {:more, body, conn} -> read_complete_body(conn, acc <> body)
       end
+    end
+  end
+
+  defmodule BanditRequestCrash do
+    defexception message: "controlled Bandit request crash"
+  end
+
+  defmodule BanditCrashPlug do
+    @behaviour Plug
+
+    alias Orchard.API.{SentryContextBoundary, SentryRequestContext}
+    alias Orchard.API.SentryWireDeliveryTest.BanditRequestCrash
+
+    @impl Plug
+    def init(opts), do: opts
+
+    @impl Plug
+    def call(conn, _opts) do
+      conn
+      |> SentryContextBoundary.call([])
+      |> SentryRequestContext.call([])
+
+      raise BanditRequestCrash
     end
   end
 
@@ -80,7 +104,7 @@ defmodule Orchard.API.SentryWireDeliveryTest do
     on_exit(fn ->
       remove_sentry_handler()
       restore_sentry_env(previous_sentry)
-      restore_sentry_handler(previous_handler)
+      SentryHandlerTestSupport.restore_handler(previous_handler)
       Sentry.Context.clear_all()
     end)
 
@@ -217,6 +241,54 @@ defmodule Orchard.API.SentryWireDeliveryTest do
     refute envelope =~ "/Users/"
   end
 
+  test "real Bandit request crash produces exactly one filtered Sentry event" do
+    receiver_port = start_receiver(200)
+    _identity = configure_sentry(receiver_port)
+    :ok = SentryLogger.install_handler()
+
+    request_port = start_bandit(BanditCrashPlug)
+
+    assert {:ok, %Req.Response{status: 500}} =
+             Req.post(
+               "http://127.0.0.1:#{request_port}/v1/responses?token=ISSUE337_BANDIT_QUERY",
+               body: "ISSUE337_BANDIT_BODY",
+               headers: [
+                 {"authorization", "Bearer ISSUE337_BANDIT_AUTH"},
+                 {"cookie", "session=ISSUE337_BANDIT_COOKIE"}
+               ],
+               retry: false
+             )
+
+    assert_receive {:sentry_envelope, envelope}, 5_000
+    payload = envelope_event_payload(envelope)
+
+    assert payload["request"] == %{"method" => "POST"}
+    assert get_in(payload, ["exception", Access.at(0), "value"]) == "[Filtered]"
+    refute envelope =~ "controlled Bandit request crash"
+    refute envelope =~ "ISSUE337_BANDIT_"
+    refute envelope =~ "/Users/"
+    refute_receive {:sentry_envelope, _duplicate}, 500
+  end
+
+  test "manual logger handler enforces its configured crash rate limit" do
+    port = start_receiver(200)
+    _identity = configure_sentry(port)
+    :ok = install_rate_limited_handler(max_events: 1, interval: 60_000)
+
+    {:ok, first_pid} = NonExceptionCrashProcess.start(:first)
+    crash_and_wait(first_pid)
+
+    first_envelope = await_envelope("req_wire_logger")
+
+    assert envelope_event_payload(first_envelope)["extra"]["logger_metadata"]["request_id"] ==
+             "req_wire_logger"
+
+    {:ok, second_pid} = NonExceptionCrashProcess.start(:second)
+    crash_and_wait(second_pid)
+
+    refute_receive {:sentry_envelope, _rate_limited}, 500
+  end
+
   defp await_envelope(expected_marker, attempts \\ 5) do
     assert_receive {:sentry_envelope, envelope}, 5_000
 
@@ -235,20 +307,34 @@ defmodule Orchard.API.SentryWireDeliveryTest do
     end
   end
 
-  defp restore_sentry_handler({:ok, %{module: module} = config}) do
-    :logger.add_handler(Sentry.LoggerHandler, module, config)
+  defp install_rate_limited_handler(rate_limiting) do
+    :logger.add_handler(Sentry.LoggerHandler, Sentry.LoggerHandler, %{
+      config: %{
+        capture_log_messages: false,
+        capture_excluded_domains: [:cowboy],
+        capture_metadata: [:request_id, :worker_model, :model_backend],
+        rate_limiting: rate_limiting
+      }
+    })
   end
 
-  defp restore_sentry_handler(_absent), do: :ok
+  defp crash_and_wait(pid) do
+    ref = Process.monitor(pid)
+    GenServer.cast(pid, :crash)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
+  end
 
   defp start_receiver(status) do
+    start_bandit({Receiver, test_pid: self(), status: status})
+  end
+
+  defp start_bandit(plug) do
     pid =
       start_supervised!(
-        {Bandit,
-         plug: {Receiver, test_pid: self(), status: status},
-         ip: {127, 0, 0, 1},
-         port: 0,
-         startup_log: false}
+        Supervisor.child_spec(
+          {Bandit, plug: plug, ip: {127, 0, 0, 1}, port: 0, startup_log: false},
+          id: {:bandit, make_ref()}
+        )
       )
 
     {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(pid)
