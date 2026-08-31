@@ -23,4 +23,4 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence ends with [ADR 0027: Remove native PKG distribution and managed Node Agent handover](0027-remove-native-pkg-and-managed-handover.md).
+The current sequence ends with [ADR 0028: Local model support claims require manual qualification](0028-mandatory-manual-model-qualification.md).
