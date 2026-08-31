@@ -293,7 +293,7 @@ run_in_controller() {
         fi
     done
 
-    _expression="OrchardCLI.ControllerRPC.main_base64([$_encoded_args])"
+    _expression="Orchard.PackagedNodeCommandRPC.main_base64([$_encoded_args])"
     _rpc_tmp=$(mktemp -d "$RPC_TMP_PARENT/orchardctl-rpc.XXXXXX") || {
         controller_runtime_error "$@"
         return 1
