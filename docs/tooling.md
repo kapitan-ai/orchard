@@ -43,7 +43,7 @@ The pinned toolchain currently covers:
 | Node.js | `24.17.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
 | npm | `11.13.0` | Package manager for root tool and asset pins |
 | OpenSpec | `@fission-ai/openspec@1.9.0` | OpenSpec change/spec validation |
-| esbuild | `0.25.0` | Phoenix JavaScript asset bundling CLI |
+| esbuild | `0.28.2` | Phoenix JavaScript asset bundling CLI |
 | Tailwind CSS | `4.3.3` | Phoenix CSS asset build CLI |
 
 The mise environment also sets:
