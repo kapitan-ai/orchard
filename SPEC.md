@@ -3645,10 +3645,11 @@ The Worker Runtime SHALL discard hidden reasoning content at the Worker contract
 A typed internal reasoning delta MAY cross the Worker and Runtime Endpoint boundaries only when `projection = reasoning_structured`, the complete contract was negotiated before execution, and both bindings advertise support.
 No new reasoning event SHALL be sent to an older or non-advertising binding.
 
-Every Worker-originated terminal event SHALL carry exact cumulative total output usage for that attempt, including reasoning, and SHALL carry an exact reasoning-token subset when the Worker Runtime can prove it.
-An unavailable reasoning-token subset SHALL remain absent or explicitly unknown rather than defaulting to zero.
+Every Worker-originated terminal event SHALL carry exact cumulative total output usage for that attempt, including reasoning.
+The Controller SHALL record that Worker-originated total with `output_usage_status = exact` in terminal Inference Attempt evidence.
+When the Worker Runtime can prove an exact reasoning-token subset, it MAY retain that subset as Worker-internal non-content evidence; an unavailable or unproven subset SHALL remain unknown rather than defaulting to zero.
 A Controller-synthesized terminal failure SHALL use the latest validated cumulative usage with `output_usage_status = lower_bound` when the Controller cannot prove the exact terminal total.
-The reasoning-token subset is internal non-content evidence until the separate presence-aware Runtime Endpoint and public API usage contracts are accepted.
+The reasoning-token subset MUST NOT cross the Runtime Endpoint or public API boundary until separate presence-aware contracts are accepted.
 
 Automatic Attempt Retry for a negotiated Request SHALL pin the exact model artifact digest, chat-template digest, render contract and version, parser family and version, projection, generation policy, runtime contract version, and event-binding version from attempt 1.
 Attempt 2 SHALL select a different endpoint that proves support for that same contract or Orchard SHALL decline retry.
