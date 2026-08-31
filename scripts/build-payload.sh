@@ -547,6 +547,49 @@ scrub_macos_metadata() {
     assert_clean_provenance "post-scrub staging" "$root"
 }
 
+validate_controller_release_independence() {
+    local release_root="$REPO_ROOT/_build/prod/rel/orchard_controller"
+    local rel_file
+    local cli_library
+    local cli_beam
+    local required_beam
+
+    rel_file="$(find "$release_root/releases" -name 'orchard_controller.rel' -type f -print -quit 2>/dev/null || true)"
+    if [[ -z "$rel_file" ]]; then
+        log_error "Assembled Controller release is missing orchard_controller.rel"
+        return 1
+    fi
+
+    if grep -Eq '\{orchard_cli,' "$rel_file"; then
+        log_error "Assembled Controller release still contains the orchard_cli application"
+        return 1
+    fi
+
+    cli_library="$(find "$release_root/lib" -maxdepth 1 -name 'orchard_cli-*' -print -quit 2>/dev/null || true)"
+    if [[ -n "$cli_library" ]]; then
+        log_error "Assembled Controller release still contains an orchard_cli library: $cli_library"
+        return 1
+    fi
+
+    cli_beam="$(find "$release_root/lib" \
+        \( -name 'Elixir.OrchardCLI.beam' -o -name 'Elixir.OrchardCLI.*.beam' \) \
+        -print -quit 2>/dev/null || true)"
+    if [[ -n "$cli_beam" ]]; then
+        log_error "Assembled Controller release still contains an OrchardCLI module: $cli_beam"
+        return 1
+    fi
+
+    for required_beam in \
+        'Elixir.Orchard.PackagedNodeCommand.beam' \
+        'Elixir.Orchard.PackagedNodeCommandRuntime.beam' \
+        'Elixir.Orchard.PackagedNodeCommandRPC.beam'; do
+        if ! find "$release_root/lib" -type f -name "$required_beam" -print -quit | grep -q .; then
+            log_error "Assembled Controller release is missing $required_beam"
+            return 1
+        fi
+    done
+}
+
 validate_staging_layout() {
     local required_paths=(
         "share/bin/orchardctl"
@@ -802,6 +845,7 @@ log_info "Building macOS native helpers for orchard_cli"
 
 log_info "  → orchard_controller"
 mix release orchard_controller
+validate_controller_release_independence
 
 log_info "  → orchard_node_agent"
 mix release orchard_node_agent

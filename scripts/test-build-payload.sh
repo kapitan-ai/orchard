@@ -141,14 +141,38 @@ esac
 if [ "\${1:-}" = "release" ]; then
   release="\$2"
   root="\$(pwd)"
-  mkdir -p "\$root/_build/prod/rel/\$release/bin" "\$root/_build/prod/rel/\$release/erts-16.4/bin"
+  mkdir -p \
+    "\$root/_build/prod/rel/\$release/bin" \
+    "\$root/_build/prod/rel/\$release/erts-16.4/bin" \
+    "\$root/_build/prod/rel/\$release/releases/$FAKE_VERSION"
   cat > "\$root/_build/prod/rel/\$release/bin/\$release" <<'BIN'
 #!/bin/sh
 exit 0
 BIN
   chmod +x "\$root/_build/prod/rel/\$release/bin/\$release"
   : > "\$root/_build/prod/rel/\$release/erts-16.4/bin/beam.smp"
-  if { [ "\$release" = "orchard_cli" ] || [ "\$release" = "orchard_controller" ]; } &&
+  if [ "\$release" = "orchard_controller" ]; then
+    app_root="\$root/_build/prod/rel/\$release/lib/orchard_controller-$FAKE_VERSION"
+    mkdir -p "\$app_root/ebin"
+    : > "\$app_root/ebin/Elixir.Orchard.PackagedNodeCommand.beam"
+    : > "\$app_root/ebin/Elixir.Orchard.PackagedNodeCommandRuntime.beam"
+    : > "\$app_root/ebin/Elixir.Orchard.PackagedNodeCommandRPC.beam"
+    cat > "\$root/_build/prod/rel/\$release/releases/$FAKE_VERSION/orchard_controller.rel" <<'REL'
+{release,{orchard_controller,"9.9.9-test"},{erts,"16.4"},[{orchard_shared,"9.9.9-test",permanent},{orchard_controller,"9.9.9-test",permanent}]}.
+REL
+    if [ "\${ORCHARD_TEST_FAKE_CONTROLLER_CONTAMINATED:-0}" = "1" ]; then
+      cli_root="\$root/_build/prod/rel/\$release/lib/orchard_cli-$FAKE_VERSION"
+      mkdir -p "\$cli_root/ebin"
+      : > "\$cli_root/ebin/Elixir.OrchardCLI.ControllerRPC.beam"
+    fi
+    if [ "\${ORCHARD_TEST_FAKE_CONTROLLER_ROOT_BEAM:-0}" = "1" ]; then
+      : > "\$app_root/ebin/Elixir.OrchardCLI.beam"
+    fi
+    if [ "\${ORCHARD_TEST_FAKE_CONTROLLER_CLI_SYMLINK:-0}" = "1" ]; then
+      ln -s "orchard_controller-$FAKE_VERSION" \
+        "\$root/_build/prod/rel/\$release/lib/orchard_cli-$FAKE_VERSION"
+    fi
+  elif [ "\$release" = "orchard_cli" ] &&
     [ -d "\$root/_build/prod/lib/orchard_cli/priv" ]; then
     app_root="\$root/_build/prod/rel/\$release/lib/orchard_cli-$FAKE_VERSION"
     mkdir -p "\$app_root"
@@ -315,6 +339,47 @@ if [[ -s "$PKG_TOOL_LOG" ]]; then
     cat "$PKG_TOOL_LOG" >&2
     fail 'payload build invoked PKG tooling'
 fi
+
+# The payload builder must reject a Controller release contaminated by CLI
+# implementation before it becomes a staged payload candidate.
+CONTAMINATED_OUT_DIR="$TMP_ROOT/contaminated-out"
+CONTAMINATED_OUT="$TMP_ROOT/contaminated.out"
+if ORCHARD_TEST_FAKE_CONTROLLER_CONTAMINATED=1 PATH="$TOOLS:$PATH" \
+    "$REPO_ROOT/scripts/build-payload.sh" "$CONTAMINATED_OUT_DIR" \
+    >"$CONTAMINATED_OUT" 2>&1; then
+    fail 'CLI-contaminated Controller release produced a payload'
+fi
+grep -Fq 'still contains an orchard_cli library' "$CONTAMINATED_OUT" || {
+    cat "$CONTAMINATED_OUT" >&2
+    fail 'CLI-contaminated Controller release did not report the independence gate'
+}
+if grep -q '^PAYLOAD_ROOT=' "$CONTAMINATED_OUT"; then
+    fail 'rejected CLI-contaminated build still printed PAYLOAD_ROOT'
+fi
+
+ROOT_BEAM_OUT_DIR="$TMP_ROOT/root-beam-out"
+ROOT_BEAM_OUT="$TMP_ROOT/root-beam.out"
+if ORCHARD_TEST_FAKE_CONTROLLER_ROOT_BEAM=1 PATH="$TOOLS:$PATH" \
+    "$REPO_ROOT/scripts/build-payload.sh" "$ROOT_BEAM_OUT_DIR" \
+    >"$ROOT_BEAM_OUT" 2>&1; then
+    fail 'Controller release with root OrchardCLI beam produced a payload'
+fi
+grep -Fq 'still contains an OrchardCLI module' "$ROOT_BEAM_OUT" || {
+    cat "$ROOT_BEAM_OUT" >&2
+    fail 'root OrchardCLI beam did not report the independence gate'
+}
+
+CLI_SYMLINK_OUT_DIR="$TMP_ROOT/cli-symlink-out"
+CLI_SYMLINK_OUT="$TMP_ROOT/cli-symlink.out"
+if ORCHARD_TEST_FAKE_CONTROLLER_CLI_SYMLINK=1 PATH="$TOOLS:$PATH" \
+    "$REPO_ROOT/scripts/build-payload.sh" "$CLI_SYMLINK_OUT_DIR" \
+    >"$CLI_SYMLINK_OUT" 2>&1; then
+    fail 'Controller release with orchard_cli symlink produced a payload'
+fi
+grep -Fq 'still contains an orchard_cli library' "$CLI_SYMLINK_OUT" || {
+    cat "$CLI_SYMLINK_OUT" >&2
+    fail 'orchard_cli symlink did not report the independence gate'
+}
 
 # Re-running into an occupied staging path must fail closed rather than merge
 # into or overwrite a previously validated payload.

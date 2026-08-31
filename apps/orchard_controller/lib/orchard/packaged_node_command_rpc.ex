@@ -1,9 +1,11 @@
-defmodule OrchardCLI.ControllerRPC do
+defmodule Orchard.PackagedNodeCommandRPC do
   @moduledoc false
 
-  alias OrchardCLI.Commands.Nodes
+  alias Orchard.PackagedNodeCommand
 
   @protocol "ORCHARDCTL_RPC_V1"
+  @max_message_bytes 786_000
+  @oversized_message "Error: Controller runtime RPC result exceeded the 786000-byte limit."
   @controller_commands ~w(
     list
     inspect
@@ -28,12 +30,15 @@ defmodule OrchardCLI.ControllerRPC do
   end
 
   @doc "Decodes an encoded packaged node command and returns its versioned RPC result envelope."
-  @spec run_base64([String.t()]) :: String.t()
-  def run_base64(encoded_args) when is_list(encoded_args) do
+  @spec run_base64([String.t()], ([String.t()] -> PackagedNodeCommand.result())) :: String.t()
+  def run_base64(encoded_args, command_runner \\ &PackagedNodeCommand.run/1)
+
+  def run_base64(encoded_args, command_runner)
+      when is_list(encoded_args) and is_function(command_runner, 1) do
     with {:ok, args} <- decode_arguments(encoded_args),
          {:ok, node_args} <- controller_node_args(args) do
       node_args
-      |> Nodes.run()
+      |> command_runner.()
       |> encode_result()
     else
       {:error, :invalid_arguments} ->
@@ -45,6 +50,10 @@ defmodule OrchardCLI.ControllerRPC do
         )
     end
   end
+
+  @doc false
+  @spec max_message_bytes() :: pos_integer()
+  def max_message_bytes, do: @max_message_bytes
 
   defp with_isolated_group_leader(fun) do
     caller_group_leader = Process.group_leader()
@@ -82,7 +91,9 @@ defmodule OrchardCLI.ControllerRPC do
   defp encode_result({:ok, message}), do: envelope(0, "stdout", message)
   defp encode_result({:error, message, status}), do: envelope(status, "stderr", message)
 
-  defp envelope(status, stream, message) do
+  defp envelope(status, stream, message) when byte_size(message) <= @max_message_bytes do
     Enum.join([@protocol, status, stream, Base.encode64(message)], ":")
   end
+
+  defp envelope(_status, _stream, _message), do: envelope(1, "stderr", @oversized_message)
 end
