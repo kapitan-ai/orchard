@@ -73,6 +73,11 @@ defmodule Orchard.Node do
   def listen_address, do: runtime_config()[:listen_address]
   def node_identity_root, do: runtime_config()[:node_identity_root]
   def grpc_security, do: runtime_config()[:grpc_security] || :plaintext_compatibility
+
+  @spec runtime_grpc_listener_enabled?() :: boolean()
+  def runtime_grpc_listener_enabled?,
+    do: runtime_value(:runtime_grpc_listener_enabled, true) == true
+
   def listen_host, do: listen_address()[:host]
   def listen_port, do: listen_address()[:port]
   def models_root, do: runtime_config()[:models_root]

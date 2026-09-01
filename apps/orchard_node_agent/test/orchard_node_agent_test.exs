@@ -1327,11 +1327,12 @@ defmodule OrchardNodeAgentTest do
     assert {:error, {:already_started, ^pid}} = NodeSupervisor.start_link([])
   end
 
-  test "node supervisor boots all required children including gRPC client supervisor" do
+  test "node supervisor boots all required children including the runtime gRPC listener" do
     assert is_pid(Process.whereis(NodeSupervisor))
     assert is_pid(Process.whereis(ModelManager))
     assert is_pid(Process.whereis(WorkerSupervisor))
     assert is_pid(Process.whereis(Orchard.Node.ModelLoadTaskSupervisor))
+    assert Node.runtime_grpc_listener_enabled?()
 
     child_ids =
       Supervisor.which_children(NodeSupervisor)
@@ -1346,6 +1347,40 @@ defmodule OrchardNodeAgentTest do
     # supervision tree, so client channels are no longer owned by NodeSupervisor.
     refute GRPC.Client.Supervisor in child_ids
     assert is_pid(Process.whereis(GRPC.Client.Supervisor))
+  end
+
+  test "node supervisor omits only the runtime gRPC listener when it is disabled" do
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime,
+        runtime_grpc_listener_enabled: false,
+        listen_address: nil,
+        grpc_security: :mutual_tls,
+        runtime_tls_identity: nil,
+        node_identity_root: nil
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+    end)
+
+    assert {:ok, {_flags, child_specs}} = NodeSupervisor.init([])
+
+    child_ids = Enum.map(child_specs, & &1.id)
+
+    assert child_ids == [
+             ModelManager,
+             Orchard.Node.ModelLoadTaskSupervisor,
+             Orchard.Node.RuntimeProcessReaper,
+             WorkerSupervisor,
+             Orchard.Node.RuntimeEndpointTaskSupervisor
+           ]
+
+    refute NodeSupervisor.grpc_server_id() in child_ids
   end
 
   test "node agent application supervisor is running" do
