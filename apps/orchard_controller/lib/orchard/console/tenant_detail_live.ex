@@ -26,6 +26,8 @@ defmodule OrchardConsole.TenantDetailLive do
         portal_users: [],
         portal_invite_url: nil,
         portal_invite_user_id: nil,
+        portal_invite_expires_at: nil,
+        portal_invite_expiry_timer_ref: nil,
         portal_https?: Transport.public_api_https_enabled?(),
         load_error: nil,
         generated_secret: nil
@@ -98,7 +100,10 @@ defmodule OrchardConsole.TenantDetailLive do
   def handle_event("copy_portal_invite", %{"portal_user_id" => user_id}, socket) do
     case Governance.copy_portal_invite(socket.assigns.tenant, user_id) do
       {:ok, invite} ->
-        {:noreply, assign(socket, portal_invite_url: invite.url, portal_invite_user_id: user_id)}
+        {:noreply,
+         socket
+         |> show_portal_invite(user_id, invite)
+         |> mark_portal_invite_pending(user_id, invite.expires_at)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Unable to copy invite.")}
@@ -117,10 +122,84 @@ defmodule OrchardConsole.TenantDetailLive do
 
   defp dismiss_invite_url_for(socket, user_id) do
     if socket.assigns.portal_invite_user_id == user_id do
-      assign(socket, portal_invite_url: nil, portal_invite_user_id: nil)
+      clear_portal_invite(socket)
     else
       socket
     end
+  end
+
+  @impl true
+  def handle_info(
+        {:portal_invite_expired, user_id, expires_at},
+        %{
+          assigns: %{
+            portal_invite_user_id: user_id,
+            portal_invite_expires_at: expires_at
+          }
+        } = socket
+      ) do
+    {:noreply, socket |> clear_portal_invite() |> load_tenant_detail()}
+  end
+
+  def handle_info({:portal_invite_expired, _user_id, _expires_at}, socket),
+    do: {:noreply, socket}
+
+  defp show_portal_invite(socket, user_id, invite) do
+    socket = cancel_portal_invite_timer(socket)
+
+    timer_ref =
+      Process.send_after(
+        self(),
+        {:portal_invite_expired, user_id, invite.expires_at},
+        invite_expiry_delay_ms(invite.expires_at)
+      )
+
+    assign(socket,
+      portal_invite_url: invite.url,
+      portal_invite_user_id: user_id,
+      portal_invite_expires_at: invite.expires_at,
+      portal_invite_expiry_timer_ref: timer_ref
+    )
+  end
+
+  defp mark_portal_invite_pending(socket, user_id, expires_at) do
+    portal_users =
+      Enum.map(socket.assigns.portal_users, fn
+        %{id: ^user_id} = user ->
+          %{user | invite_context: :pending, invite_expires_at: expires_at}
+
+        user ->
+          user
+      end)
+
+    assign(socket, portal_users: portal_users)
+  end
+
+  defp clear_portal_invite(socket) do
+    socket
+    |> cancel_portal_invite_timer()
+    |> assign(
+      portal_invite_url: nil,
+      portal_invite_user_id: nil,
+      portal_invite_expires_at: nil,
+      portal_invite_expiry_timer_ref: nil
+    )
+  end
+
+  defp cancel_portal_invite_timer(socket) do
+    case socket.assigns.portal_invite_expiry_timer_ref do
+      timer_ref when is_reference(timer_ref) -> Process.cancel_timer(timer_ref)
+      _other -> false
+    end
+
+    socket
+  end
+
+  defp invite_expiry_delay_ms(expires_at) do
+    expires_at
+    |> DateTime.diff(DateTime.utc_now(), :microsecond)
+    |> max(0)
+    |> then(&div(&1 + 999, 1_000))
   end
 
   # -- Render --
@@ -237,7 +316,7 @@ defmodule OrchardConsole.TenantDetailLive do
             <.input field={@portal_invite_form[:email]} type="email" label="Email" required />
             <button
               type="submit"
-              class="bg-navy-900 mt-7 rounded-md px-4 py-2 text-sm font-semibold text-white"
+              class="bg-navy mt-7 rounded-md px-4 py-2 text-sm font-semibold text-white hover:bg-navy-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 dark:bg-sky-500 dark:hover:bg-sky-400 dark:focus-visible:ring-sky-400/40"
             >
               Invite
             </button>
@@ -249,19 +328,45 @@ defmodule OrchardConsole.TenantDetailLive do
         <.card>
           <:title>Invite URL - copy now</:title>
           <:subtitle>This URL is shown only for this Copy invite action.</:subtitle>
-          <code id="tenant-portal-invite-url-value" class="block break-all rounded bg-slate-100 p-3 font-mono text-sm">
-            {@portal_invite_url}
-          </code>
-          <button
-            id="tenant-portal-invite-url-copy"
-            type="button"
-            phx-hook="CopyGeneratedSecret"
-            data-secret-source="tenant-portal-invite-url-value"
-            data-api-key-id="portal-invite"
-            class="mt-3 rounded-md bg-navy-900 px-3 py-1.5 text-sm font-medium text-white"
+          <div
+            id={"tenant-portal-invite-reveal-#{DateTime.to_unix(@portal_invite_expires_at, :microsecond)}"}
+            phx-mounted={
+              Phoenix.LiveView.JS.focus(to: "#tenant-portal-invite-url-copy")
+            }
           >
-            Copy invite URL
-          </button>
+            <p
+              id="tenant-portal-invite-url-guidance"
+              class="sr-only"
+              role="status"
+              aria-live="polite"
+            >
+              One-time invite URL ready. Copy it before leaving this page.
+            </p>
+            <code
+              id="tenant-portal-invite-url-value"
+              class="block break-all rounded bg-slate-100 p-3 font-mono text-sm text-slate-900 dark:bg-slate-800 dark:text-slate-100"
+            >
+              {@portal_invite_url}
+            </code>
+            <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              Expires <.local_time
+                id="tenant-portal-invite-url-expires-at"
+                value={@portal_invite_expires_at}
+                format={:datetime_minute}
+              />
+            </p>
+            <button
+              id="tenant-portal-invite-url-copy"
+              type="button"
+              phx-hook="CopyGeneratedSecret"
+              data-secret-source="tenant-portal-invite-url-value"
+              data-api-key-id="portal-invite"
+              aria-describedby="tenant-portal-invite-url-guidance"
+              class="mt-3 rounded-md bg-navy px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 dark:bg-sky-500 dark:hover:bg-sky-400 dark:focus-visible:ring-sky-400/40"
+            >
+              Copy invite URL
+            </button>
+          </div>
         </.card>
       </div>
 
@@ -269,19 +374,76 @@ defmodule OrchardConsole.TenantDetailLive do
         <.card>
           <:title>Portal Users</:title>
           <:subtitle>Named identities for this Organization.</:subtitle>
-          <p :if={@portal_users == []} class="text-sm text-slate-500">No Portal Users invited yet.</p>
-          <div :for={user <- @portal_users} id={"portal-user-#{user.id}"} class="flex items-center justify-between border-t py-3">
-            <div>
-              <p class="font-medium">{user.email}</p>
-              <p class="text-sm text-slate-500">{String.capitalize(user.status)}</p>
+          <p :if={@portal_users == []} class="text-sm text-slate-500 dark:text-slate-400">
+            No Portal Users invited yet.
+          </p>
+          <div
+            :for={user <- @portal_users}
+            id={"portal-user-#{user.id}"}
+            class="flex flex-col gap-3 border-t py-3 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div class="min-w-0">
+              <p class="break-all font-medium">{user.email}</p>
+              <p class="text-sm text-slate-500 dark:text-slate-400">
+                {String.capitalize(user.status)}
+              </p>
+              <p
+                :if={user.invite_context == :not_issued}
+                id={"portal-user-invite-context-#{user.id}"}
+                class="text-xs text-slate-500 dark:text-slate-400"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                Not issued
+              </p>
+              <p
+                :if={user.invite_context == :pending}
+                id={"portal-user-invite-context-#{user.id}"}
+                class="text-xs text-slate-500 dark:text-slate-400"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                Pending - Expires <.local_time
+                  id={"portal-user-invite-expires-at-#{user.id}"}
+                  value={user.invite_expires_at}
+                  format={:datetime_minute}
+                />
+              </p>
+              <p
+                :if={user.invite_context == :expired}
+                id={"portal-user-invite-context-#{user.id}"}
+                class="text-xs text-slate-500 dark:text-slate-400"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                Expired - Expired at <.local_time
+                  id={"portal-user-invite-expires-at-#{user.id}"}
+                  value={user.invite_expires_at}
+                  format={:datetime_minute}
+                />
+              </p>
+              <p
+                :if={user.invite_context == :redeemed}
+                id={"portal-user-invite-context-#{user.id}"}
+                class="text-xs text-slate-500 dark:text-slate-400"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                Redeemed
+              </p>
             </div>
-            <div class="flex gap-2">
+            <div class="flex shrink-0 gap-2 self-end sm:self-auto">
               <button
                 :if={user.status == "invited"}
                 type="button"
                 phx-click="copy_portal_invite"
                 phx-value-portal_user_id={user.id}
-                class="rounded border px-3 py-1.5 text-sm"
+                aria-label={"Copy invite for #{user.email}"}
+                class="rounded border px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400/40"
               >
                 Copy invite
               </button>
@@ -290,7 +452,8 @@ defmodule OrchardConsole.TenantDetailLive do
                 type="button"
                 phx-click="disable_portal_user"
                 phx-value-portal_user_id={user.id}
-                class="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700"
+                aria-label={"Disable #{user.email}"}
+                class="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 focus-visible:ring-offset-2 dark:text-red-300"
               >
                 Disable
               </button>
@@ -754,7 +917,7 @@ defmodule OrchardConsole.TenantDetailLive do
     with {:ok, tenant} <- Governance.get_tenant(tenant_id),
          {:ok, api_keys} <- Governance.list_tenant_api_key_summaries(tenant),
          {:ok, api_clients} <- Governance.list_api_clients_for_tenant(tenant),
-         {:ok, portal_users} <- Governance.list_portal_users(tenant) do
+         {:ok, portal_users} <- Governance.list_portal_user_summaries(tenant) do
       assign(socket,
         detail_status: :ok,
         tenant: tenant,
