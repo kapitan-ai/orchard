@@ -134,17 +134,35 @@ defmodule Orchard.MetricsTest do
     assert Enum.uniq_by(descriptors, &Catalog.event_name(&1.family)) == descriptors
   end
 
-  test "SPEC.md §9.1 worksheet includes bounded attempt and retry families" do
+  test "SPEC.md §9.1 worksheet reconciles the accepted floor with runtime attempt families" do
     calculated =
       Enum.reduce(Catalog.descriptors(), 0, fn descriptor, total ->
         cost = if descriptor.type == :histogram, do: length(descriptor.buckets) + 3, else: 1
         total + descriptor.ceiling * cost
       end)
 
-    assert calculated == 2_817
-    assert Catalog.worksheet_total() == 2_817
+    assert calculated == 2_829
+    assert Catalog.worksheet_total() == 2_829
     assert Catalog.series_ceiling() == 5_000
-    assert Catalog.series_ceiling() - calculated == 2_183
+    assert calculated - 2_600 == 229
+    assert Catalog.series_ceiling() - calculated == 2_171
+  end
+
+  test "SPEC.md §9.1 admits exactly twelve audit domains by three outcomes" do
+    domains =
+      ~w(tenant api_key service_account role_binding routing_policy tenant_model_access support_bundle node_admission node_lifecycle circuit_breaker cluster portal_user)
+
+    outcomes = ~w(succeeded failed denied)
+
+    assert descriptor!(:audit_events).ceiling == length(domains) * length(outcomes)
+
+    for action <- domains, outcome <- outcomes do
+      assert {:ok, %{action: ^action, outcome: ^outcome}} =
+               Normalizer.normalize(:audit_events, %{action: action, outcome: outcome})
+    end
+
+    assert {:error, :invalid_labels} =
+             Normalizer.normalize(:audit_events, %{action: "portal_user_id", outcome: "succeeded"})
   end
 
   test "bounded normalization rejects unknown categorical values and preserves identifiers" do

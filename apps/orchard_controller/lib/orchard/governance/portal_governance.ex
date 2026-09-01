@@ -9,6 +9,8 @@ defmodule Orchard.Governance.PortalGovernance do
   alias Orchard.Governance.{
     ApiKey,
     ApiKeySecret,
+    AuditLog,
+    AuditWriter,
     PortalApiKeySummary,
     PortalInviteToken,
     PortalLoginThrottle,
@@ -32,12 +34,8 @@ defmodule Orchard.Governance.PortalGovernance do
     attrs = Map.new(attrs)
 
     with :ok <- require_https(), {:ok, tenant} <- tenant(tenant_or_id) do
-      %PortalUser{}
-      |> PortalUser.invite_changeset(%{
-        tenant_id: tenant.id,
-        email: attrs[:email] || attrs["email"]
-      })
-      |> Repo.insert()
+      AuditWriter.transaction(fn -> create_invite_transaction(tenant, attrs) end)
+      |> unwrap()
     end
   end
 
@@ -45,17 +43,14 @@ defmodule Orchard.Governance.PortalGovernance do
     with :ok <- require_https(),
          {:ok, tenant} <- tenant(tenant_or_id),
          {:ok, user} <- user_for_tenant(tenant.id, id(user_or_id)) do
-      token = "orchard_pi_" <> random_secret()
-      expires_at = DateTime.add(now(), @invite_seconds, :second)
-
-      Repo.transaction(fn -> copy_invite_transaction(tenant, user.id, token, expires_at) end)
+      AuditWriter.transaction(fn -> copy_invite_transaction(tenant, user.id) end)
       |> unwrap()
     end
   end
 
   def redeem_invite(slug, token, password) do
     with :ok <- require_https(), {:ok, password_hash} <- PortalPassword.hash(password) do
-      Repo.transaction(fn -> redeem_invite_transaction(slug, token, password_hash) end)
+      AuditWriter.transaction(fn -> redeem_invite_transaction(slug, token, password_hash) end)
       |> unwrap()
     end
   end
@@ -83,7 +78,7 @@ defmodule Orchard.Governance.PortalGovernance do
 
   def disable_user(tenant_or_id, user_or_id) do
     with {:ok, tenant} <- tenant(tenant_or_id) do
-      Repo.transaction(fn -> disable_user_transaction(tenant.id, id(user_or_id)) end)
+      AuditWriter.transaction(fn -> disable_user_transaction(tenant.id, id(user_or_id)) end)
       |> unwrap()
     end
   end
@@ -145,9 +140,12 @@ defmodule Orchard.Governance.PortalGovernance do
     attrs = Map.new(attrs)
 
     with :ok <- require_https(),
-         {:ok, %{tenant: tenant, portal_user: user}} <- validate(session_token, slug),
+         {:ok, %{tenant: tenant, portal_user: user, session: session}} <-
+           validate(session_token, slug),
          generated <- ApiKeySecret.generate() do
-      Repo.transaction(fn -> mint_key_transaction(tenant, user, attrs, generated) end)
+      identity = session_identity(tenant, user, session)
+
+      AuditWriter.transaction(fn -> mint_key_transaction(identity, attrs, generated) end)
       |> unwrap()
     end
   end
@@ -189,8 +187,11 @@ defmodule Orchard.Governance.PortalGovernance do
 
   def revoke_key(session_token, slug, key_or_id) do
     with :ok <- require_https(),
-         {:ok, %{tenant: tenant, portal_user: user}} <- validate(session_token, slug) do
-      Repo.transaction(fn -> revoke_key_transaction(tenant, user, key_or_id) end)
+         {:ok, %{tenant: tenant, portal_user: user, session: session}} <-
+           validate(session_token, slug) do
+      identity = session_identity(tenant, user, session)
+
+      AuditWriter.transaction(fn -> revoke_key_transaction(identity, key_or_id) end)
       |> unwrap()
     end
   end
@@ -203,17 +204,34 @@ defmodule Orchard.Governance.PortalGovernance do
     _ -> :ok
   end
 
+  defp create_invite_transaction(tenant, attrs) do
+    case %PortalUser{}
+         |> PortalUser.invite_changeset(%{
+           tenant_id: tenant.id,
+           email: attrs[:email] || attrs["email"]
+         })
+         |> Repo.insert() do
+      {:ok, user} ->
+        insert_portal_user_audit!(user, "portal_user.invited", user.inserted_at)
+        user
+
+      {:error, changeset} ->
+        Repo.rollback(changeset)
+    end
+  end
+
   defp redeem_invite_transaction(slug, token, password_hash) do
-    current = now()
     tenant = redemption_tenant!(slug)
     user_id = redemption_user_id!(tenant.id, token)
     user = lock_invited_user!(tenant.id, user_id, :invalid_invite)
+    current = now()
     invite = lock_valid_invite!(user.id, token, current)
 
     case user |> PortalUser.activation_changeset(password_hash) |> Repo.update() do
       {:ok, active} ->
         invite |> Changeset.change(redeemed_at: current) |> Repo.update!()
         delete_sessions(user.id)
+        insert_portal_user_audit!(user, "portal_user.invite_redeemed", current)
         active
 
       {:error, reason} ->
@@ -221,8 +239,26 @@ defmodule Orchard.Governance.PortalGovernance do
     end
   end
 
-  defp copy_invite_transaction(tenant, user_id, token, expires_at) do
+  defp copy_invite_transaction(tenant, user_id) do
     user = lock_invited_user!(tenant.id, user_id, :portal_user_not_invited)
+    previous_invite = Repo.get_by(PortalInviteToken, portal_user_id: user.id)
+
+    action =
+      if previous_invite, do: "portal_user.invite_reissued", else: "portal_user.invite_issued"
+
+    :telemetry.execute(
+      [:orchard, :governance, :portal_invite, :before_secret_generation],
+      %{},
+      %{portal_user_id: user.id}
+    )
+
+    occurred_at = now()
+    token = "orchard_pi_" <> random_secret()
+
+    expires_at =
+      occurred_at
+      |> DateTime.add(@invite_seconds, :second)
+      |> extending_expiry(previous_invite)
 
     from(row in PortalInviteToken, where: row.portal_user_id == ^user.id)
     |> Repo.delete_all()
@@ -236,6 +272,7 @@ defmodule Orchard.Governance.PortalGovernance do
     |> Repo.insert!()
 
     delete_sessions(user.id)
+    insert_portal_user_audit!(user, action, occurred_at, expires_at)
     %{token: token, url: "/portal/#{tenant.slug}/invites/#{token}", expires_at: expires_at}
   end
 
@@ -291,30 +328,37 @@ defmodule Orchard.Governance.PortalGovernance do
 
     if is_nil(user), do: Repo.rollback(:portal_user_not_found)
 
-    case user |> PortalUser.disable_changeset(now()) |> Repo.update() do
-      {:ok, disabled} ->
-        from(invite in PortalInviteToken,
-          where: invite.portal_user_id == ^user.id and is_nil(invite.redeemed_at)
-        )
-        |> Repo.delete_all()
+    if user.status == "disabled" do
+      user
+    else
+      occurred_at = now()
 
-        delete_sessions(user.id)
-        disabled
+      case user |> PortalUser.disable_changeset(occurred_at) |> Repo.update() do
+        {:ok, disabled} ->
+          from(invite in PortalInviteToken,
+            where: invite.portal_user_id == ^user.id and is_nil(invite.redeemed_at)
+          )
+          |> Repo.delete_all()
 
-      {:error, reason} ->
-        Repo.rollback(reason)
+          delete_sessions(user.id)
+          insert_portal_user_audit!(disabled, "portal_user.disabled", occurred_at)
+          disabled
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
     end
   end
 
-  defp mint_key_transaction(tenant, user, attrs, generated) do
-    PortalUser |> where([u], u.id == ^user.id) |> lock("FOR UPDATE") |> Repo.one!()
+  defp mint_key_transaction(identity, attrs, generated) do
+    user = lock_active_session_user!(identity)
 
-    if active_key_count(tenant.id, user.id) >= @active_key_limit,
+    if active_key_count(identity.tenant_id, user.id) >= @active_key_limit,
       do: Repo.rollback(:portal_key_limit_reached)
 
     case %ApiKey{}
          |> ApiKey.tenant_direct_changeset(%{
-           tenant_id: tenant.id,
+           tenant_id: identity.tenant_id,
            portal_user_id: user.id,
            name: attrs[:name] || attrs["name"],
            token_prefix: generated.token_prefix,
@@ -322,27 +366,44 @@ defmodule Orchard.Governance.PortalGovernance do
            issuance_surface: "developer_portal"
          })
          |> Repo.insert() do
-      {:ok, key} -> %{api_key: %{key | secret_hash: nil}, token: generated.token, curl: nil}
-      {:error, reason} -> Repo.rollback(reason)
+      {:ok, key} ->
+        insert_portal_api_key_audit!(user, key, "api_key.created", key.inserted_at)
+        %{api_key: %{key | secret_hash: nil}, token: generated.token, curl: nil}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
     end
   end
 
-  defp revoke_key_transaction(tenant, user, key_or_id) do
+  defp revoke_key_transaction(identity, key_or_id) do
+    user = lock_active_session_user!(identity)
+
     key =
       ApiKey
-      |> where([key], key.id == ^id(key_or_id) and key.tenant_id == ^tenant.id)
+      |> where([key], key.id == ^id(key_or_id) and key.tenant_id == ^identity.tenant_id)
       |> where(
         [key],
-        key.portal_user_id == ^user.id and key.issuance_surface == "developer_portal"
+        key.portal_user_id == ^identity.portal_user_id and
+          key.issuance_surface == "developer_portal"
       )
       |> lock("FOR UPDATE")
       |> Repo.one()
 
     if is_nil(key), do: Repo.rollback(:api_key_not_found)
 
-    case key |> ApiKey.revoke_changeset(%{revoked_at: now()}) |> Repo.update() do
-      {:ok, revoked} -> %{revoked | secret_hash: nil}
-      {:error, reason} -> Repo.rollback(reason)
+    if key.revoked_at do
+      %{key | secret_hash: nil}
+    else
+      occurred_at = now()
+
+      case key |> ApiKey.revoke_changeset(%{revoked_at: occurred_at}) |> Repo.update() do
+        {:ok, revoked} ->
+          insert_portal_api_key_audit!(user, revoked, "api_key.revoked", occurred_at)
+          %{revoked | secret_hash: nil}
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
     end
   end
 
@@ -483,6 +544,120 @@ defmodule Orchard.Governance.PortalGovernance do
 
   defp delete_sessions(user_id) do
     from(row in PortalSession, where: row.portal_user_id == ^user_id) |> Repo.delete_all()
+  end
+
+  defp insert_portal_user_audit!(user, action, occurred_at, expires_at \\ nil) do
+    {actor_type, actor_id, surface} = portal_user_audit_provenance(user, action)
+
+    %AuditLog{}
+    |> audit_log_impl().changeset(%{
+      scope: "tenant",
+      tenant_id: user.tenant_id,
+      api_key_id: nil,
+      actor_type: actor_type,
+      actor_id: actor_id,
+      action: action,
+      target_type: "portal_user",
+      target_id: user.id,
+      occurred_at: occurred_at,
+      payload: portal_user_audit_payload(surface, expires_at)
+    })
+    |> AuditWriter.insert()
+    |> case do
+      {:ok, _audit_log} -> :ok
+      {:error, _changeset} -> Repo.rollback(:audit_write_failed)
+    end
+  end
+
+  defp audit_log_impl do
+    Application.get_env(:orchard_controller, :governance_audit_log_impl, AuditLog)
+  end
+
+  defp insert_portal_api_key_audit!(user, key, action, occurred_at) do
+    %AuditLog{}
+    |> audit_log_impl().changeset(%{
+      scope: "tenant",
+      tenant_id: key.tenant_id,
+      api_key_id: key.id,
+      actor_type: "user",
+      actor_id: user.id,
+      action: action,
+      target_type: "api_key",
+      target_id: key.id,
+      occurred_at: occurred_at,
+      payload: portal_api_key_audit_payload(user, key)
+    })
+    |> AuditWriter.insert()
+    |> case do
+      {:ok, _audit_log} -> :ok
+      {:error, _changeset} -> Repo.rollback(:audit_write_failed)
+    end
+  end
+
+  defp portal_api_key_audit_payload(user, key) do
+    %{
+      "name" => key.name,
+      "token_prefix" => key.token_prefix,
+      "owner_type" => "tenant",
+      "surface" => "developer_portal",
+      "issuance_surface" => "developer_portal",
+      "portal_user_id" => user.id
+    }
+    |> maybe_put_expiry(key.expires_at)
+  end
+
+  defp maybe_put_expiry(payload, nil), do: payload
+
+  defp maybe_put_expiry(payload, expires_at),
+    do: Map.put(payload, "expires_at", DateTime.to_iso8601(expires_at))
+
+  defp session_identity(tenant, user, session),
+    do: %{
+      tenant_id: tenant.id,
+      portal_user_id: user.id,
+      session_epoch: session.password_epoch
+    }
+
+  defp lock_active_session_user!(identity) do
+    user =
+      PortalUser
+      |> where(
+        [row],
+        row.id == ^identity.portal_user_id and row.tenant_id == ^identity.tenant_id
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(user) or user.status != "active" or user.session_epoch != identity.session_epoch,
+      do: Repo.rollback(:invalid_session)
+
+    user
+  end
+
+  defp portal_user_audit_provenance(_user, action)
+       when action in [
+              "portal_user.invited",
+              "portal_user.invite_issued",
+              "portal_user.invite_reissued",
+              "portal_user.disabled"
+            ],
+       do: {"operator", nil, "console"}
+
+  defp portal_user_audit_provenance(user, "portal_user.invite_redeemed"),
+    do: {"user", user.id, "developer_portal"}
+
+  defp portal_user_audit_payload(surface, nil), do: %{"surface" => surface}
+
+  defp portal_user_audit_payload(surface, expires_at) do
+    %{"surface" => surface, "expires_at" => DateTime.to_iso8601(expires_at)}
+  end
+
+  defp extending_expiry(candidate, nil), do: candidate
+
+  defp extending_expiry(candidate, %PortalInviteToken{expires_at: previous}) do
+    if DateTime.compare(candidate, previous) == :gt,
+      do: candidate,
+      else: DateTime.add(previous, 1, :microsecond)
   end
 
   defp user_for_tenant(tenant_id, user_id) do

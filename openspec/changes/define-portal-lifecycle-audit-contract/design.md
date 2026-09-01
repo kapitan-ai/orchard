@@ -6,21 +6,20 @@ The first Copy invite action issues the initial invite, later Copy actions reiss
 Redemption is invited-only, Organization-bound, and uses `POST /portal/:organization_slug/invites/:token`.
 Initial issuance, reissue, redemption, and disablement end the target Portal User's sessions, while existing API Keys remain valid until explicit revocation.
 
-`SPEC.md` section 10.9 nevertheless requires audit evidence for Portal invitation, reissue, redemption, disablement, and API Key creation and revocation.
-The current Portal governance functions use direct `Repo` transactions and do not insert those rows.
-The ordinary governance paths already provide an atomic audit transaction and post-commit success telemetry seam through `AuditWriter.transaction/1`.
+`SPEC.md` section 10.9 requires audit evidence for Portal invitation, reissue, redemption, disablement, and API Key creation and revocation.
+Before this slice, Portal governance functions used direct `Repo` transactions and did not insert those rows.
+The implementation now uses the established atomic audit transaction and post-commit success telemetry seam through `AuditWriter.transaction/1`.
 
-The current metrics implementation recognizes eleven bounded audit action domains, while the accepted metrics worksheet and descriptor ceiling still reserve only 24 audit series from an earlier eight-domain snapshot.
-The implementation catalog also includes 229 attempt and retry series that the accepted metrics contract still assigns to issue #121 and excludes from its 2,588-series worksheet.
-This proposal adds only the `portal_user` audit domain and makes the accepted future target explicit at twelve domains and three outcomes.
-It does not adopt the separate attempt and retry metric families into the accepted contract.
+Before this implementation slice, metrics recognized eleven bounded audit action domains while the descriptor ceiling still reserved only 24 audit series from an earlier eight-domain snapshot.
+The separately accepted issue #121 attempt and retry families contribute a 229-series runtime delta beyond the Portal lifecycle floor.
+This change adds only the `portal_user` audit domain and makes the accepted target explicit at twelve domains and three outcomes.
+It keeps the attempt and retry accounting distinct rather than attributing that delta to Portal lifecycle work.
 The archived metrics design remains historical and is not rewritten.
 
 ## Decision Status
 
-The six choices below are recommendations presented for owner review.
-Merging or accepting the proposal is the act that approves them.
-Until then, the shipped lifecycle remains authoritative and no implementation should infer these choices from issue #279.
+PR #322 accepted the six choices below as the contract for this implementation slice.
+The implementation must preserve the shipped PR #300 lifecycle while applying these audit, no-op, lock-order, and telemetry decisions.
 
 | Decision frontier | Recommendation | Evidence and trade-off |
 |---|---|---|
@@ -45,7 +44,7 @@ Until then, the shipped lifecycle remains authoritative and no implementation sh
 
 ### Five Portal User Actions And Existing API Key Actions
 
-The proposed Portal User actions are:
+The accepted Portal User actions are:
 
 - `portal_user.invited`
 - `portal_user.invite_issued`
@@ -132,11 +131,11 @@ All five `portal_user.*` actions normalize to the single metrics action domain `
 Concrete action suffixes, Portal User IDs, tenant IDs, emails, and target IDs never become audit metric labels.
 The existing outcomes remain `succeeded`, `failed`, and `denied`.
 
-Current code recognizes eleven audit action domains.
+The pre-change code recognized eleven audit action domains.
 Adding `portal_user` produces twelve domains and a family ceiling of 36 series.
 Replacing the accepted worksheet's 24-series audit subtotal with 36 changes the accepted pilot total from 2,588 to 2,600 and leaves 2,400 series below the 5,000-series ceiling.
-The current catalog total of 2,817 includes 229 attempt and retry series that the accepted contract excludes.
-Their reconciliation remains owned by issue #121 and must occur before the later implementation can update the catalog total without silently accepting unrelated behavior.
+The separately accepted issue #121 attempt and retry families add 229 runtime series.
+The reconciled runtime catalog is therefore 2,829 and retains 2,171 series below the ceiling.
 
 ## Transaction Flows
 
@@ -195,7 +194,7 @@ It records only an active-to-revoked transition with `api_key.revoked` and treat
 
 - A single `portal_user.invite_copied` action was rejected because it hides the creation-to-first-issuance boundary settled by PR #300.
 - An outcome field in every audit payload was rejected because the committed append-only row already represents success and the bounded metric owns outcome projection.
-- `system` plus null for successful redemption was rejected as the recommendation because it loses the Portal User provenance established by locked token validation.
+- `system` plus null for successful redemption was rejected because it loses the Portal User provenance established by locked token validation.
 - A named Console actor was rejected because current Console authentication does not establish one.
 - Persisting `previous_invite_existed` was rejected because the action name already carries that classification.
 - An invite-row target was rejected because invite rows are deliberately deleted and are not retained lifecycle history.
@@ -204,10 +203,9 @@ It records only an active-to-revoked transition with `api_key.revoked` and treat
 
 ## Risks And Review Focus
 
-- Action names become durable audit vocabulary after acceptance, so owner review must approve them explicitly.
+- The accepted action names are durable audit vocabulary, so later renaming requires an explicit contract change.
 - Successful redemption provenance must not be read as a new authentication or authorization grant.
-- Current Portal disable and revoke behavior rewrites timestamps on repeats, so later implementation must deliberately adopt the proposed no-op contract.
-- Portal mint and revoke validate their sessions before their mutation transactions today, so later implementation must carry the validated identity and epoch into the transaction and recheck both under a Portal User lock before any API Key lock.
-- The accepted metrics spec and current implementation disagree about both the audit-domain count and issue #121-owned attempt/retry families, so this package updates only the accepted audit subtotal and leaves the unrelated 229-series drift for its owning change.
-- No ADR is warranted for this focused refinement unless owner review selects a broader identity or authority model.
+- The outermost audit transaction must remain the authoritative owner so later refactors cannot publish success before commit.
+- The accepted 2,600-series Portal lifecycle floor and the separate 229-series attempt and retry delta must remain distinguishable even though the runtime catalog reports their 2,829-series sum.
+- No ADR is warranted because this focused refinement does not select a broader identity or authority model.
 - No glossary change is warranted because `Operator`, `Portal User`, `API Key`, and `Audit Log` already name every domain concept used here.

@@ -1,8 +1,12 @@
+defmodule Orchard.Governance.AuditWriterTest.RaisingCommitVerifier do
+  def get(_schema, _id), do: raise("forced commit verification failure")
+end
+
 defmodule Orchard.Governance.AuditWriterTest do
   use Orchard.DataCase, async: false
 
   alias Orchard.Governance.{AuditLog, AuditWriter}
-  alias Orchard.Metrics.Normalizer
+  alias Orchard.Metrics.{Normalizer, Status}
   alias Orchard.Repo
 
   setup do
@@ -24,9 +28,154 @@ defmodule Orchard.Governance.AuditWriterTest do
     {"node_trust.initialized", "node_admission", "succeeded"},
     {"node_lifecycle.cordoned", "node_lifecycle", "succeeded"},
     {"circuit_breaker.node.cleared", "circuit_breaker", "succeeded"},
+    {"portal_user.invited", "portal_user", "succeeded"},
     {"provisioning_batch.failed", "service_account", "failed"},
     {"cluster_admin_bootstrap.minted", "cluster", "succeeded"}
   ]
+
+  test "SPEC.md §10.9 refuses to run inside an independently owned Repo transaction" do
+    ref = attach_metric()
+    owner = self()
+
+    assert {:ok, {:error, :audit_writer_not_outermost}} =
+             Repo.transaction(fn ->
+               AuditWriter.transaction(fn ->
+                 send(owner, :audit_callback_ran)
+
+                 "tenant.created"
+                 |> valid_changeset()
+                 |> AuditWriter.insert()
+               end)
+             end)
+
+    refute_received :audit_callback_ran
+    refute_receive {^ref, _measurements, _metadata}
+    refute Repo.get_by(AuditLog, action: "tenant.created")
+  end
+
+  test "SPEC.md §10.9 refuses a direct audit insert inside an unmanaged transaction" do
+    ref = attach_metric()
+
+    assert {:ok, {:error, changeset}} =
+             Repo.transaction(fn ->
+               "tenant.created"
+               |> valid_changeset()
+               |> AuditWriter.insert()
+             end)
+
+    assert "audit writer must own the outermost transaction" in errors_on(changeset).base
+    refute_receive {^ref, _measurements, _metadata}
+    refute Repo.get_by(AuditLog, action: "tenant.created")
+  end
+
+  test "SPEC.md §9.1 nested audit transactions publish only after the outer commit" do
+    ref = attach_metric()
+
+    assert {:ok, :committed} =
+             AuditWriter.transaction(fn ->
+               assert {:ok, {:ok, %AuditLog{}}} =
+                        AuditWriter.transaction(fn ->
+                          "tenant.created"
+                          |> valid_changeset()
+                          |> AuditWriter.insert()
+                        end)
+
+               refute_receive {^ref, _measurements, _metadata}
+               :committed
+             end)
+
+    assert_receive {^ref, %{value: 1}, %{action: "tenant", outcome: "succeeded"}}
+  end
+
+  test "SPEC.md §9.1 nested audit success cannot escape an outer rollback" do
+    ref = attach_metric()
+
+    assert {:error, :forced_outer_rollback} =
+             AuditWriter.transaction(fn ->
+               assert {:ok, {:ok, %AuditLog{}}} =
+                        AuditWriter.transaction(fn ->
+                          "tenant.created"
+                          |> valid_changeset()
+                          |> AuditWriter.insert()
+                        end)
+
+               Repo.rollback(:forced_outer_rollback)
+             end)
+
+    refute_receive {^ref, _measurements, _metadata}
+    refute Repo.get_by(AuditLog, action: "tenant.created")
+  end
+
+  test "SPEC.md §9.1 a raw inner savepoint rollback cannot publish queued success" do
+    ref = attach_metric()
+
+    assert {:ok, :outer_committed} =
+             AuditWriter.transaction(fn ->
+               Repo.query!("SAVEPOINT audit_writer_inner")
+
+               assert {:ok, %AuditLog{}} =
+                        "tenant.created"
+                        |> valid_changeset()
+                        |> AuditWriter.insert()
+
+               Repo.query!("ROLLBACK TO SAVEPOINT audit_writer_inner")
+
+               :outer_committed
+             end)
+
+    refute_receive {^ref, _measurements, _metadata}
+    refute Repo.get_by(AuditLog, action: "tenant.created")
+  end
+
+  test "SPEC.md §9.1 post-commit verification failure cannot change the committed result" do
+    previous = Application.get_env(:orchard_controller, :audit_commit_verifier_impl, :missing)
+
+    Application.put_env(
+      :orchard_controller,
+      :audit_commit_verifier_impl,
+      Orchard.Governance.AuditWriterTest.RaisingCommitVerifier
+    )
+
+    on_exit(fn ->
+      Status.recover({:audit_commit_verification, :unavailable})
+
+      case previous do
+        :missing -> Application.delete_env(:orchard_controller, :audit_commit_verifier_impl)
+        value -> Application.put_env(:orchard_controller, :audit_commit_verifier_impl, value)
+      end
+    end)
+
+    ref = attach_metric()
+
+    assert {:ok, :committed} =
+             AuditWriter.transaction(fn ->
+               assert {:ok, %AuditLog{}} =
+                        "tenant.created"
+                        |> valid_changeset()
+                        |> AuditWriter.insert()
+
+               :committed
+             end)
+
+    assert Repo.get_by(AuditLog, action: "tenant.created")
+    refute_receive {^ref, _measurements, _metadata}
+    assert :ets.member(Status, {:audit_commit_verification, :unavailable})
+
+    Application.put_env(:orchard_controller, :audit_commit_verifier_impl, Repo)
+
+    assert {:ok, :verified} =
+             AuditWriter.transaction(fn ->
+               assert {:ok, %AuditLog{}} =
+                        "tenant.updated"
+                        |> valid_changeset()
+                        |> AuditWriter.insert()
+
+               :verified
+             end)
+
+    assert_receive {^ref, %{value: 1}, %{action: "tenant", outcome: "succeeded"}}
+    refute :ets.member(Status, {:audit_commit_verification, :unavailable})
+  end
 
   test "SPEC.md §9.1 emits one bounded audit event for every current audit action domain" do
     ref = attach_metric()

@@ -216,6 +216,11 @@ It is not a claim about the current build.
 6. When access must end, the operator disables that Portal User, which atomically deletes every outstanding invite, ends only that user's portal sessions, and does not automatically revoke minted API Keys.
 7. The operator separately reviews Organization API Keys in Console and deliberately revokes known keys when key access must also end.
 
+Each effective Portal lifecycle action commits its tenant-scoped audit evidence with the authoritative mutation.
+Portal User creation and first Copy invite remain separate audited actions, and later Copy actions are recorded as reissues.
+Repeated disable and repeated key revoke are true no-ops, so operators should not expect duplicate audit rows or rewritten timestamps.
+Audit evidence records bounded actor, target, surface, expiry, and key provenance only and never stores an invite URL, password, session token, API Key secret, email address, or raw request field.
+
 ### Target Controller-Only Journey
 
 The Controller setup is identical through first Console access, but setup labels the cluster **No inference capacity** until a Node becomes active and model-ready.

@@ -2985,8 +2985,12 @@ LIVE /portal/:organization_slug/keys
 Portal User accounts SHALL be operator-invite only, with no public signup or self-registration.
 Email SHALL be the Portal User identifier and SHALL be unique by normalized value within one Organization.
 SMTP SHALL NOT be required.
+Creating a Portal User SHALL persist the invited identity and `portal_user.invited` audit row atomically without creating a Portal Invite row.
 For a Portal User in `invited` status, the Console SHALL provide Copy invite.
 Each Copy invite action SHALL mint a fresh single-use token, persist only its hash, extend the invite expiry, and invalidate every prior unused invite token for that Portal User.
+A Copy invite mutation SHALL lock the Portal User before observing invite-row state, generating the token, or calculating the expiry.
+The first committed Copy invite SHALL use `portal_user.invite_issued`, and a later committed replacement SHALL use `portal_user.invite_reissued`.
+Concurrent Copy actions SHALL serialize so exactly one initial issue is recorded and every later replacement extends the stored expiry.
 A Portal User SHALL have at most one stored invite row at a time.
 Invite invalidation SHALL delete the stored invite row rather than tombstone it, and Orchard SHALL NOT retain invite revocation history.
 Orchard SHALL NOT persist the plaintext invite token or URL.
@@ -3006,15 +3010,20 @@ The operator SHALL invite and disable Portal Users from the existing Console Org
 Disabling a Portal User SHALL atomically invalidate every outstanding invite by deleting its stored row, and SHALL end only that Portal User's portal sessions.
 Disabling a Portal User SHALL NOT revoke that Portal User's API Keys.
 Invite reissue, invite redemption, and Portal User disablement SHALL NOT revoke minted API Keys.
+Repeated disable SHALL be a true no-op that does not rewrite timestamps, advance the session epoch, or create another successful audit observation.
 
 The portal SHALL mint tenant-direct API Keys with `issuance_surface = 'developer_portal'` and `portal_user_id` equal to the signed-in Portal User.
 A Portal User MAY have at most 10 active portal-minted tenant-direct keys.
 Revoked and expired keys SHALL NOT count toward that ceiling.
 The mint transaction SHALL serialize on the Portal User, not the Organization.
+Portal key mint and revoke SHALL carry the validated session tenant ID, Portal User ID, and password epoch into one outer transaction.
+That transaction SHALL lock and revalidate the Portal User before enforcing the mint cap or locking an API Key.
+The lock order for revoke SHALL be Portal User then API Key, and a stale captured epoch SHALL fail as an invalid session before any API Key lock or mutation.
 Operator-minted tenant-direct keys SHALL NOT count toward that ceiling, SHALL remain operator-only, and SHALL NOT be visible or revocable from the portal.
 The portal SHALL list and revoke only portal-minted keys whose `portal_user_id` and `tenant_id` match the signed-in Portal User and Organization.
 Keys owned by another Portal User or another Organization SHALL be indistinguishable from missing keys on portal list and revoke paths.
 Portal revoke SHALL take effect on the next Public Inference authentication.
+Repeated Portal revoke SHALL be a true no-op that does not rewrite `revoked_at` or `updated_at` and does not create another successful audit observation.
 
 Legacy portal-minted keys with `portal_user_id IS NULL` SHALL remain valid `orchard_sk_*` Bearer credentials until explicitly revoked.
 Legacy unowned portal-minted keys SHALL remain operator-visible only, SHALL NOT be claimable by a Portal User, and SHALL NOT be listed or revoked from the portal.
@@ -4687,6 +4696,12 @@ Metric labels SHALL use closed vocabularies and SHALL NOT contain Request IDs, N
 * `orchard_api_key_auth_failures_total`
 * `orchard_audit_events_total{action,outcome}`
 
+The audit action label SHALL use only `tenant`, `api_key`, `service_account`, `role_binding`, `routing_policy`, `tenant_model_access`, `support_bundle`, `node_admission`, `node_lifecycle`, `circuit_breaker`, `cluster`, or `portal_user`.
+The audit outcome label SHALL use only `succeeded`, `failed`, or `denied`.
+Those twelve domains and three outcomes reserve exactly 36 audit series.
+The accepted Portal lifecycle metrics floor is 2,600 series.
+The already accepted and implemented inference attempt and retry families add 229 series, so the runtime worksheet SHALL total 2,829 and retain 2,171 series of headroom below the 5,000-series ceiling.
+
 ### 9.2 Tracing
 
 Required trace spans:
@@ -4976,7 +4991,26 @@ Audit logs SHALL capture:
 * support bundle generation
 * upgrade actions
 
-Audit payloads SHALL exclude plaintext API Token secrets, Portal User passwords, Portal Invite tokens and URLs, and Developer Portal session tokens.
+Every effective Portal User creation, invite issue or reissue, redemption, disablement, Portal-owned API Key mint, and effective revoke SHALL commit its tenant-scoped audit row inside the same outermost `AuditWriter.transaction/1` boundary as the authoritative mutation.
+The mutation and audit row SHALL roll back together when audit insertion fails, and no secret-bearing success result SHALL be returned.
+Successful audit telemetry SHALL be emitted only after that outer transaction commits.
+A direct audit insertion inside an unmanaged transaction SHALL fail before persistence.
+A savepoint-rolled-back audit row SHALL NOT publish a queued success observation.
+Failure to verify post-commit metric eligibility SHALL mark metrics reporting degraded without altering the already committed domain result or withholding its success value, and a later successful verification MAY recover that degradation.
+A rejected request or true no-op SHALL NOT create a success audit row or succeeded audit observation.
+
+Portal User creation SHALL use `portal_user.invited`.
+First invite issuance SHALL use `portal_user.invite_issued`, invite replacement SHALL use `portal_user.invite_reissued`, redemption SHALL use `portal_user.invite_redeemed`, and effective disablement SHALL use `portal_user.disabled`.
+Portal-owned API Key mint and effective revoke SHALL reuse `api_key.created` and `api_key.revoked`.
+Console actions SHALL use `actor_type = 'operator'`, null `actor_id`, and `surface = 'console'`.
+Redemption and Portal-owned key actions SHALL use `actor_type = 'user'`, the Portal User ID as `actor_id`, and `surface = 'developer_portal'` as provenance only.
+Portal User actions SHALL target the Portal User, while key actions SHALL target the API Key and set the matching `api_key_id`.
+
+Portal lifecycle audit payloads SHALL use closed per-action allowlists.
+`portal_user.invited`, `portal_user.invite_redeemed`, and `portal_user.disabled` SHALL contain exactly `surface`.
+`portal_user.invite_issued` and `portal_user.invite_reissued` SHALL contain exactly `surface` and the committed invite `expires_at`.
+Portal-owned `api_key.created` and `api_key.revoked` SHALL contain only `name`, `token_prefix`, `owner_type`, `surface`, `issuance_surface`, `portal_user_id`, and `expires_at` when present.
+Audit payloads SHALL exclude plaintext API Token secrets, API Key secret hashes, Portal User email addresses or passwords, Portal Invite tokens, hashes, or URLs, Developer Portal session tokens or hashes, raw request fields, source addresses, raw errors, and `previous_invite_existed`.
 Provisioning Batch records SHALL include non-secret counts, status, input hash, timestamps, and sanitized error summaries only.
 Observed target references and admission-candidate metadata in audit payloads SHALL be sanitized and MUST NOT include secrets.
 

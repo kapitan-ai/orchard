@@ -58,7 +58,9 @@ The pilot worksheet SHALL be exactly:
 - model-load duration 208; model resident 16; worker crashes 16;
 - quota rejections 16; API-key authentication failures 1; audit events 36.
 
-The total SHALL be 2,600, leaving 2,400 series of headroom below 5,000.
+The accepted Portal lifecycle floor SHALL be 2,600, leaving 2,400 series before separately accepted attempt and retry families.
+The implemented issue #121 attempt and retry families SHALL remain a distinct 229-series runtime delta.
+The runtime worksheet SHALL therefore total 2,829 and retain 2,171 series of headroom below 5,000.
 
 Orchard SHALL own a bounded in-memory Series Admission registry in front of counter and histogram emission and a shared atomic Cardinality Ledger across event and gauge paths.
 Series Admission SHALL normalize a new label tuple, calculate the tuple's complete family cost, and atomically admit it only within the identifier, family worksheet, and global ceilings before emitting to the core reporter.
@@ -84,9 +86,10 @@ Admission unavailability, meaning a bounded deadline expiry, an unavailable admi
 - **WHEN** a histogram has `B` finite boundaries and `L` active domain-label tuples
 - **THEN** its worksheet subtotal is exactly `(B + 3) * L`
 
-#### Scenario: Portal User audit domain remains within the pilot ceiling
+#### Scenario: Portal audit domain remains within the runtime ceiling
 
 - **WHEN** the twelve bounded audit action domains combine with the three bounded audit outcomes
 - **THEN** the audit-events family ceiling SHALL be exactly 36 series
-- **AND** the pilot total SHALL be 2,600 series
-- **AND** the 5,000-series ceiling SHALL retain 2,400 series of headroom
+- **AND** the accepted Portal lifecycle floor SHALL be 2,600 series
+- **AND** the runtime worksheet SHALL be 2,829 after the distinct 229-series attempt and retry delta
+- **AND** the 5,000-series ceiling SHALL retain 2,171 series of headroom
