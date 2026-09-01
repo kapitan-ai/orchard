@@ -5,11 +5,12 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
-  alias Orchard.Governance.AuditLog
+  alias Orchard.Governance.{AuditLog, PortalInviteToken}
   alias Orchard.Repo
 
   @moduletag :live
   @moduletag :db
+  @portal_password "sixteen-chars-ok"
 
   setup do
     Sandbox.mode(Orchard.Repo, {:shared, self()})
@@ -386,7 +387,8 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "tenant-portal-invite-card"
       assert html =~ "tenant-portal-users-card"
       assert html =~ "tenant-portal-access-card"
-      assert html =~ "bg-navy"
+      assert html =~ ~s(class="bg-navy mt-7)
+      refute html =~ "bg-navy-900"
 
       html =
         view
@@ -397,6 +399,18 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "Invited"
       assert {:ok, [user]} = Governance.list_portal_users(tenant)
       assert user.email == "dev@example.com"
+
+      user_row = view |> element("#portal-user-#{user.id}") |> render()
+      assert user_row =~ "Not issued"
+      refute user_row =~ "Invalidated"
+      assert user_row =~ ~s(class="text-sm text-slate-500 dark:text-slate-400")
+      assert user_row =~ ~s(class="text-xs text-slate-500 dark:text-slate-400")
+      assert user_row =~ "flex flex-col gap-3"
+      assert user_row =~ "sm:flex-row"
+      assert user_row =~ "break-all"
+      assert user_row =~ "shrink-0"
+      assert user_row =~ ~s(aria-label="Copy invite for dev@example.com")
+      assert user_row =~ ~s(aria-label="Disable dev@example.com")
     end
 
     test "Copy invite reissues a transient URL and disable leaves owned keys alone", %{
@@ -409,8 +423,30 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       first = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
       assert first =~ "tenant-portal-invite-url-card"
       assert first =~ "/portal/detail-t/invites/orchard_pi_"
+      assert first =~ "Pending"
       assert first =~ ~s(phx-hook="CopyGeneratedSecret")
       assert first =~ ~s(data-secret-source="tenant-portal-invite-url-value")
+      assert first =~ ~s(aria-describedby="tenant-portal-invite-url-guidance")
+      assert first =~ "One-time invite URL ready"
+      assert first =~ "phx-mounted"
+
+      url_value = view |> element("#tenant-portal-invite-url-value") |> render()
+      assert url_value =~ "bg-slate-100"
+      assert url_value =~ "text-slate-900"
+      assert url_value =~ "dark:bg-slate-800"
+      assert url_value =~ "dark:text-slate-100"
+
+      assert first =~ ~s(class="mt-3 rounded-md bg-navy )
+      refute first =~ "bg-navy-900"
+
+      assert {:ok, [summary]} = Governance.list_portal_user_summaries(tenant)
+
+      expected_iso =
+        summary.invite_expires_at |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+      assert first =~ ~s(id="tenant-portal-invite-url-expires-at")
+      assert first =~ ~s(class="mt-2 text-xs text-slate-500 dark:text-slate-400")
+      assert first =~ ~s(datetime="#{expected_iso}")
 
       second = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
       refute first == second
@@ -419,6 +455,163 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "Disabled"
       card_dismissed = not String.contains?(html, "tenant-portal-invite-url-card")
       assert card_dismissed
+    end
+
+    test "copy invite keeps the show-once URL without a fallible tenant-detail reload", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, user} =
+        Governance.create_portal_invite(tenant, %{email: "durable-reveal@example.com"})
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      {html, queries} =
+        capture_repo_queries(fn ->
+          render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+        end)
+
+      view_queries = for {pid, query} <- queries, pid == view.pid, do: query
+
+      assert html =~ "tenant-portal-invite-url-card"
+      assert html =~ "Pending"
+      refute Enum.any?(view_queries, &String.contains?(&1, ~s|FROM "tenants"|))
+      refute Enum.any?(view_queries, &String.contains?(&1, ~s|FROM "api_keys"|))
+      refute Enum.any?(view_queries, &String.contains?(&1, ~s|FROM "api_clients"|))
+    end
+
+    test "renders Pending invite context with localized expiry", %{conn: conn, tenant: tenant} do
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "pending@example.com"})
+      {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      row = view |> element("#portal-user-#{user.id}") |> render()
+      expected_iso = invite.expires_at |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+      assert row =~ "Invited"
+      assert row =~ "Pending"
+      assert row =~ "Expires"
+      assert row =~ ~s(id="portal-user-invite-expires-at-#{user.id}")
+      assert row =~ ~s(datetime="#{expected_iso}")
+      assert row =~ ~s(phx-hook="LocalTime")
+      assert row =~ ~s(data-local-time-format="datetime_minute")
+    end
+
+    test "current invite expiry clears the URL before refreshing the row to Expired", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "timer@example.com"})
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      shown = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+      [invite_url] = Regex.run(~r{/portal/detail-t/invites/orchard_pi_[\w-]+}, shown)
+      assert {:ok, [summary]} = Governance.list_portal_user_summaries(tenant)
+
+      PortalInviteToken
+      |> Repo.get_by!(portal_user_id: user.id)
+      |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(), -1, :second))
+      |> Repo.update!()
+
+      send(view.pid, {:portal_invite_expired, user.id, summary.invite_expires_at})
+      html = render(view)
+
+      refute html =~ "tenant-portal-invite-url-card"
+      refute html =~ invite_url
+      assert html =~ "Expired"
+      assert html =~ "Copy invite"
+    end
+
+    test "reissue replaces URL, expiry, and stale pending transition", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "reissue@example.com"})
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      first = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+      [first_url] = Regex.run(~r{/portal/detail-t/invites/orchard_pi_[\w-]+}, first)
+      [first_focus_region] = Regex.run(~r{tenant-portal-invite-reveal-\d+}, first)
+      assert {:ok, [first_summary]} = Governance.list_portal_user_summaries(tenant)
+
+      second = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+      [second_url] = Regex.run(~r{/portal/detail-t/invites/orchard_pi_[\w-]+}, second)
+      [second_focus_region] = Regex.run(~r{tenant-portal-invite-reveal-\d+}, second)
+      assert {:ok, [second_summary]} = Governance.list_portal_user_summaries(tenant)
+
+      refute first_url == second_url
+      refute first_focus_region == second_focus_region
+
+      assert DateTime.compare(second_summary.invite_expires_at, first_summary.invite_expires_at) ==
+               :gt
+
+      send(view.pid, {:portal_invite_expired, user.id, first_summary.invite_expires_at})
+      html = render(view)
+
+      assert html =~ "tenant-portal-invite-url-card"
+      assert html =~ second_url
+      refute html =~ first_url
+      assert html =~ "Pending"
+    end
+
+    test "navigation and reconnect do not restore the plaintext invite URL", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "ephemeral@example.com"})
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      shown = render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+      [invite_url] = Regex.run(~r{/portal/detail-t/invites/orchard_pi_[\w-]+}, shown)
+
+      {:ok, _list_view, _html} = live(conn, "/console/tenants")
+      {:ok, _navigated_view, navigated_html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      refute navigated_html =~ "tenant-portal-invite-url-card"
+      refute navigated_html =~ invite_url
+      assert navigated_html =~ "Pending"
+
+      {:ok, _reconnected_view, reconnected_html} = live(conn, "/console/tenants/#{tenant.id}")
+      refute reconnected_html =~ "tenant-portal-invite-url-card"
+      refute reconnected_html =~ invite_url
+      assert reconnected_html =~ "Pending"
+    end
+
+    test "renders Expired invite context with localized expiry", %{conn: conn, tenant: tenant} do
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "expired@example.com"})
+      {:ok, _invite} = Governance.copy_portal_invite(tenant, user)
+      expires_at = DateTime.add(DateTime.utc_now(), -1, :second)
+
+      PortalInviteToken
+      |> Repo.get_by!(portal_user_id: user.id)
+      |> Ecto.Changeset.change(expires_at: expires_at)
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+      row = view |> element("#portal-user-#{user.id}") |> render()
+
+      assert row =~ "Invited"
+      assert row =~ "Expired"
+      assert row =~ "Expired at"
+      assert row =~ ~s(id="portal-user-invite-expires-at-#{user.id}")
+      assert row =~ ~s(phx-hook="LocalTime")
+    end
+
+    test "keeps Active primary with subordinate Redeemed context", %{conn: conn, tenant: tenant} do
+      {:ok, user} = Governance.create_portal_invite(tenant, %{email: "active@example.com"})
+      {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+
+      {:ok, _active} =
+        Governance.redeem_portal_invite(tenant.slug, invite.token, @portal_password)
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      row = view |> element("#portal-user-#{user.id}") |> render()
+
+      assert row =~ "Active"
+      assert row =~ "Redeemed"
+      refute row =~ "Copy invite"
+      refute row =~ "Invalidated"
     end
 
     test "disable dismisses only the shown invite URL of the disabled Portal User", %{
@@ -474,5 +667,34 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       Governance.create_api_client_api_token(api_client, Map.merge(%{name: "prod"}, token_attrs))
 
     %{api_client: api_client, api_key: api_key, token: token}
+  end
+
+  defp capture_repo_queries(fun) do
+    handler_id = {__MODULE__, :repo_queries, System.unique_integer([:positive])}
+    test_pid = self()
+
+    :telemetry.attach(
+      handler_id,
+      [:orchard, :repo, :query],
+      fn _event, _measurements, metadata, _config ->
+        send(test_pid, {handler_id, self(), metadata.query})
+      end,
+      nil
+    )
+
+    try do
+      result = fun.()
+      {result, drain_repo_queries(handler_id, [])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp drain_repo_queries(handler_id, queries) do
+    receive do
+      {^handler_id, pid, query} -> drain_repo_queries(handler_id, [{pid, query} | queries])
+    after
+      0 -> Enum.reverse(queries)
+    end
   end
 end
