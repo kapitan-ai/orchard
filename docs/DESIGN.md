@@ -555,6 +555,18 @@ It must not render Console chrome or operator controls.
 It remains isolated to the Organization named by the route and to the portal-minted keys owned by the signed-in Portal User.
 The three operator cards remain Console surfaces and use the existing Console card, tactile-well, focus, and navy primary-action tokens in both Console theme modes.
 
+### 6.8 Organization API Token Mint Attribution
+
+The Organization API Tokens table places a **Minted via** column after **Name** and before **Prefix**.
+For `issuance_surface = "developer_portal"` with a Portal User from the same Organization, render **Developer Portal** as the primary line and the normalized Portal User email as visible secondary text.
+For `issuance_surface = "governance"` with no Portal User association, render **Operator tooling**.
+For a Developer Portal API Token whose Portal User attribution is null, missing, deleted, or associated with another Organization, render **Developer Portal** with **Attribution unavailable** as visible secondary text.
+Any inconsistent association must fail closed without exposing another Organization's Portal User email.
+These values describe mint-time provenance only.
+They do not identify API Token ownership, the Public Inference Bearer principal, current Portal User status, effective access, or revocation state.
+Disabling a Portal User does not automatically revoke minted API Tokens, and the existing **Status** column remains the credential-state presentation.
+Render both provenance lines in one noninteractive semantic table cell, use existing neutral light and dark theme tokens, allow the secondary line to wrap, and retain the shared table's local horizontal-scroll behavior on narrow viewports.
+
 ---
 
 ## 7. Motion
