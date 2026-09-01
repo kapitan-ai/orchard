@@ -48,7 +48,16 @@ defmodule Orchard.GovernanceTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, RoleBinding, Tenant}
+
+  alias Orchard.Governance.{
+    ApiKey,
+    ApiKeySecret,
+    AuditLog,
+    PortalUser,
+    RoleBinding,
+    Tenant,
+    TenantApiKeySummary
+  }
 
   describe "create_tenant/1" do
     test "creates a tenant, ignores caller-supplied ids, and writes one audit row" do
@@ -878,6 +887,159 @@ defmodule Orchard.GovernanceTest do
 
     test "returns error for malformed tenant ID" do
       assert {:error, :tenant_not_found} = Governance.list_api_keys_for_tenant("bad")
+    end
+  end
+
+  describe "list_tenant_api_key_summaries/1" do
+    test "SPEC 7.4a projects same-Organization Developer Portal mint attribution without secrets" do
+      tenant = create_tenant!("tenant-key-summary")
+
+      portal_user =
+        %PortalUser{}
+        |> PortalUser.invite_changeset(%{
+          tenant_id: tenant.id,
+          email: "  Developer@Example.COM "
+        })
+        |> Repo.insert!()
+
+      api_key =
+        create_api_key_record!(tenant, %{
+          portal_user_id: portal_user.id,
+          issuance_surface: "developer_portal"
+        })
+
+      assert {:ok, [%TenantApiKeySummary{} = summary]} =
+               Governance.list_tenant_api_key_summaries(tenant)
+
+      assert Map.from_struct(summary) == %{
+               id: api_key.id,
+               name: api_key.name,
+               token_prefix: api_key.token_prefix,
+               issuance_surface: "developer_portal",
+               portal_user_email: "developer@example.com",
+               expires_at: api_key.expires_at,
+               last_used_at: api_key.last_used_at,
+               revoked_at: api_key.revoked_at,
+               inserted_at: api_key.inserted_at
+             }
+
+      refute Map.has_key?(summary, :secret_hash)
+      refute Map.has_key?(summary, :password_hash)
+      refute Map.has_key?(summary, :session_epoch)
+    end
+
+    test "SPEC 7.4a preserves mint attribution and API Token state when the Portal User is disabled" do
+      tenant = create_tenant!("tenant-key-disabled-user-summary")
+
+      portal_user =
+        %PortalUser{}
+        |> PortalUser.invite_changeset(%{
+          tenant_id: tenant.id,
+          email: "disabled-mint@example.com"
+        })
+        |> Repo.insert!()
+
+      api_key =
+        create_api_key_record!(tenant, %{
+          portal_user_id: portal_user.id,
+          issuance_surface: "developer_portal"
+        })
+
+      assert {:ok, disabled_user} = Governance.disable_portal_user(tenant, portal_user)
+      assert disabled_user.status == "disabled"
+
+      assert {:ok,
+              [
+                %TenantApiKeySummary{
+                  id: key_id,
+                  portal_user_email: "disabled-mint@example.com",
+                  revoked_at: nil
+                }
+              ]} = Governance.list_tenant_api_key_summaries(tenant)
+
+      assert key_id == api_key.id
+      assert Repo.get!(ApiKey, api_key.id).revoked_at == nil
+    end
+
+    test "SPEC 7.4a projects governance mints without Portal User attribution" do
+      tenant = create_tenant!("tenant-key-governance-summary")
+      api_key = create_api_key_record!(tenant)
+
+      assert {:ok,
+              [
+                %TenantApiKeySummary{
+                  id: key_id,
+                  issuance_surface: "governance",
+                  portal_user_email: nil
+                }
+              ]} = Governance.list_tenant_api_key_summaries(tenant)
+
+      assert key_id == api_key.id
+    end
+
+    test "SPEC 7.4a keeps null and deleted Developer Portal attribution unavailable" do
+      tenant = create_tenant!("tenant-key-unattributed-summary")
+
+      portal_user =
+        %PortalUser{}
+        |> PortalUser.invite_changeset(%{
+          tenant_id: tenant.id,
+          email: "deleted@example.com"
+        })
+        |> Repo.insert!()
+
+      null_key =
+        create_api_key_record!(tenant, %{
+          name: "legacy-null",
+          issuance_surface: "developer_portal"
+        })
+
+      deleted_key =
+        create_api_key_record!(tenant, %{
+          name: "deleted-user",
+          portal_user_id: portal_user.id,
+          issuance_surface: "developer_portal"
+        })
+
+      Repo.delete!(portal_user)
+
+      assert {:ok, summaries} = Governance.list_tenant_api_key_summaries(tenant)
+
+      assert Enum.map(summaries, &{&1.id, &1.portal_user_email}) == [
+               {deleted_key.id, nil},
+               {null_key.id, nil}
+             ]
+    end
+
+    test "SPEC 7.4a fails closed for cross-Organization Portal User references" do
+      tenant = create_tenant!("tenant-key-cross-summary")
+      other_tenant = create_tenant!("tenant-key-cross-other")
+
+      other_portal_user =
+        %PortalUser{}
+        |> PortalUser.invite_changeset(%{
+          tenant_id: other_tenant.id,
+          email: "private@other.example"
+        })
+        |> Repo.insert!()
+
+      api_key =
+        create_api_key_record!(tenant, %{
+          portal_user_id: other_portal_user.id,
+          issuance_surface: "developer_portal"
+        })
+
+      assert {:ok,
+              [
+                %TenantApiKeySummary{
+                  id: key_id,
+                  issuance_surface: "developer_portal",
+                  portal_user_email: nil
+                } = summary
+              ]} = Governance.list_tenant_api_key_summaries(tenant)
+
+      assert key_id == api_key.id
+      refute inspect(summary) =~ other_portal_user.email
     end
   end
 

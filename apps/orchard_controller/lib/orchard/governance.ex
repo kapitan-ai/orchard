@@ -15,10 +15,12 @@ defmodule Orchard.Governance do
     ApiKeySecret,
     AuditLog,
     AuditWriter,
+    PortalUser,
     ProvisioningBatch,
     RoleBinding,
     ServiceAccount,
-    Tenant
+    Tenant,
+    TenantApiKeySummary
   }
 
   alias Orchard.Repo
@@ -678,6 +680,40 @@ defmodule Orchard.Governance do
         |> Enum.map(&redact_api_key/1)
 
       {:ok, api_keys}
+    end
+  end
+
+  @spec list_tenant_api_key_summaries(Tenant.t() | Ecto.UUID.t()) ::
+          {:ok, [TenantApiKeySummary.t()]} | {:error, :tenant_not_found}
+  def list_tenant_api_key_summaries(%Tenant{id: tenant_id}),
+    do: list_tenant_api_key_summaries(tenant_id)
+
+  def list_tenant_api_key_summaries(tenant_id) do
+    with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
+         {:ok, _tenant} <- fetch_tenant(tenant_id) do
+      summaries =
+        ApiKey
+        |> where([api_key], api_key.tenant_id == ^tenant_id)
+        |> join(:left, [api_key], portal_user in PortalUser,
+          on:
+            portal_user.id == api_key.portal_user_id and
+              portal_user.tenant_id == api_key.tenant_id
+        )
+        |> order_by([api_key], desc: api_key.inserted_at, desc: api_key.id)
+        |> select([api_key, portal_user], %TenantApiKeySummary{
+          id: api_key.id,
+          name: api_key.name,
+          token_prefix: api_key.token_prefix,
+          issuance_surface: api_key.issuance_surface,
+          portal_user_email: portal_user.email,
+          expires_at: api_key.expires_at,
+          last_used_at: api_key.last_used_at,
+          revoked_at: api_key.revoked_at,
+          inserted_at: api_key.inserted_at
+        })
+        |> Repo.all()
+
+      {:ok, summaries}
     end
   end
 
