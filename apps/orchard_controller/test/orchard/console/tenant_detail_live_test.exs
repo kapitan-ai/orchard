@@ -457,6 +457,29 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert card_dismissed
     end
 
+    test "copy invite keeps the show-once URL without a fallible tenant-detail reload", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, user} =
+        Governance.create_portal_invite(tenant, %{email: "durable-reveal@example.com"})
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      {html, queries} =
+        capture_repo_queries(fn ->
+          render_click(view, "copy_portal_invite", %{"portal_user_id" => user.id})
+        end)
+
+      view_queries = for {pid, query} <- queries, pid == view.pid, do: query
+
+      assert html =~ "tenant-portal-invite-url-card"
+      assert html =~ "Pending"
+      refute Enum.any?(view_queries, &String.contains?(&1, ~s|FROM "tenants"|))
+      refute Enum.any?(view_queries, &String.contains?(&1, ~s|FROM "api_keys"|))
+      refute Enum.any?(view_queries, &String.contains?(&1, ~s|FROM "api_clients"|))
+    end
+
     test "renders Pending invite context with localized expiry", %{conn: conn, tenant: tenant} do
       {:ok, user} = Governance.create_portal_invite(tenant, %{email: "pending@example.com"})
       {:ok, invite} = Governance.copy_portal_invite(tenant, user)
@@ -644,5 +667,34 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       Governance.create_api_client_api_token(api_client, Map.merge(%{name: "prod"}, token_attrs))
 
     %{api_client: api_client, api_key: api_key, token: token}
+  end
+
+  defp capture_repo_queries(fun) do
+    handler_id = {__MODULE__, :repo_queries, System.unique_integer([:positive])}
+    test_pid = self()
+
+    :telemetry.attach(
+      handler_id,
+      [:orchard, :repo, :query],
+      fn _event, _measurements, metadata, _config ->
+        send(test_pid, {handler_id, self(), metadata.query})
+      end,
+      nil
+    )
+
+    try do
+      result = fun.()
+      {result, drain_repo_queries(handler_id, [])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp drain_repo_queries(handler_id, queries) do
+    receive do
+      {^handler_id, pid, query} -> drain_repo_queries(handler_id, [{pid, query} | queries])
+    after
+      0 -> Enum.reverse(queries)
+    end
   end
 end

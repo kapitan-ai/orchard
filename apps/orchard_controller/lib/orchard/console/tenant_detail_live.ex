@@ -103,7 +103,7 @@ defmodule OrchardConsole.TenantDetailLive do
         {:noreply,
          socket
          |> show_portal_invite(user_id, invite)
-         |> load_tenant_detail()}
+         |> mark_portal_invite_pending(user_id, invite.expires_at)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Unable to copy invite.")}
@@ -160,6 +160,19 @@ defmodule OrchardConsole.TenantDetailLive do
       portal_invite_expires_at: invite.expires_at,
       portal_invite_expiry_timer_ref: timer_ref
     )
+  end
+
+  defp mark_portal_invite_pending(socket, user_id, expires_at) do
+    portal_users =
+      Enum.map(socket.assigns.portal_users, fn
+        %{id: ^user_id} = user ->
+          %{user | invite_context: :pending, invite_expires_at: expires_at}
+
+        user ->
+          user
+      end)
+
+    assign(socket, portal_users: portal_users)
   end
 
   defp clear_portal_invite(socket) do
