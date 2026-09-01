@@ -1619,7 +1619,10 @@ if config_env() == :dev do
       env_optional_string.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT")
     )
 
-  peer_grants_enabled? = env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+  peer_grants_enabled? =
+    env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false) or
+      (source_dev_role == :node_agent and
+         not is_nil(env_optional_string.("ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR")))
 
   source_dev_node_name =
     env_optional_string.("ORCHARD_BEAM_NODE_NAME") ||

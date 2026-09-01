@@ -82,6 +82,11 @@ if [[ -z "$IPV4" ]]; then
   exit 64
 fi
 
+unset ORCHARD_BEAM_NODE_NAME
+unset ORCHARD_BEAM_COOKIE_FILE
+unset ORCHARD_RUNTIME_ENDPOINT_TARGETS
+unset ORCHARD_RUNTIME_CLIENT_TARGETS
+
 SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchard-beam-peer-grant-app.XXXXXX")"
 chmod 700 "$SMOKE_ROOT"
 mkdir -p "$SMOKE_ROOT/descriptor"
@@ -98,6 +103,7 @@ CONTROL_PORT="${ORCHARD_BEAM_TRACER_CONTROL_PORT:-$((55000 + $$ % 500))}"
 CONTROLLER_DIST_PORT="${ORCHARD_BEAM_TRACER_CONTROLLER_DIST_PORT:-$((56000 + $$ % 500))}"
 NODE_DIST_PORT="${ORCHARD_BEAM_TRACER_NODE_DIST_PORT:-$((57000 + $$ % 500))}"
 DATABASE="orchard_peer_grant_smoke_$$"
+RUNTIME_PORT="${ORCHARD_BEAM_TRACER_RUNTIME_PORT:-$((59000 + $$ % 500))}"
 
 cleanup() {
   stop_process "$CONTROLLER_PID"
@@ -117,6 +123,7 @@ trap cleanup EXIT
 
 export MIX_ENV=dev
 export PGDATABASE="$DATABASE"
+export ORCHARD_SUPPORT_ROOT="$SMOKE_ROOT/support"
 export ORCHARD_BEAM_TRACER_IPV4="$IPV4"
 export ORCHARD_BEAM_EPMD_PORT="$EPMD_PORT"
 export ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST="$IPV4"
@@ -129,13 +136,24 @@ export ORCHARD_BEAM_PEER_GRANT_STATE_ROOT="$SMOKE_ROOT/launch"
 export ORCHARD_BEAM_PEER_GRANTS_ENABLED=true
 export ORCHARD_BEAM_PEER_GRANT_MODE=grant_control
 export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+export ORCHARD_SOURCE_DEV_NODE_VALIDATION_PROFILE=listener_free_runtime_endpoint
+export ORCHARD_LISTENER_FREE_RUNTIME_ENDPOINT_READY_FILE="$SMOKE_ROOT/node.listener-free.ready"
+export ORCHARD_NODE_AGENT_LISTEN_HOST=127.0.0.1
+export ORCHARD_NODE_AGENT_LISTEN_PORT="$RUNTIME_PORT"
+export ORCHARD_RUNTIME_CLIENT_PORT="$RUNTIME_PORT"
+export ORCHARD_BEAM_SMOKE_ROOT="$SMOKE_ROOT"
 export ORCHARD_SOURCE_DEV_ROLE=controller
 export ORCHARD_BEAM_DIST_PORT_MIN="$CONTROLLER_DIST_PORT"
 export ORCHARD_BEAM_DIST_PORT_MAX="$CONTROLLER_DIST_PORT"
 export PORT="$((58000 + $$ % 500))"
 
-mise exec -- mix ecto.create --quiet
-mise exec -- mix ecto.migrate --quiet
+ORCHARD_BEAM_PEER_GRANTS_ENABLED=false ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc \
+  mise exec -- mix ecto.create --quiet
+ORCHARD_BEAM_PEER_GRANTS_ENABLED=false ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc \
+  mise exec -- mix ecto.migrate --quiet
+
+export ORCHARD_CONTROLLER_MEMBERSHIP_HOST="$IPV4"
+export ORCHARD_BEAM_NODE_NAME="orchard_controller@$IPV4"
 
 mise exec -- mix run --no-start \
   "$REPO_ROOT/scripts/support/beam-peer-grant-control-application.exs" \
@@ -149,6 +167,7 @@ if ! wait_for_file "$SMOKE_ROOT/control.ready" "$CONTROL_PID"; then
 fi
 
 source "$SMOKE_ROOT/scope.env"
+export ORCHARD_CONTROLLER_MEMBERSHIP_HOST="$IPV4"
 export ORCHARD_BEAM_NODE_NAME="$NODE_NAME"
 
 mise exec -- "$REPO_ROOT/bin/source-dev-peer-grant" node-retrieve
@@ -184,6 +203,12 @@ export ORCHARD_BEAM_DIST_PORT_MAX="$NODE_DIST_PORT"
 mise exec -- "$REPO_ROOT/bin/source-dev-peer-grant" node-run \
   <&8 >"$SMOKE_ROOT/node.log" 2>&1 &
 NODE_PID=$!
+
+if ! wait_for_file "$ORCHARD_LISTENER_FREE_RUNTIME_ENDPOINT_READY_FILE" "$NODE_PID"; then
+  cat "$SMOKE_ROOT/node.log" >&2
+  echo "error: listener-free Node Agent profile did not become ready" >&2
+  exit 1
+fi
 
 export ORCHARD_BEAM_NODE_NAME="$CONTROLLER_NAME"
 export ORCHARD_BEAM_DIST_PORT_MIN="$CONTROLLER_DIST_PORT"
@@ -222,6 +247,30 @@ if (( active != 1 )); then
 fi
 
 cat "$SMOKE_ROOT/active.log"
+
+validation_command="Code.require_file(\"$REPO_ROOT/scripts/support/listener-free-beam-runtime-endpoint.exs\"); Orchard.ListenerFreeBeamRuntimeEndpointValidation.run_controller!(\"$SMOKE_ROOT\", \"$NODE_ID\", $RUNTIME_PORT)"
+printf '%s\n' "$validation_command" >&9
+
+if ! wait_for_file "$SMOKE_ROOT/controller.listener-free.complete" "$CONTROLLER_PID"; then
+  cat "$SMOKE_ROOT/node.log" >&2
+  cat "$SMOKE_ROOT/controller.log" >&2
+  echo "error: listener-free Runtime Endpoint operation matrix did not complete" >&2
+  exit 1
+fi
+
+cat "$SMOKE_ROOT/controller.listener-free.complete"
+
+persisted="$(
+  psql --no-psqlrc --tuples-only --no-align \
+    --command "SELECT state::text || ':' || (last_heartbeat_at IS NOT NULL)::text || ':' || (SELECT count(*) FROM node_heartbeats WHERE node_id = '$NODE_ID')::text FROM nodes WHERE id = '$NODE_ID'"
+)"
+
+if [[ ! "$persisted" =~ ^active:true:([1-9][0-9]*)$ ]]; then
+  echo "error: expected active Node with last_heartbeat_at and persisted heartbeat rows, got: $persisted" >&2
+  exit 1
+fi
+
+printf 'activation and heartbeat persistence: %s\n' "$persisted"
 
 stop_process "$CONTROLLER_PID"
 CONTROLLER_PID=""
