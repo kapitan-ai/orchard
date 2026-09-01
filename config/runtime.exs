@@ -558,6 +558,7 @@ default_node_runtime = fn root ->
     node_identity_path: Path.join([root, "data", "node-id"]),
     node_identity_root: Path.join([root, "config", "node-identity"]),
     grpc_security: :plaintext_compatibility,
+    runtime_grpc_listener_enabled: true,
     display_name: nil,
     listen_address: [host: "127.0.0.1", port: 50_061],
     models_root: Path.join(root, "models"),

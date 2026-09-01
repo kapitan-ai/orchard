@@ -19,14 +19,15 @@ defmodule Orchard.Node.Supervisor do
 
   @impl true
   def init(_init_arg) do
-    children = [
-      ModelManager,
-      {Task.Supervisor, name: Orchard.Node.ModelLoadTaskSupervisor},
-      RuntimeProcessReaper,
-      WorkerSupervisor,
-      {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor},
-      Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)
-    ]
+    children =
+      [
+        ModelManager,
+        {Task.Supervisor, name: Orchard.Node.ModelLoadTaskSupervisor},
+        RuntimeProcessReaper,
+        WorkerSupervisor,
+        {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor}
+      ]
+      |> maybe_add_runtime_grpc_listener()
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
@@ -42,6 +43,15 @@ defmodule Orchard.Node.Supervisor do
       start_server: true,
       adapter_opts: grpc_adapter_opts(listen_address)
     ]
+  end
+
+  defp maybe_add_runtime_grpc_listener(children) do
+    if Orchard.Node.runtime_grpc_listener_enabled?() do
+      children ++
+        [Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)]
+    else
+      children
+    end
   end
 
   defp grpc_adapter_opts(listen_address) do

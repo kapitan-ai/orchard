@@ -78,6 +78,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       node_identity_path: Path.join([root, "data", "node-id"]),
       node_identity_root: Path.join([root, "config", "node-identity"]),
       grpc_security: :plaintext_compatibility,
+      runtime_grpc_listener_enabled: true,
       display_name: nil,
       listen_address: [host: @default_runtime_host, port: @default_runtime_port],
       models_root: Path.join(root, "models"),

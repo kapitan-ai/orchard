@@ -127,6 +127,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       |> Keyword.fetch!(:runtime)
 
     assert runtime[:grpc_security] == :plaintext_compatibility
+    assert runtime[:runtime_grpc_listener_enabled]
   end
 
   test "runtime.exs rejects plaintext gRPC bound to a non-loopback listen host" do
