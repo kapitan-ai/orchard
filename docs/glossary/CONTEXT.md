@@ -247,8 +247,9 @@ _Avoid_: Worker Runtime Interface, Node Lifecycle Interface, transport protocol
 
 **gRPC Compatibility Adapter**:
 The current adapter that maps Runtime Endpoint Interface semantics to `proto/cluster/v1` and `NodeRuntimeService`.
-It remains an explicit mTLS compatibility, diagnostics, external-provider, recovery, and operator opt-out path while keeping the durable Controller domain contract transport-independent.
-_Avoid_: Runtime Endpoint Interface, Worker Runtime Interface, first-party BEAM mesh
+It is the current explicit first-party Controller-to-Node Runtime Endpoint compatibility and operator opt-out mode.
+It does not name the separate Peer Grant/control or Worker Runtime gRPC boundaries, and any future reuse by a non-BEAM adapter requires its own accepted contract.
+_Avoid_: Runtime Endpoint Interface, Worker Runtime Interface, Peer Grant control path, first-party BEAM mesh
 
 **Worker Runtime Interface**:
 The provider-neutral, versioned Node Agent-local execution process contract for readiness, model loading and unloading, inference streaming, cancellation, health, diagnostics, and normalized failures.
