@@ -5,7 +5,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
-  alias Orchard.Governance.AuditLog
+  alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, PortalUser}
   alias Orchard.Repo
 
   @moduletag :live
@@ -100,6 +100,129 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert key_row =~ ~s(data-local-time-format="datetime_minute")
       # Last Used is nil — should show placeholder without hook
       assert key_row =~ "—"
+    end
+
+    test "renders same-Organization Developer Portal mint attribution without token secrets", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      portal_user =
+        %PortalUser{}
+        |> PortalUser.invite_changeset(%{
+          tenant_id: tenant.id,
+          email: "  Developer@Example.COM "
+        })
+        |> Repo.insert!()
+
+      {api_key, token} = create_portal_api_key_record!(tenant, portal_user)
+      {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      assert html =~ "Minted via"
+
+      key_row = view |> element("#api-key-#{api_key.id}") |> render()
+      assert key_row =~ "Developer Portal"
+      assert key_row =~ "developer@example.com"
+      refute key_row =~ token
+
+      table_card = view |> element("#tenant-api-keys-card") |> render()
+      assert table_card =~ ~r/Name.*Minted via.*Prefix/s
+      assert table_card =~ "overflow-x-auto"
+
+      minted_via_cell =
+        view |> element("#api-key-#{api_key.id} td:nth-child(2)") |> render()
+
+      assert minted_via_cell =~ "min-w-40 max-w-[16rem] whitespace-normal"
+      assert minted_via_cell =~ "break-words"
+      assert minted_via_cell =~ "text-slate-500 dark:text-slate-400"
+      refute minted_via_cell =~ "<button"
+      refute minted_via_cell =~ "<a"
+      refute minted_via_cell =~ "tabindex"
+    end
+
+    test "renders governance mints as Operator tooling", %{conn: conn, tenant: tenant} do
+      {:ok, %{api_key: api_key, token: token}} =
+        Governance.create_api_key(tenant, %{name: "operator-token"})
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      key_row = view |> element("#api-key-#{api_key.id}") |> render()
+      assert key_row =~ "Operator tooling"
+      refute key_row =~ "Developer Portal"
+      refute key_row =~ "Attribution unavailable"
+      refute key_row =~ token
+    end
+
+    test "renders null and cross-Organization Portal attribution as unavailable", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      other_tenant =
+        Governance.create_tenant(%{slug: "detail-other", name: "Detail Other"})
+        |> elem(1)
+
+      other_portal_user =
+        %PortalUser{}
+        |> PortalUser.invite_changeset(%{
+          tenant_id: other_tenant.id,
+          email: "private@other.example"
+        })
+        |> Repo.insert!()
+
+      {legacy_key, legacy_token} =
+        create_portal_api_key_record!(tenant, other_portal_user, %{
+          name: "legacy-token",
+          portal_user_id: nil
+        })
+
+      {cross_key, cross_token} =
+        create_portal_api_key_record!(tenant, other_portal_user, %{name: "cross-token"})
+
+      {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      for {api_key, token} <- [{legacy_key, legacy_token}, {cross_key, cross_token}] do
+        key_row = view |> element("#api-key-#{api_key.id}") |> render()
+        assert key_row =~ "Developer Portal"
+        assert key_row =~ "Attribution unavailable"
+        refute key_row =~ token
+      end
+
+      refute html =~ other_portal_user.email
+    end
+
+    test "keeps expired and deliberately revoked rendering separate from mint provenance", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      portal_user =
+        %PortalUser{}
+        |> PortalUser.invite_changeset(%{
+          tenant_id: tenant.id,
+          email: "status@example.com"
+        })
+        |> Repo.insert!()
+
+      expires_at =
+        DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+
+      {api_key, _token} =
+        create_portal_api_key_record!(tenant, portal_user, %{expires_at: expires_at})
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      expired_row = view |> element("#api-key-#{api_key.id}") |> render()
+      assert expired_row =~ "Expired"
+      assert expired_row =~ "Developer Portal"
+      assert expired_row =~ portal_user.email
+      assert has_element?(view, "#tenant-api-key-revoke-#{api_key.id}")
+
+      html = render_click(view, "revoke_api_key", %{"id" => api_key.id})
+      revoked_row = view |> element("#api-key-#{api_key.id}") |> render()
+
+      assert html =~ "Revoked API Token portal-token."
+      assert revoked_row =~ "Revoked"
+      assert revoked_row =~ "Developer Portal"
+      assert revoked_row =~ portal_user.email
+      refute has_element?(view, "#tenant-api-key-revoke-#{api_key.id}")
     end
 
     test "secret card is NOT shown on fresh page visit", %{conn: conn, tenant: tenant} do
@@ -474,5 +597,29 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       Governance.create_api_client_api_token(api_client, Map.merge(%{name: "prod"}, token_attrs))
 
     %{api_client: api_client, api_key: api_key, token: token}
+  end
+
+  defp create_portal_api_key_record!(tenant, portal_user, overrides \\ %{}) do
+    generated = ApiKeySecret.generate()
+
+    attrs =
+      Map.merge(
+        %{
+          tenant_id: tenant.id,
+          portal_user_id: portal_user.id,
+          name: "portal-token",
+          token_prefix: generated.token_prefix,
+          secret_hash: generated.secret_hash,
+          issuance_surface: "developer_portal"
+        },
+        overrides
+      )
+
+    api_key =
+      %ApiKey{}
+      |> ApiKey.tenant_direct_changeset(attrs)
+      |> Repo.insert!()
+
+    {api_key, generated.token}
   end
 end

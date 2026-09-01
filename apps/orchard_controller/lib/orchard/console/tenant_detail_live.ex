@@ -7,7 +7,7 @@ defmodule OrchardConsole.TenantDetailLive do
 
   alias Orchard.API.Transport
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, RoleBinding}
+  alias Orchard.Governance.{ApiKey, RoleBinding, TenantApiKeySummary}
 
   @console_audit_opts [actor_type: "operator", surface: "console"]
 
@@ -393,6 +393,15 @@ defmodule OrchardConsole.TenantDetailLive do
 
           <.table id="tenant-api-keys-table" rows={@api_keys} row_id={&"api-key-#{&1.id}"}>
             <:col :let={key} label="Name">{key.name}</:col>
+            <:col :let={key} label="Minted via" class="min-w-40 max-w-[16rem] whitespace-normal">
+              <p>{minted_via_label(key)}</p>
+              <p
+                :if={key.issuance_surface == "developer_portal"}
+                class="mt-1 break-words text-xs text-slate-500 dark:text-slate-400"
+              >
+                {key.portal_user_email || "Attribution unavailable"}
+              </p>
+            </:col>
             <:col :let={key} label="Prefix" mono>{key.token_prefix}</:col>
             <:col :let={key} label="Created" mono><.local_time value={key.inserted_at} format={:datetime_minute} /></:col>
               <:col :let={key} label="Last Used" mono><.local_time value={key.last_used_at} format={:datetime_minute} /></:col>
@@ -743,7 +752,7 @@ defmodule OrchardConsole.TenantDetailLive do
     tenant_id = socket.assigns.tenant_id
 
     with {:ok, tenant} <- Governance.get_tenant(tenant_id),
-         {:ok, api_keys} <- Governance.list_api_keys_for_tenant(tenant),
+         {:ok, api_keys} <- Governance.list_tenant_api_key_summaries(tenant),
          {:ok, api_clients} <- Governance.list_api_clients_for_tenant(tenant),
          {:ok, portal_users} <- Governance.list_portal_users(tenant) do
       assign(socket,
@@ -776,13 +785,24 @@ defmodule OrchardConsole.TenantDetailLive do
 
   defp active_api_token?(%ApiKey{} = api_key), do: ApiKey.status(api_key, utc_now()) == :active
 
+  defp minted_via_label(%TenantApiKeySummary{issuance_surface: "developer_portal"}),
+    do: "Developer Portal"
+
+  defp minted_via_label(%TenantApiKeySummary{}), do: "Operator tooling"
+
   defp present?(value) when is_binary(value), do: String.trim(value) != ""
   defp present?(_value), do: false
 
   attr(:api_key, :map, required: true)
 
   defp api_token_status_badge(assigns) do
-    assigns = assign(assigns, :status, ApiKey.status(assigns.api_key, utc_now()))
+    status =
+      case assigns.api_key do
+        %ApiKey{} = api_key -> ApiKey.status(api_key, utc_now())
+        %TenantApiKeySummary{} = api_key -> TenantApiKeySummary.status(api_key, utc_now())
+      end
+
+    assigns = assign(assigns, :status, status)
 
     ~H"""
     <.badge :if={@status == :active} tone={:success}>Active</.badge>
