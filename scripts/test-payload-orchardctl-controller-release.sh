@@ -49,6 +49,14 @@ assert_contains() {
   grep -F -- "$expected" "$path" >/dev/null || fail "expected $path to contain $expected"
 }
 
+assert_absent() {
+  local unexpected="$1"
+  local path="$2"
+  if grep -F -- "$unexpected" "$path" >/dev/null; then
+    fail "expected $path to omit $unexpected"
+  fi
+}
+
 assert_matches() {
   local expected="$1"
   local path="$2"
@@ -120,10 +128,15 @@ chmod 0755 "$STAGED_ROOT/share/bin/orchardctl" "$STAGED_ROOT/share/bin/orchard-c
 
 cmp -s "$REPO_ROOT/packaging/payload/bin/orchardctl" "$STAGED_ROOT/share/bin/orchardctl" ||
   fail "staged orchardctl does not match the changed source wrapper"
-CONTROLLER_RPC_BEAM=$(find "$STAGED_ROOT/releases/orchard_controller/lib" -path '*/ebin/Elixir.OrchardCLI.ControllerRPC.beam' -print -quit)
-[[ -n "$CONTROLLER_RPC_BEAM" ]] || fail "assembled Controller release is missing ControllerRPC"
+CONTROLLER_RPC_BEAM=$(find "$STAGED_ROOT/releases/orchard_controller/lib" -path '*/ebin/Elixir.Orchard.PackagedNodeCommandRPC.beam' -print -quit)
+[[ -n "$CONTROLLER_RPC_BEAM" ]] || fail "assembled Controller release is missing the Controller-owned packaged RPC entrypoint"
+CLI_LIBRARY=$(find "$STAGED_ROOT/releases/orchard_controller/lib" -maxdepth 1 -name 'orchard_cli-*' -print -quit)
+[[ -z "$CLI_LIBRARY" ]] || fail "assembled Controller release still contains orchard_cli"
+CLI_BEAM=$(find "$STAGED_ROOT/releases/orchard_controller/lib" \
+  \( -name 'Elixir.OrchardCLI.beam' -o -name 'Elixir.OrchardCLI.*.beam' \) -print -quit)
+[[ -z "$CLI_BEAM" ]] || fail "assembled Controller release still contains an OrchardCLI module"
 REL_FILE="$STAGED_ROOT/releases/orchard_controller/releases/$PRODUCT_VERSION/orchard_controller.rel"
-assert_contains "{orchard_cli,\"$PRODUCT_VERSION\",load}" "$REL_FILE"
+assert_absent "{orchard_cli," "$REL_FILE"
 
 cat > "$TOOLS/stat" <<'SH'
 #!/bin/sh
@@ -259,17 +272,25 @@ fi
 assert_empty "$READY_STDERR"
 assert_contains 'cluster_management.node_status_list' "$READY_STDOUT"
 
-MODULE_OUTPUT=$(release_rpc 'IO.puts(Process.group_leader(), if(:code.which(OrchardCLI.ControllerRPC) == :non_existing, do: "missing", else: "loaded"))')
-[[ "$MODULE_OUTPUT" == "loaded" ]] || fail "ControllerRPC module was not loaded in the running release"
+MODULE_OUTPUT=$(release_rpc 'IO.puts(Process.group_leader(), if(:code.which(Orchard.PackagedNodeCommandRPC) == :non_existing, do: "missing", else: "loaded"))')
+[[ "$MODULE_OUTPUT" == "loaded" ]] || fail "Controller-owned packaged RPC module was not loaded in the running release"
+OLD_MODULE_OUTPUT=$(release_rpc 'IO.puts(Process.group_leader(), if(:code.which(OrchardCLI.ControllerRPC) == :non_existing, do: "missing", else: "loaded"))')
+[[ "$OLD_MODULE_OUTPUT" == "missing" ]] || fail "removed OrchardCLI.ControllerRPC still exists in the running release"
 
-DIRECT_ENVELOPE=$(release_rpc 'OrchardCLI.ControllerRPC.main_base64(["bm9kZXM=", "bGlzdA==", "LS1qc29u"])')
+set +e
+release_rpc 'OrchardCLI.ControllerRPC.main_base64([])' >"$TMP_ROOT/removed-rpc.stdout" 2>"$TMP_ROOT/removed-rpc.stderr"
+REMOVED_RPC_STATUS=$?
+set -e
+[[ "$REMOVED_RPC_STATUS" -ne 0 ]] || fail "removed OrchardCLI.ControllerRPC remained callable"
+
+DIRECT_ENVELOPE=$(release_rpc 'Orchard.PackagedNodeCommandRPC.main_base64(["bm9kZXM=", "bGlzdA==", "LS1qc29u"])')
 if [[ $(printf '%s\n' "$DIRECT_ENVELOPE" | awk 'END {print NR}') -ne 1 ]]; then
   printf '%s\n' '--- direct envelope output ---' "$DIRECT_ENVELOPE" >> "$CONTROLLER_LOG"
   fail "real release RPC emitted more than one envelope line"
 fi
 [[ "$DIRECT_ENVELOPE" == ORCHARDCTL_RPC_V1:0:stdout:* ]] || fail "real release RPC did not emit the stdout envelope"
 
-ERROR_ENVELOPE=$(release_rpc 'OrchardCLI.ControllerRPC.main_base64(["bm9kZXM=", "ZW5yb2xsbWVudA=="])')
+ERROR_ENVELOPE=$(release_rpc 'Orchard.PackagedNodeCommandRPC.main_base64(["bm9kZXM=", "ZW5yb2xsbWVudA=="])')
 [[ $(printf '%s\n' "$ERROR_ENVELOPE" | awk 'END {print NR}') -eq 1 ]] || fail "real release RPC error emitted more than one envelope line"
 [[ "$ERROR_ENVELOPE" == ORCHARDCTL_RPC_V1:1:stderr:* ]] || fail "real release RPC did not emit the stderr envelope"
 

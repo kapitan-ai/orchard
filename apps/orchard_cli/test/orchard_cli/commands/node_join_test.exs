@@ -101,6 +101,7 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: TransportClient
   alias Orchard.DispatchCapacity
   alias Orchard.Inference
+  alias Orchard.Node.ModelManager
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.NodeEnrollments
@@ -126,6 +127,15 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
   alias OrchardCLI.NodeEnrollmentBundle
   alias OrchardCLI.NodeIdentity.Store
   alias OrchardCLI.PinnedHTTPS
+
+  setup_all do
+    case Process.whereis(ModelManager) do
+      nil -> start_supervised!(ModelManager)
+      _pid -> :ok
+    end
+
+    :ok
+  end
 
   setup do
     :ok = Sandbox.checkout(Repo)

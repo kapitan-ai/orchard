@@ -529,6 +529,8 @@ final class LifecycleServiceTests: XCTestCase {
     )
     try write(
       "controller-v2", to: fixture.payload.appendingPathComponent("releases/controller.txt"))
+    try write(
+      "orchardctl-v2", to: fixture.payload.appendingPathComponent("share/bin/orchardctl"))
 
     let update = try LifecycleInvocation.parse(
       arguments: ["update", "--role", "controller", "--root", fixture.root.path],
@@ -544,6 +546,13 @@ final class LifecycleServiceTests: XCTestCase {
         absolutePath: "/Library/Application Support/Orchard/releases/controller.txt"
       ),
       "controller-v2"
+    )
+    XCTAssertEqual(
+      try text(
+        root: fixture.root,
+        absolutePath: "/Library/Application Support/Orchard/bin/orchardctl"
+      ),
+      "orchardctl-v2"
     )
     XCTAssertEqual(
       try text(
@@ -617,6 +626,8 @@ final class LifecycleServiceTests: XCTestCase {
     )
     try write(
       "controller-v2", to: fixture.payload.appendingPathComponent("releases/controller.txt"))
+    try write(
+      "orchardctl-v2", to: fixture.payload.appendingPathComponent("share/bin/orchardctl"))
 
     let update = try LifecycleInvocation.parse(
       arguments: ["update", "--role", "controller", "--root", fixture.root.path],
@@ -641,6 +652,13 @@ final class LifecycleServiceTests: XCTestCase {
         absolutePath: "/Library/Application Support/Orchard/releases/controller.txt"
       ),
       "controller"
+    )
+    XCTAssertEqual(
+      try text(
+        root: fixture.root,
+        absolutePath: "/Library/Application Support/Orchard/bin/orchardctl"
+      ),
+      "orchardctl"
     )
     XCTAssertEqual(
       try text(

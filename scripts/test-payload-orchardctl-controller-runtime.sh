@@ -9,6 +9,7 @@ TMP_ROOT="$(mktemp -d)"
 PACKAGE_ROOT="$TMP_ROOT/Library/Application Support/Orchard"
 TOOLS="$TMP_ROOT/tools"
 WRAPPER="$TMP_ROOT/orchardctl"
+LEGACY_WRAPPER="$TMP_ROOT/orchardctl-legacy-entrypoint"
 INVOCATIONS="$TMP_ROOT/invocations.log"
 UNTRUSTED_TOOL_CALLS="$TMP_ROOT/untrusted-tool-calls.log"
 PRIVATE_TMP="$TMP_ROOT/private-tmp"
@@ -182,6 +183,28 @@ case "$FAKE_RPC_MODE" in
     printf 'simulated rpc failure\n' >&2
     exit 1
     ;;
+  legacy-only)
+    case "$*" in
+      *OrchardCLI.ControllerRPC.main_base64*)
+        printf 'ORCHARDCTL_RPC_V1:0:stdout:Y29udHJvbGxlciBzdWNjZXNz\n'
+        ;;
+      *)
+        printf 'new Controller entrypoint is unavailable in legacy release\n' >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  new-only)
+    case "$*" in
+      *Orchard.PackagedNodeCommandRPC.main_base64*)
+        printf 'ORCHARDCTL_RPC_V1:0:stdout:Y29udHJvbGxlciBzdWNjZXNz\n'
+        ;;
+      *)
+        printf 'legacy CLI entrypoint is unavailable in new release\n' >&2
+        exit 1
+        ;;
+    esac
+    ;;
   *)
     printf 'unexpected fake mode: %s\n' "$FAKE_RPC_MODE" >&2
     exit 2
@@ -200,6 +223,10 @@ sed \
   -e "s|/usr/sbin/lsof|$TOOLS/lsof|g" \
   "$SOURCE_WRAPPER" > "$WRAPPER"
 chmod +x "$WRAPPER"
+sed \
+  's/Orchard\.PackagedNodeCommandRPC/OrchardCLI.ControllerRPC/' \
+  "$WRAPPER" > "$LEGACY_WRAPPER"
+chmod +x "$LEGACY_WRAPPER"
 
 node_commands=(
   list inspect pending admit reject cordon uncordon drain cancel-drain maintenance resume decommission
@@ -229,11 +256,24 @@ standalone_cases=(
 for invocation in "${standalone_cases[@]}"; do
   # shellcheck disable=SC2086 # Each fixture deliberately describes argv words.
   run_case "standalone-${invocation// /-}" success $invocation
-  [[ "$RUN_STATUS" -eq 0 ]] || fail "expected standalone invocation to succeed: $invocation"
+  if [[ "$RUN_STATUS" -ne 0 ]]; then
+    cat "$RUN_STDOUT" "$RUN_STDERR" >&2
+    fail "expected standalone invocation to succeed: $invocation"
+  fi
   assert_invocation "standalone:eval "
   assert_no_invocation "controller:"
   assert_file_contains "standalone cli" "$RUN_STDOUT"
 done
+
+run_case new-wrapper-legacy-release legacy-only nodes list
+[[ "$RUN_STATUS" -eq 1 ]] || fail "expected new wrapper against legacy release to fail closed"
+assert_file_contains "controller runtime" "$RUN_STDERR"
+assert_no_invocation "standalone:"
+
+WRAPPER="$LEGACY_WRAPPER" run_case legacy-wrapper-new-release new-only nodes list
+[[ "$RUN_STATUS" -eq 1 ]] || fail "expected legacy wrapper against new release to fail closed"
+assert_file_contains "controller runtime" "$RUN_STDERR"
+assert_no_invocation "standalone:"
 
 run_case error error nodes admit node-id --yes
 [[ "$RUN_STATUS" -eq 7 ]] || fail "expected Controller command error exit 7, got $RUN_STATUS"
@@ -251,7 +291,8 @@ second line'
 run_case hostile success nodes admit node-id --capacity-policy-reason "$hostile_reason" --yes
 [[ "$RUN_STATUS" -eq 0 ]] || fail "expected hostile argument fixture to remain data"
 assert_no_invocation "$hostile_reason"
-assert_invocation "OrchardCLI.ControllerRPC.main_base64("
+assert_invocation "Orchard.PackagedNodeCommandRPC.main_base64("
+assert_no_invocation "OrchardCLI."
 
 run_case rpc-failure failure nodes admit node-id --yes
 [[ "$RUN_STATUS" -eq 1 ]] || fail "expected RPC failure exit 1, got $RUN_STATUS"
