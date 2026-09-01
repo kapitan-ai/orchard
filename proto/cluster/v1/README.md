@@ -9,7 +9,7 @@ branch as blocked until reconciled.
 
 This directory owns the controller ↔ node-agent cluster RPC contract. It does
 not own the node-agent ↔ worker runtime contract; that lives under
-`../../../native/orchard_worker_mlx/proto/`.
+`../../orchard/worker/v1/`.
 
 `common.proto`, `events.proto`, `peer_grant.proto`, and `runtime.proto` are
 active generated inputs.
@@ -92,8 +92,8 @@ Run the repo-approved alias from the repository root:
 mise exec -- mix proto.gen.worker
 ```
 
-The alias runs `grpc_tools.protoc` through the worker package's uv environment,
-with include paths for both `proto/` and `native/orchard_worker_mlx/proto/`.
+The alias runs `grpc_tools.protoc` through the provider-neutral locked uv environment under `proto/orchard/worker/tooling/`,
+with `proto/` as the sole source include path.
 It generates:
 
 - `cluster/v1/*_pb2.py` and `cluster/v1/*_pb2_grpc.py` from this directory's

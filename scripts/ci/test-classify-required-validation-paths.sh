@@ -67,7 +67,16 @@ assert_case mlx-provider \
   native/orchard_worker_mlx/src/orchard_worker_mlx/runtime.py
 assert_case worker-protocol \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
-  native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto
+  proto/orchard/worker/v1/worker_runtime.proto
+assert_case worker-elixir-binding \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex
+assert_case worker-binding-generator \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  scripts/generate-worker-runtime-bindings.sh
+assert_case worker-binding-drift-check \
+  'portable=true conformance=true macos=true mlx=true packaging=true ' \
+  scripts/check-worker-runtime-bindings.sh
 assert_case worker-package-readme \
   'portable=true conformance=true macos=true mlx=true packaging=true ' \
   native/orchard_worker_mlx/README.md

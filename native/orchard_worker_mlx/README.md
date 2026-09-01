@@ -58,14 +58,14 @@ Orchard does not reach that path today; issue #116 sharded loading must pass an 
 
 ## Proto contract
 
-The worker runtime proto lives at:
+The provider-neutral Worker Runtime proto lives at:
 
 ```
-native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto
+proto/orchard/worker/v1/worker_runtime.proto
 ```
 
 This defines the internal node-agent ↔ worker gRPC contract (`WorkerRuntimeService`).
-It imports shared cluster types from `proto/cluster/v1/`.
+It is owned outside this provider implementation and imports shared cluster types from `proto/cluster/v1/`.
 
 ### Generated bindings
 
@@ -73,9 +73,10 @@ It imports shared cluster types from `proto/cluster/v1/`.
 |---------|----------|------------|
 | Python messages | `src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2.py` | `mise exec -- mix proto.gen.worker` |
 | Python gRPC stubs | `src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2_grpc.py` | `mise exec -- mix proto.gen.worker` |
-| Elixir modules | `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex` | Manual (see below) |
+| Elixir modules | `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex` | `mise exec -- mix proto.gen.worker` |
+| Descriptor golden | `proto/orchard/worker/v1/worker_runtime.descriptor.pb` | `mise exec -- mix proto.gen.worker` |
 
-### Regenerate Python bindings
+### Regenerate bindings
 
 From the repo root:
 
@@ -83,26 +84,28 @@ From the repo root:
 mise exec -- mix proto.gen.worker
 ```
 
-This runs `grpc_tools.protoc` under `uv` with the correct include paths.
+This runs the `grpcio-tools` version pinned by `proto/orchard/worker/tooling/uv.lock` and `protoc-gen-elixir` 0.16.0 with the correct include paths.
+It generates both language surfaces from the one neutral schema.
+The provider package carries only the protobuf and gRPC runtime dependencies needed to consume its generated bindings.
 
-### Elixir binding
+The Elixir generator output is mechanically mapped to the existing `Orchard.Node.Worker.V1.*` namespace and existing `Orchard.Cluster.V1.*` imported types.
+No message, field, RPC, package, or service definition is maintained by that mapping.
 
-The Elixir binding at `worker_runtime.pb.ex` uses the namespace `Orchard.Node.Worker.V1.*`,
-which does not match what `protoc-gen-elixir` auto-generates from the proto package
-`orchard.worker.v1` (which produces `Orchard.Orchard.Worker.V1.*` with the `Orchard`
-package prefix). **Update it by hand** when the proto changes.
+### Drift validation
+
+From the repo root:
+
+```bash
+mise exec -- mix proto.check.worker
+scripts/test-worker-runtime-binding-drift.sh
+```
+
+The first command regenerates every committed Python and Elixir binding plus the descriptor golden into a temporary root and byte-compares the results.
+The second command introduces drift only in a temporary fixture and proves the checker rejects it.
 
 ### Workflow rules
 
 1. Edit the `.proto` source first.
-2. Run `mise exec -- mix proto.gen.worker` to regenerate Python bindings.
-3. Manually update the Elixir binding to match.
-4. Commit proto source and all generated outputs together.
-
-### Drift risk
-
-The manual Elixir binding can drift from the proto source. To mitigate:
-- Always update `worker_runtime.pb.ex` in the same commit as proto changes.
-- Review the proto field list against the Elixir struct in code review.
-- Long-term: consider renaming the proto package or adding a CI check that
-  diffs proto field names against the Elixir module definition.
+2. Run `mise exec -- mix proto.gen.worker` to regenerate every binding and the descriptor golden.
+3. Run `mise exec -- mix proto.check.worker` and the reciprocal compatibility tests.
+4. Commit the canonical schema and every generated output together.

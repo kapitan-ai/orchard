@@ -14,7 +14,7 @@ This README is orientation only. Normative behavior lives in
 - Model acquisition/cache/load coordination on a node.
 - Worker process supervision and node-local diagnostics/status reporting.
 - Runtime aggregate node and placement capacity telemetry.
-- Manual Elixir binding for the node-agent ↔ worker proto.
+- Generated Elixir binding for the provider-neutral node-agent ↔ worker proto.
 
 ## Does not own
 
@@ -22,6 +22,7 @@ This README is orientation only. Normative behavior lives in
   controller.
 - Worker model-generation internals; see `../../native/orchard_worker_mlx/`.
 - Shared cluster proto source; see `../../proto/cluster/v1/`.
+- Provider-neutral Worker Runtime proto source; see `../../proto/orchard/worker/v1/worker_runtime.proto`.
 
 ## Local work
 

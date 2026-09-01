@@ -25,7 +25,8 @@ defmodule Orchard.MixProject do
   defp aliases do
     [
       "proto.gen": [&proto_gen/1],
-      "proto.gen.worker": [&proto_gen_worker/1]
+      "proto.gen.worker": [&proto_gen_worker/1],
+      "proto.check.worker": [&proto_check_worker/1]
     ]
   end
 
@@ -95,63 +96,19 @@ defmodule Orchard.MixProject do
     end
   end
 
-  defp cluster_proto_sources do
-    [
-      Path.absname("proto/cluster/v1/common.proto"),
-      Path.absname("proto/cluster/v1/events.proto"),
-      Path.absname("proto/cluster/v1/peer_grant.proto"),
-      Path.absname("proto/cluster/v1/runtime.proto")
-    ]
-  end
+  defp proto_gen_worker(args),
+    do: run_script!("scripts/generate-worker-runtime-bindings.sh", args, "proto.gen.worker")
 
-  defp proto_gen_worker(_args) do
-    uv_path =
-      executable!(
-        "uv",
-        "Install uv (https://docs.astral.sh/uv/) before running `mix proto.gen.worker`."
-      )
+  defp proto_check_worker(args),
+    do: run_script!("scripts/check-worker-runtime-bindings.sh", args, "proto.check.worker")
 
-    worker_pkg = "native/orchard_worker_mlx"
-    proto_root = Path.absname("proto")
-    worker_proto_root = Path.absname(Path.join(worker_pkg, "proto"))
-
-    worker_proto =
-      Path.absname(Path.join(worker_proto_root, "orchard/worker/v1/worker_runtime.proto"))
-
-    output_dir = Path.absname(Path.join(worker_pkg, "src/orchard_worker_mlx/generated"))
-
-    File.mkdir_p!(output_dir)
-
-    proto_inputs = cluster_proto_sources() ++ [worker_proto]
-
-    case System.cmd(
-           uv_path,
-           [
-             "run",
-             "--directory",
-             worker_pkg,
-             "python",
-             "-m",
-             "grpc_tools.protoc",
-             "-I",
-             proto_root,
-             "-I",
-             worker_proto_root,
-             "--python_out=#{output_dir}",
-             "--grpc_python_out=#{output_dir}"
-           ] ++ proto_inputs,
+  defp run_script!(script, args, task) do
+    case System.cmd(Path.expand(script), args,
            into: IO.stream(:stdio, :line),
            stderr_to_stdout: true
          ) do
-      {_output, 0} ->
-        Mix.shell().info("""
-        Python cluster + worker bindings generated.
-        NOTE: Elixir binding (apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex)
-        is maintained manually — update it by hand when the proto changes.
-        """)
-
-      {_output, status} ->
-        Mix.raise("proto.gen.worker failed with exit status #{status}")
+      {_output, 0} -> :ok
+      {_output, status} -> Mix.raise("#{task} failed with exit status #{status}")
     end
   end
 

@@ -7,7 +7,7 @@ from cluster.v1 import common_pb2 as cluster_dot_v1_dot_common__pb2
 from cluster.v1 import events_pb2 as cluster_dot_v1_dot_events__pb2
 from cluster.v1 import runtime_pb2 as cluster_dot_v1_dot_runtime__pb2
 
-GRPC_GENERATED_VERSION = '1.78.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -27,7 +27,7 @@ if _version_not_supported:
     )
 
 
-class NodeRuntimeServiceStub(object):
+class NodeRuntimeServiceStub:
     """Compatibility transport for Runtime Endpoint operations.
     The transport-independent Runtime Endpoint Interface is the Controller
     domain contract for runtime execution.
@@ -71,7 +71,7 @@ class NodeRuntimeServiceStub(object):
                 _registered_method=True)
 
 
-class NodeRuntimeServiceServicer(object):
+class NodeRuntimeServiceServicer:
     """Compatibility transport for Runtime Endpoint operations.
     The transport-independent Runtime Endpoint Interface is the Controller
     domain contract for runtime execution.
@@ -158,7 +158,7 @@ def add_NodeRuntimeServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class NodeRuntimeService(object):
+class NodeRuntimeService:
     """Compatibility transport for Runtime Endpoint operations.
     The transport-independent Runtime Endpoint Interface is the Controller
     domain contract for runtime execution.
