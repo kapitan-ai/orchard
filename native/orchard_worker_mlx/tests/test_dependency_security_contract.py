@@ -27,9 +27,9 @@ def test_mlx_extra_uses_the_approved_source_and_transformers_range() -> None:
         "mlx>=0.31.2",
         "mlx-lm==0.31.3",
         "transformers>=5.7,<5.13",
-        "protobuf>=6.33.5",
         "numpy>=1.26.0",
     ]
+    assert "protobuf>=6.33.5" in project["project"]["dependencies"]
     assert project["tool"]["uv"]["sources"]["mlx-lm"] == {
         "git": _MLX_LM_GIT,
         "rev": _MLX_LM_COMMIT,

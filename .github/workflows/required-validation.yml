@@ -173,8 +173,11 @@ jobs:
         with:
           cache: false
 
-      - name: Install Elixir dependencies
-        run: make setup-elixir
+      - name: Install conformance dependencies
+        run: |
+          make setup-elixir
+          mise exec -- uv sync --locked --directory native/orchard_worker_mlx
+          mise exec -- mix escript.install hex protobuf 0.16.0 --force
 
       - name: Prepare test database
         run: |

@@ -156,8 +156,9 @@ The gRPC/mTLS path remains available for enrollment, certificate lifecycle, Peer
 | `apps/orchard_cli/` | `orchardctl` CLI: operator/admin automation for source dev and app-installed releases. |
 | `apps/orchard_shared/` | Shared generated proto modules, Runtime Endpoint domain structs, helpers, and build metadata. |
 | `native/orchard_tokenizer/` | Python helper for prompt rendering, exact token counts, and safe-tokenization support. |
-| `native/orchard_worker_mlx/` | Current Python MLX Worker Runtime provider and current node-agent to worker protocol implementation; the accepted target moves the provider-neutral contract and generated bindings into neutral ownership. |
+| `native/orchard_worker_mlx/` | Current Python MLX Worker Runtime provider implementation and generated Python protocol consumer. |
 | `proto/cluster/v1/` | Controller ↔ node-agent proto source: the current gRPC runtime-operations compatibility transport, the certificate-authenticated BEAM Peer Grant delivery control service, and future-adapter contracts. |
+| `proto/orchard/worker/v1/` | Provider-neutral Node Agent ↔ Worker Runtime schema, descriptor golden, and cross-language compatibility fixtures. |
 | `packaging/` | macOS native distribution profile artifacts and runbooks for `Orchard.app`, DMG, app-owned service lifecycle, payload, launchd, signing, and verification. |
 | `docs/` | Contributor-facing orientation, tooling, process, design, and durable decisions subordinate to `SPEC.md`. |
 
@@ -235,7 +236,8 @@ Runtime Endpoint and worker runtime contracts are separate:
 - `proto/cluster/v1/` describes the current controller ↔ node-agent gRPC runtime-operations compatibility transport plus the certificate-authenticated `ControllerPeerGrantService` BEAM Peer Grant delivery control path.
 - Runtime Endpoint domain structs describe the Controller-facing scheduler and dispatch contract.
 - `Orchard.RuntimeEndpoint.BeamClient` and `Orchard.Node.RuntimeEndpoint` provide the split-role source-dev default first-party BEAM adapter and Node Agent facade.
-- `native/orchard_worker_mlx/proto/` describes node-agent ↔ worker messages/services.
+- `proto/orchard/worker/v1/` owns the provider-neutral node-agent ↔ worker protocol source, descriptor golden, and conformance fixtures.
+- Runtime-provider packages consume only generated bindings from that neutral authority.
 
 ### Persistence and coordination
 
@@ -254,8 +256,8 @@ This bounded CP1 audit does not enforce `SPEC.md` §7.5.5, does not replace clie
   `SPEC.md`, [`DESIGN.md`](DESIGN.md), and tests.
 - Node-local runtime, worker supervision, or model acquisition: start in
   `apps/orchard_node_agent/` and `native/orchard_worker_mlx/`.
-- Shared wire/domain types: start with proto or `apps/orchard_shared/`, then
-  regenerate/check downstream bindings.
+- Shared Controller ↔ Node wire/domain types: start with `proto/cluster/v1/` or `apps/orchard_shared/`, then regenerate and check downstream bindings.
+- Provider-neutral Worker Runtime types: start with `proto/orchard/worker/v1/worker_runtime.proto`, then run `mise exec -- mix proto.gen.worker` and `mise exec -- mix proto.check.worker`.
 - CLI/operator automation: start in `apps/orchard_cli/` and
   [`../packaging/README.md`](../packaging/README.md).
 - Toolchain/validation: use [`tooling.md`](tooling.md) and

@@ -90,6 +90,9 @@ while IFS= read -r path; do
     apps/orchard_cli/lib/orchard_cli/platform_acl.ex|apps/orchard_cli/lib/orchard_cli/commands/cluster.ex)
       enable_macos_consumers
       ;;
+    apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex)
+      enable_all
+      ;;
     native/orchard_worker_mlx/pyproject.toml|native/orchard_worker_mlx/uv.lock|native/orchard_worker_mlx/bin/*|native/orchard_worker_mlx/proto/*|native/orchard_worker_mlx/src/*)
       portable=true
       conformance=true

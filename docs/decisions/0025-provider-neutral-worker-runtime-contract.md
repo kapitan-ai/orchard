@@ -18,9 +18,10 @@ Keep the Node Agent-to-worker subprocess boundary.
 The Node Agent continues to own subprocess supervision, model loading, execution, streaming, cancellation, active allocation, diagnostics, failure handling, and cleanup.
 The Controller communicates through the Runtime Endpoint and MUST NOT manage provider subprocesses directly.
 
-Move Worker Runtime protocol source, version policy, generated bindings, and conformance fixtures to a provider-neutral repository boundary.
+Move Worker Runtime protocol source, version policy, binding generation authority and output manifest, descriptor golden, and conformance fixtures to a provider-neutral repository boundary.
 The MLX worker becomes one implementation of that contract and no longer owns it.
 Independent ownership does not require a new publishable package or OTP application.
+Generated consumer copies may remain inside a provider package when the neutral generator is their only authority and required validation checks every committed output for drift.
 
 Generate every supported language binding from one normative source.
 Required validation SHALL fail when committed generated bindings drift from that source.

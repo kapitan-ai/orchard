@@ -1378,7 +1378,8 @@ Node agent SHALL:
 ### 4.10 Local worker contract
 
 Node agent SHALL own Worker Runtime subprocess lifecycle, model loading, execution, cancellation, capacity observation, diagnostics, and cleanup.
-The Worker Runtime protocol source, version policy, generated bindings, and conformance fixtures SHALL have provider-neutral ownership outside any runtime-provider implementation.
+The Worker Runtime protocol source, version policy, binding generation authority and output manifest, descriptor golden, and conformance fixtures SHALL have provider-neutral ownership outside any runtime-provider implementation.
+Generated consumer copies MAY live under a runtime-provider package when their only authority is the neutral generator and required validation checks every committed output for drift.
 Local workers SHOULD speak gRPC over Unix domain sockets, with this minimal internal contract:
 
 * `LoadModel`
@@ -1390,7 +1391,7 @@ Local workers SHOULD speak gRPC over Unix domain sockets, with this minimal inte
 This local API is internal-only and not part of the public compatibility contract.
 Before capability evidence authorizes work, a Worker Runtime provider SHALL report its protocol version, provider identity and version, supported artifact formats, runtime features, acceleration implementations, device bindings, memory semantics, concurrency, and cache capabilities.
 Unknown, malformed, absent, stale, or incompatible required evidence MUST NOT prove capability eligibility.
-Existing MLX-owned protocol source and hand-maintained bindings remain migration inputs until the provider-neutral ownership change is implemented and accepted.
+The canonical protocol source is `proto/orchard/worker/v1/worker_runtime.proto`; supported Python and Elixir consumer bindings are generated from it and checked byte-for-byte in required validation.
 
 ---
 
@@ -3249,7 +3250,8 @@ service NodeRuntimeService {
 #### 7.5.2a Worker-side service (node-agent ↔ worker)
 
 The Worker Runtime Interface is provider-neutral even while MLX is the required v1 macOS implementation.
-Its protocol source, generated bindings, version policy, and conformance fixtures SHALL be owned outside any runtime-provider implementation after the ownership migration is accepted.
+Its protocol source, version policy, binding generation authority and output manifest, descriptor golden, and conformance fixtures SHALL be owned outside any runtime-provider implementation.
+Generated consumer copies MAY live under a runtime-provider package when their only authority is the neutral generator and required validation checks every committed output for drift.
 Every supported provider SHALL pass provider-neutral negotiation, health, load, unload, generation, streaming, cancellation, capacity, failure-normalization, and version-skew conformance, plus applicable real-hardware acceptance.
 
 The Worker Runtime Interface remains Node Agent-local.

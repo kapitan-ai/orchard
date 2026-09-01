@@ -31,12 +31,7 @@ defmodule Orchard.Node.Worker.V1.WorkerMemoryBudgetStatus do
   field(:target_working_set_bytes, 9, type: :uint64, json_name: "targetWorkingSetBytes")
   field(:overhead_bytes, 10, type: :uint64, json_name: "overheadBytes")
   field(:resident_memory_bytes, 11, type: :uint64, json_name: "residentMemoryBytes")
-
-  field(:estimated_headroom_bytes, 12,
-    type: :uint64,
-    json_name: "estimatedHeadroomBytes"
-  )
-
+  field(:estimated_headroom_bytes, 12, type: :uint64, json_name: "estimatedHeadroomBytes")
   field(:kv_cache_bytes_per_token, 13, type: :uint64, json_name: "kvCacheBytesPerToken")
 
   field(:prefill_workspace_bytes_per_token, 14,
@@ -64,12 +59,7 @@ defmodule Orchard.Node.Worker.V1.WorkerPrefixCacheStatus do
   field(:failures, 7, type: :uint64)
   field(:stores, 8, type: :uint64)
   field(:evictions, 9, type: :uint64)
-
-  field(:configured_max_entries, 10,
-    type: :uint32,
-    json_name: "configuredMaxEntries"
-  )
-
+  field(:configured_max_entries, 10, type: :uint32, json_name: "configuredMaxEntries")
   field(:configured_max_bytes, 11, type: :uint64, json_name: "configuredMaxBytes")
   field(:status_code, 12, type: :string, json_name: "statusCode")
   field(:status_message, 13, type: :string, json_name: "statusMessage")
