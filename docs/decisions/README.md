@@ -23,4 +23,4 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence ends with [ADR 0028: Local model support claims require manual qualification](0028-mandatory-manual-model-qualification.md).
+The current sequence ends with [ADR 0029: Deprecate Node Runtime gRPC compatibility in staged release epochs](0029-deprecate-node-runtime-grpc-compatibility.md).
