@@ -24,5 +24,5 @@
 - [x] 4.1 Run focused and repository-wide strict OpenSpec validation and inspect the prose for placeholders.
 - [x] 4.2 Run generation twice, clean drift, negative drift, descriptor, reciprocal fixture, provider-neutral, UDS, and lifecycle regressions.
 - [x] 4.3 Run the complete Elixir and native package quality workflows with coverage.
-- [ ] 4.4 Run every dependency-selected portable, macOS, MLX, packaging, and OpenSpec lane.
-- [ ] 4.5 Run exact-head RepoPrompt pair or design review, Oracle review, hosted CI, and review-thread inspection.
+- [x] 4.4 Run every dependency-selected portable, macOS, MLX, packaging, and OpenSpec lane.
+- [x] 4.5 Run exact-head RepoPrompt pair or design review, Oracle review, hosted CI, and review-thread inspection.
