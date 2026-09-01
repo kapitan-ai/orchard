@@ -55,6 +55,34 @@ Split-role and packaged defaults and listeners MUST NOT change until their profi
 - **WHEN** the all-in-one migration is implemented
 - **THEN** packaged Controller, Node Agent, Orchard.app, DMG, launchd, generated environment, listener, and rollback behavior remain unchanged
 
+### Requirement: Source-dev Runtime Endpoint Topology Bootstrap
+Orchard SHALL support Source-dev BEAM Runtime Endpoint mode for the split-role `bin/dev-controller` and `bin/dev-node-agent` entrypoints.
+When Source-dev BEAM mode is selected, both split-role processes SHALL start as named distributed BEAM nodes before Runtime Endpoint work is attempted.
+All-in-one `bin/dev` SHALL use same-VM transport-independent Runtime Endpoint semantics by default without requiring a gRPC loopback, EPMD, cookie material, or BEAM Distribution.
+All-in-one `bin/dev` SHALL reject explicit Source-dev BEAM mode before starting Mix.
+All-in-one `bin/dev` SHALL retain explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` selection as restart-only compatibility rollback and SHALL NOT fall back to gRPC automatically after a Runtime Endpoint operation fails.
+This refines the source-development Runtime Endpoint topology in `SPEC.md` §§1.2 and 7.5.
+
+#### Scenario: Split-role BEAM mode starts distributed nodes
+- **WHEN** a contributor starts `bin/dev-controller` and `bin/dev-node-agent` with Source-dev BEAM Runtime Endpoint mode selected
+- **THEN** each process starts with a configured BEAM node name
+- **THEN** Runtime Endpoint operations use BEAM Distribution rather than the gRPC Compatibility Adapter
+
+#### Scenario: All-in-one dev defaults to same-VM Runtime Endpoint semantics
+- **WHEN** a contributor starts all-in-one `bin/dev` without selecting a transport override
+- **THEN** the Controller invokes the local Node Agent through Runtime Endpoint Interface semantics inside the same BEAM VM
+- **THEN** Orchard does not require a Node Runtime gRPC loopback connection or BEAM Distribution for that path
+
+#### Scenario: All-in-one dev rejects BEAM mode
+- **WHEN** a contributor starts all-in-one `bin/dev` with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
+- **THEN** Orchard rejects the launch before running Mix
+- **THEN** the contributor is directed to use `bin/dev-controller` and `bin/dev-node-agent`
+
+#### Scenario: All-in-one dev explicitly restarts on gRPC compatibility
+- **WHEN** a contributor restarts all-in-one `bin/dev` with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`
+- **THEN** Orchard uses the retained single-host gRPC compatibility loopback
+- **THEN** a failed same-VM Runtime Endpoint operation does not trigger automatic gRPC fallback
+
 ### Requirement: Bridge Deprecation Floor And Removal Release Gates
 Orchard SHALL map each Bridge, Deprecation, Floor, and Removal epoch to exact released Product Versions only after that epoch's evidence gate passes.
 The mapping SHALL enumerate every Product Version in each epoch and every actual Controller `N` with Node Agent `N` and `N-1` pairing rather than using epoch labels as version substitutes.
@@ -162,34 +190,6 @@ Any validated supported consumer discovered before adapter removal SHALL block r
 
 ## MODIFIED Requirements
 
-### Requirement: Source-dev BEAM Split-role Bootstrap
-Orchard SHALL support Source-dev BEAM Runtime Endpoint mode for the split-role `bin/dev-controller` and `bin/dev-node-agent` entrypoints.
-When Source-dev BEAM mode is selected, both split-role processes SHALL start as named distributed BEAM nodes before Runtime Endpoint work is attempted.
-All-in-one `bin/dev` SHALL use same-VM transport-independent Runtime Endpoint semantics by default without requiring a gRPC loopback, EPMD, cookie material, or BEAM Distribution.
-All-in-one `bin/dev` SHALL reject explicit Source-dev BEAM mode before starting Mix.
-All-in-one `bin/dev` SHALL retain explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` selection as restart-only compatibility rollback and SHALL NOT fall back to gRPC automatically after a Runtime Endpoint operation fails.
-This refines the source-dev BEAM rollout rules in `SPEC.md` §1.2 and §7.5.
-
-#### Scenario: Split-role BEAM mode starts distributed nodes
-- **WHEN** a contributor starts `bin/dev-controller` and `bin/dev-node-agent` with Source-dev BEAM Runtime Endpoint mode selected
-- **THEN** each process starts with a configured BEAM node name
-- **THEN** Runtime Endpoint operations use BEAM Distribution rather than the gRPC Compatibility Adapter
-
-#### Scenario: All-in-one dev defaults to same-VM Runtime Endpoint semantics
-- **WHEN** a contributor starts all-in-one `bin/dev` without selecting a transport override
-- **THEN** the Controller invokes the local Node Agent through Runtime Endpoint Interface semantics inside the same BEAM VM
-- **THEN** Orchard does not require a Node Runtime gRPC loopback connection or BEAM Distribution for that path
-
-#### Scenario: All-in-one dev rejects BEAM mode
-- **WHEN** a contributor starts all-in-one `bin/dev` with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
-- **THEN** Orchard rejects the launch before running Mix
-- **THEN** the contributor is directed to use `bin/dev-controller` and `bin/dev-node-agent`
-
-#### Scenario: All-in-one dev explicitly restarts on gRPC compatibility
-- **WHEN** a contributor restarts all-in-one `bin/dev` with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`
-- **THEN** Orchard uses the retained single-host gRPC compatibility loopback
-- **THEN** a failed same-VM Runtime Endpoint operation does not trigger automatic gRPC fallback
-
 ### Requirement: All-in-one Source Dev Uses Same-VM Runtime Endpoint Semantics
 All-in-one `bin/dev` SHALL use same-VM transport-independent Runtime Endpoint semantics by default without requiring a Node Runtime gRPC loopback connection or BEAM Distribution.
 All-in-one `bin/dev` SHALL reject explicit BEAM mode with a clear error.
@@ -209,3 +209,7 @@ All-in-one `bin/dev` SHALL retain explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=g
 - **WHEN** a contributor restarts `bin/dev` with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`
 - **THEN** Orchard uses the retained single-host gRPC compatibility loopback
 - **THEN** Orchard does not select gRPC automatically after a same-VM Runtime Endpoint operation fails
+
+## REMOVED Requirements
+
+### Requirement: Source-dev BEAM Split-role Bootstrap
