@@ -2767,7 +2767,7 @@ defmodule Orchard.Nodes do
 
   defp record_dispatch_transport_failure_transaction(target_lookup, failure) do
     normalize_dispatch_database_failure(fn ->
-      Repo.transaction(fn ->
+      AuditWriter.transaction(fn ->
         validate_dispatch_transport_identity(target_lookup, failure.node_id)
         record_dispatch_transport_breaker(target_lookup, failure)
       end)

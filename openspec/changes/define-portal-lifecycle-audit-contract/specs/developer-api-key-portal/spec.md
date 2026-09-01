@@ -21,6 +21,9 @@ This provenance SHALL NOT make a Portal User an Operator, Public Inference princ
 Audit rows SHALL represent committed effective mutations without a persisted outcome field.
 A rejected request or true no-op SHALL NOT create a success audit row.
 Successful audit telemetry SHALL be emitted only after the authoritative transaction commits, and a rolled-back transaction SHALL NOT emit a succeeded observation.
+A direct audit insertion inside an unmanaged transaction SHALL fail before persistence.
+A rolled-back savepoint SHALL NOT leave a publishable success observation.
+Post-commit metric verification failure SHALL mark metrics reporting degraded without altering the committed domain result or withholding its show-once success value, and a later successful verification MAY recover that degradation.
 This refines `SPEC.md` sections 7.4a, 8.2, 9.1, and 10.9.
 
 #### Scenario: Portal User creation records the invited identity

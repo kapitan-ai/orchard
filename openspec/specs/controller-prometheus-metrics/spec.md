@@ -86,6 +86,8 @@ Categorical inputs SHALL normalize only to the bounded values in the design.
 HTTP status SHALL normalize to `informational`, `success`, `redirect`, `client_error`, or `server_error`, rather than materializing individual status codes.
 Current terminal Request status SHALL normalize only to `completed`, `failed`, `cancelled`, `timed_out`, or `interrupted`.
 Scheduler result, tier, rejection reason, quota reason, audit action domain, and audit outcome SHALL use only the design's listed values and pair constraints.
+Audit action domain SHALL normalize only to `tenant`, `api_key`, `service_account`, `role_binding`, `routing_policy`, `tenant_model_access`, `support_bundle`, `node_admission`, `node_lifecycle`, `circuit_breaker`, `cluster`, or `portal_user`.
+Audit outcome SHALL normalize only to `succeeded`, `failed`, or `denied`.
 Unknown categorical inputs SHALL be dropped and reporting marked degraded.
 
 The pilot SHALL admit at most 4 distinct Tenant identifiers, 4 distinct model identifiers, 4 distinct Node identifiers, and 8 HTTP endpoint categories across all exposed families in one reporter generation.
@@ -111,17 +113,23 @@ Any later external metrics egress SHALL remove tenant and user dimensions before
 - **THEN** Orchard does not materialize that label tuple
 - **AND** reporting becomes degraded without changing the source operation
 
+#### Scenario: Portal lifecycle actions share one bounded domain
+
+- **WHEN** a committed audit action begins with `portal_user.`
+- **THEN** its audit metric action label SHALL normalize to `portal_user`
+- **AND** the concrete suffix, Portal User ID, Tenant ID, email, and target ID SHALL NOT become metric labels
+
 ### Requirement: Logical Request Accounting Across Attempts
 Existing §9.1 logical-Request, admission, scheduler/queue, quota, authentication, audit, token, and client-visible metrics SHALL count at their named logical boundary and SHALL NOT count once per execution attempt.
 Logical inference Request duration SHALL span all attempts.
 Input tokens SHALL count once, output tokens SHALL use final logical chargeable usage, and client-visible terminal status SHALL count once.
-Attempt and retry metric families remain owned by issue #121 and SHALL NOT be added by this change.
+Attempt and retry families SHALL remain distinct from the accepted logical-Request floor and SHALL contribute their separately accepted 229-series runtime delta.
 
 #### Scenario: One logical Request uses multiple attempts
 - **WHEN** a logical Request performs more than one execution attempt before terminalizing
 - **THEN** §9.1 logical Request and client-visible terminal metrics count the Request once
 - **AND** input and final output token accounting are not duplicated
-- **AND** this package emits no attempt or retry family
+- **AND** attempt and retry families count only their separately defined attempt boundaries
 
 ### Requirement: Gauge Snapshot Reconciliation And Staleness
 Orchard SHALL own a bounded in-memory Gauge Snapshot Store that receives complete normalized snapshots from `telemetry_poller` and atomically replaces each gauge family's current map.
@@ -156,9 +164,10 @@ The pilot worksheet SHALL be exactly:
 - scheduler decisions 6; scheduler duration 14; queue depth 4; scheduler rejections 7;
 - heartbeat lag 4; available memory 4; swap used 4; active requests 16;
 - model-load duration 208; model resident 16; worker crashes 16;
-- quota rejections 16; API-key authentication failures 1; audit events 24.
+- quota rejections 16; API-key authentication failures 1; audit events 36.
 
-The total SHALL be 2,588, leaving 2,412 series of headroom below 5,000.
+The accepted Portal lifecycle floor SHALL be 2,600, leaving 2,400 series before separately accepted attempt and retry families.
+The implemented attempt and retry families SHALL add 229 series, so the runtime worksheet SHALL total 2,829 and retain 2,171 series of headroom below 5,000.
 
 Orchard SHALL own a bounded in-memory Series Admission registry in front of counter and histogram emission and a shared atomic Cardinality Ledger across event and gauge paths.
 Series Admission SHALL normalize a new label tuple, calculate the tuple's complete family cost, and atomically admit it only within the identifier, family worksheet, and global ceilings before emitting to the core reporter.
@@ -182,6 +191,14 @@ Admission unavailability, meaning a bounded deadline expiry, an unavailable admi
 - **WHEN** a histogram has `B` finite boundaries and `L` active domain-label tuples
 - **THEN** its worksheet subtotal is exactly `(B + 3) * L`
 
+#### Scenario: Portal audit domain remains within the runtime ceiling
+
+- **WHEN** the twelve bounded audit domains combine with the three bounded outcomes
+- **THEN** the audit-events family ceiling SHALL be exactly 36 series
+- **AND** the accepted Portal lifecycle floor SHALL be 2,600 series
+- **AND** the runtime worksheet SHALL be 2,829 after the 229-series attempt and retry delta
+- **AND** the 5,000-series ceiling SHALL retain 2,171 series of headroom
+
 ### Requirement: Metrics Failure Isolation
 Metrics initialization, event handling, polling, aggregation, admission, snapshot storage, and rendering SHALL be non-authoritative and SHALL NOT prevent Controller boot or alter inference, admission, quota, scheduling, dispatch, recovery, or persistence outcomes.
 Telemetry handlers SHALL perform only bounded in-memory normalization and Series Admission and SHALL be exception-contained with no database, network, filesystem, or domain mutation.
@@ -203,7 +220,7 @@ Rendering SHALL be bounded and SHALL return complete core-plus-gauge exposition 
 - **AND** metrics reporting alone becomes disabled or degraded
 
 ### Requirement: Excluded Observability Surfaces
-This change SHALL NOT add attempt or retry metrics, a collector, metrics backend, tracing, dashboards, alerts, external egress, a Node Agent metrics endpoint, a separate Controller listener, or an HMAC Tenant alias.
+This capability SHALL NOT add another attempt or retry family, a collector, metrics backend, tracing, dashboards, alerts, external egress, a Node Agent metrics endpoint, a separate Controller listener, or an HMAC Tenant alias.
 
 #### Scenario: Worker-crash seam scope is reviewed
 - **WHEN** the issue #123 worker-crash implementation is inspected
