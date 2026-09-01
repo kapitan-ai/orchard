@@ -54,9 +54,38 @@ orchard_source_dev_cleanup_workers \
 # Start only the source-dev node-agent app. The sub-app mix.exs reuses the
 # umbrella config path, but does not boot the Phoenix/controller application.
 echo "==> Starting Orchard dev node-agent (role: node-agent)"
-echo "==> gRPC endpoint: ${ORCHARD_NODE_AGENT_LISTEN_HOST}:${resolved_port}"
+if [[ "${ORCHARD_SOURCE_DEV_NODE_VALIDATION_PROFILE:-}" == "listener_free_runtime_endpoint" ]]; then
+  echo "==> gRPC endpoint: disabled by listener-free validation profile"
+else
+  echo "==> gRPC endpoint: ${ORCHARD_NODE_AGENT_LISTEN_HOST}:${resolved_port}"
+fi
 echo "==> Worker executable: ${ORCHARD_WORKER_EXECUTABLE}"
 cd "$REPO_ROOT/apps/orchard_node_agent"
+
+if [[ "${ORCHARD_SOURCE_DEV_NODE_VALIDATION_PROFILE:-}" == "listener_free_runtime_endpoint" ]]; then
+  validation_script="$REPO_ROOT/scripts/support/listener-free-beam-runtime-endpoint.exs"
+
+  if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" != "beam" ]]; then
+    echo "error: listener_free_runtime_endpoint requires BEAM Runtime Endpoint transport" >&2
+    exit 64
+  fi
+
+  if [[ -z "${ORCHARD_LISTENER_FREE_RUNTIME_ENDPOINT_READY_FILE:-}" ]]; then
+    echo "error: ORCHARD_LISTENER_FREE_RUNTIME_ENDPOINT_READY_FILE is required by the validation profile" >&2
+    exit 64
+  fi
+
+  echo "==> Validation profile: listener-free BEAM Runtime Endpoint"
+
+  if [[ "${ORCHARD_SOURCE_DEV_NO_COMPILE:-0}" == "1" ]]; then
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix run \
+      --no-compile --no-start --no-halt "$validation_script" node
+  else
+    exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix run \
+      --no-start --no-halt "$validation_script" node
+  fi
+fi
+
 if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" == "beam" ]]; then
   if [[ "${ORCHARD_SOURCE_DEV_NO_COMPILE:-0}" == "1" ]]; then
     exec iex ${ORCHARD_BEAM_IEX_ARGS[@]+"${ORCHARD_BEAM_IEX_ARGS[@]}"} -S mix run --no-compile --no-halt

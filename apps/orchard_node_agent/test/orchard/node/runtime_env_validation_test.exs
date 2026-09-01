@@ -194,6 +194,28 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert disabled[:beam_peer_grants] == [enabled: false]
   end
 
+  test "runtime.exs recognizes a source-dev Node peer-grant descriptor as its authorization mode" do
+    identity_root = Path.join(System.tmp_dir!(), "orchard-runtime-node-identity")
+    descriptor_path = Path.join(identity_root, "peer-grant-descriptor.json")
+    manifest_path = Path.join(identity_root, "launch.json")
+    node_name = "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20"
+
+    config =
+      read_runtime_config!(
+        %{
+          "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR" => descriptor_path,
+          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => manifest_path,
+          "ORCHARD_BEAM_NODE_NAME" => node_name,
+          "ORCHARD_NODE_IDENTITY_ROOT" => identity_root,
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_SOURCE_DEV_ROLE" => "node_agent"
+        },
+        :dev
+      )
+
+    assert is_list(config)
+  end
+
   test "SPEC.md §7.5.0 production grant bootstrap requires its preflight launch manifest" do
     identity_root = Path.join(System.tmp_dir!(), "orchard-runtime-node-identity")
     descriptor_path = Path.join(identity_root, "peer-grant-descriptor.json")
@@ -372,7 +394,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_memory_budget_overhead_bytes] == 268_435_456
   end
 
-  defp read_runtime_config!(overrides) do
+  defp read_runtime_config!(overrides, env \\ :prod) do
     support_root = Path.join(System.tmp_dir!(), "orchard-runtime-env-validation")
 
     base = %{
@@ -385,7 +407,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     |> Map.merge(overrides)
     |> put_config_env!()
 
-    Config.Reader.read!(runtime_config_path(), env: :prod)
+    Config.Reader.read!(runtime_config_path(), env: env)
   end
 
   defp read_dev_config!(overrides) do

@@ -2,8 +2,13 @@ Code.require_file(Path.join(__DIR__, "beam-peer-grant-control-files.exs"))
 
 defmodule Orchard.BeamPeerGrantControlApplication do
   alias Orchard.BeamPeerGrantControlFiles
-  alias Orchard.{BeamPeerGrants, NodeEnrollments, Nodes, NodeTrust, Repo}
+  alias Orchard.BeamPeerGrants
+  alias Orchard.DispatchCapacity.{AllocationAuthority, QuarantineStore}
   alias Orchard.NodeEnrollment.PKI
+  alias Orchard.NodeEnrollments
+  alias Orchard.Nodes
+  alias Orchard.NodeTrust
+  alias Orchard.Repo
   alias OrchardCLI.NodeIdentity.Store
 
   @stop_timeout_ms 120_000
@@ -24,6 +29,8 @@ defmodule Orchard.BeamPeerGrantControlApplication do
     Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
     Application.put_env(:orchard_controller, :start_endpoint, false)
     {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+    {:ok, _quarantine_store} = QuarantineStore.start_link()
+    {:ok, _allocation_authority} = AllocationAuthority.start_link()
 
     {:ok, enrollment} =
       NodeEnrollments.create(
@@ -81,6 +88,8 @@ defmodule Orchard.BeamPeerGrantControlApplication do
       Nodes.admit_node(
         enrollment.enrollment.node_id,
         %{
+          capacity_policy_reason: "listener-free BEAM Runtime Endpoint smoke",
+          controller_dispatch_ceiling: 1,
           trust_evidence_ref: "application-smoke:#{Ecto.UUID.generate()}",
           pool_id: Ecto.UUID.generate(),
           routing_policy_id: Ecto.UUID.generate()

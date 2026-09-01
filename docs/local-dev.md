@@ -939,6 +939,7 @@ The tracer and its supporting flows are validated by
 `scripts/test-beam-peer-grant-expiry-smoke.sh`,
 `scripts/test-beam-legacy-first-connect-smoke.sh`, and
 `scripts/test-source-dev-beam-bootstrap.sh`.
+The application smoke starts the admitted Node with its Runtime Endpoint gRPC listener disabled before supervision, proves that no listener process or TCP socket appears, and exercises status, model load, completion streaming, active cancellation, prefix-cache scoring, unload, activation, and heartbeat persistence through the real BEAM client and server modules.
 
 ## Testing
 
