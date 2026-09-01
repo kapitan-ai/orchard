@@ -7,9 +7,10 @@ defmodule Orchard.SentryLogger do
   @handler_config %{
     config: %{
       capture_log_messages: false,
+      capture_excluded_domains: [:cowboy],
       # Raw node identity stays out of Sentry metadata; node correlation ships only as the
       # hashed `orchard_node_hash` enrichment key.
-      metadata: [:request_id, :worker_model, :model_backend],
+      capture_metadata: [:request_id, :worker_model, :model_backend],
       rate_limiting: [max_events: 50, interval: 60_000]
     }
   }
@@ -17,8 +18,10 @@ defmodule Orchard.SentryLogger do
   @spec install_handler() :: :ok | {:error, term()}
   def install_handler do
     if dsn_configured?() do
-      case :global.trans({__MODULE__, @handler}, fn -> ensure_handler_installed() end) do
-        {:aborted, reason} -> {:error, reason}
+      lock = {{__MODULE__, @handler}, self()}
+
+      case :global.trans(lock, fn -> ensure_handler_installed() end) do
+        :aborted -> {:error, :lock_aborted}
         result -> result
       end
     else

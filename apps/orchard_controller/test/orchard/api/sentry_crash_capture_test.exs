@@ -9,6 +9,7 @@ defmodule Orchard.API.SentryCrashCaptureTest do
   alias Orchard.Governance
   alias Orchard.Repo
   alias Orchard.SentryContext
+  alias Orchard.SentryHandlerTestSupport
   alias Orchard.SentryLogger
   alias Orchard.SentryRelease
 
@@ -76,8 +77,10 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     previous_sentry = snapshot_sentry_env()
     previous_enrichment = Application.get_env(:orchard_shared, :sentry_enrichment)
     previous_handler = :logger.get_handler_config(Sentry.LoggerHandler)
+    sentry_was_started = application_started?(:sentry)
 
     remove_sentry_handler()
+    stop_sentry_app()
     SentryContext.clear_all()
 
     sentry_identity =
@@ -103,15 +106,22 @@ defmodule Orchard.API.SentryCrashCaptureTest do
       hash_secret: "controller-sentry-crash-test-secret"
     )
 
+    {:ok, _apps} = Application.ensure_all_started(:sentry)
     :ok = Sentry.Test.start_collecting_sentry_reports()
     :ok = SentryLogger.install_handler()
     _flushed_reports = Sentry.Test.pop_sentry_reports()
 
     on_exit(fn ->
       remove_sentry_handler()
+      stop_sentry_app()
       restore_sentry_env(previous_sentry)
+
+      if sentry_was_started do
+        {:ok, _apps} = Application.ensure_all_started(:sentry)
+      end
+
       restore_enrichment(previous_enrichment)
-      restore_sentry_handler(previous_handler)
+      SentryHandlerTestSupport.restore_handler(previous_handler)
       SentryContext.clear_all()
     end)
 
@@ -274,15 +284,16 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     end
   end
 
-  defp restore_sentry_handler({:ok, %{id: id, module: module} = handler_config}) do
-    config = Map.drop(handler_config, [:id, :module])
-
-    case :logger.add_handler(id, module, config) do
+  defp stop_sentry_app do
+    case Application.stop(:sentry) do
       :ok -> :ok
-      {:error, {:already_exist, ^id}} -> :ok
-      {:error, {:already_exists, ^id}} -> :ok
+      {:error, {:not_started, :sentry}} -> :ok
     end
   end
 
-  defp restore_sentry_handler(_not_found), do: :ok
+  defp application_started?(app) do
+    Enum.any?(Application.started_applications(), fn {started_app, _description, _version} ->
+      started_app == app
+    end)
+  end
 end

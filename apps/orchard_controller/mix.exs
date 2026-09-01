@@ -48,7 +48,7 @@ defmodule OrchardController.MixProject do
       {:jason, "~> 1.4"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:req, "~> 0.5"},
-      {:sentry, "~> 12.0"},
+      {:sentry, "~> 13.0"},
       {:hackney, "~> 1.8"},
       {:phoenix, "~> 1.7.20"},
       {:phoenix_html, "~> 4.2"},
