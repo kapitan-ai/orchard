@@ -79,7 +79,14 @@ defmodule Orchard.Governance do
     as: :redeem_invite
 
   defdelegate disable_portal_user(tenant, user), to: PortalGovernance, as: :disable_user
+
   defdelegate list_portal_users(tenant), to: PortalGovernance, as: :list_users
+
+  @spec list_portal_user_summaries(Tenant.t() | Ecto.UUID.t()) ::
+          {:ok, [Orchard.Governance.PortalUserSummary.t()]} | {:error, :tenant_not_found}
+  defdelegate list_portal_user_summaries(tenant),
+    to: PortalGovernance,
+    as: :list_user_summaries
 
   defdelegate create_portal_session(slug, email, password, source),
     to: PortalGovernance,

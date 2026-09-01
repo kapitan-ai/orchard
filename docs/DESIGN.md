@@ -543,6 +543,12 @@ After it disappears, **Copy invite** reissues a fresh hashed token, invalidates 
 The operator delivers the copied URL out of band.
 The third card contains the Portal Users list, where each row places the Portal User email above its status and aligns the contextual actions to the trailing edge.
 Render the status as plain secondary text rather than a badge, and do not add a separate invite-state column.
+Keep Portal User status primary and render current invitation context as subordinate text in the same status area.
+An invited user with no current invite row shows **Not issued**.
+An invited user with a current unredeemed row shows **Pending** with localized expiry while the expiry is in the future, or **Expired** with localized expiry at or after expiry.
+An active user with the retained redeemed row keeps **Active** primary and shows **Redeemed** as subordinate invitation context.
+Do not show **Invalidated**, because accepted invalidation deletes the row and retains no history.
+The transient show-once URL card shows the same committed localized expiry, disappears when that expiry arrives, and replaces its URL, expiry, and pending transition on reissue.
 Invited rows expose **Copy invite** and **Disable**.
 Active rows expose **Disable**.
 Disabled rows expose no actions.

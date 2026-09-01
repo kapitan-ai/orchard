@@ -5,7 +5,15 @@ defmodule Orchard.Governance.NamedPortalUserTest do
   import Orchard.TestSupport.ModelRequestFixtures, only: [create_request!: 1]
 
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, ApiKeySecret, PortalInviteToken, PortalSession, PortalUser}
+
+  alias Orchard.Governance.{
+    ApiKey,
+    ApiKeySecret,
+    PortalInviteToken,
+    PortalSession,
+    PortalUser,
+    PortalUserSummary
+  }
 
   @password "sixteen-chars-ok"
 
@@ -59,6 +67,81 @@ defmodule Orchard.Governance.NamedPortalUserTest do
              Governance.redeem_portal_invite(tenant.slug, second.token, @password)
   end
 
+  test "SPEC 7.4a lists a tenant-scoped secret-free Not issued Portal User summary" do
+    {:ok, tenant} = Governance.create_tenant(%{slug: "summary", name: "Summary"})
+    {:ok, other_tenant} = Governance.create_tenant(%{slug: "summary-other", name: "Other"})
+
+    {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
+    {:ok, other_user} = Governance.create_portal_invite(other_tenant, %{email: user.email})
+    {:ok, _other_invite} = Governance.copy_portal_invite(other_tenant, other_user)
+
+    assert {:ok, [%PortalUserSummary{} = summary]} =
+             Governance.list_portal_user_summaries(tenant)
+
+    assert Map.from_struct(summary) == %{
+             id: user.id,
+             email: user.email,
+             status: "invited",
+             invite_context: :not_issued,
+             invite_expires_at: nil
+           }
+  end
+
+  test "SPEC 7.4a lists a pending invite with its committed expiry" do
+    {:ok, tenant} = Governance.create_tenant(%{slug: "pending-summary", name: "Pending"})
+    {:ok, user} = Governance.create_portal_invite(tenant, %{email: "pending@example.com"})
+    {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+
+    assert {:ok,
+            [
+              %PortalUserSummary{
+                status: "invited",
+                invite_context: :pending,
+                invite_expires_at: expires_at
+              }
+            ]} = Governance.list_portal_user_summaries(tenant)
+
+    assert expires_at == invite.expires_at
+  end
+
+  test "SPEC 7.4a lists an invite at or past expiry as Expired" do
+    {:ok, tenant} = Governance.create_tenant(%{slug: "expired-summary", name: "Expired"})
+    {:ok, user} = Governance.create_portal_invite(tenant, %{email: "expired@example.com"})
+    {:ok, _invite} = Governance.copy_portal_invite(tenant, user)
+
+    expires_at = DateTime.add(DateTime.utc_now(), -1, :second)
+
+    PortalInviteToken
+    |> Repo.get_by!(portal_user_id: user.id)
+    |> Ecto.Changeset.change(expires_at: expires_at)
+    |> Repo.update!()
+
+    assert {:ok,
+            [
+              %PortalUserSummary{
+                status: "invited",
+                invite_context: :expired,
+                invite_expires_at: ^expires_at
+              }
+            ]} = Governance.list_portal_user_summaries(tenant)
+  end
+
+  test "SPEC 7.4a keeps Active primary with subordinate Redeemed context" do
+    {:ok, tenant} = Governance.create_tenant(%{slug: "redeemed-summary", name: "Redeemed"})
+    {:ok, user} = Governance.create_portal_invite(tenant, %{email: "redeemed@example.com"})
+    {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+    {:ok, _active} = Governance.redeem_portal_invite(tenant.slug, invite.token, @password)
+
+    assert {:ok,
+            [
+              %PortalUserSummary{
+                status: "active",
+                invite_context: :redeemed,
+                invite_expires_at: nil
+              }
+            ]} = Governance.list_portal_user_summaries(tenant)
+  end
+
   test "SPEC 7.4a disablement invalidates an outstanding invite without reactivation" do
     {:ok, tenant} = Governance.create_tenant(%{slug: "disable-invite", name: "Disable Invite"})
     {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
@@ -70,7 +153,7 @@ defmodule Orchard.Governance.NamedPortalUserTest do
     assert {:error, :invalid_invite} =
              Governance.redeem_portal_invite(tenant.slug, invite.token, @password)
 
-    assert {:ok, [persisted]} = Governance.list_portal_users(tenant)
+    assert {:ok, [%PortalUser{} = persisted]} = Governance.list_portal_users(tenant)
     assert persisted.status == "disabled"
 
     assert Repo.aggregate(

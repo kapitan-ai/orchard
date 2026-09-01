@@ -18,6 +18,7 @@ defmodule Orchard.Governance.PortalGovernance do
     PortalPasswordVerifier,
     PortalSession,
     PortalUser,
+    PortalUserSummary,
     Tenant
   }
 
@@ -92,6 +93,48 @@ defmodule Orchard.Governance.PortalGovernance do
        |> Repo.all()}
     end
   end
+
+  @spec list_user_summaries(Tenant.t() | Ecto.UUID.t()) ::
+          {:ok, [PortalUserSummary.t()]} | {:error, :tenant_not_found}
+  def list_user_summaries(tenant_or_id) do
+    current = now()
+
+    with {:ok, tenant} <- tenant(tenant_or_id) do
+      {:ok,
+       PortalUser
+       |> join(:left, [u], invite in PortalInviteToken, on: invite.portal_user_id == u.id)
+       |> where([u], u.tenant_id == ^tenant.id)
+       |> order_by([u], asc: u.email)
+       |> select([u, invite], {u.id, u.email, u.status, invite.expires_at, invite.redeemed_at})
+       |> Repo.all()
+       |> Enum.map(fn {id, email, status, expires_at, redeemed_at} ->
+         {invite_context, invite_expires_at} =
+           invite_presentation(status, expires_at, redeemed_at, current)
+
+         %PortalUserSummary{
+           id: id,
+           email: email,
+           status: status,
+           invite_context: invite_context,
+           invite_expires_at: invite_expires_at
+         }
+       end)}
+    end
+  end
+
+  defp invite_presentation("invited", nil, _redeemed_at, _current), do: {:not_issued, nil}
+
+  defp invite_presentation("invited", expires_at, _redeemed_at, current) do
+    if DateTime.compare(expires_at, current) == :gt,
+      do: {:pending, expires_at},
+      else: {:expired, expires_at}
+  end
+
+  defp invite_presentation("active", _expires_at, redeemed_at, _current)
+       when not is_nil(redeemed_at),
+       do: {:redeemed, nil}
+
+  defp invite_presentation(_status, _expires_at, _redeemed_at, _current), do: {nil, nil}
 
   def login(slug, email, password, source) do
     email = PortalUser.normalize_email(email)
