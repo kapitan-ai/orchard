@@ -13,6 +13,7 @@ defmodule Orchard.Node.WorkerProcessTest do
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
+  alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
   alias Orchard.Node.WorkerProcess
 
   defmodule ConcurrentRuntimeAdapter do
@@ -612,5 +613,161 @@ defmodule Orchard.Node.WorkerProcessTest do
       Port.close(port)
       GenServer.stop(pid, :normal, 1_000)
     end
+  end
+
+  describe "worker capability evidence custody" do
+    test "status map is identical for absent and malformed envelopes" do
+      {absent_map, absent_snapshot} = status_and_snapshot(nil)
+      {malformed_map, malformed_snapshot} = status_and_snapshot(capabilities(protocol_major: 0))
+
+      assert absent_map == malformed_map
+      refute Map.has_key?(absent_map, :capability_snapshot)
+      assert absent_snapshot.classification == :absent
+      assert malformed_snapshot.classification == :malformed
+      assert malformed_snapshot.detail == "protocol_major"
+    end
+
+    test "snapshot is nil before the first probe and after unload" do
+      with_fake_capabilities(capabilities(), fn ->
+        pid = start_worker_process!()
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+          assert WorkerProcess.capability_snapshot(pid) == nil
+
+          assert {:ok, _status} = WorkerProcess.status(pid)
+
+          assert %{classification: :valid, custody: :fake_runtime} =
+                   WorkerProcess.capability_snapshot(pid)
+
+          assert :ok = WorkerProcess.unload(pid)
+          assert WorkerProcess.capability_snapshot(pid) == nil
+        after
+          GenServer.stop(pid, :normal, 1_000)
+        end
+      end)
+    end
+
+    test "request admission probe retains the snapshot" do
+      with_fake_capabilities(capabilities(), fn ->
+        pid = start_worker_process!()
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+          assert :ok =
+                   WorkerProcess.start_request(pid, "cap-1", execute_request("cap-1"),
+                     subscriber: self()
+                   )
+
+          assert %{classification: :valid} = WorkerProcess.capability_snapshot(pid)
+        after
+          GenServer.stop(pid, :normal, 1_000)
+        end
+      end)
+    end
+
+    test "classified telemetry reports incarnation change across probes" do
+      events =
+        with_telemetry(fn ->
+          with_fake_capabilities(capabilities(service_incarnation: "aaaa"), fn ->
+            pid = start_worker_process!()
+
+            try do
+              assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+              assert {:ok, _status} = WorkerProcess.status(pid)
+
+              with_fake_capabilities(capabilities(service_incarnation: "bbbb"), fn ->
+                assert {:ok, _status} = WorkerProcess.status(pid)
+              end)
+            after
+              GenServer.stop(pid, :normal, 1_000)
+            end
+          end)
+        end)
+
+      assert [
+               %{classification: :valid, incarnation_changed: false, provider_id: "mlx"},
+               %{classification: :valid, incarnation_changed: true, profile_count: 1}
+             ] = Enum.map(events, fn {_name, _measurements, metadata} -> metadata end)
+    end
+  end
+
+  defp status_and_snapshot(envelope) do
+    with_fake_capabilities(envelope, fn ->
+      pid = start_worker_process!()
+
+      try do
+        assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+        assert {:ok, status} = WorkerProcess.status(pid)
+        {status, WorkerProcess.capability_snapshot(pid)}
+      after
+        GenServer.stop(pid, :normal, 1_000)
+      end
+    end)
+  end
+
+  defp with_fake_capabilities(envelope, fun) do
+    with_runtime_config(
+      [runtime_adapter_impl: Orchard.Node.FakeRuntimeAdapter, fake_worker_capabilities: envelope],
+      fun
+    )
+  end
+
+  defp with_telemetry(fun) do
+    test_pid = self()
+    handler_id = "worker-process-capabilities-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler_id,
+      [:orchard, :node, :worker_capabilities, :classified],
+      fn name, measurements, metadata, _config ->
+        send(test_pid, {:capabilities_event, name, measurements, metadata})
+      end,
+      nil
+    )
+
+    try do
+      fun.()
+    after
+      :telemetry.detach(handler_id)
+    end
+
+    collect_capabilities_events()
+  end
+
+  defp collect_capabilities_events do
+    receive do
+      {:capabilities_event, name, measurements, metadata} ->
+        [{name, measurements, metadata} | collect_capabilities_events()]
+    after
+      0 -> []
+    end
+  end
+
+  defp capabilities(overrides \\ []) do
+    struct!(
+      %WorkerCapabilities{
+        protocol_major: 1,
+        protocol_minor: 0,
+        provider_id: "mlx",
+        provider_version: "0.31.2",
+        implementation_version: "0.1.0",
+        service_incarnation: String.duplicate("ab", 16),
+        profiles: [
+          %WorkerCapabilityProfile{
+            profile_id: "mlx-metal-unified-default",
+            artifact_format: "safetensors",
+            acceleration: "metal",
+            device_binding: "apple_gpu_0",
+            memory_semantics: "unified",
+            max_concurrency: 4,
+            runtime_features: ["prompt_token_ids", "streaming"],
+            cache_capabilities: ["prefix_cache"]
+          }
+        ]
+      },
+      overrides
+    )
   end
 end

@@ -21,12 +21,12 @@
 
 ## 4. Node Agent Wiring And Custody
 
-- [ ] 4.1 Decode the envelope in `Orchard.Node.WorkerRuntimeAdapter.get_status/2` into a classified snapshot with monotonic receipt time and custody identity; never retain raw malformed bytes.
-- [ ] 4.2 Retain and replace the snapshot in `Orchard.Node.WorkerProcess`; invalidate on `{:exit_status, ...}` and `{:gun_down, ...}` (the existing `:runtime_worker_exited` paths), before delegating `unload_model` and `load_model` to the adapter, and on incarnation change; expose `capability_snapshot/1`.
-- [ ] 4.3 Expose `Orchard.Node.ModelManager.evaluate_worker_capability/3` for diagnostics and tests without touching `StatusResponse`, `Observation`, `PlacementCapacity`, or `RuntimeHealth`.
-- [ ] 4.4 Emit `[:orchard, :node, :worker_capabilities, :classified]` and `[:orchard, :node, :worker_capabilities, :evaluated]`; add them to the telemetry allow-list test.
-- [ ] 4.5 Add the non-gating regression: `WorkerProcess.status/2` minus the snapshot is identical for an absent envelope and a malformed envelope, and `classify_worker_status/1`, `status_max_concurrency/1`, `aggregate_supports_prompt_token_ids/2`, `health_from_status_result/2`, and `placement_capacity/4` are unchanged.
-- [ ] 4.6 Add `NodeRuntimeStub` end-to-end tests in `orchard_node_agent_test.exs` for envelope present, absent, malformed, and incarnation change across a simulated worker restart.
+- [x] 4.1 Decode the envelope in `Orchard.Node.WorkerRuntimeAdapter.get_status/2` into a classified snapshot with monotonic receipt time and custody identity; never retain raw malformed bytes.
+- [x] 4.2 Retain and replace the snapshot in `Orchard.Node.WorkerProcess`; invalidate on `{:exit_status, ...}` and `{:gun_down, ...}` (the existing `:runtime_worker_exited` paths), before delegating `unload_model` and `load_model` to the adapter, and on incarnation change; expose `capability_snapshot/1`.
+- [x] 4.3 Expose `Orchard.Node.ModelManager.evaluate_worker_capability/3` for diagnostics and tests without touching `StatusResponse`, `Observation`, `PlacementCapacity`, or `RuntimeHealth`.
+- [x] 4.4 Emit `[:orchard, :node, :worker_capabilities, :classified]` and `[:orchard, :node, :worker_capabilities, :evaluated]`; add them to the telemetry allow-list test.
+- [x] 4.5 Add the non-gating regression: `WorkerProcess.status/2` minus the snapshot is identical for an absent envelope and a malformed envelope, and `classify_worker_status/1`, `status_max_concurrency/1`, `aggregate_supports_prompt_token_ids/2`, `health_from_status_result/2`, and `placement_capacity/4` are unchanged.
+- [x] 4.6 Add `NodeRuntimeStub` end-to-end tests in `orchard_node_agent_test.exs` for envelope present, absent, malformed, and incarnation change across a simulated worker restart.
 
 ## 5. MLX Worker And Provider-Neutral Conformance
 

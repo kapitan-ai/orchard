@@ -26,6 +26,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
+    WorkerCapabilities,
     WorkerMemoryBudgetStatus,
     WorkerPrefixCacheStatus,
     WorkerRuntimeService,
@@ -33,6 +34,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   }
 
   alias Orchard.Node.RuntimeProcessReaper
+  alias Orchard.Node.WorkerCapabilityEvidence
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.PathUtils
 
@@ -68,7 +70,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         }
 
   @impl true
-  def get_status(%{channel: channel}, opts) do
+  def get_status(%{channel: channel} = adapter_state, opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, @rpc_timeout_ms)
 
     case WorkerRuntimeService.Stub.get_status(
@@ -77,6 +79,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            timeout: timeout_ms
          ) do
       {:ok, status} ->
+        received_at_ms = System.monotonic_time(:millisecond)
+
         {:ok,
          %{
            ready: Map.get(status, :ready, false),
@@ -85,7 +89,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            memory_budget: memory_budget_from_proto(Map.get(status, :memory_budget)),
            prefix_cache_status: prefix_cache_from_proto(Map.get(status, :prefix_cache)),
            supports_prompt_token_ids: Map.get(status, :supports_prompt_token_ids, false) || false,
-           max_concurrency: positive_integer_or_nil(Map.get(status, :max_concurrency))
+           max_concurrency: positive_integer_or_nil(Map.get(status, :max_concurrency)),
+           capability_snapshot:
+             WorkerCapabilityEvidence.classify(
+               capabilities_from_proto(Map.get(status, :capabilities)),
+               received_at_ms,
+               custody_term(adapter_state)
+             )
          }}
 
       {:error, reason} ->
@@ -134,6 +144,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   defp positive_integer_or_nil(value) when is_integer(value) and value > 0, do: value
   defp positive_integer_or_nil(_value), do: nil
+
+  defp capabilities_from_proto(%WorkerCapabilities{} = capabilities), do: capabilities
+  defp capabilities_from_proto(_other), do: nil
+
+  defp custody_term(adapter_state) do
+    {Map.get(adapter_state, :os_pid), Map.get(adapter_state, :os_identity)}
+  end
 
   defp memory_budget_from_proto(nil), do: nil
 

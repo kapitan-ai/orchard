@@ -34,6 +34,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Node.ModelLoadFailure
   alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
   alias Orchard.Node.ToolCapabilityCatalog
+  alias Orchard.Node.WorkerCapabilityEvidence
   alias Orchard.Node.WorkerProcess
   alias Orchard.Node.WorkerSupervisor
 
@@ -177,6 +178,55 @@ defmodule Orchard.Node.ModelManager do
     :exit, _reason ->
       score_prefix_cache_response("unavailable", "model manager unavailable")
   end
+
+  @doc """
+  Evaluates `query` against the capability snapshot retained by the loaded
+  worker for `model`, using the configured freshness window.
+
+  Diagnostic only: the result is never written into `StatusResponse` or any
+  other Controller-visible structure. Returns `:absent` when no worker is
+  loaded for `model`.
+  """
+  @spec evaluate_worker_capability(
+          ModelRef.t() | {String.t(), String.t()},
+          WorkerCapabilityEvidence.query(),
+          keyword()
+        ) :: WorkerCapabilityEvidence.result()
+  def evaluate_worker_capability(model, query, opts \\ []) when is_map(query) do
+    {model_id, version} = key = worker_capability_model_key(model)
+
+    snapshot =
+      case GenServer.call(__MODULE__, {:loaded_worker_pid, key}) do
+        {:ok, pid} -> WorkerProcess.capability_snapshot(pid, Keyword.take(opts, [:timeout]))
+        :error -> nil
+      end
+
+    result =
+      WorkerCapabilityEvidence.evaluate(
+        snapshot,
+        query,
+        System.monotonic_time(:millisecond),
+        freshness_window_ms: Node.worker_capabilities_freshness_window_ms()
+      )
+
+    :telemetry.execute(
+      [:orchard, :node, :worker_capabilities, :evaluated],
+      %{system_time: System.system_time()},
+      %{model_id: model_id, version: version, result: evaluation_result_kind(result)}
+    )
+
+    result
+  end
+
+  defp worker_capability_model_key(%ModelRef{model_id: model_id, version: version}),
+    do: model_key(model_id, version)
+
+  defp worker_capability_model_key({model_id, version})
+       when is_binary(model_id) and is_binary(version),
+       do: model_key(model_id, version)
+
+  defp evaluation_result_kind({:supported, _profile_id, _incarnation}), do: :supported
+  defp evaluation_result_kind(result) when is_atom(result), do: result
 
   @impl true
   def init(_init_arg) do
@@ -339,6 +389,13 @@ defmodule Orchard.Node.ModelManager do
   def handle_call({:score_prefix_cache, %ScorePrefixCacheRequest{} = request}, _from, state) do
     response = score_prefix_cache_for_state(request, state)
     {:reply, response, state}
+  end
+
+  def handle_call({:loaded_worker_pid, key}, _from, state) do
+    case Map.get(state.workers, key) do
+      %{placement_state: :PLACEMENT_STATE_LOADED, pid: pid} -> {:reply, {:ok, pid}, state}
+      _other -> {:reply, :error, state}
+    end
   end
 
   defp handle_prepare_request(%ExecuteInferenceRequest{} = request, subscriber, state) do
