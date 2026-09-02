@@ -33,13 +33,13 @@
 
 - [x] 3.1 Add shared domain structures for lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and control-plane read-only status.
 - [x] 3.2 Add fixed scheduler explanation rejection codes and action preview blocker codes.
-- [ ] 3.3 Ensure reason codes are used by Operator API, Admin API, CLI, Console, support bundles, and tests.
+- [ ] 3.3 Ensure reason codes are used by Operator API, Admin API, CLI, Console, and tests.
   Note: CLI/Admin admission previews now use shared `ActionPreview` blocker and confirmation codes.
   Console pending admission queue, detail drill-in, and admit/reject preview panels now render shared status, scheduler, blocker, warning, consequence, and confirmation codes for this slice.
   Admin API, CLI, Console, and tests consume the shared contract for landed admission-review behavior.
   Node lifecycle previews for cordon, uncordon, drain, maintenance, resume, and decommission now consume the shared blocker, consequence, and confirmation vocabulary across CLI and Console.
   The Operator API scheduler explanations endpoint and the multi-node scheduler explanation producer now consume the shared reason-code contract.
-  Support bundles remain the outstanding consumer for a future slice.
+  The remaining unchecked work is verification of every retained consumer after the support-only vocabulary is retired by `retire-support-bundles`.
 - [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
 - [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and control-plane status.
 - [x] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
@@ -87,7 +87,7 @@
   Note: Scheduler decision debug JSON plus candidate diagnostics and score components now filter unsafe prompt, token, secret, credential, DSN, body, payload, request, and response keys before rendering.
   Note: Public LiveView tests cover the full candidate groups, not found, legacy empty shape, invalid persisted explanation, and disconnected deferred render.
   Note: The diagnostics and components deny-list is key-based and does not inspect values, accepted because the data domain is internal scheduler metadata.
-- [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
+- [ ] 5.5 Add diagnostics entry points that reuse the shared node, request, scheduler, Runtime Endpoint, dispatch-capacity, and control-plane contracts.
 - [x] 5.6 Add read-only control-plane status.
   Note: Console Nodes now includes a separate read-only Control Plane status rail card that renders deployment mode, this-controller identity, leader identity, advisory-lock status, lock age, last renewal, write-path behavior, and sanitized leadership errors without failover or transfer controls.
 - [x] 5.7 Verify Console UI against `docs/DESIGN.md` and `docs/brand-identity.md` with browser screenshots during implementation.
@@ -97,17 +97,17 @@
   Note: This task 5.4 slice browser-verified the request-scoped scheduler explanation panel on desktop and mobile.
   Keep this unchecked as a recurring gate for future Console slices.
 
-## 6. Diagnostics And Support Bundles
+## 6. Retired Support-Bundle Work
 
-- [ ] 6.1 Align Console-triggered support bundles with the archive format emitted by `orchardctl support bundle create`.
-- [ ] 6.2 Upgrade `orchardctl support bundle create` to emit `orchard.support_bundle.v2` for cluster-management support bundles.
-- [ ] 6.3 Make Console-triggered bundles use the same v2 archive format.
-- [ ] 6.4 Document any v1 compatibility behavior separately; v2 fields required by this change are mandatory for the new contract.
-- [ ] 6.5 Add scope selection for cluster, node, request, scheduler decision, runtime endpoint, and control plane evidence.
-- [ ] 6.6 Add a redaction manifest with redaction classes and counts.
-- [ ] 6.7 Ensure support bundles exclude plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw token sequences, raw local evidence logs, and tool session identifiers.
-- [ ] 6.8 Add tests for support bundle manifest contents and redaction behavior.
-- [ ] 6.9 Add tests proving request and scheduler-decision scoped bundles include sanitized metadata only.
+- [x] 6.1 Retired by `retire-support-bundles`; no Console-to-CLI archive alignment remains.
+- [x] 6.2 Retired by `retire-support-bundles`; no v2 CLI archive format remains.
+- [x] 6.3 Retired by `retire-support-bundles`; Console does not generate a separate archive.
+- [x] 6.4 Retired by `retire-support-bundles`; no v1 compatibility contract remains.
+- [x] 6.5 Retired by `retire-support-bundles`; no support-only scope vocabulary remains.
+- [x] 6.6 Retired by `retire-support-bundles`; no redaction-manifest artifact remains.
+- [x] 6.7 Retired by `retire-support-bundles`; retained diagnostics enforce their own secret exclusions.
+- [x] 6.8 Retired by `retire-support-bundles`; no archive-manifest tests remain.
+- [x] 6.9 Retired by `retire-support-bundles`; request and scheduler diagnostics remain sanitized without a scoped archive.
 
 ## 7. Scheduler Explanations
 

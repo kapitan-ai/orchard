@@ -50,9 +50,9 @@ product/system/build contract.
   reporting a `drain_not_running` blocker; `orchardctl nodes maintenance`
   previews only, with its `draining -> maintenance` execution deferred until
   drain completion can be verified.
-  `orchardctl support bundle create` creates a local diagnostic archive
-  with bounded redacted logs, redacted config, service status, node snapshots,
-  shared cluster-management node status, and request summaries.
+  `orchardctl requests inspect` and the authenticated Operator API expose
+  bounded request, scheduler, node, and control-plane diagnostics without a
+  packaged evidence artifact.
 
 When this guide and `SPEC.md` disagree, treat the branch as blocked until the
 conflict is reconciled. `SPEC.md` wins until explicitly updated.

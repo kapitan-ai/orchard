@@ -233,7 +233,7 @@ The compatibility API at `/v1/chat/completions` backed by Orchard's canonical re
 _Avoid_: Canonical inference abstraction
 
 **Operator API**:
-The runtime-operations HTTP API surface for nodes, requests, diagnostics, scheduler explanations, and support bundles.
+The runtime-operations HTTP API surface for nodes, requests, diagnostics, and scheduler explanations.
 _Avoid_: Admin API, Public Inference API, tenant/key mutation unless also admin
 
 **Admin API**:
@@ -311,7 +311,7 @@ _Avoid_: principal, RBAC Role, Bootstrap Token, Node Certificate, token when ref
 
 **One-time Secret Output**:
 The one-time display or export of newly generated API Token secrets at creation.
-_Avoid_: persisted secret, audit payload, support bundle content
+_Avoid_: persisted secret, audit payload, durable local evidence
 
 **Owner Contact**:
 Descriptive human or team contact metadata for an API Client.
@@ -378,11 +378,11 @@ _Avoid_: Quota, Scheduler Decision
 
 **Audit Log**:
 A durable governance or security event record for significant administrative and operator actions.
-_Avoid_: Support Bundle, debug log, structured log, trace span
+_Avoid_: debug log, structured log, trace span
 
 **Payload Capture Mode**:
 A tenant setting that controls how much prompt and response payload data Orchard may retain, resolved into an effective mode that each Request snapshots for its whole lifetime.
-_Avoid_: Audit Log, Support Bundle, logging level
+_Avoid_: Audit Log, logging level
 
 ### Requests and Inference
 
@@ -957,15 +957,6 @@ _Avoid_: Deployment topology, External Database Mode
 A database ownership mode where Orchard uses an operator-managed PostgreSQL database.
 _Avoid_: Managed Database Mode, All-in-One Deployment
 
-**Support Bundle**:
-An operator-generated diagnostic package for logs, config, snapshots, and request summaries.
-_Avoid_: Audit Log, Payload Capture Mode, raw local evidence
-
-**Support Bundle v2**:
-The required diagnostic bundle format for cluster-management evidence, including sanitized admission candidates, Node Admission Decisions, scheduler explanations, support scope, omitted sections, and redaction manifest.
-v1 compatibility must not weaken v2 contents or redaction rules.
-_Avoid_: Support Bundle v1, raw local evidence, prompt export
-
 **DMG Installer**:
 The approved interactive deployment artifact for the macOS Native Distribution Profile whose primary artifact is a verified `Orchard.app` that owns the root-authorized service lifecycle.
 Native PKG is not a supported current Orchard distribution channel.
@@ -980,7 +971,7 @@ A launchd-managed user agent that starts the Tray/Menu Bar App in a user context
 _Avoid_: LaunchDaemon, system service
 
 **Tray/Menu Bar App**:
-The local macOS app for status, onboarding, logs, and support-bundle entry.
+The local macOS app for status, onboarding, and logs.
 _Avoid_: Orchard Console, LaunchDaemon
 
 **Install Role**:

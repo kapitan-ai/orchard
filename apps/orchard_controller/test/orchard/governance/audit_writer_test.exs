@@ -22,7 +22,6 @@ defmodule Orchard.Governance.AuditWriterTest do
     {"api_key.auth_failed", "api_key", "denied"},
     {"service_account.disabled", "service_account", "succeeded"},
     {"role_binding.created", "role_binding", "succeeded"},
-    {"support_bundle.generated", "support_bundle", "succeeded"},
     {"node_admission.rejected", "node_admission", "denied"},
     {"node_enrollment.issued", "node_admission", "succeeded"},
     {"node_trust.initialized", "node_admission", "succeeded"},
@@ -32,6 +31,18 @@ defmodule Orchard.Governance.AuditWriterTest do
     {"provisioning_batch.failed", "service_account", "failed"},
     {"cluster_admin_bootstrap.minted", "cluster", "succeeded"}
   ]
+
+  test "retired support-bundle actions do not emit bounded audit metrics" do
+    ref = attach_metric()
+
+    assert {:ok, %AuditLog{}} =
+             "support_bundle.generated"
+             |> valid_changeset()
+             |> AuditWriter.insert()
+
+    refute_receive {^ref, _measurements, _metadata}
+    assert Repo.get_by(AuditLog, action: "support_bundle.generated")
+  end
 
   test "SPEC.md §10.9 refuses to run inside an independently owned Repo transaction" do
     ref = attach_metric()

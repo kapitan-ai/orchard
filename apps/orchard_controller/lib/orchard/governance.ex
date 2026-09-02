@@ -494,41 +494,6 @@ defmodule Orchard.Governance do
     end
   end
 
-  @doc """
-  Records a best-effort `support_bundle.generated` audit event when the Repo is running.
-
-  The payload is intentionally limited to bundle metadata and excludes local
-  support-root paths.
-  """
-  @spec audit_support_bundle_generated(map()) :: :ok | :skipped | {:error, Changeset.t()}
-  def audit_support_bundle_generated(attrs) when is_map(attrs) do
-    if repo_started?() do
-      attrs = normalize_attrs(attrs)
-
-      %AuditLog{}
-      |> audit_log_impl().changeset(%{
-        tenant_id: legacy_tenant_id(),
-        api_key_id: nil,
-        actor_type: "operator",
-        actor_id: nil,
-        action: "support_bundle.generated",
-        target_type: "support_bundle",
-        target_id: Map.get(attrs, "archive_name"),
-        occurred_at: utc_now(),
-        payload: support_bundle_audit_payload(attrs)
-      })
-      |> AuditWriter.insert()
-      |> case do
-        {:ok, _audit_log} -> :ok
-        {:error, changeset} -> {:error, sanitize_changeset(changeset)}
-      end
-    else
-      :skipped
-    end
-  end
-
-  def audit_support_bundle_generated(_attrs), do: audit_support_bundle_generated(%{})
-
   @spec insert_cluster_audit_log(map() | keyword()) ::
           {:ok, AuditLog.t()} | {:error, Changeset.t()}
   def insert_cluster_audit_log(attrs) do
@@ -1155,15 +1120,6 @@ defmodule Orchard.Governance do
   end
 
   defp fetch_api_key_for_audit(_token), do: :skip
-
-  defp support_bundle_audit_payload(attrs) do
-    attrs
-    |> Map.take(["archive_name", "bundle_format", "generated_at", "max_log_bytes"])
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
-  end
-
-  defp repo_started?, do: Process.whereis(Repo) != nil
 
   defp normalize_generated_secret(%{token: token}) when is_binary(token),
     do: normalize_generated_secret(token)

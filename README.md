@@ -89,7 +89,7 @@ your network and under your audit trail.
 - `orchardctl`: guided first run, node trust and enrollment, admission review,
   node lifecycle (cordon, drain, decommission), model import and access grants,
   request diagnostics with scheduler explanations, cluster status, TLS and
-  transport setup, upgrades, and redacted support bundles.
+  transport setup, and upgrades.
 - Prometheus exposition on `/metrics`, health and readiness endpoints, and
   request-correlated logs; structured logging and OpenTelemetry tracing are
   specified but not yet shipped.
@@ -144,8 +144,7 @@ bulk API Client provisioning, the Developer Portal, the Console, Prometheus
 metrics, and — on the operations side — node trust initialization, secure
 single-node enrollment and join, admission review, node lifecycle execution
 (cordon, drain, decommission; maintenance previews only), request diagnostics
-with scheduler explanations, cluster and control-plane status, and redacted
-support bundles.
+with scheduler explanations, and cluster and control-plane status.
 
 Not yet operator-usable: multi-node cluster bootstrap beyond the one-controller
 one-node enrollment tracer, broader production multi-node scheduling, full

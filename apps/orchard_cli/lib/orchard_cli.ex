@@ -18,7 +18,6 @@ defmodule OrchardCLI do
     Start,
     Status,
     Stop,
-    Support,
     Tenants,
     TLS,
     Transport,
@@ -51,7 +50,6 @@ defmodule OrchardCLI do
   defp dispatch_command(["nodes" | rest]), do: Nodes.run(rest)
   defp dispatch_command(["models" | rest]), do: Models.run(rest)
   defp dispatch_command(["requests" | rest]), do: Requests.run(rest)
-  defp dispatch_command(["support" | rest]), do: Support.run(rest)
   defp dispatch_command(["tenants" | rest]), do: Tenants.run(rest)
   defp dispatch_command(["api-clients" | rest]), do: ApiClients.run(rest)
   defp dispatch_command(["api-keys" | rest]), do: ApiKeys.run(rest)
@@ -82,6 +80,6 @@ defmodule OrchardCLI do
   end
 
   defp usage do
-    "orchardctl\nAvailable commands: status, start, stop, init, first-run, migrate, console, cluster, env, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
+    "orchardctl\nAvailable commands: status, start, stop, init, first-run, migrate, console, cluster, env, node, nodes, models, requests, tenants, api-clients, api-keys, tls, transport, upgrade"
   end
 end
