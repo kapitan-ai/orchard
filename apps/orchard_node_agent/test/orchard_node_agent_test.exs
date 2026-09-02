@@ -37,6 +37,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Node.SharedContract
   alias Orchard.Node.Status, as: NodeStatus
   alias Orchard.Node.Supervisor, as: NodeSupervisor
+  alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.Node.WorkerSupervisor
   alias Orchard.NodeAgent.Supervisor, as: NodeAgentSupervisor
@@ -1942,6 +1943,175 @@ defmodule OrchardNodeAgentTest do
                } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 700))
       end
     )
+  end
+
+  describe "worker capability evidence (non-gating)" do
+    @capability_query %{
+      artifact_format: "safetensors",
+      acceleration: "metal",
+      device_binding: "apple_gpu_0",
+      memory_semantics: "unified",
+      min_concurrency: 2,
+      runtime_features: ["prompt_token_ids"],
+      cache_capabilities: ["prefix_cache"]
+    }
+
+    test "absent, malformed, and valid envelopes yield identical Controller-visible responses",
+         %{bundle: bundle} do
+      [absent, malformed, valid] =
+        Enum.map(
+          [nil, worker_capabilities(protocol_major: 0), worker_capabilities()],
+          &load_and_observe_with_capabilities(bundle, &1)
+        )
+
+      assert absent.ensure == malformed.ensure
+      assert absent.ensure == valid.ensure
+      assert absent.status == malformed.status
+      assert absent.status == valid.status
+
+      assert %StatusResponse{
+               runtime_health: %{ready: true, health_code: ""},
+               supports_prompt_token_ids: false,
+               max_concurrency: max_concurrency,
+               runtime_model_placements: [
+                 %RuntimeModelPlacement{max_concurrency: max_concurrency}
+               ]
+             } = valid.status
+
+      assert max_concurrency == Node.effective_worker_request_limit()
+      assert %EnsureModelLoadedResponse{worker_supports_prompt_token_ids: false} = valid.ensure
+
+      assert absent.evaluation == :absent
+      assert malformed.evaluation == :malformed
+      assert {:supported, "mlx-metal-unified-default", incarnation} = valid.evaluation
+      assert incarnation == worker_capabilities().service_incarnation
+    end
+
+    test "evaluate_worker_capability reports unsupported above the advertised concurrency",
+         %{bundle: bundle} do
+      with_fake_worker_capabilities(worker_capabilities(), fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        assert {:ok, %StatusResponse{}} =
+                 with_channel(&NodeRuntimeStub.get_status(&1, %StatusRequest{}))
+
+        events =
+          with_telemetry_collector(all_lifecycle_events(), fn ->
+            assert :unsupported =
+                     ModelManager.evaluate_worker_capability(
+                       {bundle.model_id, bundle.version},
+                       Map.put(@capability_query, :min_concurrency, 99)
+                     )
+          end)
+
+        assert_telemetry_event(
+          events,
+          [:orchard, :node, :worker_capabilities, :evaluated],
+          fn _measurements, metadata ->
+            assert metadata.model_id == bundle.model_id
+            assert metadata.version == bundle.version
+            assert metadata.result == :unsupported
+          end
+        )
+      end)
+    end
+
+    test "evaluate_worker_capability is absent when no worker is loaded" do
+      assert :absent =
+               ModelManager.evaluate_worker_capability(
+                 %RPCModelRef{model_id: "missing/model", version: "v1"},
+                 @capability_query
+               )
+    end
+
+    test "snapshot goes stale once the freshness window elapses", %{bundle: bundle} do
+      with_fake_worker_capabilities(worker_capabilities(), fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        assert {:ok, %StatusResponse{}} =
+                 with_channel(&NodeRuntimeStub.get_status(&1, %StatusRequest{}))
+
+        assert {:supported, _profile_id, _incarnation} =
+                 ModelManager.evaluate_worker_capability(
+                   {bundle.model_id, bundle.version},
+                   @capability_query
+                 )
+
+        Process.sleep(5)
+        put_runtime_setting(:worker_capabilities_freshness_window_ms, 1)
+
+        assert :stale =
+                 ModelManager.evaluate_worker_capability(
+                   {bundle.model_id, bundle.version},
+                   @capability_query
+                 )
+      end)
+    end
+
+    test "incarnation change is reported across probes and reset by a worker restart",
+         %{bundle: bundle} do
+      first = worker_capabilities(service_incarnation: String.duplicate("a1", 16))
+      second = worker_capabilities(service_incarnation: String.duplicate("b2", 16))
+      third = worker_capabilities(service_incarnation: String.duplicate("c3", 16))
+
+      with_fake_worker_capabilities(first, fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        assert {:ok, %StatusResponse{}} =
+                 with_channel(&NodeRuntimeStub.get_status(&1, %StatusRequest{}))
+
+        assert [{:valid, false}] = classified_incarnation_changes(fn -> :ok end)
+
+        put_runtime_setting(:fake_worker_capabilities, second)
+
+        assert [{:valid, true}] = classified_incarnation_changes(fn -> :ok end)
+        assert [{:valid, false}] = classified_incarnation_changes(fn -> :ok end)
+
+        assert {:supported, _profile_id, incarnation} =
+                 ModelManager.evaluate_worker_capability(
+                   {bundle.model_id, bundle.version},
+                   @capability_query
+                 )
+
+        assert incarnation == second.service_incarnation
+
+        assert %{ok: true} =
+                 NodeStatus.unload_model(%UnloadModelRequest{
+                   model_id: bundle.model_id,
+                   version: bundle.version
+                 })
+
+        wait_until(fn -> worker_count() == 0 end)
+
+        assert :absent =
+                 ModelManager.evaluate_worker_capability(
+                   {bundle.model_id, bundle.version},
+                   @capability_query
+                 )
+
+        put_runtime_setting(:fake_worker_capabilities, third)
+
+        restart_classifications =
+          classified_incarnation_changes(fn ->
+            assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                     NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+          end)
+
+        assert restart_classifications != []
+        assert Enum.all?(restart_classifications, &(&1 == {:valid, false}))
+
+        assert {:supported, _profile_id, restarted_incarnation} =
+                 ModelManager.evaluate_worker_capability(
+                   {bundle.model_id, bundle.version},
+                   @capability_query
+                 )
+
+        assert restarted_incarnation == third.service_incarnation
+      end)
+    end
   end
 
   test "score_prefix_cache returns model_not_loaded when no matching worker exists" do
@@ -5522,6 +5692,79 @@ defmodule OrchardNodeAgentTest do
     )
   end
 
+  defp with_fake_worker_capabilities(envelope, fun) when is_function(fun, 0) do
+    with_runtime_config(
+      [runtime_adapter_impl: Orchard.Node.FakeRuntimeAdapter, fake_worker_capabilities: envelope],
+      fun
+    )
+  end
+
+  # Only valid inside with_runtime_config/2, which restores the previous runtime.
+  defp put_runtime_setting(key, value) do
+    runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+    Application.put_env(:orchard_node_agent, :runtime, Keyword.put(runtime, key, value))
+  end
+
+  defp classified_incarnation_changes(before_status_fun) when is_function(before_status_fun, 0) do
+    all_lifecycle_events()
+    |> with_telemetry_collector(fn ->
+      before_status_fun.()
+
+      assert {:ok, %StatusResponse{}} =
+               with_channel(&NodeRuntimeStub.get_status(&1, %StatusRequest{}))
+    end)
+    |> Enum.flat_map(fn
+      {[:orchard, :node, :worker_capabilities, :classified], _measurements, metadata} ->
+        [{metadata.classification, metadata.incarnation_changed}]
+
+      _other_event ->
+        []
+    end)
+  end
+
+  defp load_and_observe_with_capabilities(bundle, envelope) do
+    with_fake_worker_capabilities(envelope, fn ->
+      ensure = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      {:ok, %StatusResponse{} = status} =
+        with_channel(&NodeRuntimeStub.get_status(&1, %StatusRequest{}))
+
+      evaluation =
+        ModelManager.evaluate_worker_capability(
+          {bundle.model_id, bundle.version},
+          @capability_query
+        )
+
+      %{ensure: ensure, status: status, evaluation: evaluation}
+    end)
+  end
+
+  defp worker_capabilities(overrides \\ []) do
+    struct!(
+      %WorkerCapabilities{
+        protocol_major: 1,
+        protocol_minor: 0,
+        provider_id: "mlx",
+        provider_version: "0.31.2",
+        implementation_version: "0.1.0",
+        service_incarnation: String.duplicate("0f", 16),
+        profiles: [
+          %WorkerCapabilityProfile{
+            profile_id: "mlx-metal-unified-default",
+            artifact_format: "safetensors",
+            acceleration: "metal",
+            device_binding: "apple_gpu_0",
+            memory_semantics: "unified",
+            max_concurrency: 4,
+            runtime_features: ["prompt_token_ids", "streaming"],
+            cache_capabilities: ["prefix_cache"]
+          }
+        ]
+      },
+      overrides
+    )
+  end
+
   defp with_real_worker_runtime(fun) when is_function(fun, 0) do
     with_runtime_config(
       [runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter, fake_runtime?: false],
@@ -5597,7 +5840,9 @@ defmodule OrchardNodeAgentTest do
       [:orchard, :node, :worker_runtime, :load, :exception],
       [:orchard, :node, :worker_runtime, :unload, :start],
       [:orchard, :node, :worker_runtime, :unload, :stop],
-      [:orchard, :node, :worker_runtime, :unload, :exception]
+      [:orchard, :node, :worker_runtime, :unload, :exception],
+      [:orchard, :node, :worker_capabilities, :classified],
+      [:orchard, :node, :worker_capabilities, :evaluated]
     ] ++ all_eviction_events()
   end
 

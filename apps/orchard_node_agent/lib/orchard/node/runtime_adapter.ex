@@ -28,7 +28,10 @@ defmodule Orchard.Node.RuntimeAdapter do
   semantics. Adapters that can run overlapping generations should also report
   `:max_concurrency`; the node agent uses it for request admission and status
   capacity telemetry, falling back to conservative single-request capacity when
-  it is absent.
+  it is absent. Adapters that decode the `WorkerCapabilities` envelope report it
+  as `:capability_snapshot` (an `Orchard.Node.WorkerCapabilityEvidence`
+  snapshot classified at receipt); the owning worker treats a missing key as an
+  absent envelope. The snapshot never influences readiness or capacity.
   """
 
   alias Orchard.Cluster.V1.ExecuteInferenceRequest

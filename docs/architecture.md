@@ -239,6 +239,12 @@ Runtime Endpoint and worker runtime contracts are separate:
 - `proto/orchard/worker/v1/` owns the provider-neutral node-agent ↔ worker protocol source, descriptor golden, and conformance fixtures.
 - Runtime-provider packages consume only generated bindings from that neutral authority.
 
+The worker `GetStatus` response carries an additive `WorkerCapabilities` envelope: protocol major/minor, provider identity and versions, a non-secret per-process `service_incarnation`, and complete indivisible capability profiles (artifact format, acceleration, device binding, memory semantics, concurrency, feature and cache sets).
+`Orchard.Node.WorkerCapabilityEvidence` classifies each response at receipt as `absent`, `malformed`, `duplicate_or_conflicting`, `incompatible`, or valid, and evaluates exact-profile queries against the retained snapshot with the precedence `absent`, `stale`, retained invalid verdict, `unknown`, `unsupported`, then a proof naming the profile and incarnation.
+Only the whole profile can prove a capability; no Cartesian combination across profiles is inferred, provider timestamps never establish freshness, and `Orchard.Node.WorkerProcess` discards the snapshot on worker exit, load, unload, or an incarnation change.
+The evaluator is diagnostic-only in this slice: it emits `[:orchard, :node, :worker_capabilities, :classified | :evaluated]` telemetry and is reachable for tests, but nothing from it enters readiness, capacity, `StatusResponse`, or Runtime Endpoint Observations until the separately reviewed cutover described in ADR 0026.
+The loaded-model binding inside the envelope is deferred (field 8 reserved) until the negotiated reasoning contract fixes the canonical incarnation and artifact identity.
+
 ### Persistence and coordination
 
 Postgres is the sole persistence and coordination layer. In the target product,

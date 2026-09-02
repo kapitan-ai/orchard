@@ -14,6 +14,7 @@ defmodule Orchard.Node.WorkerProcess do
   alias Orchard.Node
   alias Orchard.Node.RuntimeAdapter
   alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
+  alias Orchard.Node.WorkerCapabilityEvidence
 
   require Logger
 
@@ -24,6 +25,7 @@ defmodule Orchard.Node.WorkerProcess do
   @type state :: %{
           adapter: module(),
           adapter_state: term(),
+          capability_snapshot: WorkerCapabilityEvidence.snapshot() | nil,
           loaded?: boolean(),
           manager: pid(),
           model_ref: ModelRef.t(),
@@ -96,6 +98,20 @@ defmodule Orchard.Node.WorkerProcess do
     :exit, reason -> {:error, {:worker_exit, reason}}
   end
 
+  @doc """
+  Returns the capability snapshot retained from the most recent successful
+  adapter status probe, or `nil` when none is retained or it was invalidated.
+
+  Diagnostic only: it never feeds `status/2` or any Controller-visible surface.
+  """
+  @spec capability_snapshot(pid(), keyword()) :: WorkerCapabilityEvidence.snapshot() | nil
+  def capability_snapshot(pid, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    GenServer.call(pid, :capability_snapshot, timeout)
+  catch
+    :exit, _reason -> nil
+  end
+
   @impl true
   def init(opts) do
     model_ref = Keyword.fetch!(opts, :model_ref)
@@ -107,6 +123,7 @@ defmodule Orchard.Node.WorkerProcess do
      %{
        adapter: RuntimeAdapter.impl(),
        adapter_state: nil,
+       capability_snapshot: nil,
        loaded?: false,
        manager: manager,
        model_ref: model_ref,
@@ -128,6 +145,8 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}, load_timeout_ms}, _from, state) do
+    state = invalidate_capability_snapshot(state)
+
     case state.adapter.load_model(state.model_ref,
            owner: self(),
            load_timeout_ms: load_timeout_ms
@@ -146,7 +165,7 @@ defmodule Orchard.Node.WorkerProcess do
     if map_size(state.requests) > 0 and not force? do
       {:reply, {:error, :active_requests}, state}
     else
-      state = maybe_cancel_requests(state, force?)
+      state = state |> maybe_cancel_requests(force?) |> invalidate_capability_snapshot()
 
       case state.adapter.unload_model(state.adapter_state, opts) do
         :ok ->
@@ -172,31 +191,13 @@ defmodule Orchard.Node.WorkerProcess do
       Map.has_key?(state.requests, request_id) ->
         {:reply, {:error, :already_running}, state}
 
-      request_capacity_reached?(state) ->
-        {:reply, {:error, :model_busy}, state}
-
       true ->
-        start_generation(request_id, request, subscriber, state)
+        admit_request(request_id, request, subscriber, state)
     end
   end
 
   def handle_call(:status, _from, state) do
-    adapter_health =
-      if state.loaded? and state.adapter_state != nil do
-        case state.adapter.get_status(state.adapter_state, timeout_ms: 1_000) do
-          {:ok, health} ->
-            health
-
-          {:error, _reason} ->
-            %{
-              ready: false,
-              health_code: "worker_status_error",
-              health_message: "worker status request failed"
-            }
-        end
-      else
-        %{ready: false, health_code: "not_loaded", health_message: "model not yet loaded"}
-      end
+    {adapter_health, state} = probe_adapter_health(state)
 
     status = %{
       model_ref: state.model_ref,
@@ -212,6 +213,10 @@ defmodule Orchard.Node.WorkerProcess do
     }
 
     {:reply, {:ok, status}, state}
+  end
+
+  def handle_call(:capability_snapshot, _from, state) do
+    {:reply, state.capability_snapshot, state}
   end
 
   def handle_call({:cancel_request, request_id}, _from, state) do
@@ -324,7 +329,7 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   def handle_info({port, {:exit_status, _status}}, %{adapter_state: %{port: port}} = state) do
-    {:stop, :runtime_worker_exited, state}
+    {:stop, :runtime_worker_exited, invalidate_capability_snapshot(state)}
   end
 
   # Port data from a non-active port (e.g. stale port after adapter swap)
@@ -337,7 +342,7 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   def handle_info({:gun_down, _conn_pid, _protocol, _reason, _streams}, state) do
-    {:stop, :runtime_worker_exited, state}
+    {:stop, :runtime_worker_exited, invalidate_capability_snapshot(state)}
   end
 
   @impl true
@@ -361,20 +366,101 @@ defmodule Orchard.Node.WorkerProcess do
     end
   end
 
-  defp request_capacity_reached?(state) do
-    map_size(state.requests) >= worker_request_limit(state)
+  defp admit_request(request_id, request, subscriber, state) do
+    {request_limit, state} = worker_request_limit(state)
+
+    if map_size(state.requests) >= request_limit do
+      {:reply, {:error, :model_busy}, state}
+    else
+      start_generation(request_id, request, subscriber, state)
+    end
   end
 
-  defp worker_request_limit(%{adapter_state: nil}), do: Node.effective_worker_request_limit()
+  defp worker_request_limit(%{adapter_state: nil} = state) do
+    {Node.effective_worker_request_limit(), state}
+  end
 
   defp worker_request_limit(state) do
     case state.adapter.get_status(state.adapter_state, timeout_ms: 1_000) do
       {:ok, status} ->
-        status_max_concurrency(status) || fallback_worker_request_limit(state.adapter)
+        {status_max_concurrency(status) || fallback_worker_request_limit(state.adapter),
+         retain_capability_snapshot(state, status)}
 
       {:error, _reason} ->
-        fallback_worker_request_limit(state.adapter)
+        {fallback_worker_request_limit(state.adapter), state}
     end
+  end
+
+  defp probe_adapter_health(%{loaded?: true, adapter_state: adapter_state} = state)
+       when adapter_state != nil do
+    case state.adapter.get_status(adapter_state, timeout_ms: 1_000) do
+      {:ok, health} ->
+        {health, retain_capability_snapshot(state, health)}
+
+      {:error, _reason} ->
+        {%{
+           ready: false,
+           health_code: "worker_status_error",
+           health_message: "worker status request failed"
+         }, state}
+    end
+  end
+
+  defp probe_adapter_health(state) do
+    {%{ready: false, health_code: "not_loaded", health_message: "model not yet loaded"}, state}
+  end
+
+  # Adapters that do not decode the envelope report no snapshot; that is an
+  # absent envelope observed now, not a missing observation.
+  defp retain_capability_snapshot(state, adapter_status) do
+    snapshot =
+      case Map.get(adapter_status, :capability_snapshot) do
+        %{classification: _classification} = snapshot ->
+          snapshot
+
+        _missing ->
+          WorkerCapabilityEvidence.classify(nil, System.monotonic_time(:millisecond), nil)
+      end
+
+    emit_capabilities_classified(
+      state.model_ref,
+      snapshot,
+      incarnation_changed?(state.capability_snapshot, snapshot)
+    )
+
+    %{state | capability_snapshot: snapshot}
+  end
+
+  defp invalidate_capability_snapshot(state), do: %{state | capability_snapshot: nil}
+
+  defp incarnation_changed?(
+         %{service_incarnation: previous},
+         %{service_incarnation: current}
+       )
+       when is_binary(previous) and is_binary(current) do
+    previous != current
+  end
+
+  defp incarnation_changed?(_previous, _current), do: false
+
+  defp emit_capabilities_classified(model_ref, snapshot, incarnation_changed?) do
+    envelope = snapshot.envelope || %{}
+
+    :telemetry.execute(
+      [:orchard, :node, :worker_capabilities, :classified],
+      %{system_time: System.system_time()},
+      %{
+        model_id: model_ref.model_id,
+        version: model_ref.version,
+        classification: snapshot.classification,
+        provider_id: Map.get(envelope, :provider_id),
+        protocol_major: Map.get(envelope, :protocol_major),
+        protocol_minor: Map.get(envelope, :protocol_minor),
+        profile_count: length(Map.get(envelope, :profiles, [])),
+        incarnation_changed: incarnation_changed?,
+        detail: snapshot.detail
+      }
+    )
   end
 
   defp fallback_worker_request_limit(Orchard.Node.WorkerRuntimeAdapter), do: 1

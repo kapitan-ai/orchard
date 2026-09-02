@@ -1,6 +1,10 @@
 defmodule Orchard.Node.FakeRuntimeAdapter do
   @moduledoc """
   Deterministic fake runtime adapter used by tests and local runtime wiring.
+
+  The `WorkerCapabilities` envelope reported on status is read from the
+  `:fake_worker_capabilities` runtime setting (a `WorkerCapabilities` struct or
+  `nil`), so tests can exercise envelope classification without a worker.
   """
 
   @behaviour Orchard.Node.RuntimeAdapter
@@ -9,6 +13,8 @@ defmodule Orchard.Node.FakeRuntimeAdapter do
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.InferenceEvent
   alias Orchard.InferenceEvent.Usage
+  alias Orchard.Node.Worker.V1.WorkerCapabilities
+  alias Orchard.Node.WorkerCapabilityEvidence
 
   @impl true
   def get_status(_adapter_state, _opts) do
@@ -17,8 +23,21 @@ defmodule Orchard.Node.FakeRuntimeAdapter do
        ready: true,
        health_code: "",
        health_message: "",
-       max_concurrency: Orchard.Node.effective_worker_request_limit()
+       max_concurrency: Orchard.Node.effective_worker_request_limit(),
+       capability_snapshot:
+         WorkerCapabilityEvidence.classify(
+           configured_capabilities(),
+           System.monotonic_time(:millisecond),
+           :fake_runtime
+         )
      }}
+  end
+
+  defp configured_capabilities do
+    case Keyword.get(Orchard.Node.runtime_config(), :fake_worker_capabilities) do
+      %WorkerCapabilities{} = capabilities -> capabilities
+      _other -> nil
+    end
   end
 
   @impl true

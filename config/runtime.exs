@@ -569,6 +569,7 @@ default_node_runtime = fn root ->
     worker_ready_timeout_ms: 5_000,
     worker_load_timeout_ms: 120_000,
     worker_shutdown_timeout_ms: 1_000,
+    worker_capabilities_freshness_window_ms: 15_000,
     worker_log_dir: Path.join([root, "logs", "workers"]),
     worker_prefix_cache_mode: "kv",
     worker_prefix_cache_max_entries: 8,
@@ -1453,6 +1454,8 @@ if config_env() == :prod do
             worker_ready_timeout_ms: env_int.("ORCHARD_WORKER_READY_TIMEOUT_MS", "5000"),
             worker_load_timeout_ms: env_int.("ORCHARD_WORKER_LOAD_TIMEOUT_MS", "120000"),
             worker_shutdown_timeout_ms: env_int.("ORCHARD_WORKER_SHUTDOWN_TIMEOUT_MS", "1000"),
+            worker_capabilities_freshness_window_ms:
+              env_int.("ORCHARD_WORKER_CAPABILITIES_FRESHNESS_WINDOW_MS", "15000"),
             worker_log_dir:
               System.get_env("ORCHARD_WORKER_LOG_DIR") ||
                 Path.join([orchard_support_root, "logs", "workers"]),

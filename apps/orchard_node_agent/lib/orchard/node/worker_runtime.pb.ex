@@ -72,6 +72,41 @@ defmodule Orchard.Node.Worker.V1.WorkerPrefixCacheStatus do
   )
 end
 
+defmodule Orchard.Node.Worker.V1.WorkerCapabilityProfile do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "orchard.worker.v1.WorkerCapabilityProfile",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:profile_id, 1, type: :string, json_name: "profileId")
+  field(:artifact_format, 2, type: :string, json_name: "artifactFormat")
+  field(:acceleration, 3, type: :string)
+  field(:device_binding, 4, type: :string, json_name: "deviceBinding")
+  field(:memory_semantics, 5, type: :string, json_name: "memorySemantics")
+  field(:max_concurrency, 6, type: :uint32, json_name: "maxConcurrency")
+  field(:runtime_features, 7, repeated: true, type: :string, json_name: "runtimeFeatures")
+  field(:cache_capabilities, 8, repeated: true, type: :string, json_name: "cacheCapabilities")
+end
+
+defmodule Orchard.Node.Worker.V1.WorkerCapabilities do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "orchard.worker.v1.WorkerCapabilities",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:protocol_major, 1, type: :uint32, json_name: "protocolMajor")
+  field(:protocol_minor, 2, type: :uint32, json_name: "protocolMinor")
+  field(:provider_id, 3, type: :string, json_name: "providerId")
+  field(:provider_version, 4, type: :string, json_name: "providerVersion")
+  field(:implementation_version, 5, type: :string, json_name: "implementationVersion")
+  field(:service_incarnation, 6, type: :string, json_name: "serviceIncarnation")
+  field(:profiles, 7, repeated: true, type: Orchard.Node.Worker.V1.WorkerCapabilityProfile)
+end
+
 defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
   @moduledoc false
 
@@ -98,6 +133,7 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
 
   field(:supports_prompt_token_ids, 8, type: :bool, json_name: "supportsPromptTokenIds")
   field(:max_concurrency, 9, type: :uint32, json_name: "maxConcurrency")
+  field(:capabilities, 10, type: Orchard.Node.Worker.V1.WorkerCapabilities)
 end
 
 defmodule Orchard.Node.Worker.V1.LoadModelRequest do
