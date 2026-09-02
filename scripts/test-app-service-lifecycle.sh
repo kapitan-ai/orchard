@@ -66,8 +66,12 @@ grep -Fq 'controller' \
 grep -Fq 'controller' \
   "$TARGET_ROOT/Library/Application Support/Orchard/support/.install-role"
 
-mkdir -p "$TARGET_ROOT/Library/Application Support/Orchard/models"
+mkdir -p \
+  "$TARGET_ROOT/Library/Application Support/Orchard/models" \
+  "$TARGET_ROOT/Library/Application Support/Orchard/support"
 printf 'retain\n' > "$TARGET_ROOT/Library/Application Support/Orchard/models/operator-model"
+printf 'retain-support\n' \
+  > "$TARGET_ROOT/Library/Application Support/Orchard/support/operator-note.txt"
 ORCHARD_APP_PAYLOAD_ROOT="$PAYLOAD" \
 ORCHARD_APP_CONTRACT_PATH="$REPO_ROOT/packaging/service-lifecycle.json" \
 swift run --package-path "$REPO_ROOT/packaging/app" orchard-service \
@@ -75,6 +79,8 @@ swift run --package-path "$REPO_ROOT/packaging/app" orchard-service \
 grep -Fq '"role":"node-agent"' "$TMP_ROOT/update.json"
 test -f "$TARGET_ROOT/Library/LaunchDaemons/com.orchard.node-agent.plist"
 test ! -e "$TARGET_ROOT/Library/LaunchDaemons/com.orchard.controller.plist"
+grep -Fq 'retain-support' \
+  "$TARGET_ROOT/Library/Application Support/Orchard/support/operator-note.txt"
 
 ORCHARD_APP_PAYLOAD_ROOT="$PAYLOAD" \
 ORCHARD_APP_CONTRACT_PATH="$REPO_ROOT/packaging/service-lifecycle.json" \
@@ -83,6 +89,8 @@ swift run --package-path "$REPO_ROOT/packaging/app" orchard-service \
 grep -Fq '"installation_source":"none"' "$TMP_ROOT/uninstall.json"
 grep -Fq 'retain' \
   "$TARGET_ROOT/Library/Application Support/Orchard/models/operator-model"
+grep -Fq 'retain-support' \
+  "$TARGET_ROOT/Library/Application Support/Orchard/support/operator-note.txt"
 test ! -e "$TARGET_ROOT/Library/Application Support/Orchard/releases"
 
 printf 'app service lifecycle integration test passed\n'
