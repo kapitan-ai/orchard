@@ -60,6 +60,7 @@
   Note: The initial review found two contract blockers. The follow-up review verified both fixes and found no additional implementation or contract blocker beyond the planned finalization gates.
 - [x] 8.2 Record explicit owner acceptance for the retirement contract.
   Note: Najib explicitly approved the reconciled RepoPrompt and ChatGPT Pro design on 2026-09-02 before implementation proceeded.
-- [ ] 8.3 Synchronize the accepted capability deltas, archive this change, and validate all OpenSpec materials strictly.
-- [ ] 8.4 Append partial-supersession annotations to ADR 0005 and ADR 0008 without rewriting their historical decisions.
+- [x] 8.3 Synchronize the accepted capability deltas, archive this change, and validate all OpenSpec materials strictly.
+  Note: The archive updated four accepted capabilities, and strict validation passed all 41 active changes and accepted specifications.
+- [x] 8.4 Append partial-supersession annotations to ADR 0005 and ADR 0008 without rewriting their historical decisions.
 - [ ] 8.5 Open an unmerged pull request that closes issue #356 and reports exact validation evidence and residual risks.

@@ -5,9 +5,7 @@
 Defines the macOS native distribution profile's app-primary lifecycle, including app assembly and release sidecars, root-authorized role-aware service operations, transactional rollback and operator-state retention, inner-first signing, and verified Amore DMG handoff.
 
 The generic-distribution-artifact contract that the archived `2026-07-20-amore-dmg-service-lifecycle` delta also proposed here is owned solely by `packaging-deployment`, so it is deliberately not restated in this capability.
-
 ## Requirements
-
 ### Requirement: DMG Is App-Primary
 
 Orchard's interactive DMG in `SPEC.md` §11.3 SHALL contain a real signed `Orchard.app` as its install artifact and SHALL NOT require a native PKG artifact under the current distribution contract.
@@ -52,12 +50,14 @@ App-owned install and update SHALL preflight before stopping services and SHALL 
 
 ### Requirement: Operator State Is Preserved
 
-App-owned install and update SHALL preserve operator-owned `config`, `data`, `models`, `bundles`, `logs`, and support-bundle contents, and default uninstall SHALL retain those paths while removing app-owned payloads, links, launchd plists, and install markers.
+App-owned install and update SHALL preserve operator-owned `config`, `data`, `models`, `bundles`, `logs`, and non-app-owned contents under the retained `support/` namespace.
+Default uninstall SHALL retain those paths and contents while removing app-owned payloads, links, launchd plists, install markers, and app-owned support entries.
 
 #### Scenario: Default uninstall retains recoverable state
 
 - **WHEN** an operator runs app-owned uninstall without a separately approved destructive purge operation
-- **THEN** Orchard removes executable service artifacts and retains operator configuration, data, models, bundles, logs, and support bundles
+- **THEN** Orchard removes executable service artifacts and app-owned support entries
+- **AND** Orchard retains operator configuration, data, models, bundles, logs, and non-app-owned contents under the retained `support/` namespace
 
 ### Requirement: TLS State Fails Closed
 

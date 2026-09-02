@@ -39,7 +39,7 @@
   Admin API, CLI, Console, and tests consume the shared contract for landed admission-review behavior.
   Node lifecycle previews for cordon, uncordon, drain, maintenance, resume, and decommission now consume the shared blocker, consequence, and confirmation vocabulary across CLI and Console.
   The Operator API scheduler explanations endpoint and the multi-node scheduler explanation producer now consume the shared reason-code contract.
-  The remaining unchecked work is verification of every retained consumer after the support-only vocabulary is retired by `retire-support-bundles`.
+  The remaining unchecked work is verification of every retained consumer after the support-only vocabulary is retired by the accepted `support-bundle-retirement` capability.
 - [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
 - [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and control-plane status.
 - [x] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
@@ -99,15 +99,15 @@
 
 ## 6. Retired Support-Bundle Work
 
-- [x] 6.1 Retired by `retire-support-bundles`; no Console-to-CLI archive alignment remains.
-- [x] 6.2 Retired by `retire-support-bundles`; no v2 CLI archive format remains.
-- [x] 6.3 Retired by `retire-support-bundles`; Console does not generate a separate archive.
-- [x] 6.4 Retired by `retire-support-bundles`; no v1 compatibility contract remains.
-- [x] 6.5 Retired by `retire-support-bundles`; no support-only scope vocabulary remains.
-- [x] 6.6 Retired by `retire-support-bundles`; no redaction-manifest artifact remains.
-- [x] 6.7 Retired by `retire-support-bundles`; retained diagnostics enforce their own secret exclusions.
-- [x] 6.8 Retired by `retire-support-bundles`; no archive-manifest tests remain.
-- [x] 6.9 Retired by `retire-support-bundles`; request and scheduler diagnostics remain sanitized without a scoped archive.
+- [x] 6.1 Retired by the accepted `support-bundle-retirement` capability; no Console-to-CLI archive alignment remains.
+- [x] 6.2 Retired by the accepted `support-bundle-retirement` capability; no v2 CLI archive format remains.
+- [x] 6.3 Retired by the accepted `support-bundle-retirement` capability; Console does not generate a separate archive.
+- [x] 6.4 Retired by the accepted `support-bundle-retirement` capability; no v1 compatibility contract remains.
+- [x] 6.5 Retired by the accepted `support-bundle-retirement` capability; no support-only scope vocabulary remains.
+- [x] 6.6 Retired by the accepted `support-bundle-retirement` capability; no redaction-manifest artifact remains.
+- [x] 6.7 Retired by the accepted `support-bundle-retirement` capability; retained diagnostics enforce their own secret exclusions.
+- [x] 6.8 Retired by the accepted `support-bundle-retirement` capability; no archive-manifest tests remain.
+- [x] 6.9 Retired by the accepted `support-bundle-retirement` capability; request and scheduler diagnostics remain sanitized without a scoped archive.
 
 ## 7. Scheduler Explanations
 
