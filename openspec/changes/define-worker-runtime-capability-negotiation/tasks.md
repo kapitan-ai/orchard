@@ -6,11 +6,11 @@
 
 ## 2. Schema And Generated Bindings
 
-- [ ] 2.1 Add `WorkerCapabilities` and `WorkerCapabilityProfile` messages and `WorkerStatusResponse.capabilities = 10` to `proto/orchard/worker/v1/worker_runtime.proto` with documented grammar, bounds, non-gating comment, and the reserved `loaded_binding` field 8 note.
-- [ ] 2.2 Regenerate Python and Elixir bindings with `mise exec -- mix proto.gen.worker`; confirm `Orchard.Node.Worker.V1.WorkerCapabilities` and `WorkerCapabilityProfile` exist and the legacy module surface is unchanged.
-- [ ] 2.3 Update the descriptor golden and extend the literal descriptor assertions in `worker_runtime_proto_contract_test.exs` and `test_worker_runtime_proto_contract.py` for the new messages and field 10.
-- [ ] 2.4 Add `python_worker_status_response_capabilities.pb` and `elixir_worker_capabilities.pb` fixtures; keep `python_worker_status_response.pb` as the previous-revision fixture asserting `capabilities == nil`.
-- [ ] 2.5 Run `mise exec -- mix proto.check.worker` and `scripts/test-worker-runtime-binding-drift.sh` clean.
+- [x] 2.1 Add `WorkerCapabilities` and `WorkerCapabilityProfile` messages and `WorkerStatusResponse.capabilities = 10` to `proto/orchard/worker/v1/worker_runtime.proto` with documented grammar, bounds, non-gating comment, and the reserved `loaded_binding` field 8 note.
+- [x] 2.2 Regenerate Python and Elixir bindings with `mise exec -- mix proto.gen.worker`; confirm `Orchard.Node.Worker.V1.WorkerCapabilities` and `WorkerCapabilityProfile` exist and the legacy module surface is unchanged.
+- [x] 2.3 Update the descriptor golden and extend the literal descriptor assertions in `worker_runtime_proto_contract_test.exs` and `test_worker_runtime_proto_contract.py` for the new messages and field 10.
+- [x] 2.4 Add `python_worker_status_response_capabilities.pb` and `elixir_worker_capabilities.pb` fixtures; keep `python_worker_status_response.pb` as the previous-revision fixture asserting `capabilities == nil`.
+- [x] 2.5 Run `mise exec -- mix proto.check.worker` and `scripts/test-worker-runtime-binding-drift.sh` clean.
 
 ## 3. Node Agent Evidence Classifier And Evaluator
 

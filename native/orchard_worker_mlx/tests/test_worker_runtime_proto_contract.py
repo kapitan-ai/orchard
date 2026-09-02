@@ -22,7 +22,7 @@ LEGACY_PROTO = (
     / "v1"
     / "worker_runtime.proto"
 )
-EXPECTED_DESCRIPTOR_SET_SHA256 = "aead882439b97655748ede5a08286f902bf0e9601d6235c6e1bd9111f06d2521"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",
@@ -66,6 +66,31 @@ EXPECTED_MESSAGES = {
         ("session_started_unix_ms", 14, "TYPE_UINT64", False, None),
         ("prefix_cache_fingerprints", 15, "TYPE_STRING", True, None),
     ],
+    "WorkerCapabilityProfile": [
+        ("profile_id", 1, "TYPE_STRING", False, None),
+        ("artifact_format", 2, "TYPE_STRING", False, None),
+        ("acceleration", 3, "TYPE_STRING", False, None),
+        ("device_binding", 4, "TYPE_STRING", False, None),
+        ("memory_semantics", 5, "TYPE_STRING", False, None),
+        ("max_concurrency", 6, "TYPE_UINT32", False, None),
+        ("runtime_features", 7, "TYPE_STRING", True, None),
+        ("cache_capabilities", 8, "TYPE_STRING", True, None),
+    ],
+    "WorkerCapabilities": [
+        ("protocol_major", 1, "TYPE_UINT32", False, None),
+        ("protocol_minor", 2, "TYPE_UINT32", False, None),
+        ("provider_id", 3, "TYPE_STRING", False, None),
+        ("provider_version", 4, "TYPE_STRING", False, None),
+        ("implementation_version", 5, "TYPE_STRING", False, None),
+        ("service_incarnation", 6, "TYPE_STRING", False, None),
+        (
+            "profiles",
+            7,
+            "TYPE_MESSAGE",
+            True,
+            ".orchard.worker.v1.WorkerCapabilityProfile",
+        ),
+    ],
     "WorkerStatusResponse": [
         ("loaded", 1, "TYPE_BOOL", False, None),
         ("active_request_count", 2, "TYPE_UINT32", False, None),
@@ -88,12 +113,23 @@ EXPECTED_MESSAGES = {
         ),
         ("supports_prompt_token_ids", 8, "TYPE_BOOL", False, None),
         ("max_concurrency", 9, "TYPE_UINT32", False, None),
+        (
+            "capabilities",
+            10,
+            "TYPE_MESSAGE",
+            False,
+            ".orchard.worker.v1.WorkerCapabilities",
+        ),
     ],
     "LoadModelRequest": [
         ("model_id", 1, "TYPE_STRING", False, None),
         ("version", 2, "TYPE_STRING", False, None),
         ("model_path", 3, "TYPE_STRING", False, None),
     ],
+}
+
+EXPECTED_RESERVED_RANGES = {message_name: [] for message_name in EXPECTED_MESSAGES} | {
+    "WorkerCapabilities": [(8, 9)]
 }
 
 EXPECTED_RPCS = [
@@ -216,6 +252,45 @@ def _python_worker_status_fixture() -> worker_runtime_pb2.WorkerStatusResponse:
     )
 
 
+def _worker_capabilities_fixture() -> worker_runtime_pb2.WorkerCapabilities:
+    return worker_runtime_pb2.WorkerCapabilities(
+        protocol_major=1,
+        protocol_minor=1,
+        provider_id="mlx",
+        provider_version="0.31.2",
+        implementation_version="0.1.0",
+        service_incarnation="0123456789abcdef0123456789abcdef",
+        profiles=[
+            worker_runtime_pb2.WorkerCapabilityProfile(
+                profile_id="mlx-metal-unified-default",
+                artifact_format="safetensors",
+                acceleration="metal",
+                device_binding="apple_gpu_0",
+                memory_semantics="unified",
+                max_concurrency=4,
+                runtime_features=["prompt_token_ids", "streaming"],
+                cache_capabilities=["prefix_cache"],
+            ),
+            worker_runtime_pb2.WorkerCapabilityProfile(
+                profile_id="mlx-metal-unified-serial",
+                artifact_format="safetensors",
+                acceleration="metal",
+                device_binding="apple_gpu_0",
+                memory_semantics="unified",
+                max_concurrency=1,
+                runtime_features=["streaming"],
+                cache_capabilities=[],
+            ),
+        ],
+    )
+
+
+def _python_worker_status_capabilities_fixture() -> worker_runtime_pb2.WorkerStatusResponse:
+    message = _python_worker_status_fixture()
+    message.capabilities.CopyFrom(_worker_capabilities_fixture())
+    return message
+
+
 def test_provider_neutral_source_is_sole_authority() -> None:
     assert CANONICAL_PROTO.is_file()
     assert not LEGACY_PROTO.exists()
@@ -289,6 +364,13 @@ def test_descriptor_golden_covers_the_complete_current_wire_contract() -> None:
     assert {message.name: list(message.oneof_decl) for message in descriptor.message_type} == {
         message_name: [] for message_name in EXPECTED_MESSAGES
     }
+    assert {
+        message.name: [(reserved.start, reserved.end) for reserved in message.reserved_range]
+        for message in descriptor.message_type
+    } == EXPECTED_RESERVED_RANGES
+    assert {message.name: list(message.reserved_name) for message in descriptor.message_type} == {
+        message_name: [] for message_name in EXPECTED_MESSAGES
+    }
 
     assert len(descriptor.service) == 1
     service = descriptor.service[0]
@@ -327,9 +409,37 @@ def test_python_decodes_elixir_fixture_with_semantic_equality() -> None:
     )
 
 
+def test_python_decodes_elixir_capabilities_fixture_with_semantic_equality() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "elixir_worker_capabilities.pb"
+
+    decoded = worker_runtime_pb2.WorkerCapabilities.FromString(fixture.read_bytes())
+
+    assert decoded == _worker_capabilities_fixture()
+
+
 def test_committed_python_fixture_is_produced_by_the_generated_binding() -> None:
     fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response.pb"
 
     assert fixture.read_bytes() == _python_worker_status_fixture().SerializeToString(
         deterministic=True
+    )
+
+
+def test_previous_revision_python_fixture_decodes_with_capabilities_absent() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response.pb"
+
+    decoded = worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes())
+
+    assert not decoded.HasField("capabilities")
+    assert decoded == _python_worker_status_fixture()
+
+
+def test_committed_python_capabilities_fixture_is_produced_by_the_generated_binding() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response_capabilities.pb"
+
+    assert fixture.read_bytes() == _python_worker_status_capabilities_fixture().SerializeToString(
+        deterministic=True
+    )
+    assert worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes()).HasField(
+        "capabilities"
     )
