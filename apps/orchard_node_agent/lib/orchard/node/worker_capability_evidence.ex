@@ -115,6 +115,9 @@ defmodule Orchard.Node.WorkerCapabilityEvidence do
       :valid ->
         snapshot(:valid, envelope, received_at_ms, custody, envelope.service_incarnation, nil)
 
+      {:malformed, detail} ->
+        snapshot(:malformed, nil, received_at_ms, custody, nil, detail)
+
       {classification, detail} ->
         snapshot(classification, envelope, received_at_ms, custody, nil, detail)
     end

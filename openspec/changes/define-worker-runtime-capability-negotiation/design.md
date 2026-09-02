@@ -68,7 +68,9 @@ Empty `profiles` is valid and simply proves nothing (every query yields `unsuppo
 Token grammar for all identifier strings: `^[a-z0-9][a-z0-9_.-]{0,63}$`.
 Version strings: non-empty, at most 128 bytes, printable ASCII.
 Bounded repeated fields: at most 64 profiles, 64 features, and 64 cache capabilities per profile; exceeding a bound is `malformed`.
-The Node Agent never logs or stores the raw bytes of a malformed envelope, only the field path that failed.
+The Node Agent never logs or stores the raw bytes of a malformed envelope, only the field path that failed: a `malformed` snapshot carries `envelope: nil` and `detail: <field path>`, so telemetry derived from it reports the classification and path but no provider-supplied identifier.
+`duplicate_or_conflicting` and `incompatible` snapshots have passed structural validation and retain the decoded envelope for diagnostics.
+On the worker side, the servicer copies the backend's envelope without validating it, but it never lets capability construction fail `GetStatus`: any backend value that cannot be represented faithfully (non-dict envelope, non-list or non-dict profiles, out-of-range integers, unencodable strings) is emitted as a present envelope with `protocol_major = 0`, which the Node Agent classifies as `malformed` rather than `absent`.
 
 ### D3. Compatibility: protocol major must equal the Node Agent's supported major; provider identity is diagnostic only
 
@@ -133,8 +135,8 @@ If #327's contract is accepted before implementation of this change begins, the 
 
 New module `Orchard.Node.WorkerCapabilityEvidence` (pure functions, fully unit-testable without a worker):
 
-- `classify(%WorkerStatusResponse{} | map, received_at_ms, custody) :: snapshot`
-- `evaluate(snapshot | nil, query, now_ms, opts) :: result`
+- `classify(%WorkerCapabilities{} | nil, received_at_ms, custody) :: snapshot` — the adapter extracts `capabilities` from the decoded `WorkerStatusResponse` and passes only the envelope, so the classifier stays independent of the surrounding legacy status fields
+- `evaluate(snapshot | nil, query, now_ms, opts) :: result` — `opts` requires `freshness_window_ms`; the caller supplies it from `Orchard.Node.worker_capabilities_freshness_window_ms/0`
 - `canonical_tuple/1`, `known_vocabulary/0`
 
 Query shape: `%{artifact_format, acceleration, device_binding, memory_semantics, min_concurrency, runtime_features: [..], cache_capabilities: [..]}`; a profile matches when every scalar dimension is inside the known vocabulary and equals the query, `max_concurrency >= min_concurrency`, and every requested feature and cache capability is present in the profile's sets.

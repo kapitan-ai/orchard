@@ -341,6 +341,8 @@ defmodule Orchard.Node.WorkerCapabilityEvidenceTest do
     snapshot = classify(envelope)
 
     assert snapshot.classification == :malformed
+    assert snapshot.envelope == nil
+    assert snapshot.service_incarnation == nil
     assert snapshot.detail == detail
     assert snapshot.service_incarnation == nil
   end

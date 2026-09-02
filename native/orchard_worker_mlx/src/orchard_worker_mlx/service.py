@@ -258,42 +258,101 @@ def _memory_budget_status_response(
     )
 
 
+class _MalformedCapabilities(Exception):
+    """Raised internally when a backend envelope cannot be copied faithfully."""
+
+
+def _malformed_capabilities() -> worker_runtime_pb2.WorkerCapabilities:
+    """Present, deterministically malformed envelope (``protocol_major == 0``).
+
+    ``protocol_major`` is a required ``>= 1`` scalar in
+    ``WorkerCapabilities``, so a present envelope carrying ``0`` is malformed by
+    the proto grammar. Everything else is left at its default.
+    """
+    return worker_runtime_pb2.WorkerCapabilities(protocol_major=0)
+
+
+def _capability_uint32(value: Any) -> int:
+    """Strict uint32 copy: out-of-range, bool, or non-int values become ``0``.
+
+    Unlike ``_status_uint32`` this never clamps; ``0`` is malformed for every
+    required capability integer and only valid for ``protocol_minor``.
+    """
+    if _valid_status_uint32(value):
+        return value
+    return 0
+
+
+def _capability_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise _MalformedCapabilities
+    return list(value)
+
+
 def _capability_profile_response(
-    profile: dict[str, Any],
+    profile: Any,
 ) -> worker_runtime_pb2.WorkerCapabilityProfile:
+    if not isinstance(profile, dict):
+        raise _MalformedCapabilities
+
     return worker_runtime_pb2.WorkerCapabilityProfile(
         profile_id=_status_string(profile.get("profile_id")),
         artifact_format=_status_string(profile.get("artifact_format")),
         acceleration=_status_string(profile.get("acceleration")),
         device_binding=_status_string(profile.get("device_binding")),
         memory_semantics=_status_string(profile.get("memory_semantics")),
-        max_concurrency=_status_uint32(profile.get("max_concurrency")),
-        runtime_features=_status_string_list(profile.get("runtime_features")),
-        cache_capabilities=_status_string_list(profile.get("cache_capabilities")),
+        max_concurrency=_capability_uint32(profile.get("max_concurrency")),
+        runtime_features=_capability_string_list(profile.get("runtime_features")),
+        cache_capabilities=_capability_string_list(profile.get("cache_capabilities")),
     )
 
 
 def _capabilities_status_response(
     capabilities: Any,
 ) -> worker_runtime_pb2.WorkerCapabilities | None:
-    """Copy the backend envelope verbatim; classification is Node Agent-owned."""
-    if not isinstance(capabilities, dict):
+    """Copy the backend envelope verbatim; classification is Node Agent-owned.
+
+    Only ``None`` means omission. Any shape that cannot be copied faithfully
+    (non-dict envelope, non-list ``profiles``, non-dict profile entry, non-list
+    or non-string-only feature lists, or a value protobuf rejects such as an
+    unpaired surrogate) yields the whole envelope as the present malformed
+    sentinel from ``_malformed_capabilities`` instead of being dropped or
+    normalized into valid-looking evidence. Scalars are never clamped:
+    non-string strings become ``""`` and out-of-range integers become ``0``.
+    """
+    if capabilities is None:
         return None
 
+    if not isinstance(capabilities, dict):
+        return _malformed_capabilities()
+
     profiles = capabilities.get("profiles")
-    return worker_runtime_pb2.WorkerCapabilities(
-        protocol_major=_status_uint32(capabilities.get("protocol_major")),
-        protocol_minor=_status_uint32(capabilities.get("protocol_minor")),
-        provider_id=_status_string(capabilities.get("provider_id")),
-        provider_version=_status_string(capabilities.get("provider_version")),
-        implementation_version=_status_string(capabilities.get("implementation_version")),
-        service_incarnation=_status_string(capabilities.get("service_incarnation")),
-        profiles=[
-            _capability_profile_response(profile)
-            for profile in (profiles if isinstance(profiles, list) else [])
-            if isinstance(profile, dict)
-        ],
-    )
+    try:
+        if not isinstance(profiles, list):
+            raise _MalformedCapabilities
+
+        return worker_runtime_pb2.WorkerCapabilities(
+            protocol_major=_capability_uint32(capabilities.get("protocol_major")),
+            protocol_minor=_capability_uint32(capabilities.get("protocol_minor")),
+            provider_id=_status_string(capabilities.get("provider_id")),
+            provider_version=_status_string(capabilities.get("provider_version")),
+            implementation_version=_status_string(capabilities.get("implementation_version")),
+            service_incarnation=_status_string(capabilities.get("service_incarnation")),
+            profiles=[_capability_profile_response(profile) for profile in profiles],
+        )
+    except (_MalformedCapabilities, ValueError, TypeError, UnicodeError):
+        return _malformed_capabilities()
+
+
+def _safe_capabilities_status_response(
+    capabilities: Any,
+) -> worker_runtime_pb2.WorkerCapabilities | None:
+    """Never let capability projection fail ``GetStatus`` (non-gating envelope)."""
+    try:
+        return _capabilities_status_response(capabilities)
+    except Exception:
+        logger.warning("capability envelope projection failed; publishing malformed sentinel")
+        return _malformed_capabilities()
 
 
 def _prefix_cache_disabled(prefix_cache_config: Any | None) -> bool:
@@ -562,7 +621,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         if memory_budget is not None:
             response.memory_budget.CopyFrom(memory_budget)
 
-        capabilities = _capabilities_status_response(status.get("capabilities"))
+        capabilities = _safe_capabilities_status_response(status.get("capabilities"))
         if capabilities is not None:
             response.capabilities.CopyFrom(capabilities)
 

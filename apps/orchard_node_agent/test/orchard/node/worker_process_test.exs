@@ -691,6 +691,25 @@ defmodule Orchard.Node.WorkerProcessTest do
                %{classification: :valid, incarnation_changed: true, profile_count: 1}
              ] = Enum.map(events, fn {_name, _measurements, metadata} -> metadata end)
     end
+
+    test "classified telemetry for a malformed envelope carries only the field path" do
+      events =
+        with_telemetry(fn ->
+          status_and_snapshot(capabilities(protocol_major: 0, provider_id: "Rejected-Provider"))
+        end)
+
+      assert [
+               %{
+                 classification: :malformed,
+                 detail: "protocol_major",
+                 provider_id: nil,
+                 protocol_major: nil,
+                 protocol_minor: nil,
+                 profile_count: 0,
+                 incarnation_changed: false
+               }
+             ] = Enum.map(events, fn {_name, _measurements, metadata} -> metadata end)
+    end
   end
 
   defp status_and_snapshot(envelope) do

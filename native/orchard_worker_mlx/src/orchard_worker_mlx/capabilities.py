@@ -50,9 +50,15 @@ class BackendCapabilities(TypedDict):
 
 
 def installed_distribution_version(distribution: str) -> str:
+    """Best-effort diagnostic version lookup; never gates backend construction.
+
+    Any metadata failure (missing distribution, unreadable or malformed
+    metadata, filesystem errors) collapses to ``"unknown"``. Process-level
+    ``BaseException`` subclasses such as ``KeyboardInterrupt`` still propagate.
+    """
     try:
         return metadata.version(distribution) or _UNKNOWN_VERSION
-    except metadata.PackageNotFoundError:
+    except Exception:
         return _UNKNOWN_VERSION
 
 

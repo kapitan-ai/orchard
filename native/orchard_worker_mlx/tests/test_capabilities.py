@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from orchard_worker_mlx import __version__, capabilities
+from orchard_worker_mlx import __version__, capabilities, service
 from orchard_worker_mlx.backends import MLXBackend, StubBackend
 from orchard_worker_mlx.capabilities import (
     SERVICE_INCARNATION,
@@ -28,6 +28,9 @@ from orchard_worker_mlx.service import WorkerRuntimeServicer
 _TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _INCARNATION_RE = re.compile(r"^[0-9a-f]{32}$")
 _FIXTURE_INCARNATION = "0123456789abcdef0123456789abcdef"
+# Present envelope with the required protocol_major left at 0: malformed per
+# the WorkerCapabilities proto grammar, never confusable with omission.
+_MALFORMED_SENTINEL = worker_runtime_pb2.WorkerCapabilities(protocol_major=0)
 
 
 def _profile(**overrides: Any) -> BackendCapabilityProfile:
@@ -167,16 +170,161 @@ def test_get_status_protocol_minor_zero_is_preserved() -> None:
     assert response.capabilities == _wire(envelope)
 
 
-def test_get_status_ignores_non_dict_capabilities() -> None:
-    class BrokenCapabilitiesBackend(StubBackend):
+def _raw_capabilities_backend(raw: Any) -> StubBackend:
+    """StubBackend whose ``status()["capabilities"]`` is the raw value ``raw``."""
+
+    class RawCapabilitiesBackend(StubBackend):
         def status(self) -> Any:
             status = dict(super().status())
-            status["capabilities"] = "not-a-dict"
+            status["capabilities"] = raw
             return status
 
-    response = _get_status(BrokenCapabilitiesBackend())
+    return RawCapabilitiesBackend()
+
+
+def _assert_malformed_sentinel(response: worker_runtime_pb2.WorkerStatusResponse) -> None:
+    assert response.HasField("capabilities")
+    assert response.capabilities == _MALFORMED_SENTINEL
+    assert response.capabilities.protocol_major == 0
+
+
+def _assert_legacy_status_intact(response: worker_runtime_pb2.WorkerStatusResponse) -> None:
+    stub = StubBackend()
+    assert response.ready is bool(stub.health()["ready"])
+    assert response.loaded is bool(stub.status()["loaded"])
+    assert response.max_concurrency == stub.status()["max_concurrency"]
+
+
+# -- Malformed payloads are preserved as present malformed evidence -----------
+
+
+def test_get_status_omits_envelope_when_capabilities_key_is_none() -> None:
+    response = _get_status(_raw_capabilities_backend(None))
 
     assert not response.HasField("capabilities")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["not-a-dict", ["not", "a", "dict"], 7],
+    ids=["string", "list", "int"],
+)
+def test_get_status_publishes_non_dict_capabilities_as_malformed_sentinel(raw: Any) -> None:
+    response = _get_status(_raw_capabilities_backend(raw))
+
+    _assert_malformed_sentinel(response)
+    _assert_legacy_status_intact(response)
+
+
+@pytest.mark.parametrize(
+    ("label", "envelope"),
+    [
+        ("profiles_not_a_list", _envelope(profiles="mlx-metal-unified")),
+        ("profiles_is_dict", _envelope(profiles={"profile_id": "mlx-metal-unified"})),
+        ("profile_entry_not_a_dict", _envelope(profiles=[_profile(), "mlx-metal-unified"])),
+        ("profile_entry_none", _envelope(profiles=[None])),
+        ("runtime_features_not_a_list", _envelope(profiles=[_profile(runtime_features="a")])),
+        ("runtime_feature_non_str", _envelope(profiles=[_profile(runtime_features=["a", 1])])),
+        ("cache_capability_non_str", _envelope(profiles=[_profile(cache_capabilities=[None])])),
+    ],
+)
+def test_get_status_publishes_unrepresentable_shapes_as_malformed_sentinel(
+    label: str, envelope: BackendCapabilities
+) -> None:
+    response = _get_status(StubBackend(capabilities=envelope))
+
+    _assert_malformed_sentinel(response)
+    _assert_legacy_status_intact(response)
+
+
+@pytest.mark.parametrize(
+    ("label", "max_concurrency"),
+    [
+        ("oversized", 2**40),
+        ("uint32_max_plus_one", 2**32),
+        ("negative", -1),
+        ("bool", True),
+        ("float", 1.0),
+        ("string", "4"),
+    ],
+)
+def test_get_status_does_not_clamp_invalid_max_concurrency(
+    label: str, max_concurrency: Any
+) -> None:
+    envelope = _envelope(profiles=[_profile(max_concurrency=max_concurrency)])
+
+    response = _get_status(StubBackend(capabilities=envelope))
+
+    assert response.HasField("capabilities"), label
+    assert response.capabilities.protocol_major == 1, label
+    assert response.capabilities.profiles[0].max_concurrency == 0, label
+
+
+def test_get_status_does_not_clamp_oversized_protocol_major() -> None:
+    response = _get_status(StubBackend(capabilities=_envelope(protocol_major=2**32)))
+
+    assert response.HasField("capabilities")
+    assert response.capabilities.protocol_major == 0
+
+
+def test_get_status_does_not_clamp_uint32_boundary_downwards() -> None:
+    envelope = _envelope(protocol_major=2**32 - 1)
+
+    response = _get_status(StubBackend(capabilities=envelope))
+
+    assert response.capabilities.protocol_major == 2**32 - 1
+
+
+@pytest.mark.parametrize(
+    ("label", "envelope"),
+    [
+        ("non_str_provider_id", _envelope(provider_id=3)),
+        ("non_str_profile_id", _envelope(profiles=[_profile(profile_id=None)])),
+    ],
+)
+def test_get_status_publishes_non_string_scalars_as_empty(
+    label: str, envelope: BackendCapabilities
+) -> None:
+    response = _get_status(StubBackend(capabilities=envelope))
+
+    assert response.HasField("capabilities"), label
+    assert response.capabilities.protocol_major == 1, label
+    assert response.capabilities.provider_id == ("" if label == "non_str_provider_id" else "mlx")
+    if label == "non_str_profile_id":
+        assert response.capabilities.profiles[0].profile_id == ""
+
+
+@pytest.mark.parametrize(
+    ("label", "envelope"),
+    [
+        ("surrogate_provider_version", _envelope(provider_version="0.31\udc80")),
+        ("surrogate_runtime_feature", _envelope(profiles=[_profile(runtime_features=["\udc80"])])),
+    ],
+)
+def test_get_status_survives_unpaired_surrogates_with_malformed_sentinel(
+    label: str, envelope: BackendCapabilities
+) -> None:
+    # protobuf raises on strings that cannot be UTF-8 encoded; GetStatus must
+    # still return every legacy field and publish present malformed evidence.
+    response = _get_status(StubBackend(capabilities=envelope))
+
+    _assert_malformed_sentinel(response)
+    _assert_legacy_status_intact(response)
+    assert response.health_code == StubBackend().health()["code"]
+
+
+def test_get_status_substitutes_sentinel_when_projection_raises_unexpectedly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def explode(_: Any) -> Any:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "_capabilities_status_response", explode)
+
+    response = _get_status(StubBackend(capabilities=_envelope()))
+
+    _assert_malformed_sentinel(response)
+    _assert_legacy_status_intact(response)
 
 
 # -- Service incarnation -----------------------------------------------------
@@ -277,3 +425,51 @@ def test_installed_distribution_version_falls_back_to_unknown(
     monkeypatch.setattr(capabilities.metadata, "version", missing)
 
     assert installed_distribution_version("mlx") == "unknown"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError("unreadable metadata"), ValueError("malformed METADATA"), RuntimeError("boom")],
+    ids=["os_error", "value_error", "runtime_error"],
+)
+def test_installed_distribution_version_falls_back_to_unknown_on_any_error(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def broken(_: str) -> str:
+        raise error
+
+    monkeypatch.setattr(capabilities.metadata, "version", broken)
+
+    assert installed_distribution_version("mlx") == "unknown"
+
+
+def test_installed_distribution_version_does_not_swallow_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def interrupted(_: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(capabilities.metadata, "version", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        installed_distribution_version("mlx")
+
+
+def test_mlx_backend_constructs_and_reports_status_when_metadata_lookup_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Provider-version discovery is diagnostic only; it must never gate backend
+    # construction or the legacy GetStatus fields (proto: non-gating envelope).
+    def broken(_: str) -> str:
+        raise OSError("unreadable metadata")
+
+    monkeypatch.setattr(capabilities.metadata, "version", broken)
+
+    backend = _mlx_backend()
+    response = _get_status(backend)
+
+    assert response.ready is True
+    assert response.max_concurrency == 1
+    assert response.HasField("capabilities")
+    assert response.capabilities.protocol_major == 1
+    assert response.capabilities.provider_version == "unknown"
