@@ -59,6 +59,7 @@ No lifecycle manifest, Swift policy, transaction, or ownership rule changes.
 Audit actions are stored as ordinary text.
 Historical `support_bundle.generated` rows do not require an enum value or live action-domain mapper to remain readable.
 The removal stops new production and removes bounded metrics normalization, while generic audit persistence and readers remain unchanged.
+If a historical or otherwise unknown support-bundle action is submitted through the generic audit writer, the authoritative text row remains committed while metrics enter the existing bounded rejected-tuple degradation state.
 
 ### Remove support-only reason vocabulary
 

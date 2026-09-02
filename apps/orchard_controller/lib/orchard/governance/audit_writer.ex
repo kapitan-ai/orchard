@@ -8,6 +8,7 @@ defmodule Orchard.Governance.AuditWriter do
 
   @pending_events_key {__MODULE__, :pending_events}
   @commit_verification_degradation {:audit_commit_verification, :unavailable}
+  @action_domain_degradation {:series_admission, :rejected}
 
   @spec transaction((-> result)) :: {:ok, result} | {:error, term()} when result: term()
   def transaction(fun) when is_function(fun, 0) do
@@ -99,11 +100,16 @@ defmodule Orchard.Governance.AuditWriter do
   end
 
   defp emit_safely(action, result) do
-    with {:ok, action_domain} <- action_domain(action) do
-      SeriesAdmission.emit(:audit_events, 1, %{
-        action: action_domain,
-        outcome: outcome(action, result)
-      })
+    case action_domain(action) do
+      {:ok, action_domain} ->
+        SeriesAdmission.emit(:audit_events, 1, %{
+          action: action_domain,
+          outcome: outcome(action, result)
+        })
+
+      :error ->
+        Status.degrade(@action_domain_degradation)
+        {:error, :metrics_degraded}
     end
   rescue
     _exception -> {:error, :metrics_degraded}

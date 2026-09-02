@@ -37,7 +37,7 @@
 
 - [x] 6.1 Run semantic residual searches for support-bundle product names, v2 manifest fields, `support_scope`, and the `support_bundle` audit domain.
 - [x] 6.2 Run focused `orchard_cli`, shared reason-code, governance, audit-writer, and metrics tests.
-  Note: The combined focused run passed 18 shared tests, 90 Controller tests, and 40 CLI tests.
+  Note: The post-review combined focused run passed 18 shared tests, 91 Controller tests, and 40 CLI tests.
 - [x] 6.3 Validate both `retire-support-bundles` and the modified `cluster-management-ux-foundation` changes strictly.
   Note: The two additional active changes touched by residual wording cleanup also passed strict validation.
 
@@ -56,7 +56,8 @@
 
 ## 8. Acceptance And Handoff
 
-- [ ] 8.1 Obtain independent RepoPrompt review of the complete diff and resolve all validated blockers.
+- [x] 8.1 Obtain independent RepoPrompt review of the complete diff and resolve all validated blockers.
+  Note: The initial review found two contract blockers. The follow-up review verified both fixes and found no additional implementation or contract blocker beyond the planned finalization gates.
 - [x] 8.2 Record explicit owner acceptance for the retirement contract.
   Note: Najib explicitly approved the reconciled RepoPrompt and ChatGPT Pro design on 2026-09-02 before implementation proceeded.
 - [ ] 8.3 Synchronize the accepted capability deltas, archive this change, and validate all OpenSpec materials strictly.

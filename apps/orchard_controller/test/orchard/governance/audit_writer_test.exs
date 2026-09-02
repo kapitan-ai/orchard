@@ -32,7 +32,8 @@ defmodule Orchard.Governance.AuditWriterTest do
     {"cluster_admin_bootstrap.minted", "cluster", "succeeded"}
   ]
 
-  test "retired support-bundle actions do not emit bounded audit metrics" do
+  test "retired support-bundle actions degrade bounded metrics without changing the audit write" do
+    on_exit(fn -> Status.recover({:series_admission, :rejected}) end)
     ref = attach_metric()
 
     assert {:ok, %AuditLog{}} =
@@ -41,6 +42,11 @@ defmodule Orchard.Governance.AuditWriterTest do
              |> AuditWriter.insert()
 
     refute_receive {^ref, _measurements, _metadata}
+    assert :ets.member(Status, {:series_admission, :rejected})
+  end
+
+  test "historical support-bundle audit rows remain readable through the generic audit store" do
+    assert {:ok, %AuditLog{}} = Repo.insert(valid_changeset("support_bundle.generated"))
     assert Repo.get_by(AuditLog, action: "support_bundle.generated")
   end
 

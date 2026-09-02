@@ -46,6 +46,7 @@ Any later external metrics egress SHALL remove tenant and user dimensions before
 
 - **WHEN** a historical or unknown action begins with `support_bundle.`
 - **THEN** metrics normalization rejects the action as outside the live bounded domain
+- **AND** reporting becomes degraded without changing the authoritative audit write result
 - **AND** the stored audit row remains available to generic audit readers
 
 ### Requirement: Active Series Ceiling
