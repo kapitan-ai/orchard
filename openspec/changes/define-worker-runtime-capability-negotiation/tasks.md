@@ -14,10 +14,10 @@
 
 ## 3. Node Agent Evidence Classifier And Evaluator
 
-- [ ] 3.1 Create `Orchard.Node.WorkerCapabilityEvidence` with `classify/3`, `evaluate/4`, `canonical_tuple/1`, and `known_vocabulary/0`, with `@spec` on every public function.
-- [ ] 3.2 Unit-test receipt classification: `absent`, each `malformed` rule (zero major, empty tokens, bad grammar, bound overflow, zero `max_concurrency`), `minor = 0` valid, `duplicate_or_conflicting` for both identity rules, `incompatible` major.
-- [ ] 3.3 Unit-test evaluation precedence: `absent` after invalidation, `stale` before retained invalid verdict, `unknown` vs `unsupported`, Cartesian-combination rejection, exact-profile proof naming `profile_id` and `service_incarnation`.
-- [ ] 3.4 Add `worker_capabilities_freshness_window_ms` (default 15_000) to the `:orchard_node_agent, :runtime` config list via the `Orchard.Node.runtime_value/2` pattern and test the override.
+- [x] 3.1 Create `Orchard.Node.WorkerCapabilityEvidence` with `classify/3`, `evaluate/4`, `canonical_tuple/1`, and `known_vocabulary/0`, with `@spec` on every public function.
+- [x] 3.2 Unit-test receipt classification: `absent`, each `malformed` rule (zero major, empty tokens, bad grammar, bound overflow, zero `max_concurrency`), `minor = 0` valid, `duplicate_or_conflicting` for both identity rules, `incompatible` major.
+- [x] 3.3 Unit-test evaluation precedence: `absent` after invalidation, `stale` before retained invalid verdict, `unknown` vs `unsupported`, Cartesian-combination rejection, exact-profile proof naming `profile_id` and `service_incarnation`.
+- [x] 3.4 Add `worker_capabilities_freshness_window_ms` (default 15_000) to the `:orchard_node_agent, :runtime` config list via the `Orchard.Node.runtime_value/2` pattern and test the override.
 
 ## 4. Node Agent Wiring And Custody
 
@@ -30,15 +30,15 @@
 
 ## 5. MLX Worker And Provider-Neutral Conformance
 
-- [ ] 5.1 Generate `service_incarnation` once per process start in the MLX worker (16 random bytes, hex) and expose it through the backend status.
-- [ ] 5.2 Populate `WorkerCapabilities` in `WorkerRuntimeServicer.GetStatus` with `protocol_major = 1`, `protocol_minor = 1`, `provider_id = "mlx"`, `provider_version` from installed `mlx`, `implementation_version` from `orchard_worker_mlx.__version__`, and one exact MLX profile.
-- [ ] 5.3 Add an optional `capabilities` entry to the `Backend.status()` contract; `MlxBackend` always supplies it and `StubBackend` accepts an injected value so conformance can drive every taxonomy branch; add pytest cases for the populated envelope, an omitted envelope, and each malformed and duplicate variant.
-- [ ] 5.4 Run `ruff format`, `ruff check`, `pytest`, and `pytest --cov` for `native/orchard_worker_mlx`.
+- [x] 5.1 Generate `service_incarnation` once per process start in the MLX worker (16 random bytes, hex) and expose it through the backend status.
+- [x] 5.2 Populate `WorkerCapabilities` in `WorkerRuntimeServicer.GetStatus` with `protocol_major = 1`, `protocol_minor = 1`, `provider_id = "mlx"`, `provider_version` from installed `mlx`, `implementation_version` from `orchard_worker_mlx.__version__`, and one exact MLX profile.
+- [x] 5.3 Add an optional `capabilities` entry to the `Backend.status()` contract; `MlxBackend` always supplies it and `StubBackend` accepts an injected value so conformance can drive every taxonomy branch; add pytest cases for the populated envelope, an omitted envelope, and each malformed and duplicate variant.
+- [x] 5.4 Run `ruff format`, `ruff check`, `pytest`, and `pytest --cov` for `native/orchard_worker_mlx`.
 
 ## 6. Documentation And SPEC Reconciliation
 
-- [ ] 6.1 Add one sentence to `SPEC.md` §4.10 naming the additive capability envelope on `GetStatus` and stating that its local evaluation is diagnostic-only until the separately reviewed cutover.
-- [ ] 6.2 Update Node Agent and MLX provider docs describing the envelope, the taxonomy, invalidation triggers, and the deferred loaded binding.
+- [x] 6.1 Add one sentence to `SPEC.md` §4.10 naming the additive capability envelope on `GetStatus` and stating that its local evaluation is diagnostic-only until the separately reviewed cutover.
+- [x] 6.2 Update Node Agent and MLX provider docs describing the envelope, the taxonomy, invalidation triggers, and the deferred loaded binding.
 - [ ] 6.3 Update #266 and #354 to record the delivered slice without claiming normalized evidence, scheduling authority, or a wider version window.
 
 ## 7. Validation And Review

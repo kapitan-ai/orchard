@@ -165,6 +165,12 @@ def _status_string(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _status_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def _memory_budget_claims_usable(memory_budget: dict[str, Any]) -> bool:
     return (
         _status_string(memory_budget.get("status_code")) == "ok"
@@ -249,6 +255,44 @@ def _memory_budget_status_response(
             memory_budget.get("prefill_workspace_bytes_per_token")
         ),
         recommended_context_tokens=_status_uint64(memory_budget.get("recommended_context_tokens")),
+    )
+
+
+def _capability_profile_response(
+    profile: dict[str, Any],
+) -> worker_runtime_pb2.WorkerCapabilityProfile:
+    return worker_runtime_pb2.WorkerCapabilityProfile(
+        profile_id=_status_string(profile.get("profile_id")),
+        artifact_format=_status_string(profile.get("artifact_format")),
+        acceleration=_status_string(profile.get("acceleration")),
+        device_binding=_status_string(profile.get("device_binding")),
+        memory_semantics=_status_string(profile.get("memory_semantics")),
+        max_concurrency=_status_uint32(profile.get("max_concurrency")),
+        runtime_features=_status_string_list(profile.get("runtime_features")),
+        cache_capabilities=_status_string_list(profile.get("cache_capabilities")),
+    )
+
+
+def _capabilities_status_response(
+    capabilities: Any,
+) -> worker_runtime_pb2.WorkerCapabilities | None:
+    """Copy the backend envelope verbatim; classification is Node Agent-owned."""
+    if not isinstance(capabilities, dict):
+        return None
+
+    profiles = capabilities.get("profiles")
+    return worker_runtime_pb2.WorkerCapabilities(
+        protocol_major=_status_uint32(capabilities.get("protocol_major")),
+        protocol_minor=_status_uint32(capabilities.get("protocol_minor")),
+        provider_id=_status_string(capabilities.get("provider_id")),
+        provider_version=_status_string(capabilities.get("provider_version")),
+        implementation_version=_status_string(capabilities.get("implementation_version")),
+        service_incarnation=_status_string(capabilities.get("service_incarnation")),
+        profiles=[
+            _capability_profile_response(profile)
+            for profile in (profiles if isinstance(profiles, list) else [])
+            if isinstance(profile, dict)
+        ],
     )
 
 
@@ -517,6 +561,10 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         memory_budget = _memory_budget_status_response(status.get("memory_budget"))
         if memory_budget is not None:
             response.memory_budget.CopyFrom(memory_budget)
+
+        capabilities = _capabilities_status_response(status.get("capabilities"))
+        if capabilities is not None:
+            response.capabilities.CopyFrom(capabilities)
 
         if _prefix_cache_disabled(self._prefix_cache_config):
             response.prefix_cache.CopyFrom(

@@ -137,7 +137,8 @@ New module `Orchard.Node.WorkerCapabilityEvidence` (pure functions, fully unit-t
 - `evaluate(snapshot | nil, query, now_ms, opts) :: result`
 - `canonical_tuple/1`, `known_vocabulary/0`
 
-Query shape: `%{artifact_format, acceleration, device_binding, memory_semantics, min_concurrency, runtime_features: [..], cache_capabilities: [..]}`; a profile matches when every scalar equals, `max_concurrency >= min_concurrency`, and every requested feature and cache capability is present in the profile's sets.
+Query shape: `%{artifact_format, acceleration, device_binding, memory_semantics, min_concurrency, runtime_features: [..], cache_capabilities: [..]}`; a profile matches when every scalar dimension is inside the known vocabulary and equals the query, `max_concurrency >= min_concurrency`, and every requested feature and cache capability is present in the profile's sets.
+A profile carrying a value outside the known vocabulary on any scalar dimension can never be a proof; it yields `unknown` when every other matching condition holds, which is the fail-closed direction for a provider the Node Agent has not yet learned.
 
 Access: `WorkerProcess.capability_snapshot/1` and `ModelManager.evaluate_worker_capability/3` for tests and diagnostics.
 Telemetry: `[:orchard, :node, :worker_capabilities, :classified]` with metadata `%{model_id, version, classification, provider_id, protocol_major, protocol_minor, profile_count, incarnation_changed}` and `[:orchard, :node, :worker_capabilities, :evaluated]` with `%{model_id, version, result}`.

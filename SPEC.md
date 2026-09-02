@@ -1391,6 +1391,7 @@ Local workers SHOULD speak gRPC over Unix domain sockets, with this minimal inte
 This local API is internal-only and not part of the public compatibility contract.
 Before capability evidence authorizes work, a Worker Runtime provider SHALL report its protocol version, provider identity and version, supported artifact formats, runtime features, acceleration implementations, device bindings, memory semantics, concurrency, and cache capabilities.
 Unknown, malformed, absent, stale, or incompatible required evidence MUST NOT prove capability eligibility.
+That evidence travels as one additive provider-neutral capability envelope on the worker `Status` response; the Node Agent alone owns its receipt time, freshness, validity classification, and exact-profile evaluation, and that local evaluation SHALL remain diagnostic-only, altering no readiness, admission, dispatch, scheduling, retry, or Runtime Endpoint behavior until a separately reviewed cutover makes normalized evidence authoritative.
 The canonical protocol source is `proto/orchard/worker/v1/worker_runtime.proto`; supported Python and Elixir consumer bindings are generated from it and checked byte-for-byte in required validation.
 
 ---

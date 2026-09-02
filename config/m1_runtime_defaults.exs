@@ -12,6 +12,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
   @default_worker_ready_timeout_ms 5_000
   @default_worker_load_timeout_ms 120_000
   @default_worker_shutdown_timeout_ms 1_000
+  @default_worker_capabilities_freshness_window_ms 15_000
 
   def hf do
     [
@@ -89,6 +90,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       worker_ready_timeout_ms: @default_worker_ready_timeout_ms,
       worker_load_timeout_ms: @default_worker_load_timeout_ms,
       worker_shutdown_timeout_ms: @default_worker_shutdown_timeout_ms,
+      worker_capabilities_freshness_window_ms: @default_worker_capabilities_freshness_window_ms,
       worker_log_dir: Path.join([root, "logs", "workers"]),
       worker_prefix_cache_mode: "kv",
       worker_prefix_cache_max_entries: 8,

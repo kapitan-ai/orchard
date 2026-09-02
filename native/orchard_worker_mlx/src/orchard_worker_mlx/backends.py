@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
+from orchard_worker_mlx.capabilities import (
+    MLX_PROVIDER_ID,
+    BackendCapabilities,
+    installed_distribution_version,
+    mlx_capabilities,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,6 +112,7 @@ class BackendStatus(TypedDict):
     active_request_count: int
     max_concurrency: NotRequired[int]
     memory_budget: NotRequired[BackendMemoryBudgetStatus]
+    capabilities: NotRequired[BackendCapabilities]
 
 
 class BackendHealth(TypedDict):
@@ -139,7 +147,10 @@ class Backend(Protocol):
 
 class StubBackend:
     def __init__(
-        self, *, max_fingerprint_buffer_size: int = _DEFAULT_FINGERPRINT_BUFFER_SIZE
+        self,
+        *,
+        max_fingerprint_buffer_size: int = _DEFAULT_FINGERPRINT_BUFFER_SIZE,
+        capabilities: BackendCapabilities | None = None,
     ) -> None:
         self._loaded_model: tuple[str, str, str] | None = None
         self._active_request_count = 0
@@ -147,15 +158,19 @@ class StubBackend:
             max_fingerprint_buffer_size
         )
         self._fingerprint_buffer: list[str] = []
+        self._capabilities = capabilities
         self._lock = threading.Lock()
 
     def status(self) -> BackendStatus:
         with self._lock:
-            return BackendStatus(
+            status = BackendStatus(
                 loaded=self._loaded_model is not None,
                 active_request_count=self._active_request_count,
                 max_concurrency=1,
             )
+            if self._capabilities is not None:
+                status["capabilities"] = self._capabilities
+            return status
 
     def health(self) -> BackendHealth:
         return BackendHealth(ready=True, code="", message="")
@@ -349,6 +364,7 @@ class MLXBackend:
         )
         self._generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
         self._memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
+        self._provider_version = installed_distribution_version(MLX_PROVIDER_ID)
         self._session: Any | None = None
         self._batch_runtime: Any | None = None
         self._max_concurrent_requests = 1
@@ -391,6 +407,12 @@ class MLXBackend:
                 loaded=loaded,
                 active_request_count=self._active_request_count,
                 max_concurrency=self._max_concurrent_requests,
+                capabilities=mlx_capabilities(
+                    max_concurrency=self._max_concurrent_requests,
+                    prefix_cache_enabled=getattr(self._prefix_cache_config, "mode", "")
+                    != "disabled",
+                    provider_version=self._provider_version,
+                ),
             )
             if loaded and self._session is not None:
                 budget = self._session.memory_budget_status
