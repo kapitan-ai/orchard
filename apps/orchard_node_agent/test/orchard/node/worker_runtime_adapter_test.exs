@@ -20,6 +20,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
+    WorkerCapabilities,
+    WorkerCapabilityProfile,
     WorkerMemoryBudgetStatus,
     WorkerPrefixCacheStatus,
     WorkerRuntimeService,
@@ -188,6 +190,34 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     use GRPC.Endpoint
 
     run(PromptTokenIdsSupportWorkerService)
+  end
+
+  defmodule CapabilitiesWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    @envelope_key {__MODULE__, :envelope}
+
+    def put_envelope(envelope), do: :persistent_term.put(@envelope_key, envelope)
+    def clear_envelope, do: :persistent_term.erase(@envelope_key)
+
+    def get_status(%WorkerStatusRequest{}, _stream) do
+      %WorkerStatusResponse{
+        ready: true,
+        max_concurrency: 2,
+        capabilities: :persistent_term.get(@envelope_key, nil)
+      }
+    end
+
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+    def generate(%ExecuteInferenceRequest{}, _stream), do: raise("not used")
+  end
+
+  defmodule CapabilitiesEndpoint do
+    use GRPC.Endpoint
+
+    run(CapabilitiesWorkerService)
   end
 
   defmodule LegacyPromptTokenIdsWorkerService do
@@ -364,6 +394,62 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
       assert status.supports_prompt_token_ids == false
     end)
+  end
+
+  describe "get_status capability snapshot" do
+    setup do
+      on_exit(fn -> CapabilitiesWorkerService.clear_envelope() end)
+    end
+
+    test "classifies a valid envelope with monotonic receipt time and adapter custody" do
+      CapabilitiesWorkerService.put_envelope(capabilities_envelope())
+
+      with_worker_runtime_server(CapabilitiesEndpoint, fn channel ->
+        before_ms = System.monotonic_time(:millisecond)
+
+        assert {:ok, status} =
+                 WorkerRuntimeAdapter.get_status(
+                   %{channel: channel, os_pid: 4242, os_identity: %{start_time: "1"}},
+                   timeout_ms: 500
+                 )
+
+        assert status.ready == true
+        assert status.max_concurrency == 2
+
+        assert %{
+                 classification: :valid,
+                 custody: {4242, %{start_time: "1"}},
+                 service_incarnation: "0123456789abcdef0123456789abcdef",
+                 detail: nil,
+                 received_at_ms: received_at_ms,
+                 envelope: %WorkerCapabilities{provider_id: "mlx"}
+               } = status.capability_snapshot
+
+        assert received_at_ms >= before_ms
+        assert received_at_ms <= System.monotonic_time(:millisecond)
+      end)
+    end
+
+    test "absent and malformed envelopes leave every live status field identical" do
+      with_worker_runtime_server(CapabilitiesEndpoint, fn channel ->
+        assert {:ok, absent} =
+                 WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
+
+        CapabilitiesWorkerService.put_envelope(capabilities_envelope(protocol_major: 0))
+
+        assert {:ok, malformed} =
+                 WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
+
+        assert Map.delete(absent, :capability_snapshot) ==
+                 Map.delete(malformed, :capability_snapshot)
+
+        assert %{classification: :absent, envelope: nil, custody: {nil, nil}} =
+                 absent.capability_snapshot
+
+        assert %{classification: :malformed, detail: "protocol_major"} =
+                 malformed.capability_snapshot
+      end)
+    end
   end
 
   test "get_status maps memory budget fields from worker status proto" do
@@ -754,6 +840,32 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       input_tokens: 1,
       deadline_unix_ms: System.system_time(:millisecond) + 5_000
     }
+  end
+
+  defp capabilities_envelope(overrides \\ []) do
+    struct!(
+      %WorkerCapabilities{
+        protocol_major: 1,
+        protocol_minor: 0,
+        provider_id: "mlx",
+        provider_version: "0.31.2",
+        implementation_version: "0.1.0",
+        service_incarnation: "0123456789abcdef0123456789abcdef",
+        profiles: [
+          %WorkerCapabilityProfile{
+            profile_id: "mlx-metal-unified-default",
+            artifact_format: "safetensors",
+            acceleration: "metal",
+            device_binding: "apple_gpu_0",
+            memory_semantics: "unified",
+            max_concurrency: 2,
+            runtime_features: ["prompt_token_ids", "streaming"],
+            cache_capabilities: ["prefix_cache"]
+          }
+        ]
+      },
+      overrides
+    )
   end
 
   defp score_prefix_cache_request do

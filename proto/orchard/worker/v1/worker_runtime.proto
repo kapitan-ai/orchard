@@ -61,6 +61,57 @@ message WorkerPrefixCacheStatus {
   repeated string prefix_cache_fingerprints = 15;
 }
 
+// One indivisible unit of capability evidence. Every scalar is required inside
+// a present profile; a zero or empty required value is malformed. Repeated
+// fields are sets attached to this one profile and never combine across
+// profiles (no cross-profile Cartesian product may be inferred).
+// Identifier tokens (profile_id, artifact_format, acceleration, device_binding,
+// memory_semantics, runtime_features, cache_capabilities) match
+// ^[a-z0-9][a-z0-9_.-]{0,63}$.
+// Bounds: at most 64 runtime_features and 64 cache_capabilities per profile.
+message WorkerCapabilityProfile {
+  // Unique within one WorkerCapabilities response.
+  string profile_id = 1;
+  string artifact_format = 2;
+  string acceleration = 3;
+  string device_binding = 4;
+  string memory_semantics = 5;
+  // Required, >= 1.
+  uint32 max_concurrency = 6;
+  // Sorted unique tokens.
+  repeated string runtime_features = 7;
+  // Sorted unique tokens.
+  repeated string cache_capabilities = 8;
+}
+
+// Additive capability envelope on GetStatus. An omitted envelope means absent.
+// Inside a present envelope every required scalar must be non-zero/non-empty;
+// a zero or empty required value is malformed. protocol_minor may be 0.
+// Non-gating: observe-only in this slice: capability evidence MUST NOT alter
+// readiness, request admission, model admission, placement capacity, scheduler
+// eligibility, retry, or Runtime Endpoint projection.
+message WorkerCapabilities {
+  // Required, >= 1. Only the major is a compatibility input.
+  uint32 protocol_major = 1;
+  // Additive revisions bump the minor; 0 is valid.
+  uint32 protocol_minor = 2;
+  // Required identifier token matching ^[a-z0-9][a-z0-9_.-]{0,63}$, e.g. "mlx".
+  // Diagnostic only; never a compatibility or provider-inference input.
+  string provider_id = 3;
+  // Required version string: non-empty, at most 128 bytes, printable ASCII.
+  string provider_version = 4;
+  // Required version string: non-empty, at most 128 bytes, printable ASCII.
+  string implementation_version = 5;
+  // Required identifier token matching ^[a-z0-9][a-z0-9_.-]{0,63}$. Non-secret,
+  // generated once per worker process start; safe to log.
+  string service_incarnation = 6;
+  // At most 64 profiles. Empty is valid and proves nothing.
+  repeated WorkerCapabilityProfile profiles = 7;
+  // field 8 reserved for a future loaded_binding (WorkerLoadedBinding),
+  // deferred pending issue #327 acceptance
+  reserved 8;
+}
+
 message WorkerStatusResponse {
   bool loaded = 1;
   // Active Generate calls in this worker process.
@@ -74,6 +125,9 @@ message WorkerStatusResponse {
   // Effective overlapping Generate capacity for this worker. Node agents treat
   // absent or zero values as capacity 1.
   uint32 max_concurrency = 9;
+  // Observe-only capability evidence; nil/omitted means absent. Non-gating in
+  // this slice (see WorkerCapabilities).
+  WorkerCapabilities capabilities = 10;
 }
 
 message LoadModelRequest {

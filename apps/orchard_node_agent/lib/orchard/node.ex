@@ -11,6 +11,7 @@ defmodule Orchard.Node do
   @default_worker_ready_timeout_ms 5_000
   @default_worker_load_timeout_ms 120_000
   @default_worker_shutdown_timeout_ms 1_000
+  @default_worker_capabilities_freshness_window_ms 15_000
   @default_worker_prefix_cache_mode "kv"
   @default_worker_prefix_cache_max_entries 8
   @default_worker_prefix_cache_max_bytes 0
@@ -100,6 +101,17 @@ defmodule Orchard.Node do
 
   def worker_shutdown_timeout_ms do
     runtime_config()[:worker_shutdown_timeout_ms] || @default_worker_shutdown_timeout_ms
+  end
+
+  @spec worker_capabilities_freshness_window_ms() :: pos_integer()
+  def worker_capabilities_freshness_window_ms do
+    case runtime_value(
+           :worker_capabilities_freshness_window_ms,
+           @default_worker_capabilities_freshness_window_ms
+         ) do
+      n when is_integer(n) and n >= 1 -> n
+      other -> raise "invalid worker_capabilities_freshness_window_ms: #{inspect(other)}"
+    end
   end
 
   def fake_runtime?, do: runtime_config()[:fake_runtime?]
