@@ -276,11 +276,19 @@ def _capability_uint32(value: Any) -> int:
     """Strict uint32 copy: out-of-range, bool, or non-int values become ``0``.
 
     Unlike ``_status_uint32`` this never clamps; ``0`` is malformed for every
-    required capability integer and only valid for ``protocol_minor``.
+    required capability integer.
     """
     if _valid_status_uint32(value):
         return value
     return 0
+
+
+def _capability_protocol_minor(value: Any) -> int:
+    """``protocol_minor`` is the one integer where ``0`` is valid, so an invalid
+    value cannot be laundered to ``0``; it makes the whole envelope malformed."""
+    if not _valid_status_uint32(value):
+        raise _MalformedCapabilities
+    return value
 
 
 def _capability_string_list(value: Any) -> list[str]:
@@ -333,7 +341,7 @@ def _capabilities_status_response(
 
         return worker_runtime_pb2.WorkerCapabilities(
             protocol_major=_capability_uint32(capabilities.get("protocol_major")),
-            protocol_minor=_capability_uint32(capabilities.get("protocol_minor")),
+            protocol_minor=_capability_protocol_minor(capabilities.get("protocol_minor")),
             provider_id=_status_string(capabilities.get("provider_id")),
             provider_version=_status_string(capabilities.get("provider_version")),
             implementation_version=_status_string(capabilities.get("implementation_version")),

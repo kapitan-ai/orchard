@@ -260,6 +260,28 @@ def test_get_status_does_not_clamp_invalid_max_concurrency(
     assert response.capabilities.profiles[0].max_concurrency == 0, label
 
 
+@pytest.mark.parametrize(
+    ("label", "protocol_minor"),
+    [
+        ("oversized", 2**40),
+        ("negative", -1),
+        ("bool", True),
+        ("string", "1"),
+        ("none", None),
+    ],
+)
+def test_get_status_does_not_launder_invalid_protocol_minor_to_zero(
+    label: str, protocol_minor: Any
+) -> None:
+    envelope = dict(_envelope())
+    envelope["protocol_minor"] = protocol_minor
+
+    response = _get_status(_raw_capabilities_backend(envelope))
+
+    _assert_malformed_sentinel(response)
+    _assert_legacy_status_intact(response)
+
+
 def test_get_status_does_not_clamp_oversized_protocol_major() -> None:
     response = _get_status(StubBackend(capabilities=_envelope(protocol_major=2**32)))
 
