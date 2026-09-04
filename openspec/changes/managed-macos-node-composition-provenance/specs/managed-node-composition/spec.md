@@ -2,7 +2,7 @@
 
 ### Requirement: V1 Has One Dedicated-Host Transition
 
-Orchard SHALL reserve `managed_apple_silicon_macos_node` as the distribution-profile identifier for a dedicated Apple Silicon macOS host that runs the Node Agent role and no Controller role.
+Orchard SHALL reserve `managed_apple_silicon_macos_node` as an experimental distribution-profile identifier for a dedicated Apple Silicon macOS host that runs the Node Agent role and no Controller role.
 Each admitted software composition under that profile SHALL be an independently typed, content-addressed Managed Node Composition instance.
 V1 SHALL admit only an already managed `exact_ref_source_build` baseline transitioning to one `orchard_signed_prebuilt` candidate.
 V1 SHALL permit rollback only to that exact recorded baseline.
@@ -36,9 +36,16 @@ V1 SHALL NOT admit a pretrusted local builder or a user-supplied build attestati
 
 ### Requirement: Managed Composition Is Closed
 
-The composition SHALL contain exactly one macOS arm64 Node Agent component built from the provider-neutral Node Agent core, one generation-side launchd host-adapter contract, and one exact-pinned MLX Worker Provider with its dedicated interpreter and closed runtime dependencies.
+The composition SHALL contain exactly one macOS arm64 Node Agent component built from the provider-neutral Node Agent core, one generation-side launchd host-adapter contract, and one exact-pinned single-process MLX Worker Provider with its dedicated interpreter and closed runtime dependencies.
 Every executable, interpreter, library, package, launch contract, and immutable configuration default required by those components SHALL be enumerated by signed closed manifests.
 The stable lifecycle bootstrap SHALL remain outside the replaceable composition and SHALL be referenced by exact required identity and protocol.
+The Worker Provider and every closed runtime dependency SHALL satisfy the managed v1 non-forking and non-daemonizing process-shape contract.
+The Node Agent component SHALL bind the pinned OTP runtime's exact closed ERTS support-process set, including OTP 29 `erl_child_setup`, and SHALL prohibit any unadmitted external Port target, resolver helper, shell, library child, or direct spawn path.
+Any profile `epmd` service SHALL be exact-pinned stable host infrastructure outside replaceable generations and SHALL hold no Node Certificate, BEAM Peer Grant, Worker channel capability, Controller request authority, or Runtime Endpoint.
+The composition SHALL bind a profile-fixed unprivileged Worker account name created and verified by the clean-host provisioning contract and SHALL NOT bind a machine-specific numeric UID.
+That account's host-enforced filesystem policy SHALL deny the Worker Provider access to the Node Identity Set, release-trust store, active pointer, managed journals, helper control endpoint, other generations, and shared mutable serving state.
+For code and system resources, it SHALL permit read and execute access only to the exact admitted current-generation Worker executable, interpreter, dependency closure, and closed system-library, framework, device, and IPC resources bound by the qualified matrix.
+For non-code data and mutable resources, it SHALL permit read-only admitted model inputs, write access only to generation-scoped scratch, and the authenticated generation-scoped local channel.
 
 #### Scenario: Closed composition is assembled
 
@@ -49,6 +56,12 @@ The stable lifecycle bootstrap SHALL remain outside the replaceable composition 
 
 - **WHEN** a generation needs or contains an undeclared executable, interpreter, library, package, launch contract, helper, or immutable input
 - **THEN** Orchard SHALL reject the composition
+
+#### Scenario: Worker Provider requires multiple processes
+
+- **WHEN** the Worker Provider or a closed dependency requires fork, subprocess creation, daemonization, or another executable at runtime
+- **THEN** Orchard SHALL reject it from the managed v1 profile
+- **AND** SHALL require a separately accepted containment contract or distribution profile before support
 
 ### Requirement: Executable and Provider Selection Cannot Be Overridden
 
@@ -84,8 +97,8 @@ The admitted Node subtree SHALL then be embedded without mutation, followed by e
 DMG assembly, notarization, stapling, mounting, and post-assembly verification SHALL be mandatory for every production candidate.
 The Candidate Manifest SHALL be sealed only after the final app and mandatory DMG have final verified identities.
 
-The composition lock SHALL NOT reference its own digest, final app identity, governed-build-manifest digest, DMG identity, publication state, or later signature.
-The governed build manifest SHALL exclude itself according to the release-governance contract.
+The composition lock SHALL NOT reference its own digest, final app identity, Candidate Manifest digest, DMG identity, publication state, or later signature.
+The Candidate Manifest SHALL exclude itself according to the release-governance contract.
 
 #### Scenario: Identity and signing order is valid
 
@@ -149,10 +162,17 @@ Secret values SHALL NOT appear in manifests, composition locks, journals, Contro
 
 ### Requirement: Only Complete Profile Evidence Supports a Claim
 
-Orchard SHALL describe the managed profile as supported only after its composition, purpose-bound verification, immutable-generation lifecycle, Controller generation, full descendant fence, exact-baseline rollback, final app and DMG evidence, and adversarial real Apple Silicon qualification all pass.
+Orchard SHALL describe the managed profile as supported only after its composition, purpose-bound verification, immutable-generation lifecycle, Controller execution-authority fence, Worker Provider spawn gate, exact registered-process fence, exact-baseline rollback, final app and DMG evidence, and adversarial real Apple Silicon qualification all pass.
+Qualification SHALL bind an explicit operator-visible supported model and feature matrix to the exact Worker Provider executable, interpreter, dependency closure, relevant runtime configuration, model families, tokenizer paths, and execution modes.
+Any change to that bound matrix or closure SHALL invalidate qualification until the affected matrix is requalified.
 No component archive, generation, composition lock, verifier decision, local app, or unpublished artifact SHALL independently establish support.
 
 #### Scenario: Contract or simulated tests pass without real-hardware qualification
 
 - **WHEN** design, unit, integration, or simulated evidence exists but the adversarial real Apple Silicon matrix is incomplete
 - **THEN** Orchard SHALL keep the profile unsupported
+
+#### Scenario: Model or feature is outside the qualified matrix
+
+- **WHEN** admission or execution selects a model, tokenizer path, execution mode, provider byte, dependency, or runtime configuration outside the qualified matrix
+- **THEN** Orchard SHALL reject it with a stable operator-visible unsupported-profile reason

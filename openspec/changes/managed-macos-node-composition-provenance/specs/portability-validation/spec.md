@@ -8,12 +8,12 @@ Tests SHALL NOT establish acceptance solely through private functions or direct 
 #### Scenario: Forward transition succeeds
 
 - **WHEN** the public-interface transition completes on a dedicated Node
-- **THEN** evidence SHALL show the exact source baseline, mandatory verified DMG and Candidate Manifest, imported signed-prebuilt generation, frozen Node Identity Set, authoritative containment close and exit, atomic pointer switch, exact provisional child, host-arm evidence, pending-result consumption, enabled-child acknowledgement, fresh live-child proof, and scheduler eligibility only after the second Controller commit
+- **THEN** evidence SHALL show the exact source baseline, mandatory verified DMG and Candidate Manifest, imported signed-prebuilt generation, frozen Node Identity Set, closed execution-grant set, closed Worker Provider spawn gate, exact registered-process exit, atomic pointer switch, exact provisional child, host-arm evidence, pending-result consumption, enabled-child acknowledgement, exact registered Worker readiness, authenticated local channel, fresh Node Agent and Worker proof, and scheduler eligibility only after the second Controller commit
 
 ### Requirement: Exact-Baseline Rollback Requires Public-Interface Proof
 
 Orchard SHALL test rollback only to the exact source baseline bound by the active Controller transition generation.
-Rollback proof SHALL use the same kernel-backed containment fence, atomic pointer, one-shot provisional child, Controller token, host-arm evidence, pending-result consumption, enabled-child acknowledgement, fresh live-child proof, and second terminal generation transaction.
+Rollback proof SHALL use the same closed execution-grant set, Worker Provider spawn gate, reserve-before-spawn process fence, authenticated local channel, atomic pointer, one-shot provisional child, Controller token, host-arm evidence, pending-result consumption, enabled-child acknowledgement, exact Worker readiness, fresh Node Agent and Worker proof, and second terminal generation transaction.
 
 #### Scenario: Exact-baseline rollback succeeds
 
@@ -27,8 +27,16 @@ Rollback proof SHALL use the same kernel-backed containment fence, atomic pointe
 
 ### Requirement: Failure Boundaries Require Fail-Closed Proof
 
-Validation SHALL inject interruption or failure at every durable Controller phase and local journal boundary and at mandatory DMG verification, candidate import, transition allocation fencing, drain acknowledgement, launch suppression, containment close, stop, exit proof, pointer switch, provisional claim, Controller arm authorization, host arm, pending Controller commit, child consumption, enabled-child acknowledgement, fresh live-child challenge, terminal commit, and rollback.
+Validation SHALL inject interruption or failure at every durable Controller phase and local journal boundary and at mandatory DMG verification, candidate import, transition allocation fencing, execution-grant closure and accounting, drain acknowledgement, launch suppression, each reserve-before-spawn state, Worker Provider spawn-gate close and open, channel-capability delivery and authentication, Worker Runtime channel close, stop, exit proof, pointer switch, provisional claim, Controller arm authorization, host arm, pending Controller commit, child consumption, enabled-child acknowledgement, Worker readiness, fresh Node Agent and Worker challenge, terminal commit, active-generation launch-policy installation, and rollback.
 Every ambiguous result SHALL remain launch-suppressed and scheduler-excluded.
+
+#### Scenario: Terminal Controller result precedes active-policy installation
+
+- **WHEN** failure occurs after the Controller accepts terminal `succeeded` or fully accepted `rolled_back` but before the exact active-generation launch policy is durably installed
+- **THEN** validation SHALL prove the host remains suppressed and stable-bootstrap recovery idempotently installs only the policy bound to that exact terminal result, Node, generation, executable, and bootstrap
+- **AND** ordinary grant issuance SHALL remain blocked until the helper durably reconciles the terminal result's serving epoch and the Node Agent publishes matching epoch-readiness
+- **AND** if the Node Agent exits in that window, validation SHALL prove the execution-epoch channel closes, new Worker initialization remains denied, the helper terminates and reaps its registered Worker child, and restart waits for exact policy installation
+- **AND** no stale, alternate-generation, or ordinary restart SHALL be admitted before installation succeeds
 
 #### Scenario: Failure occurs around a linearization point
 
@@ -39,7 +47,7 @@ Every ambiguous result SHALL remain launch-suppressed and scheduler-excluded.
 ### Requirement: Leadership, Heartbeat, and Generic Commands Cannot Bypass Transition
 
 Validation SHALL prove that Controller restart, leadership change, stale leader mutation, stale scheduler snapshot, healthy heartbeat, generic resume, generic uncordon, and launchd retry cannot make the Node eligible before exact terminal evidence.
-It SHALL race transition creation against allocation claim and final Worker Runtime execution acceptance and prove no post-fence acceptance can commit while every pre-fence accepted execution is included in drain acknowledgement.
+It SHALL race transition creation against allocation claims to prove no later grant can issue, race helper-serialized durable local epoch closure against final Worker Runtime acceptance to prove no later acceptance can commit, and prove every pre-fence execution-grant ID was never accepted, was durably rejected before acceptance, or has confirmed execution termination and allocation release across queue, retry, stream, recovery, and delayed-delivery paths before drain acknowledgement.
 
 #### Scenario: Leader changes during provisional start
 
@@ -47,14 +55,17 @@ It SHALL race transition creation against allocation claim and final Worker Runt
 - **THEN** the new leader SHALL preserve the transition generation and exclusion
 - **AND** no request SHALL dispatch to the Node
 
-### Requirement: Full Descendant Adversaries Are Qualified on Real Hardware
+### Requirement: Worker Process-Shape Adversaries Are Qualified on Real Hardware
 
-Real Apple Silicon tests SHALL include nested Worker Provider children, rapid child creation, reparenting attempts, PID reuse pressure, delayed exit, containment escape attempts, incomplete authoritative membership, replacement root launch, and replacement descendant launch.
-Qualification SHALL prove authoritative containment membership, atomic containment close as the no-new-child point, exact membership exit, unrelated-process survival, and durable suppression across lifecycle-owner death and host reboot.
+Real Apple Silicon tests SHALL exercise exact OTP 29 `erl_child_setup` registration and exit, rejection of every unadmitted Erlang Port target and resolver or shell child, Worker Provider fork, subprocess launch, daemonization, unregistered execution, rapid spawn requests, PID reuse pressure, delayed exit, stale Worker Runtime channels, incomplete registration, helper crash at every reserve-before-spawn boundary, wrong-identity spawn, channel impersonation and replay, denied Node Identity Set, BEAM Peer Grant Store, journal, helper-control, and other protected-path access from a remnant, Worker readiness loss, and replacement root launch.
+They SHALL also exercise helper death in `bound`, `released`, serving, and terminal-pending Worker states; privileged-command replay across helper death before and after the first side effect; every launchd enable, bootstrap, one-shot claim, root-registration, disable, bootout, owner-death, and reboot boundary; inherited-descriptor leakage attempts; and durable ordinary-serving managed-fault exclusion against health, restart, resume, uncordon, and Controller-unavailable races.
+Qualification SHALL bind the exact executable, interpreter, dependency closure, relevant runtime configuration, model families, tokenizer paths, and execution modes in the supported model and feature matrix.
+It SHALL combine closed executable-launch auditing with runtime process-creation observation across that matrix and SHALL invalidate qualification when the bound closure or matrix changes.
+Qualification SHALL establish the observed single-process behavior of that exact matrix, atomic Worker Provider spawn-gate close bound to the Controller execution-authority fence as the no-new-execution point, exact registered-process exit, denial of stale authority, unrelated-process survival, and durable suppression across lifecycle-owner death and host reboot.
 
-#### Scenario: Descendant escapes exact proof
+#### Scenario: Worker violates the admitted process shape
 
-- **WHEN** a child escapes containment, reparents without retaining membership, changes identity, survives termination, or becomes unclassifiable
+- **WHEN** a Worker Provider creates a descendant, daemonizes, starts outside the helper, changes identity, survives termination, retains a usable stale channel, or becomes unclassifiable
 - **THEN** activation SHALL fail and the Node SHALL remain stopped and scheduler-excluded
 
 ### Requirement: Purpose and Artifact Stage Boundaries Are Qualified
@@ -78,11 +89,12 @@ Evidence SHALL record exact artifact and generation identities, process observat
 
 ### Requirement: Provisioning and Release Governance Are Acceptance Prerequisites
 
-Production support SHALL remain blocked until the separate clean-host managed-baseline provisioning contract and `product-versioning-release-governance` Candidate Manifest contract are accepted and qualified.
+Production support and admission SHALL remain blocked until the separate clean-host managed-baseline provisioning contract, `product-versioning-release-governance` Candidate Manifest contract, operator-visible managed status and repair surfaces, safe managed decommission path, and next-update strategy are accepted and qualified.
+Until then `managed_apple_silicon_macos_node` SHALL remain an experimental reserved identifier and SHALL NOT be exposed as an operator-acquirable supported profile.
 
 #### Scenario: A prerequisite remains unaccepted
 
-- **WHEN** either prerequisite contract is absent, unaccepted, or fails its qualification gates
+- **WHEN** any prerequisite contract or lifecycle surface is absent, unaccepted, or fails its qualification gates
 - **THEN** Orchard SHALL NOT claim production support or begin implementation-dependent qualification
 
 ### Requirement: Existing Profiles and Foreground Development Remain Regression Gates

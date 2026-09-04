@@ -32,13 +32,13 @@ DMG assembly, notarization, stapling, mounting, and nested verification SHALL th
 - **WHEN** mounted-DMG verification observes a changed nested byte, signature, entitlement, subtree, or app identity
 - **THEN** Orchard SHALL reject the DMG and every dependent activation decision
 
-### Requirement: Governed Build Manifest Seals Final Required Identities
+### Requirement: Candidate Manifest Seals Final Required Identities
 
 The Candidate Manifest SHALL be sealed only after every required artifact has final verified identity.
 It SHALL bind Product Version, exact commit, final app tree, managed Node subtree, composition lock, stable-bootstrap identity, target profile, and mandatory final DMG identity.
-The composition lock SHALL NOT reference the later governed build manifest.
+The composition lock SHALL NOT reference the later Candidate Manifest.
 
-#### Scenario: Governed build manifest is sealed
+#### Scenario: Candidate Manifest is sealed
 
 - **WHEN** every required app and DMG identity is final and verified
 - **THEN** release governance MAY canonically serialize and digest the manifest
@@ -47,7 +47,7 @@ The composition lock SHALL NOT reference the later governed build manifest.
 #### Scenario: Manifest is sealed before final artifact verification
 
 - **WHEN** a required signing, notarization, stapling, mounting, or verification step remains
-- **THEN** the governed build SHALL remain unsealed and ineligible for activation authorization
+- **THEN** the Candidate Manifest SHALL remain unsealed and ineligible for activation authorization
 
 ### Requirement: Stable Bootstrap Is Outside the Replaceable Generation
 
@@ -73,7 +73,7 @@ They SHALL NOT expose an independent supported installation, update, publication
 
 #### Scenario: Operator has a component archive without governed app evidence
 
-- **WHEN** a valid component archive or composition lock is presented outside the final app and governed build binding
+- **WHEN** a valid component archive or composition lock is presented outside the final app and Candidate Manifest binding
 - **THEN** Orchard SHALL NOT treat it as installable or supported
 
 ### Requirement: Native PKG Remains Outside Managed Delivery

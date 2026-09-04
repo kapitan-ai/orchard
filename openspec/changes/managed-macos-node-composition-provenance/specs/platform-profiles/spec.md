@@ -2,7 +2,8 @@
 
 ### Requirement: Managed Apple Silicon macOS Node Is Dedicated
 
-Orchard SHALL define `managed_apple_silicon_macos_node` as a dedicated Node-role specialization of the Apple Silicon macOS platform profile, macOS native distribution profile, and macOS MLX Node runtime profile.
+Orchard SHALL reserve `managed_apple_silicon_macos_node` as an experimental dedicated Node-role transition specialization of the Apple Silicon macOS platform profile, macOS native distribution profile, and macOS MLX Node runtime profile.
+It SHALL NOT be operator-acquirable or described as supported until every production-admission prerequisite in this change is accepted and qualified.
 The host SHALL run no Controller release, Controller launchd job, or all-in-one role while the managed profile is admitted or a managed transition generation exists.
 The profile SHALL require the signed app and DMG lifecycle, exact stable bootstrap, fixed managed launch domain, external Controller coordination, and a verifier-admitted composition.
 
