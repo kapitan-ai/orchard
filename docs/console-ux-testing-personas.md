@@ -74,12 +74,13 @@ The following distinctions should remain visible across every relevant scenario.
 ### Application Developer
 
 - **Job to be done:** The Application Developer obtains an approved credential, discovers Models visible to their Organization, and integrates a reliable inference call without needing cluster-administration knowledge.
-- **Actual Orchard authority and prohibited actions:** The participant may use an `inference_client` credential or an Organization-scoped Portal User to mint and revoke only their own portal-minted API Tokens, but a Portal session does not authorize Console, Operator API, Admin API, or Public Inference by itself.
-- **Technical confidence and starting mental model:** The participant is comfortable with HTTP APIs, SDKs, and environment variables, but may expect a portal login, copied API Token, or visible Catalog entry to imply every other permission.
-- **Information and system access available:** The participant has their Organization-scoped Developer Portal, show-once API Token output, callable exact Model identifiers returned by `/v1/models`, example requests, stable public errors, and application logs they control.
-- **Likely misconceptions:** The participant may confuse Portal User identity with the Public Inference principal, expect a disabled Portal User to revoke previously minted API Tokens, or assume `401`, `403`, and capacity failures mean the same thing.
+- **Actual Orchard authority and prohibited actions:** The participant may authenticate Public Inference with a tenant-direct API Key that resolves to the Tenant principal, or with a service-account-owned API Token whose enabled API Client has tenant-scoped `inference_client` access.
+  Separately, an Organization-scoped Portal User may mint and revoke only their own portal-minted tenant-direct API Keys, but a Portal session does not authorize Console, Operator API, Admin API, or Public Inference by itself.
+- **Technical confidence and starting mental model:** The participant is comfortable with HTTP APIs, SDKs, and environment variables, but may expect a portal login, copied bearer credential, or visible Catalog entry to imply every other permission.
+- **Information and system access available:** The participant has their Organization-scoped Developer Portal, show-once API Key or API Token output, callable exact Model identifiers returned by `/v1/models`, example requests, stable public errors, and application logs they control.
+- **Likely misconceptions:** The participant may confuse Portal User identity with the Public Inference principal, expect a disabled Portal User to revoke previously minted API Keys, or assume `401`, `403`, and capacity failures mean the same thing.
 - **Evidence required before declaring success:** The participant must protect the one-time secret, authenticate with the correct bearer credential, select a Model returned for the effective Organization, receive a successful response, and distinguish credential, authorization, model, and runtime failures.
-- **Relevant prototype and product scenarios:** This persona leads Portal invitation, API Token creation and revocation, `/v1/models` discovery, first inference, invalid credential, unauthorized Model, and retry-safe client behavior scenarios.
+- **Relevant prototype and product scenarios:** This persona leads Portal invitation, portal-minted API Key creation and revocation, `/v1/models` discovery, first inference, invalid credential, unauthorized Model, and retry-safe client behavior scenarios.
 - **Accessibility or operational constraints:** Tests should cover copy errors, screen-reader labeling of show-once secrets, keyboard-only Portal use, reduced motion, expired sessions, and environments where production secrets cannot be pasted into a browser recording or support artifact.
 
 ### On-call Operator or Platform Generalist
@@ -89,7 +90,7 @@ The following distinctions should remain visible across every relevant scenario.
 - **Technical confidence and starting mental model:** The participant understands distributed systems and incident response, but may be unfamiliar with the exact cluster, recent policy changes, or whether an observation is durable authority or diagnostic evidence.
 - **Information and system access available:** The participant has Console status, bounded diagnostics, lifecycle and health, freshness, Runtime Endpoint observations, scheduler explanations, request attempts, stable reason codes, audit references, and approved CLI or API operations.
 - **Likely misconceptions:** The participant may equate healthy with schedulable, active with exact-Model readiness, loaded with authorized, retryable with safe to retry after output, or Cancel Drain with a return to active service.
-- **Evidence required before declaring success:** The participant must identify the failed boundary, show that the chosen action was authorized and audited, confirm current health and eligibility, and complete a fresh inference without hiding unresolved execution or partial-failure state.
+- **Evidence required before declaring success:** The participant must identify the failed boundary, show that the chosen action was authorized and audited, confirm current health and eligibility, and obtain a fresh inference result from an Application Developer or separately authorized Public Inference principal without hiding unresolved execution or partial-failure state.
 - **Relevant prototype and product scenarios:** This persona leads reciprocal Model-first and Node-first diagnosis, degraded clusters, one-request retry, load failures, cordon and drain, recovery, and destructive-action preview scenarios.
 - **Accessibility or operational constraints:** Tests should include time pressure, dark and low-light use, stale tabs, narrow screens, keyboard navigation, reduced motion, long-running actions, and the need to copy stable reason codes without exposing secrets.
 
@@ -116,22 +117,26 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 - **Starting state:** A healthy Controller exists, no pending enrollment exists, a supported machine has no authorized Orchard role, and an exact Model is already available to an approved Organization on at least one other path.
 - **Task prompt:** A new supported machine is ready to contribute inference capacity, so add it safely and show when Orchard may schedule the exact Model on it.
 - **Allowed authority:** The Department Operator may request capacity, an administrator may issue the per-Node Enrollment Bundle and later review and admit the registered Node, and the custodian may receive the protected bundle, verify media, install the `node-agent` Install Role, and complete machine-local registration.
-- **Success evidence:** The flow shows installation, bundle issuance and expiry, certificate-backed registration, administrator review, explicit admission, automatic healthy activation, exact-Model compatibility and residency, current capacity, Organization authorization, and a successful request without collapsing any stage.
+- **Success evidence:** The flow shows installation, bundle issuance and expiry, certificate-backed registration, administrator review, explicit admission, automatic healthy activation, exact-Model compatibility and residency, current capacity, and Organization authorization without collapsing any stage.
+  The accepted attempt for the successful terminal request identifies the newly added Node and exact Model version and shows that final revalidation and runtime acceptance succeeded.
 - **Critical misunderstandings:** Installation is not enrollment, observation is not registration, registration is not admission, admission does not require a manual Activate action, and active is not universal workload readiness.
 - **Prototype observations:** Record where each participant changes surfaces or machines, what they transfer, whether they can resume after delay, when they ask for help, and the first point at which they claim the Node is ready.
-- **Candidate automated regression checks:** Browser tests should verify ordered stage labels, disabled admission before trusted registration, explicit confirmation for admission, no manual Activate control, non-color status semantics, and exact-Model readiness that remains separate from Node lifecycle.
+- **Candidate automated regression checks:** Browser tests should verify ordered stage labels, disabled admission before trusted registration, a side-effect-free Action Preview, non-bypassable blockers, any action-specific confirmation requirements returned by the preview, no manual Activate control, non-color status semantics, and exact-Model readiness that remains separate from Node lifecycle.
 
 ### S2: Add Node partial failure, retry, and recovery
 
 - **Contract and maturity:** `SPEC.md` sections 4.1 through 4.5, 10.5 through 10.6, and 12.1 define fail-closed trust and Node recovery invariants, while guided packaged resume and bundle-transfer behavior remain target or unresolved where `docs/operator-journey.md` says acceptance is incomplete.
 - **Persona:** The Node Host Custodian leads local recovery while the On-call Operator observes Controller-side state and an administrator retains admission authority.
-- **Starting state:** Installation succeeded, but the Enrollment Bundle expired or registration failed after partial local setup, and an untrusted Runtime Endpoint observation may also be present.
+- **Starting state:** Installation succeeded, but either the Enrollment Bundle became invalid or expired before registration, or the registration response was lost after the one-time token was consumed, and an untrusted Runtime Endpoint observation may also be present.
 - **Task prompt:** Recover the interrupted join without trusting stale material, duplicating identity, or admitting observation-only evidence.
-- **Allowed authority:** The custodian may inspect safe local status and retry with newly issued protected enrollment material, the operator may diagnose status, and only an administrator may revoke or reissue bootstrap authority and admit the registered Node.
-- **Success evidence:** The old bundle is rejected, a safe resume or restart path is clear, the resulting registered Node has one stable identity, stale candidate evidence remains non-schedulable, and later activation follows only from fresh authenticated health.
-- **Critical misunderstandings:** Retrying must not reuse expired secrets, a new observation must not create a second trusted Node, and an unhealthy or identity-mismatched endpoint must not become active.
+- **Allowed authority:** For invalid or expired material, the custodian may inspect safe local status and continue only after an administrator revokes or reissues bootstrap authority.
+  For a lost registration response after token consumption, the custodian may resume only with the matching enrollment identifier, locally held Node key, and CSR fingerprint, while only an administrator may admit the registered Node.
+- **Success evidence:** Invalid or expired material is rejected and replaced through an administrator-issued path, while a consumed attempt with a lost response resumes idempotently only when the enrollment identifier, local Node key, and CSR fingerprint match.
+  Either path produces one stable registered Node identity, keeps stale candidate evidence non-schedulable, and reaches activation only after fresh authenticated health.
+- **Critical misunderstandings:** Retrying must not reuse invalid or expired secrets, a lost registration response must not force reissue when the consumed attempt can be matched safely, different key material must fail closed, and a new observation must not create a second trusted Node.
 - **Prototype observations:** Record whether the participant can identify the failed boundary, whether recovery guidance names the responsible role and machine, and whether progress survives navigation or session loss.
-- **Candidate automated regression checks:** Tests should cover expired and already-used bundles, generic secret-safe failures, idempotent resume behavior, candidate-versus-Node labeling, identity mismatch, inaccessible Controller recovery, and no scheduling before admission and fresh activation.
+- **Candidate automated regression checks:** Tests should distinguish invalid or expired material that requires rejection and reissue from a consumed registration attempt that resumes only with the matching enrollment identifier, local Node key, and CSR fingerprint.
+  Guided browser checks remain candidates until an implemented public seam fixes the resume behavior; other checks should cover generic secret-safe failures, candidate-versus-Node labeling, identity mismatch, inaccessible Controller recovery, and no scheduling before admission and fresh activation.
 
 ### S3: Discover and acquire an exact Model
 
@@ -147,15 +152,17 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 
 ### S4: Organization access and API credentials
 
-- **Contract and maturity:** `SPEC.md` sections 6.6, 7.2.2 through 7.2.3, 7.4a, and 10.2 through 10.4 define current Organization, Model grant, Portal User, API Token, and authorization behavior, while Workspace remains only a research label.
+- **Contract and maturity:** `SPEC.md` sections 6.6, 7.2.2 through 7.2.3, 7.4a, and 10.2 through 10.4 define current Organization, Model grant, Portal User, API Key, API Token, and authorization behavior, while Workspace remains only a research label.
 - **Persona:** The Department Operator grants appropriate Organization access and the Application Developer completes credential and API use.
-- **Starting state:** An exact Model is active in the Catalog, but the Organization has no enabled Model grant and the developer has no usable API Token.
+- **Starting state:** An exact Model is active in the Catalog, but the Organization has no enabled Model grant and the developer has no usable bearer credential.
 - **Task prompt:** Give one application the minimum access required to discover and call the approved Model without granting cluster administration.
-- **Allowed authority:** A `tenant_admin` may manage Organization-scoped model access and credentials within the accepted surface, while the developer may use `inference_client` access or manage only their own portal-minted API Tokens.
-- **Success evidence:** The exact Model appears in `/v1/models` only after an enabled Organization grant, the API Token is shown once and stored safely, the effective principal and Organization are correct, and a request succeeds without cluster-scoped authority.
-- **Critical misunderstandings:** The current product-facing term is Organization rather than Workspace, Team is metadata rather than a governance boundary, Portal User is not a Public Inference principal, and Portal User disablement does not automatically revoke minted API Tokens.
+- **Allowed authority:** A `tenant_admin` may manage Organization-scoped model access and credentials within the accepted surface.
+  A tenant-direct API Key may discover and invoke granted Models as the Tenant principal, while a service-account-owned API Token may do so only when its enabled API Client has tenant-scoped `inference_client` access.
+  Separately, an Application Developer signed in as an Organization-scoped Portal User may manage only their own portal-minted tenant-direct API Keys.
+- **Success evidence:** The exact Model appears in `/v1/models` only after an enabled Organization grant, the bearer credential is shown once and stored safely, the effective principal and Organization are correct, and a request succeeds without cluster-scoped authority.
+- **Critical misunderstandings:** The current product-facing term is Organization rather than Workspace, Team is metadata rather than a governance boundary, Portal User is not a Public Inference principal, and Portal User disablement does not automatically revoke minted API Keys.
 - **Prototype observations:** Record whether participants can explain who owns the credential, where model access is granted, what one-time output means, and which action is needed to end both portal and key access.
-- **Candidate automated regression checks:** Tests should cover deny-by-default model listing, cross-Organization isolation, show-once secrets, disabled API Clients, revoked and expired tokens, Portal User ownership filters, separate Portal User disable and API Token revoke, and stable `401` versus `403` behavior.
+- **Candidate automated regression checks:** Tests should cover deny-by-default model listing, cross-Organization isolation, show-once secrets, disabled API Clients, revoked and expired credentials, Portal User ownership filters, separate Portal User disable and portal-minted API Key revoke, and stable `401` versus `403` behavior.
 
 ### S5: Model files, runtime residency, eligibility, and successful inference
 
@@ -163,7 +170,8 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 - **Persona:** The Model Curator and On-call Operator establish runtime facts, while the Department Operator and Application Developer establish Organization authorization and request success.
 - **Starting state:** The exact Model is active and granted, two active Nodes report different compatibility or capacity evidence, and neither has a loaded placement.
 - **Task prompt:** Make the exact Model available with low cold-start risk on suitable capacity and prove that an authorized request can be served.
-- **Allowed authority:** An administrator may set accepted cluster placement and pinning policy, a `tenant_admin` may change only Organization-scoped routing or model access that its accepted surface authorizes, an operator may perform permitted runtime load or diagnostic operations, and application credentials may only discover and invoke granted Models.
+- **Allowed authority:** An administrator may set accepted cluster placement, routing, and pinning policy, a `tenant_admin` may manage only Organization-scoped keys, quota, and model access that its accepted surface authorizes, and an operator may perform permitted runtime load or diagnostic operations.
+  A tenant-direct API Key may discover and invoke granted Models as the Tenant principal, while a service-account-owned API Token may do so only when its enabled API Client has tenant-scoped `inference_client` access.
 - **Success evidence:** The participant separately verifies acquisition, authoritative digest verification, cached files, runtime loading, exact-Model placement capacity, lifecycle and health, policy eligibility, Organization authorization, scheduler selection, dispatch-time revalidation, and a successful response.
 - **Critical misunderstandings:** Desired placement is not observed state, downloaded is not verified, cached is not loaded, loaded is not eligible, and eligible is not proof that a particular request was authorized or selected.
 - **Prototype observations:** Record whether progress and failures remain attributable to files, verification, runtime, policy, capacity, or authorization, and whether long-running steps expose safe resume behavior.
@@ -172,11 +180,11 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 ### S6: Model-first diagnosis
 
 - **Contract and maturity:** `SPEC.md` sections 5.5 through 5.8, 6.3, and 7.3.5 define eligibility and scheduler evidence, while the reciprocal Model-first Console workflow remains a prototype target until its public seams and browser behavior are implemented.
-- **Persona:** The On-call Operator begins from the exact Model and may consult the Model Curator when artifact or compatibility evidence is ambiguous.
+- **Persona:** The On-call Operator begins from the exact Model and may consult the Model Curator when artifact or compatibility evidence is ambiguous, while an Application Developer or separately authorized Public Inference principal performs the recovery request.
 - **Starting state:** Requests fail for one exact Model, one active Node has a cached placement that failed to load, one has a loaded placement but is cordoned, and one has compatible cold capacity without files.
 - **Task prompt:** Starting from the Model, identify a safe recovery path and state the evidence required before declaring the incident resolved.
 - **Allowed authority:** The operator may inspect scheduler and placement evidence and perform permitted runtime operations, but admin-only policy, access, admission, and destructive changes require an authorized handoff.
-- **Success evidence:** The participant preserves exact-version identity, distinguishes files, runtime, lifecycle, eligibility, and authorization, selects viable capacity, observes any acquisition and load, and confirms recovery with a fresh request and scheduler evidence.
+- **Success evidence:** The operator preserves exact-version identity, distinguishes files, runtime, lifecycle, eligibility, and authorization, selects viable capacity, observes any acquisition and load, and obtains a fresh request result from an Application Developer or separately authorized Public Inference principal together with scheduler evidence.
 - **Critical misunderstandings:** A cached failed placement is not ready, a loaded cordoned placement is not schedulable, cold capacity is not guaranteed to load, and changing desired residency is not recovery by itself.
 - **Prototype observations:** Record whether the participant can reach the responsible Node, compare candidates, interpret stable reason codes, and return to the same Model context without losing the incident narrative.
 - **Candidate automated regression checks:** Tests should verify exact-version preservation across drill-ins, reciprocal links, rejected and skipped candidate reasons, policy-versus-state labels, load failure recovery, and a post-recovery request using an eligible selected Node.
@@ -197,11 +205,12 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 
 - **Contract and maturity:** `SPEC.md` sections 7.2.2 through 7.2.3, 7.4a, and 10.2 through 10.4 define the current authentication, authorization, Portal, and Organization-isolation expectations used by this scenario.
 - **Persona:** The Application Developer diagnoses the client-visible failure and the Department Operator handles any authorized Organization-side correction.
-- **Starting state:** The developer may have an invalid, revoked, expired, disabled-owner, or wrong-Organization credential, or may request an active Model that lacks an enabled Organization grant.
+- **Starting state:** The developer may have an invalid, revoked, expired, or wrong-Organization bearer credential, a valid API Token owned by a disabled API Client, a Portal session ended by Portal User disablement, or a request for an active Model that lacks an enabled Organization grant.
 - **Task prompt:** Determine why the application cannot call the Model and recover without exposing credential or cross-Organization information.
-- **Allowed authority:** The developer may inspect their own Portal and client output and rotate or revoke only permitted portal-minted API Tokens, while Organization access changes require tenant administration and cluster changes require operator or admin authority.
+- **Allowed authority:** The developer may inspect their own Portal and client output, mint and revoke only their own portal-minted tenant-direct API Keys, and retry with a bearer path authorized for Public Inference.
+  Recovery from API Client Disablement requires tenant administration to re-enable the intended API Client or provision a service-account-owned API Token under an enabled API Client, while cluster changes require operator or admin authority.
 - **Success evidence:** The participant distinguishes authentication from authorization and runtime availability, replaces or corrects only the failed layer, verifies `/v1/models`, and completes a successful request with no cross-Organization disclosure.
-- **Critical misunderstandings:** A `401` is not a Model-placement failure, a `403` for a known disabled principal is not an invalid secret, and an empty visible Model list does not prove the Catalog is empty.
+- **Critical misunderstandings:** A `401` is not a Model-placement failure, a `403` for a valid API Token owned by a disabled API Client is not an invalid secret, disabling a Portal User does not revoke previously minted tenant-direct API Keys, and an empty visible Model list does not prove the Catalog is empty.
 - **Prototype observations:** Record whether generic external errors remain actionable through safe next steps, whether participants seek unauthorized Console access, and whether they understand which role must fix each cause.
 - **Candidate automated regression checks:** Tests should cover `401 invalid_api_key`, `403 forbidden`, `403 model_not_authorized`, indistinguishable cross-Organization Portal failures, no secret echo, no unauthorized mutation, and success after the minimum scoped correction.
 
@@ -215,7 +224,7 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 - **Success evidence:** The participant identifies attempt boundaries, Output Commitment, deadline, selected and excluded Nodes, capacity release or quarantine, stable failure mapping, and one terminal request outcome.
 - **Critical misunderstandings:** Retryability does not authorize replay after output, a new attempt does not extend the absolute deadline, and unresolved cancellation must not release or reallocate capacity as if execution ended cleanly.
 - **Prototype observations:** Record whether the timeline explains automatic versus operator versus client retry, whether partial output changes the decision, and whether quarantine or fail-closed state is visible without exposing internal errors.
-- **Candidate automated regression checks:** Tests should cover pre-commit alternate retry, no retry after Output Commitment, caller disconnect, absolute timeout, one-attempt limit, previous-node exclusion, unresolved execution quarantine, idempotency mismatch, and one terminal state.
+- **Candidate automated regression checks:** Tests should cover pre-commit alternate retry, no retry after Output Commitment, caller disconnect, absolute timeout, one automatic alternate attempt with two total attempts maximum, previous-node exclusion, unresolved execution quarantine, idempotency mismatch, and one terminal state.
 
 ### S10: Accepted destructive actions and deletion hypotheses
 
@@ -233,7 +242,7 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 
 - **Contract and maturity:** `SPEC.md` sections 7.4a and 10.8 through 10.10 define current secret, Portal, audit, and data-governance behavior, while a dedicated read-only reviewer role or export surface is not currently defined.
 - **Persona:** The Security and Compliance Reviewer leads a read-only review with evidence supplied by the relevant Operator or administrator.
-- **Starting state:** A workflow includes Portal invitation, API Token mint or revoke, Model access change, Node Admission, or a destructive operation across more than one Organization.
+- **Starting state:** A workflow includes Portal invitation, portal-minted API Key mint or revoke, Model access change, Node Admission, or a destructive operation across more than one Organization.
 - **Task prompt:** Prove who could do what, what changed, what was retained, and what sensitive material was excluded without mutating the system.
 - **Allowed authority:** The reviewer receives only approved read-only evidence, and any additional query or export must preserve tenant scope, capture policy, redaction, and least privilege.
 - **Success evidence:** The evidence links actor type, scope, target, decision, timestamp, result, and audit reference while excluding plaintext secrets, invite URLs, password material, raw request content outside policy, local paths, and another Organization's identities.
@@ -247,9 +256,11 @@ Each card may be run against a concept, clickable prototype, instrumented produc
 - **Persona:** The Department Operator owns the capacity need and acceptance criteria, while the Node Host Custodian owns the target machine and an administrator retains cluster admission authority.
 - **Starting state:** The department needs more capacity, but the Department Operator cannot access the target machine and the custodian cannot access Organization or cluster administration.
 - **Task prompt:** Exchange the minimum protected information needed to add the machine, then return enough evidence for the department and administrator to continue without sharing credentials or extending either participant's authority.
-- **Allowed authority:** The Department Operator may describe the capacity requirement and initiate the approved enrollment request, the custodian may handle the protected bundle and machine-local steps, and neither participant may perform the other's work or admit the Node without separate admin authority.
+- **Allowed authority:** The Department Operator may describe the capacity requirement and initiate the capacity request or handoff, a separately authorized administrator provisions the Node and issues its enrollment authority, and the custodian may handle the protected bundle and machine-local steps.
+  Neither the Department Operator nor the custodian may admit the Node without separate admin authority.
 - **Success evidence:** The outgoing handoff names the target machine, trusted Controller identity, protected artifact, exact execution location, expiry, expected registration result, and safe failure route, while the returning handoff contains stable non-secret Node identity and registration evidence rather than credentials, local paths, or raw logs.
-- **Critical misunderstandings:** A copied bundle is not a general installation package, local administrator authority is not cluster authority, registration does not imply admission, and screenshots or transcripts are not acceptable secret-transfer or durable evidence channels.
+- **Critical misunderstandings:** A copied bundle is not a general installation package, local administrator authority is not cluster authority, registration does not imply admission, and no specific protected transfer medium is product-approved while the transfer mechanism remains unresolved.
+  A study should evaluate the participant against the study-specified mechanism, and secret-bearing screenshots, recordings, or transcripts must not be persisted as study or repository evidence.
 - **Prototype observations:** Record whether each participant knows when ownership changes, what may be copied, what must remain secret, how to recognize stale instructions, and which role is responsible for the next action after success or failure.
 - **Candidate automated regression checks:** Tests should verify role-specific instructions, show-once and expiring material, no secret in URLs or persistent page state beyond the accepted contract, copyable non-secret identifiers, safe resume guidance, explicit handoff state, and admission controls unavailable to the custodian.
 
