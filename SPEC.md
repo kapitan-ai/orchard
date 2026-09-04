@@ -1246,6 +1246,13 @@ A same-Request held-claim rejection SHALL remain a fail-closed defense against o
 Acquisition of the final unit of Dispatch Headroom SHALL be serialized so two concurrent requests cannot both claim it.
 This F11 accounting contract is Controller-local and SHALL NOT be represented as a durable dispatch permit, leader epoch, Node-verifiable token, crash-recoverable reservation ledger, or proof of actual Node occupancy.
 
+For the reserved experimental `managed_apple_silicon_macos_node` profile only, Orchard SHALL use durable execution-grant IDs and fence epochs solely to fence the profile's managed host-composition transition.
+Transition creation SHALL be the first-stage allocation-issuance fence: the Controller SHALL close new grant issuance for that Node and persist each exact grant, its fence epoch, and its terminal disposition in Postgres under the same serialization boundary as transition creation and scheduler exclusion.
+The stable helper SHALL provide the second-stage final-acceptance fence by serializing final Worker Runtime acceptance against durable local epoch closure and by durably retaining the current local epoch plus consumed or rejected grant IDs so restart and replay fail closed until exact Controller and helper reconciliation.
+Host mutation SHALL remain blocked until local epoch closure is durable and every pre-fence grant is proven never accepted, durably rejected before acceptance, or confirmed terminated with its allocation released.
+This profile SHALL remain reserved, experimental, not operator-acquirable, and not production-admittable until its product-versioning and release-governance, clean-host provisioning, operator-visible status and repair, safe decommission, and next-update prerequisites are accepted and its full production qualification is complete.
+This exception SHALL NOT alter F11 for any other profile or authorize a general durable dispatch-permit system, leader epoch, leadership fence, crash-recoverable reservation ledger, handover recovery mechanism, or other pre-M7 fencing behavior.
+
 The Active Controller SHALL provide one Controller-local cluster transition barrier and one Controller-local acceptance gate per admitted production Node.
 Node policy mutation SHALL serialize through that Node's acceptance gate.
 Final dispatch revalidation SHALL acquire the same acceptance gate and hold it continuously from the final shared evaluation through either Node acceptance or pre-acceptance failure.
