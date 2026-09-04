@@ -1,28 +1,44 @@
 ## ADDED Requirements
 
-### Requirement: Managed Apple Silicon macOS Node Is a Narrow Profile Specialization
+### Requirement: Managed Apple Silicon macOS Node Is Dedicated
 
-Orchard SHALL define `managed_apple_silicon_macos_node` as a Node-role specialization of the existing macOS native distribution profile and the macOS MLX Node runtime profile.
-The profile SHALL require Apple Silicon macOS, the signed app and DMG lifecycle, Controller maintenance coordination, the managed launch-domain adapter, and a verifier-admitted managed Node composition.
-The profile SHALL NOT alter the support status of controller-only, all-in-one, Linux, WSL, Windows, Intel macOS, or ordinary source-development profiles.
+Orchard SHALL define `managed_apple_silicon_macos_node` as a dedicated Node-role specialization of the Apple Silicon macOS platform profile, macOS native distribution profile, and macOS MLX Node runtime profile.
+The host SHALL run no Controller release, Controller launchd job, or all-in-one role while the managed profile is admitted or a managed transition generation exists.
+The profile SHALL require the signed app and DMG lifecycle, exact stable bootstrap, fixed managed launch domain, external Controller coordination, and a verifier-admitted composition.
 
-#### Scenario: Managed Node profile is admitted
+#### Scenario: Dedicated Node host is admitted
 
-- **WHEN** the host, role, runtime, distribution, Controller-coordination, launch-domain, and composition requirements all match the named profile
+- **WHEN** the host, role, runtime, distribution, bootstrap, launch-domain, Controller, and composition evidence all match the named profile and no Controller role is present
 - **THEN** Orchard MAY identify the installation as a Managed Apple Silicon macOS Node
 
-#### Scenario: Another profile presents managed composition evidence
+#### Scenario: Controller role is selected or running
 
-- **WHEN** a host or role outside the named profile presents a valid composition lock or build attestation
-- **THEN** Orchard SHALL NOT infer that the managed profile or its support claim applies
+- **WHEN** the target host selects or runs a Controller or all-in-one role
+- **THEN** Orchard SHALL reject managed profile admission and transition creation
+
+### Requirement: V1 Profile Starts from a Managed Baseline
+
+The v1 profile SHALL start from an immutable `exact_ref_source_build` baseline whose production provisioning is governed by a separate accepted clean-host contract.
+This change SHALL NOT define, authorize, or claim support for that provisioning path.
+It SHALL NOT adopt a generic app install, foreground source checkout, native PKG install, arbitrary active tree, or externally supervised Node Agent.
+
+#### Scenario: Existing unmanaged installation is presented
+
+- **WHEN** a host lacks the exact managed baseline, stable bootstrap, active pointer, frozen identity set, or Controller admission evidence
+- **THEN** Orchard SHALL refuse v1 transition instead of deriving or synthesizing a baseline
+
+#### Scenario: Provisioning contract is not accepted
+
+- **WHEN** no separate accepted production provisioning contract has established the managed baseline and profile marker
+- **THEN** Orchard SHALL keep production admission and support claims blocked
 
 ### Requirement: Source Development Remains Foreground and Unmanaged
 
 The managed profile SHALL NOT change `make dev`, `mise exec -- bin/dev`, or the source-development Node Agent host into background installation or managed-composition commands.
-Source-development processes SHALL NOT be silently adopted into the managed launch domain.
+Source-development processes SHALL NOT be adopted into the managed launch domain.
 
 #### Scenario: Operator runs source development
 
 - **WHEN** an operator runs the documented foreground source-development command
 - **THEN** the command SHALL retain foreground terminal custody and existing shutdown behavior
-- **AND** SHALL NOT create or activate a managed composition implicitly
+- **AND** SHALL NOT create a managed baseline or transition implicitly

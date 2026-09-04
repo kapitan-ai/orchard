@@ -1,169 +1,158 @@
 ## ADDED Requirements
 
-### Requirement: Managed Node Composition Is Closed and Role Specific
+### Requirement: V1 Has One Dedicated-Host Transition
 
-Orchard SHALL define one `managed_apple_silicon_macos_node` composition for the Node-role specialization of the macOS native distribution profile.
-The composition SHALL contain exactly one macOS arm64 Node Agent component built from the provider-neutral Node Agent core, one launchd host-adapter component, and one exact-pinned MLX Worker Provider component.
-Every executable, library, package, launch definition, helper, and immutable configuration default needed to run those components SHALL be enumerated by closed component manifests.
-Models, operator data, the Node Identity Root, journals, release manifests, and generated identity records SHALL remain outside the replaceable composition.
+Orchard SHALL reserve `managed_apple_silicon_macos_node` as the distribution-profile identifier for a dedicated Apple Silicon macOS host that runs the Node Agent role and no Controller role.
+Each admitted software composition under that profile SHALL be an independently typed, content-addressed Managed Node Composition instance.
+V1 SHALL admit only an already managed `exact_ref_source_build` baseline transitioning to one `orchard_signed_prebuilt` candidate.
+V1 SHALL permit rollback only to that exact recorded baseline.
+It SHALL NOT admit legacy adoption, a normal reverse provenance transition, a subsequent managed update, or a Controller-bearing or all-in-one host.
 
-#### Scenario: Closed composition is admitted
+#### Scenario: Supported v1 transition is requested
 
-- **WHEN** all three required component roles have closed manifests and every referenced entry passes closure verification
-- **THEN** Orchard SHALL permit the component manifests to be bound into one composition lock
-- **AND** the composition lock SHALL identify the managed Apple Silicon macOS Node profile and exact target platform
+- **WHEN** a dedicated admitted Node presents its exact managed source baseline and one authorized signed-prebuilt candidate
+- **THEN** Orchard SHALL evaluate the one supported forward transition
 
-#### Scenario: Undeclared runtime dependency is present
+#### Scenario: Another transition or host role is requested
 
-- **WHEN** a component needs or contains an executable, library, package, launch definition, helper, or immutable configuration input that its manifest does not close
+- **WHEN** the request starts from an unmanaged or prebuilt baseline, selects another rollback target, requests another update direction, or targets a Controller-bearing host
+- **THEN** Orchard SHALL reject it before Controller transition creation or host mutation
+
+### Requirement: Source Baseline Construction Is Verifier Controlled
+
+An `exact_ref_source_build` baseline SHALL be constructed only inside a verifier-controlled isolated build environment.
+Construction SHALL require the canonical Orchard repository, an authorized exact full commit, clean complete source inputs, pinned toolchains, dependency locks, controlled environment inputs, the exact macOS arm64 target, and deterministic declared outputs.
+V1 SHALL NOT admit a pretrusted local builder or a user-supplied build attestation.
+
+#### Scenario: Controlled source baseline is constructed
+
+- **WHEN** the isolated verifier controls every declared source, toolchain, dependency, environment, target, and output input
+- **THEN** it MAY issue a purpose-bound source-construction decision for the resulting exact baseline
+
+#### Scenario: Local or uncontrolled source build is presented
+
+- **WHEN** a build originated from a local trusted-builder claim, arbitrary checkout, dirty source, changed dependency lock, uncontrolled environment, or user-supplied attestation
+- **THEN** Orchard SHALL reject it as a managed v1 baseline
+
+### Requirement: Managed Composition Is Closed
+
+The composition SHALL contain exactly one macOS arm64 Node Agent component built from the provider-neutral Node Agent core, one generation-side launchd host-adapter contract, and one exact-pinned MLX Worker Provider with its dedicated interpreter and closed runtime dependencies.
+Every executable, interpreter, library, package, launch contract, and immutable configuration default required by those components SHALL be enumerated by signed closed manifests.
+The stable lifecycle bootstrap SHALL remain outside the replaceable composition and SHALL be referenced by exact required identity and protocol.
+
+#### Scenario: Closed composition is assembled
+
+- **WHEN** all required component roles, signed bytes, runtime dependencies, compatibility identities, and bootstrap requirements are closed
+- **THEN** Orchard MAY bind them into one composition lock
+
+#### Scenario: Runtime dependency or component is undeclared
+
+- **WHEN** a generation needs or contains an undeclared executable, interpreter, library, package, launch contract, helper, or immutable input
 - **THEN** Orchard SHALL reject the composition
-- **AND** SHALL NOT stage or activate any of its bytes
 
-### Requirement: Component Closure Is Deterministic and Safe to Extract
+### Requirement: Executable and Provider Selection Cannot Be Overridden
 
-Orchard SHALL canonicalize each component tree and record path, entry kind, digest, byte length, mode, ownership policy, extended-attribute policy, code-signing identity where applicable, Mach-O dependency closure, entitlements, and compatibility identity.
+The managed profile SHALL fix the Node Agent executable, stable bootstrap, Worker Provider executable, dedicated interpreter, launchd label, active-pointer location, and Node Identity Set location through signed profile evidence.
+Environment variables, command arguments, mutable configuration, symlinks, retained state, model content, and operator data SHALL NOT override those selections.
+
+#### Scenario: Override is attempted
+
+- **WHEN** any mutable input attempts to select another executable, interpreter, provider, launch label, active pointer, or identity location
+- **THEN** the stable bootstrap or verifier SHALL reject the managed start
+
+### Requirement: Component Closure Is Deterministic and Safe
+
+Orchard SHALL canonicalize each signed component tree and record path, entry kind, digest, byte length, mode, ownership policy, extended-attribute policy, code-signing identity where applicable, Mach-O dependency closure, entitlements, and compatibility identity.
 Orchard SHALL reject traversal, absolute paths, hard links, device files, sockets, FIFOs, external or cyclic symlinks, undeclared extended attributes, disallowed access-control-list changes, case-fold collisions, Unicode-normalization collisions, and unclosed Mach-O dependencies.
-Extraction SHALL enforce configured entry, path-length, and expanded-byte limits inside an isolated staging root and SHALL publish only by atomic same-filesystem rename after complete verification.
+Extraction SHALL enforce entry, path-length, and expanded-byte limits in an isolated staging root and SHALL publish only into a new immutable generation after complete verification.
 
-#### Scenario: Archive contains a path collision or unsafe entry
+#### Scenario: Archive contains an unsafe or ambiguous entry
 
-- **WHEN** an archive contains traversal, a special file, a disallowed link, or two paths that collide under the target filesystem's case or Unicode normalization behavior
-- **THEN** Orchard SHALL reject the archive before activation
-- **AND** SHALL leave the active composition unchanged
+- **WHEN** an archive contains traversal, a special file, a disallowed link, or a target-filesystem path collision
+- **THEN** Orchard SHALL reject the archive before generation publication
 
-#### Scenario: Closed component is extracted
+#### Scenario: Generation is published
 
-- **WHEN** every entry is within configured limits and matches the canonical component manifest
-- **THEN** Orchard SHALL extract it only into an isolated staging root
-- **AND** SHALL make it eligible for atomic activation only after post-extraction verification succeeds
+- **WHEN** every extracted byte matches the canonical signed manifests and all limits pass
+- **THEN** Orchard SHALL atomically publish a new immutable generation
+- **AND** SHALL NOT mutate an existing baseline, candidate, active, rollback, or retained-evidence generation
 
-### Requirement: Composition Identity Graph Is Acyclic
+### Requirement: Artifact Identity Graph Follows Signing Order
 
-Component tree digests SHALL feed component manifests, component-manifest digests SHALL feed the composition lock, and the composition-lock digest SHALL feed a detached build attestation and later app or release evidence.
-The composition lock SHALL bind the ordered component identities, target profile, target platform, compatibility declarations, retained-identity schema ranges, and realization-neutral composition identity.
-The composition lock SHALL NOT reference its own digest, a build-attestation digest, an app-tree digest, a Candidate or Internal Build Manifest, a DMG digest, publication state, or any later signature.
-The detached build attestation SHALL NOT reference its own digest or later app, release, DMG, or publication identity.
+Nested generation code SHALL receive required signatures and entitlements before component manifests and the composition lock identify its final bytes.
+The admitted Node subtree SHALL then be embedded without mutation, followed by existing inner-to-outer app signing and complete app verification.
+DMG assembly, notarization, stapling, mounting, and post-assembly verification SHALL be mandatory for every production candidate.
+The Candidate Manifest SHALL be sealed only after the final app and mandatory DMG have final verified identities.
 
-#### Scenario: Composition evidence follows the identity order
+The composition lock SHALL NOT reference its own digest, final app identity, governed-build-manifest digest, DMG identity, publication state, or later signature.
+The governed build manifest SHALL exclude itself according to the release-governance contract.
 
-- **WHEN** Orchard produces component manifests, a composition lock, and a detached build attestation
-- **THEN** every reference SHALL point only to an identity that existed earlier in the graph
-- **AND** recomputing any earlier identity SHALL deterministically invalidate every dependent identity
+#### Scenario: Identity and signing order is valid
 
-#### Scenario: Manifest introduces a circular identity
+- **WHEN** each identity is sealed only after its subject bytes reach their final state for that stage
+- **THEN** every reference SHALL point to an identity that existed earlier in the graph
 
-- **WHEN** a composition lock or build attestation references itself or an identity produced by a later assembly or release stage
-- **THEN** Orchard SHALL reject the evidence as structurally invalid
+#### Scenario: Later step mutates authorized bytes
 
-### Requirement: Exactly Two Provenance Realizations Are Admitted
+- **WHEN** signing, packaging, copying, or metadata injection changes a sealed Node subtree, app, or DMG identity
+- **THEN** Orchard SHALL invalidate the dependent admission or activation decision
 
-The managed profile SHALL admit only `exact_ref_source_build` and `orchard_signed_prebuilt` realizations.
-Both realizations SHALL produce the same component, composition-lock, compatibility, and verifier-decision structure.
-The realization name SHALL describe provenance and SHALL NOT by itself grant support, publication, installation, or scheduling authority.
+### Requirement: Verification Is Bound to Purpose and Stage
 
-#### Scenario: Admitted realization is supplied
+One verifier engine SHALL return a versioned decision containing purpose, stage, profile, realization, exact subject identities, required evidence identities, policy version, and terminal `admitted` or `rejected` verdict.
+The supported purposes SHALL distinguish source construction, Node-subtree assembly, signed-prebuilt activation, exact-baseline rollback, provisional-generation acceptance, host arm, and terminal live-child acceptance.
+Evidence or a decision accepted for one purpose or stage SHALL NOT authorize another.
+Missing, stale, unsupported, ambiguous, mismatched, or internally inconsistent evidence SHALL produce `rejected`.
 
-- **WHEN** a composition declares `exact_ref_source_build` or `orchard_signed_prebuilt`
-- **THEN** Orchard SHALL evaluate the realization-specific trust policy and the common composition contract
+#### Scenario: Node subtree is admitted for assembly
 
-#### Scenario: Unknown or hybrid realization is supplied
+- **WHEN** closed signed component and composition evidence passes purpose `assemble_node_subtree`
+- **THEN** Orchard MAY embed that exact subtree into an app
+- **AND** SHALL NOT treat the decision as activation authority
 
-- **WHEN** a composition declares another realization or combines trust evidence from both admitted realizations to cover missing evidence
-- **THEN** Orchard SHALL reject the composition
+#### Scenario: Signed prebuilt is authorized for activation
 
-### Requirement: Exact Ref Source Builds Use Controlled Trust
+- **WHEN** purpose `activate_signed_prebuilt` binds the Node ID, operation ID, Controller transition generation, exact mounted final app, imported Node subtree generation, composition lock, installed bootstrap, Candidate Manifest, target profile, transition direction, baseline, and mandatory DMG evidence
+- **THEN** Orchard MAY use that decision only for the matching Controller transition generation
 
-An `exact_ref_source_build` SHALL originate from the configured canonical Orchard repository at an exact full commit identity reachable under an authorized-ref policy.
-Its complete declared source inputs SHALL be clean.
-Its build SHALL use pinned toolchains, dependency locks, controlled environment inputs, the exact macOS arm64 target, and a pretrusted local builder or verifier-controlled build environment.
-Its detached build attestation SHALL bind those inputs and the resulting composition-lock digest.
+#### Scenario: Wrong-purpose decision is replayed
 
-#### Scenario: Controlled exact-ref build is verified
-
-- **WHEN** the canonical repository, authorized exact ref, clean source, pinned inputs, target, builder policy, and output identities all agree
-- **THEN** the common verifier MAY admit the composition as `exact_ref_source_build`
-
-#### Scenario: Arbitrary clean commit is presented
-
-- **WHEN** a build comes from an unauthorized ref, noncanonical repository, dirty source, changed lock, uncontrolled environment, or untrusted builder
-- **THEN** Orchard SHALL NOT assign Orchard-trusted `exact_ref_source_build` provenance
-- **AND** SHALL NOT activate it under this managed profile
-
-### Requirement: Orchard Signed Prebuilt Uses Orchard Authorization
-
-An `orchard_signed_prebuilt` SHALL satisfy the configured Orchard signing and authorization policy for every component manifest, composition lock, detached build attestation, and enclosing app or release evidence required by its stage.
-Verification SHALL cover exact bytes, signature chain, designated requirements, entitlements, target platform, composition compatibility, and notarization and stapling where required.
-A valid Apple signature without Orchard authorization SHALL be insufficient.
-
-#### Scenario: Authorized prebuilt is verified
-
-- **WHEN** exact bytes, Orchard authorization, required signatures, entitlements, target, compatibility, and stage-specific notarization evidence agree
-- **THEN** the common verifier MAY admit the composition as `orchard_signed_prebuilt`
-
-#### Scenario: Locally resigned or byte-divergent prebuilt is presented
-
-- **WHEN** a prebuilt is ad hoc signed, locally resigned, partially signed, authorized by an unrecognized identity, or differs from its recorded bytes
+- **WHEN** an assembly, source-construction, rollback, prior-stage, or prior-generation decision is presented as activation authority
 - **THEN** Orchard SHALL reject it
 
-### Requirement: Both Realizations Share One Fail-Closed Verifier Decision
+### Requirement: Node Identity Set Is Explicit and Frozen
 
-Realization-specific validators SHALL feed one versioned verifier decision contract.
-The decision SHALL include composition-lock digest, realization, profile, target, component identities, compatibility result, retained-schema result, trust-policy result, closure result, applicable app or release binding, evidence digest, and a terminal `admitted` or `rejected` verdict.
-Missing, stale, unsupported, ambiguous, or inconsistent evidence SHALL produce `rejected`.
-The verifier SHALL NOT convert one realization into the other.
+The retained Node Identity Set SHALL be the union of the complete current Node Identity Store generation, the scoped BEAM Peer Grant Store, and the stable bootstrap release-trust store.
+The Node Identity Store SHALL include its current-generation pointer, metadata, private key, CSR, Node Certificate, Controller Certificate, runtime CA certificate, enrollment and cluster identifiers, URI SAN bindings, certificate identifiers and fingerprints, runtime trust SPKI digest, public-key and CSR fingerprints, state, and generation identity.
+Each store SHALL live outside every generation and staging root at a fixed profile path.
+The Controller generation SHALL bind the exact current store-generation identities and content digests.
+Their schemas, paths, Node ID, Node private-key identity, Controller trust anchors, runtime trust anchors, and bootstrap release-trust anchors SHALL remain frozen for the v1 transition and rollback.
+Renewable Node certificate bytes and scoped BEAM Peer Grant records MAY change only through their existing separately authorized protocols in an explicit generation-checked, scheduler-excluded recovery phase.
+After such renewal or grant rotation, the Controller SHALL atomically rebind the new store generation and digests and reauthorize both the exact baseline and candidate before recovery continues.
+V1 SHALL NOT migrate, relocate, delete, replace, extend, or symlink-substitute a store as part of activation.
+Secret values SHALL NOT appear in manifests, composition locks, journals, Controller transition rows, or review evidence.
 
-#### Scenario: Either realization passes all checks
+#### Scenario: Candidate uses the retained identity
 
-- **WHEN** the realization-specific trust validator and every common composition check pass
-- **THEN** the verifier SHALL return the same versioned decision shape with verdict `admitted`
-- **AND** SHALL preserve the original realization identity
+- **WHEN** the signed-prebuilt generation starts provisionally
+- **THEN** it SHALL observe the same Node Identity Set and frozen schema as the source baseline
 
-#### Scenario: Evidence is incomplete or ambiguous
+#### Scenario: Identity mutation or alternate root is requested
 
-- **WHEN** any required trust, closure, compatibility, schema, target, or binding evidence is missing, stale, unsupported, ambiguous, or contradictory
-- **THEN** the verifier SHALL return verdict `rejected`
-- **AND** downstream lifecycle code SHALL NOT reinterpret the result
+- **WHEN** a generation or mutable input requests a schema change, new identity member, alternate path, replacement key or trust anchor, unauthorized credential or grant rotation, relocation, deletion, or symlinked root during a nonterminal transition
+- **THEN** Orchard SHALL reject activation or rollback
 
-### Requirement: Node Identity Root Is Retained Outside Composition
+#### Scenario: Renewable credential expires during recovery
 
-The managed profile SHALL keep the Node Identity Root outside active, staged, and rollback composition trees.
-The Node Identity Root SHALL retain Node identity, Controller enrollment, trust-root references, and schema-governed state needed to preserve the same Node across activation and rollback.
-Manifests and evidence SHALL record secret references or trust-root identities rather than secret values.
+- **WHEN** an existing authorized renewal or peer-grant rotation completes in the scheduler-excluded recovery phase
+- **THEN** the Controller SHALL rebind the exact new store generation and reauthorize both baseline and candidate before another recovery mutation
 
-#### Scenario: Composition provenance changes
+### Requirement: Only Complete Profile Evidence Supports a Claim
 
-- **WHEN** a Node transitions between the two admitted realizations
-- **THEN** the active composition bytes MAY change
-- **AND** the Node Identity Root and Controller-visible Node identity SHALL remain the same
+Orchard SHALL describe the managed profile as supported only after its composition, purpose-bound verification, immutable-generation lifecycle, Controller generation, full descendant fence, exact-baseline rollback, final app and DMG evidence, and adversarial real Apple Silicon qualification all pass.
+No component archive, generation, composition lock, verifier decision, local app, or unpublished artifact SHALL independently establish support.
 
-#### Scenario: Archive contains retained identity material
+#### Scenario: Contract or simulated tests pass without real-hardware qualification
 
-- **WHEN** a component archive includes Node identity, enrollment secrets, trust roots, or retained-state bytes owned by the Node Identity Root
-- **THEN** Orchard SHALL reject the archive
-
-### Requirement: Retained Schema Must Remain Rollback Compatible
-
-Each composition SHALL declare the minimum and maximum retained schema it can read and the maximum schema it may write.
-Before activation, Orchard SHALL prove that the incoming composition can read current retained state and that the selected rollback composition can read every schema the incoming composition may write.
-The v1 supported transition set SHALL reject irreversible retained-schema mutation.
-
-#### Scenario: Transition preserves rollback compatibility
-
-- **WHEN** current retained state is readable by the incoming composition and every reachable written schema remains readable by the rollback composition
-- **THEN** the transition MAY proceed to Controller maintenance preflight
-
-#### Scenario: Incoming write would strand rollback
-
-- **WHEN** the incoming composition may write retained state that the selected rollback composition cannot read
-- **THEN** Orchard SHALL reject the transition before host mutation
-
-### Requirement: Support Claim Is Bound to the Complete Profile
-
-Orchard SHALL describe the managed Node as supported only when the composition, app and DMG derivation, Controller coordination, host lifecycle, compatibility, migration, rollback, and real Apple Silicon qualification requirements all pass.
-A component archive, component manifest, composition lock, detached build attestation, locally built app, or unsigned or unpublished DMG SHALL NOT independently establish a support claim.
-
-#### Scenario: Only component evidence exists
-
-- **WHEN** component closure and composition verification pass but app, lifecycle, migration, or real-hardware qualification evidence is absent
-- **THEN** Orchard SHALL treat the result as build or test evidence only
-- **AND** SHALL NOT represent the profile as supported
+- **WHEN** design, unit, integration, or simulated evidence exists but the adversarial real Apple Silicon matrix is incomplete
+- **THEN** Orchard SHALL keep the profile unsupported

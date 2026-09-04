@@ -2,36 +2,44 @@
 
 Orchard already has three relevant but separate foundations.
 The macOS native distribution profile builds and verifies a signed `Orchard.app` in a DMG.
-The app lifecycle serializes host mutations and can recover a failed transaction, but its current recovery model may restore previously loaded services automatically.
-The source-development Node Agent stop path captures exact process identity and rejects a replacement process, but it is not a durable managed-distribution process fence.
+The app lifecycle serializes root-authorized host mutations and can recover a failed transaction, but it replaces managed paths in place and may restore previously loaded services automatically.
+The source-development Node Agent stop path captures an exact root process and rejects replacement, but it does not durably suppress launch or prove that every Worker Provider descendant is gone.
 
-The proposed slice joins those foundations without merging their scopes.
-It creates one managed Node profile whose replaceable composition can be realized either from a controlled exact source ref or from Orchard-signed prebuilt bytes.
-It does not turn ordinary source development into an installation path, revive native PKG, or give a component archive an independent support claim.
+The first managed-composition design tried to solve source and prebuilt transitions in both directions, legacy adoption, builder enrollment, retained-schema ranges, and broad app-role compatibility at once.
+Review converged on a smaller safe boundary.
+V1 is one transition on a dedicated Node-only host from an already managed verifier-built source baseline to one Orchard-signed prebuilt generation, with rollback only to that exact baseline.
 
 The normative hierarchy remains `SPEC.md`, accepted decisions, accepted OpenSpec specifications, tests, and implementation.
-This package must be accepted with the corresponding `SPEC.md` amendment before behavior implementation can be considered conformant.
+This package must be accepted with a corresponding `SPEC.md` amendment before behavior implementation can be conformant.
 
 ## Goals
 
-- Define one closed composition identity for a managed Apple Silicon macOS Node.
-- Admit exactly two provenance realizations while preserving their distinct trust roots.
-- Make verification, Controller maintenance, process custody, activation, rollback, and retained identity one fail-closed protocol.
-- Prove both provenance directions through public interfaces and real Apple Silicon migration evidence.
-- Preserve the existing app and DMG as the supported distribution boundary.
-- Preserve foreground source development unchanged.
+- Define one closed managed Node composition for a dedicated Apple Silicon macOS Node host.
+- Prove one source-baseline-to-signed-prebuilt transition with no outgoing process or descendant overlap.
+- Preserve exactly one rollback target and one frozen retained identity schema.
+- Keep recovery authority stable outside replaceable generations.
+- Make Controller schedulability depend on exact durable transition evidence rather than generic resume or heartbeat health.
+- Bind verification to its purpose, artifact stage, target profile, and final governed identities.
+- Require adversarial real-hardware proof before a support claim.
 
 ## Non-Goals
 
+- Legacy or unmanaged installation adoption.
+- A normal `orchard_signed_prebuilt` to `exact_ref_source_build` transition.
+- A second managed update after the first signed-prebuilt activation.
+- Prebuilt-to-prebuilt upgrade, arbitrary downgrade, or relaxed version skew.
+- A pretrusted local builder or user-supplied source-build attestation.
+- Controller-bearing or all-in-one host activation.
+- Lifecycle-bootstrap replacement during the managed transition.
+- Node Identity Set schema migration, relocation, deletion, or extension.
+- Executable, provider, interpreter, launch-label, or identity-path overrides.
 - Amore upload, promotion, publication, or credential handling.
 - GitHub Release publication or other release authority.
-- Linux, WSL, Windows, Intel macOS, or another Node Distribution Profile.
-- Relaxed Controller, Node Agent, Runtime Endpoint, or Worker Provider version skew.
+- Linux, WSL, Windows, Intel macOS, or another Node distribution profile.
 - Zero-downtime or overlapping-process activation.
-- Support for a standalone Node Agent Core archive, launchd host-adapter archive, Worker Provider archive, composition lock, or build attestation.
-- Native PKG or any handover from removed native-PKG machinery.
-- Fencing manually started or externally supervised processes outside the supported managed launch domain.
-- Changing the default foreground behavior of `make dev`.
+- Native PKG or removed-PKG handover.
+- Standalone support for a component archive, composition lock, build attestation, app, or unpublished DMG.
+- Changing the foreground behavior of `make dev`.
 
 ## Contract Reconciliation
 
@@ -40,232 +48,381 @@ This package must be accepted with the corresponding `SPEC.md` amendment before 
 The existing macOS native distribution profile remains the outer distribution contract.
 `Orchard.app` remains the installed product boundary and the signed DMG remains the supported transport artifact.
 The Node Agent Core remains provider-neutral.
-The MLX Worker Provider remains an independently versioned provider behind the existing Worker Runtime Interface.
-Controller maintenance remains the state that prevents new scheduling.
+The MLX Worker Provider remains independently versioned behind the provider-neutral Worker Runtime Interface.
+Controller maintenance remains unschedulable.
 Native PKG remains unsupported and removed.
+Foreground source development remains unmanaged and under terminal custody.
 
 ### Existing Contract Narrowly Superseded
 
-`SPEC.md` §11.4 and ADR 0027 currently state that Orchard has no supported source-development to packaged-service handover or zero-overlap ownership transfer.
-The accepted change would supersede only that absence for the named Managed Apple Silicon macOS Node Distribution Profile and only for `exact_ref_source_build` and `orchard_signed_prebuilt` compositions.
-Ordinary source development, controller-only installs, all-in-one profiles, and every other platform or provenance route remain outside the exception.
+`SPEC.md` §11.4 and ADR 0027 currently state that Orchard has no managed Node replacement or zero-overlap protocol.
+The accepted change would supersede only that absence for `managed_apple_silicon_macos_node` and only for an already managed `exact_ref_source_build` baseline transitioning to one `orchard_signed_prebuilt` generation.
+Controller-bearing hosts, all-in-one hosts, legacy installs, ordinary source development, and every other transition remain outside the exception.
+
+### Historical Input Without Authority
+
+Superseded ADR 0018 contains useful safety vocabulary for durable suppression, one-shot launch, and provisional acceptance.
+This proposal does not restore its native PKG assumptions or treat it as approval.
+The new contract restates every retained invariant against immutable generations, a stable app bootstrap, and durable Controller transition state.
 
 ### Active Change Coordination
 
-`product-versioning-release-governance` owns Orchard product version, Candidate and Internal Build Manifests, state attestations, release state, and publication gates.
-This change owns component manifests, composition locks, and detached composition build attestations.
-The release manifest may reference a composition-lock digest, but the composition lock must not reference a later release manifest.
+`product-versioning-release-governance` owns Product Version, Candidate and Internal Build Manifests, final artifact identities, state attestations, release state, and publication gates.
+This change owns component manifests, the composition lock, source-construction evidence, purpose-bound composition verification, and activation evidence.
+This change cannot be accepted before `product-versioning-release-governance` unless both changes are accepted atomically with matching terminology and identity fields.
+The Candidate Manifest references the composition-lock, final app, and mandatory DMG identities after final artifact verification.
+The composition lock never references the later governed build manifest.
 
 `deprecate-node-runtime-grpc-compatibility` owns staged Runtime Endpoint compatibility epochs and removal gates.
-This change records the required epoch and assets for each composition and verifies them during transition.
-It does not remove, default-off, or accelerate any compatibility transport.
+This change records and verifies the required epoch and compatibility assets for the baseline and candidate.
+It removes or defaults off no compatibility transport.
 
 `add-portable-validation-fanout` owns the general validation-lane fanout.
-This change supplies the profile-specific public-seam and real-hardware cases that those lanes must execute when the corresponding implementation lands.
+This change supplies the profile-specific public-seam and real-hardware cases for the macOS lane.
 
-`operator-first-run-journey` owns operator-facing setup journeys and future upgrade guidance.
-This change defines lifecycle authority and machine-readable states only.
-It does not add a Console journey or UI implementation.
+## V1 Entry State
 
-## Composition Model
+The host is a dedicated supported Apple Silicon macOS Node with no Controller release, Controller launchd job, or all-in-one role selected.
+The stable signed lifecycle bootstrap and its compatible privileged helper are already installed through an approved app lifecycle.
+The active-generation pointer selects one immutable verifier-built `exact_ref_source_build` baseline.
+The durable managed-profile admission marker, baseline, pointer, bootstrap, launch policy, retained Node Identity Stores, and Controller Node identity have already passed the managed-profile admission checks.
 
-### Managed Profile
+V1 defines no conversion from an existing generic app installation, a foreground source checkout, a native PKG receipt, an arbitrary active tree, or another launch supervisor into this entry state.
+Production entry into this state requires a separate accepted clean-host provisioning contract.
+Until that prerequisite exists, this change can define and review the transition but cannot qualify or claim production support.
 
-The profile identifier is `managed_apple_silicon_macos_node`.
-It is a Node-role specialization of the existing macOS native distribution profile and is compatible with the separate macOS MLX Node runtime profile.
-Admission requires Apple Silicon macOS, the supported app and DMG lifecycle, the managed launch-domain adapter, and Controller reachability for maintenance coordination.
+## Closed Composition
 
-### Closed Components
+The composition contains exactly these component roles:
 
-The composition contains exactly these first-party component roles:
-
-| Component role | Required content | Independent identity |
+| Component role | Required content | Bound identity |
 |---|---|---|
-| `node_agent` | macOS arm64 Node Agent component built from the provider-neutral Node Agent core | tree digest, build identity, protocol compatibility |
-| `launchd_host_adapter` | launchd definitions plus the privileged lifecycle and process-fence helper | tree digest, helper protocol version, managed launch-domain identity |
-| `mlx_worker_provider` | exact-pinned MLX Worker Provider and its closed runtime dependencies | tree digest, provider version, Worker Runtime protocol identity |
+| `node_agent` | macOS arm64 Node Agent component built from the provider-neutral Node Agent core | signed tree digest, build identity, Runtime Endpoint compatibility |
+| `launchd_host_adapter` | generation-side launch contract consumed by the stable lifecycle bootstrap | signed tree digest, bootstrap protocol version, fixed launch identity |
+| `mlx_worker_provider` | exact-pinned MLX Worker Provider, dedicated interpreter, tokenizer, and closed runtime dependencies | signed tree digest, provider version, Worker Runtime protocol identity |
 
-No undeclared executable, dynamic library, Python package, model, launchd definition, helper, or mutable configuration default may be imported into the replaceable composition at activation time.
-Models and operator data remain outside the composition and are governed by their existing storage contracts.
+The stable lifecycle executable, launch gate, recovery logic, and privileged helper are profile prerequisites outside the replaceable composition.
+The composition records their required exact identity and protocol version but cannot replace them.
 
-### Closed Manifest Rules
+Every executable and interpreter path is internal to either the stable bootstrap or immutable generation and is named by the signed contract.
+The launchd label and active-pointer location are fixed by the profile.
+Environment variables, command arguments, mutable configuration, symlinks, retained identity, and operator data cannot select another Node Agent, bootstrap, interpreter, or Worker Provider.
 
-Each component manifest records normalized relative path, entry kind, digest, byte length, mode, ownership policy, extended-attribute policy, code-signing identity where applicable, Mach-O dependency closure, entitlements, and component-specific compatibility identity.
+Models and operator data remain outside the composition under their existing storage contracts.
+They cannot contain an executable override used by the managed process tree.
+
+## Component Closure
+
+Each component manifest records normalized relative path, entry kind, digest, byte length, mode, ownership policy, extended-attribute policy, code-signing identity where applicable, Mach-O dependency closure, entitlements, and component compatibility identity.
 Directory traversal, absolute paths, hard links, device files, sockets, FIFOs, undeclared extended attributes, access-control-list mutations, and symlinks outside the component root are rejected.
-Internal symlinks are relative, resolve within the same component root, and cannot form cycles.
+Internal symlinks are relative, resolve within the same immutable generation, and cannot form cycles.
 Path comparison rejects case-fold and Unicode-normalization collisions before extraction.
-Extraction uses bounded entry counts, bounded path length, bounded expanded bytes, an isolated staging root, and an atomic same-filesystem rename after complete verification.
+Extraction uses bounded entry counts, bounded path length, bounded expanded bytes, an isolated staging root, and an atomic same-filesystem publication into a new generation directory after complete verification.
 
-Mutable host state, the Node Identity Root, activation journals, verification evidence, release manifests, and the composition's own generated digest files are not part of a component tree digest.
-Their exclusions are explicit rather than inferred.
+The Node Identity Set, activation journals, operation evidence, active pointer, release manifests, and generated digest files are not part of a component tree digest.
+Every exclusion is explicit.
 
-## Identity Graph
+## Artifact Identity and Signing Order
 
-The identity graph is acyclic and ordered:
+The identity graph is acyclic and follows the actual packaging order:
 
-1. Component trees produce component tree digests.
-2. Component manifests bind those tree digests and component compatibility identities.
-3. The composition lock binds the ordered component-manifest digests, target profile, target platform, compatibility declarations, identity-schema ranges, and realization-neutral composition identity.
-4. A detached build attestation binds the composition-lock digest, provenance realization, builder policy, controlled inputs, and build outputs.
-5. Verified composition inputs are assembled into the `Orchard.app` tree.
-6. The Candidate or Internal Build Manifest records the app tree identity and composition-lock digest.
-7. The signed DMG wraps the verified app tree and is recorded by release governance.
+1. Verifier-controlled source construction records canonical repository, authorized full commit, clean declared inputs, pinned toolchains, dependency locks, controlled environment, and target identity.
+2. Nested Node Agent, dedicated Worker Provider interpreter and native code, and generation-side helper code receive their required signatures and entitlements.
+3. Canonical component manifests identify the final signed component bytes.
+4. The composition lock binds ordered component-manifest digests, target profile, target platform, exact stable-bootstrap requirement, frozen identity schema, compatibility identities, and realization.
+5. An assembly-admission decision binds the composition lock to purpose `assemble_node_subtree` and the app-build stage.
+6. The admitted Node subtree is embedded into `Orchard.app` without changing those signed generation bytes.
+7. Stable app helpers, the main app executable, and the outer app bundle are signed in the existing inner-to-outer order and the complete final app tree is verified.
+8. DMG assembly, notarization, stapling, mounting, and post-assembly nested verification produce the final DMG and mounted-app identities.
+9. The Candidate Manifest is sealed after the final app and DMG have verified identities and records Product Version, exact commit, app tree, composition lock, Node subtree, bootstrap identity, and DMG identity.
+10. The installed stable bootstrap imports only the admitted Node subtree from the verified mounted candidate app into a new immutable generation while every stable-bootstrap identity remains unchanged.
+11. Activation authorization is issued only after Controller transition creation and binds those sealed identities to one Node, operation, transition generation, target profile, and transition direction.
 
-The composition lock does not contain its own digest, build-attestation digest, app-tree digest, release-manifest identity, DMG digest, publication state, or signature generated after the lock.
-The detached build attestation does not contain its own digest or any later artifact identity.
+The composition lock contains no self-digest, app-tree digest, governed-build-manifest digest, DMG digest, publication state, or later signature.
+The governed build manifest excludes itself and receives its digest only after canonical serialization, as required by release governance.
+No build, signing, packaging, or metadata-injection step may mutate bytes after the identity that activation authorizes is sealed.
 
-## Provenance Realizations
+## Purpose-Bound Verification
 
-### `exact_ref_source_build`
+One verifier engine applies explicit policy sets and returns a versioned decision with `purpose`, `stage`, `profile`, `realization`, exact subject identities, required evidence identities, policy version, and terminal `admitted` or `rejected` verdict.
+Evidence accepted for one purpose or stage cannot be replayed as authority for another.
 
-This realization is admitted only from the configured canonical Orchard repository at an exact full commit identifier reachable from an authorized ref policy.
-The complete source tree is clean, including submodules or other declared source inputs.
-The build uses pinned toolchain versions, dependency locks, controlled environment inputs, the exact macOS arm64 target, and either a pretrusted local builder identity or a verifier-controlled build environment.
-The attestation records all declared source, toolchain, dependency-lock, builder-policy, and output identities.
+### Source Construction
 
-A clean arbitrary fork, detached commit, modified lockfile, untrusted builder, or build using `--allow-dirty` may produce a custom local composition but cannot receive Orchard-trusted `exact_ref_source_build` status.
+Purpose `construct_source_baseline` runs only inside a verifier-controlled isolated builder.
+It requires the canonical repository, authorized exact full commit, clean complete source inputs, pinned toolchains, dependency locks, controlled environment, exact macOS arm64 target, and deterministic declared outputs.
+There is no pretrusted local builder path.
 
-### `orchard_signed_prebuilt`
+### Assembly Admission
 
-This realization is admitted only when every component manifest, composition lock, detached build attestation, and enclosing app or release evidence satisfies the configured Orchard signing and authorization policy.
-The verifier checks exact bytes, signature chain, designated requirements, entitlements, notarization and stapling where required by the artifact stage, revocation policy, release identity, target platform, and composition compatibility.
+Purpose `assemble_node_subtree` verifies closed signed component bytes and the composition lock before app assembly.
+It does not authorize installation, activation, rollback, start, scheduling, delivery, or publication.
 
-A valid Apple signature alone does not establish Orchard provenance.
-Ad hoc, locally resigned, partially signed, or byte-divergent inputs are rejected.
+### Activation Authorization
 
-### Common Decision Contract
+Static candidate checks before Controller transition creation are non-authorizing preflight only.
+Purpose `activate_signed_prebuilt` is issued after transition creation and requires realization `orchard_signed_prebuilt`, exact Node ID, operation ID, Controller transition generation, final mounted candidate-app identity, embedded Node subtree, imported generation identity, composition lock, installed and candidate bootstrap identity equality, accepted Candidate Manifest, target profile, source-baseline identity, transition direction, exact DMG identity, and mounted-app verification evidence.
+It rejects an app extracted from another candidate, a locally resigned app, a composition copied between apps, a different bootstrap, or a valid signature that lacks Orchard authorization.
 
-Both realization validators feed one verifier and return one versioned decision shape.
-The decision includes the composition-lock digest, realization, profile, target, component identities, compatibility result, identity-schema result, trust-policy result, closure result, app or release binding when present, evidence digest, and a terminal verdict.
-The only terminal verdicts are `admitted` and `rejected`.
-Missing, unsupported, stale, ambiguous, or internally inconsistent evidence is rejected.
+### Rollback Authorization
 
-The verifier never converts an `exact_ref_source_build` result into an `orchard_signed_prebuilt` result or the reverse.
-Trust policy is an input to the common decision, not a post-verification label.
+Purpose `rollback_to_source_baseline` names only the exact source baseline recorded in the active Controller transition generation.
+It cannot select another source ref, another generation, or the previous contents of an arbitrary filesystem path.
 
-## Node Identity Root
+### Terminal Evidence Verification
 
-The Node Identity Root is a durable host path outside both the replaceable composition and its staging roots.
-It owns Node identity material, Controller enrollment state, trust roots, and schema-governed retained state needed to preserve the same Node identity across activation and rollback.
-It is never copied into a component archive or replaced by composition activation.
+Purpose `accept_provisional_generation` verifies the exact provisional process, generation pointer, app, composition, bootstrap, Node identity, Runtime Endpoint, Worker Runtime, launch-suppression, and local-health evidence for the current Controller transition generation.
+Purpose `accept_host_arm` verifies the generation-bound Controller token and exact durable host-arm evidence before terminal Controller commit.
+Purpose `accept_enabled_child` verifies pending-result consumption, exact-child enabled acknowledgement, and a fresh challenge of the same live child before active eligibility.
 
-Each composition declares the minimum and maximum readable schema and the maximum schema it may write.
-Preflight requires the incoming composition to read the current retained schema and the rollback composition to read every schema the incoming composition may write before uncordon.
-The v1 transition set rejects a composition that could perform an irreversible retained-state migration across the selected rollback pair.
+Missing, stale, unsupported, ambiguous, mismatched, or internally inconsistent evidence is rejected.
+Downstream code cannot reinterpret a rejected or wrong-purpose decision.
 
-Secrets remain in their existing protected custody locations.
-Manifests record secret-reference identities or required trust-root versions, never secret values.
+## Immutable Generations and Atomic Selection
 
-## Coordinated Activation Protocol
+Every baseline or candidate is published into a new content-addressed immutable generation directory on the same filesystem as the active pointer.
+No supported operation edits, overlays, repairs, or deletes a generation while it is the baseline, candidate, active, rollback, or evidence-retained generation.
 
-### Authority Split
+One active-generation pointer is the only selector read by the stable bootstrap.
+The pointer target is a validated relative generation identifier and cannot name an arbitrary path.
+Activation writes a sibling temporary pointer, verifies its target, durably syncs the pointer and parent directory as required by the filesystem contract, atomically replaces the active pointer, and durably syncs the parent directory before recording success.
 
-The Controller owns schedulability, maintenance, drain completion, allocation absence, health eligibility, and uncordon.
-The host lifecycle owns local operation serialization, launch suppression, process custody, byte activation, local verification, and local start.
-Neither authority may infer the other's acknowledgement from local state.
+The transition journal records the old and new pointer identities before replacement and records the observed active pointer after replacement.
+A torn, missing, duplicated, out-of-root, or contradictory pointer is uncertainty.
 
-### Activation Sequence
+## Stable Lifecycle and Recovery Bootstrap
 
-1. Verify the incoming composition and selected rollback composition without mutating live state.
-2. Ask the Controller to enter maintenance and drain the Node.
-3. Require a fresh Controller acknowledgement that the Node is unschedulable and has no active allocations.
-4. Acquire the host operation lock.
-5. Write the new activation-journal header and establish durable managed-launch suppression.
-6. Capture the exact outgoing managed process set through the single process-fence helper.
-7. Boot out the managed launch domain and terminate only the captured process identities when required.
-8. Prove that every captured identity exited and that no replacement managed process appeared.
-9. Stage, verify, atomically activate, and post-activation verify the incoming composition.
-10. Commit the journal state `activated_stopped` while launch suppression remains active.
-11. Start the activated composition as a separate verified operation.
-12. Require the new process to report the expected composition-lock digest, Node Identity Root identity, protocol compatibility, and healthy local state.
-13. Clear launch suppression only as part of the verified start state.
-14. Ask the Controller to evaluate health and compatibility, then explicitly uncordon the Node.
+The root-owned stable bootstrap contains the lifecycle coordinator, launch gate, recovery reader, active-pointer resolver, and privileged-helper client.
+It is signed, versioned, and verified independently of every generation.
+The baseline and candidate composition locks name the exact compatible bootstrap identity and helper protocol.
 
-There is always a stopped interval between outgoing-process proof and incoming-process start.
-The protocol makes no zero-downtime claim.
+The bootstrap never imports lifecycle or recovery code from the active generation before deciding whether that generation may start.
+The v1 activation operation cannot change the bootstrap binary, helper, launchd plist, launch label, launch gate, active-pointer path, or bootstrap trust policy.
+Any required bootstrap upgrade is a separate app lifecycle change completed and verified before a managed transition generation may be created.
 
-### Process Fence
+An older or incompatible bootstrap rejects the operation before Controller drain or host mutation.
+An unrecognized transition journal or eligibility schema leaves general launch suppression active.
 
-One privileged helper protocol is the safety authority for launch suppression, exact process capture, stop, exit proof, and replacement detection.
-Swift, Elixir, scripts, and tests call that protocol and do not maintain independent copies of the safety algorithm.
-The helper identifies a process by PID, process start identity, executable identity, and the managed launch-domain membership available on the supported host.
+## Retained Node Identity Stores
 
-The v1 no-overlap invariant is precise: after the outgoing fence is proven and until the incoming managed process is explicitly started, no process may run through the profile's supported managed launch domain.
-An unexpected process in that domain is a hard failure and leaves suppression active.
+The v1 Node Identity Set is the union of three versioned stores at profile-fixed roots:
 
-### Activation Journal
+- the complete current Node Identity Store generation, including its current-generation pointer, metadata fields, private key, CSR, Node Certificate, Controller Certificate, runtime CA certificate, enrollment and cluster identifiers, URI SAN bindings, certificate identifiers and fingerprints, runtime trust SPKI digest, public-key and CSR fingerprints, state, and generation identity;
+- the scoped BEAM Peer Grant Store and its current controller-bound grant records; and
+- the stable bootstrap release-trust store used to verify Orchard candidate authority.
 
-The managed-composition journal has a new schema version and records immutable operation identity, old and new composition-lock digests, rollback target, Node Identity Root identity, Controller maintenance acknowledgement, verifier evidence digests, helper protocol version, and monotonic state transitions.
-The minimum states are `prepared`, `suppressed`, `outgoing_captured`, `outgoing_stopped`, `activating`, `activated_stopped`, `starting`, `started_pending_controller`, `rollback_restored_stopped`, and `uncertain`.
+The stores live outside every immutable software generation and staging root.
+Their paths and schemas are frozen for the whole v1 transition and rollback.
+The exact current store-generation identities and content digests are bound when the Controller transition generation is created.
+The schema, profile paths, Node ID, Node private-key identity, Controller trust anchors, runtime trust anchors, and bootstrap release-trust anchors remain frozen while that transition generation is nonterminal.
+Renewable Node certificate bytes and scoped BEAM Peer Grant records may change only through their existing separately authorized protocols in an explicit generation-checked, scheduler-excluded recovery phase.
+After such renewal or grant rotation, the Controller must atomically rebind the new store generation and digests and reauthorize both the exact baseline and candidate before recovery continues.
+Release-root, Controller-trust-anchor, runtime-trust-anchor, Node-key, schema, or path rotation must complete before transition creation or after terminal completion.
 
-Journal replacement is atomic and durable before the corresponding external mutation is acknowledged.
-A state transition that cannot be durably recorded is treated as uncertain.
-Existing lifecycle code that does not understand this schema refuses recovery and preserves launch suppression.
+Neither baseline nor candidate may migrate, relocate, delete, replace, extend, or symlink-substitute a store as part of activation.
+Secret values never appear in component manifests, composition locks, Controller transition rows, journals, or review evidence.
 
-### Recovery and Rollback
+## Durable Controller Transition Generation
 
-Recovery begins by re-verifying the journal, Node Identity Root, active composition, rollback composition, process-fence state, and Controller maintenance state.
-It never assumes that an interrupted state means a prior mutation completed or did not complete.
+The Controller stores one monotonically increasing managed transition generation per Node in Postgres.
+At most one generation is nonterminal for a Node.
+The row binds:
 
-Rollback restores bytes only when the rollback composition remains verified and compatible with the current retained identity schema.
-The restored composition remains stopped and launch-suppressed in `rollback_restored_stopped` until an explicit verified start succeeds.
-Rollback does not uncordon the Node.
+- Node ID and transition-generation number;
+- operation ID and authorized actor;
+- exact source baseline, candidate composition, final app, bootstrap, and governed-build identities;
+- required Runtime Endpoint and Worker Runtime compatibility;
+- expected direction `exact_ref_source_build_to_orchard_signed_prebuilt`;
+- current phase and phase evidence digests;
+- provisional process and one-shot identities when created;
+- Controller acceptance-token identity;
+- host-arm evidence identity; and
+- terminal result.
 
-Missing journal evidence, contradictory active-tree identity, an unrecognized process, failed suppression, incompatible retained state, or inability to contact the Controller produces `uncertain`.
-An uncertain operation may be inspected and repaired by an authorized operator but cannot auto-start or auto-uncordon.
+Creation is allowed only from the existing `active` or `cordoned` lifecycle states.
+It atomically creates the authoritative scheduler exclusion, records the managed transition generation, moves the Node to `draining`, and appends audit evidence.
+The transition generation, Node lifecycle mutation, and audit evidence commit in one database transaction.
+Transition creation is also the allocation fence.
+Every allocation claim and final Worker Runtime execution acceptance must atomically verify the observed absence of this transition generation and scheduler exclusion in the same serialization boundary as its authority grant.
+No post-fence allocation or execution acceptance may commit.
+Verified inert candidate import may occur before transition creation, but no active pointer, launch suppression, running process, launch policy, or other managed launch state may change until existing request and allocation authority proves every pre-fence accepted allocation and execution is complete, records a fresh generation-bound zero-active-allocation acknowledgement, and advances the Node through the existing `draining -> maintenance` edge.
+
+Every later Controller mutation uses compare-and-swap on the exact current transition generation and allowed prior phase.
+A stale leader, duplicate request, replayed host result, prior-generation heartbeat, or concurrent operator action cannot advance or terminate the operation.
+On leadership change, the new leader loads nonterminal transition generations before scheduler or lifecycle reconciliation and preserves their exclusions.
+
+Generic `resume`, generic `uncordon`, normal heartbeat health, admission reconciliation, and scheduler health projection cannot make the Node active or route work to it while a nonterminal generation or a blocking recoverable phase exists.
+Static, single-node, and compatibility fallbacks must reject any target that matches or may alias a managed Node with such a generation.
+The accepted explicitly unmanaged compatibility path remains permitted only when the Controller positively proves that the target is associated with no managed Node or transition.
+Only the managed transition terminal protocol may clear the exclusion.
+
+## Process Fence and No-New-Child Point
+
+The stable privileged helper is the sole authority for operation locking, durable general launch suppression, one-shot authorization, process discovery, suspension, exact identity capture, stop, exit proof, and replacement detection.
+Swift, Elixir, scripts, and tests call that protocol and do not copy the safety algorithm.
+
+Before the source baseline first starts, the stable bootstrap places its Node Agent and every descendant into one kernel-backed Managed Process Containment whose membership survives reparenting and cannot be escaped by generation code.
+The same stable bootstrap creates the candidate containment before provisional start.
+The selected public supported macOS primitive must enumerate exact membership, atomically close membership against new descendants, and terminate or freeze the complete membership.
+Process-table scans may detect violations and supply evidence but cannot create the no-new-child proof.
+
+After durable launch suppression, the helper validates the exact launchd root and asks the kernel-backed containment to close membership against new descendants.
+The successful containment close is the no-new-child linearization point.
+The helper then captures every exact member identity, terminates the complete closed membership, proves every member exited, and proves no replacement launchd root exists before pointer activation.
+
+Any process observed running an outgoing-generation executable outside its required containment is an immediate uncertainty and support-boundary violation.
+Containment escape, PID reuse, executable mismatch, membership ambiguity, failed close, surviving membership, unexpected external generation process, or incomplete authoritative observation is uncertainty.
+Unrelated processes outside the closed generation and launch domain remain untouched.
+If supported public macOS APIs cannot implement and prove this containment contract, managed activation remains blocked and the profile remains unsupported.
+
+## Durable Suppression and One-Shot Provisional Start
+
+General launch suppression combines persistent launchd job-domain disablement with a stable launch-gate decision below `RunAtLoad` and `KeepAlive`.
+It is established before process capture and survives initiating-process death and host reboot.
+
+The only permitted start under suppression uses an atomic one-shot authorization bound to Node ID, transition generation, operation ID, generation ID, exact executable, bootstrap identity, launch label, nonce, and expiry policy.
+The stable launch gate atomically claims it once and records the exact child process identity.
+A second claim, replacement process, mismatched generation, stale operation, or missing Controller transition fails closed.
+
+The provisional child may perform only the minimum authenticated diagnostics needed to report transition evidence.
+It cannot announce normal Node registration, publish schedulable capacity, accept requests, start Worker Provider execution, or use the retained Node identity for ordinary cluster serving.
+The stable bootstrap enforces this provisional mode independently of generation-owned configuration.
+
+General suppression remains active through provisional health and Controller terminalization.
+After validating provisional evidence, the Controller may issue one generation-bound host-arm token.
+The host may use that token only to persist idempotent `host_armed_pending_controller_commit` evidence for the exact provisional child.
+Host arm does not authorize normal serving, does not clear general suppression, and does not permit a replacement child.
+After host arm, the Controller may commit `controller_committed_pending_child_observation` while retaining maintenance and scheduler exclusion.
+The exact child consumes the authenticated result, changes from provisional to exact-child enabled, and acknowledges that state while ordinary dispatch remains fenced.
+The Controller then freshly challenges that same live enabled child.
+Only a second generation-checked transaction may advance the Node to active and clear exclusion.
+If the first response is lost, the child remains provisional and resubmits the same arm evidence.
+If the child exits or the host reboots before the second transaction, the arm and pending Controller commit are invalidated, suppression remains active, and recovery must restart or roll back within the same transition generation.
+
+## Forward Activation Protocol
+
+1. Verify and mount the mandatory DMG, verify the final candidate app and Candidate Manifest, import only its admitted Node subtree into a new immutable candidate generation through the installed stable bootstrap, and verify the already managed source baseline, frozen Node Identity Set, and exact rollback target without host activation mutation.
+2. Perform only non-authorizing static compatibility checks before Controller transition creation.
+3. Create the durable Controller transition generation and atomically create scheduler exclusion, enter `draining`, and record audit evidence.
+4. Drain active allocations and require a fresh generation-bound Controller acknowledgement of zero active allocations to advance through the existing `draining -> maintenance` edge.
+5. After maintenance is committed, issue activation authorization bound to Node ID, operation ID, transition generation, final mounted app, Candidate Manifest, mandatory DMG, imported generation, stable bootstrap, target profile, and transition direction.
+6. Acquire the stable host operation lock and verify the same Controller generation and authorization.
+7. Durably record the activation journal and establish general launch suppression.
+8. Close the kernel-backed outgoing containment to establish the no-new-child point.
+9. Stop every member of the closed containment and prove exact exit, no survivor, and no replacement launchd root.
+10. Atomically replace the active-generation pointer with the already imported candidate and verify the observed pointer and generation bytes.
+11. Record `candidate_active_stopped` while general suppression remains active.
+12. Mint one generation-bound one-shot and start the candidate provisionally through the stable bootstrap in a new containment.
+13. Collect exact provisional evidence without starting Worker Provider execution or normal serving.
+14. Ask the Controller to verify evidence for the current transition generation and issue one host-arm token while the Node remains unschedulable.
+15. Consume the token to record idempotent `host_armed_pending_controller_commit` evidence for the exact provisional child, without clearing suppression or provisional restrictions.
+16. Commit `controller_committed_pending_child_observation` with exact host-arm evidence while retaining maintenance and scheduler exclusion.
+17. Let the exact child consume the authenticated pending result, become exact-child enabled, and acknowledge that state while ordinary dispatch remains fenced.
+18. Re-challenge the same live enabled child and only then commit terminal success, advance `maintenance -> active`, and clear scheduler exclusion in a second generation-checked transaction.
+
+There is a proved stopped interval between outgoing closure exit and candidate provisional start.
+No zero-downtime claim is made.
+
+## Exact-Baseline Rollback Protocol
+
+Rollback remains within the same Controller transition generation and names only its recorded source baseline.
+It can begin from a stopped candidate, failed provisional candidate, or a candidate whose terminal acceptance did not complete.
+
+1. Keep or reestablish general launch suppression and Controller scheduler exclusion.
+2. Fence and stop any candidate provisional closure through the same descendant protocol.
+3. Verify the exact immutable source baseline, stable bootstrap, frozen identity set, and rollback authorization.
+4. Atomically replace the active pointer with the exact baseline and verify it.
+5. Record `baseline_restored_stopped`.
+6. Start the baseline through a new operation-bound one-shot under general suppression.
+7. Run the same provisional evidence, Controller host-arm token, idempotent arm evidence, pending-commit delivery, exact-child-enabled acknowledgement, fresh live-child challenge, and second terminal generation-checked sequence.
+8. Record terminal `rolled_back` only when exact baseline arm evidence and fresh enabled-child evidence commit and the Node advances to active.
+
+Rollback never reconstructs bytes from a backup copy, selects a different source ref, restores prior loaded-service state, or falls through to generic resume.
+If any rollback evidence is uncertain, the baseline remains stopped and the Node remains excluded.
+
+## Journal and Recovery
+
+The stable bootstrap owns a versioned managed-transition journal separate from the current app transaction schema.
+It records immutable operation identity, Controller transition generation, baseline and candidate generation identities, old and new pointer observations, suppression generation, containment-close evidence, one-shot claims, provisional process identity, Controller token identity, host-arm evidence, pending-result consumption, exact-child enabled acknowledgement, and monotonic phase.
+
+Every external mutation is preceded or followed by the durable record required to make recovery unambiguous under the documented state transition.
+Journal replacement is atomic and durable before an operation reports progress.
+
+Recovery re-reads Postgres transition state through the authenticated Controller interface and re-verifies local pointer, generations, bootstrap, identity set, suppression, process closure, and journal.
+It does not infer completion from intended state.
+Unknown schema, missing evidence, contradictory pointer state, unexpected process, unreachable Controller, or mismatched generation yields uncertainty and preserves suppression.
+
+The dedicated profile has a durable managed-profile admission marker outside every generation and transition journal.
+For the entire admitted profile lifetime, the current schema-v1 app lifecycle transaction and generic app install, update, uninstall, start, stop, rollback, and recovery paths must reject or delegate the operation to the managed bootstrap, even when no transition generation is active.
+They cannot recover or auto-restart a managed transition.
+A stable-bootstrap upgrade or profile decommission is a separate accepted lifecycle operation.
+
+## Failure Semantics
+
+Before Controller transition creation, failure changes no schedulability or host state.
+After transition creation, every state other than `succeeded` or fully accepted `rolled_back` remains scheduler-excluded and nonterminal.
+After suppression, every uncertain local state remains launch-suppressed.
+After pointer activation, missing terminal acceptance does not permit normal serving.
+After rollback pointer restoration, missing exact-baseline acceptance does not permit normal serving.
+
+No timeout, process owner death, Controller restart, leadership change, host reboot, heartbeat, generic lifecycle command, or launchd retry can convert uncertainty into eligibility.
+Failure and uncertainty are blocking recoverable phases within the same transition generation, not terminal escape hatches.
+In particular, recovery from `host_armed_pending_controller_commit` or `controller_committed_pending_child_observation` must revalidate the same live child and evidence or reestablish suppression after child exit or reboot.
+An authorized repair procedure may inspect and reconcile evidence but cannot bypass the same exact-generation terminal protocol.
 
 ## Orchard.app and DMG Derivation
 
-The managed composition is assembled into a declared Node-role subtree of `Orchard.app` only after the common verifier admits it.
-The app may continue to contain Controller, CLI, Console, or all-in-one content governed by the existing profile.
-This change does not silently narrow the app to a Node-only product.
+The admitted Node subtree is embedded in a declared immutable-generation seed area inside the final app delivered by the mandatory DMG.
+The installed stable signed lifecycle bootstrap is a separate app-owned helper outside that subtree.
+The app may still contain Controller, CLI, Console, or all-in-one content for other distribution roles, but the managed transition profile rejects a host where a Controller role is selected or running.
 
-The app build records the composition-lock digest and detached build-attestation digest in the app's governed build evidence.
-The app signing verifier covers the final embedded composition bytes and rejects a mismatch with the recorded composition identity.
-The Candidate or Internal Build Manifest records the final app-tree digest and the embedded composition-lock digest.
-The DMG builder packages that exact verified app tree and runs the existing signing, Gatekeeper, notarization, stapling, and artifact verification gates appropriate to its stage.
+The final app verifier checks every embedded generation byte, composition identity, stable-bootstrap identity, code signature, entitlement, and app tree.
+The candidate's embedded bootstrap identity must exactly equal the already installed stable bootstrap identity because this operation cannot update it.
+The Candidate Manifest binds those identities after final verification.
+The installed bootstrap imports only the admitted Node subtree from the verified mounted app into a new immutable generation.
+It does not replace the installed app or invoke a generic app update path.
+The mounted app and final DMG evidence must match the same Candidate Manifest before activation authorization can be issued.
 
-An extracted component archive, composition lock, or detached build attestation is evidence or an assembly input only.
-It does not carry an independent installation or support claim.
-
-## Migration Plan
-
-There is no automatic adoption of an existing service or source-development process into managed custody.
-The first managed activation requires a verifier-admitted incoming composition and a verifier-admitted rollback baseline with a known composition-lock digest.
-If the currently installed Node lacks a composition lock, an explicit migration command must build and verify a closed baseline from the exact installed bytes before any stop or replacement occurs.
-If that baseline cannot be closed and verified, migration stops before host mutation.
-
-The initial supported matrix contains these distinct transition cases:
-
-| Case | Outgoing realization | Incoming realization | Required result |
-|---|---|---|---|
-| A to B | `exact_ref_source_build` | `orchard_signed_prebuilt` | same Node Identity Root, zero managed-process overlap, explicit Controller uncordon |
-| B to C | `orchard_signed_prebuilt` | `exact_ref_source_build` | same Node Identity Root, zero managed-process overlap, explicit Controller uncordon |
-
-The B to C case is a reverse provenance transition, not an implied product-version downgrade.
-Each selected pair must independently satisfy product-version, Runtime Endpoint, Worker Runtime, retained-schema, and rollback compatibility.
+A component archive, generation directory, composition lock, assembly decision, or build attestation is evidence or an assembly input only.
+It is not independently installable or supported.
 
 ## Acceptance and Proof Strategy
 
-Contract tests exercise the common verifier with fixtures for both realizations and byte-identical closure failures.
-Public-interface lifecycle tests drive Controller maintenance, host activation, start, health, uncordon, and rollback without calling private implementation functions.
-Fault-injection tests interrupt every journal boundary and prove that recovery never creates overlap or schedulability from uncertainty.
-Process tests use real managed launchd jobs and prove exact outgoing exit, no replacement, unrelated-process survival, and rejected stale process identity.
-Identity tests prove the Node Identity Root remains byte-for-byte or semantically stable as specified across both transition directions and rollback.
+Contract tests cover every purpose-bound verifier decision and reject cross-purpose replay.
+Public-interface lifecycle tests drive Controller transition creation, drain acknowledgement, host activation, provisional start, Controller host arm, fresh-child terminal verification, terminal success, and exact-baseline rollback without direct private-state mutation.
+Fault injection interrupts every database and journal boundary and proves that neither leader change nor host recovery reactivates the Node.
 
-Real Apple Silicon qualification executes both transition directions plus failed activation, failed start, interrupted rollback, Controller disconnect, and host reboot at selected journal boundaries.
-Evidence includes exact commands, composition identities, process samples, journal states, Controller maintenance observations, Node identity observations, and final health state.
-Secrets, credentials, machine-specific paths, and raw transient logs do not enter the repository.
+Process tests create real launchd-rooted Node Agent and Worker Provider trees inside the selected kernel-backed containment, including nested children, rapid child creation, reparenting attempts, PID reuse pressure, delayed exit, containment escape attempts, and replacement launch.
+The tests prove the authoritative containment close, no-new-child point, exact membership exit, unrelated-process survival, and durable suppression across reboot.
+
+Real Apple Silicon qualification includes:
+
+- the one forward transition;
+- candidate verification rejection at every artifact stage;
+- descendant races and reparenting attempts;
+- lifecycle-owner death before and after pointer switch and host arm;
+- host reboot at every recoverable journal class;
+- Controller process restart and leadership change at every Controller phase;
+- stale heartbeat, generic resume, and generic uncordon attempts;
+- candidate provisional failure;
+- exact-baseline rollback success and rollback uncertainty;
+- lost pending response, provisional-child exit, and host reboot in `host_armed_pending_controller_commit` or `controller_committed_pending_child_observation`;
+- wrong bootstrap, identity schema, executable, provider, app, Candidate Manifest, and mandatory DMG evidence; and
+- proof that no Controller role runs on the target host.
+
+Support remains unclaimed until this matrix, the applicable repo quality workflows, and independent architecture, security, packaging, and migration review all pass.
 
 ## Risks and Tradeoffs
 
-The profile introduces a second lifecycle journal schema and a privileged helper protocol, which increases compatibility surface but creates one auditable safety authority.
-Controller coordination makes activation unavailable during a control-plane outage, which is preferable to silently restarting a potentially schedulable Node.
-The stopped interval reduces availability, which is the accepted tradeoff for a provable v1 no-overlap transition.
-Exact-ref source trust requires a controlled builder policy, which deliberately excludes casual local builds from the supported provenance claim.
-Retained-schema rollback compatibility restricts migrations, which avoids irreversible identity loss in the first slice.
+The dedicated-host restriction limits immediate applicability but removes Controller self-replacement and local authority cycles.
+The one-way transition is not a complete update system but provides a tractable first safety proof.
+The stable bootstrap introduces a separately versioned prerequisite, but recovery authority cannot safely depend on the generation it replaces.
+Kernel-backed containment and authoritative membership closure are more demanding than root-process checks, but the Worker Provider makes scan-only proof insufficient.
+The host-arm, pending commit, exact-child acknowledgement, and fresh-live-child terminal protocol adds latency and state, but avoids scheduling before a child is capable of serving and avoids an enabled-child crash window.
+The frozen identity schema defers migrations, but preserves exact rollback semantics.
 
-## Open Questions
+## Deferred Implementation Choices
 
-No contract-level design question remains open after owner approval.
-Concrete filesystem locations, key identifiers, helper transport, journal encoding, timeout values, and compatibility-version values remain implementation details that must be selected within this contract and reviewed before code lands.
+The exact filesystem paths, serialized schemas, helper transport, supported public kernel-backed containment primitive, timeout values, Controller table names, API paths, and cryptographic key identifiers remain implementation choices.
+Each choice must preserve the explicit boundaries and linearization points in this design.
+If macOS cannot provide authoritative full descendant closure and no-new-child proof for the declared process model, the implementation is blocked and the profile remains unsupported rather than weakening the requirement.
