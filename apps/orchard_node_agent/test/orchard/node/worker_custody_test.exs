@@ -22,11 +22,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
 
-    root =
-      Path.join(
-        "/tmp",
-        "oc-#{System.unique_integer([:positive, :monotonic])}"
-      )
+    root = unique_tmp_root!()
 
     models_root = Path.join(root, "models")
     model_ref = %ModelRef{model_id: "custody/test", version: "v1"}
@@ -41,6 +37,20 @@ defmodule Orchard.Node.WorkerCustodyTest do
       root: root,
       socket_path: Path.join(root, "worker.sock")
     }
+  end
+
+  defp unique_tmp_root! do
+    root =
+      Path.join(
+        "/tmp",
+        "oc-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    case File.mkdir(root) do
+      :ok -> root
+      {:error, :eexist} -> unique_tmp_root!()
+      {:error, reason} -> raise "could not create custody test root #{root}: #{inspect(reason)}"
+    end
   end
 
   test "SPEC.md §4.9 explicit unload reaps the exact stub runtime PID and socket", context do

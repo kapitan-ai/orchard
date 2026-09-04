@@ -49,6 +49,22 @@ defmodule Orchard.NodeEnrollments do
     end
   end
 
+  @spec latest_for_node(Ecto.UUID.t()) ::
+          {:ok, Enrollment.t()} | {:error, :enrollment_not_found}
+  def latest_for_node(node_id) do
+    with {:ok, node_id} <- Ecto.UUID.cast(node_id),
+         %Enrollment{} = enrollment <-
+           Enrollment
+           |> where([enrollment], enrollment.node_id == ^node_id)
+           |> order_by([enrollment], desc: enrollment.issued_at)
+           |> limit(1)
+           |> Repo.one() do
+      {:ok, Repo.preload(enrollment, :node)}
+    else
+      _reason -> {:error, :enrollment_not_found}
+    end
+  end
+
   @spec mark_output_failed(Ecto.UUID.t(), keyword()) ::
           {:ok, Enrollment.t()}
           | {:error, :enrollment_not_found | :invalid_enrollment_state | term()}

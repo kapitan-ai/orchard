@@ -1278,6 +1278,54 @@ defmodule Orchard.RequestsTest do
                  node_id: nil
                })
     end
+
+    test "rejects a stale schedule write after terminalization" do
+      request = create_request!(%{public_id: "req_schedule_terminal", state: :queued})
+
+      terminal_decision = %{
+        queueing_enabled: true,
+        queue_key: "model@v1",
+        queue_result: "queue_timeout"
+      }
+
+      assert {:ok, terminal} = Requests.record_schedule(request, terminal_decision)
+
+      assert {:error, :already_terminal} =
+               Requests.record_schedule(terminal, %{
+                 queueing_enabled: true,
+                 queue_key: "model@v1",
+                 queue_result: "queued"
+               })
+
+      assert {:ok, terminal} = Requests.mark_terminal(terminal, %{state: :timed_out})
+
+      assert {:error, :already_terminal} =
+               Requests.record_schedule(terminal, %{
+                 queueing_enabled: true,
+                 queue_key: "model@v1",
+                 queue_result: "queued"
+               })
+
+      immutable_before_retry = Requests.get_request!(request.id)
+      alternate_node_id = Ecto.UUID.generate()
+
+      assert {:ok, idempotent} =
+               Requests.record_schedule(terminal, %{
+                 queueing_enabled: false,
+                 queue_key: "different@v2",
+                 queue_result: "queue_timeout",
+                 node_id: alternate_node_id
+               })
+
+      assert idempotent == immutable_before_retry
+      assert idempotent.node_id != alternate_node_id
+      assert idempotent.scheduler_decision == immutable_before_retry.scheduler_decision
+
+      persisted = Requests.get_request!(request.id)
+      assert persisted == immutable_before_retry
+      assert persisted.state == :timed_out
+      assert persisted.scheduler_decision["queue_result"] == "queue_timeout"
+    end
   end
 
   describe "list_recent_requests/1" do

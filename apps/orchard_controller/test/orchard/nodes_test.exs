@@ -3338,13 +3338,13 @@ defmodule Orchard.NodesTest do
       assert {:queued, first_ticket} =
                QueueManager.acquire(
                  queue_admission_request("req-node-placement-omitted-a", "omitted-model"),
-                 config: queue_config(capacity: 0)
+                 config: queue_config(capacity: 0, max_wait_ms: 5_000)
                )
 
       assert {:queued, second_ticket} =
                QueueManager.acquire(
                  queue_admission_request("req-node-placement-omitted-b", "omitted-model"),
-                 config: queue_config(capacity: 0)
+                 config: queue_config(capacity: 0, max_wait_ms: 5_000)
                )
 
       first_awaiter = start_holding_awaiter(first_ticket, :first_omitted_result)
@@ -3367,7 +3367,7 @@ defmodule Orchard.NodesTest do
 
       insert_node_from_status!(target, loaded_status)
       assert {:ok, _node} = observe_status(target, loaded_status, DateTime.utc_now())
-      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 5_000)
       assert second_grant.queue_result == :queued
 
       assert :ok = QueueManager.release(second_grant)

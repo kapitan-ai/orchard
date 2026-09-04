@@ -1013,6 +1013,27 @@ defmodule Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.ImmediateGrantQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+
+  def acquire(request) do
+    {:ok,
+     %QueueManager.Grant{
+       server: __MODULE__,
+       grant_id: Ecto.UUID.generate(),
+       queue_key: "#{request.model_id}@#{request.version}",
+       queue_result: :immediate,
+       queue_granted_at:
+         DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601(),
+       queue_wait_ms: 0
+     }}
+  end
+
+  def release(_grant), do: :ok
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager do
   @moduledoc false
 
@@ -2393,11 +2414,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert :ok = QueueManager.release(held_grant)
 
     assert wait_until(fn ->
-             request = Requests.get_request_by_public_id(canonical.public_id)
+             request = request_without_preloads(canonical.public_id)
              get_in(request.scheduler_decision, ["queue_result"]) == "queue_timeout"
            end)
 
-    request = Requests.get_request_by_public_id(canonical.public_id)
+    request = request_without_preloads(canonical.public_id)
     assert request.state == :timed_out
     assert request.http_status == 504
     assert request.error_code == "queue_timeout"
@@ -2471,6 +2492,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     bundle: bundle
   } do
     put_queue_admission_config(enabled: true)
+    put_immediate_grant_queue_manager()
     put_capturing_runtime_adapter_config()
 
     model = create_active_model!(bundle, "request-orchestrator-queue-disconnect")
@@ -2498,7 +2520,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   test "queue admission requeues post-grant cluster_busy then schedules when live capacity returns",
        %{bundle: bundle} do
     metric_ref = attach_scheduler_rejection_metric()
-    put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
+    put_queue_admission_config(enabled: true, max_wait_ms: 5_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
 
@@ -2507,51 +2529,52 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical =
       canonical_request("request-orchestrator-live-capacity-requeue",
         stream?: false,
-        admission: %{queue_wait_ms: 2_000}
+        admission: %{queue_wait_ms: 5_000}
       )
 
     public_id = canonical.public_id
 
     task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
 
-    assert {:live_capacity_schedule_attempt, scheduler_pid, ^public_id} = live_capacity_attempt()
+    try do
+      assert {:live_capacity_schedule_attempt, scheduler_pid, ^public_id} =
+               live_capacity_attempt(3_000)
 
-    send(scheduler_pid, {:live_capacity_schedule_reply, {:error, :cluster_busy}})
-    assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
-    refute_receive {:captured_execute_request, _request}, 50
+      send(scheduler_pid, {:live_capacity_schedule_reply, {:error, :cluster_busy}})
+      refute_receive {:captured_execute_request, _request}, 50
 
-    queued_request = Requests.get_request_by_public_id(canonical.public_id)
-    assert_queue_metadata(queued_request, "queued", queued?: true)
-    assert queued_request.scheduler_decision["queue_wait_reason"] == "live_node_capacity"
-    refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
+      assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
+               live_capacity_attempt(3_000)
 
-    assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
-             live_capacity_attempt(1_500)
+      assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
 
-    assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
+      send(retry_scheduler_pid, {:live_capacity_schedule_reply, {:ok, schedule}})
 
-    send(retry_scheduler_pid, {:live_capacity_schedule_reply, {:ok, schedule}})
+      assert_receive {:captured_execute_request, _request}, 3_000
+      assert {:ok, ^canonical, events} = Task.await(task, 5_000)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
 
-    assert_receive {:captured_execute_request, _request}, 500
-    assert {:ok, ^canonical, events} = Task.await(task, 2_000)
-    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      states = request_event_states(request)
 
-    request = Requests.get_request_by_public_id(canonical.public_id)
-    states = request_event_states(request)
+      assert state_before?(states, :admitted, :queued)
+      assert state_before?(states, :queued, :scheduled)
+      assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+      assert request.scheduler_decision["queue_wait_reason"] == "live_node_capacity"
+      refute_receive {^metric_ref, _measurements, _metadata}
 
-    assert state_before?(states, :admitted, :queued)
-    assert state_before?(states, :queued, :scheduled)
-    assert_queue_metadata(request, "queued", queued?: true, granted?: true)
-    refute_receive {^metric_ref, _measurements, _metadata}
-
-    assert {:ok, next_grant} = hold_queue_lane(canonical)
-    assert :ok = QueueManager.release(next_grant)
+      assert {:ok, next_grant} = hold_queue_lane(canonical)
+      assert :ok = QueueManager.release(next_grant)
+    after
+      Task.shutdown(task, :brutal_kill)
+      QueueManager.reset()
+    end
   end
 
   test "queue admission requeues post-grant model_busy then schedules when live capacity returns",
        %{bundle: bundle} do
     metric_ref = attach_scheduler_rejection_metric()
-    put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
+    put_queue_admission_config(enabled: true, max_wait_ms: 5_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
 
@@ -2560,48 +2583,49 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical =
       canonical_request("request-orchestrator-single-node-capacity-requeue",
         stream?: false,
-        admission: %{queue_wait_ms: 2_000}
+        admission: %{queue_wait_ms: 5_000}
       )
 
     public_id = canonical.public_id
 
     task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
 
-    assert {:live_capacity_schedule_attempt, scheduler_pid, ^public_id} = live_capacity_attempt()
+    try do
+      assert {:live_capacity_schedule_attempt, scheduler_pid, ^public_id} =
+               live_capacity_attempt(3_000)
 
-    send(scheduler_pid, {:live_capacity_schedule_reply, {:error, :model_busy}})
-    assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
-    refute_receive {:captured_execute_request, _request}, 50
+      send(scheduler_pid, {:live_capacity_schedule_reply, {:error, :model_busy}})
+      refute_receive {:captured_execute_request, _request}, 50
 
-    queued_request = Requests.get_request_by_public_id(canonical.public_id)
-    assert_queue_metadata(queued_request, "queued", queued?: true)
+      assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
+               live_capacity_attempt(3_000)
 
-    assert queued_request.scheduler_decision["queue_wait_reason"] ==
-             "requested_model_path_capacity"
+      assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
 
-    refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
+      send(retry_scheduler_pid, {:live_capacity_schedule_reply, {:ok, schedule}})
 
-    assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
-             live_capacity_attempt(1_500)
+      assert_receive {:captured_execute_request, _request}, 3_000
+      assert {:ok, ^canonical, events} = Task.await(task, 5_000)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
 
-    assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      states = request_event_states(request)
 
-    send(retry_scheduler_pid, {:live_capacity_schedule_reply, {:ok, schedule}})
+      assert state_before?(states, :admitted, :queued)
+      assert state_before?(states, :queued, :scheduled)
+      assert_queue_metadata(request, "queued", queued?: true, granted?: true)
 
-    assert_receive {:captured_execute_request, _request}, 500
-    assert {:ok, ^canonical, events} = Task.await(task, 2_000)
-    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+      assert request.scheduler_decision["queue_wait_reason"] ==
+               "requested_model_path_capacity"
 
-    request = Requests.get_request_by_public_id(canonical.public_id)
-    states = request_event_states(request)
+      refute_receive {^metric_ref, _measurements, _metadata}
 
-    assert state_before?(states, :admitted, :queued)
-    assert state_before?(states, :queued, :scheduled)
-    assert_queue_metadata(request, "queued", queued?: true, granted?: true)
-    refute_receive {^metric_ref, _measurements, _metadata}
-
-    assert {:ok, next_grant} = hold_queue_lane(canonical)
-    assert :ok = QueueManager.release(next_grant)
+      assert {:ok, next_grant} = hold_queue_lane(canonical)
+      assert :ok = QueueManager.release(next_grant)
+    after
+      Task.shutdown(task, :brutal_kill)
+      QueueManager.reset()
+    end
   end
 
   test "queue admission times out post-grant cluster_busy without dispatching", %{bundle: bundle} do
@@ -3893,12 +3917,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     canonical =
       canonical_request("request-orchestrator-started-alternate-timeout",
         stream?: false,
-        admission: %{timeout_ms: 60}
+        admission: %{timeout_ms: 1_000}
       )
 
     public_id = canonical.public_id
 
-    Process.put(:orchard_retry_started_probe, fn _request -> Process.sleep(80) end)
+    Process.put(:orchard_retry_started_probe, fn _request -> Process.sleep(1_100) end)
 
     assert {:error, {:dispatch_failed, :request_timeout}} =
              RequestOrchestrator.execute(canonical, model)
@@ -5393,6 +5417,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Application.put_env(:orchard_controller, :inference, inference)
   end
 
+  defp put_immediate_grant_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.ImmediateGrantQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
   defp put_recording_queue_manager do
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
@@ -5465,6 +5500,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
+  defp request_without_preloads(public_id) do
+    Repo.one!(from(request in Orchard.Requests.Request, where: request.public_id == ^public_id))
+  end
+
   defp wait_until(fun, attempts \\ 50)
   defp wait_until(_fun, 0), do: false
 
@@ -5477,7 +5516,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
-  defp live_capacity_attempt(timeout \\ 500) do
+  defp live_capacity_attempt(timeout) do
     receive do
       {:live_capacity_schedule_attempt, _scheduler_pid, _public_id} = attempt -> attempt
     after

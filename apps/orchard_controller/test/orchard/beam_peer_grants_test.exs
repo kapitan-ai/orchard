@@ -397,25 +397,41 @@ defmodule Orchard.BeamPeerGrantsTest do
     authorization_root: authorization_root
   } do
     now = DateTime.utc_now()
-    assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
+    :ok = Sandbox.checkin(Repo)
+    on_exit(&clean_unboxed_grant_fixture/0)
 
-    assert {:ok, _controller} =
-             ControllerInstances.ensure_local(
-               private_ipv4: "10.0.0.10",
-               membership_scope: :remote_beam,
-               node_trust_root: trust_root,
-               authorization_root_path: authorization_root,
-               now: now
-             )
+    nodes =
+      Sandbox.unboxed_run(Repo, fn ->
+        assert {:ok, trust} = NodeTrust.initialize(root: trust_root, now: now)
 
-    nodes = [register_node!(trust, now, "10.0.0.20"), register_node!(trust, now, "10.0.0.21")]
+        assert {:ok, _controller} =
+                 ControllerInstances.ensure_local(
+                   private_ipv4: "10.0.0.10",
+                   membership_scope: :remote_beam,
+                   node_trust_root: trust_root,
+                   authorization_root_path: authorization_root,
+                   now: now
+                 )
+
+        [
+          register_node!(trust, now, "10.0.0.20"),
+          register_node!(trust, now, "10.0.0.21")
+        ]
+      end)
+
     parent = self()
 
     tasks =
       Enum.map(nodes, fn node ->
         Task.async(fn ->
           send(parent, {:admission_ready, self()})
-          receive do: (:admit -> Nodes.admit_node(node.id, admission_attrs(), now: now))
+
+          receive do
+            :admit ->
+              Sandbox.unboxed_run(Repo, fn ->
+                Nodes.admit_node(node.id, admission_attrs(), now: now)
+              end)
+          end
         end)
       end)
 
@@ -435,19 +451,21 @@ defmodule Orchard.BeamPeerGrantsTest do
 
     {winner_node, winner_grant} = winner
 
-    assert {:ok, _delivery} =
-             BeamPeerGrants.deliver(
-               delivery_request(winner_grant),
-               authenticated_peer!(winner_node.id),
-               now: now
-             )
+    Sandbox.unboxed_run(Repo, fn ->
+      assert {:ok, _delivery} =
+               BeamPeerGrants.deliver(
+                 delivery_request(winner_grant),
+                 authenticated_peer!(winner_node.id),
+                 now: now
+               )
 
-    assert Repo.aggregate(Grant, :count, :id) == 1
-    assert Repo.get!(Grant, winner_grant.id).state == :active
+      assert Repo.aggregate(Grant, :count, :id) == 1
+      assert Repo.get!(Grant, winner_grant.id).state == :active
 
-    assert [loser] = Enum.reject(nodes, &(&1.id == winner_node.id))
-    assert Repo.get!(Node, loser.id).state == :registered
-    assert BeamPeerGrants.list_for_node(loser.id) == []
+      assert [loser] = Enum.reject(nodes, &(&1.id == winner_node.id))
+      assert Repo.get!(Node, loser.id).state == :registered
+      assert BeamPeerGrants.list_for_node(loser.id) == []
+    end)
   end
 
   test "SPEC.md §7.5.0 admission uses the global grant transaction lock order", %{

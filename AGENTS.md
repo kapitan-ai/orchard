@@ -194,7 +194,9 @@ When changing Console UI, keep `docs/DESIGN.md` and the implementation in sync. 
   end
   ```
 - **Deferred mount**: Call DB/gRPC only inside `if connected?(socket)`. Disconnected render shows loading state via `state_message`.
-- **Sensitive values**: Never put secrets in `data-*` attributes, flash, session, or URL params. Keep them in socket assigns only. JS hooks should read secrets from visible DOM elements via ID reference, not data attributes.
+- **Sensitive values**: Never put secrets in `data-*` attributes, flash, session, URL params, logs, or reusable endpoints.
+  Ordinary one-time display or copy hooks should read the value from a visible DOM element by ID.
+  A one-time non-display download may instead receive bytes through an authenticated same-origin `push_event`, provided the hook clears transient bytes, revokes object URLs, and acknowledges only a bounded non-secret identifier.
 - **Multi-tenant scoping**: Always scope child-resource DB operations (revoke, update, delete) to the parent tenant from server-side assigns. Never trust `phx-value-*` IDs alone.
 
 ## Agent Contribution Workflow

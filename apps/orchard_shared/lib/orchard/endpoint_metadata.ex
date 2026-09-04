@@ -1,4 +1,4 @@
-defmodule OrchardCLI.EndpointMetadata do
+defmodule Orchard.EndpointMetadata do
   @moduledoc """
   Reads and writes the non-secret controller endpoint metadata sidecar.
 
