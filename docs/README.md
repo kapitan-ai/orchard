@@ -44,6 +44,7 @@ large spec sections.
   and visual semantics.
 - [`DESIGN.md`](DESIGN.md) — tactical LiveView UI contract downstream of brand
   identity.
+- [`console-ux-testing-personas.md`](console-ux-testing-personas.md) - behavioral personas and scenario scripts for prototype, usability, and regression testing.
 
 ### I want to package or install Orchard
 
