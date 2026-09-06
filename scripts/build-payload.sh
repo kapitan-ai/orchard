@@ -867,6 +867,9 @@ copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_controller" "$STA
 copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_node_agent" "$STAGING/releases/"
 copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_cli" "$STAGING/releases/"
 
+log_info "Excluding debug-symbol bundles from staged runtime releases..."
+find -P "$STAGING/releases" -type d -name '*.dSYM' -prune -exec rm -rf {} +
+
 log_info "Remediating OTP OpenSSL Mach-O closure..."
 OPENSSL_PROVENANCE="$STAGING_BASE.openssl-provenance.txt"
 if ! "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$OPENSSL_PROVENANCE" "$STAGING"; then

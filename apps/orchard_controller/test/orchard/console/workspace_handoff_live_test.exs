@@ -97,6 +97,13 @@ defmodule OrchardConsole.WorkspaceHandoffLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#handoff-step-4")
+
+    assert has_element?(
+             view,
+             "#handoff-step-4",
+             "Cluster administration and API credentials are not included in this invitation."
+           )
+
     assert Repo.aggregate(PortalUser, :count) == 1
     assert Repo.aggregate(PortalInviteToken, :count) == 0
     assert Repo.aggregate(ApiKey, :count) == 0
