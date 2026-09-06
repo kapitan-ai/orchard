@@ -503,12 +503,25 @@ Blocker rows must read as non-bypassable and must disable or omit the execute co
 Warnings and consequences may use compact badges plus short copy, but stable codes remain visible or inspectable when the code is part of the user-facing contract.
 Confirmation requirements sit directly above the execution control they gate.
 Page-local preview panels are valid for node actions when they keep review context visible.
+Node action previews appear in the Actions section directly after the available action controls.
+Opening a preview focuses its panel, and closing it restores focus to the originating control.
+If refreshed action facts or consequences change, clear the prior confirmation and require the operator to review the updated preview.
+Candidate transport and raw identity evidence retain their observation time and are not labeled as current health.
 Typed-identifier confirmation inputs require the operator to retype the exact target identifier; do not prefill, autocomplete, or accept partial matches.
 Consequence acknowledgement controls default to unacknowledged and name the consequence they accept.
 The execute control stays disabled until every confirmation requirement is satisfied, and satisfying requirements never bypasses blockers.
 When one page offers several previewable actions, show one open preview panel at a time so review context stays unambiguous.
 
+Nodes uses Inventory, Admission, Runtime, and Diagnostics as page-local sections.
+Node detail uses Overview, Evidence, and Actions with shared identity and refresh context.
+Section links update a whitelisted URL parameter and replace the visible section rather than scrolling to another card.
+Inactive sections are hidden from both keyboard navigation and the accessibility tree; the selected navigation link exposes `aria-current`.
+
 Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, warnings, and observe-only memory telemetry in labeled groups instead of flattening them into a generic table.
+Node detail provides an explicit read-only refresh action.
+If refresh fails, retain the last successful evidence for the same target with its observation time and a visible stale warning.
+Stale evidence cannot authorize an action preview or execution; a successful refresh restores those controls.
+Changing the target clears retained evidence before loading the new target.
 The memory telemetry group renders only when runtime memory-budget data is present, stays labeled as observe-only and non-gating, and fails open to omission when no budget is reported.
 Use `<.detail_grid>`, `<.detail_field>`, and compact status badges for grouped facts.
 Source and compatibility badges should stay close to the identity or inventory field they qualify.

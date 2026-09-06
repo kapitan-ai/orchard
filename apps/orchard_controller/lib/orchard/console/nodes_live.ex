@@ -37,7 +37,12 @@ defmodule OrchardConsole.NodesLive do
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(page_title: "Nodes", active_nav: :nodes, page_mode: :workspace)
+      |> assign(
+        page_title: "Nodes",
+        active_nav: :nodes,
+        page_mode: :workspace,
+        section: :inventory
+      )
 
     if connected?(socket) do
       {:ok, socket |> load_nodes_page() |> schedule_refresh()}
@@ -47,8 +52,21 @@ defmodule OrchardConsole.NodesLive do
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    section =
+      case params["section"] do
+        "admissions" -> :admissions
+        "runtime" -> :runtime
+        "diagnostics" -> :diagnostics
+        _ -> :inventory
+      end
+
+    {:noreply, assign(socket, section: section)}
+  end
+
+  @impl true
   def handle_info(:refresh_nodes, socket) do
-    {:noreply, socket |> load_nodes_page() |> schedule_refresh()}
+    {:noreply, socket |> cancel_refresh() |> load_nodes_page() |> schedule_refresh()}
   end
 
   @impl true
@@ -74,8 +92,31 @@ defmodule OrchardConsole.NodesLive do
         </.link>
       </div>
 
+    <nav id="nodes-sections" aria-label="Nodes sections" class="flex flex-wrap gap-2">
+    <.link :for={{section, label} <- [inventory: "Inventory", admissions: "Admission Review", runtime: "Runtime", diagnostics: "Diagnostics"]}
+    id={"nodes-section-#{section}"} patch={~p"/console/nodes?#{[section: section]}"}
+    aria-current={if @section == section, do: "page"}
+    class={["rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:focus-visible:ring-sky-400", if(@section == section, do: "border-navy bg-navy text-white dark:border-sky-500 dark:bg-sky-500 dark:hover:bg-sky-400", else: "border-slate-300 text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800")]}>
+    {label}
+    </.link>
+    </nav>
+        <div id="nodes-freshness" class="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+          <span :if={@last_refreshed_at == nil} class="font-mono">Waiting for first live update</span>
+          <span :if={@last_refreshed_at != nil} class="font-mono">
+            Last refresh attempt <.local_time value={@last_refreshed_at} format={:time_second} />
+          </span>
+          <span :if={@last_refreshed_at != nil}>· Auto-refreshing every {refresh_interval_label()}</span>
+          <.button
+            id="nodes-refresh-now"
+            variant={:ghost}
+            size={:sm}
+            phx-click="refresh_now"
+          >
+            Refresh now
+          </.button>
+        </div>
       <%!-- Inventory Summary --%>
-      <div id="nodes-summary-card">
+      <div id="nodes-summary-card" hidden={@section != :inventory}>
       <.card>
         <:title>Inventory Summary</:title>
         <:subtitle>Persisted node inventory with periodic runtime refresh.</:subtitle>
@@ -88,26 +129,12 @@ defmodule OrchardConsole.NodesLive do
           <.summary_tile id="nodes-summary-unreachable" label="Unreachable" value={format_count(@inventory.summary.by_health[:unreachable])} tone={:error} />
         </div>
 
-        <div id="nodes-freshness" class="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-          <span :if={@last_refreshed_at == nil} class="font-mono">Waiting for first live update</span>
-          <span :if={@last_refreshed_at != nil} class="font-mono">
-            Last refreshed <.local_time value={@last_refreshed_at} format={:time_second} />
-          </span>
-          <span :if={@last_refreshed_at != nil}>· Auto-refreshing every {refresh_interval_label()}</span>
-          <.button
-            id="nodes-refresh-now"
-            variant={:ghost}
-            size={:sm}
-            phx-click="refresh_now"
-          >
-            Refresh now
-          </.button>
-        </div>
+
       </.card>
       </div>
 
       <%!-- Admission Review Queue --%>
-      <div id="nodes-pending-admissions-card">
+      <div id="nodes-pending-admissions-card" hidden={@section != :admissions}>
       <.card>
         <:title>Admission Review</:title>
         <:subtitle>{pending_admissions_subtitle(@pending_admissions)}</:subtitle>
@@ -180,13 +207,14 @@ defmodule OrchardConsole.NodesLive do
       </div>
 
       <%!-- Main Grid --%>
-      <div class="grid gap-6 xl:grid-cols-12">
-        <div class="xl:col-span-8">
+      <div class="space-y-6">
+        <div hidden={@section != :inventory}>
           <div class="space-y-6">
           <%!-- Persisted Inventory Table --%>
-          <div id="nodes-inventory-card">
+          <div id="nodes-inventory-card" hidden={@section != :inventory}>
           <.card>
             <:title>Registered Nodes</:title>
+            <:subtitle>Lifecycle and health are separate. Inspect a Node for admission, observation freshness, and scheduling evidence.</:subtitle>
 
             <%= cond do %>
               <% @inventory.status == :loading -> %>
@@ -211,14 +239,19 @@ defmodule OrchardConsole.NodesLive do
                   </:col>
                   <:col :let={node} label="Hostname" mono>{node.hostname}</:col>
                   <:col :let={node} label="Address" mono>{format_address(node)}</:col>
-                  <:col :let={node} label="State">
+                  <:col :let={node} label="Lifecycle">
                     <.badge tone={state_badge_tone(node.state)}>{node.state}</.badge>
                   </:col>
                   <:col :let={node} label="Health">
                     <.badge tone={health_badge_tone(node.health)}>{node.health}</.badge>
                   </:col>
                   <:col :let={node} label="Agent Version" mono>{node.agent_version || "—"}</:col>
-                  <:col :let={node} label="Last Seen" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} /></:col>
+                  <:col :let={node} label="Last Seen" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} /></:col><:action :let={node}>
+    <.link navigate={~p"/console/nodes/#{node.id}"} class="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-300 dark:hover:bg-slate-800" aria-label={"Inspect #{node.display_name || node.hostname || node.id}"}>
+    Inspect Node <.icon name="hero-arrow-left" class="ml-1 h-4 w-4 rotate-180" />
+    </.link>
+    </:action>
+
                 </.table>
               <% true -> %>
                 <.state_message id="nodes-inventory-error" kind={:error} layout={:compact} title="Node inventory unavailable." body={@inventory.message} />
@@ -229,9 +262,9 @@ defmodule OrchardConsole.NodesLive do
         </div>
 
         <%!-- Live Cluster Column --%>
-        <div class="xl:col-span-4 space-y-6">
+        <div hidden={@section not in [:runtime, :diagnostics]} class="space-y-6">
           <%!-- Cluster Summary Card --%>
-          <div id="nodes-live-cluster-card">
+          <div id="nodes-live-cluster-card" hidden={@section != :runtime}>
           <.card variant={:rail} padding={:sm}>
             <:title>Live Cluster</:title>
             <:subtitle><%= cluster_subtitle(@cluster) %></:subtitle>
@@ -257,7 +290,7 @@ defmodule OrchardConsole.NodesLive do
           </div>
 
           <%!-- Control Plane Card --%>
-          <div id="nodes-control-plane-status-card">
+          <div id="nodes-control-plane-status-card" hidden={@section != :diagnostics}>
           <.card variant={:rail} padding={:sm}>
             <:title>Control Plane</:title>
             <:subtitle>{control_plane_subtitle(@control_plane)}</:subtitle>
@@ -305,7 +338,7 @@ defmodule OrchardConsole.NodesLive do
           </div>
 
           <%!-- Per-Target Runtime Cards --%>
-          <div id="nodes-runtime-targets" class="space-y-4">
+          <div id="nodes-runtime-targets" hidden={@section != :runtime} class="space-y-4">
             <div :for={t <- @cluster.targets} id={"nodes-runtime-card-#{t.target_dom_id}"}>
               <.card variant={:rail} padding={:sm}>
                 <:title><%= target_card_title(t) %></:title>
@@ -438,7 +471,7 @@ defmodule OrchardConsole.NodesLive do
         </div>
       </div>
 
-      <div id="nodes-safe-tokenization-telemetry-card">
+      <div id="nodes-safe-tokenization-telemetry-card" hidden={@section != :diagnostics}>
       <.card variant={:secondary}>
         <:title>Safe Tokenization Counters</:title>
         <:subtitle>Process-local observe-only counters since counter process start.</:subtitle>
@@ -804,8 +837,17 @@ defmodule OrchardConsole.NodesLive do
   end
 
   defp fetch_inventory do
-    rows = Nodes.list_nodes()
-    summary = Nodes.summary()
+    rows = Nodes.list_nodes_for_upgrade!()
+    health_counts = Enum.frequencies_by(rows, & &1.health)
+
+    summary = %{
+      total: length(rows),
+      by_health:
+        Map.new(Orchard.Nodes.Node.health_values(), fn health ->
+          {health, Map.get(health_counts, health, 0)}
+        end)
+    }
+
     NodesPageData.inventory(rows, summary)
   rescue
     _ ->
@@ -813,7 +855,10 @@ defmodule OrchardConsole.NodesLive do
         status: :error,
         rows: [],
         statuses: [],
-        summary: %{total: 0, by_health: %{healthy: 0, degraded: 0, unhealthy: 0, unreachable: 0}},
+        summary: %{
+          total: nil,
+          by_health: %{healthy: nil, degraded: nil, unhealthy: nil, unreachable: nil}
+        },
         message: "Node inventory unavailable."
       }
   end
@@ -1214,8 +1259,11 @@ defmodule OrchardConsole.NodesLive do
   defp rejected_review_count_label(1), do: "1 rejected record visible for audit."
   defp rejected_review_count_label(count), do: "#{count} rejected records visible for audit."
 
-  defp pending_detail_path(%{kind: :candidate, id: id}), do: ~p"/console/nodes/pending/#{id}"
-  defp pending_detail_path(%{kind: :node, id: id}), do: ~p"/console/nodes/#{id}"
+  defp pending_detail_path(%{kind: :candidate, id: id}),
+    do: ~p"/console/nodes/pending/#{id}?section=actions&from=admissions"
+
+  defp pending_detail_path(%{kind: :node, id: id}),
+    do: ~p"/console/nodes/#{id}?section=actions&from=admissions"
 
   defp status_value(status, group, key) when is_map(status) do
     case map_get(status, group) do
