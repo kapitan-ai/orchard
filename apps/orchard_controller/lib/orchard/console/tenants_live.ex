@@ -1,17 +1,22 @@
 defmodule OrchardConsole.TenantsLive do
   @moduledoc """
-  Console Organizations page.
+  Console Workspaces page.
   """
 
   use OrchardConsole, :live_view
 
   alias Orchard.Governance
+  alias OrchardConsole.WorkspacePresentation
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(page_title: "Organizations", active_nav: :tenants)
+      |> assign(
+        page_title: "Access",
+        active_nav: :tenants,
+        create_mode: socket.assigns.live_action == :new
+      )
       |> assign_loading_state()
       |> assign_blank_form()
 
@@ -23,6 +28,8 @@ defmodule OrchardConsole.TenantsLive do
   end
 
   @impl true
+  def handle_event("refresh_workspaces", _params, socket), do: {:noreply, load_tenants(socket)}
+
   def handle_event("create_tenant", %{"tenant" => params}, socket) do
     create_tenant(socket, params)
   end
@@ -34,8 +41,8 @@ defmodule OrchardConsole.TenantsLive do
       id="tenants-loading-card"
       kind={:loading}
       layout={:panel}
-      title="Organizations"
-      body="Loading Organizations…"
+      title="Workspaces"
+      body="Loading Workspaces…"
     />
     """
   end
@@ -46,19 +53,72 @@ defmodule OrchardConsole.TenantsLive do
       id="tenants-error-card"
       kind={:error}
       layout={:panel}
-      title="Organizations unavailable"
+      title="Workspaces unavailable"
       body={@load_error}
-    />
+    ><:action><.button phx-click="refresh_workspaces" variant={:secondary}>Retry</.button></:action></.state_message>
     """
   end
 
   def render(%{tenants_status: :ok} = assigns) do
     ~H"""
     <div class="space-y-6">
-      <div id="tenant-create-card">
+      <header id="tenants-page-header" class="space-y-2">
+        <h2 class="text-2xl font-semibold text-slate-900 dark:text-slate-100">Manage Workspace access</h2>
+        <p class="max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+          A Workspace is the scope for model access, Portal Users, API credentials, requests, and usage.
+          Choose a Workspace to manage its access, or create a separate scope for new work.
+        </p>
+      </header>
+
+      <.link :if={!@create_mode} navigate="/console/access/workspaces/new" class="text-sm text-navy underline">Create Workspace</.link>
+      <.link :if={@create_mode} navigate="/console/access" class="text-sm text-navy underline">Back to Workspaces</.link>
+      <p :if={!@create_mode && !Enum.any?(@tenants, &WorkspacePresentation.default?/1)} id="workspace-default-missing" role="status">Default workspace is unavailable. Refresh after checking the controller setup; no replacement scope has been created.</p>
+      <.button :if={!@create_mode} phx-click="refresh_workspaces" variant={:secondary}>Refresh Workspaces</.button>
+      <div :if={!@create_mode} id="tenants-list-card">
         <.card>
-          <:title>Create Organization</:title>
-          <:subtitle>Add a new Organization to issue API Tokens against.</:subtitle>
+          <:title>Choose a Workspace</:title>
+          <:subtitle>Access and credentials are managed independently inside each Workspace.</:subtitle>
+
+          <.table id="tenants-table" rows={@tenants} row_id={&"tenant-#{&1.id}"}>
+            <:col :let={tenant} label="Name">{WorkspacePresentation.display_name(tenant)} <span :if={WorkspacePresentation.default?(tenant)} class="text-xs text-slate-500">Default</span></:col>
+            <:col :let={tenant} label="Slug" mono>{tenant.slug}</:col>
+            <:col :let={tenant} label="Workspace ID" mono>
+              <span class="text-xs">{tenant.id}</span>
+            </:col>
+            <:col :let={tenant} label="Created" mono><.local_time value={tenant.inserted_at} format={:datetime_minute} /></:col>
+
+            <:action :let={tenant}>
+              <.link
+                id={"tenant-open-#{tenant.id}"}
+                navigate={"/console/access/workspaces/#{tenant.id}"}
+                class="inline-flex rounded-md px-2 py-1 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-400 dark:hover:bg-slate-700 dark:focus-visible:ring-sky-400"
+              >
+                Open workspace
+              </.link>
+            </:action>
+
+            <:empty>
+              <.state_message
+                id="tenants-empty-state"
+                kind={:empty}
+                layout={:compact}
+                title="No Workspaces created yet."
+              >
+                <:action>
+                  Use Create Workspace to establish an isolated scope.
+                </:action>
+              </.state_message>
+            </:empty>
+          </.table>
+        </.card>
+      </div>
+
+      <div :if={@create_mode} id="tenant-create-card">
+        <.card>
+          <:title>Create a separate Workspace</:title>
+          <:subtitle>
+            This creates the scope only. It does not grant model access, invite a Portal User, or issue an API credential.
+          </:subtitle>
 
           <.simple_form
             for={@tenant_form}
@@ -83,47 +143,9 @@ defmodule OrchardConsole.TenantsLive do
                 size={:lg}
               />
             <:actions>
-              <.button type="submit" phx-disable-with="Creating…">Create Organization</.button>
+              <.button type="submit" phx-disable-with="Creating…">Create Workspace</.button>
             </:actions>
           </.simple_form>
-        </.card>
-      </div>
-
-      <div id="tenants-list-card">
-        <.card>
-          <:title>Organizations</:title>
-
-          <.table id="tenants-table" rows={@tenants} row_id={&"tenant-#{&1.id}"}>
-            <:col :let={tenant} label="Name">{tenant.name}</:col>
-            <:col :let={tenant} label="Slug" mono>{tenant.slug}</:col>
-            <:col :let={tenant} label="Organization ID" mono>
-              <span class="text-xs">{tenant.id}</span>
-            </:col>
-            <:col :let={tenant} label="Created" mono><.local_time value={tenant.inserted_at} format={:datetime_minute} /></:col>
-
-            <:action :let={tenant}>
-              <.link
-                id={"tenant-open-#{tenant.id}"}
-                navigate={"/console/tenants/#{tenant.id}"}
-                class="text-forest-600 hover:text-forest-700 dark:text-emerald-400 dark:hover:text-emerald-300 font-medium text-sm"
-              >
-                Open
-              </.link>
-            </:action>
-
-            <:empty>
-              <.state_message
-                id="tenants-empty-state"
-                kind={:empty}
-                layout={:compact}
-                title="No Organizations created yet."
-              >
-                <:action>
-                  Create an Organization above to start issuing API Tokens.
-                </:action>
-              </.state_message>
-            </:empty>
-          </.table>
         </.card>
       </div>
     </div>
@@ -137,9 +159,9 @@ defmodule OrchardConsole.TenantsLive do
       {:ok, tenant} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Created Organization #{tenant.slug}.")
+         |> put_flash(:info, "Created Workspace #{tenant.slug}.")
          |> assign_blank_form()
-         |> load_tenants()}
+         |> push_navigate(to: "/console/access/workspaces/#{tenant.id}")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         form = changeset_to_form(changeset, :tenant, %{"slug" => "", "name" => ""})
@@ -147,7 +169,7 @@ defmodule OrchardConsole.TenantsLive do
     end
   rescue
     _ ->
-      {:noreply, put_flash(socket, :error, "Unable to create tenant.")}
+      {:noreply, put_flash(socket, :error, "Unable to create Workspace.")}
   end
 
   defp assign_loading_state(socket) do
@@ -180,7 +202,11 @@ defmodule OrchardConsole.TenantsLive do
   defp load_tenants(socket) do
     assign(socket,
       tenants_status: :ok,
-      tenants: Governance.list_tenants(),
+      tenants:
+        Enum.sort_by(
+          Governance.list_tenants(),
+          &{!WorkspacePresentation.default?(&1), WorkspacePresentation.display_name(&1), &1.id}
+        ),
       load_error: nil
     )
   rescue
@@ -188,7 +214,7 @@ defmodule OrchardConsole.TenantsLive do
       assign(socket,
         tenants_status: :error,
         tenants: [],
-        load_error: "Organization data unavailable."
+        load_error: "Workspace data unavailable."
       )
   end
 end

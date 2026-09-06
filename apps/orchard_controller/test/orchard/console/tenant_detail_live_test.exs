@@ -4,6 +4,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
   import Phoenix.LiveViewTest
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.API.Endpoint
   alias Orchard.Governance
 
   alias Orchard.Governance.{
@@ -33,12 +34,24 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       # Initial title before connected mount sets slug-specific title
       assert html =~ "Orchard Console"
       assert html =~ "tenant-summary-card"
+      assert html =~ "tenant-access-header"
+      assert html =~ "tenant-access-navigation"
+      assert html =~ "tenant-access-boundaries"
       assert html =~ "tenant-api-key-create-card"
       assert html =~ "tenant-api-keys-card"
       assert html =~ "tenant-api-clients-card"
       assert html =~ "Detail Tenant"
       assert html =~ "detail-t"
       assert html =~ tenant.id
+      assert html =~ "Everything on this page applies to"
+
+      assert html =~
+               "Portal membership, model access, and inference credentials are separate controls"
+
+      assert html =~ "Model grants are inspected here"
+      assert html =~ "An invitation does not create an inference credential"
+      assert html =~ "subject to its separate model access and policy"
+      assert html =~ "provisioned separately from Portal Users"
       # Tenant Created timestamp uses LocalTime hook
       assert html =~ "tenant-detail-created-at"
       assert html =~ ~s(phx-hook="LocalTime")
@@ -47,13 +60,13 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
     test "shows not-found state for unknown tenant ID", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/tenants/#{Ecto.UUID.generate()}")
-      assert html =~ "Organization not found"
+      assert html =~ "Workspace not found"
       assert html =~ "tenant-back-to-list"
     end
 
     test "shows not-found state for malformed ID", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/tenants/not-a-uuid")
-      assert html =~ "Organization not found"
+      assert html =~ "Workspace not found"
     end
 
     test "shows empty API keys state", %{conn: conn, tenant: tenant} do
@@ -70,9 +83,44 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
     test "back link navigates to tenants list", %{conn: conn, tenant: tenant} do
       {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
-      assert html =~ "/console/tenants"
-      assert html =~ "Back to Organizations"
+      assert html =~ "/console/access"
+      assert html =~ "Back to Workspaces"
     end
+  end
+
+  test "Workspace sections are exclusive and unknown sections fall back to Overview", %{
+    conn: conn,
+    tenant: tenant
+  } do
+    {:ok, view, _html} =
+      live(conn, "/console/access/workspaces/#{tenant.id}?section=model_access")
+
+    assert has_element?(view, "#workspace-section-overview[hidden]")
+    refute has_element?(view, "#workspace-section-model_access[hidden]")
+    assert has_element?(view, "#workspace-section-api_credentials[hidden]")
+    render_patch(view, "/console/access/workspaces/#{tenant.id}?section=unknown")
+    refute has_element?(view, "#workspace-section-overview[hidden]")
+    assert has_element?(view, "#workspace-section-model_access[hidden]")
+  end
+
+  test "changing Workspace clears revealed credentials and reloads scope", %{
+    conn: conn,
+    tenant: tenant
+  } do
+    {:ok, other} = Governance.create_tenant(%{slug: "other-detail", name: "Other"})
+
+    {:ok, view, _html} =
+      live(conn, "/console/access/workspaces/#{tenant.id}?section=api_credentials")
+
+    view
+    |> form("#tenant-api-key-create-form", api_key: %{name: "scope-secret"})
+    |> render_submit()
+
+    assert has_element?(view, "#tenant-api-key-secret-value")
+    render_patch(view, "/console/access/workspaces/#{other.id}?section=overview")
+    refute has_element?(view, "#tenant-api-key-secret-value")
+    assert has_element?(view, "#tenant-access-header", "Other")
+    refute render(view) =~ "scope-secret"
   end
 
   describe "create API key" do
@@ -111,7 +159,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert key_row =~ "—"
     end
 
-    test "renders same-Organization Developer Portal mint attribution without token secrets", %{
+    test "renders same-Workspace Developer Portal mint attribution without token secrets", %{
       conn: conn,
       tenant: tenant
     } do
@@ -161,7 +209,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       refute key_row =~ token
     end
 
-    test "renders null and cross-Organization Portal attribution as unavailable", %{
+    test "renders null and cross-Workspace Portal attribution as unavailable", %{
       conn: conn,
       tenant: tenant
     } do
@@ -343,7 +391,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert has_element?(view, "#tenant-api-client-token-revoke-#{api_key.id}")
     end
 
-    test "revokes API Client-owned API Tokens from the Organization detail page", %{
+    test "revokes API Client-owned API Tokens from the Workspace detail page", %{
       conn: conn,
       tenant: tenant
     } do
@@ -362,7 +410,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert audit_log.payload["surface"] == "console"
     end
 
-    test "revokes expired API Client-owned API Tokens from the Organization detail page", %{
+    test "revokes expired API Client-owned API Tokens from the Workspace detail page", %{
       conn: conn,
       tenant: tenant
     } do
@@ -386,7 +434,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       refute has_element?(view, "#tenant-api-client-token-revoke-#{api_key.id}")
     end
 
-    test "disables API Clients from the Organization detail page", %{
+    test "disables API Clients from the Workspace detail page", %{
       conn: conn,
       tenant: tenant
     } do
@@ -436,7 +484,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert audit_log.payload["surface"] == "console"
     end
 
-    test "shows error for cross-Organization API Client disable attempt", %{
+    test "shows error for cross-Workspace API Client disable attempt", %{
       conn: conn,
       tenant: tenant
     } do
@@ -498,9 +546,30 @@ defmodule OrchardConsole.TenantDetailLiveTest do
   describe "Portal Users" do
     setup do
       previous_mode = Application.get_env(:orchard_controller, :transport_mode, :__missing__)
+      previous_endpoint = Application.get_env(:orchard_controller, Endpoint, [])
       Application.put_env(:orchard_controller, :transport_mode, :direct_https)
 
+      Application.put_env(
+        :orchard_controller,
+        Endpoint,
+        Keyword.put(previous_endpoint, :url,
+          scheme: "https",
+          host: "orchard.test",
+          port: 443
+        )
+      )
+
+      :ok =
+        Endpoint.config_change(
+          [
+            {Endpoint, Application.fetch_env!(:orchard_controller, Endpoint)}
+          ],
+          []
+        )
+
       on_exit(fn ->
+        Application.put_env(:orchard_controller, Endpoint, previous_endpoint)
+
         case previous_mode do
           :__missing__ -> Application.delete_env(:orchard_controller, :transport_mode)
           mode -> Application.put_env(:orchard_controller, :transport_mode, mode)
@@ -518,6 +587,12 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "tenant-portal-invite-card"
       assert html =~ "tenant-portal-users-card"
       assert html =~ "tenant-portal-access-card"
+      assert html =~ "Orchard does not send email or create an API credential"
+      assert html =~ "use Copy invite and deliver the URL out of band"
+      assert html =~ "Portal access does not grant Console or cluster administration"
+      assert html =~ "does not authorize inference by itself"
+      assert html =~ ~s(id="tenant-open-portal")
+      assert html =~ ~s(href="https://orchard.test/portal/detail-t")
       assert html =~ ~s(class="bg-navy mt-7)
       refute html =~ "bg-navy-900"
 
@@ -745,6 +820,29 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       refute row =~ "Invalidated"
     end
 
+    test "configured HTTPS mode without a public HTTPS URL does not link to an HTTP Portal", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      endpoint = Application.fetch_env!(:orchard_controller, Endpoint)
+
+      http_endpoint =
+        Keyword.put(endpoint, :url,
+          scheme: "http",
+          host: "orchard.test",
+          port: 80
+        )
+
+      Application.put_env(:orchard_controller, Endpoint, http_endpoint)
+      :ok = Endpoint.config_change([{Endpoint, http_endpoint}], [])
+
+      {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      assert html =~ "The configured public HTTPS Portal address is unavailable"
+      refute html =~ ~s(id="tenant-open-portal")
+      refute html =~ ~s(href="/portal/detail-t")
+    end
+
     test "disable dismisses only the shown invite URL of the disabled Portal User", %{
       conn: conn,
       tenant: tenant
@@ -776,7 +874,9 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
       {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
       assert html =~ "tenant-portal-tls-required"
+      assert html =~ "Unavailable until public API HTTPS is enabled"
       refute html =~ "tenant-portal-invite-form"
+      refute html =~ ~s(id="tenant-open-portal")
     end
   end
 

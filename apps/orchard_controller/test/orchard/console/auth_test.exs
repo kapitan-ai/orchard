@@ -624,7 +624,7 @@ defmodule OrchardConsole.AuthTest do
 
       follow_up = conn |> recycle() |> get("/console/tenants")
       assert follow_up.status == 200
-      assert follow_up.resp_body =~ "Organizations"
+      assert follow_up.resp_body =~ "Workspaces"
     end
 
     test "returns 404 for /console/tenants/:id when console is disabled", %{conn: conn} do

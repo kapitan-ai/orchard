@@ -223,7 +223,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "Playground"
       assert has_element?(view, ~s(#console-sidebar a[href="/console/models"]), "Models")
       refute has_element?(view, ~s(#console-sidebar a[href="/console/model-hub"]), "Model Hub")
-      assert html =~ "Organizations"
+      assert html =~ "Access"
       assert html =~ "Requests"
     end
 
@@ -243,7 +243,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert has_element?(view, ~s(#console-sidebar a[href="/console/models"]), "Models")
       refute has_element?(view, ~s(#console-sidebar a[href="/console/model-hub"]), "Model Hub")
       assert html =~ "/console/requests"
-      assert html =~ "/console/tenants"
+      assert html =~ "/console/access"
     end
 
     test "renders sidebar toggle button", %{conn: conn} do

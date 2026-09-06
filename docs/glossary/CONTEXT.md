@@ -264,7 +264,7 @@ The product-facing LiveView console for local and operator UI.
 _Avoid_: Kapitan Orchard UI, admin panel
 
 **Developer Portal**:
-The Organization-scoped browser surface where an invited Portal User mints, lists, and revokes their own tenant-direct API Keys.
+The Workspace-scoped browser surface where an invited Portal User mints, lists, and revokes their own tenant-direct API Keys.
 _Avoid_: Orchard Console, Admin API, public signup
 
 **Orchard CLI**:
@@ -280,11 +280,13 @@ _Avoid_: Service Account, API Client, API Key, Tenant, Portal User
 
 **Tenant**:
 A governance boundary for model access, quotas, keys, retention, and usage accounting.
-Product-facing label: Organization.
-_Avoid_: Workspace, account, Service Account, API Key
+Product-facing label: Workspace.
+One Workspace maps to one existing Tenant UUID; the display label does not rename machine contracts or create a new hierarchy.
+The seeded Tenant is presented as the default Workspace without granting additional authority.
+_Avoid_: Organization (historical display label), account, Service Account, API Key
 
 **Team**:
-A product-facing grouping label stored as API Client metadata for filtering, reporting, and ownership context inside an Organization.
+A product-facing grouping label stored as API Client metadata for filtering, reporting, and ownership context inside a Workspace.
 _Avoid_: Tenant, Quota boundary, Routing Policy, RBAC Role
 
 **Service Account**:
@@ -293,7 +295,7 @@ Product-facing label: API Client.
 _Avoid_: User account, Tenant, API Key, Team, Portal User
 
 **Portal User**:
-An interactive, Organization-scoped identity that may sign in only to the Developer Portal and own portal-minted tenant-direct API Keys.
+An interactive, Workspace-scoped identity that may sign in only to the Developer Portal and own portal-minted tenant-direct API Keys.
 A Portal User is not a Public Inference principal, Operator, Service Account, or Owner Contact.
 _Avoid_: User account, Portal Developer, Tenant Admin, Owner Contact, Service Account
 
@@ -345,12 +347,12 @@ _Avoid_: raw CSV archive, One-time Secret Output, Audit Log
 
 **Dry Run**:
 A validation-only provisioning pass that reports intended changes and errors without creating API Clients, API Tokens, or One-time Secret Output.
-Bulk API Client Dry Run validates one Organization slug per CSV file.
+Bulk API Client Dry Run validates one Workspace slug per CSV file.
 _Avoid_: partial import, preview that mutates state
 
 **Apply**:
 A provisioning pass that commits all validated changes and emits One-time Secret Output only if the batch succeeds.
-Bulk API Client Apply validates the output path before mutation and treats the input file as an all-or-nothing batch for one Organization.
+Bulk API Client Apply validates the output path before mutation and treats the input file as an all-or-nothing batch for one Workspace.
 If One-time Secret Output delivery fails after the batch commits, Orchard marks the Provisioning Batch `output_failed` and returns API Token prefixes for revocation or rotation without persisting plaintext secrets.
 _Avoid_: Dry Run, partial import, best-effort import
 
@@ -365,7 +367,7 @@ Tenant-direct API Keys do not imply this role.
 _Avoid_: tenant admin, inference client, local dev admin
 
 **Inference Client**:
-An Access Level that permits a principal to call public inference endpoints for its Organization.
+An Access Level that permits a principal to call public inference endpoints for its Workspace.
 _Avoid_: admin, operator, tenant-admin, API Token
 
 **Quota**:

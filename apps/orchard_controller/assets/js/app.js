@@ -4,6 +4,7 @@ import "phoenix_html"
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import topbar from "../vendor/topbar"
+import {WorkspaceSections} from "./workspace_sections.mjs"
 import {
   downloadNodeEnrollmentBundle,
   nodeEnrollmentBundleAcknowledgement
@@ -14,6 +15,7 @@ import {
 // ===========================================================================
 
 let Hooks = {}
+Hooks.WorkspaceSections = WorkspaceSections
 
 const QUICKSTART_COOKIE_OPTIONS = {
   path: "/console",
