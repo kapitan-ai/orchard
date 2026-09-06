@@ -235,7 +235,27 @@ defmodule OrchardConsole.WorkspaceHandoffLiveTest do
     assert has_element?(view, "#handoff-load-state", "Workspace not found")
   end
 
-  test "refresh reports inactive model separately and removed model blocks sharing", %{
+  test "SPEC 6.2 registered models remain unavailable in first-request guidance", %{
+    conn: conn,
+    workspace: workspace
+  } do
+    model = create_model!(%{state: :registered})
+    {:ok, view, _html} = live(conn, path(workspace))
+    choose_model(view, model)
+    render_click(view, "next")
+
+    view
+    |> form("#handoff-colleague-form", colleague: %{email: "registered-model@example.test"})
+    |> render_submit()
+
+    render_click(view, "next")
+    render_click(view, "next")
+    assert has_element?(view, "#handoff-step-6", "registered")
+    assert has_element?(view, "#handoff-step-6", "not currently available for Public Inference")
+    refute has_element?(view, "#handoff-step-6", "Deprecation does not by itself block inference")
+  end
+
+  test "SPEC 6.2 deprecated models remain schedulable and removed models block sharing", %{
     conn: conn,
     workspace: workspace,
     model: model
@@ -253,7 +273,14 @@ defmodule OrchardConsole.WorkspaceHandoffLiveTest do
     assert has_element?(view, "#handoff-step-4", "deprecated")
     render_click(view, "next")
     render_click(view, "next")
+    assert has_element?(view, "#handoff-step-6", "Deprecation does not by itself block inference")
+    refute has_element?(view, "#handoff-step-6", "not currently available for Public Inference")
+
+    {:ok, _model} = Orchard.Models.retire_model(model.id)
+    render_click(view, "refresh")
+    assert has_element?(view, "#handoff-step-6", "retired")
     assert has_element?(view, "#handoff-step-6", "not currently available for Public Inference")
+    refute has_element?(view, "#handoff-step-6", "Deprecation does not by itself block inference")
     render_patch(view, path(workspace) <> "?step=4")
     Repo.delete!(model)
     render_click(view, "refresh")

@@ -430,7 +430,7 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
             <div><dt class="font-semibold">Personal API Key</dt><dd>The colleague creates their own key in the actual Portal. This Console flow does not create or inspect it.</dd></div>
             <div><dt class="font-semibold">Runtime and request</dt><dd>Not verified by this handoff.</dd></div>
           </dl>
-          <.link :if={@selected && @selected.model.state != :active} navigate="/console/models/catalog" class="text-navy dark:text-sky-400">Review the model's lifecycle in Catalog before making a request</.link>
+          <.link :if={@selected && @selected.model.state != :active} navigate="/console/models/catalog" class="text-navy dark:text-sky-400">Review the model's lifecycle in Catalog</.link>
         </div>
         <div :if={@step == 5} class="mt-4 space-y-4">
           <p>No email is sent. Deliver the Portal link separately to the intended colleague.</p>
@@ -455,7 +455,8 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
           <pre :if={@selected} id="handoff-request-example" class="overflow-x-auto rounded-md bg-slate-50 p-3 text-xs dark:bg-slate-900/60">{request_example(@selected)}</pre>
           <p id="handoff-request-result">Request result: not observed. A valid key and model grant do not prove that a compatible Node is ready.</p>
           <p :if={@selected && @selected.grant_state != :enabled}>Model access is still {grant_label(@selected.grant_state)}. Return to Model access and complete the administrator handoff first.</p>
-          <p :if={@selected && @selected.model.state != :active}>This catalog model is {@selected.model.state}, so it is not currently available for Public Inference.</p>
+          <p :if={@selected && @selected.model.state == :deprecated}>This catalog model is deprecated. Deprecation does not by itself block inference; model access and runtime readiness still apply.</p>
+          <p :if={@selected && @selected.model.state in [:registered, :retired]}>This catalog model is {@selected.model.state}, so it is not currently available for Public Inference.</p>
           <p>Console Playground uses its own default Workspace context; it does not execute this selected Workspace's handoff.</p>
         </div>
         <div class="mt-6 flex flex-wrap items-center gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">

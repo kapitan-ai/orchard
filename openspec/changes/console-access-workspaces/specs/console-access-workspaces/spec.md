@@ -165,3 +165,9 @@ Workspace management sections SHALL not be presented as completion of the guided
 #### Scenario: Narrow viewport navigation
 - **WHEN** the guided journey is used at a narrow viewport
 - **THEN** the current step, Workspace, primary action, and return/retry controls remain reachable without horizontal page overflow or scrolling to an appended step
+
+#### Scenario: Deprecated catalog state remains separate from inference readiness
+- **WHEN** the handoff's selected Model is deprecated
+- **THEN** the Console SHALL explain that deprecation alone does not block inference under SPEC section 6.2
+- **AND** Workspace access and runtime readiness SHALL remain separate prerequisites
+- **AND** registered and retired Models SHALL still be identified as unavailable for Public Inference

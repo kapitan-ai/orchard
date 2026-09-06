@@ -598,6 +598,7 @@ An already-active Portal User with missing model access needs grant recovery, no
 Keep Portal User creation and Copy invite as separate actions with real persisted status, explicit manual delivery, expiry, and reissue behavior.
 Opening the actual HTTPS Portal is a handoff, not evidence that the colleague accepted an invitation or ran a request.
 Console request guidance uses placeholder credentials and does not show completion without actual request evidence.
+Deprecated Models remain schedulable under SPEC section 6.2; handoff guidance must not describe deprecation alone as blocking inference.
 The Portal's one-time request example uses an authorized active exact Model and clearly states that runtime readiness remains unverified.
 
 ### 6.8 Workspace API Token Mint Attribution
