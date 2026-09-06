@@ -818,10 +818,6 @@ subsequent page loads. Live OS-appearance changes require the client theme
 control to register a `matchMedia` change listener; without JavaScript,
 `system` cannot resolve and the Console uses the light selector state.
 
-Tailwind's `dark:` utilities and Console dark custom rules are keyed from
-`<html data-theme="dark">`. Do not mix media-query driven app CSS with this
-selector contract.
-
 ### 13.3 Control Contract
 
 The theme control is a three-segment radiogroup mounted in the sidebar footer
@@ -840,3 +836,104 @@ fits inside the clipped sidebar without adding a second control style.
 This state-model addition satisfies §12 Change Discipline. It does not relax
 §11: no new Tailwind color tokens, font extensions, palette values, or `@theme`
 changes are part of theme mode control.
+
+Tailwind's `dark:` utilities and Console dark custom rules are keyed from
+`<html data-theme="dark">`.
+Do not mix media-query driven app CSS with this selector contract.
+
+---
+
+## 14. Guided Setup And One-Time Output
+
+Guided setup connects operator actions to system-observed state without inventing a second lifecycle model.
+These rules apply to Node Enrollment and to later multi-step setup experiences.
+
+### 14.1 Progress Structure
+
+- Use one ordered progress list with numbered steps and short verb labels.
+- Completed, current, pending, and blocked steps pair color with an icon, number, line style, or visible state text.
+- The accessible label must name the durable lifecycle or operation state.
+- Presentation labels such as **Activating** must not replace a persisted lifecycle value.
+- The main content starts with the current operator outcome, not an implementation phase name.
+- Each operator action states where it runs, what it produces, and what it does not prove.
+- Automatic state changes use a polite live region and never move keyboard focus.
+
+### 14.2 Recommended Order
+
+When independent prerequisites may occur in either order, the normal guided path still recommends the order that minimizes expiry, custody, and recovery risk.
+The interface may explain that the system does not require that order.
+It must not present operational independence as a reason to make the operator choose an order without guidance.
+
+For Node Enrollment, prepare the target Mac before issuing the short-lived bundle.
+Installation, configured service state, enrollment, registration, trust, admission, authorization, health, and scheduling remain separate visible concepts.
+
+### 14.3 Current Blocker And Recovery
+
+- Show one primary current blocker instead of a stack of warning-colored incomplete states.
+- State what is waiting, why it matters, and the exact corrective action.
+- Include stable reason codes as supplemental technical detail when the shared domain contract provides them.
+- Do not use warning or error treatment for ordinary system-managed waiting.
+- Terminal failures name whether identity, trust, or durable state was created.
+- Recovery actions must be safe for the exact state and must not imply that confirmation can bypass a blocker.
+
+### 14.4 Automatic Observation
+
+- Registration, service observation, authorization delivery, health, and activation refresh automatically at a bounded interval.
+- Show the last successful check time.
+- A **Refresh now** control may remain as a fallback.
+- Never ask the operator to record or certify a system fact that Orchard can observe directly.
+- Do not add a manual **Activate** action when lifecycle advancement is system-managed.
+
+### 14.5 One-Time Secret Output
+
+One-time secret output is visible or deliverable exactly once.
+Keep secret material in socket-owned transient state only for the response that delivers it.
+Never place it in a URL, flash message, session, cookie, log, audit payload, `data-*` attribute, or reusable endpoint.
+
+When a client hook consumes one-time output, deliver the bytes through an authenticated same-origin event.
+The hook must clear its in-memory reference and revoke any object URL after success or failure.
+The acknowledgement returns only a bounded non-secret identifier.
+The server validates that identifier against socket-owned state before changing durable publication state.
+
+Delivery failure, disconnect, or lost acknowledgement must fail closed.
+The interface must not redisplay, resend, restore, or silently renew the same secret.
+The recovery action creates new one-time output under a new durable record.
+It does not reissue onto the previous provisioned record, and the interface must say that a distinct Node name is required when uniqueness is enforced.
+
+### 14.6 Browser Download
+
+A browser download proves only that the client accepted a download attempt.
+It does not prove destination-file custody, protected transfer, or target-machine use.
+Copy must tell the operator to use a protected administrative transfer channel and keep the file out of chat, logs, tickets, and shell history.
+
+Use `application/json` for a Node Enrollment Bundle and a bounded sanitized filename.
+The visible page may show the filename and exact consuming command, but not the Bootstrap Token or raw bundle content.
+After delivery, say that the browser accepted the download attempt and continue with durable status only.
+Do not call that acknowledgement confirmed target custody or transfer.
+
+### 14.7 Form And Action Copy
+
+- Use **New machine**, not **Another machine**, for the machine being added.
+- Use **Create enrollment** for the Controller-side operation.
+- Use **Download bundle** for browser delivery.
+- Use **Create Enrollment and Download** when one action performs both operations.
+- Use **Admit Node** for the explicit human authorization boundary.
+- Use **Create new enrollment** for expired, revoked, or failed output.
+- Identify `orchardctl node join --enrollment-bundle PATH` as a target-Mac command.
+- Describe Pool as an existing scheduling group and say where it can be changed.
+- Do not use **Ready** as an umbrella state.
+
+### 14.8 Browser Verification
+
+For a guided Node Enrollment change, verify at least these states in light and dark mode:
+
+- Add Node discovery from the Nodes workspace.
+- Ordered target-Mac preparation and Controller enrollment creation.
+- Form validation and disabled action behavior.
+- Successful one-time download and exact join command.
+- Download failure without secret redisplay.
+- Registration waiting with automatic refresh and last-checked time.
+- Registered handoff to explicit admission review.
+- Expired, revoked, and output-failed recovery.
+- Narrow viewport wrapping for filenames, identifiers, commands, and evidence.
+- Keyboard focus, live-region announcements, and reduced motion.

@@ -9,7 +9,8 @@
     "npm": "11.13.0"
   },
   "scripts": {
-    "openspec": "OPENSPEC_TELEMETRY=0 openspec"
+    "openspec": "OPENSPEC_TELEMETRY=0 openspec",
+    "test:assets": "node --test apps/orchard_controller/assets/test/*.test.mjs"
   },
   "devDependencies": {
     "@fission-ai/openspec": "1.10.0",

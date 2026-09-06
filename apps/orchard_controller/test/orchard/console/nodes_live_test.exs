@@ -645,6 +645,8 @@ defmodule OrchardConsole.NodesLiveTest do
     test "renders nodes page with section titles", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
+      assert html =~ "Add Node"
+      assert html =~ "/console/nodes/new"
       assert html =~ "Inventory Summary"
       assert html =~ "Registered Nodes"
       assert html =~ "Live Cluster"

@@ -30,15 +30,15 @@ defmodule Orchard.TransportTLS.CertificateIdentity do
   )
 
   Record.defrecord(
-    :subject_public_key_info,
-    :SubjectPublicKeyInfo,
-    Record.extract(:SubjectPublicKeyInfo, from_lib: "public_key/include/public_key.hrl")
+    :certificate,
+    :Certificate,
+    Record.extract(:Certificate, from_lib: "public_key/include/public_key.hrl")
   )
 
   Record.defrecord(
-    :algorithm_identifier,
-    :AlgorithmIdentifier,
-    Record.extract(:AlgorithmIdentifier, from_lib: "public_key/include/public_key.hrl")
+    :tbs_certificate,
+    :TBSCertificate,
+    Record.extract(:TBSCertificate, from_lib: "public_key/include/public_key.hrl")
   )
 
   Record.defrecord(
@@ -98,24 +98,10 @@ defmodule Orchard.TransportTLS.CertificateIdentity do
           {:ok, String.t()} | {:error, :invalid_certificate_identity}
   def spki_fingerprint_from_pem(pem) when is_binary(pem) do
     der = decode_certificate!(pem)
-    certificate = :public_key.pkix_decode_cert(der, :otp)
-    tbs = otp_certificate(certificate, :tbsCertificate)
-    public_key_info = otp_tbs_certificate(tbs, :subjectPublicKeyInfo)
-    algorithm = otp_subject_public_key_info(public_key_info, :algorithm)
-    point = otp_subject_public_key_info(public_key_info, :subjectPublicKey)
-
-    encoded =
-      subject_public_key_info(
-        algorithm:
-          algorithm_identifier(
-            algorithm: public_key_algorithm(algorithm, :algorithm),
-            parameters: public_key_algorithm(algorithm, :parameters)
-          ),
-        subjectPublicKey: encoded_public_point(point)
-      )
-      |> then(&:public_key.der_encode(:SubjectPublicKeyInfo, &1))
-
-    {:ok, fingerprint(encoded)}
+    decoded = :public_key.der_decode(:Certificate, der)
+    tbs = certificate(decoded, :tbsCertificate)
+    public_key_info = tbs_certificate(tbs, :subjectPublicKeyInfo)
+    {:ok, fingerprint(:public_key.der_encode(:SubjectPublicKeyInfo, public_key_info))}
   rescue
     _error -> {:error, :invalid_certificate_identity}
   catch
@@ -231,9 +217,6 @@ defmodule Orchard.TransportTLS.CertificateIdentity do
       point when is_binary(point) -> {{:ECPoint, point}, parameters}
     end
   end
-
-  defp encoded_public_point({:ECPoint, point}), do: point
-  defp encoded_public_point(point) when is_binary(point), do: point
 
   defp certificate_public_point(der) do
     {{:ECPoint, point}, _parameters} = certificate_public_key(der)

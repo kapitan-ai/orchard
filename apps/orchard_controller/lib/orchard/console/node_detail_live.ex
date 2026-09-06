@@ -15,6 +15,7 @@ defmodule OrchardConsole.NodeDetailLive do
   }
 
   alias Orchard.ControlPlane
+  alias Orchard.NodeEnrollments
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, Lifecycle, Node}
 
@@ -74,7 +75,8 @@ defmodule OrchardConsole.NodeDetailLive do
   @impl true
   def handle_event("open_admit", _params, socket) do
     if can_open_admit?(socket.assigns.target_kind, socket.assigns.record, socket.assigns.status) do
-      {:noreply, put_action(socket, :admit, default_action_inputs(:admit), false)}
+      inputs = default_admission_inputs(socket.assigns.record)
+      {:noreply, put_action(socket, :admit, inputs, false)}
     else
       {:noreply, socket}
     end
@@ -179,7 +181,7 @@ defmodule OrchardConsole.NodeDetailLive do
                     size={:sm}
                     phx-click="open_admit"
                   >
-                    Preview admit
+                    Admit Node
                   </.button>
                   <.button
                     :if={can_open_reject?(@target_kind, @record, @status)}
@@ -769,16 +771,6 @@ defmodule OrchardConsole.NodeDetailLive do
 
   defp audit_opts, do: [actor_type: "operator", actor_id: nil]
 
-  defp default_action_inputs(:admit) do
-    %{
-      "trust_evidence_ref" => "",
-      "pool_id" => "",
-      "routing_policy_id" => "",
-      "capacity_policy_reason" => "",
-      "controller_dispatch_ceiling" => 1
-    }
-  end
-
   defp default_action_inputs(:reject), do: %{"reason" => ""}
 
   defp default_action_inputs(:decommission) do
@@ -790,6 +782,38 @@ defmodule OrchardConsole.NodeDetailLive do
   defp default_action_inputs(action) when action in @lifecycle_actions do
     %{"reason" => ""}
   end
+
+  defp default_admission_inputs(node) do
+    enrollment = enrollment_for_node(node)
+
+    %{
+      "trust_evidence_ref" => trust_evidence_ref(enrollment),
+      "pool_id" => enrollment_pool_intent(enrollment),
+      "routing_policy_id" => "",
+      "capacity_policy_reason" => "",
+      "controller_dispatch_ceiling" => 1
+    }
+  end
+
+  defp enrollment_for_node(%Node{id: node_id}) do
+    case NodeEnrollments.latest_for_node(node_id) do
+      {:ok, enrollment} -> enrollment
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp enrollment_for_node(_node), do: nil
+
+  defp enrollment_pool_intent(%{audit_metadata: %{"initial_pool_id" => pool_id}})
+       when is_binary(pool_id),
+       do: pool_id
+
+  defp enrollment_pool_intent(_enrollment), do: ""
+
+  defp trust_evidence_ref(%{certificate_identifier: identifier}) when is_binary(identifier),
+    do: "node-enrollment-certificate:#{identifier}"
+
+  defp trust_evidence_ref(_enrollment), do: ""
 
   defp normalize_action_inputs(:admit, params) do
     %{
@@ -1167,7 +1191,7 @@ defmodule OrchardConsole.NodeDetailLive do
   defp action_title(:resume), do: "Resume Node Preview"
   defp action_title(:decommission), do: "Decommission Node Preview"
 
-  defp action_submit_label(:admit), do: "Admit node"
+  defp action_submit_label(:admit), do: "Admit Node"
   defp action_submit_label(:reject), do: "Reject admission"
   defp action_submit_label(:cordon), do: "Cordon node"
   defp action_submit_label(:uncordon), do: "Uncordon node"

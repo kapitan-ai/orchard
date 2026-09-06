@@ -10,8 +10,8 @@ defmodule OrchardCLI.Commands.Status do
     orchardctl status help  — Show usage
   """
 
+  alias Orchard.EndpointMetadata
   alias OrchardCLI.Commands.LifecycleSupport
-  alias OrchardCLI.EndpointMetadata
 
   @default_support_root "/Library/Application Support/Orchard"
   @connect_timeout_ms 2_000

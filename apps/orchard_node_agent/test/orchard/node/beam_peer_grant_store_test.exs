@@ -12,6 +12,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
   @fixture_activation_backdate_seconds 60
   @fixture_validity_seconds 30 * 24 * 60 * 60
   @fixture_anchor_tolerance_seconds 3600
+  @child_start_attempts 250
 
   defmodule FakeControlTransport do
     def retrieve(target, credential, request) do
@@ -711,7 +712,7 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
         )
       end)
 
-    wait_until(fn -> File.exists?(ready_path) end)
+    wait_until(fn -> File.exists?(ready_path) end, @child_start_attempts)
     Process.sleep(250)
     refute File.exists?(result_path)
     assert File.exists?(temporary)

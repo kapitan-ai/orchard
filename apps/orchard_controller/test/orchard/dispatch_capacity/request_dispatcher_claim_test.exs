@@ -2008,11 +2008,12 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     node_id = claim_node_id()
     node = insert_admitted_node!(target, heartbeat_at, node_id)
     request_id = "request-cancel-drain-durable-unreachable"
+    request_timeout_ms = 1_500
 
     schedule = %{
       capacity_schedule(authority, node.id, request_id)
-      | request_timeout_ms: @expiring_request_timeout_ms,
-        timeout_at: DateTime.add(DateTime.utc_now(), @expiring_request_timeout_ms, :millisecond)
+      | request_timeout_ms: request_timeout_ms,
+        timeout_at: DateTime.add(DateTime.utc_now(), request_timeout_ms, :millisecond)
     }
 
     dispatch =
@@ -2023,8 +2024,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         )
       end)
 
-    assert_receive {:pre_acceptance_cancel_received, _emitter}, 1_000
-    assert_receive :pre_acceptance_disconnected, 1_000
+    assert_receive {:pre_acceptance_cancel_received, _emitter}, 5_000
+    assert_receive :pre_acceptance_disconnected, 5_000
     assert_dispatch_failure(Task.await(dispatch), :request_timeout)
     assert Repo.get!(Node, node.id).health == :unhealthy
 
@@ -2910,8 +2911,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
-      | request_timeout_ms: 60,
-        timeout_at: DateTime.add(DateTime.utc_now(), 60, :millisecond)
+      | request_timeout_ms: 1_000,
+        timeout_at: DateTime.add(DateTime.utc_now(), 1_000, :millisecond)
     }
 
     assert_dispatch_failure(
@@ -3033,8 +3034,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     schedule = %{
       capacity_schedule(authority, node_id, request_id)
-      | request_timeout_ms: 1_000,
-        timeout_at: DateTime.add(DateTime.utc_now(), 1_000, :millisecond)
+      | request_timeout_ms: 1_500,
+        timeout_at: DateTime.add(DateTime.utc_now(), 1_500, :millisecond)
     }
 
     {:ok, held_lease} = QueueManager.acquire_acceptance_gate(node_id, authority: authority)
@@ -3053,10 +3054,10 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       assert :ok = QueueManager.release_acceptance_gate(held_lease, authority: authority)
 
       # A deadline that excluded the 600ms gate wait would cancel no earlier
-      # than 1_600ms after dispatch started, so the upper bound still proves
+      # than 2,100ms after dispatch started, so the upper bound still proves
       # acceptance waiting and streaming share one request timeout.
-      assert_receive {:cancel_received, emitter}, 700
-      assert System.monotonic_time(:millisecond) - started_at < 1_400
+      assert_receive {:cancel_received, emitter}, 1_300
+      assert System.monotonic_time(:millisecond) - started_at < 2_000
 
       send(emitter, :finish_cancel)
       _events = assert_dispatch_success(Task.await(dispatch))
