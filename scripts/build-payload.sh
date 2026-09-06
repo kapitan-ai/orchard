@@ -858,7 +858,7 @@ validate_captured_source_identity
 # Create staging directory
 log_info "Creating payload staging..."
 STAGING="$EXPECTED_STAGING_ROOT"
-mkdir -p "$STAGING"/{releases,native,share/{bin,launchd},config,logs,support}
+mkdir -p "$STAGING"/{releases,native,share/{bin,launchd},config,logs,support/openssl}
 STAGING_CREATED=true
 
 # Copy releases
