@@ -2,6 +2,7 @@ defmodule OrchardConsole.AuthTest do
   use Orchard.ConnCase, async: false
 
   @moduletag :live
+  @moduletag :db
 
   setup do
     previous = Application.get_env(:orchard_controller, :console, [])

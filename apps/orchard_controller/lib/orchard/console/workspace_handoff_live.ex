@@ -30,7 +30,9 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
     socket =
       if connected?(socket) and socket.assigns.status == :loading, do: load(socket), else: socket
 
-    step = min(requested_step(params["step"], socket.assigns.step), navigation_limit(socket.assigns))
+    step =
+      min(requested_step(params["step"], socket.assigns.step), navigation_limit(socket.assigns))
+
     socket = if step == 5, do: socket, else: clear_invite(socket)
     {:noreply, assign(socket, step: step)}
   end
@@ -398,7 +400,7 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
           <p :if={@rows == []}>No catalog models are available. Import a model from Models, then return and refresh.</p>
           <.form :if={@rows != []} for={to_form(%{"id" => @model_id || ""}, as: :model)} id="handoff-model-form" phx-change="choose_model">
             <label for="handoff-model-id" class="block text-sm font-medium">Catalog model</label>
-            <select id="handoff-model-id" name="model[id]" class="mt-2 w-full rounded-md border border-slate-200 bg-slate-50 p-3 text-sm shadow-inner dark:border-slate-700 dark:bg-slate-900/60">
+            <select id="handoff-model-id" name="model[id]" class="mt-2 w-full rounded-md border border-slate-200 bg-slate-50 p-3 text-sm shadow-inner focus-visible:outline-none focus-visible:border-navy focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-slate-700 dark:bg-slate-900/60 dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400/40 dark:focus-visible:ring-offset-slate-900">
               <option value="">Choose a model</option>
               <option :for={row <- @rows} value={row.model.id} selected={@model_id == row.model.id}>{identity(row.model)} - {grant_label(row.grant_state)}</option>
             </select>

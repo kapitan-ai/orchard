@@ -60,6 +60,16 @@ defmodule OrchardConsole.WorkspaceHandoffLiveTest do
     assert has_element?(view, "#handoff-step-2")
   end
 
+  test "catalog model selector preserves DESIGN keyboard focus in light and dark themes",
+       %{conn: conn, workspace: workspace} do
+    {:ok, view, _html} = live(conn, path(workspace))
+
+    for token <-
+          ~w(focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-white focus-visible:border-navy focus-visible:ring-navy/40 dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400/40 dark:focus-visible:ring-offset-slate-900) do
+      assert has_element?(view, ~s(#handoff-model-id[class~="#{token}"]))
+    end
+  end
+
   test "missing grant gives exact scoped administrator commands and refresh observes actual grant",
        %{conn: conn, workspace: workspace, model: model} do
     {:ok, view, _html} = live(conn, path(workspace))
