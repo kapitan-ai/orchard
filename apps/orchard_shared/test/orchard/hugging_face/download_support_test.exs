@@ -89,6 +89,91 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
     assert File.read!(Path.join(ctx.tmp_dir, "config.json")) == @file_content
   end
 
+  test "pause after an ignored Range response restarts without corrupting the file", ctx do
+    control = :atomics.new(1, [])
+    count = :atomics.new(1, [])
+    {:ok, root} = Orchard.PathUtils.resolve_realpath(ctx.tmp_dir)
+    partial = Path.join(root, "config.json.partial")
+    File.write!(partial, binary_part(@file_content, 0, 5))
+    File.write!(partial <> ".etag", @file_etag)
+
+    request = fn
+      :head, _, _ ->
+        {:ok, %{status: 200, headers: %{}}}
+
+      :get, _, opts ->
+        into = Keyword.fetch!(opts, :into)
+        headers = Keyword.fetch!(opts, :headers)
+
+        case :atomics.add_get(count, 1, 1) do
+          1 ->
+            assert {"range", "bytes=5-"} in headers
+            :atomics.put(control, 1, 1)
+            first = binary_part(@file_content, 0, 3)
+            assert {:halt, {_, response}} = into.({:data, first}, {%{}, %{status: 200}})
+            {:ok, response}
+
+          2 ->
+            offset =
+              case List.keyfind(headers, "range", 0) do
+                {"range", "bytes=" <> range} -> range |> String.trim_trailing("-") |> String.to_integer()
+                nil -> 0
+              end
+
+            remaining = binary_part(@file_content, offset, @file_size - offset)
+            status = if offset == 0, do: 200, else: 206
+            assert {:cont, {_, response}} = into.({:data, remaining}, {%{}, %{status: status}})
+            {:ok, response}
+        end
+    end
+
+    opts =
+      base_opts(ctx.tmp_dir, request) ++
+        [
+          control_fun: fn -> if :atomics.get(control, 1) == 1, do: {:error, :paused}, else: :ok end,
+          wait_fun: fn -> :atomics.put(control, 1, 0) end
+        ]
+
+    assert {:ok, %{files_completed: 1}} = DownloadSupport.download_all(ctx.file_metas, opts)
+    assert File.read!(Path.join(ctx.tmp_dir, "config.json")) == @file_content
+    assert :atomics.get(count, 1) == 2
+    refute File.exists?(partial)
+    refute File.exists?(partial <> ".etag")
+  end
+
+  test "pause fails closed when an ignored Range partial cannot be discarded", ctx do
+    control = :atomics.new(1, [])
+    {:ok, root} = Orchard.PathUtils.resolve_realpath(ctx.tmp_dir)
+    partial = Path.join(root, "config.json.partial")
+    File.write!(partial, binary_part(@file_content, 0, 5))
+    File.write!(partial <> ".etag", @file_etag)
+
+    request = fn
+      :head, _, _ ->
+        {:ok, %{status: 200, headers: %{}}}
+
+      :get, _, opts ->
+        :atomics.put(control, 1, 1)
+        into = Keyword.fetch!(opts, :into)
+        assert {:halt, {_, response}} = into.({:data, "bad"}, {%{}, %{status: 200}})
+        File.rm!(partial)
+        File.mkdir!(partial)
+        {:ok, response}
+    end
+
+    opts =
+      base_opts(ctx.tmp_dir, request) ++
+        [
+          control_fun: fn -> if :atomics.get(control, 1) == 1, do: {:error, :paused}, else: :ok end,
+          wait_fun: fn -> flunk("must not acknowledge pause with invalid retained state") end
+        ]
+
+    assert {:error, {:filesystem_error, :remove, ^partial, _reason}} =
+             DownloadSupport.download_all(ctx.file_metas, opts)
+
+    refute File.exists?(Path.join(ctx.tmp_dir, "config.json"))
+  end
+
   test "cancellation halts before starting a file", ctx do
     opts =
       base_opts(ctx.tmp_dir, fn _, _, _ -> flunk("request after cancellation") end) ++

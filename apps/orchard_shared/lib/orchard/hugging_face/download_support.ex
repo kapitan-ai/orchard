@@ -437,6 +437,18 @@ defmodule Orchard.HuggingFace.DownloadSupport do
     {:error, {:filesystem_error, :write, state.partial_path, :disk_write_failed}}
   end
 
+  defp finalize_stream(
+         %{resume?: true} = state,
+         {:ok, %{status: 200}},
+         _bytes_written,
+         false,
+         {true, reason}
+       ) do
+    with :ok <- clear_resume_state(state.partial_path, state.etag_path) do
+      {:error, {:callback_failed, reason}}
+    end
+  end
+
   defp finalize_stream(_state, _result, _bytes_written, false, {true, reason}) do
     {:error, {:callback_failed, reason}}
   end
@@ -477,14 +489,13 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   end
 
   defp restart_without_resume(state) do
-    File.rm(state.partial_path)
-    File.rm(state.etag_path)
-
-    if state.attempt < state.context.max_attempts do
-      backoff(state.attempt)
-      retry_download(state)
-    else
-      {:error, {:range_resume_not_supported, state.file_meta.path}}
+    with :ok <- clear_resume_state(state.partial_path, state.etag_path) do
+      if state.attempt < state.context.max_attempts do
+        backoff(state.attempt)
+        retry_download(state)
+      else
+        {:error, {:range_resume_not_supported, state.file_meta.path}}
+      end
     end
   end
 
@@ -557,8 +568,9 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   defp handle_http_error(%{resume?: true} = state, 416) do
     # Stale/corrupted .partial is larger than the real file.
     # Clear scratch state and retry as a fresh download (same attempt number).
-    clear_resume_state(state.partial_path, state.etag_path)
-    download_with_retry(state.context, state.file_meta, state.progress, state.attempt)
+    with :ok <- clear_resume_state(state.partial_path, state.etag_path) do
+      download_with_retry(state.context, state.file_meta, state.progress, state.attempt)
+    end
   end
 
   defp handle_http_error(state, status) do
@@ -597,10 +609,13 @@ defmodule Orchard.HuggingFace.DownloadSupport do
           {:ok, resume_file_size(partial_path)}
 
         true ->
-          clear_resume_state(partial_path, etag_path)
-          {:ok, {0, false}}
+          reset_resume_offset(partial_path, etag_path)
       end
     end
+  end
+
+  defp reset_resume_offset(partial_path, etag_path) do
+    with :ok <- clear_resume_state(partial_path, etag_path), do: {:ok, {0, false}}
   end
 
   defp resume_allowed?(etag_path, remote_etag) when is_binary(remote_etag) do
@@ -617,8 +632,13 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   end
 
   defp clear_resume_state(partial_path, etag_path) do
-    File.rm(partial_path)
-    File.rm(etag_path)
+    Enum.reduce_while([partial_path, etag_path], :ok, fn path, :ok ->
+      case File.rm(path) do
+        :ok -> {:cont, :ok}
+        {:error, :enoent} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:filesystem_error, :remove, path, reason}}}
+      end
+    end)
   end
 
   defp range_headers(true, offset) when offset > 0, do: [{"range", "bytes=#{offset}-"}]
