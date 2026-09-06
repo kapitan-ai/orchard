@@ -47,10 +47,12 @@ defmodule OrchardConsole.NodeDetailLiveTest do
   use Orchard.ConnCase, async: false
 
   import Orchard.TestSupport.ModelRequestFixtures, only: [create_model!: 1]
+  import Ecto.Query
   import Phoenix.LiveViewTest
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.DispatchCapacity.Policy
+  alias Orchard.NodeEnrollments
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
   alias Orchard.NodeTrust
@@ -115,7 +117,7 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert html =~ "node-detail-scheduling"
       assert html =~ "Blocked"
       assert html =~ "node_not_admitted"
-      assert html =~ "Preview admit"
+      assert html =~ "Admit Node"
       assert html =~ "Preview reject"
     end
 
@@ -202,7 +204,7 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert html =~ "node-detail-inventory-evidence"
       assert html =~ "node-detail-compatibility-evidence"
       assert html =~ "Preview reject"
-      refute html =~ "Preview admit"
+      refute html =~ "Admit Node"
     end
 
     test "renders not found state for missing candidates", %{conn: conn} do
@@ -237,7 +239,7 @@ defmodule OrchardConsole.NodeDetailLiveTest do
 
       refute html =~ "otherwise clears it"
       assert html =~ "Preview reject"
-      refute html =~ "Preview admit"
+      refute html =~ "Admit Node"
     end
 
     test "renders command sequence as a visibly numbered recessed code well", %{conn: conn} do
@@ -302,6 +304,46 @@ defmodule OrchardConsole.NodeDetailLiveTest do
   end
 
   describe "admission action previews" do
+    test "pre-fills the non-authoritative pool intent from Node Enrollment", %{conn: conn} do
+      trust = establish_local_controller_identity!()
+      now = DateTime.utc_now()
+
+      assert {:ok, result} =
+               NodeEnrollments.create(
+                 %{
+                   cluster_id: trust.cluster_id,
+                   expected_controller_id: trust.controller_id,
+                   trust_authority_id: trust.trust_authority_id,
+                   creator_type: "operator",
+                   expires_at: DateTime.add(now, 3_600, :second),
+                   node: %{display_name: "pool-intent-node"},
+                   audit_metadata: %{
+                     "surface" => "console",
+                     "initial_pool_id" => "general"
+                   }
+                 },
+                 now: now
+               )
+
+      from(node in Node, where: node.id == ^result.enrollment.node_id)
+      |> Repo.update_all(
+        set: [
+          state: :registered,
+          hostname: "pool-intent-node.local",
+          advertise_addr: "10.40.0.20",
+          rpc_port: 50_071,
+          connect_host: "10.40.0.20",
+          connect_port: 50_071
+        ]
+      )
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{result.enrollment.node_id}")
+      view |> element("#node-detail-open-admit") |> render_click()
+
+      assert has_element?(view, "#action-pool-id[value='general']")
+      assert render(view) =~ "Admit Node Preview"
+    end
+
     test "previews and executes node admit with shared blockers and confirmation", %{conn: conn} do
       trust = establish_local_controller_identity!()
 

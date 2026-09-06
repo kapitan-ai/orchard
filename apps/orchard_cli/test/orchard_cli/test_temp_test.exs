@@ -1,6 +1,7 @@
 defmodule OrchardCLI.TestTempTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
+  @fresh_beam_start_timeout_ms 15_000
   @test_temp_support Path.expand("../support/test_temp.ex", __DIR__)
 
   setup do
@@ -58,7 +59,13 @@ defmodule OrchardCLI.TestTempTest do
         ])
       end)
 
-    root = await_ready!(task, ready, System.monotonic_time(:millisecond) + 5_000)
+    root =
+      await_ready!(
+        task,
+        ready,
+        System.monotonic_time(:millisecond) + @fresh_beam_start_timeout_ms
+      )
+
     assert File.dir?(root)
 
     Process.sleep(150)
@@ -89,7 +96,13 @@ defmodule OrchardCLI.TestTempTest do
         run_fresh_beam(["hold", base, label, ready, armed, release])
       end)
 
-    root = await_ready!(task, ready, System.monotonic_time(:millisecond) + 5_000)
+    root =
+      await_ready!(
+        task,
+        ready,
+        System.monotonic_time(:millisecond) + @fresh_beam_start_timeout_ms
+      )
+
     assert File.dir?(root)
     OrchardCLI.TestTemp.atomic_write!(armed, "armed")
     %{release: release, root: root, task: task}

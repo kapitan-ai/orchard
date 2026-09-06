@@ -100,6 +100,7 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
   alias Orchard.ClusterManagement.StatusBuilder
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: TransportClient
   alias Orchard.DispatchCapacity
+  alias Orchard.EndpointMetadata
   alias Orchard.Inference
   alias Orchard.Node.ModelManager
   alias Orchard.Node.Supervisor, as: NodeSupervisor
@@ -123,7 +124,6 @@ defmodule OrchardCLI.Commands.NodeJoinTest do
   alias Orchard.TransportTLS.PeerVerifier
   alias OrchardCLI.Commands.Node
   alias OrchardCLI.Commands.Nodes
-  alias OrchardCLI.EndpointMetadata
   alias OrchardCLI.NodeEnrollmentBundle
   alias OrchardCLI.NodeIdentity.Store
   alias OrchardCLI.PinnedHTTPS

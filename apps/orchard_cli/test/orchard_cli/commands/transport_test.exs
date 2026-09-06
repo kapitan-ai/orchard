@@ -234,7 +234,7 @@ defmodule OrchardCLI.Commands.TransportTest do
       assert Bitwise.band(File.stat!(public_ca).mode, 0o777) == 0o644
 
       assert {:ok, endpoint} =
-               OrchardCLI.EndpointMetadata.read(
+               Orchard.EndpointMetadata.read(
                  path: Path.join([support_root, "public", "endpoint.json"])
                )
 
@@ -395,9 +395,7 @@ defmodule OrchardCLI.Commands.TransportTest do
       assert controller_env =~ ~r/^ORCHARD_TRANSPORT_MODE="direct_https"$/m
 
       {:ok, endpoint} =
-        OrchardCLI.EndpointMetadata.read(
-          path: Path.join([support_root, "public", "endpoint.json"])
-        )
+        Orchard.EndpointMetadata.read(path: Path.join([support_root, "public", "endpoint.json"]))
 
       assert endpoint.ca_certfile == nil
     after
@@ -432,9 +430,7 @@ defmodule OrchardCLI.Commands.TransportTest do
       assert controller_env =~ ~r/^ORCHARD_API_HTTPS_PORT="9443"$/m
 
       {:ok, endpoint} =
-        OrchardCLI.EndpointMetadata.read(
-          path: Path.join([support_root, "public", "endpoint.json"])
-        )
+        Orchard.EndpointMetadata.read(path: Path.join([support_root, "public", "endpoint.json"]))
 
       assert endpoint.api_https_port == 9443
     after

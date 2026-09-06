@@ -1,10 +1,8 @@
 defmodule OrchardCLI.Commands.NodeEnrollment do
   @moduledoc false
 
+  alias Orchard.NodeEnrollmentBundle
   alias Orchard.NodeEnrollments
-  alias Orchard.NodeTrust
-  alias OrchardCLI.CertificatePin
-  alias OrchardCLI.EndpointMetadata
   alias OrchardCLI.ExclusiveOutput
   alias OrchardCLI.RepoRuntime
 
@@ -78,51 +76,33 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
   defp issue(options) do
     output = output_impl()
 
-    with {:ok, trust} <- NodeTrust.public_material(),
-         {:ok, endpoint} <- controller_https_endpoint(),
-         {:ok, reservation} <- reserve_output(output, options.output_path) do
-      issue_reserved(output, reservation, options, trust, endpoint)
-    else
+    case reserve_output(output, options.output_path) do
+      {:ok, reservation} -> issue_reserved(output, reservation, options)
       {:error, reason} -> command_error(reason)
     end
   end
 
-  defp issue_reserved(output, reservation, options, trust, endpoint) do
-    now = DateTime.utc_now()
-    expires_at = DateTime.add(now, options.expiry_seconds, :second)
-
+  defp issue_reserved(output, reservation, options) do
     attrs = %{
-      audit_metadata: %{"surface" => "local_orchardctl"},
-      cluster_id: trust.cluster_id,
       creator_id: "local-orchardctl",
       creator_type: "operator",
-      expected_controller_id: trust.controller_id,
-      expires_at: expires_at,
-      resume_verifier_metadata: %{"algorithm" => "sha256", "version" => 1},
-      trust_authority_id: trust.trust_authority_id
+      display_name: nil,
+      expiry_seconds: options.expiry_seconds,
+      surface: "local_orchardctl"
     }
 
-    with {:ok, _reconciliation} <-
-           NodeEnrollments.reconcile_stale_pending_publications(now: now),
-         {:ok, result} <- NodeEnrollments.create(attrs, now: now) do
-      publish_bundle(output, reservation, result, trust, endpoint)
-    else
+    case bundle_issuer_impl().issue(attrs) do
+      {:ok, bundle} ->
+        publish_bundle(output, reservation, bundle)
+
       {:error, reason} ->
         output.release(reservation)
         command_error(reason)
     end
   end
 
-  defp publish_bundle(output, reservation, result, trust, endpoint) do
-    bundle = enrollment_bundle(result, trust, endpoint)
-
-    case Jason.encode(bundle, pretty: true) do
-      {:ok, json} ->
-        publish_encoded_bundle(output, reservation, result.enrollment.id, json <> "\n")
-
-      {:error, _reason} ->
-        handle_publication_failure(output, reservation, result.enrollment.id)
-    end
+  defp publish_bundle(output, reservation, bundle) do
+    publish_encoded_bundle(output, reservation, bundle.enrollment.id, bundle.contents)
   end
 
   defp publish_encoded_bundle(output, reservation, enrollment_id, contents) do
@@ -194,26 +174,6 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
        "Enrollment ID: #{enrollment_id}"}
   end
 
-  defp enrollment_bundle(result, trust, endpoint) do
-    %{
-      version: 1,
-      enrollment_id: result.enrollment.id,
-      node_id: result.enrollment.node_id,
-      cluster_id: trust.cluster_id,
-      expires_at: DateTime.to_iso8601(result.enrollment.expires_at),
-      issued_at: DateTime.to_iso8601(result.enrollment.issued_at),
-      controller: %{
-        https_endpoint: endpoint.address,
-        https_trust_anchor_pem: endpoint.trust_anchor_pem,
-        https_trust_spki_sha256: endpoint.trust_spki_sha256,
-        id: trust.controller_id,
-        runtime_trust_spki_sha256: trust.ca_spki_fingerprint,
-        uri_san: trust.controller_uri_san
-      },
-      token: result.bootstrap_token
-    }
-  end
-
   defp handle_publication_failure(output, reservation, enrollment_id) do
     case output.release(reservation) do
       :ok ->
@@ -259,49 +219,6 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     )
   end
 
-  defp controller_https_endpoint do
-    with {:ok, metadata} <- EndpointMetadata.read(),
-         :ok <- require_https_transport(metadata),
-         {:ok, host} <- required_metadata(metadata.public_host, :public_host),
-         {:ok, port} <- required_metadata(metadata.api_https_port, :api_https_port),
-         {:ok, ca_certfile} <- required_metadata(metadata.ca_certfile, :ca_certfile),
-         {:ok, trust} <- https_trust_material(ca_certfile) do
-      {:ok,
-       %{
-         address: "https://#{endpoint_host(host)}:#{port}",
-         trust_anchor_pem: trust.pem,
-         trust_spki_sha256: trust.spki_sha256
-       }}
-    end
-  end
-
-  defp https_trust_material(path) do
-    with {:ok, pem} <- File.read(path),
-         {:ok, der} <- CertificatePin.decode_pem(pem),
-         {:ok, fingerprint} <- CertificatePin.from_der(der) do
-      {:ok, %{pem: pem, spki_sha256: fingerprint}}
-    else
-      _reason -> {:error, :controller_https_trust_invalid}
-    end
-  end
-
-  defp require_https_transport(%{transport_mode: mode})
-       when mode in ["direct_https", "reverse_proxy"],
-       do: :ok
-
-  defp require_https_transport(_metadata), do: {:error, :controller_https_not_configured}
-
-  defp required_metadata(nil, _field), do: {:error, :controller_https_not_configured}
-  defp required_metadata(value, _field), do: {:ok, value}
-
-  defp endpoint_host(host) do
-    if String.contains?(host, ":") do
-      "[#{host}]"
-    else
-      host
-    end
-  end
-
   defp reserve_output(output, path) do
     case output.reserve(path) do
       {:ok, reservation} -> {:ok, reservation}
@@ -313,6 +230,14 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
 
   defp output_impl do
     Application.get_env(:orchard_cli, :node_enrollment_output_impl, ExclusiveOutput)
+  end
+
+  defp bundle_issuer_impl do
+    Application.get_env(
+      :orchard_cli,
+      :node_enrollment_bundle_impl,
+      NodeEnrollmentBundle
+    )
   end
 
   defp command_error({:error, message, code}), do: {:error, message, code}
@@ -359,9 +284,27 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     {:error, "Error: Controller leadership could not be proven; no Enrollment was issued.", 1}
   end
 
+  defp command_error({:bundle_publication_failed, enrollment_id, :output_failed, failure_code}) do
+    {:error,
+     "Error: Enrollment #{enrollment_id} is output_failed because #{failure_label(failure_code)}. No bundle was published. Correct the Controller configuration, then create a new enrollment.",
+     1}
+  end
+
+  defp command_error(
+         {:bundle_publication_reconciliation_failed, enrollment_id, failure_code,
+          _reconciliation_reason}
+       ) do
+    {:error,
+     "Error: no bundle was published. Enrollment #{enrollment_id} remains non-redeemable pending reconciliation after #{failure_label(failure_code)}, and its provisioned Node name remains reserved. Record the Enrollment ID and retry with a distinct Node name after Controller recovery.",
+     1}
+  end
+
   defp command_error(_reason) do
     {:error, "Error: Node Enrollment issuance failed.", 1}
   end
+
+  defp failure_label(:bundle_too_large), do: "the enrollment bundle exceeded 65536 bytes"
+  defp failure_label(:bundle_encoding_failed), do: "the enrollment bundle could not be encoded"
 
   defp usage do
     "Usage: orchardctl nodes enrollment create --output PATH [--expires-in DURATION]"

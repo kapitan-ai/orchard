@@ -1,11 +1,13 @@
 defmodule Orchard.NodeEnrollmentsTest do
-  use Orchard.DataCase, async: true
+  use Orchard.DataCase, async: false
 
   import Ecto.Query
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance.AuditLog
   alias Orchard.NodeEnrollment.PKI
   alias Orchard.NodeEnrollments
+  alias Orchard.Nodes.{Enrollment, Node}
   alias Orchard.Repo
 
   test "OpenSpec task 2.1 creates a versioned Node Enrollment with hash-only token persistence" do
@@ -168,7 +170,79 @@ defmodule Orchard.NodeEnrollmentsTest do
     refute inspect(audits) =~ result.bootstrap_token
   end
 
-  defp create_pending!(now) do
+  test "concurrent publication success and failure serialize to one durable outcome" do
+    now = ~U[2026-07-10 03:30:00Z]
+    result = begin_unboxed_pending!(now)
+    enrollment_id = result.enrollment.id
+
+    issued_task =
+      Task.async(fn ->
+        receive do
+          :go ->
+            Sandbox.unboxed_run(Repo, fn ->
+              NodeEnrollments.mark_issued(enrollment_id, now: now)
+            end)
+        end
+      end)
+
+    failed_task =
+      Task.async(fn ->
+        receive do
+          :go ->
+            Sandbox.unboxed_run(Repo, fn ->
+              NodeEnrollments.mark_output_failed(enrollment_id, now: now)
+            end)
+        end
+      end)
+
+    send(issued_task.pid, :go)
+    send(failed_task.pid, :go)
+
+    results = [Task.await(issued_task), Task.await(failed_task)]
+
+    assert Enum.count(results, &match?({:ok, _enrollment}, &1)) == 1
+    assert Enum.count(results, &(&1 == {:error, :invalid_enrollment_state})) == 1
+
+    {enrollment, actions} =
+      Sandbox.unboxed_run(Repo, fn ->
+        assert {:ok, enrollment} = NodeEnrollments.fetch(enrollment_id)
+
+        actions =
+          Repo.all(
+            from(audit in AuditLog,
+              where: audit.target_id == ^enrollment_id,
+              order_by: [asc: audit.id],
+              select: audit.action
+            )
+          )
+
+        {enrollment, actions}
+      end)
+
+    assert enrollment.state in [:issued, :output_failed]
+
+    expected_transition =
+      if enrollment.state == :issued,
+        do: "node_enrollment.issued",
+        else: "node_enrollment.output_failed"
+
+    assert actions == ["node_enrollment.publication_pending", expected_transition]
+  end
+
+  test "returns the Enrollment for a provisioned node without exposing its token" do
+    now = ~U[2026-07-10 04:00:00Z]
+    result = create_pending!(now)
+
+    assert {:ok, enrollment} = NodeEnrollments.latest_for_node(result.enrollment.node_id)
+    assert enrollment.id == result.enrollment.id
+    assert enrollment.node.id == result.enrollment.node_id
+    refute inspect(enrollment) =~ result.bootstrap_token
+
+    assert {:error, :enrollment_not_found} =
+             NodeEnrollments.latest_for_node(Ecto.UUID.generate())
+  end
+
+  defp create_pending!(now, display_name \\ "stale-publication") do
     assert {:ok, result} =
              NodeEnrollments.create(
                %{
@@ -178,10 +252,35 @@ defmodule Orchard.NodeEnrollmentsTest do
                  creator_type: "operator",
                  creator_id: "local-test-operator",
                  expires_at: DateTime.add(now, 3_600, :second),
-                 node: %{display_name: "stale-publication"}
+                 node: %{display_name: display_name}
                },
                now: now
              )
+
+    result
+  end
+
+  defp begin_unboxed_pending!(now) do
+    :ok = Sandbox.checkin(Repo)
+    display_name = "publication-race-#{System.unique_integer([:positive])}"
+    result = Sandbox.unboxed_run(Repo, fn -> create_pending!(now, display_name) end)
+    enrollment_id = result.enrollment.id
+    node_id = result.enrollment.node_id
+
+    on_exit(fn ->
+      Sandbox.unboxed_run(Repo, fn ->
+        Repo.query!("ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only")
+
+        try do
+          Repo.delete_all(from(audit in AuditLog, where: audit.target_id == ^enrollment_id))
+        after
+          Repo.query!("ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only")
+        end
+
+        Repo.delete_all(from(enrollment in Enrollment, where: enrollment.id == ^enrollment_id))
+        Repo.delete_all(from(node in Node, where: node.id == ^node_id))
+      end)
+    end)
 
     result
   end

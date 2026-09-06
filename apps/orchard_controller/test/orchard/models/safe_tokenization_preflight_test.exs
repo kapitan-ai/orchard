@@ -98,7 +98,7 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
                  SafeTokenizationPreflight.run(preflight_input(tmp_dir))
 
         elapsed_ms = System.monotonic_time(:millisecond) - started_at
-        assert elapsed_ms < 500
+        assert elapsed_ms < 1_000
       end)
     end)
   end

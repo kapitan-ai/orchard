@@ -645,18 +645,52 @@ defmodule Orchard.Requests do
   end
 
   defp persist_schedule(request, schedule, normalized_schedule) do
-    attrs =
-      %{
-        scheduler_decision:
-          CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
-            requested_model: request.requested_model
-          })
-      }
-      |> maybe_put_schedule_node_id(schedule)
+    case schedule_write_action(request, normalized_schedule) do
+      :unchanged ->
+        {:ok, request}
 
-    request
-    |> Request.schedule_changeset(attrs)
-    |> Repo.update()
+      :reject ->
+        Repo.rollback(:already_terminal)
+
+      :update ->
+        attrs =
+          %{
+            scheduler_decision:
+              CapturePolicy.schedule_attrs(request.payload_capture_mode, normalized_schedule, %{
+                requested_model: request.requested_model
+              })
+          }
+          |> maybe_put_schedule_node_id(schedule)
+
+        request
+        |> Request.schedule_changeset(attrs)
+        |> Repo.update()
+    end
+  end
+
+  defp schedule_write_action(request, normalized_schedule) do
+    current_queue_result = get_in(request.scheduler_decision || %{}, ["queue_result"])
+    incoming_queue_result = Map.get(normalized_schedule, "queue_result")
+
+    cond do
+      terminal_queue_result?(current_queue_result) ->
+        if current_queue_result == incoming_queue_result, do: :unchanged, else: :reject
+
+      request.state in Request.terminal_states() ->
+        :reject
+
+      true ->
+        :update
+    end
+  end
+
+  defp terminal_queue_result?(queue_result) do
+    queue_result in ~w(
+      interrupted_before_dispatch
+      interrupted_controller_restarted
+      queue_full
+      queue_timeout
+    )
   end
 
   defp maybe_put_schedule_node_id(attrs, schedule) do
