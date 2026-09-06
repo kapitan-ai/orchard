@@ -7,10 +7,24 @@ defmodule Orchard.Node.WorkerCustodyTest do
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.RuntimeProcessReaper
+  alias Orchard.Node.Worker.V1.{WorkerRuntimeService, WorkerStatusResponse}
   alias Orchard.Node.WorkerProcess
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.Node.WorkerRuntimeAdapter
   alias Orchard.Node.WorkerSupervisor
+
+  defmodule ReadyWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(_request, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(_request, _stream), do: %Orchard.Cluster.V1.Ack{ok: true}
+  end
+
+  defmodule ReadyWorkerEndpoint do
+    use GRPC.Endpoint
+
+    run(ReadyWorkerService)
+  end
 
   @shutdown_timeout_ms 200
   @stale_identity "0 Thu Jan 1 00:00:00 1970"
@@ -51,6 +65,71 @@ defmodule Orchard.Node.WorkerCustodyTest do
       {:error, :eexist} -> unique_tmp_root!()
       {:error, reason} -> raise "could not create custody test root #{root}: #{inspect(reason)}"
     end
+  end
+
+  test "SPEC.md §4.9 worker readiness honors its budget when the UDS never appears", context do
+    executable = waiting_worker!(context)
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, :worker_ready_timeout} =
+             load_runtime(context, executable: executable, ready_timeout_ms: 100)
+
+    assert System.monotonic_time(:millisecond) - started < 2_000
+    CustodyTestHelpers.assert_reaper_empty!(1_000)
+    refute File.exists?(context.socket_path)
+  end
+
+  test "SPEC.md §4.9 readiness accepts a worker UDS that starts asynchronously",
+       context do
+    executable = waiting_worker!(context)
+    test_pid = self()
+
+    server =
+      Task.async(fn ->
+        send(test_pid, {:worker_server_waiting, self()})
+
+        receive do
+          :start -> run_delayed_worker_server(context)
+          :stop -> :ok
+        end
+      end)
+
+    try do
+      assert_receive {:worker_server_waiting, server_pid}, 2_000
+      send(server_pid, :start)
+
+      assert {:ok, state} =
+               load_runtime(context, executable: executable, ready_timeout_ms: 2_000)
+
+      assert :ok = WorkerRuntimeAdapter.unload_model(state, skip_rpc: true)
+      CustodyTestHelpers.assert_reaper_empty!(1_000)
+    after
+      send(server.pid, :stop)
+      Task.await(server)
+    end
+  end
+
+  defp run_delayed_worker_server(context) do
+    Process.sleep(150)
+
+    {:ok, supervisor} =
+      GRPC.Server.Supervisor.start_link(
+        endpoint: ReadyWorkerEndpoint,
+        port: 0,
+        start_server: true,
+        adapter_opts: [ip: {:local, context.socket_path}]
+      )
+
+    receive do
+      :stop -> Supervisor.stop(supervisor)
+    end
+  end
+
+  defp waiting_worker!(context) do
+    executable = Path.join(context.root, "waiting-worker")
+    File.write!(executable, "#!/bin/sh\nexec sleep 30\n")
+    File.chmod!(executable, 0o755)
+    executable
   end
 
   test "SPEC.md §4.9 explicit unload reaps the exact stub runtime PID and socket", context do
@@ -444,20 +523,24 @@ defmodule Orchard.Node.WorkerCustodyTest do
   end
 
   defp load_stub_runtime!(context) do
-    assert {:ok, state} =
-             WorkerRuntimeAdapter.load_model(context.model_ref,
-               backend: "stub",
-               executable: worker_executable(),
-               load_timeout_ms: 5_000,
-               log_path: context.log_path,
-               models_root: context.models_root,
-               owner: self(),
-               ready_timeout_ms: 5_000,
-               shutdown_timeout_ms: @shutdown_timeout_ms,
-               socket_path: context.socket_path
-             )
-
+    assert {:ok, state} = load_runtime(context, [])
     state
+  end
+
+  defp load_runtime(context, opts) do
+    defaults = [
+      backend: "stub",
+      executable: worker_executable(),
+      load_timeout_ms: 5_000,
+      log_path: context.log_path,
+      models_root: context.models_root,
+      owner: self(),
+      ready_timeout_ms: 5_000,
+      shutdown_timeout_ms: @shutdown_timeout_ms,
+      socket_path: context.socket_path
+    ]
+
+    WorkerRuntimeAdapter.load_model(context.model_ref, Keyword.merge(defaults, opts))
   end
 
   defp exited_port! do
