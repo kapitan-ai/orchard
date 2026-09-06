@@ -116,8 +116,11 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
           2 ->
             offset =
               case List.keyfind(headers, "range", 0) do
-                {"range", "bytes=" <> range} -> range |> String.trim_trailing("-") |> String.to_integer()
-                nil -> 0
+                {"range", "bytes=" <> range} ->
+                  range |> String.trim_trailing("-") |> String.to_integer()
+
+                nil ->
+                  0
               end
 
             remaining = binary_part(@file_content, offset, @file_size - offset)
@@ -130,7 +133,9 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
     opts =
       base_opts(ctx.tmp_dir, request) ++
         [
-          control_fun: fn -> if :atomics.get(control, 1) == 1, do: {:error, :paused}, else: :ok end,
+          control_fun: fn ->
+            if :atomics.get(control, 1) == 1, do: {:error, :paused}, else: :ok
+          end,
           wait_fun: fn -> :atomics.put(control, 1, 0) end
         ]
 
@@ -164,7 +169,9 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
     opts =
       base_opts(ctx.tmp_dir, request) ++
         [
-          control_fun: fn -> if :atomics.get(control, 1) == 1, do: {:error, :paused}, else: :ok end,
+          control_fun: fn ->
+            if :atomics.get(control, 1) == 1, do: {:error, :paused}, else: :ok
+          end,
           wait_fun: fn -> flunk("must not acknowledge pause with invalid retained state") end
         ]
 
