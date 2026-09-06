@@ -4,6 +4,7 @@ defmodule OrchardConsole.ModelHubTest do
   import ExUnit.CaptureLog
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.{ArtifactBundle, Models}
   alias OrchardConsole.ModelHub
   alias OrchardConsole.ModelHubTest.{StubClient, StubDownloader}
 
@@ -354,6 +355,7 @@ defmodule OrchardConsole.ModelHubTest do
         pipeline_tag: "text-generation",
         library_name: "mlx",
         used_storage_bytes: 1_000,
+        safetensors_total: 600_000_000,
         last_modified: "2024-01-01",
         gated: false
       }
@@ -374,6 +376,7 @@ defmodule OrchardConsole.ModelHubTest do
 
       assert length(results) == 1
       assert hd(results).repo_id == "owner/model-name"
+      assert hd(results).safetensors_total == 600_000_000
     end
 
     test "non-repo-ID query does not trigger direct lookup" do
@@ -605,6 +608,124 @@ defmodule OrchardConsole.ModelHubTest do
   # ===========================================================================
 
   describe "start_download_import/4" do
+    test "cancelled transfer removes temporary files before acknowledging cancellation" do
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: {:error, {:cancelled, "Cancelled"}}, capture_dest_dir: true)
+      ref = make_ref()
+      {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+      assert_receive {:captured_dest_dir, path}, 2000
+
+      assert_receive {:model_hub, ^ref, :download_finished,
+                      {:error, %{code: "download_cancelled"}}},
+                     2000
+
+      refute File.exists?(path)
+      refute_receive {:model_hub, ^ref, :download_progress, %{phase: :preparing_bundle}}
+    end
+
+    test "cleanup failure does not claim cancellation reclaimed temporary storage" do
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: {:error, {:cancelled, "Cancelled"}}, capture_dest_dir: true)
+      ref = make_ref()
+      control = :atomics.new(1, [])
+      :atomics.put(control, 1, 2)
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, "mlx-community/test",
+          control: control,
+          cleanup_fun: fn path -> {:error, :eacces, path} end
+        )
+
+      assert_receive {:captured_dest_dir, path}, 2000
+      on_exit(fn -> File.rm_rf(path) end)
+
+      assert_receive {:model_hub, ^ref, :download_finished,
+                      {:error, %{code: "download_cleanup_failed", message: message}}},
+                     2000
+
+      assert File.exists?(path)
+      assert message =~ "could not be removed"
+      refute message =~ "Temporary files removed"
+    end
+
+    test "rapid resume and pause acknowledges the new pause before waiting again" do
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: :wait_control, capture_dest_dir: true)
+      control = :atomics.new(1, [])
+      :atomics.put(control, 1, 1)
+      ref = make_ref()
+
+      {:ok, pid} =
+        ModelHub.start_download_import(self(), ref, "mlx-community/test", control: control)
+
+      assert_receive {:captured_dest_dir, path}, 2000
+      assert_receive {:"$gen_call", first_ack, {:download_paused, ^ref}}, 2000
+      # Re-pause before the worker consumes the resume notification.
+      :atomics.put(control, 1, 0)
+      send(pid, {:model_hub_control, ref, :resume})
+      :atomics.put(control, 1, 1)
+      GenServer.reply(first_ack, :ok)
+      assert_receive {:"$gen_call", second_ack, {:download_paused, ^ref}}, 2000
+      GenServer.reply(second_ack, :ok)
+      :atomics.put(control, 1, 2)
+      send(pid, {:model_hub_control, ref, :cancel})
+
+      assert_receive {:model_hub, ^ref, :download_finished,
+                      {:error, %{code: "download_cancelled"}}},
+                     2000
+
+      refute File.exists?(path)
+    end
+
+    test "accepted cancellation wins over a delayed provider detail failure" do
+      stub_client(
+        detail: {:error, %{status: :error, code: "hf_unavailable", message: "Offline"}},
+        block_detail: true
+      )
+
+      stub_downloader(download: :success)
+      control = :atomics.new(1, [])
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, "mlx-community/test", control: control)
+
+      assert_receive {:blocked_detail, worker}, 2000
+      :atomics.put(control, 1, 2)
+      send(worker, :proceed_detail)
+
+      assert_receive {:model_hub, ^ref, :download_finished,
+                      {:error, %{code: "download_cancelled"}}},
+                     2000
+    end
+
+    test "accepted cancellation wins over a delayed downloader preflight failure" do
+      stub_client(detail: {:ok, stub_detail()})
+
+      stub_downloader(
+        download: {:error, {:unavailable, "Preflight unavailable"}},
+        block_download: true,
+        capture_dest_dir: true
+      )
+
+      control = :atomics.new(1, [])
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, "mlx-community/test", control: control)
+
+      assert_receive {:captured_dest_dir, path}, 2000
+      assert_receive {:blocked_download, worker}, 2000
+      :atomics.put(control, 1, 2)
+      send(worker, :proceed_download)
+
+      assert_receive {:model_hub, ^ref, :download_finished,
+                      {:error, %{code: "download_cancelled"}}},
+                     2000
+
+      refute File.exists?(path)
+    end
+
     test "returns {:ok, pid} immediately and task is unlinked" do
       stub_client(detail: {:ok, stub_detail()})
       stub_downloader(download: :success)
@@ -726,6 +847,46 @@ defmodule OrchardConsole.ModelHubTest do
 
       assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
       assert error.code == "hf_revision_unavailable"
+    end
+
+    test "rejects a stale pinned revision before calling the downloader" do
+      detail = stub_detail()
+      stub_client(detail: {:ok, detail})
+      stub_downloader(download: :success, capture_download: true)
+
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, detail.repo_id, revision: "stale-revision")
+
+      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+      assert error.status == :error
+      assert error.code == "hf_revision_changed"
+      refute_receive {:captured_download, _, _}, 100
+      refute_receive {:model_hub, ^ref, :download_started, _}, 100
+    end
+
+    test "imports an exact pinned revision and returns its final stored digest" do
+      detail = stub_detail()
+      repo_id = detail.repo_id
+      stub_client(detail: {:ok, detail})
+      stub_downloader(download: :success, capture_download: true)
+
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, detail.repo_id, revision: detail.revision_sha)
+
+      assert_receive {:captured_download, ^repo_id, download_opts}, 2000
+      assert download_opts[:revision] == detail.revision_sha
+      assert_receive {:model_hub, ^ref, :download_finished, {:ok, result}}, 2000
+
+      model = Models.get_model_by_identity(detail.repo_id, detail.revision_sha)
+      assert {:ok, artifact_path} = Models.artifact_local_path(model)
+      assert {:ok, final_tree_sha256} = ArtifactBundle.tree_sha256(artifact_path)
+      assert result.version == detail.revision_sha
+      assert result.artifact_sha256 == model.artifact_sha256
+      assert result.artifact_sha256 == final_tree_sha256
     end
 
     test "normalizes exceptions to download_import_failed" do
@@ -953,7 +1114,26 @@ defmodule OrchardConsole.ModelHubTest do
         send(pid, {:captured_dest_dir, dest_dir})
       end
 
+      if config[:capture_download] do
+        send(pid, {:captured_download, repo_id, opts})
+      end
+
+      if config[:block_download] do
+        send(pid, {:blocked_download, self()})
+
+        receive do
+          :proceed_download -> :ok
+        end
+      end
+
       handle_download_result(config[:download], repo_id, dest_dir, opts)
+    end
+
+    defp handle_download_result(:wait_control, _repo_id, _dest_dir, opts) do
+      case Keyword.fetch!(opts, :wait_fun).() do
+        {:error, {:callback_failed, :cancelled}} -> {:error, {:cancelled, "Cancelled"}}
+        result -> result
+      end
     end
 
     defp handle_download_result(:raise, _repo_id, _dest_dir, _opts),

@@ -38,6 +38,8 @@ defmodule Orchard.HuggingFace.DownloadSupport do
           request_fun: request_fun(),
           max_attempts: pos_integer(),
           progress_fun: progress_fun() | nil,
+          control_fun: (-> :ok | {:error, term()}) | nil,
+          wait_fun: (-> :ok | {:error, term()}) | nil,
           emit_initial_progress?: boolean()
         ]
 
@@ -67,9 +69,25 @@ defmodule Orchard.HuggingFace.DownloadSupport do
 
   @spec download_all([file_meta()], download_opts()) :: {:ok, progress()} | {:error, term()}
   def download_all(file_metas, opts) do
-    with {:ok, context} <- build_context(file_metas, opts),
+    with :ok <- validate_controls(opts),
+         {:ok, context} <- build_context(file_metas, opts),
          :ok <- maybe_emit_initial_progress(context) do
       download_each(context)
+    end
+  end
+
+  defp validate_controls(opts) do
+    case {Keyword.get(opts, :control_fun), Keyword.get(opts, :wait_fun)} do
+      {nil, nil} ->
+        :ok
+
+      {control, wait} when is_function(control, 0) and is_function(wait, 0) ->
+        :ok
+
+      _ ->
+        {:error,
+         {:invalid_controls,
+          "Download control and wait callbacks must both be zero-arity functions."}}
     end
   end
 
@@ -95,6 +113,8 @@ defmodule Orchard.HuggingFace.DownloadSupport do
          request_fun: Keyword.fetch!(opts, :request_fun),
          max_attempts: max(Keyword.fetch!(opts, :max_attempts), 1),
          progress_fun: Keyword.get(opts, :progress_fun),
+         control_fun: Keyword.get(opts, :control_fun),
+         wait_fun: Keyword.get(opts, :wait_fun),
          emit_initial_progress?: Keyword.get(opts, :emit_initial_progress?, false),
          stream_high_water: :counters.new(1, [:atomics]),
          progress: %{
@@ -130,9 +150,30 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   defp download_with_retry(context, file_meta, progress, attempt) do
     with {:ok, paths} <- prepare_destination(context, file_meta),
          {:ok, state} <- build_download_state(context, file_meta, paths, progress, attempt) do
-      open_partial_file(state)
+      case check_control(context.control_fun) do
+        :ok -> open_partial_file(state)
+        {:error, reason} -> {:error, {:callback_failed, reason}}
+      end
+      |> continue_controlled_download(context, file_meta, progress, attempt)
     end
   end
+
+  defp continue_controlled_download(
+         {:error, {:callback_failed, :paused}},
+         context,
+         meta,
+         progress,
+         attempt
+       ) do
+    with :ok <- context.wait_fun.() do
+      download_with_retry(context, meta, progress, attempt)
+    end
+  end
+
+  defp continue_controlled_download(result, _context, _meta, _progress, _attempt), do: result
+
+  defp check_control(nil), do: :ok
+  defp check_control(fun), do: fun.()
 
   defp build_download_state(context, file_meta, paths, progress, attempt) do
     remote_etag = file_meta[:etag]
@@ -290,6 +331,7 @@ defmodule Orchard.HuggingFace.DownloadSupport do
 
     stream_ctx = %{
       progress_fun: state.context.progress_fun,
+      control_fun: state.context.control_fun,
       base_progress: state.progress,
       file_meta: state.file_meta,
       resume?: state.resume?,
@@ -333,7 +375,19 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   defp handle_written_chunk(chunk, bytes_counter, stream_ctx, req, resp) do
     :counters.add(bytes_counter, 1, byte_size(chunk))
 
-    case maybe_emit_streaming_progress(stream_ctx, bytes_counter, resp) do
+    result =
+      case check_control(stream_ctx.control_fun) do
+        :ok ->
+          maybe_emit_streaming_progress(stream_ctx, bytes_counter, resp)
+
+        {:error, :paused} ->
+          with :ok <- emit_paused_progress(stream_ctx, bytes_counter, resp), do: {:error, :paused}
+
+        error ->
+          error
+      end
+
+    case result do
       :ok ->
         {:cont, {req, resp}}
 
@@ -342,6 +396,14 @@ defmodule Orchard.HuggingFace.DownloadSupport do
         Process.put(stream_ctx.callback_error_key, reason)
         {:halt, {req, resp}}
     end
+  end
+
+  defp emit_paused_progress(%{resume?: true}, _counter, %{status: 200}), do: :ok
+
+  defp emit_paused_progress(context, counter, _response) do
+    bytes = context.base_progress.bytes_downloaded + :counters.get(counter, 1)
+    progress = %{context.base_progress | bytes_downloaded: bytes}
+    emit_progress(context.progress_fun, progress, context.file_meta.path)
   end
 
   defp maybe_emit_streaming_progress(%{progress_fun: nil}, _bytes_counter, _resp), do: :ok
