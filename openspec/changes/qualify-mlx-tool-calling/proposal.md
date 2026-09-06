@@ -11,6 +11,7 @@ For JSON tool wrappers this exposes the function envelope instead of its argumen
 - Add pinned-parser regression coverage and a repeatable real-model tool-result round-trip qualification path.
 - Document verified model bundle prerequisites and the scope of client compatibility evidence.
 - Normalize JSON-string tool history into argument objects for contract-v3 segmented rendering, recursively protect caller strings, and preserve exactly empty strings without markers.
+- Accept valid assistant function-call history with absent content, preserve whitespace provenance through trimming, and keep request failures out of the artifact incompatibility cache.
 
 ## Capabilities
 
@@ -27,6 +28,6 @@ For JSON tool wrappers this exposes the function envelope instead of its argumen
 `SPEC.md` §7.5.2 internal tool-call semantics will explicitly allow one complete parsed call per delta and prohibit raw model wrappers as function arguments.
 The legacy byte-preservation wording will be clarified to preserve normalized function arguments rather than unvalidated model framing.
 The public request schemas, Worker Runtime protobuf, Node Agent transport, client-owned execution, and MLX-LM dependency pin remain unchanged.
-Implementation covers `native/orchard_worker_mlx` and `native/orchard_tokenizer`, with repository qualification tooling and documentation.
+Implementation covers `native/orchard_worker_mlx`, `native/orchard_tokenizer`, and Controller tokenizer cache admission, with repository qualification tooling and documentation.
 `SPEC.md` §3.5 gains the segmented tool-history normalization and zero-byte tagging rules.
 Responses API interoperability and future worker transport/backend redesign are separate workstreams.

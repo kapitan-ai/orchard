@@ -582,7 +582,20 @@ Tokenizer contract v3 adds controller-authoritative prompt token IDs for safe-to
 For contract-v3 segmented rendering, assistant tool-call history arguments SHALL be decoded from public JSON strings into argument objects before chat-template rendering.
 Malformed, non-object, duplicate-key, or non-finite arguments SHALL fail before inference.
 Caller-string tagging SHALL operate on the normalized argument object, protecting recursive object keys and string values while preserving JSON scalar types and the dual-render compatibility check.
-Exactly empty caller strings SHALL remain empty without markers because they contain no caller bytes; nonempty strings, including whitespace-only strings, remain subject to tagging and the dual-render check.
+Assistant tool-call history MAY omit content or supply null when it contains a nonempty list of valid function calls; segmented rendering SHALL normalize that absent text to an empty string.
+Exactly empty caller strings SHALL remain empty without markers because they contain no caller bytes.
+Every nonempty caller string SHALL retain ordinary markers enclosing all original bytes, including leading and trailing whitespace, in raw and JSON rendering.
+Trimming a tagged string SHALL operate on the original caller value and retain markers around any nonempty result; only an empty result MAY omit markers.
+Text-part lists SHALL be concatenated before caller tagging so trimming preserves the combined text's internal whitespace.
+Segmented rendering SHALL restrict operations on marker-bearing values to an explicitly audited subset: whole-value rendering and traversal, original-value trimming, serialization, concatenation, observations, and the literal replacements `-` to `_`, space to `_`, and `$` to empty used by the qualified template.
+Serialization, concatenation, and those replacements SHALL preserve registered marker identities, multiplicity, balanced spans, and caller containment before returning their results.
+Unsupported caller-string transformations, character indexing, slicing, iteration, and unpacking SHALL fail closed before exposing unprotected fragments, including after coercion or serialization.
+Templates MAY omit whole caller values, and one empty trim SHALL NOT remove protection from other uses of its original value.
+All nonempty caller strings SHALL remain tagged, and the dual-render check remains mandatory; incompatible transformations SHALL fail closed.
+A request-dependent render or decode failure SHALL fail that request without writing a bundle-wide incompatibility cache entry.
+Only validated deterministic tokenizer or sentinel-preflight incompatibilities MAY populate the negative compatibility cache.
+Runtime helper errors SHALL identify request, artifact-preflight, or artifact-tokenizer evaluation scope; cache admission requires explicit artifact scope, matching inner and outer error categories, and structurally valid deterministic evidence.
+Unscoped runtime errors SHALL remain request-local for compatibility with older helpers.
 
 For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, parser-family selection, and version selection.
 The public API MUST NOT accept arbitrary chat-template keyword arguments.

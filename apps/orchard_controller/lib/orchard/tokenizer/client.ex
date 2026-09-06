@@ -978,10 +978,22 @@ defmodule Orchard.Tokenizer.Client do
               "safe_tokenization_incompatible_tokenizer",
               "safe_tokenization_incompatible_template"
             ] do
-    maybe_cache_segmented_incompatibility(cache_key, Map.put(error, "category", category))
+    reason = normalize_cache_reason(Map.put(error, "category", category))
+    template_compatible? = category == "safe_tokenization_incompatible_tokenizer"
+
+    if artifact_error_scope?(error, template_compatible?) and
+         validate_segmented_incompatibility_reason(reason, template_compatible?) == :ok do
+      maybe_cache_segmented_incompatibility(cache_key, reason)
+    end
   end
 
   defp maybe_cache_segmented_incompatibility(_cache_key, _category, _error), do: :ok
+
+  defp artifact_error_scope?(%{"details" => %{"evaluation_scope" => scope}}, template_compatible?) do
+    scope == if(template_compatible?, do: "artifact_tokenizer", else: "artifact_preflight")
+  end
+
+  defp artifact_error_scope?(_error, _template_compatible?), do: false
 
   defp maybe_cache_segmented_incompatibility({bundle_sha256, catalog_sha256}, reason) do
     case normalize_reason_category(reason) do

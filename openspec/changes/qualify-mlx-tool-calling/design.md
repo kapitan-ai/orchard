@@ -46,7 +46,23 @@ Protect recursive argument keys and string values with the existing segmentation
 Malformed or non-object arguments fail as invalid input without exposing their contents.
 This normalization belongs to the Controller-side tokenizer, independently of the worker's model-output parser.
 Legacy non-segmented rendering is unchanged.
-Exactly empty strings remain unmarked because they carry zero caller bytes; every nonempty string remains tagged.
+Exactly empty strings remain unmarked because they carry zero caller bytes.
+All nonempty strings retain ordinary markers around every byte, including leading and trailing whitespace.
+A string subtype applies strip, lstrip, and rstrip to the original caller value and retags every nonempty result; only empty results lose their markers.
+Message text parts are concatenated before tagging, preserving combined-value trim semantics and internal whitespace.
+The segmented sandbox receives the authoritative marker pairs separately from its data and exposes only audited operations on protected values.
+Raw rendering, original-value trimming, whole-value container access, observations, JSON/string serialization, and concatenation are supported.
+The literal single-character replacements `-` to `_`, space to `_`, and `$` to empty are supported for Qwen schema keys; none edits marker delimiter characters.
+Supported serialization, concatenation, and replacement verify marker identity counts and balanced spans before returning tracked strings.
+The filter registry and callable dispatcher reject other string transformations before their output can escape.
+An AST adaptation routes string slices, iteration, and assignment/loop unpacking through checked operations while retaining whole-value list and mapping traversal.
+Tracked string results also reject direct Python slicing and iteration, including after macro capture and serialization.
+These checks run on every tagged request even when preflight is cached; the mandatory dual-render check independently rejects semantic divergence.
+Exactly empty trims and ignored whole leaves remain valid without globally declassifying another use of their original values.
+Marker-transform rejections identify a stable operation without caller text; sentinel rejections carry artifact-preflight scope and sentinel identity, but do not expand the existing manifest-reason or negative-cache admission vocabulary.
+Legacy non-segmented rendering receives no active marker registry and retains the ordinary template dialect.
+Null or omitted assistant content normalizes to empty text only with valid nonempty function-call history.
+Request-specific render and decode failures do not invalidate the bundle-wide cache; deterministic tokenizer and sentinel-preflight verdicts still do.
 The generic preflight uses complete synthetic function schemas but does not require tool-result history from chat-only templates.
 Tool-capable profiles must additionally pass the real-template continuation regression and the client round trip.
 
@@ -56,6 +72,7 @@ Tool-capable profiles must additionally pass the real-template continuation regr
 - Model-native marker ambiguity: retain upstream marker semantics and fail closed; test split markers and malformed blocks.
 - Parser drift: exercise the pinned parser alongside deterministic protocol fixtures and real-model qualification.
 - Model reliability: use exact artifact identity, repeat the synthetic tool-result loop, and distinguish wire correctness from model choice quality.
+- Template compatibility: previously accepted unaudited string transformations now fail closed; qualified operations are covered by the exact pinned Qwen template and adversarial regressions.
 
 ## Migration Plan
 

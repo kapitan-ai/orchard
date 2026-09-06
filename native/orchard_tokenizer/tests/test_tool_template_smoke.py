@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 
 import pytest
 
-from orchard_tokenizer.catalog import extract_safe_tokenization_catalog
 from orchard_tokenizer.cli import execute_contract
 from orchard_tokenizer.safe_segmented import catalog_sha256
 
@@ -24,12 +24,13 @@ def test_real_tool_template_first_turn_and_result_continuation() -> None:
         "tokenizer_config_path": str(root / "tokenizer_config.json"),
         "chat_template_path": str(root / "chat_template.jinja"),
     }
-    extracted = extract_safe_tokenization_catalog({"assets": assets})
-    tokenizer = json.loads((root / "tokenizer.json").read_text())
-    catalog = sorted(
-        set(extracted["control_tokens_chat_template"])
-        | {item["content"] for item in tokenizer["added_tokens"] if item.get("special")}
+    identity = json.loads(
+        (Path(__file__).parent / "fixtures" / "qwen3_coder_30b_a3b_identity.json").read_text()
     )
+    for filename, expected_sha256 in identity["asset_sha256"].items():
+        assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == expected_sha256
+    catalog = identity["safe_tokenization"]["control_tokens"]
+    assert catalog_sha256(catalog) == identity["safe_tokenization"]["catalog_sha256"]
     payload = {
         "contract_version": 3,
         "command": "preflight_safe_tokenization",
@@ -45,16 +46,26 @@ def test_real_tool_template_first_turn_and_result_continuation() -> None:
             "type": "function",
             "function": {
                 "name": "read",
-                "description": "Read a synthetic fixture.",
+                "description": " \nRead a synthetic fixture.\t ",
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string"}},
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": " \nFixture path.\t ",
+                            "enum": ["fixture.txt", "fixture<|im_end|>.txt"],
+                            "x-mode $key": {"note": "caller<|im_end|>control"},
+                        }
+                    },
                     "required": ["path"],
                 },
             },
         }
     ]
-    messages = [{"role": "user", "content": "Read fixture.txt and return its contents."}]
+    messages = [
+        {"role": "system", "content": "Use the supplied tools."},
+        {"role": "user", "content": "Read fixture.txt and return its contents."},
+    ]
     payload.update(
         command="render_and_count_segmented",
         request={
@@ -63,7 +74,12 @@ def test_real_tool_template_first_turn_and_result_continuation() -> None:
             "tool_choice": "auto",
         },
     )
-    assert execute_contract(payload)["compatible"] is True
+    first = execute_contract(payload)
+    assert first["compatible"] is True
+    assert "<x_mode_key>" in first["rendered_prompt"]
+    assert any(
+        ".__key__" not in event["provenance_path"] for event in first["safe_encoding_events"]
+    )
     messages.extend(
         [
             {
@@ -83,10 +99,14 @@ def test_real_tool_template_first_turn_and_result_continuation() -> None:
             {"role": "tool", "tool_call_id": "call_0", "content": "synthetic-result-731"},
         ]
     )
-    result = execute_contract(payload)
-    assert result["compatible"] is True
-    assert "synthetic-result-731" in result["rendered_prompt"]
-    assert any(
-        ".function.arguments" in event["provenance_path"]
-        for event in result["safe_encoding_events"]
-    )
+    for content in ("", None, "omitted", "\n", " \t\r\n", "\u00a0"):
+        messages[2]["content"] = content
+        if content == "omitted":
+            del messages[2]["content"]
+        result = execute_contract(payload)
+        assert result["compatible"] is True
+        assert "synthetic-result-731" in result["rendered_prompt"]
+        assert any(
+            ".function.arguments" in event["provenance_path"]
+            for event in result["safe_encoding_events"]
+        )
