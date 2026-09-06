@@ -334,6 +334,7 @@ defmodule OrchardConsole.TenantDetailLive do
       </header>
 
     <p class="text-xs text-slate-500 break-all">{@tenant.slug} · {@tenant.id} <span :if={WorkspacePresentation.default?(@tenant)}>· Default</span></p>
+    <.link navigate={"/console/access/workspaces/#{@tenant.id}/handoff"} class="text-sm text-navy underline">Guide workspace access</.link>
     <nav id="tenant-access-navigation" aria-label="Workspace access sections" class="flex flex-wrap gap-2">
     <.link :for={{key, label} <- [{"overview", "Overview"}, {"model_access", "Model access"}, {"portal_users", "Portal Users"}, {"api_credentials", "API credentials"}]}
     patch={"/console/access/workspaces/#{@tenant.id}?section=#{key}"}

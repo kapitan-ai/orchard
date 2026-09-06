@@ -142,6 +142,7 @@ defmodule Orchard.API.Router do
       live("/access", OrchardConsole.TenantsLive, :index)
       live("/access/workspaces", OrchardConsole.TenantsLive, :index)
       live("/access/workspaces/new", OrchardConsole.TenantsLive, :new)
+      live("/access/workspaces/:id/handoff", OrchardConsole.WorkspaceHandoffLive, :show)
       live("/access/workspaces/:id", OrchardConsole.TenantDetailLive, :show)
       live("/tenants", OrchardConsole.TenantsLive, :index)
       live("/tenants/:id", OrchardConsole.TenantDetailLive, :show)

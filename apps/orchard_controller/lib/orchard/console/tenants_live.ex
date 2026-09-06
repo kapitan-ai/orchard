@@ -95,6 +95,7 @@ defmodule OrchardConsole.TenantsLive do
               >
                 Open workspace
               </.link>
+              <.link navigate={"/console/access/workspaces/#{tenant.id}/handoff"} class="text-sm text-navy underline">Guide access</.link>
             </:action>
 
             <:empty>
