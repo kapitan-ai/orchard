@@ -70,10 +70,86 @@ Qualify each exact model/runtime/client combination before declaring tool suppor
 4. Through Chat Completions, require the client to call a local tool against a synthetic fixture, validate its arguments, return the result with the matching call ID, and reproduce an unpredictable fixture value in the final answer.
 5. Exercise cancellation and recovery, malformed/truncated calls, and sequential tool turns; distinguish protocol failures from model choices.
 
-`mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` at revision `6e302ea604ad9ab206367e2c501d1571023e7b6d` is a qualification candidate with a `qwen3_coder` parser.
-The initial profile uses a 16K context and one concurrent request.
-It is not a qualified OpenCode profile until the real client round trip passes.
+The qualification harness must fail on a nonzero client exit, missing output, error events, incomplete tool execution, or an incorrect final fixture value.
+Record the fixture before each run and verify the completed tool's arguments and returned contents against that snapshot.
+An empty client transcript is a blocked run, never a pass.
+Use a portable bounded watchdog on macOS rather than assuming GNU `timeout` is installed.
+
+For source-development runs, verify that PostgreSQL sessions use UTC before evaluating heartbeat freshness.
+Record cold-load and preloaded results separately.
+Between independent direct-API cases at concurrency one, wait for an idle heartbeat observed after the preceding request's terminal boundary; an older idle snapshot cannot establish recovery.
+Do not insert this pacing inside the client under qualification, because normal client sequencing is part of the assertion.
+See [model qualification policy](../../docs/model-qualification.md) for the required evidence and support-claim boundaries.
+
+`mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` at revision `6e302ea604ad9ab206367e2c501d1571023e7b6d` uses the `qwen3_coder` parser.
+OpenCode 1.18.25 exercised the preloaded source-development profile at a 16,384-token context, 1,024 output tokens, and one concurrent request.
+Completed read-tool round trips reproduced exact synthetic file values, including three fresh-nonce runs and two-file and three-file sequences.
+These results establish bounded client round-trip evidence, not an approved model support claim.
+OpenCode cancellation remains unverified because the client-cancellation harness did not deliver its signal correctly.
+Some tool-history continuations emitted an incomplete trailing tool marker after useful text; the worker rejected that malformed output instead of publishing an unvalidated call.
+Cold-load reliability, broader model behavior, and unrestricted coding-agent operation require separate qualification.
+OpenCode also sends parallel title/summary requests; at concurrency one, the capture included transient `cluster_busy` responses and client retries.
+Successful primary read turns do not establish contention-free operation.
 Chat Completions qualification does not establish Responses API compatibility.
+
+### Repeat an OpenCode read-tool smoke
+
+Use an isolated synthetic workspace with OpenCode 1.18.25 and provide the tenant API key through `ORCHARD_API_KEY`.
+Replace `<model-alias>` with the complete `<model_id>@<version>` returned by `GET /v1/models`, `<host>` with the Orchard endpoint, and `<workspace>` with the synthetic workspace's absolute path.
+Save this configuration as `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "autoupdate": false,
+  "enabled_providers": ["orchard"],
+  "model": "orchard/<model-alias>",
+  "permission": {"*": "deny", "read": "allow", "external_directory": "allow"},
+  "provider": {
+    "orchard": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Orchard",
+      "options": {
+        "baseURL": "https://<host>/v1",
+        "apiKey": "{env:ORCHARD_API_KEY}",
+        "timeout": 300000
+      },
+      "models": {
+        "<model-alias>": {
+          "name": "<model-alias>",
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "limit": {"context": 16384, "output": 1024}
+        }
+      }
+    }
+  },
+  "agent": {
+    "readonly": {
+      "mode": "primary",
+      "tools": {"*": false, "read": true},
+      "permission": {"*": "deny", "read": "allow", "external_directory": "allow"},
+      "prompt": "Use the read tool for requested files. The synthetic workspace is <workspace>; use absolute paths when needed and answer with exact file contents."
+    }
+  }
+}
+```
+
+This template restricts the global permission map to the read-only agent's effective permissions.
+The measured run additionally used isolated user/config directories and a local capture proxy; equivalent isolation and redacted request capture are required when reproducing its evidence.
+Create `notes/token.txt` with a fresh unpredictable value, retain that value outside the prompt, then run from the synthetic workspace under a 600-second process watchdog:
+
+```bash
+OPENCODE_CONFIG="$PWD/opencode.json" opencode run --pure --format json --agent readonly \
+  "Read notes/token.txt and tell me the exact token it contains." > out.jsonl
+```
+
+Require a zero exit status, a completed `read` tool event for the expected file, the exact fixture value in the final text, and no client error events.
+Inspect the captured continuation to verify that the assistant call and tool result retain the same call ID and that the public request uses `max_tokens: 1024`.
+Repeat with three fresh values, then two and three separate files, without resetting caches or restarting Orchard.
+Record background-request admission failures and retries even when the primary answer succeeds.
 
 ## Proto contract
 
