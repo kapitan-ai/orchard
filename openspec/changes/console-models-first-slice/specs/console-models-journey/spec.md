@@ -33,7 +33,8 @@ The pipeline SHALL reject a refreshed provider detail whose revision differs fro
 
 ### Requirement: Truthful catalog completion
 
-Import completion SHALL identify the exact catalog record and its stored artifact digest according to SPEC.md section 6.5.
+Import completion SHALL identify the exact registered Catalog record and its stored artifact digest according to SPEC.md section 6.5.
+Console import SHALL NOT request immediate activation; the existing Catalog Activate action remains a separate publication transition under SPEC.md section 6.6.
 Completion SHALL NOT imply Tenant authorization, Node residency, or successful inference.
 
 #### Scenario: Successful import
@@ -59,6 +60,8 @@ Only the Catalog step SHALL expose the action that starts a new import.
 The Console SHALL keep the latest download attempt for every repository and revision accessible across model selection and navigation within the running Controller session.
 Pause SHALL stop the active HTTP transfer while retaining its partial bytes, completed files, selected revision, and validated metadata.
 Resume SHALL continue the same transfer using existing ETag-validated Range handling without resolving a newer provider revision.
+If the server ignores Range before a pause, the downloader SHALL discard that file's invalid partial state before acknowledging pause and restart the same file from byte zero on resume.
+A failure to discard invalid partial state SHALL fail the transfer rather than permit a corrupt resume.
 Cancel SHALL cooperatively halt the transfer and remove its temporary files before acknowledging completion.
 The Controller SHALL serialize lifecycle control against the transition to bundle preparation and reject pause or cancel once finalization begins.
 Download job history and paused work are Controller-session state, not restart-persistent state.

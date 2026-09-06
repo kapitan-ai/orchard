@@ -866,7 +866,7 @@ defmodule OrchardConsole.ModelHubTest do
       refute_receive {:model_hub, ^ref, :download_started, _}, 100
     end
 
-    test "imports an exact pinned revision and returns its final stored digest" do
+    test "SPEC 6.5 registers an exact pinned revision and returns its final stored digest" do
       detail = stub_detail()
       repo_id = detail.repo_id
       stub_client(detail: {:ok, detail})
@@ -875,7 +875,10 @@ defmodule OrchardConsole.ModelHubTest do
       ref = make_ref()
 
       {:ok, _pid} =
-        ModelHub.start_download_import(self(), ref, detail.repo_id, revision: detail.revision_sha)
+        ModelHub.start_download_import(self(), ref, detail.repo_id,
+          revision: detail.revision_sha,
+          activate: false
+        )
 
       assert_receive {:captured_download, ^repo_id, download_opts}, 2000
       assert download_opts[:revision] == detail.revision_sha
@@ -884,6 +887,8 @@ defmodule OrchardConsole.ModelHubTest do
       model = Models.get_model_by_identity(detail.repo_id, detail.revision_sha)
       assert {:ok, artifact_path} = Models.artifact_local_path(model)
       assert {:ok, final_tree_sha256} = ArtifactBundle.tree_sha256(artifact_path)
+      assert result.state == :registered
+      assert model.state == :registered
       assert result.version == detail.revision_sha
       assert result.artifact_sha256 == model.artifact_sha256
       assert result.artifact_sha256 == final_tree_sha256

@@ -4,6 +4,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
   import Phoenix.LiveViewTest
 
   @moduletag :live
+  @moduletag :db
 
   setup do
     previous = Application.get_env(:orchard_controller, :console, [])
@@ -32,16 +33,767 @@ defmodule OrchardConsole.ModelHubLiveTest do
     :ok
   end
 
-  describe "GET /console/model-hub" do
-    test "renders shell, title, nav, read-only copy, and debounced search input", %{conn: conn} do
-      {:ok, view, html} = live(conn, "/console/model-hub")
+  describe "download management" do
+    test "Catalog-origin revision recovery navigates to Discover and initializes Node inventory",
+         %{conn: conn} do
+      repo = hd(search_results_fixture()).repo_id
 
-      assert html =~ "Model Hub \u2014 Orchard Console"
+      assert {:ok, _} =
+               OrchardConsole.ModelHubDownloadCoordinator.start_download(repo,
+                 revision: "recorded",
+                 activate: true
+               )
+
+      ref = assert_download_started()
+      send_download_error(ref, %{code: "download_cancelled", message: "Download cancelled"})
+
+      path =
+        "/console/models/catalog/import?" <>
+          URI.encode_query(%{"repo" => repo, "revision" => "recorded"})
+
+      {:ok, view, _html} = live(conn, path)
+      detail_ref = assert_detail_started(repo)
+
+      send_detail_success(
+        view,
+        detail_ref,
+        Map.put(detail_fixture(repo), :revision_sha, "new-head")
+      )
+
+      view |> element("#model-hub-detail-card [phx-click=restart_download]") |> render_click()
+      restarted_ref = assert_download_started()
+
+      send_download_error(restarted_ref, %{
+        code: "hf_revision_changed",
+        message: "Provider revision changed"
+      })
+
+      expected_path = "/console/models/discover?" <> URI.encode_query(%{"query" => repo})
+      redirect = view |> element("#model-hub-refresh-revision") |> render_click()
+      assert_redirect(view, expected_path)
+      {:ok, discover, _html} = follow_redirect(redirect, conn)
+      search_ref = assert_search_started(repo)
+      render_async(discover)
+      assert has_element?(discover, "#model-hub-node-context", "No Nodes registered")
+      refute has_element?(discover, "#model-hub-node-context", "Checking Node inventory")
+      send_search_success(discover, search_ref, repo, search_results_fixture())
+      fresh_ref = assert_detail_started(repo)
+
+      send_detail_success(
+        discover,
+        fresh_ref,
+        Map.put(detail_fixture(repo), :revision_sha, "new-head")
+      )
+
+      assert has_element?(discover, "#model-hub-search-input[value='#{repo}']")
+      assert has_element?(discover, "#model-hub-detail-content", "new-head")
+      refute_receive {:stub_download_ref, _, _, _}
+    end
+
+    test "job-backed Catalog copy describes completion, pause and cancellation rather than a new import",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      load_initial_results_and_detail(view)
+
+      for {status, heading} <- [
+            {:completed, "Model imported"},
+            {:paused, "Download paused"},
+            {:cancelled, "Download cancelled"}
+          ] do
+        repo = "publisher/#{status}"
+
+        result =
+          if status == :completed,
+            do: %{state: :active, model_id: "stored", version: "pinned"},
+            else: nil
+
+        send(
+          view.pid,
+          {:model_hub_download,
+           %{
+             key: {repo, "pinned"},
+             repo_id: repo,
+             status: status,
+             progress: %{repo_id: repo},
+             result: result,
+             error: nil
+           }}
+        )
+
+        render(view)
+        render_click(view, "view_download", %{"repo_id" => repo, "revision" => "pinned"})
+        assert has_element?(view, "#model-hub-catalog-heading", heading)
+
+        assert has_element?(
+                 view,
+                 "#model-hub-import-heading",
+                 if(status == :completed, do: "Import details", else: "Download details")
+               )
+
+        refute has_element?(view, "#model-hub-catalog-header", "return to Discover")
+
+        if status == :paused do
+          assert has_element?(view, "#model-hub-catalog-header", "This download stays paused")
+          refute has_element?(view, "#model-hub-catalog-header", "An active import continues")
+        end
+
+        refute has_element?(
+                 view,
+                 "#model-hub-detail-card",
+                 "Check the exact revision, then import"
+               )
+      end
+    end
+
+    test "direct Catalog import link opens a held revision without discovery and returns to unified Catalog",
+         %{conn: conn} do
+      repo = "publisher/catalog-link"
+
+      assert {:ok, _} =
+               OrchardConsole.ModelHubDownloadCoordinator.start_download(repo,
+                 revision: "recorded",
+                 activate: true
+               )
+
+      _ref = assert_download_started()
+
+      path =
+        "/console/models/catalog/import?" <>
+          URI.encode_query(%{"repo" => repo, "revision" => "recorded"})
+
+      {:ok, view, _html} = live(conn, path)
+      assert has_element?(view, "#model-hub-catalog-heading")
+      assert has_element?(view, "#model-hub-detail-repo-id", repo)
+      assert has_element?(view, "#model-hub-detail-content", "recorded")
+      assert has_element?(view, "#models-navigation a[aria-current=page]", "Catalog")
+      refute_receive {:stub_search_ref, _, _}
+      detail_ref = assert_detail_started(repo)
+
+      send_detail_success(
+        view,
+        detail_ref,
+        Map.put(detail_fixture(repo), :revision_sha, "new-head")
+      )
+
+      assert has_element?(view, "#model-hub-opened-download-note", "different revision")
+      assert has_element?(view, "#model-hub-back-to-discover", "Back to Catalog")
+      view |> element("#model-hub-back-to-discover") |> render_click()
+      assert_redirect(view, "/console/models")
+      {:ok, catalog, _html} = live(conn, "/console/models")
+      assert has_element?(catalog, "#catalog-imports-list", repo)
+    end
+
+    test "expired or forged Catalog import link offers recovery without provider lookup", %{
+      conn: conn
+    } do
+      {:ok, view, _html} =
+        live(conn, "/console/models/catalog/import?repo=missing&revision=forged")
+
+      assert has_element?(view, "#model-hub-detail-error", "no longer in this Controller session")
+      assert has_element?(view, "#model-hub-back-to-discover", "Back to Catalog")
+      refute_receive {:stub_detail_ref, _, _}
+      refute_receive {:stub_download_ref, _, _, _}
+    end
+
+    test "local history removal restores focus without moving focus in other views", %{conn: conn} do
+      for repo <- ["publisher/one", "publisher/two"] do
+        assert {:ok, _} =
+                 OrchardConsole.ModelHubDownloadCoordinator.start_download(repo,
+                   revision: "saved",
+                   activate: true
+                 )
+
+        ref = assert_download_started()
+        send_download_error(ref, %{code: "download_failed", message: "Fixture failure"})
+      end
+
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      {:ok, other_view, _html} = live(conn, "/console/models/discover")
+
+      render_click(view, "remove_download", %{"repo_id" => "publisher/one", "revision" => "saved"})
+
+      assert has_element?(
+               view,
+               "[id^=model-hub-removal-focus-][phx-mounted*=model-hub-toggle-downloads]"
+             )
+
+      refute has_element?(other_view, "[id^=model-hub-removal-focus-]")
+
+      render_click(view, "remove_download", %{"repo_id" => "publisher/two", "revision" => "saved"})
+
+      assert has_element?(view, "#model-hub-removed-return-heading", "Discover models")
+
+      assert has_element?(
+               view,
+               "[id^=model-hub-removal-focus-][phx-mounted*=model-hub-removed-return-heading]"
+             )
+
+      refute has_element?(view, "#model-hub-downloads")
+      refute has_element?(other_view, "[id^=model-hub-removal-focus-]")
+    end
+
+    test "cancelled Catalog offers restart from the original revision without an active progress bar",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      load_initial_results_and_detail(view)
+      repo = "publisher/cancelled"
+
+      send(
+        view.pid,
+        {:model_hub_download,
+         %{
+           key: {repo, "original"},
+           repo_id: repo,
+           status: :cancelled,
+           progress: %{repo_id: repo, bytes_downloaded: 256, total_bytes: 1024},
+           result: nil,
+           error: nil
+         }}
+      )
+
+      render(view)
+      render_click(view, "view_download", %{"repo_id" => repo, "revision" => "original"})
+      assert has_element?(view, "#model-hub-detail-card", "transferred before cancellation")
+      refute has_element?(view, "#model-hub-detail-card [role=progressbar]")
+      refute has_element?(view, "#model-hub-detail-card [phx-value-action=resume]")
+      render_click(view, "restart_download", %{"repo_id" => repo, "revision" => "forged"})
+      refute_receive {:stub_download_ref, _, _, _}
+      view |> element("#model-hub-detail-card [phx-click=restart_download]") |> render_click()
+      assert_receive {:stub_download_ref, _ref, ^repo, opts}, 200
+      assert opts[:revision] == "original"
+      assert has_element?(view, "#model-hub-detail-card #model-hub-download-status", "Starting")
+    end
+
+    test "removing an opened terminal entry updates other views and keeps the active job", %{
+      conn: conn
+    } do
+      repo = "publisher/failed"
+
+      assert {:ok, _} =
+               OrchardConsole.ModelHubDownloadCoordinator.start_download(repo,
+                 revision: "saved",
+                 activate: true
+               )
+
+      ref = assert_download_started()
+      send_download_error(ref, %{code: "download_failed", message: "Fixture failure"})
+
+      assert {:ok, _} =
+               OrchardConsole.ModelHubDownloadCoordinator.start_download("publisher/active",
+                 revision: "running",
+                 activate: true
+               )
+
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      {:ok, second_view, _html} = live(conn, "/console/models/discover")
+      render_click(view, "view_download", %{"repo_id" => repo, "revision" => "saved"})
+      assert has_element?(view, "#model-hub-detail-card [phx-click=remove_download]")
+      view |> element("#model-hub-detail-card [phx-click=remove_download]") |> render_click()
+      assert has_element?(view, "#model-hub-search-card:not([hidden])")
+
+      assert has_element?(
+               view,
+               "[id^=model-hub-removal-focus-][phx-mounted*=model-hub-toggle-downloads]"
+             )
+
+      refute has_element?(view, "#model-hub-download-list", repo)
+      refute has_element?(second_view, "#model-hub-download-list", repo)
+      assert has_element?(second_view, "#model-hub-toggle-downloads", "1 running")
+
+      render_click(view, "remove_download", %{
+        "repo_id" => "publisher/active",
+        "revision" => "running"
+      })
+
+      assert has_element?(view, "#model-hub-toggle-downloads", "1 running")
+    end
+
+    test "opened stale download refreshes into a fresh import without retaining history mode", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      repo = hd(results).repo_id
+
+      snapshot = %{
+        key: {repo, "old"},
+        repo_id: repo,
+        status: :error,
+        progress: %{repo_id: repo},
+        result: nil,
+        error: %{code: "hf_revision_changed", message: "Revision changed"}
+      }
+
+      send(view.pid, {:model_hub_download, snapshot})
+      render(view)
+      render_click(view, "view_download", %{"repo_id" => repo, "revision" => "old"})
+      assert has_element?(view, "#model-hub-catalog-heading")
+      refute has_element?(view, "#model-hub-download-button")
+      old_ref = assert_detail_started(repo)
+      send_detail_success(view, old_ref, Map.put(detail_fixture(repo), :revision_sha, "old"))
+      view |> element("#model-hub-refresh-revision") |> render_click()
+      search_ref = assert_search_started(repo)
+      send_search_success(view, search_ref, repo, results)
+      fresh_ref = assert_detail_started(repo)
+      send_detail_success(view, fresh_ref, Map.put(detail_fixture(repo), :revision_sha, "fresh"))
+      assert has_element?(view, "#model-hub-detail-content", "fresh")
+      enter_catalog(view)
+      view |> element("#model-hub-download-button") |> render_click()
+      assert_receive {:stub_download_ref, _ref, ^repo, opts}, 200
+      assert opts[:revision] == "fresh"
+    end
+
+    test "Back from another download preserves selection through reordered Refresh results", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      [first, second | _] = results
+
+      send(
+        view.pid,
+        {:model_hub_download,
+         %{
+           key: {second.repo_id, "saved"},
+           repo_id: second.repo_id,
+           status: :paused,
+           progress: %{repo_id: second.repo_id},
+           result: nil,
+           error: nil
+         }}
+      )
+
+      render(view)
+      render_click(view, "view_download", %{"repo_id" => second.repo_id, "revision" => "saved"})
+      job_detail_ref = assert_detail_started(second.repo_id)
+
+      send_detail_success(
+        view,
+        job_detail_ref,
+        Map.put(detail_fixture(second.repo_id), :revision_sha, "saved")
+      )
+
+      back_to_discover(view)
+      assert has_element?(view, "#model-hub-detail-repo-id", first.repo_id)
+      view |> element("#model-hub-retry-search") |> render_click()
+      refresh_ref = assert_search_started(nil)
+      send_search_success(view, refresh_ref, nil, [second, first])
+      selected_ref = assert_detail_started(first.repo_id)
+      send_detail_success(view, selected_ref, detail_fixture(first.repo_id))
+      assert has_element?(view, "#model-hub-detail-repo-id", first.repo_id)
+    end
+
+    test "Open Catalog keeps the job visible when the detail task cannot start", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      load_initial_results_and_detail(view)
+      :persistent_term.put({__MODULE__, :start_detail_result}, {:error, :unavailable})
+      repo = "publisher/saved"
+
+      send(
+        view.pid,
+        {:model_hub_download,
+         %{
+           key: {repo, "pinned"},
+           repo_id: repo,
+           status: :paused,
+           progress: %{repo_id: repo},
+           result: nil,
+           error: nil
+         }}
+      )
+
+      render(view)
+      render_click(view, "view_download", %{"repo_id" => repo, "revision" => "pinned"})
+      assert has_element?(view, "#model-hub-catalog-heading")
+
+      assert has_element?(
+               view,
+               "#model-hub-opened-download-note",
+               "Provider details are unavailable"
+             )
+
+      assert has_element?(view, "#model-hub-detail-card #model-hub-download-progress", "Paused")
+      assert has_element?(view, "#model-hub-detail-content", "pinned")
+      refute has_element?(view, "#model-hub-download-button")
+    end
+
+    test "Open Catalog restores a job outside search results and guards its pinned revision", %{
+      conn: conn
+    } do
+      repo = "publisher/prior-download"
+
+      assert {:ok, _} =
+               OrchardConsole.ModelHubDownloadCoordinator.start_download(repo,
+                 revision: "pinned",
+                 activate: true
+               )
+
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      search_ref = assert_search_started(nil)
+      view |> element("#model-hub-toggle-downloads") |> render_click()
+
+      view
+      |> element("button[phx-value-repo_id='publisher/prior-download']", "Open Catalog")
+      |> render_click()
+
+      assert has_element?(view, "#model-hub-catalog-heading")
+      assert has_element?(view, "#model-hub-detail-repo-id", repo)
+      assert has_element?(view, "#model-hub-detail-content", "pinned")
+      detail_ref = assert_detail_started(repo)
+      send_search_success(view, search_ref, nil, search_results_fixture())
+      send(view.pid, {:model_hub, search_ref, :search_finished, {:ok, %{results: []}}})
+      send(view.pid, {:model_hub, search_ref, :search_finished, {:error, %{message: "stale"}}})
+      assert has_element?(view, "#model-hub-detail-repo-id", repo)
+
+      send_detail_success(
+        view,
+        detail_ref,
+        Map.put(detail_fixture(repo), :revision_sha, "new-head")
+      )
+
+      assert has_element?(view, "#model-hub-detail-content", "pinned")
+      assert has_element?(view, "#model-hub-opened-download-note", "different revision")
+      refute has_element?(view, "#model-hub-download-button")
+      refute has_element?(view, "#model-hub-detail-content", "GenericForCausalLM")
+      back_to_discover(view)
+      assert has_element?(view, "#model-hub-search-card:not([hidden])")
+      assert has_element?(view, "#model-hub-download-list:not([hidden])")
+    end
+
+    test "reopened matching revision loads metadata and Back restores the previous selection", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      repo = "publisher/prior"
+
+      send(
+        view.pid,
+        {:model_hub_download,
+         %{
+           key: {repo, "saved"},
+           repo_id: repo,
+           status: :paused,
+           progress: %{repo_id: repo},
+           result: nil,
+           error: nil
+         }}
+      )
+
+      render(view)
+      render_click(view, "view_download", %{"repo_id" => repo, "revision" => "saved"})
+      detail_ref = assert_detail_started(repo)
+      send_detail_success(view, detail_ref, Map.put(detail_fixture(repo), :revision_sha, "saved"))
+      refute has_element?(view, "#model-hub-opened-download-note")
+      assert has_element?(view, "#model-hub-detail-repo-id", repo)
+      back_to_discover(view)
+      assert has_element?(view, "#model-hub-detail-repo-id", hd(results).repo_id)
+    end
+
+    test "unfinished downloads precede history and identify their controls and known bytes", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      load_initial_results_and_detail(view)
+
+      for {repo, status, bytes} <- [{"aaa/done", :cancelled, 9999}, {"zzz/paused", :paused, 512}] do
+        send(
+          view.pid,
+          {:model_hub_download,
+           %{
+             key: {repo, "r1"},
+             repo_id: repo,
+             status: status,
+             progress: %{repo_id: repo, bytes_downloaded: bytes},
+             result: nil,
+             error: nil
+           }}
+        )
+      end
+
+      render(view)
+      view |> element("#model-hub-toggle-downloads") |> render_click()
+      assert has_element?(view, "#model-hub-download-list > ul > li:first-child", "zzz/paused")
+      assert has_element?(view, "[aria-label='Resume download for zzz/paused, revision r1']")
+      assert has_element?(view, "#model-hub-download-bytes", "512")
+      refute has_element?(view, "#model-hub-download-bytes", "9,999")
+    end
+
+    test "another repository or revision stays in Downloads rather than the selected model card",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      selected_repo = hd(results).repo_id
+
+      for {repo, revision} <- [
+            {"publisher/background", "r1"},
+            {selected_repo, "different-revision"}
+          ] do
+        send(
+          view.pid,
+          {:model_hub_download,
+           %{
+             key: {repo, revision},
+             repo_id: repo,
+             status: :downloading,
+             progress: %{repo_id: repo, bytes_downloaded: 12},
+             result: nil,
+             error: nil
+           }}
+        )
+
+        render(view)
+
+        refute has_element?(view, "#model-hub-detail-card #model-hub-download-progress")
+        assert has_element?(view, "#model-hub-download-list #model-hub-download-progress", repo)
+        assert has_element?(view, "#model-hub-detail-repo-id", selected_repo)
+      end
+    end
+
+    test "viewing another job cannot enable a duplicate import for the selected model", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      enter_catalog(view)
+      selected = hd(results).repo_id
+
+      for repo <- [selected, "publisher/other"] do
+        send(
+          view.pid,
+          {:model_hub_download,
+           %{
+             key: {repo, "r1"},
+             repo_id: repo,
+             status: :paused,
+             progress: %{repo_id: repo},
+             result: nil,
+             error: nil
+           }}
+        )
+      end
+
+      render(view)
+      render_click(view, "view_download", %{"repo_id" => "publisher/other", "revision" => "r1"})
+      refute has_element?(view, "#model-hub-download-button")
+      render_click(view, "download_model", %{})
+      refute_receive {:stub_download_ref, _, _, _}
+    end
+
+    test "legacy jobs use their held identity when no revision was recorded", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      load_initial_results_and_detail(view)
+
+      snapshot = %{
+        key: {"publisher/legacy", nil},
+        repo_id: "publisher/legacy",
+        status: :paused,
+        progress: %{repo_id: "publisher/legacy"},
+        result: nil,
+        error: nil
+      }
+
+      send(view.pid, {:model_hub_download, snapshot})
+      render(view)
+      render_click(view, "view_download", %{"repo_id" => "publisher/legacy", "revision" => ""})
+      assert has_element?(view, "#model-hub-catalog-heading")
+
+      render_click(view, "control_download", %{
+        "repo_id" => "publisher/legacy",
+        "revision" => "forged",
+        "action" => "resume"
+      })
+
+      assert has_element?(view, "#model-hub-toggle-downloads", "1 paused")
+      view |> element("#model-hub-toggle-downloads") |> render_click()
+
+      render_click(view, "control_download", %{
+        "repo_id" => "publisher/legacy",
+        "action" => "resume"
+      })
+
+      assert has_element?(view, "#model-hub-downloads > [role=alert]", "This download changed")
+      assert Process.alive?(view.pid)
+    end
+
+    test "remount restores all coordinator jobs, not only the most recent", %{conn: conn} do
+      for repo <- ["publisher/first", "publisher/second"] do
+        assert {:ok, _} =
+                 OrchardConsole.ModelHubDownloadCoordinator.start_download(repo,
+                   revision: "pinned",
+                   activate: true
+                 )
+      end
+
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      assert has_element?(view, "#model-hub-toggle-downloads", "2 running")
+      view |> element("#model-hub-toggle-downloads") |> render_click()
+      assert has_element?(view, "#model-hub-download-list", "publisher/first")
+      assert has_element?(view, "#model-hub-download-list", "publisher/second")
+    end
+
+    test "Catalog progress stays inside the import card and remains reachable from Discover", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      enter_catalog(view)
+      view |> element("#model-hub-download-button") |> render_click()
+      ref = assert_download_started()
+
+      send_download_started(ref, %{
+        repo_id: hd(results).repo_id,
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      assert has_element?(view, "#model-hub-detail-content #model-hub-download-progress")
+      assert has_element?(view, "#model-hub-toggle-downloads", "1 running")
+      assert has_element?(view, "#model-hub-download-progress [phx-value-action=pause]")
+      back_to_discover(view)
+      view |> element("#model-hub-toggle-downloads") |> render_click()
+      assert has_element?(view, "#model-hub-download-list:not([hidden])", hd(results).repo_id)
+      view |> element("#model-hub-toggle-downloads") |> render_click()
+      assert has_element?(view, "#model-hub-download-list[hidden]")
+      assert has_element?(view, "#model-hub-toggle-downloads", "1 running")
+    end
+
+    test "snapshots retain every job with exact identity and restrict finalizing controls", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      load_initial_results_and_detail(view)
+
+      for {repo, status} <- [
+            {"publisher/a", :paused},
+            {"publisher/b", :importing},
+            {"publisher/c", :cancelled}
+          ] do
+        send(
+          view.pid,
+          {:model_hub_download,
+           %{
+             key: {repo, "r1"},
+             repo_id: repo,
+             status: status,
+             progress: %{repo_id: repo, bytes_downloaded: 12},
+             result: nil,
+             error: nil
+           }}
+        )
+      end
+
+      assert has_element?(view, "#model-hub-toggle-downloads", "1 running · 1 paused · 3 total")
+      view |> element("#model-hub-toggle-downloads") |> render_click()
+
+      assert has_element?(
+               view,
+               "#model-hub-download-list [phx-value-repo_id='publisher/a'][phx-value-action=resume][phx-value-revision=r1]"
+             )
+
+      refute has_element?(
+               view,
+               "#model-hub-download-list [phx-value-repo_id='publisher/b'][phx-value-action]"
+             )
+
+      refute has_element?(
+               view,
+               "#model-hub-download-list [phx-value-repo_id='publisher/c'][phx-value-action]"
+             )
+
+      render_click(view, "control_download", %{
+        "repo_id" => "forged/repo",
+        "revision" => "r1",
+        "action" => "cancel"
+      })
+
+      assert Process.alive?(view.pid)
+      assert has_element?(view, "#model-hub-toggle-downloads", "3 total")
+    end
+  end
+
+  describe "GET /console/models/discover" do
+    test "known MLX Node does not imply provider model memory compatibility", %{conn: conn} do
+      %Orchard.Nodes.Node{}
+      |> Orchard.Nodes.Node.changeset(%{
+        hostname: "fit-node.local",
+        display_name: "Fit Node",
+        advertise_addr: "127.0.0.2",
+        rpc_port: 50_474,
+        state: :active,
+        health: :healthy,
+        capabilities: %{"worker_backend" => "mlx"},
+        agent_version: "0.1.0"
+      })
+      |> Orchard.Repo.insert!()
+
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      render_async(view)
+      assert has_element?(view, "#model-hub-node-context", "Fit Node")
+
+      assert has_element?(
+               view,
+               "#model-hub-node-context",
+               "Hardware memory and exact model requirements are not available"
+             )
+
+      load_initial_results_and_detail(view)
+      assert has_element?(view, "#model-hub-results-table", "Node fit: not verified")
+    end
+
+    test "shows all six setup steps and distinguishes absent Nodes from compatibility", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      render_async(view)
+      assert has_element?(view, "#model-hub-journey-stepper", "Step 1 of 6")
+
+      assert has_element?(
+               view,
+               "#model-hub-journey-stepper li[aria-current=step]",
+               "Discover models"
+             )
+
+      for label <- ["Access", "Placement", "Acquire", "Test inference"] do
+        assert has_element?(view, "#model-hub-journey-stepper [aria-disabled=true]", label)
+      end
+
+      assert has_element?(view, "#model-hub-node-context", "No Nodes registered")
+      load_initial_results_and_detail(view)
+      assert has_element?(view, "#model-hub-results-table", "Node fit: no Nodes registered")
+    end
+
+    test "renders the canonical Discover page under the single Models navigation", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/console/models/discover")
+
+      assert html =~ "Discover models \u2014 Orchard Console"
       assert html =~ "console-sidebar"
       assert html =~ "model-hub-search-form"
       assert html =~ "model-hub-search-input"
       assert html =~ ~s(phx-debounce="300")
-      assert has_element?(view, ~s(a[aria-current="page"][href="/console/model-hub"]))
+      assert has_element?(view, ~s(a[aria-current="page"][href="/console/models"]))
+
+      assert has_element?(
+               view,
+               ~s(#models-navigation a[aria-current="page"][href="/console/models/discover"]),
+               "Discover"
+             )
+
+      refute has_element?(view, ~s(a[href="/console/model-hub"]))
+    end
+
+    test "retains the legacy Model Hub URL as a compatibility entry", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/console/model-hub")
+
+      assert html =~ "Discover models \u2014 Orchard Console"
+      assert has_element?(view, ~s(a[aria-current="page"][href="/console/models"]))
+
+      assert has_element?(
+               view,
+               ~s(#models-navigation a[href="/console/models/discover"]),
+               "Discover"
+             )
     end
 
     test "cards use max_height for desktop scroll containment", %{conn: conn} do
@@ -167,7 +919,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "xl:z-"
       # Contains repo id and download action
       assert html =~ "model-hub-detail-repo-id"
-      assert html =~ "model-hub-download-action"
+      assert html =~ "model-hub-open-catalog"
       # Scrolling body wrapper exists
       assert html =~ ~s(id="model-hub-detail-body")
     end
@@ -178,7 +930,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute html =~ "model-hub-detail-sticky-header"
     end
 
-    test "result rows are keyboard-accessible with tabindex and Enter activation", %{conn: conn} do
+    test "results expose explicit keyboard-accessible Import actions", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
 
       search_ref = assert_search_started(nil)
@@ -189,14 +941,66 @@ defmodule OrchardConsole.ModelHubLiveTest do
       detail_ref = assert_detail_started(hd(results).repo_id)
       send_detail_success(view, detail_ref, detail_fixture(hd(results).repo_id))
 
-      html = render(view)
+      first = hd(results)
 
-      # Result rows should be keyboard-focusable
-      assert html =~ ~s(tabindex="0")
-      assert html =~ ~s(phx-key="Enter")
-      # Row click should still work
-      assert html =~ "phx-click"
-      assert html =~ "phx-keydown"
+      import_action =
+        view
+        |> element("#model-hub-result-#{dom_id_fragment(first.repo_id)} button", "Import")
+        |> render()
+
+      assert import_action =~ "Import"
+      assert import_action =~ ~s(aria-label="Import #{first.repo_id}")
+      assert import_action =~ "open_catalog"
+      assert import_action =~ "focus"
+      assert import_action =~ "push_focus"
+      refute has_element?(view, "#model-hub-download-button")
+    end
+
+    test "cards show provider metadata without inferring missing specifications", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      search_ref = assert_search_started(nil)
+
+      known =
+        search_result_fixture("publisher/Example-27B", %{
+          library_name: "mlx",
+          safetensors_total: 1_724_000_000,
+          last_modified: "2026-03-19T12:34:56Z"
+        })
+
+      unknown =
+        search_result_fixture("publisher/Mystery-70B", %{library_name: nil, last_modified: nil})
+
+      send_search_success(view, search_ref, nil, [known, unknown])
+      card = view |> element("#model-hub-result-#{dom_id_fragment(known.repo_id)}") |> render()
+      assert card =~ "Example-27B"
+      assert card =~ "publisher"
+      assert card =~ "mlx"
+      assert card =~ "1.7B"
+      assert card =~ "stored parameters"
+      assert card =~ "2026-03-19"
+
+      missing =
+        view |> element("#model-hub-result-#{dom_id_fragment(unknown.repo_id)}") |> render()
+
+      assert missing =~ "Update date unavailable"
+      refute missing =~ "stored parameters"
+    end
+
+    test "result card selects another repository without entering import setup", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      [first, second | _] = load_initial_results_and_detail(view)
+      selector = "#model-hub-result-#{dom_id_fragment(second.repo_id)} button[aria-pressed]"
+      assert has_element?(view, selector <> ~s([aria-pressed="false"]))
+      view |> element(selector) |> render_click()
+      detail_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+      assert has_element?(view, selector <> ~s([aria-pressed="true"]), "Selected")
+      assert has_element?(view, "#model-hub-detail-repo-id", second.repo_id)
+
+      assert has_element?(
+               view,
+               "#model-hub-result-#{dom_id_fragment(first.repo_id)} button[aria-pressed=false]"
+             )
     end
 
     test "connected mount loads initial browse results, auto-selects the first result, and loads detail",
@@ -223,6 +1027,93 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "LlamaForCausalLM"
       assert html =~ "model-hub-detail-siblings"
       assert html =~ "tokenizer.json"
+    end
+
+    test "labels capability filters as provider result metadata with normalized values", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      search_ref = assert_search_started(nil)
+
+      results = [
+        search_result_fixture("mlx-community/text-model", %{pipeline_tag: "text-generation"}),
+        search_result_fixture("mlx-community/unknown-model", %{pipeline_tag: nil})
+      ]
+
+      send_search_success(view, search_ref, nil, results)
+      _detail_ref = assert_detail_started("mlx-community/text-model")
+
+      assert has_element?(view, "#model-hub-capability-filters")
+      assert render(view) =~ "Filter these results by capability"
+      assert render(view) =~ "not verified runtime support"
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-capability-filters button[phx-click="filter_capability"][phx-value-capability="all"])
+             )
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-capability-filters button[phx-value-capability="text-generation"]),
+               "Text generation"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-capability-filters button[phx-value-capability="unknown"]),
+               "Unknown"
+             )
+    end
+
+    test "capability filtering applies only to server results and clears filtered-out detail", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      search_ref = assert_search_started(nil)
+      known = search_result_fixture("mlx-community/text-model")
+      unknown = search_result_fixture("mlx-community/unknown-model", %{pipeline_tag: nil})
+
+      send_search_success(view, search_ref, nil, [known, unknown])
+      detail_ref = assert_detail_started(known.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(known.repo_id))
+
+      view
+      |> element(~s(#model-hub-capability-filters button[phx-value-capability="unknown"]))
+      |> render_click()
+
+      assert has_element?(view, "#model-hub-result-#{dom_id_fragment(unknown.repo_id)}")
+      refute has_element?(view, "#model-hub-result-#{dom_id_fragment(known.repo_id)}")
+      assert has_element?(view, "#model-hub-detail-idle")
+      refute has_element?(view, "#model-hub-detail-content")
+    end
+
+    test "restrictive capability filter shows a distinct empty state and can be cleared", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      search_ref = assert_search_started(nil)
+      known = search_result_fixture("mlx-community/text-model")
+
+      send_search_success(view, search_ref, nil, [known])
+      _detail_ref = assert_detail_started(known.repo_id)
+
+      view
+      |> element(~s(#model-hub-capability-filters button[phx-value-capability="unknown"]))
+      |> render_click()
+
+      assert has_element?(view, "#model-hub-filter-empty")
+      assert render(view) =~ "No results match this filter."
+      assert has_element?(view, ~s(#model-hub-filter-empty button[phx-click="clear_filter"]))
+
+      view
+      |> element(
+        ~s(#model-hub-filter-empty button[phx-click="clear_filter"]),
+        "Clear capability filter"
+      )
+      |> render_click()
+
+      assert has_element?(view, "#model-hub-result-#{dom_id_fragment(known.repo_id)}")
+      refute has_element?(view, "#model-hub-filter-empty")
     end
 
     test "search change starts a new debounced search and clears prior detail state", %{
@@ -265,9 +1156,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       results = load_initial_results_and_detail(view)
       second = Enum.at(results, 1)
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       detail_ref = assert_detail_started(second.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
@@ -290,9 +1179,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       send_search_success(view, search_ref, nil, results)
       _detail_ref = assert_detail_started(first_repo_id)
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(first_repo_id)}")
-      |> render_click()
+      select_result(view, first_repo_id)
 
       refute_receive {:stub_detail_ref, _, ^first_repo_id}, 50
       assert render(view) =~ "model-hub-detail-loading"
@@ -303,9 +1190,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       results = load_initial_results_and_detail(view)
       second = Enum.at(results, 1)
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       second_detail_ref = assert_detail_started(second.repo_id)
       send_detail_success(view, second_detail_ref, detail_fixture(second.repo_id))
@@ -324,6 +1209,22 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ second.repo_id
       assert html =~ "QwenForCausalLM"
       refute html =~ "LlamaForCausalLM"
+    end
+
+    test "Refresh results preserves the current selected repository", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      second = Enum.at(results, 1)
+      select_result(view, second.repo_id)
+      detail_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+
+      view |> element("#model-hub-retry-search") |> render_click()
+      retry_ref = assert_search_started(nil)
+      send_search_success(view, retry_ref, nil, results)
+      retry_detail_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, retry_detail_ref, detail_fixture(second.repo_id))
+      assert render(view) =~ "QwenForCausalLM"
     end
 
     test "empty search results show the shared empty state and clear detail", %{conn: conn} do
@@ -364,6 +1265,49 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute_receive {:stub_detail_ref, _, _}, 50
     end
 
+    test "search errors expose a retry that repeats the current server query", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      search_ref = assert_search_started(nil)
+      send_search_error(view, search_ref, %{message: "Provider unavailable."})
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-retry-search[phx-click="retry_search"]),
+               "Retry search"
+             )
+
+      view
+      |> element("#model-hub-retry-search")
+      |> render_click()
+
+      assert_search_started(nil)
+      assert has_element?(view, "#model-hub-results-loading")
+    end
+
+    test "clear search resets the query through the server search flow", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      _initial_ref = assert_search_started(nil)
+
+      view
+      |> form("#model-hub-search-form", model_hub_search: %{query: "qwen"})
+      |> render_change()
+
+      _query_ref = assert_search_started("qwen")
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-clear-search[phx-click="clear_search"]),
+               "Clear search"
+             )
+
+      view
+      |> element("#model-hub-clear-search")
+      |> render_click()
+
+      assert_search_started(nil)
+      refute has_element?(view, "#model-hub-clear-search")
+    end
+
     test "search error sanitizes raw token-bearing messages before render", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       search_ref = assert_search_started(nil)
@@ -399,7 +1343,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       assert html =~ "model-hub-results-error"
       assert html =~ "String keyed search failed."
-      refute html =~ "Model Hub unavailable."
+      refute html =~ "Model discovery unavailable."
     end
 
     test "detail error keeps results visible for the selected repo", %{conn: conn} do
@@ -531,9 +1475,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       second = Enum.at(results, 1)
       :persistent_term.put({__MODULE__, :start_detail_result}, :error)
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       html = render(view)
       assert html =~ "model-hub-detail-error"
@@ -619,9 +1561,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       send_search_success(view, search_ref, nil, results)
       first_detail_ref = assert_detail_started(first.repo_id)
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       second_detail_ref = assert_detail_started(second.repo_id)
 
@@ -650,9 +1590,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       first_detail_ref = assert_detail_started(first.repo_id)
       first_detail_pid = assert_detail_task_pid(first_detail_ref)
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       second_detail_ref = assert_detail_started(second.repo_id)
       _second_detail_pid = assert_detail_task_pid(second_detail_ref)
@@ -761,10 +1699,117 @@ defmodule OrchardConsole.ModelHubLiveTest do
     end
   end
 
+  describe "Catalog step navigation" do
+    test "Import replaces discovery and Back restores query, filter, and selection", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      second = Enum.at(results, 1)
+
+      view |> form("#model-hub-search-form", model_hub_search: %{query: "mlx"}) |> render_change()
+      search_ref = assert_search_started("mlx")
+      send_search_success(view, search_ref, "mlx", results)
+      first_ref = assert_detail_started(hd(results).repo_id)
+      send_detail_success(view, first_ref, detail_fixture(hd(results).repo_id))
+      select_result(view, second.repo_id)
+      second_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, second_ref, detail_fixture(second.repo_id))
+
+      view
+      |> element(~s(#model-hub-capability-filters button[phx-value-capability="text-generation"]))
+      |> render_click()
+
+      view
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)} button", "Import")
+      |> render_click()
+
+      assert has_element?(view, "#model-hub-catalog-heading", "Add to your catalog")
+      assert has_element?(view, "#model-hub-import-storage", "Provider repository storage")
+      assert has_element?(view, "#model-hub-import-storage", "Actual download size may differ")
+
+      assert has_element?(
+               view,
+               "#model-hub-catalog-header",
+               "An active import continues when you leave this page."
+             )
+
+      assert has_element?(view, "#model-hub-search-card[hidden]")
+      assert has_element?(view, "#model-hub-detail-repo-id", second.repo_id)
+      assert has_element?(view, "#model-hub-download-button")
+      refute_receive {:stub_download_ref, _, _, _}, 50
+
+      view |> element("#model-hub-back-to-discover") |> render_click()
+      assert has_element?(view, ~s(#model-hub-search-input[value="mlx"]))
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-capability-filters button[phx-value-capability="text-generation"][aria-pressed="true"])
+             )
+
+      assert has_element?(
+               view,
+               "#model-hub-result-#{dom_id_fragment(second.repo_id)} button[aria-pressed=true]"
+             )
+
+      refute has_element?(view, "#model-hub-download-button")
+      refute_receive {:stub_search_ref, _, _}, 50
+      refute_receive {:stub_detail_ref, _, _}, 50
+    end
+
+    test "forged import events cannot start a download while browsing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      load_initial_results_and_detail(view)
+      render_click(view, "download_model", %{"revision" => "rev-llama"})
+      refute_receive {:stub_download_ref, _, _, _}, 50
+      assert has_element?(view, "#model-hub-search-form")
+      refute has_element?(view, "#model-hub-download-button")
+    end
+
+    test "Catalog handles pending detail and Back before the provider responds", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      second = Enum.at(results, 1)
+
+      view
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)} button", "Import")
+      |> render_click()
+
+      detail_ref = assert_detail_started(second.repo_id)
+      assert has_element?(view, "#model-hub-catalog-heading")
+      assert has_element?(view, "#model-hub-detail-loading")
+      assert has_element?(view, "#model-hub-search-card[hidden]")
+      render_click(view, "download_model")
+      refute_receive {:stub_download_ref, _, _, _}, 50
+      view |> element("#model-hub-back-to-discover") |> render_click()
+      send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+      assert has_element?(view, "#model-hub-search-form")
+      assert has_element?(view, "#model-hub-detail-repo-id", second.repo_id)
+      refute has_element?(view, "#model-hub-download-button")
+    end
+
+    test "Catalog provider error keeps a usable Back path", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      second = Enum.at(results, 1)
+
+      view
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)} button", "Import")
+      |> render_click()
+
+      detail_ref = assert_detail_started(second.repo_id)
+      send_detail_error(view, detail_ref, %{message: "Provider unavailable."})
+      assert has_element?(view, "#model-hub-detail-error")
+      refute has_element?(view, "#model-hub-download-button")
+      view |> element("#model-hub-back-to-discover") |> render_click()
+      assert has_element?(view, "#model-hub-search-form")
+      assert has_element?(view, "#model-hub-result-#{dom_id_fragment(second.repo_id)}")
+    end
+  end
+
   describe "download flow" do
     test "download button renders for open models and is absent for idle detail", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       html = render(view)
 
       # Detail loaded for first (open) model — button present
@@ -777,12 +1822,11 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Second model is gated
       second = Enum.at(results, 1)
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       detail_ref = assert_detail_started(second.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+      enter_catalog(view)
       html = render(view)
 
       # Gated model — button disabled, warning visible
@@ -791,9 +1835,47 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "gated on Hugging Face"
     end
 
+    test "missing revision evidence disables import and ignores the import event", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = search_results_fixture()
+      first = hd(results)
+      search_ref = assert_search_started(nil)
+
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(first.repo_id)
+
+      first.repo_id
+      |> detail_fixture()
+      |> Map.put(:revision_sha, nil)
+      |> then(&send_detail_success(view, detail_ref, &1))
+
+      enter_catalog(view)
+
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+      assert has_element?(view, "#model-hub-revision-unavailable")
+
+      render_click(view, "download_model", %{"revision" => "forged-client-revision"})
+      refute_receive {:stub_download_ref, _, _, _}, 50
+    end
+
+    test "SPEC 6.5 import retains the registered lifecycle and selected server revision", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      enter_catalog(view)
+      first = hd(results)
+
+      render_click(view, "download_model", %{"revision" => "forged-client-revision"})
+
+      assert_receive {:stub_download_ref, _ref, repo_id, opts}, 200
+      assert repo_id == first.repo_id
+      assert opts[:activate] == false
+      assert opts[:revision] == "rev-llama"
+    end
+
     test "clicking download starts the seam and shows starting state", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       first = hd(results)
 
       view
@@ -803,7 +1885,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Verify stub received the right call
       assert_receive {:stub_download_ref, _ref, repo_id, opts}, 200
       assert repo_id == first.repo_id
-      assert opts[:activate] == true
+      assert opts[:activate] == false
+      assert opts[:revision] == "rev-llama"
 
       html = render(view)
       assert html =~ "model-hub-download-progress"
@@ -825,6 +1908,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "active download keeps selected repo download button disabled", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view
       |> element("#model-hub-download-button")
@@ -849,6 +1933,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       detail_ref = assert_detail_started(first.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(first.repo_id))
+      enter_catalog(view)
 
       view
       |> element("#model-hub-download-button")
@@ -865,12 +1950,11 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       assert has_element?(view, "#model-hub-download-button[disabled]")
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       detail_ref = assert_detail_started(second.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+      enter_catalog(view)
 
       refute has_element?(view, "#model-hub-download-button[disabled]")
       assert has_element?(view, "#model-hub-download-button:not([disabled])")
@@ -890,6 +1974,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       detail_ref = assert_detail_started(first.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(first.repo_id))
+      enter_catalog(view)
 
       view
       |> element("#model-hub-download-button")
@@ -904,12 +1989,11 @@ defmodule OrchardConsole.ModelHubLiveTest do
         total_bytes: 1024
       })
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       detail_ref = assert_detail_started(second.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+      enter_catalog(view)
 
       refute has_element?(view, "#model-hub-download-button[disabled]")
 
@@ -928,12 +2012,11 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       assert has_element?(view, "#model-hub-download-button[disabled]")
 
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(first.repo_id)}")
-      |> render_click()
+      select_result(view, first.repo_id)
 
       detail_ref = assert_detail_started(first.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(first.repo_id))
+      enter_catalog(view)
 
       html = render(view)
 
@@ -944,6 +2027,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test ":download_started moves to downloading and renders totals", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -975,6 +2059,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test ":download_progress maps seam phases correctly", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1036,6 +2121,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     } do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1074,6 +2160,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test ":download_finished {:ok, ...} shows completion with CTA", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1085,9 +2172,13 @@ defmodule OrchardConsole.ModelHubLiveTest do
         total_bytes: 1024
       })
 
+      digest = String.duplicate("b", 64)
+
       send_download_success(download_ref, %{
+        id: "catalog-record-id",
         model_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         version: "abc123def456",
+        artifact_sha256: digest,
         state: :active
       })
 
@@ -1097,7 +2188,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "Catalog activation is not runtime readiness"
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
       assert html =~ "abc123def456"
-      assert has_element?(view, "#model-hub-download-models-link")
+      assert html =~ "Bundle SHA-256"
+      assert html =~ digest
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-download-models-link[href="/console/models#model-catalog-record-id"])
+             )
+
       assert has_element?(view, "#model-hub-download-readiness-note")
 
       assert has_element?(
@@ -1116,6 +2214,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     } do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1135,7 +2234,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       html = render(view)
       assert html =~ "model-hub-download-complete"
-      assert html =~ "Model imported successfully."
+      assert html =~ "Model registered in Catalog."
+      assert html =~ "Activate it from Catalog before granting access."
       assert has_element?(view, "#model-hub-download-models-link")
       refute has_element?(view, "#model-hub-download-playground-link")
     end
@@ -1143,6 +2243,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test ":download_finished {:error, ...} shows error with retry", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1164,9 +2265,212 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute has_element?(view, "#model-hub-download-button[disabled]")
     end
 
+    test "revision drift requires a fresh search instead of retrying the stale import", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      results = load_initial_results_and_detail(view)
+      enter_catalog(view)
+      first = hd(results)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_error(download_ref, %{
+        code: "hf_revision_changed",
+        message: "The provider revision changed. Refresh the search and select the model again."
+      })
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-refresh-revision[phx-click="refresh_failed_revision"]),
+               "Refresh and select again"
+             )
+
+      refute has_element?(view, "#model-hub-download-retry")
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+      assert view |> element("#model-hub-download-error-revision") |> render() =~ "rev-llama"
+
+      render_click(view, "download_model")
+      refute_receive {:stub_download_ref, _, _, _}, 50
+
+      render_click(view, "retry_download")
+      refute_receive {:stub_download_ref, _, _, _}, 50
+
+      view
+      |> element("#model-hub-refresh-revision")
+      |> render_click()
+
+      refreshed_search_ref = assert_search_started(first.repo_id)
+      assert has_element?(view, "#model-hub-results-loading")
+
+      send_search_success(view, refreshed_search_ref, first.repo_id, results)
+      refreshed_detail_ref = assert_detail_started(first.repo_id)
+
+      refreshed_detail =
+        first.repo_id
+        |> detail_fixture()
+        |> Map.put(:revision_sha, "rev-llama-refreshed")
+
+      send_detail_success(view, refreshed_detail_ref, refreshed_detail)
+      enter_catalog(view)
+
+      refute has_element?(view, "#model-hub-download-error")
+      refute has_element?(view, "#model-hub-refresh-revision")
+      assert has_element?(view, "#model-hub-download-button:not([disabled])")
+      assert render(view) =~ "rev-llama-refreshed"
+
+      send(view.pid, {
+        :model_hub_download,
+        %{
+          key: {first.repo_id, "rev-llama"},
+          repo_id: first.repo_id,
+          status: :error,
+          progress: %{repo_id: first.repo_id},
+          result: nil,
+          error: %{
+            code: "hf_revision_changed",
+            message:
+              "The provider revision changed. Refresh the search and select the model again."
+          }
+        }
+      })
+
+      refute has_element?(view, "#model-hub-download-error")
+      assert has_element?(view, "#model-hub-download-button:not([disabled])")
+
+      view |> element("#model-hub-download-button") |> render_click()
+      assert_download_started(first.repo_id, "rev-llama-refreshed")
+    end
+
+    test "revision recovery refreshes the failed repo after another search is selected", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      first = view |> load_initial_results_and_detail() |> hd()
+      enter_catalog(view)
+      other = search_result_fixture("mlx-community/other-model")
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_error(download_ref, %{
+        code: "hf_revision_changed",
+        message: "The provider revision changed. Refresh the search and select the model again."
+      })
+
+      back_to_discover(view)
+
+      view
+      |> form("#model-hub-search-form", model_hub_search: %{query: "qwen"})
+      |> render_change()
+
+      other_search_ref = assert_search_started("qwen")
+      send_search_success(view, other_search_ref, "qwen", [other])
+      other_detail_ref = assert_detail_started(other.repo_id)
+      send_detail_success(view, other_detail_ref, detail_fixture(other.repo_id))
+      enter_catalog(view)
+
+      assert view |> element("#model-hub-download-error-repo") |> render() =~ first.repo_id
+      assert view |> element("#model-hub-download-error-revision") |> render() =~ "rev-llama"
+      assert has_element?(view, "#model-hub-download-button:not([disabled])")
+
+      view
+      |> element("#model-hub-refresh-revision")
+      |> render_click()
+
+      recovery_search_ref = assert_search_started(first.repo_id)
+
+      send_search_error(view, recovery_search_ref, %{
+        message: "Provider unavailable during revision refresh."
+      })
+
+      assert has_element?(view, "#model-hub-results-error")
+
+      view
+      |> element("#model-hub-retry-search")
+      |> render_click()
+
+      recovery_retry_ref = assert_search_started(first.repo_id)
+      send_search_success(view, recovery_retry_ref, first.repo_id, [other, first])
+      assert_detail_started(first.repo_id)
+    end
+
+    test "late stale revision error preserves another visible background import", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/discover")
+      initial_search_ref = assert_search_started(nil)
+      first = hd(search_results_fixture())
+      other = search_result_fixture("mlx-community/other-model")
+
+      send_search_success(view, initial_search_ref, nil, [other])
+      other_detail_ref = assert_detail_started(other.repo_id)
+      send_detail_success(view, other_detail_ref, detail_fixture(other.repo_id))
+      enter_catalog(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      other_download_ref = assert_download_started(other.repo_id, "rev-generic")
+
+      send_download_started(other_download_ref, %{
+        repo_id: other.repo_id,
+        revision: "rev-generic",
+        total_files: 2,
+        total_bytes: 1_024
+      })
+
+      assert view |> element("#model-hub-download-repo-id") |> render() =~ other.repo_id
+
+      back_to_discover(view)
+
+      view
+      |> form("#model-hub-search-form", model_hub_search: %{query: first.repo_id})
+      |> render_change()
+
+      first_search_ref = assert_search_started(first.repo_id)
+      send_search_success(view, first_search_ref, first.repo_id, [first])
+      first_detail_ref = assert_detail_started(first.repo_id)
+
+      first_detail =
+        first.repo_id
+        |> detail_fixture()
+        |> Map.put(:revision_sha, "rev-llama-refreshed")
+
+      send_detail_success(view, first_detail_ref, first_detail)
+      enter_catalog(view)
+
+      send(view.pid, {
+        :model_hub_download,
+        %{
+          key: {first.repo_id, "rev-llama"},
+          repo_id: first.repo_id,
+          status: :error,
+          progress: %{repo_id: first.repo_id},
+          result: nil,
+          error: %{
+            code: "hf_revision_changed",
+            message:
+              "The provider revision changed. Refresh the search and select the model again."
+          }
+        }
+      })
+
+      refute has_element?(view, "#model-hub-download-error")
+      assert view |> element("#model-hub-download-repo-id") |> render() =~ other.repo_id
+
+      send_download_success(other_download_ref, %{
+        id: "other-catalog-record",
+        model_id: other.repo_id,
+        version: "rev-generic",
+        state: :inactive
+      })
+
+      assert has_element?(view, "#model-hub-download-complete")
+      assert view |> element("#model-hub-download-model-id") |> render() =~ other.repo_id
+    end
+
     test "download error snapshot sanitizes token-bearing message before render", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       first = hd(results)
       bearer = "abcdef1234567890"
       hf_token = "hf_1234567890abcdef"
@@ -1199,6 +2503,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "download error title reads sanitized string-keyed messages", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       first = hd(results)
 
       send(view.pid, {
@@ -1227,6 +2532,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "download error snapshot sanitizes struct errors before render", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       first = hd(results)
       bearer = "abcdef1234567890"
       hf_token = "hf_1234567890abcdef"
@@ -1255,6 +2561,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "duplicate model error shows friendly message", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1279,6 +2586,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "start failure renders fallback error", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       :persistent_term.put({__MODULE__, :start_download_result}, :error)
 
       view |> element("#model-hub-download-button") |> render_click()
@@ -1292,6 +2600,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "retry restarts failed repo download", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       first = hd(results)
 
       view |> element("#model-hub-download-button") |> render_click()
@@ -1312,7 +2621,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Verify new download started for the same repo
       assert_receive {:stub_download_ref, _new_ref, repo_id, opts}, 200
       assert repo_id == first.repo_id
-      assert opts[:activate] == true
+      assert opts[:activate] == false
 
       html = render(view)
       assert html =~ "model-hub-download-progress"
@@ -1322,6 +2631,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "stale download refs are ignored", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       first_download_ref = assert_download_started()
@@ -1377,15 +2687,15 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "download button disabled for gated model click attempt", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       second = Enum.at(results, 1)
 
       # Select gated model
-      view
-      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
-      |> render_click()
+      select_result(view, second.repo_id)
 
       detail_ref = assert_detail_started(second.repo_id)
       send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+      enter_catalog(view)
 
       # Try to click download — should be disabled, no stub call
       assert has_element?(view, "#model-hub-download-button[disabled]")
@@ -1400,6 +2710,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Start download and advance to downloading state
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1437,6 +2748,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Start download and keep it active
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1454,6 +2766,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       # Reload results/detail so download button is in the DOM
       _results = load_initial_results_and_detail(remounted_view)
+      enter_catalog(remounted_view)
       html = render(remounted_view)
 
       # Download button is disabled because coordinator has an active job
@@ -1470,6 +2783,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Complete a download successfully
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
@@ -1504,6 +2818,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Complete a download with error
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)
+      enter_catalog(view)
       first = hd(results)
 
       view |> element("#model-hub-download-button") |> render_click()
@@ -1532,7 +2847,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       assert_receive {:stub_download_ref, _new_ref, repo_id, opts}, 200
       assert repo_id == first.repo_id
-      assert opts[:activate] == true
+      assert opts[:activate] == false
 
       html = render(remounted_view)
       assert html =~ "model-hub-download-progress"
@@ -1595,6 +2910,28 @@ defmodule OrchardConsole.ModelHubLiveTest do
         other ->
           other
       end
+    end
+  end
+
+  defp select_result(view, repo_id) do
+    back_to_discover(view)
+
+    view
+    |> element("#model-hub-result-#{dom_id_fragment(repo_id)} button[aria-pressed]")
+    |> render_click()
+  end
+
+  defp enter_catalog(view) do
+    if has_element?(view, "#model-hub-open-catalog") do
+      view |> element("#model-hub-open-catalog") |> render_click()
+    end
+
+    assert has_element?(view, "#model-hub-catalog-heading")
+  end
+
+  defp back_to_discover(view) do
+    if has_element?(view, "#model-hub-back-to-discover") do
+      view |> element("#model-hub-back-to-discover") |> render_click()
     end
   end
 
@@ -1668,6 +3005,12 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
   defp assert_download_started do
     assert_receive {:stub_download_ref, ref, _repo_id, _opts}, 200
+    ref
+  end
+
+  defp assert_download_started(repo_id, revision) do
+    assert_receive {:stub_download_ref, ref, ^repo_id, opts}, 200
+    assert opts[:revision] == revision
     ref
   end
 

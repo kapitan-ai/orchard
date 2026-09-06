@@ -9,7 +9,7 @@ The Console needs one Models entry and a truthful path from provider evidence to
 - Distinguish empty catalogs, filtered results, provider errors, and unavailable revision evidence.
 - Label discovery filters explicitly and use Import for the import action.
 - Carry the selected server-held revision into the existing coordinator and reject a changed provider snapshot before downloading.
-- Show the resulting catalog identity and artifact digest without implying runtime readiness.
+- Show the resulting registered catalog identity and artifact digest, retaining separate activation and runtime readiness.
 
 - Add visible download management and cooperative pause, resume, and cancel before Catalog finalization.
 - Restore terminal download recovery through exact-revision restart and history removal.

@@ -216,13 +216,13 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
 
     test "renders sidebar navigation with all items", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console")
+      {:ok, view, html} = live(conn, "/console")
 
       assert html =~ "Overview"
       assert html =~ "Nodes"
       assert html =~ "Playground"
-      assert html =~ "Models"
-      assert html =~ "Model Hub"
+      assert has_element?(view, ~s(#console-sidebar a[href="/console/models"]), "Models")
+      refute has_element?(view, ~s(#console-sidebar a[href="/console/model-hub"]), "Model Hub")
       assert html =~ "Organizations"
       assert html =~ "Requests"
     end
@@ -234,14 +234,14 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
 
     test "all sidebar nav items are enabled", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console")
+      {:ok, view, html} = live(conn, "/console")
 
       refute html =~ ~s(aria-disabled="true")
       refute html =~ "coming soon"
       assert html =~ "/console/nodes"
       assert html =~ "/console/playground"
-      assert html =~ "/console/models"
-      assert html =~ "/console/model-hub"
+      assert has_element?(view, ~s(#console-sidebar a[href="/console/models"]), "Models")
+      refute has_element?(view, ~s(#console-sidebar a[href="/console/model-hub"]), "Model Hub")
       assert html =~ "/console/requests"
       assert html =~ "/console/tenants"
     end
@@ -464,7 +464,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert has_element?(view, "#overview-quickstart-action-import-first-model")
 
       assert view |> element("#overview-quickstart-action-import-first-model") |> render() =~
-               ~s(href="/console/model-hub")
+               ~s(href="/console/models/discover")
 
       assert has_element?(view, "#overview-quickstart-action-run-test-request")
 
