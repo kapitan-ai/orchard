@@ -624,7 +624,7 @@ defmodule OrchardConsole.ModelHubLive do
 
                   <p :if={@opened_download_note} id="model-hub-opened-download-note" role="status" class="mt-4 text-sm text-slate-600 dark:text-slate-300">{@opened_download_note}</p>
                   <p class="mt-4 text-sm text-slate-600 dark:text-slate-300">
-                    {if @job_detail?, do: "Catalog presence does not establish access authorization, Node placement, or inference readiness.", else: "Import downloads this revision and adds it to your active catalog. Access, Node placement, and inference readiness are separate."}
+                    {if @job_detail?, do: "Catalog presence does not establish access authorization, Node placement, or inference readiness.", else: "Import downloads this revision and registers it in Catalog. Activate it from Catalog before granting access. Node placement and inference readiness are separate."}
                   </p>
                   <p :if={not present_text?(@model_detail.revision_sha)} id="model-hub-revision-unavailable" class="mt-2 text-sm text-amber-600 dark:text-amber-400">
                     The provider has not supplied a revision. Refresh the search before importing.

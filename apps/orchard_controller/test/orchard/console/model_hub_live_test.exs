@@ -1861,6 +1861,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
     test "SPEC 6.5 import retains the registered lifecycle and selected server revision", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/models/discover")
       results = load_initial_results_and_detail(view)
+      assert render(view) =~ "Import downloads this revision and registers it in Catalog."
+      assert render(view) =~ "Activate it from Catalog before granting access."
       enter_catalog(view)
       first = hd(results)
 
