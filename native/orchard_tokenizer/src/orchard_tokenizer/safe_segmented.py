@@ -214,6 +214,8 @@ def tag_caller_strings(
     marker_pairs: list[MarkerPair] = []
 
     def wrap(path: str, value: str) -> str:
+        if value == "":
+            return value
         index = len(marker_pairs)
         begin = tag_begin(nonce, index)
         end = tag_end(nonce, index)
@@ -568,7 +570,11 @@ def sentinel_payloads(catalog: Sequence[str]) -> list[tuple[str, int, dict[str, 
                     "tools": [
                         {
                             "type": "function",
-                            "function": {"name": "lookup", "description": value},
+                            "function": {
+                                "name": "lookup",
+                                "description": value,
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
                         }
                     ],
                     "tool_choice": None,
@@ -586,7 +592,12 @@ def sentinel_payloads(catalog: Sequence[str]) -> list[tuple[str, int, dict[str, 
                             "type": "function",
                             "function": {
                                 "name": "lookup",
-                                "parameters": {"type": "object", "description": value},
+                                "parameters": {
+                                    "type": "object",
+                                    "description": value,
+                                    "properties": {},
+                                    "required": [],
+                                },
                             },
                         }
                     ],
@@ -640,7 +651,11 @@ def _message_item_strings(item: Mapping[str, Any], index: int) -> list[tuple[str
                     function_map = cast(dict[str, Any], function)
                     function_base = f"{call_base}.function"
                     _append_string_field(strings, function_map, "name", function_base)
-                    _append_string_field(strings, function_map, "arguments", function_base)
+                    strings.extend(
+                        _extra_string_values(
+                            function_map.get("arguments"), f"{function_base}.arguments"
+                        )
+                    )
                     strings.extend(
                         _extra_string_values(
                             function_map,
@@ -905,7 +920,10 @@ def _tag_message_tool_calls(
             function_map = cast(dict[str, Any], function)
             function_base = f"{call_base}.function"
             _tag_string_field(function_map, "name", function_base, wrap)
-            _tag_string_field(function_map, "arguments", function_base, wrap)
+            if "arguments" in function_map:
+                function_map["arguments"] = _tag_extra_string_values(
+                    function_map["arguments"], f"{function_base}.arguments", wrap
+                )
             tool_call_map["function"] = _tag_extra_string_values(
                 function_map,
                 function_base,

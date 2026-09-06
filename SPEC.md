@@ -579,6 +579,11 @@ Tokenizer contract v2 requirements:
 
 Tokenizer contract v3 adds controller-authoritative prompt token IDs for safe-tokenization-capable workers. When controller safe tokenization produces `prompt_token_ids`, capable workers must use those IDs directly rather than re-encoding rendered prompt text. Manifest compatibility trust remains governed by §6.4 and the runtime manifest-trust configuration; worker capability is advertised by the worker, not by the manifest.
 
+For contract-v3 segmented rendering, assistant tool-call history arguments SHALL be decoded from public JSON strings into argument objects before chat-template rendering.
+Malformed, non-object, duplicate-key, or non-finite arguments SHALL fail before inference.
+Caller-string tagging SHALL operate on the normalized argument object, protecting recursive object keys and string values while preserving JSON scalar types and the dual-render compatibility check.
+Exactly empty caller strings SHALL remain empty without markers because they contain no caller bytes; nonempty strings, including whitespace-only strings, remain subject to tagging and the dual-render check.
+
 For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, parser-family selection, and version selection.
 The public API MUST NOT accept arbitrary chat-template keyword arguments.
 The tokenizer SHALL map the typed generation policy through a closed contract for the exact model artifact and chat-template digest.
@@ -3554,6 +3559,10 @@ Internal tool-calling wire semantics:
 
 * `ToolCallDelta.tool_call_id` SHALL remain stable for the life of that tool call within the request
 * tool-call deltas SHALL preserve zero-based call index and append-only argument fragments in arrival order
+* function arguments SHALL be derived from the provider's parsed function result, not the raw model-native tool wrapper; the Worker Runtime owns this normalization
+* a complete-call parser MAY buffer one model-native block and emit one complete normalized argument fragment per parsed call; streaming does not require forwarding unparsed model tokens
+* before publishing calls from a parsed block, the worker SHALL validate every call's requested function name and JSON argument object; malformed or unrequested calls SHALL fail without publishing that block or echoing its generated contents in errors
+* cancellation or truncation SHALL discard unvalidated tool blocks; required closing markers MUST be present, and delimiter-free formats MUST reach a clean generation stop before parsing
 * if a request completes successfully after emitting one or more tool-call deltas, the terminal `Completed.finish_reason` SHALL be `FINISH_REASON_TOOL_CALLS`
 
 Internal token-streaming wire semantics:
@@ -3668,7 +3677,8 @@ Only final-answer text SHALL enter tool-call parsing.
 Caller stop sequences SHALL apply only to ordinary final-answer text in the negotiated pipeline and SHALL NOT terminate hidden or selected reasoning.
 Once tool-call emission begins, the existing rule preventing stop truncation of tool-call JSON remains in force.
 Parser control markers are framing and MUST NOT be emitted as reasoning, final text, or tool content.
-The legacy pipeline SHALL retain its existing tool and stop ordering and byte behavior when the reasoning control is omitted.
+The legacy pipeline SHALL retain its existing tool and stop ordering when the reasoning control is omitted.
+Tool argument byte preservation applies after provider normalization under §7.5.2; model-native wrappers are not public function arguments.
 
 Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
@@ -3718,7 +3728,7 @@ Admin creates bootstrap token or provisions node
 * allow typed internal reasoning deltas only under the negotiated contract in §7.5.3a
 * include exactly one terminal `Completed` or `Failed`
 * stop emitting additional events after the terminal event
-* preserve tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
+* preserve normalized tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
 * when `prompt_token_ids` is non-empty, validate that `len(prompt_token_ids) == input_tokens` before any model invocation; on mismatch, return a structured `prompt_token_ids_length_mismatch` failure; on match, use the supplied IDs directly; when the field is empty, legacy workers and legacy dispatch paths continue to re-encode `rendered_prompt_utf8`
 * a controller that receives a worker stream failure with code `prompt_token_ids_length_mismatch` SHALL emit `[:orchard, :tokenizer, :parity_drift]` with structured request/model/node metadata and a bounded worker message; the controller SHALL NOT parse length values from the message text
 * a controller that observes catalog drift SHALL emit `[:orchard, :tokenizer, :catalog_drift]` with `%{count: 1}`, request/model metadata, `endpoint`, `bundle_id`, trusted `bundle_sha256` when available, `catalog_sha256`, bounded `added` token metadata, full `added_count`, and explicit `partial_detection: true`; the event SHALL NOT include `removed` entries until runtime helper re-extraction or source-tagged manifests exist

@@ -21,6 +21,21 @@ validated surface.
 
 ## Validation
 
+Contract-v3 segmented rendering decodes tool-call history argument JSON into objects before template rendering and caller-string tagging.
+Nested argument keys and strings remain protected; invalid argument objects fail before dispatch.
+Exactly empty strings need no markers, while whitespace-only strings retain the normal protection.
+Legacy non-segmented rendering is unchanged.
+
+To check a tool-capable model's exact tokenizer assets without loading weights, point `ORCHARD_TOOL_TEMPLATE_SMOKE_PATH` at a directory containing `tokenizer.json`, `tokenizer_config.json`, and `chat_template.jinja`:
+
+```bash
+ORCHARD_TOOL_TEMPLATE_SMOKE_PATH=/path/to/pinned/assets mise exec -- uv run --directory native/orchard_tokenizer pytest tests/test_tool_template_smoke.py
+```
+
+This checks preflight, a tool-enabled first turn, and a synthetic tool-result continuation with safe encoding of a control-token literal in an argument.
+Record the immutable model revision and asset digests alongside the result.
+Passing this check does not qualify model generation or any particular client.
+
 From the repo root:
 
 ```bash

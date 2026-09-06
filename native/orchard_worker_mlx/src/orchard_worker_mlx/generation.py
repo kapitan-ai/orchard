@@ -2512,7 +2512,14 @@ def generate_events(
                             yield {"kind": "output_text_delta", "delta": flush_text}
 
                     if tool_context is not None:
-                        final_error = finalize_tool_calling(tool_context, terminal_kind="completed")
+                        final_error = finalize_tool_calling(
+                            tool_context,
+                            terminal_kind=(
+                                "completed"
+                                if orchard_eos or finish_reason == "stop"
+                                else "truncated"
+                            ),
+                        )
                         for event in tool_context.take_pending_events():
                             if event["kind"] == "tool_call_delta":
                                 tool_calls_emitted = True
@@ -2568,7 +2575,7 @@ def generate_events(
                 yield cancelled_event()
             else:
                 if tool_context is not None:
-                    final_error = finalize_tool_calling(tool_context, terminal_kind="completed")
+                    final_error = finalize_tool_calling(tool_context, terminal_kind="truncated")
                     for event in tool_context.take_pending_events():
                         if event["kind"] == "tool_call_delta":
                             tool_calls_emitted = True

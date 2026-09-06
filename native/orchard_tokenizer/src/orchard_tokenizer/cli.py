@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -411,7 +412,7 @@ def _execute_preflight_safe_tokenization(payload: dict[str, Any]) -> dict[str, A
 
 def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, Any]:
     assets = require_mapping(payload, "assets")
-    request = require_mapping(payload, "request")
+    request = normalize_tool_history(require_mapping(payload, "request"))
 
     tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
     if tokenizer_kind not in HF_TOKENIZER_KINDS:
@@ -663,6 +664,48 @@ def normalize_messages(request: dict[str, Any]) -> list[dict[str, str]]:
         )
 
     return messages
+
+
+def normalize_tool_history(request: dict[str, Any]) -> dict[str, Any]:
+    """Decode API history arguments before rendering or tagging caller strings."""
+    normalized = deepcopy(request)
+    items = normalized.get("input_items")
+    if not isinstance(items, list):
+        return normalized
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        calls = item.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+                continue
+            function = call["function"]
+            if "arguments" not in function:
+                continue
+            arguments = function["arguments"]
+            try:
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments, object_pairs_hook=_unique_argument_keys)
+                if not isinstance(arguments, dict):
+                    raise ValueError("arguments must be an object")
+                json.dumps(arguments, allow_nan=False)
+            except (ValueError, TypeError, RecursionError) as exc:
+                raise TokenizerCliError(
+                    "invalid_input", "tool history arguments must be a valid JSON object", 2
+                ) from exc
+            function["arguments"] = arguments
+    return normalized
+
+
+def _unique_argument_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate argument key")
+        result[key] = value
+    return result
 
 
 def normalize_messages_preserving_message_fields(request: dict[str, Any]) -> list[dict[str, Any]]:

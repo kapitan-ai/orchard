@@ -56,6 +56,25 @@ These controls reduce dynamic-code exposure but do not make model execution a se
 Residual: MLX-LM's `sharded_load` falls back to `{"trust_remote_code": True}` for the tokenizer whenever `tokenizer_config` is omitted or empty, so its model-side `trust_remote_code=False` does not cover the tokenizer by itself.
 Orchard does not reach that path today; issue #116 sharded loading must pass an explicit `{"trust_remote_code": False}` tokenizer config rather than relying on the upstream default.
 
+## Tool calling qualification
+
+The worker buffers each complete model-native tool block, delegates interpretation to the pinned MLX-LM parser, and emits only validated function names and JSON argument objects.
+Raw model wrappers never become public arguments.
+Cancellation, incomplete framing, invalid parser results, and unrequested names cannot publish the affected block.
+
+Qualify each exact model/runtime/client combination before declaring tool support:
+
+1. Record the immutable model revision, manifest identity, effective context and concurrency, MLX-LM Git revision, parser identity, client version, and API path.
+2. Verify the bundle declares tool capability and the loaded tokenizer exposes a supported parser.
+3. Run the pinned-parser regression tests and the real-template continuation test documented in `../orchard_tokenizer/README.md`.
+4. Through Chat Completions, require the client to call a local tool against a synthetic fixture, validate its arguments, return the result with the matching call ID, and reproduce an unpredictable fixture value in the final answer.
+5. Exercise cancellation and recovery, malformed/truncated calls, and sequential tool turns; distinguish protocol failures from model choices.
+
+`mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` at revision `6e302ea604ad9ab206367e2c501d1571023e7b6d` is a qualification candidate with a `qwen3_coder` parser.
+The initial profile uses a 16K context and one concurrent request.
+It is not a qualified OpenCode profile until the real client round trip passes.
+Chat Completions qualification does not establish Responses API compatibility.
+
 ## Proto contract
 
 The provider-neutral Worker Runtime proto lives at:
