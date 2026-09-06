@@ -50,6 +50,8 @@ A prepared handoff SHALL not imply that the grant changed or that runtime infere
 The guided handoff SHALL retain the server-resolved Workspace and exact selected catalog Model through access inspection, invitation preparation, scope review, and manual delivery.
 It SHALL preserve the separation of grants, Portal membership, and inference credentials in SPEC.md section 7.4a.
 Switching Workspace SHALL clear previous scoped drafts and secret-bearing state.
+Successful refresh SHALL reconcile the current step and unlocked navigation with the selected Model and Portal User that still exist.
+Missing selected Models SHALL return the operator to Model access; missing or disabled Portal Users SHALL return the operator to Portal invitation.
 
 #### Scenario: Scope is reviewed before invitation
 - **WHEN** the operator reviews an invitation
@@ -59,6 +61,14 @@ Switching Workspace SHALL clear previous scoped drafts and secret-bearing state.
 - **WHEN** a child-resource event supplies an identifier belonging to another Workspace
 - **THEN** the server rejects it without reading or mutating the other Workspace's resource
 
+#### Scenario: Selected Model disappears during handoff
+- **WHEN** refresh no longer finds the exact selected Model while the operator is in a later step
+- **THEN** the handoff returns to Model access and later steps remain unavailable until their prerequisites are restored
+
+#### Scenario: Portal User becomes disabled during handoff
+- **WHEN** refresh finds the selected Portal User disabled or missing
+- **THEN** the handoff returns to Portal invitation and cannot issue an invite from a later step
+
 ### Requirement: Invitation outcomes reflect actual service state
 
 Portal User creation, invite-token issuance or reissue, activation, expiry, disablement, and secret display SHALL preserve the existing Developer Portal contract.
@@ -66,6 +76,8 @@ Creating the invited Portal User SHALL not be presented as issuing or delivering
 Copy invite SHALL issue or reissue a fresh single-use token and invalidate the previous token.
 The Console SHALL distinguish preparation from successful creation and manual delivery.
 Failure SHALL retain safe non-secret inputs and offer retry without fabricating invitation success or sending email.
+Leaving the invite reveal step SHALL discard its plaintext URL and cancel its display-expiry timer.
+Invite issuance SHALL be available only in that step with a selected Model and an invited Portal User.
 
 #### Scenario: Invitation service fails
 - **WHEN** invitation creation fails after review
@@ -83,6 +95,10 @@ Failure SHALL retain safe non-secret inputs and offer retry without fabricating 
 #### Scenario: Link issuance fails after user creation
 - **WHEN** the Portal User exists but Copy invite fails
 - **THEN** recovery preserves the user and retries link issuance without recreating the user or fabricating a link
+
+#### Scenario: Return to invite delivery after leaving it
+- **WHEN** the operator leaves the invite reveal step and later returns
+- **THEN** the previous plaintext URL remains unavailable and another explicit issuance is required to show a new link
 
 ### Requirement: Credential and first-request handoff is truthful
 

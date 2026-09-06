@@ -590,6 +590,8 @@ Show the complete numbered sequence, current step count, and dimmed future steps
 Each step replaces the previous step's content, with a compact responsive orientation and the selected Workspace and exact Model identity kept visible.
 If the default Workspace is the only scope, resolve step 1 visibly and start at step 2 of 6.
 Preserve non-secret inputs on Back and recoverable retries; changing scope clears scoped drafts and transient secrets.
+Leaving the invite reveal step clears its plaintext URL and timer, so returning requires explicit reissue.
+Successful refresh returns to Model access when the selected Model disappears, or Portal invitation when the selected Portal User disappears or becomes disabled, and locks the later steps until their prerequisites recover.
 Model access shows actual enabled, disabled, not-granted, inactive, or unavailable evidence.
 Where browser command authority is absent, provide scoped, shell-quoted operator command guidance and a refresh action rather than an unchecked grant control.
 An already-active Portal User with missing model access needs grant recovery, not another invitation.

@@ -30,8 +30,9 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
     socket =
       if connected?(socket) and socket.assigns.status == :loading, do: load(socket), else: socket
 
-    step = requested_step(params["step"], socket.assigns.step)
-    {:noreply, assign(socket, step: min(step, navigation_limit(socket.assigns)))}
+    step = min(requested_step(params["step"], socket.assigns.step), navigation_limit(socket.assigns))
+    socket = if step == 5, do: socket, else: clear_invite(socket)
+    {:noreply, assign(socket, step: step)}
   end
 
   @impl true
@@ -84,7 +85,8 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
   end
 
   def handle_event("issue_invite", _params, socket) do
-    if socket.assigns.status == :ok and not is_nil(socket.assigns.selected) and
+    if socket.assigns.step == 5 and socket.assigns.status == :ok and
+         not is_nil(socket.assigns.selected) and
          match?(%{status: "invited"}, socket.assigns.user) do
       {:noreply, issue_invite(clear_invite(socket))}
     else
@@ -148,10 +150,12 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
         workspace: workspace,
         rows: rows,
         selected: selected,
+        model_id: if(selected, do: selected.model.id),
         user: user,
         status: :ok,
         portal_url: portal_url(workspace, selected)
       )
+      |> reconcile_navigation()
     else
       {:error, :tenant_not_found} ->
         assign(socket, status: :not_found, workspace: nil, selected: nil, user: nil)
@@ -288,8 +292,27 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
   defp can_advance?(_assigns), do: false
 
   defp navigation_limit(%{selected: nil}), do: 2
+  defp navigation_limit(%{user: %{status: "disabled"}, unlocked: unlocked}), do: min(3, unlocked)
   defp navigation_limit(%{user: nil, unlocked: unlocked}), do: min(3, unlocked)
   defp navigation_limit(%{unlocked: unlocked}), do: unlocked
+
+  defp reconcile_navigation(socket) do
+    previous_step = socket.assigns.step
+    limit = navigation_limit(socket.assigns)
+    step = min(previous_step, limit)
+    socket = assign(socket, step: step, unlocked: limit)
+
+    if step < previous_step do
+      message =
+        if socket.assigns.selected,
+          do: "Portal User is unavailable or disabled. Review the colleague before continuing.",
+          else: "Selected model is no longer in Catalog. Choose a model to continue."
+
+      socket |> put_flash(:info, message) |> go(step)
+    else
+      socket
+    end
+  end
 
   defp go(socket, step),
     do: push_patch(socket, to: handoff_path(socket.assigns.workspace_id, step))
@@ -413,7 +436,7 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
           <p>No email is sent. Deliver the Portal link separately to the intended colleague.</p>
           <p :if={!@user || @user.status == "disabled"}>This Portal User is unavailable or disabled. Return to Portal invitation to resolve the colleague's access before sharing a link.</p>
           <p :if={@user && @user.status == "active"}>This Portal User is already active. They can sign in with their existing account; no new invitation is needed.</p>
-          <div :if={@user && @user.status == "invited"} class="space-y-3">
+          <div :if={@selected && @user && @user.status == "invited"} class="space-y-3">
             <p>The Portal User is saved. Issue an invite link separately. Each issuance invalidates any earlier unused invite link.</p>
             <.button id="handoff-issue-invite" phx-click="issue_invite">{if @invite, do: "Issue replacement invite", else: "Issue invite link"}</.button>
           </div>

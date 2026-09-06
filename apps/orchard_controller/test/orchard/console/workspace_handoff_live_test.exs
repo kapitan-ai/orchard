@@ -216,7 +216,8 @@ defmodule OrchardConsole.WorkspaceHandoffLiveTest do
     assert Repo.aggregate(PortalInviteToken, :count) == 0
     refute has_element?(view, "#handoff-invite-value")
     render_click(view, "refresh")
-    assert has_element?(view, "#handoff-step-5", "unavailable or disabled")
+    assert has_element?(view, "#handoff-step-3")
+    assert render(view) =~ "Portal User is unavailable or disabled"
     refute has_element?(view, "#handoff-issue-invite")
   end
 
@@ -256,11 +257,12 @@ defmodule OrchardConsole.WorkspaceHandoffLiveTest do
     render_patch(view, path(workspace) <> "?step=4")
     Repo.delete!(model)
     render_click(view, "refresh")
-    assert has_element?(view, "#handoff-step-4", "Model no longer in catalog")
+    assert has_element?(view, "#handoff-step-2")
+    assert render(view) =~ "Selected model is no longer in Catalog"
     assert has_element?(view, "#handoff-next[disabled]")
     render_click(view, "next")
     render_click(view, "issue_invite")
-    assert has_element?(view, "#handoff-step-4")
+    assert has_element?(view, "#handoff-step-2")
     assert Repo.aggregate(PortalInviteToken, :count) == 0
   end
 
@@ -324,6 +326,77 @@ defmodule OrchardConsole.WorkspaceHandoffLiveTest do
     render_click(view, "next")
     assert has_element?(view, "#handoff-colleague-email[value='access-review@example.test']")
     assert Repo.aggregate(PortalUser, :count) == 0
+  end
+
+  test "refresh returns later steps to model selection when the exact model disappears", %{
+    conn: conn,
+    workspace: workspace
+  } do
+    for step <- [5, 6] do
+      model = create_model!(%{state: :active})
+      {:ok, view, _html} = live(conn, path(workspace))
+      choose_model(view, model)
+      render_click(view, "next")
+
+      view
+      |> form("#handoff-colleague-form", colleague: %{email: "removed-#{step}@example.test"})
+      |> render_submit()
+
+      render_click(view, "next")
+      if step == 6, do: render_click(view, "next")
+      assert has_element?(view, "#handoff-step-#{step}")
+      Repo.delete!(model)
+      render_click(view, "refresh")
+
+      assert has_element?(view, "#handoff-step-2")
+      assert render(view) =~ "Selected model is no longer in Catalog"
+      refute has_element?(view, "#handoff-issue-invite")
+      refute has_element?(view, "nav[aria-label='Colleague handoff steps'] a[href$='step=5']")
+      render_patch(view, path(workspace) <> "?step=6")
+      assert has_element?(view, "#handoff-step-2")
+      render_click(view, "issue_invite")
+      assert Repo.aggregate(PortalInviteToken, :count) == 0
+    end
+  end
+
+  test "leaving the invite reveal clears its plaintext and timer before Back or reissue", %{
+    conn: conn,
+    workspace: workspace,
+    model: model
+  } do
+    {:ok, view, _html} = live(conn, path(workspace))
+    choose_model(view, model)
+    render_click(view, "next")
+
+    view
+    |> form("#handoff-colleague-form", colleague: %{email: "one-time@example.test"})
+    |> render_submit()
+
+    render_click(view, "next")
+    render_click(view, "issue_invite")
+    assigns = :sys.get_state(view.pid).socket.assigns
+    first_url = assigns.invite.url
+    first_token = Repo.one!(PortalInviteToken)
+    assert has_element?(view, "#handoff-invite-value", first_url)
+
+    render_click(view, "next")
+    assert has_element?(view, "#handoff-step-6")
+    assert :sys.get_state(view.pid).socket.assigns.invite == nil
+    assert Process.read_timer(assigns.invite_timer) == false
+    render_click(view, "issue_invite")
+    assert Repo.one!(PortalInviteToken).id == first_token.id
+    render_patch(view, path(workspace) <> "?step=5")
+    refute has_element?(view, "#handoff-invite-value")
+    refute render(view) =~ first_url
+
+    render_click(view, "issue_invite")
+    assert has_element?(view, "#handoff-invite-value")
+    refute :sys.get_state(view.pid).socket.assigns.invite.url == first_url
+    assert Repo.aggregate(PortalInviteToken, :count) == 1
+    render_patch(view, path(workspace) <> "?step=4")
+    assert :sys.get_state(view.pid).socket.assigns.invite == nil
+    render_patch(view, path(workspace) <> "?step=5")
+    refute has_element?(view, "#handoff-invite-value")
   end
 
   defp choose_model(view, model),
