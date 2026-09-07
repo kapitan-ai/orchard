@@ -11,7 +11,7 @@ Repository hosting remains `kapitan-ai/orchard`; Najib retains project direction
 The initial publication is source-only and experimental.
 The existing macOS app/DMG contract remains applicable to future binary distribution.
 This change does not publish a binary, create a release tag, promise support, or alter GitHub access and workflow settings.
-Publication-surface findings and raw evidence remain local or in the relevant private review, not in committed audit logs.
+Publication-surface findings and raw evidence remain local or in a review surface that remains access-restricted after repository cutover, not in committed audit logs.
 
 ## Participation
 

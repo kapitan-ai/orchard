@@ -39,6 +39,7 @@ Keep discussions and contributions respectful.
 
 ## Change Workflow
 
+The direct-PR path does not waive the participation requirements above.
 Small changes can go directly through a normal PR:
 
 - typo and docs clarifications
