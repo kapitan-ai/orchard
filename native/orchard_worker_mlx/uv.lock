@@ -637,8 +637,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = ">=1.83.1" },
-    { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.32.2" },
+    { name = "grpcio", specifier = ">=1.81.1" },
+    { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.31.2" },
     { name = "mlx-lm", marker = "extra == 'mlx'", git = "https://github.com/ml-explore/mlx-lm.git?rev=ab1806e8f5d6aa035973af194a1b9198ab4754dc" },
     { name = "numpy", marker = "extra == 'mlx'", specifier = ">=1.26.0" },
     { name = "protobuf", specifier = ">=6.33.5" },
