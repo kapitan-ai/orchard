@@ -6,15 +6,18 @@ defmodule Orchard.Portal.KeysLive do
   use Orchard.Portal, :live_view
 
   alias Orchard.Governance
+  alias Orchard.Governance.PortalActivationCurl
+  alias OrchardConsole.WorkspacePresentation
 
   @revalidate_ms 5_000
 
   @impl true
-  def mount(%{"organization_slug" => slug}, _session, socket) do
+  def mount(%{"organization_slug" => slug} = params, _session, socket) do
     socket =
       socket
       |> assign(:page_title, "API keys")
       |> assign(:organization_slug, slug)
+      |> assign(:requested_model, requested_model(params))
       |> assign(:keys, [])
       |> assign(:active_portal_count, 0)
       |> assign(:mint_open?, false)
@@ -68,6 +71,8 @@ defmodule Orchard.Portal.KeysLive do
            }
          ) do
       {:ok, result} ->
+        result = add_activation_curl(result, socket.assigns)
+
         {:noreply,
          socket
          |> assign(:mint_open?, false)
@@ -207,7 +212,10 @@ defmodule Orchard.Portal.KeysLive do
         <div>
           <h1 class="text-lg font-semibold text-slate-50">API keys</h1>
           <p class="mt-1 text-sm text-slate-400">
-            Tenant-direct keys for <span class="font-mono text-slate-300">{@organization_slug}</span>
+            Workspace: <span class="text-slate-300">{WorkspacePresentation.display_name(@current_tenant)}</span>
+          </p>
+          <p :if={@requested_model} id="portal-requested-model" class="mt-1 text-xs text-slate-400">
+            Requested Model: <span class="font-mono text-slate-300">{@requested_model}</span>
           </p>
         </div>
         <div class="flex items-center gap-3">
@@ -405,11 +413,22 @@ defmodule Orchard.Portal.KeysLive do
             {@generated_secret.curl}
           </div>
           <p
+            :if={@generated_secret.curl}
+            id="portal-curl-runtime-note"
+            class="mt-2 text-sm text-slate-300"
+          >
+            This example has not run. Runtime availability and readiness are checked when you send the request.
+          </p>
+          <p
             :if={!@generated_secret.curl}
             id="portal-no-curl"
             class="mt-2 rounded-md border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-sm text-sky-200"
           >
-            No test curl is available yet because this Organization has no proven callable model. Your key was still minted.
+            <%= if @requested_model do %>
+              No request example is available because the requested Model is not active and authorized for this Workspace. Your key was still minted.
+            <% else %>
+              No request example is available because this Workspace has no active authorized Model. Your key was still minted.
+            <% end %>
           </p>
         </div>
 
@@ -495,6 +514,26 @@ defmodule Orchard.Portal.KeysLive do
         assign(socket, :keys, [])
     end
   end
+
+  defp add_activation_curl(result, assigns) do
+    model_id =
+      PortalActivationCurl.select_callable_model(
+        assigns.current_tenant.id,
+        assigns.requested_model
+      )
+
+    curl =
+      PortalActivationCurl.build(
+        result.token,
+        model_id,
+        PortalActivationCurl.public_base_url()
+      )
+
+    %{result | curl: curl}
+  end
+
+  defp requested_model(%{"model" => model}) when is_binary(model) and model != "", do: model
+  defp requested_model(_params), do: nil
 
   defp reconcile_key_limit(socket) do
     socket = refresh_keys(socket)

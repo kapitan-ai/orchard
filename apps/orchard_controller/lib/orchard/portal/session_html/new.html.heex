@@ -13,9 +13,14 @@
 
   <section class="rounded-lg border border-slate-700 bg-slate-800 p-6">
     <h1 class="text-lg font-semibold text-slate-50">Developer portal</h1>
-    <p class="mt-1 font-mono text-sm text-slate-300">{@organization_slug}</p>
+    <p class="mt-1 text-sm text-slate-400">
+      Workspace <span class="font-mono text-slate-300">{@organization_slug}</span>
+    </p>
+    <p :if={@requested_model} class="mt-1 text-xs text-slate-400">
+      Requested Model: <span class="font-mono text-slate-300">{@requested_model}</span>
+    </p>
 
-    <form action={"/portal/#{@organization_slug}/session"} method="post" class="mt-6 space-y-4">
+    <form action={@form_action} method="post" class="mt-6 space-y-4">
       <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
 
       <div>

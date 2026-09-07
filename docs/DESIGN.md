@@ -544,7 +544,18 @@ When raw decision debug JSON is shown, apply the same key-based unsafe-key deny-
 
 ### 6.7 Portal User Management and Portal Isolation
 
-The Organization detail surface manages Portal Users through three stacked Console cards.
+Access opens a Workspace list with the existing default Workspace first and a secondary Create workspace action leading to a separate form.
+Display the untouched seeded name as Default workspace, preserve customized names, and use a Default badge based on stable identity.
+Workspace detail keeps its name and slug visible above reloadable Overview, Model access, Portal users, and API credentials sections.
+Section changes replace the visible content; inactive sections are hidden from layout, keyboard navigation, and the accessibility tree.
+Known legacy fragments map to their corresponding section through a whitelisted client hook, preserving the Workspace identity.
+Unknown section values fall back to Overview; unknown fragments do not change scope.
+Return controls remain visible and preserve the destination context.
+Portal membership, model access, tenant-direct API Tokens, and API Client credentials remain independently explained.
+Team appears only as optional API Client grouping metadata, including an Ungrouped state, without membership or role controls.
+Invitation instructions explain that the operator separately copies and delivers the invite URL; no email delivery is implied.
+
+The Portal users section manages Portal Users through three related Console cards.
 The first card is the Portal User invite form, with an email field and a navy primary **Invite** action.
 Submitting **Invite** creates the Portal User in `invited` status without issuing a token or showing a Portal Invite URL.
 The operator then uses **Copy invite** on that invited Portal User to issue the first token.
@@ -571,16 +582,32 @@ The operator manages developer access through Portal Invites and Portal User dis
 
 The Developer Portal remains a separate, dark-pinned surface and does not inherit the Console theme preference.
 It must not render Console chrome or operator controls.
-It remains isolated to the Organization named by the route and to the portal-minted keys owned by the signed-in Portal User.
-The three operator cards remain Console surfaces and use the existing Console card, tactile-well, focus, and navy primary-action tokens in both Console theme modes.
+It remains isolated to the Workspace named by the route and to the portal-minted keys owned by the signed-in Portal User.
+These operator cards remain Console surfaces and use the existing Console card, tactile-well, focus, and navy primary-action tokens in both Console theme modes.
 
-### 6.8 Organization API Token Mint Attribution
+The guided colleague handoff is a separate six-step journey: Workspace, Model access, Portal invitation, Review scope, Colleague handoff, and First request.
+Show the complete numbered sequence, current step count, and dimmed future steps without spreading two active steps across the entire page.
+Each step replaces the previous step's content, with a compact responsive orientation and the selected Workspace and exact Model identity kept visible.
+If the default Workspace is the only scope, resolve step 1 visibly and start at step 2 of 6.
+Preserve non-secret inputs on Back and recoverable retries; changing scope clears scoped drafts and transient secrets.
+Leaving the invite reveal step clears its plaintext URL and timer, so returning requires explicit reissue.
+Successful refresh returns to Model access when the selected Model disappears, or Portal invitation when the selected Portal User disappears or becomes disabled, and locks the later steps until their prerequisites recover.
+Model access shows actual enabled, disabled, not-granted, inactive, or unavailable evidence.
+Where browser command authority is absent, provide scoped, shell-quoted operator command guidance and a refresh action rather than an unchecked grant control.
+An already-active Portal User with missing model access needs grant recovery, not another invitation.
+Keep Portal User creation and Copy invite as separate actions with real persisted status, explicit manual delivery, expiry, and reissue behavior.
+Opening the actual HTTPS Portal is a handoff, not evidence that the colleague accepted an invitation or ran a request.
+Console request guidance uses placeholder credentials and does not show completion without actual request evidence.
+Deprecated Models remain schedulable under SPEC section 6.2; handoff guidance must not describe deprecation alone as blocking inference.
+The Portal's one-time request example uses an authorized active exact Model and clearly states that runtime readiness remains unverified.
 
-The Organization API Tokens table places a **Minted via** column after **Name** and before **Prefix**.
-For `issuance_surface = "developer_portal"` with a Portal User from the same Organization, render **Developer Portal** as the primary line and the normalized Portal User email as visible secondary text.
+### 6.8 Workspace API Token Mint Attribution
+
+The Workspace API Tokens table places a **Minted via** column after **Name** and before **Prefix**.
+For `issuance_surface = "developer_portal"` with a Portal User from the same Workspace, render **Developer Portal** as the primary line and the normalized Portal User email as visible secondary text.
 For `issuance_surface = "governance"` with no Portal User association, render **Operator tooling**.
-For a Developer Portal API Token whose Portal User attribution is null, missing, deleted, or associated with another Organization, render **Developer Portal** with **Attribution unavailable** as visible secondary text.
-Any inconsistent association must fail closed without exposing another Organization's Portal User email.
+For a Developer Portal API Token whose Portal User attribution is null, missing, deleted, or associated with another Workspace, render **Developer Portal** with **Attribution unavailable** as visible secondary text.
+Any inconsistent association must fail closed without exposing another Workspace's Portal User email.
 These values describe mint-time provenance only.
 They do not identify API Token ownership, the Public Inference Bearer principal, current Portal User status, effective access, or revocation state.
 Disabling a Portal User does not automatically revoke minted API Tokens, and the existing **Status** column remains the credential-state presentation.
@@ -711,9 +738,9 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
   dark).
 - [ ] Placeholder contrast is readable.
 
-**Form input wells (Organizations + Organization Detail)**
+**Form input wells (Workspaces + Workspace Detail)**
 
-- [ ] Organization create `<.input>` renders as a tactile well.
+- [ ] Workspace create `<.input>` renders as a tactile well.
 - [ ] API Token create `<.input>` renders as a tactile well.
 
 **Form input wells (Playground)**

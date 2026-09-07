@@ -1670,7 +1670,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "Playground"
       assert html =~ "Models"
       refute html =~ "Model Hub"
-      assert html =~ "Organizations"
+      assert html =~ "Access"
       assert html =~ "Requests"
       assert html =~ "Settings"
     end
@@ -1699,7 +1699,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "/console/requests"
       assert html =~ "/console/models"
       refute html =~ "/console/model-hub"
-      assert html =~ "/console/tenants"
+      assert html =~ "/console/access"
       assert html =~ "/console/settings"
     end
 

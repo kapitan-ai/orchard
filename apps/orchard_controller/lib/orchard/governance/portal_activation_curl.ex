@@ -8,16 +8,33 @@ defmodule Orchard.Governance.PortalActivationCurl do
 
   alias Orchard.API.Endpoint
   alias Orchard.API.Transport
+  alias Orchard.Models
 
   @prompt "Say hello in one sentence."
 
-  @spec select_callable_model(Ecto.UUID.t()) :: String.t() | nil
-  def select_callable_model(tenant_id) when is_binary(tenant_id) do
-    case visible_models_for_tenant(tenant_id) do
-      [] ->
-        nil
-    end
+  @spec select_callable_model(Ecto.UUID.t(), String.t() | nil) :: String.t() | nil
+  def select_callable_model(tenant_id, requested_model \\ nil)
+
+  def select_callable_model(tenant_id, nil) when is_binary(tenant_id) do
+    tenant_id
+    |> visible_models_for_tenant()
+    |> Enum.min_by(&model_sort_key/1, fn -> nil end)
+    |> exact_model_identity()
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] -> nil
   end
+
+  def select_callable_model(tenant_id, requested_model)
+      when is_binary(tenant_id) and is_binary(requested_model) do
+    tenant_id
+    |> visible_models_for_tenant()
+    |> Enum.find(&(exact_model_identity(&1) == requested_model))
+    |> exact_model_identity()
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] -> nil
+  end
+
+  def select_callable_model(_tenant_id, _requested_model), do: nil
 
   @spec build(String.t(), String.t() | nil, String.t() | nil) :: String.t() | nil
   def build(_token, nil, _url), do: nil
@@ -57,11 +74,12 @@ defmodule Orchard.Governance.PortalActivationCurl do
     end
   end
 
-  defp visible_models_for_tenant(_tenant_id) do
-    # GET /v1/models is not tenant-scoped yet. Do not treat the full active
-    # catalog as authorized for a portal curl.
-    []
-  end
+  defp visible_models_for_tenant(tenant_id), do: Models.list_active_models_for_tenant(tenant_id)
+
+  defp model_sort_key(model), do: {model.model_id, model.version, model.id}
+
+  defp exact_model_identity(nil), do: nil
+  defp exact_model_identity(model), do: model.model_id <> "@" <> model.version
 
   defp completions_url(base_url) do
     String.trim_trailing(base_url, "/") <> "/v1/chat/completions"

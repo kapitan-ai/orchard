@@ -23,4 +23,4 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence ends with [ADR 0029: Deprecate Node Runtime gRPC compatibility in staged release epochs](0029-deprecate-node-runtime-grpc-compatibility.md).
+The current sequence includes [ADR 0030: Managed Node composition and activation](0030-managed-node-composition-activation.md) and ends with [ADR 0031: Workspace display and Access navigation](0031-workspace-display-and-access-navigation.md).
