@@ -3,6 +3,45 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-09-06
+
+### Breaking changes
+
+_None this week._
+
+### Features
+
+- The Console now provides a guided Node-enrollment flow that creates a short-lived one-time bundle, gives operators the exact `orchardctl node join` handoff, tracks registration, and keeps final admission explicit. ([#359](https://github.com/kapitan-ai/orchard/pull/359))
+- Portal-owned API-key and Portal User lifecycle mutations now commit bounded, secret-free audit evidence atomically and with post-commit success telemetry. ([#338](https://github.com/kapitan-ai/orchard/pull/338))
+- Organization Console API-token rows now show secret-free mint provenance while preserving tenant isolation and credential-state semantics. ([#349](https://github.com/kapitan-ai/orchard/pull/349))
+- Console Portal-invite views now show the current invite context and expiry, with lifecycle-aware refresh and stale-state handling. ([#348](https://github.com/kapitan-ai/orchard/pull/348))
+
+### Bug fixes
+
+- Console Playground readiness and request preparation now use the resolved caller tenant, so models granted only to an explicit nonlegacy tenant no longer fail the readiness gate. ([#318](https://github.com/kapitan-ai/orchard/pull/318))
+- Dispatch no longer grants a queued acceptance lease to a caller that died while waiting; dead waiters are skipped and capacity and gate ownership remain reusable. ([#323](https://github.com/kapitan-ai/orchard/pull/323))
+- Node Agent model loads now reuse durable verification receipts for unchanged, inventory-matching artifacts while retaining full verification on first, uncertain, forced, or invalidated loads. ([#320](https://github.com/kapitan-ai/orchard/pull/320))
+
+### Improvements
+
+- Worker Runtime capability negotiation is now provider-neutral and diagnostic-only, with versioned capability envelopes, deterministic classification, per-process incarnations, and cross-language binding fixtures. ([#355](https://github.com/kapitan-ai/orchard/pull/355))
+- Worker Runtime protocol ownership now lives in a neutral schema/tooling tree with generated-binding drift checks while preserving the existing wire contract and consumer namespace. ([#352](https://github.com/kapitan-ai/orchard/pull/352))
+- Orchard now has a staged, rollback-aware deprecation contract for the first-party Node Runtime gRPC compatibility transport; no removal occurs until exact release-floor and mixed-version gates pass. ([#351](https://github.com/kapitan-ai/orchard/pull/351))
+- The managed Apple Silicon Node composition is defined as an experimental, fail-closed activation contract with immutable generations, stable-helper custody, and explicit production-readiness gates; it is not yet operator-acquirable. ([#358](https://github.com/kapitan-ai/orchard/pull/358))
+- The Console UX testing documentation now aligns personas and journeys with the product's current contracts and operator boundaries. ([#357](https://github.com/kapitan-ai/orchard/pull/357))
+- Controller releases no longer load or ship `orchard_cli`; the Controller owns the packaged node-command compatibility boundary while the existing CLI command contract remains unchanged. ([#333](https://github.com/kapitan-ai/orchard/pull/333))
+- Source-development Node Agents can now disable only the Runtime Endpoint gRPC listener through an internal seam, enabling listener-free validation without changing supported defaults. ([#341](https://github.com/kapitan-ai/orchard/pull/341))
+- Orchard now records listener-free Runtime Endpoint acceptance evidence for the BEAM operation matrix while keeping production defaults and the gRPC compatibility path unchanged. ([#346](https://github.com/kapitan-ai/orchard/pull/346))
+- Sentry was upgraded from 12.0.3 to 13.5.0 while preserving Bandit crash capture, request metadata filtering, rate limiting, and fail-closed handler behavior. ([#337](https://github.com/kapitan-ai/orchard/pull/337))
+- Development-only Tidewave tooling was upgraded from 0.5.6 to 0.9.0 with its optional toolbar disabled, leaving release and test paths unchanged. ([#335](https://github.com/kapitan-ai/orchard/pull/335))
+- OpenSpec CLI and Ruff development locks were refreshed to 1.10.0 and 0.16.4, respectively, without changing runtime dependencies. ([#334](https://github.com/kapitan-ai/orchard/pull/334))
+- The esbuild toolchain was upgraded from 0.25.0 to 0.28.2 with synchronized npm and Elixir pins and no intentional bundle-behavior change. ([#336](https://github.com/kapitan-ai/orchard/pull/336))
+- API-token mint-attribution copy and its Console presentation contract are now documented alongside the existing provenance distinctions. ([#347](https://github.com/kapitan-ai/orchard/pull/347))
+- The accepted Portal lifecycle-audit OpenSpec package is now archived after its implementation and spec synchronization. ([#340](https://github.com/kapitan-ai/orchard/pull/340))
+- Orchard now has a mandatory manual qualification policy for local-model support claims, binding each claim to an exact model, runtime, artifact, environment, and tested capability envelope. ([#319](https://github.com/kapitan-ai/orchard/pull/319))
+- The reasoning-output contract now separates generation policy from public projection, keeps hidden reasoning ephemeral, and defers public structured-reasoning fields until their wire contracts are accepted. ([#325](https://github.com/kapitan-ai/orchard/pull/325))
+- The Portal lifecycle-audit proposal now defines atomic transaction boundaries, actor and target provenance, secret-free payloads, and bounded metrics for owner review. ([#322](https://github.com/kapitan-ai/orchard/pull/322))
+
 ## 2026-08-30
 
 ### Breaking changes
