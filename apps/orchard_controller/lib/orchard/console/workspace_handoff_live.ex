@@ -424,6 +424,7 @@ defmodule OrchardConsole.WorkspaceHandoffLive do
         </div>
         <div :if={@step == 4} class="mt-4 space-y-4">
           <p>Check each independent part of the handoff before sharing anything.</p>
+          <p>Cluster administration and API credentials are not included in this invitation.</p>
           <dl class="space-y-3 text-sm">
             <div><dt class="font-semibold">Workspace</dt><dd>{WorkspacePresentation.display_name(@workspace)} ({@workspace.slug})</dd></div>
             <div><dt class="font-semibold">Model access</dt><dd>{if @selected, do: grant_label(@selected.grant_state), else: "Model no longer in catalog; return to Model access"}</dd></div>
