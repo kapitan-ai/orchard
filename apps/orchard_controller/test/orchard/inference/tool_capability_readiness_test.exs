@@ -198,7 +198,7 @@ defmodule Orchard.Inference.ToolCapabilityReadinessTest do
           id: Ecto.UUID.generate(),
           hostname: "host-#{unique}.local",
           display_name: "node-#{unique}",
-          advertise_addr: "10.0.0.#{rem(unique, 255)}",
+          advertise_addr: "node-#{unique}.test",
           rpc_port: 9444,
           state: :active,
           health: :healthy,
