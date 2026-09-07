@@ -39,6 +39,37 @@ defmodule Orchard.API.ForwardedHeadersTest do
     assert conn.remote_ip == {203, 0, 113, 10}
   end
 
+  test "SPEC 10.7: reverse_proxy preserves HTTPS for clients inside trusted proxy CIDRs" do
+    Application.put_env(:orchard_controller, :transport_mode, :reverse_proxy)
+
+    cases = [
+      {"127.0.0.1", {127, 0, 0, 1}},
+      {"::1", {0, 0, 0, 0, 0, 0, 0, 1}},
+      {"::1, 127.0.0.1", {0, 0, 0, 0, 0, 0, 0, 1}}
+    ]
+
+    for {forwarded_for, client_ip} <- cases do
+      conn =
+        {127, 0, 0, 1}
+        |> forwarded_conn(forwarded_for)
+        |> Endpoint.call([])
+
+      assert conn.status == 200
+      assert conn.scheme == :https
+      assert conn.host == "orchard.example.test"
+      assert conn.port == 443
+      assert conn.remote_ip == client_ip
+      assert conn.private.orchard_forwarded_headers_trusted?
+
+      portal =
+        {127, 0, 0, 1}
+        |> forwarded_conn(forwarded_for, "/portal/loopback-client")
+        |> Endpoint.call([])
+
+      assert html_response(portal, 200) =~ "Developer portal"
+    end
+  end
+
   test "SPEC 10.7: reverse_proxy ignores spoofed forwarded headers from untrusted peer" do
     Application.put_env(:orchard_controller, :transport_mode, :reverse_proxy)
 
@@ -208,8 +239,8 @@ defmodule Orchard.API.ForwardedHeadersTest do
     Map.update!(conn, :req_headers, &[{header, value} | &1])
   end
 
-  defp forwarded_conn(peer_ip, forwarded_for \\ "203.0.113.10") do
-    Phoenix.ConnTest.build_conn(:get, "/health/live")
+  defp forwarded_conn(peer_ip, forwarded_for \\ "203.0.113.10", path \\ "/health/live") do
+    Phoenix.ConnTest.build_conn(:get, path)
     |> Map.put(:remote_ip, peer_ip)
     |> Plug.Conn.put_req_header("x-forwarded-for", forwarded_for)
     |> Plug.Conn.put_req_header("x-forwarded-proto", "https")

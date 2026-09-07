@@ -294,7 +294,9 @@ MIX_ENV=test mise exec -- mix test \
 
 "$SCRIPT_DIR/test-beam-peer-grant-expiry-smoke.sh"
 "$SCRIPT_DIR/test-beam-peer-grant-tracer.sh"
-"$SCRIPT_DIR/test-beam-legacy-first-connect-smoke.sh"
+# The loopback compatibility child must isolate this conflicting grant identity.
+ORCHARD_CONTROLLER_MEMBERSHIP_HOST="$IPV4" \
+  "$SCRIPT_DIR/test-beam-legacy-first-connect-smoke.sh"
 
 echo "BEAM Peer Grant composed source-dev application tracer passed"
 echo "Validated: real grant-control application, real mTLS retrieval, owner-only preflight, exact TLS Distribution application launches, admitted-to-active BEAM observation, and explicit legacy BEAM first-connect compatibility"

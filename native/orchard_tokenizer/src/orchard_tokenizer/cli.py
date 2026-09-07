@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,12 +14,12 @@ from typing import Any, Final, cast
 import sentencepiece as sentencepiece
 from jinja2 import Environment, TemplateError, Undefined
 from jinja2 import meta as jinja_meta
-from jinja2.sandbox import ImmutableSandboxedEnvironment
 from tokenizers import Tokenizer
 
 from orchard_tokenizer import __version__
 from orchard_tokenizer.catalog import extract_safe_tokenization_catalog
 from orchard_tokenizer.safe_segmented import (
+    MarkerPair,
     SafeSegmentedError,
     catalog_sha256,
     choose_marker_nonce,
@@ -32,6 +33,7 @@ from orchard_tokenizer.safe_segmented import (
     tag_caller_strings,
     walk_rendered,
 )
+from orchard_tokenizer.template_sandbox import ProvenanceSandbox
 
 # Prompt-shaping tokens that must be resolved when referenced by a template.
 # If a template uses {{ bos_token }} or {{ eos_token }}, the value MUST come
@@ -411,7 +413,7 @@ def _execute_preflight_safe_tokenization(payload: dict[str, Any]) -> dict[str, A
 
 def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, Any]:
     assets = require_mapping(payload, "assets")
-    request = require_mapping(payload, "request")
+    request = normalize_tool_history(require_mapping(payload, "request"))
 
     tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
     if tokenizer_kind not in HF_TOKENIZER_KINDS:
@@ -461,7 +463,7 @@ def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, An
     messages = normalize_messages_preserving_message_fields(request)
     tools = normalize_optional_tools(request.get("tools"))
     tool_choice = request.get("tool_choice", None)
-    input_items = request.get("input_items")
+    input_items = messages
 
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
     paired_render_time = datetime.now()
@@ -490,6 +492,7 @@ def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, An
         tools=tagged_tools,
         tool_choice=tagged_tool_choice,
         render_time=paired_render_time,
+        marker_pairs=marker_pairs,
     )
     dual_render_guard(baseline_render, tagged_render, marker_pairs)
 
@@ -541,7 +544,7 @@ def _run_template_sentinel_preflight(
 ) -> None:
     preflight_render_time = datetime.now()
 
-    def render_payload(payload: dict[str, Any]) -> str:
+    def render_payload(payload: dict[str, Any], marker_pairs: Sequence[MarkerPair] = ()) -> str:
         request = {"input_items": payload["input_items"]}
         messages = normalize_messages_preserving_message_fields(request)
         tools = normalize_optional_tools(payload.get("tools"))
@@ -555,9 +558,12 @@ def _run_template_sentinel_preflight(
             tools=tools,
             tool_choice=tool_choice,
             render_time=preflight_render_time,
+            marker_pairs=marker_pairs,
         )
 
-    dual_render_guard_sentinel_matrix(control_tokens, render_payload)
+    dual_render_guard_sentinel_matrix(
+        control_tokens, render_payload, render_tagged_payload=render_payload
+    )
 
 
 def _require_safe_tokenization_catalog(payload: dict[str, Any]) -> tuple[list[str], str]:
@@ -665,6 +671,68 @@ def normalize_messages(request: dict[str, Any]) -> list[dict[str, str]]:
     return messages
 
 
+def normalize_tool_history(request: dict[str, Any]) -> dict[str, Any]:
+    """Decode API history arguments before rendering or tagging caller strings."""
+    normalized = deepcopy(request)
+    items = normalized.get("input_items")
+    if not isinstance(items, list):
+        return normalized
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        calls = item.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+                continue
+            function = call["function"]
+            if "arguments" not in function:
+                continue
+            arguments = function["arguments"]
+            try:
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments, object_pairs_hook=_unique_argument_keys)
+                if not isinstance(arguments, dict):
+                    raise ValueError("arguments must be an object")
+                json.dumps(arguments, allow_nan=False)
+            except (ValueError, TypeError, RecursionError) as exc:
+                raise TokenizerCliError(
+                    "invalid_input", "tool history arguments must be a valid JSON object", 2
+                ) from exc
+            function["arguments"] = arguments
+        if item.get("role") == "assistant" and item.get("content") is None:
+            if not calls or not all(_valid_history_function_call(call) for call in calls):
+                raise TokenizerCliError(
+                    "invalid_input", "absent assistant content requires valid function calls", 2
+                )
+            item["content"] = ""
+    return normalized
+
+
+def _valid_history_function_call(call: Any) -> bool:
+    if not isinstance(call, dict) or call.get("type", "function") != "function":
+        return False
+    function = call.get("function")
+    return (
+        isinstance(call.get("id"), str)
+        and bool(call["id"])
+        and isinstance(function, dict)
+        and isinstance(function.get("name"), str)
+        and bool(function["name"])
+        and isinstance(function.get("arguments"), dict)
+    )
+
+
+def _unique_argument_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate argument key")
+        result[key] = value
+    return result
+
+
 def normalize_messages_preserving_message_fields(request: dict[str, Any]) -> list[dict[str, Any]]:
     input_items = request.get("input_items")
 
@@ -766,18 +834,25 @@ def _raise_exception(message: str) -> None:
     raise TemplateRequestError(message)
 
 
-def _chat_template_environment(render_time: datetime | None = None) -> Environment:
+def _chat_template_environment(
+    render_time: datetime | None = None, marker_pairs: Sequence[MarkerPair] = ()
+) -> Environment:
     render_time = render_time or datetime.now()
 
     def strftime_now(format_string: str) -> str:
         return render_time.strftime(format_string)
 
-    environment = ImmutableSandboxedEnvironment(
-        autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=Undefined
+    environment = ProvenanceSandbox(
+        autoescape=False,
+        lstrip_blocks=True,
+        trim_blocks=True,
+        undefined=Undefined,
+        marker_pairs=marker_pairs,
     )
     filters_map = cast(dict[str, Any], environment.filters)
     filters_map["length"] = _length_filter
     filters_map["count"] = _length_filter
+    environment.guard_filters()
     globals_map = cast(dict[str, Any], environment.globals)
     globals_map["raise_exception"] = _raise_exception
     globals_map["strftime_now"] = strftime_now
@@ -800,6 +875,7 @@ def render_prompt(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
     render_time: datetime | None = None,
+    marker_pairs: Sequence[MarkerPair] = (),
 ) -> str:
     if not chat_template_path.is_file():
         raise TokenizerCliError(
@@ -817,7 +893,7 @@ def render_prompt(
             3,
         ) from exc
 
-    environment = _chat_template_environment(render_time)
+    environment = _chat_template_environment(render_time, marker_pairs)
 
     # Discover which variables the template references via AST introspection.
     referenced_vars = _discover_template_variables(template_text, environment)

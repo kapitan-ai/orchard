@@ -1,14 +1,17 @@
 defmodule OrchardConsole.TenantDetailLive do
   @moduledoc """
-  Console Organization detail page with API Token and API Client management.
+  Console Workspace detail page with API Token and API Client management.
   """
 
   use OrchardConsole, :live_view
 
   alias Orchard.API.Transport
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, RoleBinding, TenantApiKeySummary}
+  alias Orchard.Governance.{ApiKey, PortalActivationCurl, RoleBinding, TenantApiKeySummary}
 
+  alias OrchardConsole.{WorkspaceAccess, WorkspacePresentation}
+
+  @sections ~w(overview model_access portal_users api_credentials)
   @console_audit_opts [actor_type: "operator", surface: "console"]
 
   @impl true
@@ -17,7 +20,10 @@ defmodule OrchardConsole.TenantDetailLive do
       socket
       |> assign(
         tenant_id: id,
-        page_title: "Organization",
+        section: "overview",
+        model_access: [],
+        model_access_error: nil,
+        page_title: "Workspace",
         active_nav: :tenants,
         detail_status: :loading,
         tenant: nil,
@@ -29,6 +35,7 @@ defmodule OrchardConsole.TenantDetailLive do
         portal_invite_expires_at: nil,
         portal_invite_expiry_timer_ref: nil,
         portal_https?: Transport.public_api_https_enabled?(),
+        portal_base_url: PortalActivationCurl.public_base_url(),
         load_error: nil,
         generated_secret: nil
       )
@@ -42,6 +49,51 @@ defmodule OrchardConsole.TenantDetailLive do
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    section = valid_section(params["section"])
+
+    socket =
+      if params["id"] == socket.assigns.tenant_id do
+        assign(socket, section: section)
+      else
+        socket
+        |> clear_portal_invite()
+        |> assign_blank_form()
+        |> assign(
+          tenant_id: params["id"],
+          tenant: nil,
+          generated_secret: nil,
+          section: section,
+          detail_status: :loading,
+          model_access: [],
+          model_access_error: nil
+        )
+        |> load_if_connected()
+      end
+
+    {:noreply, socket}
+  end
+
+  defp load_if_connected(socket) do
+    if connected?(socket), do: load_tenant_detail(socket), else: socket
+  end
+
+  defp valid_section(section) when section in @sections, do: section
+  defp valid_section(_section), do: "overview"
+
+  @impl true
+  def handle_event("legacy_section", %{"section" => section}, socket) do
+    {:noreply,
+     push_patch(socket,
+       to:
+         "/console/access/workspaces/#{socket.assigns.tenant_id}?section=#{valid_section(section)}"
+     )}
+  end
+
+  def handle_event("refresh_model_access", _params, socket) do
+    {:noreply, load_model_access(socket)}
+  end
+
   def handle_event("create_api_key", %{"api_key" => params}, socket) do
     create_api_key(socket, params)
   end
@@ -211,8 +263,8 @@ defmodule OrchardConsole.TenantDetailLive do
       id="tenant-loading-card"
       kind={:loading}
       layout={:panel}
-      title="Organization Detail"
-      body="Loading Organization…"
+      title="Workspace Detail"
+      body="Loading Workspace…"
     />
     """
   end
@@ -222,17 +274,17 @@ defmodule OrchardConsole.TenantDetailLive do
     <div id="tenant-not-found-card" class="space-y-4">
       <.link
         id="tenant-back-to-list"
-        navigate="/console/tenants"
+        navigate="/console/access"
         class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
       >
-        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Organizations
+        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Workspaces
       </.link>
       <.state_message
         id="tenant-not-found-message"
         kind={:empty}
         layout={:panel}
-        title="Organization not found"
-        body="The requested Organization does not exist or the ID is invalid."
+        title="Workspace not found"
+        body="The requested Workspace does not exist or the ID is invalid."
       />
     </div>
     """
@@ -243,16 +295,16 @@ defmodule OrchardConsole.TenantDetailLive do
     <div id="tenant-error-card" class="space-y-4">
       <.link
         id="tenant-back-to-list"
-        navigate="/console/tenants"
+        navigate="/console/access"
         class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
       >
-        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Organizations
+        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Workspaces
       </.link>
       <.state_message
         id="tenant-error-message"
         kind={:error}
         layout={:panel}
-        title="Organization details unavailable"
+        title="Workspace details unavailable"
         body={@load_error}
       />
     </div>
@@ -261,32 +313,103 @@ defmodule OrchardConsole.TenantDetailLive do
 
   def render(%{detail_status: :ok} = assigns) do
     ~H"""
-    <div class="space-y-6">
+    <div id="workspace-detail" phx-hook="WorkspaceSections" class="space-y-6">
       <.link
         id="tenant-back-to-list"
-        navigate="/console/tenants"
+        navigate="/console/access"
         class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
       >
-        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Organizations
+        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Workspaces
       </.link>
 
-      <%!-- Organization Summary --%>
+      <header id="tenant-access-header" class="space-y-2">
+        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Current Workspace
+        </p>
+        <h2 class="text-2xl font-semibold text-slate-900 dark:text-slate-100">Access for {WorkspacePresentation.display_name(@tenant)}</h2>
+        <p class="max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+          Everything on this page applies to <span class="font-medium text-slate-900 dark:text-slate-100">{WorkspacePresentation.display_name(@tenant)}</span> only.
+          Portal membership, model access, and inference credentials are separate controls. Model grants are inspected here and changed with operator tooling.
+        </p>
+      </header>
+
+    <p class="text-xs text-slate-500 break-all">{@tenant.slug} · {@tenant.id} <span :if={WorkspacePresentation.default?(@tenant)}>· Default</span></p>
+    <.link navigate={"/console/access/workspaces/#{@tenant.id}/handoff"} class="text-sm text-navy underline">Guide workspace access</.link>
+    <nav id="tenant-access-navigation" aria-label="Workspace access sections" class="flex flex-wrap gap-2">
+    <.link :for={{key, label} <- [{"overview", "Overview"}, {"model_access", "Model access"}, {"portal_users", "Portal Users"}, {"api_credentials", "API credentials"}]}
+    patch={"/console/access/workspaces/#{@tenant.id}?section=#{key}"}
+    aria-current={if @section == key, do: "page"}
+    class={["rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-navy", if(@section == key, do: "bg-navy text-white", else: "border-slate-300 text-navy dark:text-sky-400")]}>{label}</.link>
+    </nav>
+    <div id="workspace-section-model_access" hidden={@section != "model_access"} class="space-y-4">
+    <div id="tenant-model-access-card"><.card>
+    <:title>Model access</:title>
+    <:subtitle>Grants apply only to this Workspace. Enabled access does not mean a Model is placed, loaded, or ready for inference.</:subtitle>
+    <.button phx-click="refresh_model_access" variant={:secondary}>Refresh grants</.button>
+    <p :if={@model_access_error} role="alert">Model grants unavailable. Refresh to try again.</p>
+    <p :if={!@model_access_error && @model_access == []}>No catalog Models. Import a Model in Catalog before granting access.</p>
+    <div :for={row <- @model_access} id={"workspace-model-#{row.model.id}"} class="mt-4 space-y-2 rounded-lg border border-slate-200 p-4">
+      <p class="break-all font-mono text-sm">{row.model.model_id}@{row.model.version}</p>
+      <p>Grant: {grant_label(row.grant_state)} · Model state: {row.model.state}</p>
+      <p class="text-xs text-slate-500 break-all">Catalog ID: {row.model.id}</p>
+      <details><summary class="cursor-pointer text-sm text-navy">Operator commands</summary>
+        <p class="mt-2 text-sm">Run with authorized operator tooling. These commands use the existing Tenant scope identifier.</p>
+        <pre class="overflow-x-auto p-2 text-xs">{WorkspaceAccess.commands(@tenant, row.model, row.grant).grant}</pre>
+        <pre class="overflow-x-auto p-2 text-xs">{WorkspaceAccess.commands(@tenant, row.model, row.grant).inspect}</pre>
+      </details>
+    </div>
+    </.card></div>
+    </div>
+    <div id="workspace-section-overview" hidden={@section != "overview"} class="space-y-6">
+
+
+      <section
+        id="tenant-access-boundaries"
+        aria-labelledby="tenant-access-boundaries-title"
+        class="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/60"
+      >
+        <h2 id="tenant-access-boundaries-title" class="font-medium text-slate-900 dark:text-slate-100">
+          Keep these access paths separate
+        </h2>
+        <div class="mt-3 grid gap-4 text-sm sm:grid-cols-3">
+          <div>
+            <p class="font-medium text-slate-900 dark:text-slate-100">Portal User</p>
+            <p class="mt-1 text-slate-600 dark:text-slate-300">
+              Signs in to this Workspace's Developer Portal. An invitation does not create an inference credential.
+            </p>
+          </div>
+          <div>
+            <p class="font-medium text-slate-900 dark:text-slate-100">Direct API Token</p>
+            <p class="mt-1 text-slate-600 dark:text-slate-300">
+              Authorizes Public Inference for this Workspace, subject to its separate model access and policy.
+            </p>
+          </div>
+          <div>
+            <p class="font-medium text-slate-900 dark:text-slate-100">API Client</p>
+            <p class="mt-1 text-slate-600 dark:text-slate-300">
+              Represents non-interactive application access and owns separately provisioned API Tokens.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <%!-- Workspace Summary --%>
       <div id="tenant-summary-card">
         <.card>
-          <:title>{@tenant.name}</:title>
-          <:subtitle>Organization details</:subtitle>
+          <:title>{WorkspacePresentation.display_name(@tenant)}</:title>
+          <:subtitle>Stable identity for this access and request scope.</:subtitle>
 
           <.detail_grid
             gap_class="gap-x-6 gap-y-3"
             class="grid-cols-2"
           >
             <.detail_field id="tenant-detail-name" label="Name" value_class="font-medium">
-              {@tenant.name}
+              {WorkspacePresentation.display_name(@tenant)}
             </.detail_field>
             <.detail_field id="tenant-detail-slug" label="Slug" mono>
               {@tenant.slug}
             </.detail_field>
-            <.detail_field id="tenant-detail-id" label="Organization ID" mono break_all>
+            <.detail_field id="tenant-detail-id" label="Workspace ID" mono break_all>
               {@tenant.id}
             </.detail_field>
             <.detail_field id="tenant-detail-created-at" label="Created" mono>
@@ -295,10 +418,14 @@ defmodule OrchardConsole.TenantDetailLive do
           </.detail_grid>
         </.card>
       </div>
-      <div id="tenant-portal-invite-card">
+      </div>
+      <div id="workspace-section-portal_users" hidden={@section != "portal_users"} class="space-y-6">
+      <div id="tenant-portal-invite-card" class="scroll-mt-6">
         <.card>
-          <:title>Invite Portal User</:title>
-          <:subtitle>Create a named Developer Portal identity. Orchard does not send email.</:subtitle>
+          <:title>Invite a Portal User</:title>
+          <:subtitle>
+            Create a named identity for this Workspace's Developer Portal. Orchard does not send email or create an API credential. After creation, use Copy invite and deliver the URL out of band.
+          </:subtitle>
           <div
             :if={!@portal_https?}
             id="tenant-portal-tls-required"
@@ -373,7 +500,9 @@ defmodule OrchardConsole.TenantDetailLive do
       <div id="tenant-portal-users-card">
         <.card>
           <:title>Portal Users</:title>
-          <:subtitle>Named identities for this Organization.</:subtitle>
+          <:subtitle>
+            Named Developer Portal identities for this Workspace only. Portal access does not grant Console or cluster administration.
+          </:subtitle>
           <p :if={@portal_users == []} class="text-sm text-slate-500 dark:text-slate-400">
             No Portal Users invited yet.
           </p>
@@ -465,12 +594,29 @@ defmodule OrchardConsole.TenantDetailLive do
       <div id="tenant-portal-access-card">
         <.card>
           <:title>Portal access</:title>
-          <:subtitle>TLS-only isolated surface without Console chrome.</:subtitle>
-          <code class="font-mono text-sm">/portal/{@tenant.slug}</code>
+          <:subtitle>
+            TLS-only sign-in for this Workspace. The Developer Portal is separate from Console and does not authorize inference by itself.
+          </:subtitle>
+          <div class="flex flex-wrap items-center gap-3">
+            <code class="font-mono text-sm">/portal/{@tenant.slug}</code>
+            <.link
+              :if={@portal_base_url}
+              id="tenant-open-portal"
+              href={portal_url(@portal_base_url, @tenant.slug)}
+              class="text-sm font-medium text-navy underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-400 dark:focus-visible:ring-sky-400"
+            >
+              Open Developer Portal
+            </.link>
+            <span :if={is_nil(@portal_base_url)} class="text-xs text-amber-700 dark:text-amber-300">
+              {portal_unavailable_label(@portal_https?)}
+            </span>
+          </div>
         </.card>
       </div>
 
       <%!-- One-Time Secret Card --%>
+      </div>
+      <div id="workspace-section-api_credentials" hidden={@section != "api_credentials"} class="space-y-6">
       <div :if={@generated_secret} id="tenant-api-key-secret-card">
         <.card>
           <:title>API Token Created - Copy Your Secret</:title>
@@ -530,10 +676,12 @@ defmodule OrchardConsole.TenantDetailLive do
       </div>
 
       <%!-- Create tenant-direct API Token --%>
-      <div id="tenant-api-key-create-card">
+      <div id="tenant-api-key-create-card" class="scroll-mt-6">
         <.card>
-          <:title>Create API Token</:title>
-          <:subtitle>Issue a new API Token for this Organization.</:subtitle>
+          <:title>Create a direct API Token</:title>
+          <:subtitle>
+            Issue a Public Inference credential for this Workspace. It does not sign a person in to the Developer Portal or grant model access.
+          </:subtitle>
 
           <.simple_form
             for={@api_key_form}
@@ -549,10 +697,13 @@ defmodule OrchardConsole.TenantDetailLive do
         </.card>
       </div>
 
-      <%!-- Organization API Tokens table --%>
+      <%!-- Workspace API Tokens table --%>
       <div id="tenant-api-keys-card">
         <.card>
-          <:title>Organization API Tokens</:title>
+          <:title>Workspace API Tokens</:title>
+          <:subtitle>
+            Tenant-direct credentials minted by operator tooling or by Portal Users. Revoking a token does not change Portal membership.
+          </:subtitle>
 
           <.table id="tenant-api-keys-table" rows={@api_keys} row_id={&"api-key-#{&1.id}"}>
             <:col :let={key} label="Name">{key.name}</:col>
@@ -600,7 +751,7 @@ defmodule OrchardConsole.TenantDetailLive do
                 title="No API Tokens created yet."
               >
                 <:action>
-                  Create an API Token above to issue direct Organization access.
+                  Create a direct API Token above, or let a Portal User mint one from the Developer Portal.
                 </:action>
               </.state_message>
             </:empty>
@@ -608,10 +759,12 @@ defmodule OrchardConsole.TenantDetailLive do
         </.card>
       </div>
 
-      <div id="tenant-api-clients-card">
+      <div id="tenant-api-clients-card" class="scroll-mt-6">
         <.card>
           <:title>API Clients</:title>
-          <:subtitle>Non-interactive access, ownership context, and owned API Tokens.</:subtitle>
+          <:subtitle>
+            Non-interactive application identities and their owned API Tokens. API Clients are provisioned separately from Portal Users.
+          </:subtitle>
 
           <div
             id="tenant-api-clients-list"
@@ -665,11 +818,10 @@ defmodule OrchardConsole.TenantDetailLive do
                         {client.owner_contact}
                       </div>
                       <div
-                        :if={present?(client.team)}
                         class="mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400"
                       >
                         <span class="font-medium uppercase tracking-wide">Team</span>
-                        <span class="min-w-0 break-words">{client.team}</span>
+                        <span class="min-w-0 break-words">{if present?(client.team), do: client.team, else: "Ungrouped"}</span>
                       </div>
                     </.detail_field>
                     <.detail_field
@@ -790,6 +942,7 @@ defmodule OrchardConsole.TenantDetailLive do
             </article>
           </div>
         </.card>
+      </div>
       </div>
     </div>
     """
@@ -924,9 +1077,10 @@ defmodule OrchardConsole.TenantDetailLive do
         api_keys: api_keys,
         api_clients: api_clients,
         portal_users: portal_users,
-        page_title: "Organization #{tenant.slug}",
+        page_title: WorkspacePresentation.display_name(tenant),
         load_error: nil
       )
+      |> load_model_access()
     else
       {:error, :tenant_not_found} ->
         assign(socket, detail_status: :not_found)
@@ -935,9 +1089,22 @@ defmodule OrchardConsole.TenantDetailLive do
     _ ->
       assign(socket,
         detail_status: :error,
-        load_error: "Organization details unavailable."
+        load_error: "Workspace details unavailable."
       )
   end
+
+  defp load_model_access(%{assigns: %{tenant: nil}} = socket), do: socket
+
+  defp load_model_access(socket) do
+    case WorkspaceAccess.list(socket.assigns.tenant) do
+      {:ok, rows} -> assign(socket, model_access: rows, model_access_error: nil)
+      {:error, reason} -> assign(socket, model_access: [], model_access_error: reason)
+    end
+  end
+
+  defp grant_label(:enabled), do: "Enabled"
+  defp grant_label(:disabled), do: "Disabled"
+  defp grant_label(:not_granted), do: "Not granted"
 
   defp inference_client_access?(api_client) do
     Enum.any?(api_client.role_bindings, fn
@@ -947,6 +1114,15 @@ defmodule OrchardConsole.TenantDetailLive do
   end
 
   defp active_api_token?(%ApiKey{} = api_key), do: ApiKey.status(api_key, utc_now()) == :active
+
+  defp portal_url(base_url, slug) do
+    String.trim_trailing(base_url, "/") <> "/portal/" <> slug
+  end
+
+  defp portal_unavailable_label(false), do: "Unavailable until public API HTTPS is enabled."
+
+  defp portal_unavailable_label(true),
+    do: "The configured public HTTPS Portal address is unavailable."
 
   defp minted_via_label(%TenantApiKeySummary{issuance_surface: "developer_portal"}),
     do: "Developer Portal"

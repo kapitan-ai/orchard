@@ -95,7 +95,7 @@ defmodule Orchard.Models.HubDownloader do
          {:ok, retained} <- filter_and_validate(file_entries),
          {:ok, sanitized} <- sanitize_entry_paths(retained),
          {:ok, file_metas} <- preflight_head(sanitized, repo_spec, config) do
-      download_all(file_metas, repo_spec, dest_dir, config, callback)
+      download_all(file_metas, repo_spec, dest_dir, config, callback, opts)
     end
   end
 
@@ -419,7 +419,7 @@ defmodule Orchard.Models.HubDownloader do
 
   # -- File Download ---------------------------------------------------------
 
-  defp download_all(file_metas, repo_spec, dest_dir, config, callback) do
+  defp download_all(file_metas, repo_spec, dest_dir, config, callback, download_opts) do
     opts = [
       base_url: Keyword.get(config, :base_url, "https://huggingface.co"),
       repo_spec: repo_spec,
@@ -432,6 +432,8 @@ defmodule Orchard.Models.HubDownloader do
       progress_fun: fn progress, current_file ->
         emit_progress(callback, progress, current_file)
       end,
+      control_fun: Keyword.get(download_opts, :control_fun),
+      wait_fun: Keyword.get(download_opts, :wait_fun),
       emit_initial_progress?: true
     ]
 
@@ -448,6 +450,8 @@ defmodule Orchard.Models.HubDownloader do
         map_download_error(reason)
     end
   end
+
+  defp map_download_error({:invalid_controls, message}), do: {:error, {:invalid_options, message}}
 
   defp map_download_error({:path_escape, path, root_label}) do
     {:error, {:invalid_source_layout, "path escapes #{root_label} directory: #{path}"}}
@@ -493,6 +497,9 @@ defmodule Orchard.Models.HubDownloader do
   defp map_download_error({:request_failed, path, _reason}) do
     {:error, {:download_failed, "HF download failed for #{path}"}}
   end
+
+  defp map_download_error({:callback_failed, :cancelled}),
+    do: {:error, {:cancelled, "Download cancelled."}}
 
   defp map_download_error({:callback_failed, _} = error), do: {:error, error}
   defp map_download_error({:error, _} = error), do: error

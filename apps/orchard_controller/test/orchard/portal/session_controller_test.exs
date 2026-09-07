@@ -34,6 +34,8 @@ defmodule Orchard.Portal.SessionControllerTest do
       response = conn |> https_conn() |> get("/portal/#{slug}")
       body = html_response(response, 200)
       assert body =~ "Developer portal"
+      assert body =~ "Workspace"
+      assert body =~ slug
       assert body =~ "Email"
       assert body =~ "Password"
       refute body =~ "Portal password"
@@ -52,6 +54,28 @@ defmodule Orchard.Portal.SessionControllerTest do
     assert get_session(conn, Auth.session_token_key())
   end
 
+  test "exact requested Model survives login into the scoped keys page", %{conn: conn} do
+    {tenant, user} = active_user!("portal-login-model")
+    model = "mlx-community/phi-4@v2"
+    query = URI.encode_query(%{"model" => model})
+
+    page = conn |> https_conn() |> get("/portal/#{tenant.slug}?#{query}")
+    body = html_response(page, 200)
+
+    assert body =~ "Requested Model"
+    assert body =~ model
+    assert body =~ ~s|action="/portal/#{tenant.slug}/session?#{query}"|
+
+    logged_in =
+      post_form(page, "/portal/#{tenant.slug}/session?#{query}", %{
+        "_csrf_token" => csrf_token(page),
+        "session[email]" => user.email,
+        "session[password]" => @password
+      })
+
+    assert redirected_to(logged_in) == "/portal/#{tenant.slug}/keys?#{query}"
+  end
+
   test "invite redemption sets password once and redirects to login", %{conn: conn} do
     {:ok, tenant} = Governance.create_tenant(%{slug: "portal-redeem", name: "Redeem"})
     {:ok, user} = Governance.create_portal_invite(tenant, %{email: "dev@example.com"})
@@ -67,6 +91,7 @@ defmodule Orchard.Portal.SessionControllerTest do
 
     page = conn |> https_conn() |> get("/portal/#{tenant.slug}/invites/#{invite.token}")
     assert html_response(page, 200) =~ "Set your password"
+    assert page.resp_body =~ "Workspace"
     assert page.resp_body =~ ~s|id="invite-password"|
     assert page.resp_body =~ ~s|id="invite-password-confirmation"|
     assert page.resp_body =~ ~s|name="_csrf_token"|
@@ -89,6 +114,33 @@ defmodule Orchard.Portal.SessionControllerTest do
       })
 
     assert again.status == 422
+  end
+
+  test "exact requested Model survives invite redemption into login", %{conn: conn} do
+    {:ok, tenant} = Governance.create_tenant(%{slug: "portal-invite-model", name: "Invite Model"})
+    {:ok, user} = Governance.create_portal_invite(tenant, %{email: "model@example.com"})
+    {:ok, invite} = Governance.copy_portal_invite(tenant, user)
+    model = "mlx-community/phi-4@v2"
+    query = URI.encode_query(%{"model" => model})
+
+    page =
+      conn
+      |> https_conn()
+      |> get("/portal/#{tenant.slug}/invites/#{invite.token}?#{query}")
+
+    assert html_response(page, 200) =~ model
+
+    assert page.resp_body =~
+             ~s|action="/portal/#{tenant.slug}/invites/#{invite.token}?#{query}"|
+
+    redeemed =
+      post_form(page, "/portal/#{tenant.slug}/invites/#{invite.token}?#{query}", %{
+        "_csrf_token" => csrf_token(page),
+        "invite[password]" => @password,
+        "invite[password_confirmation]" => @password
+      })
+
+    assert redirected_to(redeemed) == "/portal/#{tenant.slug}?#{query}"
   end
 
   test "SPEC 7.4a invite redemption is bound to the Organization route", %{conn: conn} do

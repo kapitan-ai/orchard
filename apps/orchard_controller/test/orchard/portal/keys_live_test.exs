@@ -2,9 +2,11 @@ defmodule Orchard.Portal.KeysLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Orchard.TestSupport.ModelRequestFixtures
   import Orchard.TestSupport.PortalConn
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.API.Endpoint
   alias Orchard.Governance
   alias Orchard.Governance.PortalPasswordVerifier
   alias Orchard.Portal.Auth
@@ -35,9 +37,15 @@ defmodule Orchard.Portal.KeysLiveTest do
     %{tenant: tenant, user: user, token: session.token}
   end
 
-  test "empty org shows a create action, not only a table", %{conn: conn, token: token} do
+  test "empty Workspace shows a create action, not only a table", %{
+    conn: conn,
+    token: token,
+    tenant: tenant
+  } do
     {:ok, view, html} = live(authed(conn, token), "/portal/portal-keys/keys")
 
+    assert html =~ "Workspace"
+    assert html =~ tenant.name
     assert html =~ "No API keys yet"
     assert html =~ "Mint your first key"
     assert html =~ "0 / 10"
@@ -61,7 +69,7 @@ defmodule Orchard.Portal.KeysLiveTest do
     assert html =~ "orchard_sk_"
     assert html =~ "portal-secret-value"
     refute html =~ "data-secret="
-    assert html =~ "No test curl is available"
+    assert html =~ "this Workspace has no active authorized Model"
 
     view
     |> element("#portal-secret-modal form")
@@ -71,6 +79,64 @@ defmodule Orchard.Portal.KeysLiveTest do
     refute html =~ "orchard_sk_"
     assert html =~ "laptop"
     assert html =~ "orchard_kp_"
+  end
+
+  test "mint shows an inert exact-model curl from the new key without claiming runtime success",
+       %{
+         conn: conn,
+         token: token,
+         tenant: tenant
+       } do
+    default_model = create_model!(%{model_id: "alpha/model", version: "v1", state: :active})
+    requested_model = create_model!(%{model_id: "zeta/model", version: "v2", state: :active})
+    grant_model_access!(tenant, default_model)
+    grant_model_access!(tenant, requested_model)
+
+    with_public_https(fn ->
+      {:ok, view, html} =
+        live(authed(conn, token), "/portal/portal-keys/keys?model=zeta%2Fmodel%40v2")
+
+      assert html =~ "Requested Model"
+      assert html =~ "zeta/model@v2"
+      view |> element("#portal-mint-button") |> render_click()
+
+      html =
+        view
+        |> form("#portal-mint-modal form", key: %{name: "first-request"})
+        |> render_submit()
+
+      assert has_element?(view, "#portal-curl-value", "zeta/model@v2")
+      assert html =~ "Authorization: Bearer orchard_sk_"
+      assert html =~ "/v1/chat/completions"
+      assert html =~ "This example has not run"
+      assert html =~ "Runtime availability and readiness are checked when you send the request"
+      refute html =~ "Request completed"
+    end)
+  end
+
+  test "mint does not substitute another authorized model for an unavailable exact request", %{
+    conn: conn,
+    token: token,
+    tenant: tenant
+  } do
+    model = create_model!(%{model_id: "available/model", state: :active})
+    grant_model_access!(tenant, model)
+
+    with_public_https(fn ->
+      {:ok, view, _html} =
+        live(authed(conn, token), "/portal/portal-keys/keys?model=missing%2Fmodel%40main")
+
+      view |> element("#portal-mint-button") |> render_click()
+
+      html =
+        view
+        |> form("#portal-mint-modal form", key: %{name: "unavailable-model"})
+        |> render_submit()
+
+      refute has_element?(view, "#portal-curl-value")
+      assert html =~ "requested Model is not active and authorized for this Workspace"
+      assert html =~ "Your key was still minted"
+    end)
   end
 
   test "mint validation stays inside the dialog and describes the key-name input", %{
@@ -368,4 +434,24 @@ defmodule Orchard.Portal.KeysLiveTest do
   end
 
   defp cap_occurrences(html), do: length(Regex.scan(~r/Portal cap reached/, html))
+
+  defp with_public_https(fun) do
+    previous_endpoint = Application.fetch_env!(:orchard_controller, Endpoint)
+
+    endpoint =
+      Keyword.put(previous_endpoint, :url,
+        scheme: "https",
+        host: "orchard.test",
+        port: 443
+      )
+
+    try do
+      Application.put_env(:orchard_controller, Endpoint, endpoint)
+      :ok = Endpoint.config_change([{Endpoint, endpoint}], [])
+      fun.()
+    after
+      Application.put_env(:orchard_controller, Endpoint, previous_endpoint)
+      :ok = Endpoint.config_change([{Endpoint, previous_endpoint}], [])
+    end
+  end
 end

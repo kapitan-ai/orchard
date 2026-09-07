@@ -14,6 +14,8 @@ defmodule OrchardConsole.NodeDetailLive do
     StatusBuilder
   }
 
+  alias Phoenix.LiveView.JS
+
   alias Orchard.ControlPlane
   alias Orchard.NodeEnrollments
   alias Orchard.Nodes
@@ -34,6 +36,8 @@ defmodule OrchardConsole.NodeDetailLive do
        page_title: "Node Detail",
        active_nav: :nodes,
        page_mode: :workspace,
+       section: :overview,
+       return_section: :inventory,
        target_kind: nil,
        target_id: nil,
        load_status: :loading,
@@ -43,6 +47,7 @@ defmodule OrchardConsole.NodeDetailLive do
        memory_budget: nil,
        action: nil,
        refresh_timer: nil,
+       last_successful_refresh: nil,
        message: nil
      )}
   end
@@ -51,10 +56,40 @@ defmodule OrchardConsole.NodeDetailLive do
   def handle_params(params, _uri, socket) do
     {target_kind, target_id} = target_from_params(socket.assigns.live_action, params)
 
+    section =
+      case params["section"] do
+        "evidence" -> :evidence
+        "actions" -> :actions
+        _ -> :overview
+      end
+
+    socket =
+      assign(socket,
+        section: section,
+        return_section:
+          if(params["from"] == "admissions" or target_kind == :candidate,
+            do: :admissions,
+            else: :inventory
+          )
+      )
+
+    if socket.assigns.target_kind == target_kind and socket.assigns.target_id == target_id do
+      {:noreply, socket}
+    else
+      load_target(socket, target_kind, target_id)
+    end
+  end
+
+  defp load_target(socket, target_kind, target_id) do
     socket =
       assign(socket,
         target_kind: target_kind,
         target_id: target_id,
+        record: nil,
+        status: nil,
+        latest_decision: nil,
+        memory_budget: nil,
+        last_successful_refresh: nil,
         load_status: :loading,
         action: nil,
         message: nil
@@ -69,10 +104,30 @@ defmodule OrchardConsole.NodeDetailLive do
 
   @impl true
   def handle_info(:refresh_node_detail, socket) do
-    {:noreply, socket |> load_detail() |> schedule_refresh()}
+    {:noreply, socket |> cancel_refresh() |> load_detail() |> schedule_refresh()}
   end
 
   @impl true
+  def handle_event("refresh_detail", _params, socket) do
+    {:noreply, socket |> cancel_refresh() |> load_detail() |> schedule_refresh()}
+  end
+
+  def handle_event(event, _params, %{assigns: %{load_status: :stale}} = socket)
+      when event in [
+             "open_admit",
+             "open_reject",
+             "open_lifecycle",
+             "action_change",
+             "execute_action"
+           ] do
+    {:noreply,
+     put_flash(
+       socket,
+       :error,
+       "Refresh Node detail successfully before reviewing or executing an action."
+     )}
+  end
+
   def handle_event("open_admit", _params, socket) do
     if can_open_admit?(socket.assigns.target_kind, socket.assigns.record, socket.assigns.status) do
       inputs = default_admission_inputs(socket.assigns.record)
@@ -148,12 +203,25 @@ defmodule OrchardConsole.NodeDetailLive do
   def render(assigns) do
     ~H"""
     <div id="node-detail-page" class="space-y-6">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <.link
-        navigate={~p"/console/nodes"}
+        navigate={~p"/console/nodes?#{[section: @return_section]}"}
         class="inline-flex items-center rounded-md px-2 py-1 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-navy focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-sky-300 dark:focus-visible:ring-sky-400"
       >
-        Back to Nodes
-      </.link>
+    Back to Nodes
+    </.link>
+    <.button id="node-detail-refresh" variant={:secondary} size={:sm} phx-click="refresh_detail" phx-disable-with="Refreshing...">
+    <.icon name="hero-arrow-path" class="mr-1.5 h-4 w-4" />
+    {if @load_status in [:error, :stale], do: "Retry refresh", else: "Refresh detail"}
+    </.button>
+    </div>
+    <div :if={@load_status == :stale} id="node-detail-refresh-warning" role="status" class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+    <p class="font-semibold">Refresh failed. Showing the last successful detail.</p>
+    <p class="mt-1">Current state is unconfirmed. Action previews are unavailable until a refresh succeeds.</p>
+    </div>
+    <p :if={@last_successful_refresh} id="node-detail-last-success" class="text-xs text-slate-500 dark:text-slate-400">
+    Last successful page refresh <.local_time value={@last_successful_refresh} format={:datetime_second} />. Observation times are shown with their evidence below.
+    </p>
 
       <%= cond do %>
         <% @load_status == :loading -> %>
@@ -164,55 +232,28 @@ defmodule OrchardConsole.NodeDetailLive do
           <.state_message id="node-detail-error" kind={:error} layout={:panel} title="Node detail unavailable." body={@message} />
         <% true -> %>
           <div id="node-detail-content" class="space-y-6">
+    <nav id="node-detail-sections" aria-label="Node detail sections" class="flex flex-wrap gap-2">
+    <.link :for={{section, label} <- [overview: "Overview", evidence: "Evidence", actions: "Actions"]}
+    id={"node-detail-section-#{section}"} patch={detail_section_path(@target_kind, @target_id, section, @return_section)}
+    aria-current={if @section == section, do: "page"}
+    class={["rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:focus-visible:ring-sky-400", if(@section == section, do: "border-navy bg-navy text-white dark:border-sky-500 dark:bg-sky-500 dark:hover:bg-sky-400", else: "border-slate-300 text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800")]}>
+    {label}
+    </.link>
+    </nav>
             <div id="node-detail-header-card">
               <.card>
                 <:title>{detail_title(@target_kind, @record)}</:title>
                 <:subtitle>{detail_subtitle(@target_kind, @record)}</:subtitle>
 
-                <div
-                  :if={detail_action_buttons?(@target_kind, @record, @status)}
-                  id="node-detail-actions"
-                  class="mb-4 flex flex-wrap gap-2"
-                >
-                  <.button
-                    :if={can_open_admit?(@target_kind, @record, @status)}
-                    id="node-detail-open-admit"
-                    variant={:primary}
-                    size={:sm}
-                    phx-click="open_admit"
-                  >
-                    Admit Node
-                  </.button>
-                  <.button
-                    :if={can_open_reject?(@target_kind, @record, @status)}
-                    id="node-detail-open-reject"
-                    variant={:danger}
-                    size={:sm}
-                    phx-click="open_reject"
-                  >
-                    Preview reject
-                  </.button>
-                  <.button
-                    :for={lifecycle_action <- lifecycle_action_buttons(@target_kind, @record)}
-                    id={"node-detail-open-lifecycle-#{lifecycle_action}"}
-                    variant={lifecycle_action_variant(lifecycle_action)}
-                    size={:sm}
-                    phx-click="open_lifecycle"
-                    phx-value-action={lifecycle_action}
-                  >
-                    {lifecycle_action_button_label(lifecycle_action)}
-                  </.button>
-                </div>
-
                 <div class="flex flex-wrap items-center gap-2">
                   <.badge tone={admission_category_tone(status_value(@status, :admission, :category))}>
-                    {format_status_value(status_value(@status, :admission, :category))}
+                    Admission: {format_status_value(status_value(@status, :admission, :category))}
                   </.badge>
                   <.badge tone={health_tone(status_value(@status, :health, :status))}>
-                    {format_status_value(status_value(@status, :health, :status))}
+                    Health: {format_status_value(status_value(@status, :health, :status))}
                   </.badge>
                   <.badge tone={freshness_tone(status_value(@status, :freshness, :status))}>
-                    {format_status_value(status_value(@status, :freshness, :status))}
+                    Observation: {format_status_value(status_value(@status, :freshness, :status))}
                   </.badge>
                   <span class="text-xs font-mono text-slate-500 dark:text-slate-400">
                     {resource_id(@target_kind, @record)}
@@ -221,9 +262,53 @@ defmodule OrchardConsole.NodeDetailLive do
               </.card>
             </div>
 
-            <div id="node-detail-status-groups" class="grid gap-4 lg:grid-cols-2">
+            <div id="node-detail-actions-section" hidden={@section != :actions} class="space-y-4">
+              <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Actions</h2>
+              <p class="text-sm text-slate-600 dark:text-slate-300">Review consequences and required confirmations before changing this Node.</p>
+              <p :if={@load_status == :stale} class="text-sm text-amber-800 dark:text-amber-200">Refresh successfully to make actions available again.</p>
+                <div
+                  :if={@load_status == :ok and detail_action_buttons?(@target_kind, @record, @status)}
+                  id="node-detail-actions"
+                  class="mb-4 flex flex-wrap gap-2"
+                >
+                  <.button
+                    :if={can_open_admit?(@target_kind, @record, @status)}
+                    id="node-detail-open-admit"
+                    variant={:primary}
+                    size={:sm}
+                    phx-click={JS.push_focus() |> JS.push("open_admit") |> JS.focus(to: "#node-action-preview-heading")}
+                  >
+                    Admit Node
+                  </.button>
+                  <.button
+                    :if={can_open_reject?(@target_kind, @record, @status)}
+                    id="node-detail-open-reject"
+                    variant={:danger}
+                    size={:sm}
+                    phx-click={JS.push_focus() |> JS.push("open_reject") |> JS.focus(to: "#node-action-preview-heading")}
+                  >
+                    Preview reject
+                  </.button>
+                  <.button
+                    :for={lifecycle_action <- lifecycle_action_buttons(@target_kind, @record)}
+                    id={"node-detail-open-lifecycle-#{lifecycle_action}"}
+                    variant={lifecycle_action_variant(lifecycle_action)}
+                    size={:sm}
+                    phx-click={JS.push_focus() |> JS.push("open_lifecycle") |> JS.focus(to: "#node-action-preview-heading")}
+                    phx-value-action={lifecycle_action}
+                  >
+                    {lifecycle_action_button_label(lifecycle_action)}
+                  </.button>
+                </div>
+
+
+            <.action_preview_panel :if={@action} action={@action} />
+            </div>
+
+
+            <div id="node-detail-status-groups" hidden={@section == :actions} class={if @section == :actions, do: "hidden", else: "grid gap-4 lg:grid-cols-2"}>
               <.status_group
-                id="node-detail-lifecycle"
+                id="node-detail-lifecycle" hidden={@section != :overview}
                 title="Lifecycle"
                 badge={format_status_value(status_value(@status, :lifecycle, :state))}
                 tone={lifecycle_tone(status_value(@status, :lifecycle, :state))}
@@ -239,7 +324,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
 
               <.status_group
-                id="node-detail-admission"
+                id="node-detail-admission" hidden={@section != :overview}
                 title="Admission"
                 badge={format_status_value(status_value(@status, :admission, :category))}
                 tone={admission_category_tone(status_value(@status, :admission, :category))}
@@ -258,7 +343,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
 
               <.status_group
-                id="node-detail-health"
+                id="node-detail-health" hidden={@section != :overview}
                 title="Health"
                 badge={format_status_value(status_value(@status, :health, :status))}
                 tone={health_tone(status_value(@status, :health, :status))}
@@ -271,7 +356,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
 
               <.status_group
-                id="node-detail-freshness"
+                id="node-detail-freshness" hidden={@section != :overview}
                 title="Freshness"
                 badge={format_status_value(status_value(@status, :freshness, :status))}
                 tone={freshness_tone(status_value(@status, :freshness, :status))}
@@ -295,23 +380,36 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
 
               <.status_group
-                id="node-detail-transport"
-                title="Transport"
+                id="node-detail-transport" hidden={@section != :evidence}
+                title={transport_title(@target_kind)}
                 badge={format_status_value(status_value(@status, :transport, :status))}
                 tone={transport_tone(status_value(@status, :transport, :status))}
               >
                 <.detail_grid id="node-detail-transport-grid" class="sm:grid-cols-2">
-                  <.detail_field id="node-detail-transport-status" label="Transport" mono>
+                  <.detail_field id="node-detail-transport-status" label={transport_label(@target_kind)} mono>
                     {format_status_value(status_value(@status, :transport, :status))}
                   </.detail_field>
                   <.detail_field id="node-detail-target-ref" label="Target" mono break_all>
                     {target_ref(@target_kind, @record)}
                   </.detail_field>
+                  <.detail_field
+                    :if={@target_kind == :candidate}
+                    id="node-detail-transport-observed-at"
+                    label="Observed At"
+                    mono
+                  >
+                    <.local_time
+                      :if={@record.last_observed_at}
+                      value={@record.last_observed_at}
+                      format={:datetime_second}
+                    />
+                    <span :if={!@record.last_observed_at}>Never observed</span>
+                  </.detail_field>
                 </.detail_grid>
               </.status_group>
 
               <.status_group
-                id="node-detail-runtime"
+                id="node-detail-runtime" hidden={@section != :evidence}
                 title="Runtime"
                 badge={format_status_value(status_value(@status, :runtime, :status))}
                 tone={runtime_tone(status_value(@status, :runtime, :status))}
@@ -330,7 +428,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
 
               <.status_group
-                id="node-detail-compatibility"
+                id="node-detail-compatibility" hidden={@section != :evidence}
                 title="Compatibility"
                 badge={format_status_value(status_value(@status, :compatibility, :status))}
                 tone={compatibility_tone(status_value(@status, :compatibility, :status))}
@@ -343,7 +441,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
 
               <.status_group
-                id="node-detail-scheduling"
+                id="node-detail-scheduling" hidden={@section != :overview}
                 title="Scheduling"
                 badge={scheduling_badge(status_value(@status, :scheduling, :eligible))}
                 tone={scheduling_tone(status_value(@status, :scheduling, :eligible))}
@@ -363,7 +461,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
             </div>
 
-            <div :if={@memory_budget} id="node-detail-memory-budget">
+            <div :if={@memory_budget} id="node-detail-memory-budget" hidden={@section != :evidence}>
               <.card>
                 <:title>Memory Telemetry</:title>
                 <:subtitle>Observe-only memory-budget diagnostics. This section is non-gating.</:subtitle>
@@ -426,7 +524,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.card>
             </div>
 
-            <div id="node-detail-warnings-card">
+            <div id="node-detail-warnings-card" hidden={@section != :overview}>
               <.card>
                 <:title>Warnings</:title>
                 <.coded_entry_list
@@ -438,7 +536,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.card>
             </div>
 
-            <div :if={@latest_decision} id="node-detail-latest-decision-card">
+            <div :if={@latest_decision} id="node-detail-latest-decision-card" hidden={@section != :actions}>
               <.card variant={:secondary}>
                 <:title>Latest Admission Decision</:title>
                 <.detail_grid id="node-detail-latest-decision-grid" class="sm:grid-cols-3">
@@ -457,7 +555,7 @@ defmodule OrchardConsole.NodeDetailLive do
 
             <div
               :if={observed_candidate_guidance?(@target_kind, @status)}
-              id="node-detail-enrollment-guidance-card"
+              id="node-detail-enrollment-guidance-card" hidden={@section != :actions}
             >
               <.card>
                 <:title>Enrollment Guidance</:title>
@@ -505,7 +603,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.card>
             </div>
 
-            <div :if={@target_kind == :candidate} id="node-detail-candidate-evidence-card">
+            <div :if={@target_kind == :candidate} id="node-detail-candidate-evidence-card" hidden={@section != :evidence}>
               <.card>
                 <:title>Candidate Evidence</:title>
                 <:subtitle>Observed candidate evidence is preserved as review context.</:subtitle>
@@ -528,7 +626,8 @@ defmodule OrchardConsole.NodeDetailLive do
                 </div>
                 <div :if={@record.node_id} class="mt-4">
                   <.link
-                    navigate={~p"/console/nodes/#{@record.node_id}"}
+                    id="node-detail-review-linked-node"
+                    navigate={~p"/console/nodes/#{@record.node_id}?from=admissions"}
                     class="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-300 dark:hover:bg-slate-800 dark:focus-visible:ring-sky-400"
                   >
                     Review linked node
@@ -537,7 +636,7 @@ defmodule OrchardConsole.NodeDetailLive do
               </.card>
             </div>
 
-            <.action_preview_panel :if={@action} action={@action} />
+
           </div>
       <% end %>
     </div>
@@ -547,6 +646,12 @@ defmodule OrchardConsole.NodeDetailLive do
   # ===========================================================================
   # Data loading
   # ===========================================================================
+
+  defp detail_section_path(:node, id, section, origin),
+    do: ~p"/console/nodes/#{id}?#{[section: section, from: origin]}"
+
+  defp detail_section_path(:candidate, id, section, origin),
+    do: ~p"/console/nodes/pending/#{id}?#{[section: section, from: origin]}"
 
   defp target_from_params(:candidate, %{"candidate_id" => candidate_id}),
     do: {:candidate, candidate_id}
@@ -563,6 +668,7 @@ defmodule OrchardConsole.NodeDetailLive do
         |> assign(
           page_title: "#{node.display_name || node.hostname || "Node"} Detail",
           load_status: :ok,
+          last_successful_refresh: DateTime.utc_now(),
           record: node,
           status: status,
           latest_decision: latest_decision,
@@ -573,6 +679,8 @@ defmodule OrchardConsole.NodeDetailLive do
 
       {:error, :node_not_found} ->
         assign(socket,
+          page_title: "Node Detail",
+          last_successful_refresh: nil,
           load_status: :not_found,
           record: nil,
           status: nil,
@@ -602,6 +710,7 @@ defmodule OrchardConsole.NodeDetailLive do
         |> assign(
           page_title: "#{candidate_display_label(candidate)} Detail",
           load_status: :ok,
+          last_successful_refresh: DateTime.utc_now(),
           record: candidate,
           status: status,
           latest_decision: latest_decision,
@@ -612,6 +721,8 @@ defmodule OrchardConsole.NodeDetailLive do
 
       {:error, :candidate_not_found} ->
         assign(socket,
+          page_title: "Node Detail",
+          last_successful_refresh: nil,
           load_status: :not_found,
           record: nil,
           status: nil,
@@ -631,6 +742,10 @@ defmodule OrchardConsole.NodeDetailLive do
       detail_error(socket)
   end
 
+  defp detail_error(%{assigns: %{record: record}} = socket) when not is_nil(record) do
+    assign(socket, load_status: :stale, action: nil, message: "Node detail refresh failed.")
+  end
+
   defp detail_error(socket) do
     assign(socket,
       load_status: :error,
@@ -646,7 +761,14 @@ defmodule OrchardConsole.NodeDetailLive do
   defp refresh_open_action(%{assigns: %{action: nil}} = socket), do: socket
 
   defp refresh_open_action(%{assigns: %{action: action}} = socket) do
-    refreshed = put_action(socket, action.kind, action.inputs, action.confirmed)
+    refreshed = put_action(socket, action.kind, action.inputs, false)
+
+    refreshed =
+      if refreshed.assigns.action.preview == action.preview do
+        assign(refreshed, action: %{refreshed.assigns.action | confirmed: action.confirmed})
+      else
+        refreshed
+      end
 
     case action.error do
       nil -> refreshed
@@ -996,6 +1118,18 @@ defmodule OrchardConsole.NodeDetailLive do
     end
   end
 
+  defp current_preview_state(preview) do
+    current = preview_value(preview, :current)
+
+    case status_value(current, :resource, :type) do
+      type when type in [:admission_candidate, "admission_candidate"] ->
+        status_value(current, :admission, :category)
+
+      _ ->
+        status_value(current, :lifecycle, :state)
+    end
+  end
+
   defp preview_value(preview, key) when is_map(preview), do: map_get(preview, key)
   defp preview_value(_preview, _key), do: nil
 
@@ -1160,6 +1294,12 @@ defmodule OrchardConsole.NodeDetailLive do
     do: :error
 
   defp transport_tone(_status), do: :neutral
+
+  defp transport_title(:candidate), do: "Transport at last observation"
+  defp transport_title(_target_kind), do: "Transport"
+
+  defp transport_label(:candidate), do: "Observed transport"
+  defp transport_label(_target_kind), do: "Transport"
 
   defp runtime_tone("ready"), do: :success
   defp runtime_tone("not_ready"), do: :error
@@ -1343,13 +1483,14 @@ defmodule OrchardConsole.NodeDetailLive do
 
   attr(:id, :string, required: true)
   attr(:title, :string, required: true)
+  attr(:hidden, :boolean, default: false)
   attr(:badge, :string, default: nil)
   attr(:tone, :atom, default: :neutral)
   slot(:inner_block, required: true)
 
   defp status_group(assigns) do
     ~H"""
-    <div id={@id}>
+    <div id={@id} hidden={@hidden}>
       <.card padding={:sm}>
         <:title>
           <span class="flex flex-wrap items-center gap-2">
@@ -1446,16 +1587,17 @@ defmodule OrchardConsole.NodeDetailLive do
 
   defp action_preview_panel(assigns) do
     ~H"""
-    <div id="node-action-preview">
+    <div id="node-action-preview" role="region" aria-label={action_title(@action.kind)} class="scroll-mt-6">
       <.card class={action_panel_class(@action.kind)}>
-        <:title>{action_title(@action.kind)}</:title>
+        <:title><span id="node-action-preview-heading" tabindex="-1" phx-mounted={JS.focus()} class="block scroll-mt-6">{action_title(@action.kind)}</span></:title>
         <:subtitle>{action_explanation(@action.kind)}</:subtitle>
 
+        <.button id="action-close-preview" variant={:secondary} size={:sm} phx-click={JS.push("cancel_action") |> JS.pop_focus()} class="mb-4">Close preview</.button>
         <form id={action_form_id(@action.kind)} phx-change="action_change" phx-submit="execute_action" class="space-y-5">
           <div id="action-preview-summary" class="grid gap-4 lg:grid-cols-3">
             <.detail_grid id="action-preview-current" class="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-950">
               <.detail_field id="action-preview-current-state" label="Current" mono>
-                {format_status_value(nested_preview_value(@action.preview, :current, :state))}
+                {format_status_value(current_preview_state(@action.preview))}
               </.detail_field>
               <.detail_field id="action-preview-active-requests" label="Active Requests" mono>
                 {format_optional(preview_value(@action.preview, :active_request_count))}
@@ -1635,8 +1777,8 @@ defmodule OrchardConsole.NodeDetailLive do
           </p>
 
           <div class="flex flex-wrap justify-end gap-2">
-            <.button id="action-cancel" variant={:secondary} phx-click="cancel_action">
-              Cancel
+            <.button id="action-cancel" variant={:secondary} phx-click={JS.push("cancel_action") |> JS.pop_focus()}>
+              Close preview
             </.button>
             <.button
               id="action-submit"

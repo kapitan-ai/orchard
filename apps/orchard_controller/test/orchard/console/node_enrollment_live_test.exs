@@ -197,6 +197,8 @@ defmodule OrchardConsole.NodeEnrollmentLiveTest do
 
     html = view |> element("#node-preparation-complete") |> render_click()
 
+    assert has_element?(view, "#node-enrollment-heading[tabindex='-1'][phx-mounted]")
+    refute has_element?(view, "#node-preparation-complete")
     assert html =~ "Create a one-time enrollment"
     assert html =~ "Initial pool intent"
     assert html =~ "A Pool is an existing scheduling group"
@@ -372,7 +374,11 @@ defmodule OrchardConsole.NodeEnrollmentLiveTest do
     assert html =~ "Registered - awaiting admission"
     assert html =~ "The node agent registered successfully"
     assert html =~ "Review and Admit Node"
-    assert html =~ "/console/nodes/22222222-2222-4222-8222-222222222222"
+
+    assert has_element?(
+             view,
+             "#review-node-admission[href='/console/nodes/22222222-2222-4222-8222-222222222222?section=actions&from=admissions']"
+           )
   end
 
   test "polling advances a waiting enrollment to registered without an operator status action", %{
@@ -410,6 +416,7 @@ defmodule OrchardConsole.NodeEnrollmentLiveTest do
     Process.sleep(25)
     registered_html = render(view)
 
+    refute has_element?(view, "#node-enrollment-monitor-step [phx-mounted]")
     assert registered_html =~ "Registered - awaiting admission"
     assert registered_html =~ "Review and Admit Node"
   end

@@ -1639,6 +1639,28 @@ defmodule OrchardConsole.CoreComponentsTest do
   # Sidebar Navigation
   # ===========================================================================
 
+  describe "models_navigation/1" do
+    test "renders Catalog and canonical Discover links" do
+      assigns = %{}
+      html = render_heex(~H|<.models_navigation active={:catalog} />|)
+
+      assert html =~ ~s(id="models-navigation")
+      assert html =~ ~s(aria-label="Models")
+      assert html =~ ~s(href="/console/models")
+      assert html =~ "Catalog"
+      assert html =~ ~s(href="/console/models/discover")
+      assert html =~ "Discover"
+    end
+
+    test "marks only the selected models destination as current" do
+      assigns = %{}
+      html = render_heex(~H|<.models_navigation active={:discover} />|)
+
+      assert html =~ ~r/href="\/console\/models\/discover"[^>]*aria-current="page"/
+      refute html =~ ~r/href="\/console\/models"[^>]*aria-current="page"/
+    end
+  end
+
   describe "sidebar_nav/1" do
     test "renders all nav items" do
       assigns = %{}
@@ -1647,8 +1669,8 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "Overview"
       assert html =~ "Playground"
       assert html =~ "Models"
-      assert html =~ "Model Hub"
-      assert html =~ "Organizations"
+      refute html =~ "Model Hub"
+      assert html =~ "Access"
       assert html =~ "Requests"
       assert html =~ "Settings"
     end
@@ -1676,8 +1698,8 @@ defmodule OrchardConsole.CoreComponentsTest do
       refute html =~ "coming soon"
       assert html =~ "/console/requests"
       assert html =~ "/console/models"
-      assert html =~ "/console/model-hub"
-      assert html =~ "/console/tenants"
+      refute html =~ "/console/model-hub"
+      assert html =~ "/console/access"
       assert html =~ "/console/settings"
     end
 
@@ -1721,12 +1743,12 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "ring-inset"
     end
 
-    test "Model Hub renders as enabled link and shows active styling when active" do
+    test "Models renders as the single active model-management entry" do
       assigns = %{}
-      html = render_heex(~H|<.sidebar_nav active={:model_hub} />|)
+      html = render_heex(~H|<.sidebar_nav active={:models} />|)
 
-      assert html =~ "/console/model-hub"
-      refute html =~ "Model Hub \u2014 coming soon"
+      assert html =~ "/console/models"
+      refute html =~ "Model Hub"
       assert html =~ ~s(aria-current="page")
       assert html =~ "bg-navy/10"
       assert html =~ "dark:bg-sky-400/10"

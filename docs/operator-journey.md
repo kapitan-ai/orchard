@@ -86,7 +86,7 @@ The selected Install Role decides which LaunchDaemons are installed and managed.
 
 | Path | Install Role | Console outcome | Inference outcome | Material current differences |
 |---|---|---|---|---|
-| All-in-one | `all` | Available after Controller configuration, first-admin initialization, Console enablement, and service start. | Possible on the same Mac after Organization/API Token creation and local model import. | No cross-Mac cookie transfer or remote model path is needed, but external Postgres is still required in the current build. |
+| All-in-one | `all` | Available after Controller configuration, first-admin initialization, Console enablement, and service start. | Possible on the same Mac after Workspace/API Token creation and local model import. | No cross-Mac cookie transfer or remote model path is needed, but external Postgres is still required in the current build. |
 | Controller-only | `controller` | Available after the same Controller setup. | Not possible until at least one eligible Runtime Endpoint is configured and model-ready. | This path is useful for governance and Console setup but is not a complete first-inference topology. |
 | Controller plus workers | `controller` on the Controller and `node-agent` on each worker Mac. | Available after Controller setup. | Technically exercisable through the current private-network first cut after explicit targets and worker-reachable model staging, but it is not the finished certificate-backed join journey. | Every worker adds a root-owned env edit, shared-cookie delivery, private-network checks, an explicit Controller target entry, and model staging. |
 
@@ -122,15 +122,15 @@ For each worker Mac, the operator currently:
 This sequence does not execute the target `provisioned -> registered -> admitted -> active` trust flow.
 The shared cookie is current transport access material and must not be described as Node identity or Node Enrollment.
 
-### Organization, Model, And First Inference
+### Workspace, Model, And First Inference
 
 After Console is reachable, the operator currently:
 
-1. Creates an Organization.
+1. Opens the existing Default workspace under Access, or creates a separate Workspace when another governance scope is needed.
 2. Creates a tenant-direct API Token for bootstrap or manual use, or provisions an API Client and API Token for a named non-interactive principal.
 3. Stores the one-time API Token output securely.
 4. Imports and activates a Model Bundle.
-5. Grants the Model to each approved Organization with `orchardctl models access grant`; activation alone authorizes nothing, and the Console Playground needs the same grant for the seeded `legacy` Tenant.
+5. Grants the Model to each approved Workspace with `orchardctl models access grant`; activation alone authorizes nothing, and the Console Playground needs the same grant for the seeded `legacy` Tenant.
 6. Verifies that the model source is reachable by the Node Agent that will load it.
 7. Confirms `/v1/models` lists the granted active model.
 8. Runs a small request through Playground or the Public Inference API.
@@ -168,7 +168,7 @@ Future implementation PRs should record sanitized timings against the measuremen
 | Static target missing or wrong | Console diagnostics and scheduler cannot reach the intended Node Agent. | Correct the Controller target list and restart or reconfigure the Controller. |
 | Endpoint observed but not trusted | Admission execution remains blocked and the endpoint is not schedulable. | Complete the future certificate-backed registration flow when implemented; observation alone is insufficient. |
 | Lost first-admin credential | Admin API access is unavailable. | Use local `orchardctl cluster init --force-new-admin --yes` break-glass recovery and audit the new credential. |
-| Model activated but not granted to the calling Organization | `/v1/models` omits the model and inference fails with `403 model_not_authorized`. | Grant the Tenant/Model pair with `orchardctl models access grant`; see [`../apps/orchard_cli/README.md`](../apps/orchard_cli/README.md). |
+| Model activated but not granted to the calling Workspace | `/v1/models` omits the model and inference fails with `403 model_not_authorized`. | Grant the Tenant/Model pair with `orchardctl models access grant`; see [`../apps/orchard_cli/README.md`](../apps/orchard_cli/README.md). |
 | Controller-local model source on a remote worker | Model acquisition fails with an unavailable path or artifact. | Pre-stage the verified bundle on the worker or provide a worker-reachable source. |
 | Worker or Controller upgrade interrupts readiness | Service status, heartbeat, or requests become unavailable. | Follow the packaging runbook's service-level backup, preflight, update, and health checks, and use cordon, drain, and resume only where lifecycle-managed Nodes exist. |
 
@@ -201,20 +201,21 @@ It is not a claim about the current build.
 4. Orchard runs migrations and the distinct first-admin and internal Node trust initialization operations.
 5. Orchard enables Console and starts services.
 6. The local Node Agent registers through the same identity model used by remote Nodes, and guided setup performs the same explicit audited Node Admission operation with confirmation inside the setup flow.
-7. The operator creates or confirms an Organization and inference credential.
+7. The operator confirms the existing Default workspace or deliberately chooses another Workspace, then provisions a separate inference credential.
 8. The operator imports one Model Bundle.
 9. Orchard verifies, places, and loads the model on the local Node Agent.
 10. Playground runs a small inference and shows the selected Node and model version.
 
 ### Target Developer Portal Access
 
-1. The operator opens the Organization in Console and creates a Portal User in `invited` status by email.
+1. The operator opens a Workspace under Access and checks its exact Model grant separately from Portal membership.
+   The guided handoff can reuse an existing active Portal User; otherwise the operator creates a Portal User in `invited` status by email.
 2. Console shows the invited Portal User without issuing a token or displaying a Portal Invite URL.
 3. The operator selects **Copy invite** to issue the first single-use token, and Console shows the Portal Invite URL once for out-of-band delivery.
 4. While the Portal User remains invited, each later **Copy invite** action deletes the previous unused invite row, issues a fresh hash-only token with an extended expiry, and shows the replacement URL once.
-5. The developer redeems the Portal Invite, chooses a password, and signs in to the Organization-scoped Developer Portal.
+5. The developer redeems the Portal Invite, chooses a password, and signs in to the Workspace-scoped Developer Portal.
 6. When access must end, the operator disables that Portal User, which atomically deletes every outstanding invite, ends only that user's portal sessions, and does not automatically revoke minted API Keys.
-7. The operator separately reviews Organization API Keys in Console and deliberately revokes known keys when key access must also end.
+7. The operator separately reviews Workspace API Keys in Console and deliberately revokes known keys when key access must also end.
 
 Each effective Portal lifecycle action commits its tenant-scoped audit evidence with the authoritative mutation.
 Portal User creation and first Copy invite remain separate audited actions, and later Copy actions are recorded as reissues.

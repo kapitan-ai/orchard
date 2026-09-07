@@ -70,7 +70,8 @@ defmodule OrchardConsole.ModelHub do
   ## Options
 
     * `:activate` — activate model after import (default: `true`)
-    * `:revision` — HF revision to download (default: detail's `revision_sha`)
+    * `:revision` - Selected immutable HF revision (default: detail's `revision_sha`).
+      Refreshed provider detail must still match this revision before downloading.
   """
   @spec start_download_import(pid(), term(), String.t(), keyword()) :: {:ok, pid()}
   def start_download_import(owner, ref, repo_id, opts \\ []) do
@@ -201,6 +202,7 @@ defmodule OrchardConsole.ModelHub do
       pipeline_tag: Map.get(detail, :pipeline_tag),
       library_name: Map.get(detail, :library_name),
       used_storage_bytes: Map.get(detail, :used_storage_bytes),
+      safetensors_total: Map.get(detail, :safetensors_total),
       last_modified: Map.get(detail, :last_modified),
       gated: Map.get(detail, :gated)
     }
@@ -255,7 +257,17 @@ defmodule OrchardConsole.ModelHub do
         download_import_error()
       )
 
+    result = apply_cancellation_result(result, opts)
     send(owner, {:model_hub, ref, :download_finished, Redaction.sanitize_result(result)})
+  end
+
+  defp apply_cancellation_result({:error, %{code: "download_cleanup_failed"}} = result, _opts),
+    do: result
+
+  defp apply_cancellation_result(result, opts) do
+    if check_download_control(opts) == {:error, :cancelled},
+      do: {:error, cancelled_error()},
+      else: result
   end
 
   defp do_download_import(client, downloader, owner, ref, repo_id, opts) do
@@ -266,22 +278,45 @@ defmodule OrchardConsole.ModelHub do
 
     try do
       {total_files, total_bytes} =
-        download_model!(downloader, owner, ref, repo_id, effective_revision, temp_dir)
+        download_model!(downloader, owner, ref, repo_id, effective_revision, temp_dir, opts)
 
+      enter_phase!(owner, ref, :preparing, opts)
       send_pipeline_progress(owner, ref, :preparing_bundle, total_files, total_bytes)
       prepare_bundle!(temp_dir, repo_id, detail_for_bundle)
+      enter_phase!(owner, ref, :importing, opts)
       send_pipeline_progress(owner, ref, :importing, total_files, total_bytes)
       import_bundle!(temp_dir, activate?)
     catch
       :throw, {:pipeline_error, result} -> result
     after
-      File.rm_rf(temp_dir)
+      cleanup_temp_dir!(temp_dir, opts)
     end
   end
 
   # ===========================================================================
   # Pipeline helpers
   # ===========================================================================
+
+  defp cleanup_temp_dir!(temp_dir, opts) do
+    cleanup = Keyword.get(opts, :cleanup_fun, &File.rm_rf/1)
+
+    case cleanup.(temp_dir) do
+      {:ok, _paths} ->
+        :ok
+
+      {:error, _reason, _path} ->
+        throw(
+          {:pipeline_error,
+           {:error,
+            %{
+              status: :error,
+              code: "download_cleanup_failed",
+              message:
+                "Temporary transfer files could not be removed. Check Controller storage and the Catalog before retrying."
+            }}}
+        )
+    end
+  end
 
   defp fetch_model_detail!(client, repo_id) do
     case client.get_model_detail(repo_id) do
@@ -293,20 +328,107 @@ defmodule OrchardConsole.ModelHub do
 
   defp build_detail_for_bundle(detail, opts) do
     effective_revision = resolve_revision(opts, detail)
-    {Map.put(detail, :revision_sha, effective_revision), effective_revision}
+
+    if effective_revision != resolve_revision_from_detail(detail) do
+      throw(
+        {:pipeline_error,
+         {:error,
+          %{
+            status: :error,
+            code: "hf_revision_changed",
+            message:
+              "The provider revision changed. Refresh the search and select the model again before importing."
+          }}}
+      )
+    end
+
+    {detail, effective_revision}
   end
 
-  defp download_model!(downloader, owner, ref, repo_id, revision, temp_dir) do
+  defp download_model!(downloader, owner, ref, repo_id, revision, temp_dir, opts) do
     progress_callback = build_progress_callback(owner, ref, repo_id, revision)
 
     case downloader.download(repo_id, temp_dir,
            revision: revision,
-           progress_callback: progress_callback
+           progress_callback: progress_callback,
+           control_fun: fn -> check_download_control(opts) end,
+           wait_fun: fn -> wait_download_control(owner, ref, opts) end
          ) do
       {:ok, _dest, summary} -> {summary.files_downloaded, summary.total_bytes}
       {:error, reason} -> throw({:pipeline_error, {:error, normalize_download_error(reason)}})
     end
   end
+
+  defp check_download_control(opts) do
+    case Keyword.get(opts, :control) do
+      nil ->
+        :ok
+
+      control ->
+        case :atomics.get(control, 1) do
+          0 -> :ok
+          1 -> {:error, :paused}
+          2 -> {:error, :cancelled}
+        end
+    end
+  end
+
+  defp wait_download_control(owner, ref, opts) do
+    monitor = Process.monitor(owner)
+
+    try do
+      await_download_control(owner, ref, monitor, opts)
+    after
+      Process.demonitor(monitor, [:flush])
+    end
+  end
+
+  defp await_download_control(owner, ref, monitor, opts) do
+    case check_download_control(opts) do
+      :ok ->
+        :ok
+
+      {:error, :cancelled} ->
+        {:error, {:callback_failed, :cancelled}}
+
+      {:error, :paused} ->
+        GenServer.call(owner, {:download_paused, ref})
+
+        receive do
+          {:model_hub_control, ^ref, _action} -> await_download_control(owner, ref, monitor, opts)
+          {:DOWN, ^monitor, :process, ^owner, _reason} -> {:error, {:callback_failed, :cancelled}}
+        end
+    end
+  end
+
+  defp enter_phase!(owner, ref, phase, opts) do
+    if Keyword.has_key?(opts, :control) do
+      case GenServer.call(owner, {:download_phase, ref, phase}) do
+        :ok ->
+          :ok
+
+        {:error, :paused} ->
+          resume_phase!(owner, ref, phase, opts)
+
+        {:error, :cancelled} ->
+          throw({:pipeline_error, {:error, cancelled_error()}})
+      end
+    end
+  end
+
+  defp resume_phase!(owner, ref, phase, opts) do
+    case wait_download_control(owner, ref, opts) do
+      :ok -> enter_phase!(owner, ref, phase, opts)
+      _ -> throw({:pipeline_error, {:error, cancelled_error()}})
+    end
+  end
+
+  defp cancelled_error,
+    do: %{
+      status: :error,
+      code: "download_cancelled",
+      message: "Download cancelled. Temporary files removed."
+    }
 
   defp build_progress_callback(owner, ref, repo_id, revision) do
     started_sent? = :atomics.new(1, [])
@@ -395,8 +517,10 @@ defmodule OrchardConsole.ModelHub do
       {:ok, model} ->
         {:ok,
          %{
+           id: model.id,
            model_id: model.model_id,
            version: model.version,
+           artifact_sha256: model.artifact_sha256,
            state: model.state
          }}
 
@@ -478,6 +602,8 @@ defmodule OrchardConsole.ModelHub do
       message: "Hugging Face revision is unavailable."
     }
   end
+
+  defp normalize_download_error({:cancelled, _message}), do: cancelled_error()
 
   defp normalize_download_error({:unauthorized, msg}),
     do: %{status: :unauthorized, code: "hf_unauthorized", message: msg}

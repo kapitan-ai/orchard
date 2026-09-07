@@ -921,7 +921,7 @@ defmodule OrchardConsole.OverviewLive do
   defp quickstart_step_action(:system_healthy), do: nil
 
   defp quickstart_step_action(:import_first_model),
-    do: %{kind: :navigate, label: "Go to Model Hub →", path: ~p"/console/model-hub"}
+    do: %{kind: :navigate, label: "Discover models →", path: ~p"/console/models/discover"}
 
   defp quickstart_step_action(:run_test_request),
     do: %{kind: :navigate, label: "Open Playground →", path: ~p"/console/playground"}

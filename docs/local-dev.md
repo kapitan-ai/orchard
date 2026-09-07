@@ -65,7 +65,7 @@ mise exec -- bin/dev
 # 3. Import a model bundle (in the running IEx session)
 OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
 
-# 4. Create an Organization and direct API Token for /v1 API calls (in the running IEx session)
+# 4. Create a Workspace and direct API Token for /v1 API calls (in the running IEx session)
 OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
 OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
 
@@ -171,12 +171,13 @@ When running from a source checkout (`make dev`, `mise exec -- bin/dev`, or
 - No TLS setup is required
 
 All `curl` examples in this document use plain HTTP because they target the source dev controller.
-API examples assume `ORCHARD_API_KEY` contains a tenant-direct API Token or a service-account-owned API Token whose API Client has the `inference_client` Access Level for the Organization.
+API examples assume `ORCHARD_API_KEY` contains a tenant-direct API Token or a service-account-owned API Token whose API Client has the `inference_client` Access Level for the Workspace.
 
 ### Bulk API Client provisioning
 
-Use `orchardctl api-clients bulk-provision` when a source-dev Organization needs service-account-owned API Tokens for internal developers, applications, coding agents, or automation clients.
-The input CSV must target one Organization slug and include `organization`, `api_client`, `owner_contact`, and `key_name`.
+Use `orchardctl api-clients bulk-provision` when a source-dev Workspace needs service-account-owned API Tokens for internal developers, applications, coding agents, or automation clients.
+Workspace is the product-facing Tenant label; CLI commands and the CSV `organization` column retain their existing names.
+The input CSV must target one Workspace slug and include `organization`, `api_client`, `owner_contact`, and `key_name`.
 Optional columns are `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
 
 ```csv
@@ -841,7 +842,7 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 
 ### Verification
 
-1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status with distinct display names and reachable status.
+1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
 3. `GET /v1/models` should return `200` and list the Models granted to the calling Tenant.
 4. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request, after the Model is granted to the calling Tenant (`legacy` for the Console Playground).
@@ -864,7 +865,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | BEAM `connect` / `:gen_tcp` returns `:ehostunreach` while `ping` works | macOS Local Network Privacy blocked the BEAM launch context | Relaunch controller/node-agent from Terminal.app (or another GUI app with Local Network allowed). |
 | Source-dev BEAM bootstrap reports wildcard-bound EPMD | Another `epmd` is listening on `0.0.0.0`/`*` for that port | `ERL_EPMD_PORT=<port> epmd -kill`, confirm only the address-constrained listener remains, rerun. |
 | Console boot warns `Sentry.LiveViewHook` unavailable / LiveView crashes lack Sentry context | Sentry was compiled without LiveView on the compile path | Console still mounts. To restore LiveView Sentry context: `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
-| Live Cluster healthy but Registered Nodes inventory is zero / candidates stuck `pending_observed` | Configured-target observation is not bootstrapping durable admission inventory yet | Inference may still work via configured targets. See issue #192. |
+| Live Cluster healthy but Registered Nodes inventory is zero while `pending_observed` candidates exist | Configured-target observation creates admission candidates but does not register or admit Nodes automatically | Complete Node enrollment and `orchardctl node join` first, then review and admit the resulting registered Node through the normal admission path. If no candidate appears, verify configured-target reachability and ActivationProbe evidence. |
 | Model load fails with missing `tokenizer.json` or `artifact_hash_mismatch` | Incomplete artifact copy on controller or worker | Re-import a complete bundle and sync the full artifact directory to the worker path. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
 | BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ipv4` or uses the wrong role service | Use `orchard_controller@<controller-ipv4>` for the controller and exactly `orchard_node_agent@<node-ipv4>` for node-agents. |
@@ -1297,7 +1298,7 @@ All-in-one local boot (dev):
    - Controller boots: Endpoint, Repo, membership owner, Inference supervisor, Runtime Endpoint clients
    - Node-agent boots: ModelManager, WorkerSupervisor, Runtime Endpoint task supervisor, gRPC server
 3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
-4. Create an Organization and API Token with `OrchardCLI.main(["tenants", ...])` and
+4. Create a Workspace and API Token with `OrchardCLI.main(["tenants", ...])` and
    `OrchardCLI.main(["api-keys", ...])`
 5. Source-dev HTTP is live at `/health/live`; status-only `/health/ready` can
    remain degraded under the staged `orchard.readiness.legacy_m0.v1` predicate and

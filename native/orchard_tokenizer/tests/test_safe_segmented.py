@@ -46,6 +46,170 @@ def test_marker_shape_uses_digits_and_underscores_only() -> None:
     assert set(tag_begin(nonce, 12)) == {"0", "1", "2", "_"}
 
 
+def test_empty_strings_allocate_no_markers_and_nonempty_indices_remain_contiguous() -> None:
+    items = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"arguments": {"": "", "key": ["", "value"]}}}],
+        }
+    ]
+    tagged, markers = tag_caller_strings(items, [], None, "3" * 39)
+    assert tagged["input_items"][0]["content"] == ""
+    arguments = tagged["input_items"][0]["tool_calls"][0]["function"]["arguments"]
+    assert arguments[""] == ""
+    assert arguments["key"][0] == ""
+    assert [pair.index for pair in markers] == [0, 1]
+    assert strip_markers(arguments["key"][1], markers) == "value"
+
+
+@pytest.mark.parametrize("value", [" ", "\t", "\n", "\r\n \t\v\f", "\u00a0"])
+def test_spec_blank_tagged_strings_preserve_trim_branch_and_caller_provenance(value):
+    items = [{"role": "assistant", "content": value}]
+    tagged, markers = tag_caller_strings(items, [], None, "2" * 39)
+    rendered = tagged["input_items"][0]["content"]
+    assert len(markers) == 1
+    assert not rendered.strip()
+    assert strip_markers(rendered, markers) == value
+    assert [(segment.kind, segment.text) for segment in walk_rendered(rendered, markers)] == [
+        ("template", ""),
+        ("caller", value),
+    ]
+    dual_render_guard("empty", "nonempty" if rendered.strip() else "empty", markers)
+    dual_render_guard(value, rendered, markers)
+    with pytest.raises(SafeSegmentedError):
+        dual_render_guard(value, rendered + "changed", markers)
+
+
+def test_blank_escaping_retains_caller_provenance_instead_of_becoming_template_text():
+    value = "\n"
+    tagged, markers = tag_caller_strings([{"role": "user", "content": value}], [], None, "2" * 39)
+
+    def render(content):
+        return "SAFE" if content.strip() else json.dumps(content)
+
+    output = render(tagged["input_items"][0]["content"])
+    dual_render_guard(render(value), output, markers)
+    assert [(part.kind, part.text) for part in walk_rendered(output, markers)] == [
+        ("template", '"'),
+        ("caller", "\\n"),
+        ("template", '"'),
+    ]
+
+
+@pytest.mark.parametrize("method", ["strip", "lstrip", "rstrip"])
+def test_blank_default_trimming_can_only_elide_to_empty(method):
+    tagged, markers = tag_caller_strings([{"role": "user", "content": " \t\n"}], [], None, "2" * 39)
+    value = tagged["input_items"][0]["content"]
+    assert getattr(value, method)() == ""
+    assert getattr(value, method)(None) == ""
+    custom = getattr(value, method)(" ")
+    assert markers[0].begin in custom and markers[0].end in custom
+    assert strip_markers(custom, markers) == getattr(" \t\n", method)(" ")
+
+
+def test_whitespace_cleanup_before_json_cannot_erase_regular_markers():
+    value = "\n"
+    tagged, markers = tag_caller_strings([{"role": "user", "content": value}], [], None, "2" * 39)
+
+    def render(content):
+        for char in " \t\v\f":
+            content = content.replace(char, "")
+        return json.dumps(content)
+
+    output = render(tagged["input_items"][0]["content"])
+    dual_render_guard(render(value), output, markers)
+    assert any(
+        part.kind == "caller" and part.text == "\\n" for part in walk_rendered(output, markers)
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "literal", "prefix"),
+    [
+        ("\n", "\n", ""),
+        ("\u00a0", "\u00a0", ""),
+        ("\n", "prefix\n", "prefix"),
+        ("\nhello", "\n", ""),
+        ("hello\n", "\n", ""),
+        ("\u00a0hello", "\u00a0", ""),
+    ],
+)
+def test_rendered_whitespace_control_literals_keep_caller_safe_encoding(
+    tmp_path, value, literal, prefix
+):
+    path = build_bytelevel_tokenizer(tmp_path)
+    tokenizer = Tokenizer.from_file(str(path))
+    tokenizer.add_special_tokens([literal])
+    tokenizer.save(str(path))
+    template, safe = load_two_tokenizers(path)
+    safe_ids = precompute_safe_ids([literal], template, safe)
+    tagged, markers = tag_caller_strings([{"role": "user", "content": value}], [], None, "4" * 39)
+    rendered, ids, events = encode_rendered_segments(
+        walk_rendered(prefix + tagged["input_items"][0]["content"], markers),
+        [literal],
+        safe_ids.safe_ids,
+        template,
+        safe,
+    )
+    assert rendered == prefix + value
+    assert template.decode(ids, skip_special_tokens=False) == rendered
+    assert template.token_to_id(literal) not in ids
+    if literal in value:
+        assert events[0].provenance_path == "messages[0].content"
+
+
+@pytest.mark.parametrize("arguments", [{"x": "\n"}, {"\n": "x"}])
+def test_json_escaped_argument_whitespace_cannot_receive_reserved_ids(tmp_path, arguments):
+    path = build_bytelevel_tokenizer(tmp_path)
+    tokenizer = Tokenizer.from_file(str(path))
+    tokenizer.add_special_tokens(["\\n"])
+    tokenizer.save(str(path))
+    template, safe = load_two_tokenizers(path)
+    safe_ids = precompute_safe_ids(["\\n"], template, safe)
+    items = [{"tool_calls": [{"function": {"arguments": arguments}}]}]
+    tagged, markers = tag_caller_strings(items, [], None, "4" * 39)
+    tagged_arguments = tagged["input_items"][0]["tool_calls"][0]["function"]["arguments"]
+    renderer = ImmutableSandboxedEnvironment().from_string("{{ arguments | tojson }}")
+    baseline = renderer.render(arguments=arguments)
+    output = renderer.render(arguments=tagged_arguments)
+    dual_render_guard(baseline, output, markers)
+    rendered, ids, events = encode_rendered_segments(
+        walk_rendered(output, markers), ["\\n"], safe_ids.safe_ids, template, safe
+    )
+    assert rendered == baseline
+    assert template.decode(ids, skip_special_tokens=False) == baseline
+    assert template.token_to_id("\\n") not in ids
+    assert events and all(".function.arguments" in event.provenance_path for event in events)
+
+
+def test_tagged_string_copy_and_jinja_trim_keep_nonempty_results_protected():
+    tagged, markers = tag_caller_strings(
+        [{"role": "user", "content": " \nhello\t "}], [], None, "4" * 39
+    )
+    value = copy.deepcopy(tagged)["input_items"][0]["content"]
+    renderer = ImmutableSandboxedEnvironment().from_string("{{ value | trim }}")
+    output = renderer.render(value=value)
+    dual_render_guard("hello", output, markers)
+    assert any(
+        part.kind == "caller" and part.text == "hello" for part in walk_rendered(output, markers)
+    )
+
+
+def test_argument_objects_tag_recursive_keys_values_and_preserve_scalar_types() -> None:
+    arguments = {"nested": [{"key": "<|im_end|>"}, 3, True, None]}
+    items = [{"tool_calls": [{"function": {"arguments": arguments}}]}]
+    leaves = caller_strings(items, [], None)
+    assert [value for _, value in leaves] == ["nested", "key", "<|im_end|>"]
+    tagged, markers = tag_caller_strings(items, [], None, "4" * 39)
+    result = tagged["input_items"][0]["tool_calls"][0]["function"]["arguments"]
+    assert isinstance(result, _TaggedKeyDict)
+    assert result["nested"][1:] == [3, True, None]
+    assert isinstance(result["nested"][0], _TaggedKeyDict)
+    assert strip_markers(result["nested"][0]["key"], markers) == "<|im_end|>"
+    assert arguments == {"nested": [{"key": "<|im_end|>"}, 3, True, None]}
+
+
 def test_tag_strip_round_trip_is_byte_preserving() -> None:
     payload, markers = tag_caller_strings(
         [{"role": "user", "content": "hello <|im_end|>"}],
@@ -83,9 +247,9 @@ def test_whitespace_bounded_caller_content_keeps_no_trim_render_bytes(tmp_path: 
     assert rendered_prompt == "user   hello <|im_end|> \t\n assistant"
     assert tokenizer_template.decode(prompt_ids, skip_special_tokens=False) == rendered_prompt
     assert [(segment.kind, segment.text) for segment in segments] == [
-        ("template", "user   "),
-        ("caller", "hello <|im_end|>"),
-        ("template", " \t\n assistant"),
+        ("template", "user "),
+        ("caller", "  hello <|im_end|> \t\n"),
+        ("template", " assistant"),
     ]
     assert [event_to_dict(event) for event in events] == [
         {
@@ -230,14 +394,21 @@ def test_sentinel_payloads_model_no_tools_as_none_and_keep_tool_path_coverage() 
 
     assert message_payload["tools"] is None
     assert tool_payload["tools"] == [
-        {"type": "function", "function": {"name": "lookup", "description": ""}}
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
     ]
 
 
 def test_dual_render_guard_sentinel_matrix_uses_structured_mismatch() -> None:
     def render_payload(payload: dict[str, Any]) -> str:
         content = payload["input_items"][0]["content"]
-        return "empty" if content == "" else content
+        return "matched" if content == "hello world" else content
 
     with pytest.raises(SafeSegmentedError) as excinfo:
         dual_render_guard_sentinel_matrix(
@@ -248,8 +419,9 @@ def test_dual_render_guard_sentinel_matrix_uses_structured_mismatch() -> None:
         "category": "dual_render_mismatch",
         "first_diff_offset": 0,
         "leaf_class": "messages[0].content",
-        "sentinel_index": 0,
+        "sentinel_index": 2,
     }
+    assert excinfo.value.evaluation_scope == "artifact_preflight"
 
 
 def test_dual_render_guard_reports_first_diff() -> None:
@@ -259,6 +431,7 @@ def test_dual_render_guard_reports_first_diff() -> None:
         dual_render_guard("hello", f"x{markers[0].begin}hello{markers[0].end}", markers)
 
     assert excinfo.value.category == "safe_tokenization_incompatible_template"
+    assert excinfo.value.evaluation_scope == "request"
     assert excinfo.value.reason == {
         "category": "dual_render_mismatch",
         "first_diff_offset": 0,
@@ -458,6 +631,7 @@ def test_precompute_safe_ids_returns_structured_incompatible_tokenizer() -> None
         precompute_safe_ids(["<|im_start|>"], tokenizer_template, tokenizer_safe)
 
     assert excinfo.value.category == "safe_tokenization_incompatible_tokenizer"
+    assert excinfo.value.evaluation_scope == "artifact_tokenizer"
     assert excinfo.value.reason == {
         "category": "per_codepoint_decode_mismatch",
         "literal": "<|im_start|>",

@@ -241,9 +241,23 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | ----------------------- | ---------------------------- | ---------------------------------------------------------- |
 | Tray/menu bar app       | macOS `.app` + LaunchAgent   | local status, onboarding, logs, support bundle entry point |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
-| Orchard Console         | controller LiveView          | local/operator UI for runtime status, node inventory and admission review, action previews, requests, Organizations, API Tokens, and API Clients |
-| Developer Portal        | controller LiveView          | Invite-only, Organization-scoped self-service mint, list, and revoke of a Portal User's tenant-direct API Keys |
+| Orchard Console         | controller LiveView          | local/operator UI for runtime status, node inventory and admission review, action previews, requests, Workspaces, API Tokens, and API Clients |
+| Developer Portal        | controller LiveView          | Invite-only, Workspace-scoped self-service mint, list, and revoke of a Portal User's tenant-direct API Keys |
 | Managed Postgres helper | LaunchDaemon in managed mode | local DB lifecycle only                                    |
+
+Workspace SHALL be the product-facing name for one existing Tenant governance boundary in Console and Developer Portal.
+Access SHALL be the Console navigation destination for Workspace management; it SHALL NOT imply a new cluster-wide RBAC role or hierarchy.
+Tenant schemas, UUIDs, slugs, API fields, CLI vocabulary, audit identifiers, CSV `organization`, and `/portal/:organization_slug` URLs SHALL remain compatible.
+Existing `/console/tenants` and `/console/tenants/:id` links SHALL remain usable alongside canonical `/console/access` and `/console/access/workspaces/:id` routes.
+Team SHALL remain API Client grouping metadata, without membership, authorization, model grants, or quotas.
+
+The seeded Tenant `00000000-0000-0000-0000-000000000000` SHALL be the default Workspace.
+Its untouched built-in name `Legacy Single Tenant` SHALL display as `Default workspace`; a customized name SHALL be preserved and the stable default identity indicated separately.
+Default identity SHALL be determined by UUID, not by name or slug.
+When it is the only Workspace, a new guided colleague handoff SHALL start within that scope with the Workspace step visibly resolved.
+Multiple Workspaces SHALL require deliberate selection for a new handoff, and an explicit Workspace route or scoped draft SHALL NOT be overwritten by default selection.
+Default selection SHALL NOT create model grants, Portal Users, credentials, quota exemptions, or runtime readiness.
+Page reads SHALL NOT create a replacement seed or reset existing state; a missing or unreadable seed SHALL produce a recoverable setup error.
 
 ### 2.4 Repository structure
 
@@ -564,6 +578,24 @@ Tokenizer contract v2 requirements:
 * tokenizer modes that cannot represent tool context SHALL reject tool-calling requests rather than silently dropping tool metadata
 
 Tokenizer contract v3 adds controller-authoritative prompt token IDs for safe-tokenization-capable workers. When controller safe tokenization produces `prompt_token_ids`, capable workers must use those IDs directly rather than re-encoding rendered prompt text. Manifest compatibility trust remains governed by §6.4 and the runtime manifest-trust configuration; worker capability is advertised by the worker, not by the manifest.
+
+For contract-v3 segmented rendering, assistant tool-call history arguments SHALL be decoded from public JSON strings into argument objects before chat-template rendering.
+Malformed, non-object, duplicate-key, or non-finite arguments SHALL fail before inference.
+Caller-string tagging SHALL operate on the normalized argument object, protecting recursive object keys and string values while preserving JSON scalar types and the dual-render compatibility check.
+Assistant tool-call history MAY omit content or supply null when it contains a nonempty list of valid function calls; segmented rendering SHALL normalize that absent text to an empty string.
+Exactly empty caller strings SHALL remain empty without markers because they contain no caller bytes.
+Every nonempty caller string SHALL retain ordinary markers enclosing all original bytes, including leading and trailing whitespace, in raw and JSON rendering.
+Trimming a tagged string SHALL operate on the original caller value and retain markers around any nonempty result; only an empty result MAY omit markers.
+Text-part lists SHALL be concatenated before caller tagging so trimming preserves the combined text's internal whitespace.
+Segmented rendering SHALL restrict operations on marker-bearing values to an explicitly audited subset: whole-value rendering and traversal, original-value trimming, serialization, concatenation, observations, and the literal replacements `-` to `_`, space to `_`, and `$` to empty used by the qualified template.
+Serialization, concatenation, and those replacements SHALL preserve registered marker identities, multiplicity, balanced spans, and caller containment before returning their results.
+Unsupported caller-string transformations, character indexing, slicing, iteration, and unpacking SHALL fail closed before exposing unprotected fragments, including after coercion or serialization.
+Templates MAY omit whole caller values, and one empty trim SHALL NOT remove protection from other uses of its original value.
+All nonempty caller strings SHALL remain tagged, and the dual-render check remains mandatory; incompatible transformations SHALL fail closed.
+A request-dependent render or decode failure SHALL fail that request without writing a bundle-wide incompatibility cache entry.
+Only validated deterministic tokenizer or sentinel-preflight incompatibilities MAY populate the negative compatibility cache.
+Runtime helper errors SHALL identify request, artifact-preflight, or artifact-tokenizer evaluation scope; cache admission requires explicit artifact scope, matching inner and outer error categories, and structurally valid deterministic evidence.
+Unscoped runtime errors SHALL remain request-local for compatibility with older helpers.
 
 For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, parser-family selection, and version selection.
 The public API MUST NOT accept arbitrary chat-template keyword arguments.
@@ -2268,7 +2300,7 @@ The platform SHALL expose five API surfaces:
 
 4. **Developer Portal**
 
-   * Organization-scoped browser surface at `/portal/:organization_slug`
+   * Workspace-scoped browser surface at `/portal/:organization_slug`
    * TLS-only in `reverse_proxy` and `direct_https` transport modes
    * unavailable in degraded `plain_http_localhost` mode
    * invite-only Portal User email-and-password authentication, not Console Basic Auth and not a Public Inference Bearer
@@ -2921,16 +2953,16 @@ Apply mode SHALL require an operator-specified output path.
 Dry Run mode MAY validate an operator-specified output path without requiring one.
 The input CSV SHALL require `organization`, `api_client`, `owner_contact`, and `key_name`.
 The input CSV MAY include `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
-The `organization` field SHALL identify one Organization slug per input file.
+The `organization` field SHALL identify one Workspace slug per input file.
 Plaintext API Token secrets SHALL NOT be accepted in input.
-Dry Run SHALL validate Organizations, API Client identity, duplicate API Token names, optional expiry values, metadata JSON, and output destination readiness without mutating state or generating secrets.
+Dry Run SHALL validate Workspaces, API Client identity, duplicate API Token names, optional expiry values, metadata JSON, and output destination readiness without mutating state or generating secrets.
 Apply SHALL validate the output path before mutation and commit all provisioning changes as one batch.
 Apply SHALL write One-time Secret Output only after the batch succeeds.
 One-time Secret Output SHALL be a CSV with `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at` columns.
 If One-time Secret Output delivery fails after a committed Apply, Orchard SHALL mark the Provisioning Batch as `output_failed`, write a redacted audit event, and return recovery guidance that names API Token prefixes for revocation or rotation.
 The output-failed recovery path SHALL NOT persist plaintext API Token secrets.
 `orchardctl cluster init` publishes its file-backed One-time Secret Output through the cluster-init-only protected publication profile in §11.9, which does not modify this bulk-provisioning contract or the `OrchardCLI.ExclusiveOutput` contract.
-Repeated provisioning SHALL match API Clients by Organization plus External Reference when present, otherwise by Organization plus API Client name.
+Repeated provisioning SHALL match API Clients by Workspace plus External Reference when present, otherwise by Workspace plus API Client name.
 Repeated provisioning SHALL reject duplicate active API Token names unless explicit Key Rotation mode is enabled.
 Key Rotation mode SHALL create a replacement API Token and revoke previous active API Tokens with the same API Client and token name.
 Repeated provisioning SHALL preserve omitted optional API Client metadata columns, clear present blank optional scalar metadata columns, and replace metadata when `metadata_json` is present.
@@ -2975,8 +3007,8 @@ shared HTTP listener and the operator-or-admin bearer boundary for `/metrics`.
 Base path: `/portal/:organization_slug`
 
 The Developer Portal SHALL be a distinct browser surface from Orchard Console.
-It SHALL NOT render operator Console chrome, other Organizations, nodes, or cluster administration.
-A Portal User SHALL be an interactive identity scoped to one Organization and SHALL authorize only Developer Portal access.
+It SHALL NOT render operator Console chrome, other Workspaces, nodes, or cluster administration.
+A Portal User SHALL be an interactive identity scoped to one Workspace and SHALL authorize only Developer Portal access.
 A Portal User SHALL NOT be treated as an Operator, Service Account, Owner Contact, Tenant Admin, Public Inference principal, or authority for Console, Operator API, or Admin API access.
 Portal sessions SHALL NOT authorize Public Inference, Operator API, Admin API, or Console access.
 
@@ -2992,7 +3024,7 @@ LIVE /portal/:organization_slug/keys
 ```
 
 Portal User accounts SHALL be operator-invite only, with no public signup or self-registration.
-Email SHALL be the Portal User identifier and SHALL be unique by normalized value within one Organization.
+Email SHALL be the Portal User identifier and SHALL be unique by normalized value within one Workspace.
 SMTP SHALL NOT be required.
 Creating a Portal User SHALL persist the invited identity and `portal_user.invited` audit row atomically without creating a Portal Invite row.
 For a Portal User in `invited` status, the Console SHALL provide Copy invite.
@@ -3004,18 +3036,18 @@ A Portal User SHALL have at most one stored invite row at a time.
 Invite invalidation SHALL delete the stored invite row rather than tombstone it, and Orchard SHALL NOT retain invite revocation history.
 Orchard SHALL NOT persist the plaintext invite token or URL.
 The operator SHALL deliver the copied invite URL out of band.
-Invite redemption SHALL be bound to the Organization identified by the route and SHALL succeed only for a valid unexpired invite owned by a Portal User who is currently `invited` in that Organization.
+Invite redemption SHALL be bound to the Workspace identified by the route and SHALL succeed only for a valid unexpired invite owned by a Portal User who is currently `invited` in that Workspace.
 Successful redemption SHALL set the Portal User's password, mark the invite redeemed, activate the Portal User, and end that Portal User's standing portal sessions.
-Wrong-Organization, disabled-user, invalidated, expired, redeemed, and unknown-token redemption failures SHALL use one generic external response and SHALL make no persisted mutation.
+Wrong-Workspace, disabled-user, invalidated, expired, redeemed, and unknown-token redemption failures SHALL use one generic external response and SHALL make no persisted mutation.
 Recopying an invite for a Portal User who remains `invited` SHALL use the same reissue flow and SHALL end that Portal User's standing portal sessions.
 
-The portal SHALL identify the Organization by slug, then authenticate one active Portal User by normalized email and password.
-Unknown Organization, unknown email, disabled Portal User, and wrong-password submissions SHALL have indistinguishable status, body shape, headers, and generic credential failure.
-`GET /portal/:organization_slug` SHALL be response-indistinguishable for Organizations with or without invited or active Portal Users and for unknown slugs.
-Failed portal logins SHALL be limited per Organization fingerprint, Portal User or email fingerprint, and source fingerprint.
-They SHALL NOT use an Organization-wide lockout.
+The portal SHALL identify the Workspace by slug, then authenticate one active Portal User by normalized email and password.
+Unknown Workspace, unknown email, disabled Portal User, and wrong-password submissions SHALL have indistinguishable status, body shape, headers, and generic credential failure.
+`GET /portal/:organization_slug` SHALL be response-indistinguishable for Workspaces with or without invited or active Portal Users and for unknown slugs.
+Failed portal logins SHALL be limited per Workspace fingerprint, Portal User or email fingerprint, and source fingerprint.
+They SHALL NOT use a Workspace-wide lockout.
 
-The operator SHALL invite and disable Portal Users from the existing Console Organization detail surface.
+The operator SHALL invite and disable Portal Users from the existing Console Workspace detail surface.
 Disabling a Portal User SHALL atomically invalidate every outstanding invite by deleting its stored row, and SHALL end only that Portal User's portal sessions.
 Disabling a Portal User SHALL NOT revoke that Portal User's API Keys.
 Invite reissue, invite redemption, and Portal User disablement SHALL NOT revoke minted API Keys.
@@ -3024,13 +3056,13 @@ Repeated disable SHALL be a true no-op that does not rewrite timestamps, advance
 The portal SHALL mint tenant-direct API Keys with `issuance_surface = 'developer_portal'` and `portal_user_id` equal to the signed-in Portal User.
 A Portal User MAY have at most 10 active portal-minted tenant-direct keys.
 Revoked and expired keys SHALL NOT count toward that ceiling.
-The mint transaction SHALL serialize on the Portal User, not the Organization.
+The mint transaction SHALL serialize on the Portal User, not the Workspace.
 Portal key mint and revoke SHALL carry the validated session tenant ID, Portal User ID, and password epoch into one outer transaction.
 That transaction SHALL lock and revalidate the Portal User before enforcing the mint cap or locking an API Key.
 The lock order for revoke SHALL be Portal User then API Key, and a stale captured epoch SHALL fail as an invalid session before any API Key lock or mutation.
 Operator-minted tenant-direct keys SHALL NOT count toward that ceiling, SHALL remain operator-only, and SHALL NOT be visible or revocable from the portal.
-The portal SHALL list and revoke only portal-minted keys whose `portal_user_id` and `tenant_id` match the signed-in Portal User and Organization.
-Keys owned by another Portal User or another Organization SHALL be indistinguishable from missing keys on portal list and revoke paths.
+The portal SHALL list and revoke only portal-minted keys whose `portal_user_id` and `tenant_id` match the signed-in Portal User and Workspace.
+Keys owned by another Portal User or another Workspace SHALL be indistinguishable from missing keys on portal list and revoke paths.
 Portal revoke SHALL take effect on the next Public Inference authentication.
 Repeated Portal revoke SHALL be a true no-op that does not rewrite `revoked_at` or `updated_at` and does not create another successful audit observation.
 
@@ -3040,7 +3072,12 @@ The portal SHALL NOT mint a new key without `portal_user_id`.
 Public Inference Bearer authentication SHALL continue to resolve every tenant-direct key as `principal_type = tenant` and SHALL NOT consult `portal_user_id`.
 
 Key secrets SHALL be shown once at creation and SHALL NOT be recoverable later.
-After mint, the portal SHALL show one `POST /v1/chat/completions` curl using a deterministic callable model already authorized for the Organization, or state that no test curl is available.
+After mint, the portal SHALL show one `POST /v1/chat/completions` curl using an active exact Model identity with enabled access for the Workspace, or state that no test curl is available.
+Selection SHALL be deterministic when no exact Model was requested.
+An explicitly requested exact Model that is inactive, unavailable, or no longer authorized SHALL NOT be silently substituted.
+Catalog availability and model authorization SHALL NOT be presented as proof of runtime readiness or request success.
+Console colleague handoff examples SHALL use a literal placeholder credential; only the actual Portal mint response SHALL display that Portal User's newly minted secret under the existing one-time display contract.
+Console guidance SHALL NOT treat the default-scoped Playground as evidence for a different Workspace.
 
 The portal SHALL be served only when public API HTTPS is enabled and the effective request scheme is HTTPS.
 Degraded `plain_http_localhost` SHALL return `404` for every portal route.
@@ -3535,6 +3572,10 @@ Internal tool-calling wire semantics:
 
 * `ToolCallDelta.tool_call_id` SHALL remain stable for the life of that tool call within the request
 * tool-call deltas SHALL preserve zero-based call index and append-only argument fragments in arrival order
+* function arguments SHALL be derived from the provider's parsed function result, not the raw model-native tool wrapper; the Worker Runtime owns this normalization
+* a complete-call parser MAY buffer one model-native block and emit one complete normalized argument fragment per parsed call; streaming does not require forwarding unparsed model tokens
+* before publishing calls from a parsed block, the worker SHALL validate every call's requested function name and JSON argument object; malformed or unrequested calls SHALL fail without publishing that block or echoing its generated contents in errors
+* cancellation or truncation SHALL discard unvalidated tool blocks; required closing markers MUST be present, and delimiter-free formats MUST reach a clean generation stop before parsing
 * if a request completes successfully after emitting one or more tool-call deltas, the terminal `Completed.finish_reason` SHALL be `FINISH_REASON_TOOL_CALLS`
 
 Internal token-streaming wire semantics:
@@ -3649,7 +3690,8 @@ Only final-answer text SHALL enter tool-call parsing.
 Caller stop sequences SHALL apply only to ordinary final-answer text in the negotiated pipeline and SHALL NOT terminate hidden or selected reasoning.
 Once tool-call emission begins, the existing rule preventing stop truncation of tool-call JSON remains in force.
 Parser control markers are framing and MUST NOT be emitted as reasoning, final text, or tool content.
-The legacy pipeline SHALL retain its existing tool and stop ordering and byte behavior when the reasoning control is omitted.
+The legacy pipeline SHALL retain its existing tool and stop ordering when the reasoning control is omitted.
+Tool argument byte preservation applies after provider normalization under §7.5.2; model-native wrappers are not public function arguments.
 
 Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
@@ -3699,7 +3741,7 @@ Admin creates bootstrap token or provisions node
 * allow typed internal reasoning deltas only under the negotiated contract in §7.5.3a
 * include exactly one terminal `Completed` or `Failed`
 * stop emitting additional events after the terminal event
-* preserve tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
+* preserve normalized tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
 * when `prompt_token_ids` is non-empty, validate that `len(prompt_token_ids) == input_tokens` before any model invocation; on mismatch, return a structured `prompt_token_ids_length_mismatch` failure; on match, use the supplied IDs directly; when the field is empty, legacy workers and legacy dispatch paths continue to re-encode `rendered_prompt_utf8`
 * a controller that receives a worker stream failure with code `prompt_token_ids_length_mismatch` SHALL emit `[:orchard, :tokenizer, :parity_drift]` with structured request/model/node metadata and a bounded worker message; the controller SHALL NOT parse length values from the message text
 * a controller that observes catalog drift SHALL emit `[:orchard, :tokenizer, :catalog_drift]` with `%{count: 1}`, request/model metadata, `endpoint`, `bundle_id`, trusted `bundle_sha256` when available, `catalog_sha256`, bounded `added` token metadata, full `added_count`, and explicit `partial_detection: true`; the event SHALL NOT include `removed` entries until runtime helper re-extraction or source-tagged manifests exist

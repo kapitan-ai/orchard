@@ -376,7 +376,7 @@ defmodule OrchardConsole.NodeEnrollmentLive do
     <section id="node-enrollment-step" class="space-y-6">
       <div>
         <p class="text-sm font-medium text-sky-700 dark:text-sky-300">Step 2 of 5</p>
-        <h2 class="mt-1 text-xl font-semibold text-slate-950 dark:text-white">Create a one-time enrollment</h2>
+        <h2 id="node-enrollment-heading" tabindex="-1" phx-mounted={Phoenix.LiveView.JS.focus(to: "#node-enrollment-heading")} class="mt-1 text-xl font-semibold text-slate-950 dark:text-white">Create a one-time enrollment</h2>
         <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">
           The downloaded bundle contains a short-lived secret. Orchard will not display or download it again.
         </p>
@@ -580,7 +580,7 @@ defmodule OrchardConsole.NodeEnrollmentLive do
                 !terminal_enrollment?(@enrollment)
             }
             id="review-node-admission"
-            navigate={~p"/console/nodes/#{@delivery.node_id}"}
+            navigate={~p"/console/nodes/#{@delivery.node_id}?section=actions&from=admissions"}
             class="inline-flex items-center justify-center rounded-md bg-navy px-4 py-2 text-sm font-medium text-white hover:bg-navy-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:bg-sky-500 dark:hover:bg-sky-400 dark:focus-visible:ring-sky-400"
           >
             Review and Admit Node

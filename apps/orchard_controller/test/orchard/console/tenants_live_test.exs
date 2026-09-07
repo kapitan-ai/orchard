@@ -17,53 +17,53 @@ defmodule OrchardConsole.TenantsLiveTest do
   describe "page rendering" do
     test "renders page title and nav", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/tenants")
-      assert html =~ "Organizations"
+      assert html =~ "Workspaces"
       assert html =~ "Orchard Console"
-      assert html =~ "tenant-create-card"
+      assert html =~ "A Workspace is the scope for model access"
+      refute html =~ "tenant-create-card"
       assert html =~ "tenants-list-card"
     end
 
-    test "Organizations sidebar item is active", %{conn: conn} do
+    test "Workspaces sidebar item is active", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/tenants")
       assert html =~ ~s(aria-current="page")
-      assert html =~ "/console/tenants"
-      assert html =~ "Organizations"
+      assert html =~ "/console/access"
+      assert html =~ "Workspaces"
     end
 
-    test "shows legacy Organization in the list", %{conn: conn} do
+    test "shows legacy Workspace in the list", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/tenants")
       assert html =~ Governance.legacy_tenant_slug()
-      assert html =~ Governance.legacy_tenant_name()
+      assert html =~ "Default workspace"
     end
 
-    test "renders create Organization form", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console/tenants")
+    test "renders create Workspace form", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/access/workspaces/new")
       assert html =~ "tenant-create-form"
       assert html =~ "Slug"
       assert html =~ "Name"
-      assert html =~ "Create Organization"
+      assert html =~ "Create Workspace"
+      assert html =~ "does not grant model access"
+      assert html =~ "issue an API credential"
     end
   end
 
   describe "create tenant" do
     test "creates tenant and resets form", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/console/tenants")
+      {:ok, view, _html} = live(conn, "/console/access/workspaces/new")
 
-      html =
-        view
-        |> form("#tenant-create-form", tenant: %{slug: "new-tenant", name: "New Tenant"})
-        |> render_submit()
+      view
+      |> form("#tenant-create-form", tenant: %{slug: "new-tenant", name: "New Tenant"})
+      |> render_submit()
 
-      assert html =~ "Created Organization new-tenant."
-      assert html =~ "new-tenant"
-      assert html =~ "New Tenant"
-      # Created column uses LocalTime hook
-      assert html =~ ~s(phx-hook="LocalTime")
-      assert html =~ ~s(data-local-time-format="datetime_minute")
+      {path, _flash} = assert_redirect(view)
+      assert "/console/access/workspaces/" <> id = path
+      assert {:ok, tenant} = Governance.get_tenant(id)
+      assert tenant.slug == "new-tenant"
     end
 
     test "shows validation error for blank slug", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/console/tenants")
+      {:ok, view, _html} = live(conn, "/console/access/workspaces/new")
 
       html =
         view
@@ -75,7 +75,7 @@ defmodule OrchardConsole.TenantsLiveTest do
 
     test "shows validation error for duplicate slug", %{conn: conn} do
       {:ok, _} = Governance.create_tenant(%{slug: "dupe-slug", name: "Original"})
-      {:ok, view, _html} = live(conn, "/console/tenants")
+      {:ok, view, _html} = live(conn, "/console/access/workspaces/new")
 
       html =
         view
@@ -92,8 +92,69 @@ defmodule OrchardConsole.TenantsLiveTest do
       {:ok, view, _html} = live(conn, "/console/tenants")
 
       assert has_element?(view, "#tenant-open-#{tenant.id}")
+      assert has_element?(view, "#tenant-open-#{tenant.id}", "Open workspace")
       html = render(view)
-      assert html =~ "/console/tenants/#{tenant.id}"
+      assert html =~ "/console/access/workspaces/#{tenant.id}"
+    end
+
+    test "repeated Access reads preserve a customized default identity and list it first", %{
+      conn: conn
+    } do
+      {:ok, default} = Governance.get_tenant(Governance.legacy_tenant_id())
+      custom = default |> Ecto.Changeset.change(name: "Zebra research") |> Orchard.Repo.update!()
+      {:ok, other} = Governance.create_tenant(%{slug: "alpha", name: "Alpha research"})
+      count = Orchard.Repo.aggregate(Orchard.Governance.Tenant, :count)
+
+      for path <- ["/console/access", "/console/access/workspaces", "/console/tenants"] do
+        {:ok, view, _html} = live(conn, path)
+        render_click(view, "refresh_workspaces")
+
+        assert has_element?(
+                 view,
+                 "#tenants-table > tr:first-child#tenant-#{custom.id}",
+                 "Zebra research"
+               )
+
+        assert has_element?(view, "#tenant-#{other.id}", "Alpha research")
+        refute has_element?(view, "#tenant-#{custom.id}", "Default workspace")
+        assert {:ok, stored} = Governance.get_tenant(custom.id)
+
+        assert {stored.id, stored.slug, stored.name} ==
+                 {default.id, default.slug, "Zebra research"}
+
+        assert Orchard.Repo.aggregate(Orchard.Governance.Tenant, :count) == count
+      end
+    end
+
+    test "default-only Access handoff opens the existing scope at step two without side effects",
+         %{conn: conn} do
+      assert [default] = Governance.list_tenants()
+      assert default.id == Governance.legacy_tenant_id()
+
+      schemas = [
+        Orchard.Governance.Tenant,
+        Orchard.Governance.PortalUser,
+        Orchard.Governance.ApiKey,
+        Orchard.Models.TenantModelAccess
+      ]
+
+      before_counts = Enum.map(schemas, &Orchard.Repo.aggregate(&1, :count))
+      {:ok, view, _html} = live(conn, "/console/access")
+      handoff = "/console/access/workspaces/#{default.id}/handoff"
+      assert has_element?(view, "#tenant-#{default.id} a[href='#{handoff}']", "Guide access")
+
+      {:ok, handoff_view, _html} =
+        view
+        |> element("#tenant-#{default.id} a[href='#{handoff}']")
+        |> render_click()
+        |> follow_redirect(conn)
+
+      assert has_element?(handoff_view, "#handoff-scope", "Default workspace")
+      assert has_element?(handoff_view, "#handoff-step-2")
+      refute has_element?(handoff_view, "#handoff-step-1")
+      assert Enum.map(schemas, &Orchard.Repo.aggregate(&1, :count)) == before_counts
+      assert {:ok, stored} = Governance.get_tenant(default.id)
+      assert {stored.id, stored.slug, stored.name} == {default.id, default.slug, default.name}
     end
 
     test "shows empty state when only legacy tenant is removed", %{conn: conn} do
@@ -104,7 +165,9 @@ defmodule OrchardConsole.TenantsLiveTest do
       Orchard.Repo.delete_all(Orchard.Governance.ServiceAccount)
       Orchard.Repo.delete_all(Orchard.Governance.Tenant)
       {:ok, _view, html} = live(conn, "/console/tenants")
-      assert html =~ "No Organizations created yet."
+      assert html =~ "No Workspaces created yet."
+      assert html =~ "workspace-default-missing"
+      assert html =~ "Refresh Workspaces"
     end
   end
 

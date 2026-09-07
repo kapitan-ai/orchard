@@ -823,16 +823,29 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp try_connect_and_check(socket_path, port, deadline) do
     remaining_ms = deadline - System.monotonic_time(:millisecond)
 
-    case connect_worker_socket(socket_path) do
+    case connect_worker_socket(socket_path,
+           await_timeout: max(0, min(remaining_ms, @poll_interval_ms))
+         ) do
       {:ok, channel} ->
-        check_connected_worker(channel, socket_path, port, deadline, remaining_ms)
+        check_connected_worker(channel, socket_path, port, deadline)
 
       {:error, _reason} ->
         retry_wait_for_worker_ready(socket_path, port, deadline)
     end
   end
 
-  defp check_connected_worker(channel, socket_path, port, deadline, remaining_ms) do
+  defp check_connected_worker(channel, socket_path, port, deadline) do
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+    if remaining_ms <= 0 do
+      _ = disconnect_channel(channel)
+      {:error, :worker_ready_timeout}
+    else
+      check_worker_status(channel, socket_path, port, deadline, remaining_ms)
+    end
+  end
+
+  defp check_worker_status(channel, socket_path, port, deadline, remaining_ms) do
     timeout_ms = min(remaining_ms, @rpc_timeout_ms)
 
     case WorkerRuntimeService.Stub.get_status(
@@ -861,7 +874,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp retry_wait_for_worker_ready(socket_path, port, deadline) do
-    Process.sleep(@poll_interval_ms)
+    remaining_ms = max(0, deadline - System.monotonic_time(:millisecond))
+    Process.sleep(min(remaining_ms, @poll_interval_ms))
     do_wait_for_worker_ready(socket_path, port, deadline)
   end
 
@@ -869,10 +883,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # does not register it with the connection supervisor refresh path. Gun's
   # open_unix/2 success typing expects the local socket path as a charlist.
   # Public only so tests can assert direct UDS channel behavior without worker startup.
-  # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
+  # credo:disable-for-lines:4 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
-  @spec connect_worker_socket(String.t()) :: {:ok, Orchard.GRPCTypes.channel()} | {:error, term()}
-  def connect_worker_socket(socket_path) when is_binary(socket_path) do
+  @spec connect_worker_socket(String.t(), keyword()) ::
+          {:ok, Orchard.GRPCTypes.channel()} | {:error, term()}
+  def connect_worker_socket(socket_path, opts \\ []) when is_binary(socket_path) do
     %Channel{
       host: {:local, String.to_charlist(socket_path)},
       port: 0,
@@ -886,7 +901,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       accepted_compressors: [],
       headers: []
     }
-    |> Gun.connect([])
+    |> Gun.connect(opts)
   end
 
   # Classify worker health from GetStatus response.
