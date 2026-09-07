@@ -112,7 +112,7 @@ defmodule Orchard.API.TrustedForwardedHeaders do
       |> Enum.reverse()
       |> Enum.find(&(not trusted_ip?(&1, proxies)))
       |> case do
-        nil -> :error
+        nil -> {:ok, hd(chain)}
         remote_ip -> {:ok, remote_ip}
       end
     else
