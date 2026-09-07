@@ -161,7 +161,7 @@ defmodule Orchard.API.RouterTest do
       conn = get(conn, "/console/model-hub")
 
       assert conn.status == 200
-      assert conn.resp_body =~ "Model Hub"
+      assert conn.resp_body =~ "Discover models"
       assert conn.resp_body =~ "model-hub-search-card"
       assert conn.resp_body =~ "model-hub-search-form"
     end

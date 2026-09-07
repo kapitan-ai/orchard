@@ -29,6 +29,139 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
     :ok
   end
 
+  describe "remove_download/1" do
+    test "removes every terminal attempt for the key without resurrecting prior history" do
+      Coordinator.subscribe()
+      key = {"owner/model", "revision-a"}
+      {:ok, _} = Coordinator.start_download("owner/model", revision: "revision-a")
+      assert_receive {:stub_download, _, first_ref, _, _}
+
+      send_to_coordinator(
+        {:model_hub, first_ref, :download_finished, {:error, %{code: "failed"}}}
+      )
+
+      {:ok, _} = Coordinator.start_download("owner/model", revision: "revision-a")
+      assert_receive {:stub_download, _, second_ref, _, _}
+      {:ok, other} = Coordinator.start_download("owner/other", revision: "revision-b")
+      assert_receive {:stub_download, _, _, "owner/other", _}
+
+      send_to_coordinator(
+        {:model_hub, second_ref, :download_finished, {:error, %{code: "download_cancelled"}}}
+      )
+
+      assert Coordinator.latest_snapshot().key == key
+      assert :ok = Coordinator.remove_download(key)
+      assert_receive {:model_hub_download_removed, ^key}
+      assert Coordinator.latest_snapshot().key == other.key
+      assert Coordinator.latest_snapshot_for_repo("owner/model") == nil
+      assert [%{key: {"owner/other", "revision-b"}}] = Coordinator.list_snapshots()
+      send_to_coordinator({:model_hub, first_ref, :download_progress, %{phase: :downloading}})
+      send_to_coordinator({:model_hub, second_ref, :download_finished, {:ok, %{model_id: "old"}}})
+      assert [%{key: {"owner/other", "revision-b"}}] = Coordinator.list_snapshots()
+      assert {:error, :not_found} = Coordinator.remove_download(key)
+    end
+
+    test "latest fallback uses update recency instead of attempt creation order" do
+      {:ok, older} = Coordinator.start_download("owner/older")
+      assert_receive {:stub_download, _, older_ref, _, _}
+      {:ok, _} = Coordinator.start_download("owner/newer")
+      assert_receive {:stub_download, _, _, "owner/newer", _}
+
+      send_to_coordinator(
+        {:model_hub, older_ref, :download_progress, %{phase: :downloading, bytes_downloaded: 10}}
+      )
+
+      {:ok, removed} = Coordinator.start_download("owner/removed")
+      assert_receive {:stub_download, _, removed_ref, _, _}
+
+      send_to_coordinator(
+        {:model_hub, removed_ref, :download_finished, {:error, %{code: "failed"}}}
+      )
+
+      assert :ok = Coordinator.remove_download(removed.key)
+      assert Coordinator.latest_snapshot().key == older.key
+    end
+
+    test "rejects removal when a newer attempt for the same key is active" do
+      key = {"owner/model", "revision-a"}
+      {:ok, _} = Coordinator.start_download("owner/model", revision: "revision-a")
+      assert_receive {:stub_download, _, old_ref, _, _}
+      send_to_coordinator({:model_hub, old_ref, :download_finished, {:error, %{code: "failed"}}})
+      {:ok, _} = Coordinator.start_download("owner/model", revision: "revision-a")
+      assert {:error, :not_available} = Coordinator.remove_download(key)
+      assert [%{key: ^key, status: :starting}] = Coordinator.list_snapshots()
+    end
+
+    test "removing a completed revision preserves another active revision and empty indexes" do
+      key = {"owner/model", "revision-a"}
+      {:ok, _} = Coordinator.start_download("owner/model", revision: "revision-a")
+      assert_receive {:stub_download, _, old_ref, _, _}
+
+      send_to_coordinator(
+        {:model_hub, old_ref, :download_finished, {:ok, %{model_id: "catalog-model"}}}
+      )
+
+      {:ok, _} = Coordinator.start_download("owner/model", revision: "revision-b")
+      assert_receive {:stub_download, _, active_ref, _, _}
+      assert :ok = Coordinator.remove_download(key)
+
+      assert Coordinator.latest_snapshot_for_repo("owner/model").key ==
+               {"owner/model", "revision-b"}
+
+      assert {:error, {:already_downloading, _}} = Coordinator.start_download("owner/model")
+
+      send_to_coordinator(
+        {:model_hub, active_ref, :download_finished, {:error, %{code: "failed"}}}
+      )
+
+      assert :ok = Coordinator.remove_download({"owner/model", "revision-b"})
+      assert Coordinator.list_snapshots() == []
+      assert Coordinator.latest_snapshot() == nil
+      assert Coordinator.latest_snapshot_for_repo("owner/model") == nil
+    end
+  end
+
+  describe "download controls" do
+    test "pause acknowledgement, resume and cancellation retain exact job identity" do
+      key = {"owner/model", "revision-a"}
+      assert {:ok, _} = Coordinator.start_download(elem(key, 0), revision: elem(key, 1))
+      assert_receive {:stub_download, owner, ref, _, opts}
+      assert {:ok, %{status: :pausing}} = Coordinator.control_download(key, :pause)
+      assert :atomics.get(opts[:control], 1) == 1
+      send_to_coordinator({:model_hub, ref, :download_started, %{revision: "revision-a"}})
+      assert Coordinator.latest_snapshot().status == :pausing
+      assert :ok = GenServer.call(owner, {:download_paused, ref})
+      assert Coordinator.latest_snapshot().status == :paused
+      assert {:error, {:already_downloading, _}} = Coordinator.start_download("owner/model")
+      assert {:ok, %{status: :downloading}} = Coordinator.control_download(key, :resume)
+      assert :atomics.get(opts[:control], 1) == 0
+      assert {:ok, %{status: :cancelling}} = Coordinator.control_download(key, :cancel)
+      assert :atomics.get(opts[:control], 1) == 2
+      assert {:error, :cancelled} = GenServer.call(owner, {:download_phase, ref, :preparing})
+
+      send_to_coordinator(
+        {:model_hub, ref, :download_finished,
+         {:error, %{code: "hf_unavailable", message: "Delayed provider failure"}}}
+      )
+
+      assert [%{key: ^key, status: :cancelled}] = Coordinator.list_snapshots()
+      send_to_coordinator({:model_hub, ref, :download_progress, %{phase: :downloading}})
+      assert Coordinator.latest_snapshot().status == :cancelled
+    end
+
+    test "finalization gate wins atomically over later pause and cancel" do
+      key = {"owner/model", "revision-a"}
+      assert {:ok, _} = Coordinator.start_download(elem(key, 0), revision: elem(key, 1))
+      assert_receive {:stub_download, owner, ref, _, _opts}
+      assert :ok = GenServer.call(owner, {:download_phase, ref, :preparing})
+      assert {:error, :not_available} = Coordinator.control_download(key, :cancel)
+      assert {:error, :not_available} = Coordinator.control_download(key, :pause)
+
+      assert {:error, :not_found} =
+               Coordinator.control_download({"owner/model", "wrong"}, :cancel)
+    end
+  end
+
   describe "start_download/2" do
     test "starts download and returns starting snapshot" do
       assert {:ok, snapshot} = Coordinator.start_download("owner/model")

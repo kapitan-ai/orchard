@@ -837,18 +837,66 @@ This state-model addition satisfies §12 Change Discipline. It does not relax
 §11: no new Tailwind color tokens, font extensions, palette values, or `@theme`
 changes are part of theme mode control.
 
+## 14. Models Catalog and Discovery
+
+Models uses one sidebar entry with shared `models_navigation/1` links for Catalog and Discover.
+Catalog is the primary Models destination and distinguishes imported records from Controller-session import activity, including paused and cancelled jobs.
+Session activity is not a persisted Model record and does not imply an imported artifact.
+Catalog activity opens a dedicated exact-job detail with Back to Catalog, validated against server-held history.
+Unknown or expired activity links show a recovery destination without starting a download.
+Both pages retain the Models active sidebar state, including the legacy Model Hub URL.
+The subnavigation uses existing button sizing, palette, and focus tokens with `aria-current="page"` on the current link.
+
+Discovery labels capability controls as filters of returned provider results.
+Provider capability labels describe metadata, not verified runtime compatibility.
+Unknown metadata remains explicit.
+Empty catalogs offer Discover; search misses and provider errors have distinct recovery actions.
+The Import action identifies the selected repository and revision and explains catalog effects before starting.
+Import leaves the Model registered; completion directs the operator to the existing Catalog Activate action before granting access.
+Completion and catalog rows preserve exact versions and stored bundle digests, and do not imply Node or request readiness.
+Cards retain their own desktop scroll areas; the page scrolls naturally on smaller viewports with enough bottom padding to reach every action.
+Discovery results use compact list cards so repository identity and Import remain visible without horizontal scrolling in the search panel.
+Import on a result advances from Discover models to a dedicated Catalog step that replaces the discovery results.
+The six-step indicator shows Discover models, Catalog, Access, Placement, Acquire, and Test inference, with an explicit current step number and dimmed future steps.
+Future steps remain unavailable and visibly identified until implemented.
+Discovery shows the installation's Node inventory and truthful fit annotations; absent hardware-memory and exact runtime requirement evidence is unverified, never a compatible verdict based on repository size or parameter count.
+The Catalog step carries the exact repository and revision, focuses its heading on entry, and keeps detailed provider metadata collapsed behind Provider details and files.
+Back to Discover preserves the live search, capability filter, selection, and originating control focus without cancelling a background import.
+The result identity and metadata form a keyboard-accessible selection button with `aria-pressed` and a visible Selected label.
+Selecting a result updates its details without moving focus away from the results; Import remains a separate setup action.
+Result cards group publisher and model name with a neutral model icon, capability and access badges, and labelled activity metrics.
+Provider-supplied library, parameter count, and update date are shown when available; model names are not used to infer specifications.
+The setup action is labelled Import this revision to distinguish entering setup from starting the download.
+
+Download progress and recovery appear inside the Catalog import card, before provider details, without a separate scroll destination.
+A sticky Downloads summary stays reachable while browsing and reports running and paused counts separately.
+Its expandable list preserves each repository and exact revision, including terminal results, and supports reopening any job.
+Pause keeps partial files for resumption; cancel stops the job and removes its partial files.
+Pause and cancel are unavailable once bundle preparation or import finalization begins.
+Job controls are validated against server-held identities and current lifecycle stages.
+Collapsed controls preserve keyboard focus and do not hide the count of running downloads.
+
+Open Catalog on a download replaces discovery with that job's Catalog view and recorded repository and revision.
+Provider metadata appears only when its revision matches the recorded job; otherwise the job identity and progress remain visible with an explanation.
+Returning to Discover restores the prior search and selection and reopens Downloads for focus continuity.
+
+Cancelled downloads offer Restart download for the original recorded revision, starting from the beginning rather than resuming partial data.
+Cancelled byte totals describe historical transfer and never render as an active progress bar.
+Remove from Downloads removes terminal history only, leaving Catalog models and other downloads intact.
+Removing the currently opened download returns to its Catalog or Discover origin; other tabs receive the history removal.
+
 Tailwind's `dark:` utilities and Console dark custom rules are keyed from
 `<html data-theme="dark">`.
 Do not mix media-query driven app CSS with this selector contract.
 
 ---
 
-## 14. Guided Setup And One-Time Output
+## 15. Guided Setup And One-Time Output
 
 Guided setup connects operator actions to system-observed state without inventing a second lifecycle model.
 These rules apply to Node Enrollment and to later multi-step setup experiences.
 
-### 14.1 Progress Structure
+### 15.1 Progress Structure
 
 - Use one ordered progress list with numbered steps and short verb labels.
 - Completed, current, pending, and blocked steps pair color with an icon, number, line style, or visible state text.
@@ -858,7 +906,7 @@ These rules apply to Node Enrollment and to later multi-step setup experiences.
 - Each operator action states where it runs, what it produces, and what it does not prove.
 - Automatic state changes use a polite live region and never move keyboard focus.
 
-### 14.2 Recommended Order
+### 15.2 Recommended Order
 
 When independent prerequisites may occur in either order, the normal guided path still recommends the order that minimizes expiry, custody, and recovery risk.
 The interface may explain that the system does not require that order.
@@ -867,7 +915,7 @@ It must not present operational independence as a reason to make the operator ch
 For Node Enrollment, prepare the target Mac before issuing the short-lived bundle.
 Installation, configured service state, enrollment, registration, trust, admission, authorization, health, and scheduling remain separate visible concepts.
 
-### 14.3 Current Blocker And Recovery
+### 15.3 Current Blocker And Recovery
 
 - Show one primary current blocker instead of a stack of warning-colored incomplete states.
 - State what is waiting, why it matters, and the exact corrective action.
@@ -876,7 +924,7 @@ Installation, configured service state, enrollment, registration, trust, admissi
 - Terminal failures name whether identity, trust, or durable state was created.
 - Recovery actions must be safe for the exact state and must not imply that confirmation can bypass a blocker.
 
-### 14.4 Automatic Observation
+### 15.4 Automatic Observation
 
 - Registration, service observation, authorization delivery, health, and activation refresh automatically at a bounded interval.
 - Show the last successful check time.
@@ -884,7 +932,7 @@ Installation, configured service state, enrollment, registration, trust, admissi
 - Never ask the operator to record or certify a system fact that Orchard can observe directly.
 - Do not add a manual **Activate** action when lifecycle advancement is system-managed.
 
-### 14.5 One-Time Secret Output
+### 15.5 One-Time Secret Output
 
 One-time secret output is visible or deliverable exactly once.
 Keep secret material in socket-owned transient state only for the response that delivers it.
@@ -900,7 +948,7 @@ The interface must not redisplay, resend, restore, or silently renew the same se
 The recovery action creates new one-time output under a new durable record.
 It does not reissue onto the previous provisioned record, and the interface must say that a distinct Node name is required when uniqueness is enforced.
 
-### 14.6 Browser Download
+### 15.6 Browser Download
 
 A browser download proves only that the client accepted a download attempt.
 It does not prove destination-file custody, protected transfer, or target-machine use.
@@ -911,7 +959,7 @@ The visible page may show the filename and exact consuming command, but not the 
 After delivery, say that the browser accepted the download attempt and continue with durable status only.
 Do not call that acknowledgement confirmed target custody or transfer.
 
-### 14.7 Form And Action Copy
+### 15.7 Form And Action Copy
 
 - Use **New machine**, not **Another machine**, for the machine being added.
 - Use **Create enrollment** for the Controller-side operation.
@@ -923,7 +971,7 @@ Do not call that acknowledgement confirmed target custody or transfer.
 - Describe Pool as an existing scheduling group and say where it can be changed.
 - Do not use **Ready** as an umbrella state.
 
-### 14.8 Browser Verification
+### 15.8 Browser Verification
 
 For a guided Node Enrollment change, verify at least these states in light and dark mode:
 

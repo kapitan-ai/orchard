@@ -15,16 +15,80 @@ defmodule OrchardConsole.ModelsLiveTest do
   end
 
   describe "page rendering" do
-    test "renders page title", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console/models")
-      assert html =~ "Models \u2014 Orchard Console"
+    test "Catalog combines session imports with durable models and preserves their distinction",
+         %{conn: conn} do
+      create_model!(%{model_id: "stored/model", state: :active})
+      {:ok, view, _html} = live(conn, "/console/models/catalog")
+
+      for status <- [:downloading, :paused, :cancelled, :completed] do
+        repo = "publisher/#{status}"
+
+        send(
+          view.pid,
+          {:model_hub_download,
+           %{
+             key: {repo, "pinned"},
+             repo_id: repo,
+             status: status,
+             progress: %{bytes_downloaded: 256},
+             result: nil,
+             error: nil
+           }}
+        )
+      end
+
+      assert has_element?(
+               view,
+               "#catalog-import-activity",
+               "Transfer history lasts until this Controller restarts"
+             )
+
+      for label <- ["Downloading", "Paused", "Cancelled", "Imported"] do
+        assert has_element?(view, "#catalog-imports-list", label)
+      end
+
+      assert has_element?(view, "#models-catalog", "stored/model")
+
+      assert has_element?(
+               view,
+               "#catalog-imports-list a[href*='/console/models/catalog/import?']"
+             )
+
+      send(view.pid, {:model_hub_download_removed, {"publisher/cancelled", "pinned"}})
+      refute has_element?(view, "#catalog-imports-list", "publisher/cancelled")
+      assert has_element?(view, "#models-catalog", "stored/model")
+      assert has_element?(view, "#models-navigation a[aria-current=page]", "Catalog")
+      refute has_element?(view, "#models-navigation", "Your models")
     end
 
-    test "renders empty state with CLI hint when no models exist", %{conn: conn} do
+    test "Catalog alias provides direct access to the empty Catalog and discovery", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models/catalog")
+      assert has_element?(view, "#catalog-imports-empty")
+      assert has_element?(view, "#models-empty-state")
+
+      assert has_element?(
+               view,
+               "#models-navigation a[href='/console/models/discover']",
+               "Discover"
+             )
+    end
+
+    test "renders page title", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/models")
+      assert html =~ "Catalog \u2014 Orchard Console"
+    end
+
+    test "empty catalog offers Discover and retains the offline bundle path", %{conn: conn} do
       {:ok, view, html} = live(conn, "/console/models")
       assert html =~ "No models imported yet."
       assert html =~ "orchardctl models import"
       assert html =~ "bundle-path"
+
+      assert has_element?(
+               view,
+               ~s(#models-empty-state a[href="/console/models/discover"]),
+               "Discover models"
+             )
 
       # Uses shared state_message component
       empty = view |> element("#models-empty-state") |> render()
@@ -32,15 +96,29 @@ defmodule OrchardConsole.ModelsLiveTest do
     end
 
     test "renders catalog table with model data", %{conn: conn} do
-      create_model!(%{model_id: "mlx-community/phi-3", state: :active, format: "mlx"})
+      digest = String.duplicate("d", 64)
+
+      create_model!(%{
+        model_id: "mlx-community/phi-3",
+        version: "revision-phi-3",
+        artifact_sha256: digest,
+        state: :active,
+        format: "mlx"
+      })
+
       create_model!(%{model_id: "mlx-community/llama-2", state: :registered, format: "mlx"})
 
       {:ok, _view, html} = live(conn, "/console/models")
 
-      assert html =~ "Model Catalog"
+      assert html =~ "Catalog"
       assert html =~ "mlx-community/phi-3"
       assert html =~ "mlx-community/llama-2"
-      assert html =~ "Manage model visibility"
+      assert html =~ "revision-phi-3"
+      assert html =~ "Bundle SHA-256"
+      assert html =~ digest
+      assert html =~ "Catalog state"
+      assert html =~ "Manage catalog visibility"
+      assert html =~ "Active models still need access authorization and a ready Node"
       # Imported column uses LocalTime hook
       assert html =~ ~s(phx-hook="LocalTime")
       assert html =~ ~s(data-local-time-format="datetime_minute")
@@ -62,12 +140,26 @@ defmodule OrchardConsole.ModelsLiveTest do
       assert html =~ "retired"
     end
 
-    test "renders Model Hub nav item as enabled while Models stays active", %{conn: conn} do
+    test "renders one Models sidebar item with Catalog and Discover subnavigation", %{
+      conn: conn
+    } do
       {:ok, view, _html} = live(conn, "/console/models")
 
-      assert has_element?(view, ~s(a[href="/console/model-hub"]))
       assert has_element?(view, ~s(a[aria-current="page"][href="/console/models"]))
-      refute render(view) =~ "Model Hub \u2014 coming soon"
+
+      assert has_element?(
+               view,
+               ~s(#models-navigation a[aria-current="page"][href="/console/models"]),
+               "Catalog"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#models-navigation a[href="/console/models/discover"]),
+               "Discover"
+             )
+
+      refute render(view) =~ "Model Hub"
     end
   end
 

@@ -429,7 +429,7 @@ defmodule OrchardConsole.AuthTest do
       # Follow-up loads the page
       follow_up = conn |> recycle() |> get("/console/models")
       assert follow_up.status == 200
-      assert follow_up.resp_body =~ "Model Catalog"
+      assert follow_up.resp_body =~ "Imported models"
     end
 
     test "returns 404 for /console/model-hub when console is disabled", %{conn: conn} do
@@ -478,7 +478,55 @@ defmodule OrchardConsole.AuthTest do
       # Follow-up loads the page
       follow_up = conn |> recycle() |> get("/console/model-hub")
       assert follow_up.status == 200
-      assert follow_up.resp_body =~ "Model Hub"
+      assert follow_up.resp_body =~ "Discover models"
+    end
+
+    test "returns 404 for canonical model discovery when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/models/discover")
+      assert conn.status == 404
+    end
+
+    test "returns 401 for canonical model discovery without basic auth credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/models/discover")
+      assert conn.status == 401
+    end
+
+    test "redirects on first auth for canonical model discovery", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/models/discover")
+
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/models/discover"
+
+      follow_up = conn |> recycle() |> get("/console/models/discover")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Discover models"
     end
   end
 
