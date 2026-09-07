@@ -255,6 +255,8 @@ fi
 # The printed path is the handoff contract with scripts/build-app.sh, so it must
 # name a real staged tree rather than a value the build merely intended.
 test -d "$PAYLOAD_ROOT" || fail 'PAYLOAD_ROOT does not name a directory'
+test -d "$PAYLOAD_ROOT/support/openssl" ||
+    fail 'app payload requires support/openssl even without Homebrew OpenSSL load commands'
 
 for staged in \
     "share/bin/orchardctl" \
