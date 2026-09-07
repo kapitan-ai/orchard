@@ -18,7 +18,7 @@
   <a href="#use-it-from-your-code"><img alt="OpenAI-compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-412991?logo=openai&logoColor=white"></a>
   <a href="https://github.com/ml-explore/mlx"><img alt="MLX" src="https://img.shields.io/badge/inference-MLX--LM-FF6F00"></a>
   <a href="#tech-stack"><img alt="Postgres" src="https://img.shields.io/badge/Postgres-16%2B-4169E1?logo=postgresql&logoColor=white"></a>
-  <a href="#license"><img alt="License" src="https://img.shields.io/badge/license-Proprietary-6B7280"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-6B7280"></a>
 </p>
 
 <p align="center">
@@ -29,6 +29,12 @@
   <a href="SPEC.md"><img alt="Spec-traced" src="https://img.shields.io/badge/build-spec--traced-2563EB"></a>
   <a href="openspec/README.md"><img alt="OpenSpec" src="https://img.shields.io/badge/OpenSpec-strict%20validation-2563EB"></a>
 </p>
+
+> **Experimental source-only publication.**
+> Orchard is published here as source only under the Apache License 2.0, with Copyright 2026 AI Singapore, for covered Orchard-authored software and technical documentation.
+> No official binary, supported release, SLA, or maintenance commitment is provided.
+> Existing tags are pre-public development history and do not identify supported releases.
+> Any future macOS binary remains subject to the existing build, verification, signing, notarization, stapling, and publication gates.
 
 ## Why Orchard
 
@@ -97,9 +103,10 @@ your network and under your audit trail.
 **Packaging and availability**
 
 - The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`, with an app-owned, root-authorized service lifecycle and role selection for `all`, `controller`, and `node-agent` hosts.
-- The initial source-availability transition may be source-first.
-  Source availability does not promise a supported public binary, which requires an explicit release decision and completed release gates.
-  Source availability also does not change Orchard's licensing terms.
+- The initial source-availability transition is source-only under the repository's Apache-2.0 grant for covered Orchard-authored software and technical documentation.
+  Source visibility alone grants no rights beyond the applicable license terms.
+  It does not provide an official binary, supported release, SLA, or maintenance commitment.
+- A supported public binary requires an explicit release decision and completion of every applicable build, verification, signing, notarization, stapling, and publication gate.
 - Native PKG is not a supported current distribution channel. Any future native
   package requires a fresh accepted OpenSpec proposal and implementing PR.
 - Packaged controller installs use operator-managed external PostgreSQL 16+;
@@ -358,4 +365,13 @@ better fault tolerance, and native macOS integration.
 
 ## License
 
-Proprietary. All rights reserved.
+Covered Orchard-authored software and technical documentation in this repository are licensed under the Apache License, Version 2.0.
+Copyright 2026 AI Singapore.
+See [`LICENSE`](LICENSE).
+
+This experimental publication is source-only.
+It provides no official binary, supported release, SLA, or maintenance commitment.
+Third-party software, models, tokenizers, assets, and other separately licensed material are excluded from this grant and retain their own terms and notices.
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for tracked third-party notices.
+The Orchard logos and distinctive brand assets are excluded from this grant, including `apps/orchard_controller/priv/static/images/` and `assets/brand/`.
+No trademark rights are granted.

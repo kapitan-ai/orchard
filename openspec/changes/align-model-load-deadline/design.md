@@ -12,21 +12,17 @@ model_load_timeout =
   )
 ```
 
-<ref_snippet file="/Users/najib/Hacks/orchard/.worktrees/issue-222-first-cold/apps/orchard_controller/lib/orchard/dispatch/request_dispatcher.ex" lines="798-803" />
+The stage-cap calculation lives in `apps/orchard_controller/lib/orchard/dispatch/request_dispatcher.ex`.
 
-This cap is passed as the RPC `timeout:` to the Runtime Endpoint client
-(<ref_snippet file="/Users/najib/Hacks/orchard/.worktrees/issue-222-first-cold/apps/orchard_controller/lib/orchard/dispatch/request_dispatcher.ex" lines="1294-1297" />),
-but the `EnsureModelLoadedRequest` itself carries the absolute Request deadline:
+The dispatcher passes this cap as the RPC `timeout:` to the Runtime Endpoint client, but the `EnsureModelLoadedRequest` itself carries the absolute Request deadline:
 
 ```elixir
 deadline_unix_ms: deadline_ms   # ~120 s
 ```
 
-<ref_snippet file="/Users/najib/Hacks/orchard/.worktrees/issue-222-first-cold/apps/orchard_controller/lib/orchard/inference/request_orchestrator.ex" lines="1748-1756" />
+The request is constructed in `apps/orchard_controller/lib/orchard/inference/request_orchestrator.ex`.
 
-The Node Agent derives its waiter expiry, load budget, and worker timeout from that
-field (<ref_snippet file="/Users/najib/Hacks/orchard/.worktrees/issue-222-first-cold/apps/orchard_node_agent/lib/orchard/node/model_manager.ex" lines="788-791" />),
-so it continues loading long after the controller has abandoned the request.
+The Node Agent derives its waiter expiry, load budget, and worker timeout from that field in `apps/orchard_node_agent/lib/orchard/node/model_manager.ex`, so it continues loading long after the controller has abandoned the request.
 
 ## Decision: rewrite `deadline_unix_ms` at dispatch
 
