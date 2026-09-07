@@ -10,6 +10,7 @@ The repository must state the license grant explicitly while preserving its expe
 - Add the root Apache-2.0 license and preserve attribution for tracked third-party material.
 - Reconcile `SPEC.md` §11, README, contribution guidance, and security status for source-only publication.
 - Record AI Singapore copyright attribution, Kapitan-AI hosting, and Najib's continuing project authority in a short decision.
+- Use license-based contribution terms with confirmation of submission rights, prior maintainer agreement, and human accountability, without DCO sign-offs or a separate CLA.
 - Keep security/access configuration and the final visibility action subject to separate owner approval.
 
 ## Capabilities

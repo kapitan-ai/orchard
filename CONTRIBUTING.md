@@ -28,6 +28,12 @@ Najib retains final authority over project direction, contribution acceptance, m
 AI-assisted work must have an accountable human contributor who reviews and stands behind the result.
 Keep discussions and contributions respectful.
 
+## Contribution Terms
+
+By submitting a pull request, you agree that your Orchard-authored contributions are licensed under [Apache-2.0](LICENSE) and confirm that you have the right to submit them under those terms.
+Identify any included third-party material and preserve its applicable licenses and notices.
+DCO sign-off trailers and a separate contributor license agreement are not required.
+
 ## Getting Started
 
 - Read `README.md` for product overview and status.

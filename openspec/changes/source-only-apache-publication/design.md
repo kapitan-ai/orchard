@@ -16,7 +16,9 @@ Publication-surface findings and raw evidence remain local or in a review surfac
 ## Participation
 
 Issues and feedback are welcome, and implementation participation requires prior maintainer agreement.
-The precise inbound contribution certification policy must be resolved before cutover; this change does not silently substitute a feedback-only policy or introduce CLA machinery.
+Contributors agree to submit Orchard-authored contributions under Apache-2.0, confirm their right to submit them, and preserve applicable third-party licenses and notices as described in `CONTRIBUTING.md`.
+AI-assisted work retains an accountable human contributor.
+This license-based policy replaces the earlier DCO 1.1 certification requirement; neither DCO sign-off trailers nor a separate CLA are required.
 
 ## Validation
 
