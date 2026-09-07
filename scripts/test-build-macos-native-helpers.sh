@@ -34,4 +34,6 @@ if [[ -e "$OUTPUT/orchard-secret-tty-test" ]]; then
   fail 'production-only rebuild retained the test helper'
 fi
 
+"$REPO_ROOT/scripts/test-lifecycle-process-snapshot.sh" --cover
+
 printf 'macOS native-helper build test passed\n'
