@@ -18,6 +18,7 @@ _None this week._
 
 ### Bug fixes
 
+- Console Playground readiness and request preparation now use the resolved caller tenant, so models granted only to an explicit nonlegacy tenant no longer fail the readiness gate. ([#318](https://github.com/kapitan-ai/orchard/pull/318))
 - Dispatch no longer grants a queued acceptance lease to a caller that died while waiting; dead waiters are skipped and capacity and gate ownership remain reusable. ([#323](https://github.com/kapitan-ai/orchard/pull/323))
 - Node Agent model loads now reuse durable verification receipts for unchanged, inventory-matching artifacts while retaining full verification on first, uncertain, forced, or invalidated loads. ([#320](https://github.com/kapitan-ai/orchard/pull/320))
 
