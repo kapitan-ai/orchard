@@ -37,7 +37,7 @@ defmodule OrchardNodeAgent.MixProject do
       {:req, "~> 0.5"},
       {:req_s3, "~> 0.2"},
       {:sentry, "~> 13.0"},
-      {:hackney, "~> 1.8"}
+      {:hackney, "~> 4.7"}
     ]
   end
 end
