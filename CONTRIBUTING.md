@@ -20,6 +20,14 @@ This repository is the collaborator-facing source of truth.
 If these disagree about product behavior, treat the PR as blocked until the
 branch reconciles the conflict. `SPEC.md` wins until explicitly updated.
 
+## Participation
+
+Issues and feedback are welcome.
+Implementation participation requires prior maintainer agreement.
+Najib retains final authority over project direction, contribution acceptance, merges, releases, and publication.
+AI-assisted work must have an accountable human contributor who reviews and stands behind the result.
+Keep discussions and contributions respectful.
+
 ## Getting Started
 
 - Read `README.md` for product overview and status.

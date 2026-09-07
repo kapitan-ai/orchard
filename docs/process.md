@@ -48,7 +48,10 @@ Native PKG is not a current supported Orchard channel.
 Restoring it or introducing another channel requires a fresh OpenSpec proposal
 and a separate implementing pull request that reconcile `SPEC.md`, decisions,
 security posture, operator docs, artifact governance, and validation gates.
-The initial source-availability transition does not promise a supported public binary.
+The initial source-availability transition is source-only under the repository's explicit Apache-2.0 grant for covered Orchard-authored software and technical documentation.
+Source visibility alone grants no rights beyond the applicable license terms.
+No official binary, supported release, SLA, or maintenance commitment follows from source availability.
+Third-party terms and notices remain applicable to their material.
 Public binary support requires an explicit release decision and completion of every applicable build, verification, signing, notarization, stapling, and publication gate.
 
 ## Re-Grounding Rule
