@@ -21,6 +21,24 @@ validated surface.
 
 ## Validation
 
+Contract-v3 segmented rendering decodes tool-call history argument JSON into objects before template rendering and caller-string tagging.
+Nested argument keys and strings remain protected; invalid argument objects fail before dispatch.
+Exactly empty strings need no markers, while whitespace-only strings retain the normal protection.
+Null or omitted assistant content is accepted only with valid nonempty function-call history.
+Text parts are concatenated before tagging, and trimming preserves provenance for every surviving caller byte.
+Request-dependent failures do not create bundle-wide incompatibility cache entries.
+Legacy non-segmented rendering is unchanged.
+
+To check the pinned Qwen3-Coder qualification assets without loading weights, point `ORCHARD_TOOL_TEMPLATE_SMOKE_PATH` at a directory containing `tokenizer.json`, `tokenizer_config.json`, and `chat_template.jinja`:
+
+```bash
+ORCHARD_TOOL_TEMPLATE_SMOKE_PATH=/path/to/pinned/assets mise exec -- uv run --directory native/orchard_tokenizer pytest tests/test_tool_template_smoke.py
+```
+
+This checks preflight, a tool-enabled first turn, and a synthetic tool-result continuation with safe encoding of a control-token literal in an argument.
+The test verifies the asset digests and complete production control-token catalog recorded in `tests/fixtures/qwen3_coder_30b_a3b_identity.json` for `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` revision `6e302ea604ad9ab206367e2c501d1571023e7b6d`.
+Passing this check does not qualify model generation or any particular client.
+
 From the repo root:
 
 ```bash
