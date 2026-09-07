@@ -417,7 +417,13 @@ static int command_lock(const char *path) {
   return 0;
 }
 
+static int snapshot_error(const char *stage, pid_t pid, int error) {
+  fprintf(stderr, "snapshot_failed stage=%s pid=%d errno=%d\n", stage, pid, error);
+  return EX_IOERR;
+}
+
 static int command_snapshot(const char *expected_pid_text) {
+
   int byte_count = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
   int capacity;
   pid_t expected_pid = -1;
@@ -432,22 +438,22 @@ static int command_snapshot(const char *expected_pid_text) {
 
     if (end == expected_pid_text || *end != '\0' || parsed <= 1 ||
         parsed > INT_MAX) {
-      return EX_IOERR;
+      return snapshot_error("expected_pid", expected_pid, 0);
     }
     expected_pid = (pid_t)parsed;
   }
   if (byte_count <= 0 || byte_count > INT_MAX / 2) {
-    return EX_IOERR;
+    return snapshot_error("list_size", 0, errno);
   }
   capacity = byte_count * 2;
   pids = calloc(1, (size_t)capacity);
   if (pids == NULL) {
-    return EX_IOERR;
+    return snapshot_error("allocate", 0, errno);
   }
   byte_count = proc_listpids(PROC_ALL_PIDS, 0, pids, capacity);
   if (byte_count <= 0 || byte_count >= capacity) {
     free(pids);
-    return EX_IOERR;
+    return snapshot_error("list_pids", 0, errno);
   }
 
   count = byte_count / (int)sizeof(pid_t);
@@ -476,21 +482,27 @@ static int command_snapshot(const char *expected_pid_text) {
           strcmp(process_name, "beam.smp") != 0) {
         continue;
       }
+      int error = errno;
+      pid_t pid = pids[index];
       free(pids);
-      return EX_IOERR;
+      fprintf(stderr, "snapshot_path_failed pid=%d errno=%d name_size=%d name_errno=%d\n",
+              pid, path_error, name_size, error);
+      return snapshot_error("process_path", pid, path_error);
     }
     if (!is_beam(executable)) {
       if (pids[index] == expected_pid) {
         free(pids);
-        return EX_IOERR;
+        return snapshot_error("expected_executable", expected_pid, 0);
       }
       continue;
     }
     node_agent =
         pids[index] == expected_pid ? 1 : process_is_node_agent(pids[index], executable);
     if (node_agent < 0) {
+      int error = errno;
+      pid_t pid = pids[index];
       free(pids);
-      return EX_IOERR;
+      return snapshot_error("process_arguments", pid, error);
     }
     if (node_agent == 0) {
       continue;
@@ -500,8 +512,10 @@ static int command_snapshot(const char *expected_pid_text) {
       continue;
     }
     if (identity_result != 0) {
+      int error = errno;
+      pid_t pid = pids[index];
       free(pids);
-      return EX_IOERR;
+      return snapshot_error("process_identity", pid, error);
     }
     if (emitted != 0) {
       putchar(',');
@@ -516,7 +530,7 @@ static int command_snapshot(const char *expected_pid_text) {
     if (expected_result != 1) {
       if (expected_result != 0) {
         free(pids);
-        return EX_IOERR;
+        return snapshot_error("expected_identity", expected_pid, errno);
       }
       if (emitted != 0) {
         putchar(',');
