@@ -40,6 +40,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @poll_interval_ms 50
   @rpc_timeout_ms 1_000
+  # sockaddr_un reserves 104 bytes on macOS and 108 on Linux, including the NUL.
+  @max_worker_socket_path_bytes if(:os.type() == {:unix, :linux}, do: 107, else: 103)
   # Slice of the shutdown budget reserved to confirm an uncatchable SIGKILL.
   @kill_confirm_ms 250
   @default_generation_mode "batch"
@@ -290,7 +292,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     owner_pid = Keyword.get(opts, :owner, self())
 
     result =
-      with {:ok, resolved_model_path} <- resolve_model_path(model_ref, models_root),
+      with :ok <- validate_socket_path(socket_path),
+           {:ok, resolved_model_path} <- resolve_model_path(model_ref, models_root),
            {:ok, resolved_executable} <- resolve_executable(executable),
            :ok <- ensure_socket_parent(socket_path),
            :ok <- ensure_log_parent(log_path),
@@ -663,6 +666,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     |> File.mkdir_p()
   end
 
+  defp validate_socket_path(socket_path) do
+    if byte_size(socket_path) <= @max_worker_socket_path_bytes do
+      :ok
+    else
+      {:error,
+       {:worker_socket_path_too_long,
+        "worker socket path is #{byte_size(socket_path)} bytes; maximum is " <>
+          "#{@max_worker_socket_path_bytes} bytes. Set ORCHARD_WORKER_SOCKET_DIR " <>
+          "to a shorter directory owned by the node-agent user"}}
+    end
+  end
+
   defp ensure_log_parent(log_path) do
     log_path
     |> Path.dirname()
@@ -888,20 +903,22 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @spec connect_worker_socket(String.t(), keyword()) ::
           {:ok, Orchard.GRPCTypes.channel()} | {:error, term()}
   def connect_worker_socket(socket_path, opts \\ []) when is_binary(socket_path) do
-    %Channel{
-      host: {:local, String.to_charlist(socket_path)},
-      port: 0,
-      scheme: "unix",
-      cred: nil,
-      ref: make_ref(),
-      adapter: Gun,
-      codec: Proto,
-      interceptors: [],
-      compressor: nil,
-      accepted_compressors: [],
-      headers: []
-    }
-    |> Gun.connect(opts)
+    with :ok <- validate_socket_path(socket_path) do
+      %Channel{
+        host: {:local, String.to_charlist(socket_path)},
+        port: 0,
+        scheme: "unix",
+        cred: nil,
+        ref: make_ref(),
+        adapter: Gun,
+        codec: Proto,
+        interceptors: [],
+        compressor: nil,
+        accepted_compressors: [],
+        headers: []
+      }
+      |> Gun.connect(opts)
+    end
   end
 
   # Classify worker health from GetStatus response.
