@@ -127,7 +127,7 @@ sed \
   -e "s|^ORCHARD_ROOT=.*$|ORCHARD_ROOT=\"$STAGED_ROOT\"|" \
   -e "s|^ORCHARD_CLI=.*$|ORCHARD_CLI=\"$WAIT_FIXTURE\"|" \
   -e "s|^SAFE_PATH=.*$|SAFE_PATH=\"$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin\"|" \
-  -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { while guard_parent_matches; do /bin/sleep 0.01 \|\| :; done; return 1; }|' \
+  -e 's|^guard_pre_ready_barrier() { :; }$|guard_pre_ready_barrier() { printf "__ORCHARD_GUARD_PRE_READY__:%s\\n" "$_guard_pid"; while guard_parent_matches; do /bin/sleep 0.01 \|\| :; done; return 1; }|' \
   "$REPO_ROOT/packaging/payload/bin/orchardctl" > "$GUARD_ORCHARDCTL"
 chmod 0755 "$GUARD_ORCHARDCTL"
 

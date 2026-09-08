@@ -17,6 +17,32 @@ fail() {
   exit 1
 }
 
+if ! awk '
+  function check_mise_step() {
+    if (!mise_step) return
+    count++
+    if (version !~ /^[0-9][0-9][0-9][0-9]\.[0-9]+\.[0-9]+$/) invalid = 1
+    if (count == 1) bootstrap_version = version
+    if (version != bootstrap_version) invalid = 1
+  }
+  /^      - / {
+    check_mise_step()
+    mise_step = 0
+    version = ""
+  }
+  /uses: jdx\/mise-action@/ { mise_step = 1 }
+  /^          version:/ {
+    version = $2
+    gsub(/["\047]/, "", version)
+  }
+  END {
+    check_mise_step()
+    exit invalid || count == 0
+  }
+' "$WORKFLOW"; then
+  fail 'every mise-action step must pin the same explicit bootstrap version'
+fi
+
 line_number() {
   local content="$1"
   local pattern="$2"

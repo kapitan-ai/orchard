@@ -104,6 +104,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Validate Product Version consistency
@@ -171,6 +172,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Install conformance dependencies
@@ -217,6 +219,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Install Elixir dependencies
@@ -256,6 +259,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Bootstrap MLX environment from lockfile
@@ -298,6 +302,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Install repository dependencies
@@ -345,6 +350,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: true
 
       - name: Install OpenSpec dependencies
