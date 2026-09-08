@@ -51,23 +51,33 @@ Orchard brings those responsibilities into one Elixir/OTP control plane backed b
 
 ## See Orchard
 
-Explore your model catalog and see which models each Workspace can access in the Orchard Console.
+Choose a model, try it in the Playground, and follow each request from generation to execution details.
 
-![Workspace model access in the Orchard Console](docs/media/workspace-model-access.png)
+![Qwen3.8 running in the Orchard Playground](docs/media/playground-inference.png)
 
-*Workspace-scoped model grants remain separate from catalog state and inference readiness.*
+*Run Qwen on your own Apple Silicon hardware and inspect the answer in the Playground.*
 
-[Watch the 35-second Console walkthrough (MP4)](docs/media/orchard-console-walkthrough.mp4).
-The walkthrough tours the Model Catalog and Workspace access controls; it does not demonstrate successful model inference.
+[Watch the Orchard inference walkthrough (MP4)](docs/media/orchard-console-walkthrough.mp4).
+Follow the model catalog, Workspace access, live Qwen3.8 inference, and the same request's execution details.
+
+![Completed inference request in the Orchard Console](docs/media/request-details.png)
+
+*Inspect completion status, token usage, latency, and the execution timeline for each request.*
 
 <details>
-<summary>Model catalog and Workspace overview</summary>
+<summary>Model catalog and Workspace access</summary>
 
 **Model catalog**
 
 ![Imported models in the Orchard Model Catalog](docs/media/model-catalog.png)
 
 *The Model Catalog shows imported models and their lifecycle state.*
+
+**Workspace model access**
+
+![Workspace model access in the Orchard Console](docs/media/workspace-model-access.png)
+
+*Workspace-scoped model grants remain separate from catalog state and inference readiness.*
 
 **Workspace overview**
 
