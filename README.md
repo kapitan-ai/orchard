@@ -116,7 +116,7 @@ Give your coding agent this prompt:
 Set up https://github.com/kapitan-ai/orchard on this Mac.
 Clone the repository if needed, read AGENTS.md, docs/tooling.md, and docs/local-dev.md, and inspect the machine and any existing Orchard installation.
 Install and configure prerequisites using the pinned toolchain and repository setup, including the optional MLX dependencies.
-Start source development in an interactive session, then follow the documented Node trust and admission flow: initialize Node trust, create an Enrollment Bundle, join the local Node Agent, admit the registered Node with every required policy and evidence input, and wait for the Node to become active.
+Start source development in an interactive session using the default single-node runtime.
 Prepare a compatible model bundle, create a Workspace and API token, grant explicit model access, and verify a real API response.
 If testing the Playground, grant Playground access explicitly.
 Keep credentials private, preserve existing data, and report the Console URL plus the commands to stop and restart.
@@ -143,8 +143,8 @@ The Console is available at `http://localhost:4000` and the source-development N
 The extra `uv sync` installs the optional MLX worker dependencies needed for real inference on the Mac.
 
 Starting the service does not make it inference-ready.
-Before sending inference requests, complete the supported [Node enrollment and admission flow](docs/local-dev.md#two-node-source-dev-cluster-testing): initialize Node trust, create an Enrollment Bundle, join the local Node Agent, admit the registered Node with every documented policy and evidence input, and wait for the Node to become `active`.
-Source development is inference-ready only when the local Node is admitted and active, in addition to satisfying the model and Workspace conditions below.
+This all-in-one quick start uses Orchard's explicitly unmanaged source-development compatibility target while trusted admitted or active Node inventory is empty.
+That local-only fallback does not create production Node inventory or grant production scheduling authority.
 In the running IEx session, import and activate a Model Bundle, create a Workspace and direct API Token, then grant the Workspace access to the model.
 The CLI currently uses `tenant` in these commands for the Workspace identifier.
 
@@ -176,7 +176,8 @@ curl -X POST http://localhost:4000/v1/chat/completions \
 ```
 
 Treat this first request as the end-to-end inference check.
-It succeeds only when the API Token resolves to the Workspace, the local Node is admitted and active, the exact model is active and granted, and an eligible runtime has the model loaded or can load it within the routing policy's cold-start budget.
+It succeeds only when the API Token resolves to the Workspace, the exact model is active and granted, and the configured local runtime has the model loaded or can load it within the routing policy's cold-start budget.
+The [Node enrollment and admission flow](docs/local-dev.md#two-node-source-dev-cluster-testing) is a separate lifecycle and multi-host testing path with additional transport and identity requirements.
 `/v1/responses` is Orchard's canonical inference abstraction.
 `/v1/chat/completions` is a compatibility facade, and `/v1/models` lists only active models granted to the calling Workspace.
 See the [API examples](docs/local-dev.md#api-endpoints) for streaming and Responses requests.
