@@ -666,6 +666,8 @@ operator workflow, permission expectations, and external certificate setup.
 ## Two-Node Source-Dev Cluster Testing
 
 Single-node all-in-one remains available through `bin/dev`.
+The README quick start uses the explicitly unmanaged static compatibility target and does not require Node enrollment or admission.
+That fallback is available only when static fallback is enabled, trusted admitted or active inventory is confirmed empty, and the target matches the configured source-development target; it never becomes production inventory or production authority.
 Use the BEAM Runtime Endpoint flow for the default split-role source-dev cluster path.
 Use the gRPC compatibility flow only when you intentionally opt out with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` or need side-by-side comparison.
 
@@ -675,6 +677,8 @@ If publication cannot be confirmed after credential authority commits, the comma
 The command refuses a second init with `cluster_already_initialized` and supports `--force-new-admin --yes` recovery minting, `--client-name`, and `--json`.
 `orchardctl nodes trust init` initializes the internal Node trust authority on the controller host and is a required, idempotent, leader-gated prerequisite before any enrollment bundle can be issued; it is separate from the credential-only `orchardctl cluster init`.
 `orchardctl nodes enrollment create --output PATH` issues an owner-only, single-Node Enrollment bundle from the active controller, and `orchardctl node join --enrollment-bundle PATH` redeems it with pinned controller trust before persisting the Node identity and validated gRPC compatibility advertisement.
+Bundle issuance also requires Controller endpoint metadata for a reachable HTTPS endpoint and its public CA certificate; the default `plain_http_localhost` transport does not provide those inputs.
+The current source-dev enrollment and join slice proves registration and persisted identity, while production-managed scheduling additionally requires a runtime that presents that registered identity, administrator admission, and fresh authenticated evidence before the Node becomes active.
 Set `ORCHARD_NODE_AGENT_ADVERTISE_HOST` to a Controller-reachable private address when `ORCHARD_NODE_AGENT_LISTEN_HOST` is `0.0.0.0`; wildcard addresses fail closed and are never persisted as trusted targets.
 `orchardctl cluster status [--json]` is implemented for read-only cluster and control-plane status, with the shared `ControlPlaneStatus` payload and a control-plane summary in `--json` mode.
 `orchardctl nodes inspect`, `orchardctl nodes pending`, `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for the current node-admission-review slice, with stable JSON and human output, `--dry-run` previews, and `--yes` execution gating; `orchardctl nodes reject` additionally requires a nonblank `--reason`.

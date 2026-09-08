@@ -4,7 +4,6 @@ import os
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,7 +24,7 @@ def test_worker_server_smoke_supports_load_generate_cancel_and_unload(tmp_path: 
     model_path = tmp_path / "models" / "phi-3" / "main"
     model_path.mkdir(parents=True)
 
-    process = start_worker(socket_path)
+    process = start_worker(socket_path, cancel_gate=True)
 
     try:
         channel = wait_for_channel(socket_path)
@@ -68,23 +67,22 @@ def test_worker_server_smoke_supports_load_generate_cancel_and_unload(tmp_path: 
             version="main",
             rendered_prompt_utf8=b"hello orchard",
             input_tokens=2,
-            metadata_json=b'{"worker_delay_ms":50}',
         )
 
-        # Server-streaming RPCs don't support .future(); run Generate in a
-        # background thread so we can send Cancel concurrently.
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(lambda: list(stub.Generate(cancel_request)))
-            time.sleep(0.05)
-            cancel_ack = stub.Cancel(
-                runtime_pb2.CancelInferenceRequest(
-                    request_id="req-worker-cancel",
-                    controller_session_id="controller-session-2",
-                )
-            )
-            assert cancel_ack.ok is True
-            cancelled_events = future.result(timeout=5)
-            assert cancelled_events[-1].failed.code == "cancelled"
+        cancel_stream = stub.Generate(cancel_request, timeout=10)
+        assert next(cancel_stream).output_text_delta.delta == "cancel-ready"
+        status = stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), timeout=2)
+        assert status.active_request_count == 1
+        cancel_ack = stub.Cancel(
+            runtime_pb2.CancelInferenceRequest(
+                request_id="req-worker-cancel",
+                controller_session_id="controller-session-2",
+            ),
+            timeout=2,
+        )
+        assert cancel_ack.ok is True
+        cancelled_events = list(cancel_stream)
+        assert cancelled_events[-1].failed.code == "cancelled"
 
         unload_ack = stub.UnloadModel(
             runtime_pb2.UnloadModelRequest(model_id="mlx-community/phi-3", version="main")
@@ -658,11 +656,16 @@ def start_worker(
     backend: str = "stub",
     log_file: Path | None = None,
     verbose: bool = False,
+    cancel_gate: bool = False,
 ) -> subprocess.Popen[str]:
+    entrypoint = (
+        [str(Path(__file__).with_name("worker_cancel_gate.py"))]
+        if cancel_gate
+        else ["-m", "orchard_worker_mlx.cli"]
+    )
     cmd = [
         sys.executable,
-        "-m",
-        "orchard_worker_mlx.cli",
+        *entrypoint,
         "--socket-path",
         str(socket_path),
         "--backend",
