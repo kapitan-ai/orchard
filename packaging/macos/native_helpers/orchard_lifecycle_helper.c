@@ -417,6 +417,39 @@ static int command_lock(const char *path) {
   return 0;
 }
 
+/* proc_name requires same-user access. KERN_PROC_PID can classify an unrelated
+ * process without reading its arguments or treating an unresolved path as exit. */
+static int can_exclude_unresolved_process(pid_t pid, pid_t expected_pid) {
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+  struct kinfo_proc process;
+  size_t size = sizeof(process);
+  size_t name_size;
+
+  memset(&process, 0, sizeof(process));
+  if (sysctl(mib, 4, &process, &size, NULL, 0) != 0) {
+    return errno == ESRCH;
+  }
+  if (size == 0) {
+    return 1;
+  }
+  if (size != sizeof(process) || process.kp_proc.p_pid != pid) {
+    errno = EIO;
+    return 0;
+  }
+  name_size = strnlen(process.kp_proc.p_comm, sizeof(process.kp_proc.p_comm));
+  if (name_size == 0 || name_size == sizeof(process.kp_proc.p_comm)) {
+    errno = EIO;
+    return 0;
+  }
+  errno = 0;
+  return pid != expected_pid && strcmp(process.kp_proc.p_comm, "beam.smp") != 0;
+}
+
+static int snapshot_error(const char *stage, pid_t pid, int error) {
+  fprintf(stderr, "snapshot_failed stage=%s pid=%d errno=%d\n", stage, pid, error);
+  return EX_IOERR;
+}
+
 static int command_snapshot(const char *expected_pid_text) {
   int byte_count = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
   int capacity;
@@ -432,22 +465,22 @@ static int command_snapshot(const char *expected_pid_text) {
 
     if (end == expected_pid_text || *end != '\0' || parsed <= 1 ||
         parsed > INT_MAX) {
-      return EX_IOERR;
+      return snapshot_error("expected_pid", expected_pid, 0);
     }
     expected_pid = (pid_t)parsed;
   }
   if (byte_count <= 0 || byte_count > INT_MAX / 2) {
-    return EX_IOERR;
+    return snapshot_error("list_size", 0, errno);
   }
   capacity = byte_count * 2;
   pids = calloc(1, (size_t)capacity);
   if (pids == NULL) {
-    return EX_IOERR;
+    return snapshot_error("allocate", 0, errno);
   }
   byte_count = proc_listpids(PROC_ALL_PIDS, 0, pids, capacity);
   if (byte_count <= 0 || byte_count >= capacity) {
     free(pids);
-    return EX_IOERR;
+    return snapshot_error("list_pids", 0, errno);
   }
 
   count = byte_count / (int)sizeof(pid_t);
@@ -465,32 +498,33 @@ static int command_snapshot(const char *expected_pid_text) {
       expected_seen = 1;
     }
     if (proc_pidpath(pids[index], executable, sizeof(executable)) <= 0) {
-      char process_name[PROC_PIDPATHINFO_MAXSIZE];
       int path_error = errno;
-      int name_size = proc_name(pids[index], process_name, sizeof(process_name));
 
-      if (path_error == ESRCH || (name_size <= 0 && errno == ESRCH)) {
+      if (path_error == ESRCH ||
+          can_exclude_unresolved_process(pids[index], expected_pid)) {
         continue;
       }
-      if (pids[index] != expected_pid && name_size > 0 &&
-          strcmp(process_name, "beam.smp") != 0) {
-        continue;
-      }
+      int metadata_error = errno;
+      pid_t pid = pids[index];
       free(pids);
-      return EX_IOERR;
+      fprintf(stderr, "snapshot_path_failed pid=%d errno=%d metadata_errno=%d\n",
+              pid, path_error, metadata_error);
+      return snapshot_error("process_path", pid, path_error);
     }
     if (!is_beam(executable)) {
       if (pids[index] == expected_pid) {
         free(pids);
-        return EX_IOERR;
+        return snapshot_error("expected_executable", expected_pid, 0);
       }
       continue;
     }
     node_agent =
         pids[index] == expected_pid ? 1 : process_is_node_agent(pids[index], executable);
     if (node_agent < 0) {
+      int error = errno;
+      pid_t pid = pids[index];
       free(pids);
-      return EX_IOERR;
+      return snapshot_error("process_arguments", pid, error);
     }
     if (node_agent == 0) {
       continue;
@@ -500,8 +534,10 @@ static int command_snapshot(const char *expected_pid_text) {
       continue;
     }
     if (identity_result != 0) {
+      int error = errno;
+      pid_t pid = pids[index];
       free(pids);
-      return EX_IOERR;
+      return snapshot_error("process_identity", pid, error);
     }
     if (emitted != 0) {
       putchar(',');
@@ -516,7 +552,7 @@ static int command_snapshot(const char *expected_pid_text) {
     if (expected_result != 1) {
       if (expected_result != 0) {
         free(pids);
-        return EX_IOERR;
+        return snapshot_error("expected_identity", expected_pid, errno);
       }
       if (emitted != 0) {
         putchar(',');
