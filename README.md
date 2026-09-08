@@ -51,7 +51,7 @@ Orchard brings those responsibilities into one Elixir/OTP control plane backed b
 
 ## See Orchard
 
-These captures show the source-development Console populated with synthetic demo Workspaces.
+Explore your model catalog and see which models each Workspace can access in the Orchard Console.
 
 ![Workspace model access in the Orchard Console](docs/media/workspace-model-access.png)
 
