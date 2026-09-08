@@ -929,6 +929,12 @@ Tailwind's `dark:` utilities and Console dark custom rules are keyed from
 `<html data-theme="dark">`.
 Do not mix media-query driven app CSS with this selector contract.
 
+### 14.1 Model Availability Projections
+
+Model availability surfaces may group desired availability policy, Node-local Model files, Runtime Endpoint loadedness, derived scheduling eligibility, and current transition progress only when each fact has an authoritative source.
+Each fact remains separately labelled, and missing evidence remains unknown rather than being collapsed into `Ready`.
+This grouped presentation creates no Cache Residency resource, durable model-operation object, Runtime Provider selector, or Runtime Endpoint identity beyond the contracts that already own those concepts.
+
 ---
 
 ## 15. Guided Setup And One-Time Output
