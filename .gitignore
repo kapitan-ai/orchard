@@ -51,6 +51,7 @@ native/*/.venv-pkg/
 .pi/
 
 # Prompt exports and private agent/tool artifacts
+/.basecamp/config.json
 /prompt-exports/
 **/prompt-exports/
 /.codex/
