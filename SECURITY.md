@@ -21,6 +21,8 @@ A nested policy must not broaden support, relax this root policy, or override `S
 Orchard does not currently publish a security-supported release line.
 The repository identifies current development code as `0.5.0-dev`, but that identifier is not a released-version support commitment.
 Security reports concerning current development code are welcome.
+This repository is an experimental source-only publication.
+Source availability provides no official binary, supported release, SLA, or maintenance commitment.
 
 The Controller `N` and Node Agent `N` and `N-1` compatibility rule in `SPEC.md` is a target contract.
 No concrete Current or Previous Supported Release Line should be inferred until the active release-governance work is accepted and implemented.

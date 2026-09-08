@@ -1182,6 +1182,9 @@ static void run_guard_pre_ready_death(int master, int slave, pid_t child,
   pid_t guard = read_marked_pid(master, &capture, "__ORCHARD_GUARD_PID__:");
   read_marked_path(master, &capture, "__ORCHARD_CUSTODY_DIR__:", completion_dir,
                    sizeof(completion_dir));
+  /* PID publication can precede the guard opening its custody directory. */
+  if (read_marked_pid(master, &capture, "__ORCHARD_GUARD_PRE_READY__:") != guard)
+    fail("guard-pre-ready-pid");
   int length = snprintf(moved_dir, sizeof(moved_dir), "%s.moved", completion_dir);
   if (length < 0 || (size_t)length >= sizeof(moved_dir)) fail("moved-path-size");
   if (rename(completion_dir, moved_dir) != 0) fail("guard-custody-dir-rename");

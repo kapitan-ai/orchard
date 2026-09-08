@@ -322,6 +322,10 @@ back to that same full digest whenever the receipt is missing, invalid, or no
 longer matches the cache tree.
 By default, source-dev worker Unix sockets live under a short, worktree-specific `/tmp/od-<hash>/ws` directory to avoid macOS Unix socket path length limits.
 Set `ORCHARD_WORKER_SOCKET_DIR` to override that location.
+On macOS, the complete worker socket path must fit within 103 UTF-8 bytes, including the directory, separator, and generated `orchard-worker-<16 hex digits>.sock` filename.
+Keep the expanded directory path at most 66 bytes and use a directory owned by the node-agent user, isolated from other running instances.
+Linux validation allows 107 bytes for the complete path, or 70 bytes for the directory.
+An oversized path returns `worker_socket_path_too_long` before launching a worker or removing an existing socket; shorten `ORCHARD_WORKER_SOCKET_DIR` and restart the node agent.
 `ORCHARD_FAKE_RUNTIME` is a release/runtime config knob; source-dev tests use
 the fake runtime through `config/test.exs`, not a dev env override.
 Batch generation mode can admit multiple same-model requests up to the worker-reported limit.

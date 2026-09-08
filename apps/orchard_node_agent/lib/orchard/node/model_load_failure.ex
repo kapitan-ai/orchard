@@ -233,6 +233,15 @@ defmodule Orchard.Node.ModelLoadFailure do
       )
 
   # --- RUNTIME_UNAVAILABLE ---
+  def from_reason({:worker_socket_path_too_long, _details}),
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "worker_socket_path_too_long",
+        "worker socket path exceeds the host limit; set ORCHARD_WORKER_SOCKET_DIR " <>
+          "to a shorter directory owned by the node-agent user and restart the node agent"
+      )
+
   def from_reason(:worker_executable_not_found),
     do:
       new(

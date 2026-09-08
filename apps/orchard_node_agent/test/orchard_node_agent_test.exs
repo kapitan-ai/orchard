@@ -4222,6 +4222,33 @@ defmodule OrchardNodeAgentTest do
 
   # -- Worker lifecycle telemetry tests ----------------------------------------
 
+  test "SPEC.md §4.10 model loading reports actionable oversized socket configuration", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter,
+        fake_runtime?: false,
+        worker_socket_dir: "/tmp/" <> String.duplicate("s", 103)
+      ],
+      fn ->
+        with_channel(fn channel ->
+          assert {:ok, response} =
+                   NodeRuntimeStub.ensure_model_loaded(
+                     channel,
+                     ensure_model_loaded_request(bundle)
+                   )
+
+          assert response.placement_state == :PLACEMENT_STATE_FAILED
+          assert response.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
+          assert response.failure_code == "worker_socket_path_too_long"
+          assert response.failure_message =~ "ORCHARD_WORKER_SOCKET_DIR"
+          wait_until(fn -> worker_count() == 0 end)
+        end)
+      end
+    )
+  end
+
   describe "worker lifecycle telemetry" do
     test "successful load emits manager and runtime start/stop telemetry", %{bundle: bundle} do
       with_real_worker_runtime(fn ->

@@ -33,6 +33,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   alias Orchard.InferenceEvent.{Completed, OutputTextDelta, TokenDelta}
   alias Orchard.Node.WorkerRuntimeAdapter
 
+  @socket_path_limit if(:os.type() == {:unix, :linux}, do: 107, else: 103)
+
   defmodule OpenUnavailableWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
 
@@ -479,6 +481,49 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     end)
   end
 
+  test "SPEC.md §4.10 rejects an oversized socket before model loading or socket cleanup" do
+    root = Path.join("/tmp", "orchard-socket-#{System.unique_integer([:positive])}")
+    socket_path = Path.join(root, String.duplicate("s", 112 - byte_size(root) - 1))
+    File.mkdir_p!(root)
+    File.write!(socket_path, "existing artifact")
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    assert {:error, {:worker_socket_path_too_long, message}} =
+             WorkerRuntimeAdapter.load_model(%ModelRef{model_id: "test/model", version: "v1"},
+               socket_path: socket_path,
+               models_root: Path.join(root, "missing-models")
+             )
+
+    assert message =~ "112 bytes"
+    assert message =~ "#{@socket_path_limit} bytes"
+    assert message =~ "ORCHARD_WORKER_SOCKET_DIR"
+    assert File.read!(socket_path) == "existing artifact"
+  end
+
+  test "connect_worker_socket rejects a UTF-8 path one byte over the host limit without starting Gun" do
+    socket_path = "/tmp/" <> String.duplicate("é", div(@socket_path_limit - 5, 2)) <> "s"
+
+    assert {:error, {:worker_socket_path_too_long, message}} =
+             WorkerRuntimeAdapter.connect_worker_socket(socket_path)
+
+    assert message =~ "#{@socket_path_limit + 1} bytes"
+    assert message =~ "#{@socket_path_limit} bytes"
+  end
+
+  test "connect_worker_socket serves gRPC at the host socket path limit" do
+    filename = "orchard-boundary-#{System.unique_integer([:positive])}"
+    socket_path = "/tmp/" <> String.pad_trailing(filename, @socket_path_limit - 5, "s")
+
+    with_worker_runtime_unix_server(
+      MemoryBudgetEndpoint,
+      fn channel, _socket_path ->
+        assert {:ok, %{ready: true}} =
+                 WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
+      end,
+      socket_path
+    )
+  end
+
   test "connect_worker_socket uses a direct UDS channel without connection supervisor refresh" do
     with_worker_runtime_unix_server(MemoryBudgetEndpoint, fn channel, socket_path ->
       assert %GRPC.Channel{
@@ -778,13 +823,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     end
   end
 
-  defp with_worker_runtime_unix_server(endpoint, fun)
+  defp with_worker_runtime_unix_server(endpoint, fun, socket_path \\ nil)
        when is_atom(endpoint) and is_function(fun, 2) do
     socket_path =
-      Path.join(
-        System.tmp_dir!(),
-        "orchard-worker-runtime-adapter-#{System.unique_integer([:positive])}.sock"
-      )
+      socket_path ||
+        Path.join(
+          System.tmp_dir!(),
+          "orchard-worker-runtime-adapter-#{System.unique_integer([:positive])}.sock"
+        )
 
     File.rm(socket_path)
 
