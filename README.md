@@ -7,17 +7,17 @@
 <h3 align="center">Your LLMs. Your hardware. Your rules.</h3>
 
 <p align="center">
-  Sovereign on-prem LLM orchestration for 1–4 Apple Silicon Macs — OpenAI-compatible
-  APIs, multi-tenant governance, and native macOS operations. No cloud, no Kubernetes.
+  Sovereign on-prem LLM orchestration for Apple Silicon Macs - OpenAI-compatible
+  APIs, multi-tenant governance, and native macOS operations.
 </p>
 
 <p align="center">
   <a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/version-0.5.0--dev-1565C0"></a>
-  <a href="#status--roadmap"><img alt="Status" src="https://img.shields.io/badge/status-pre--release%20(pilot)-FDD835"></a>
-  <a href="#deployment-modes"><img alt="Platform" src="https://img.shields.io/badge/platform-Apple%20Silicon%20macOS-000000?logo=apple&logoColor=white"></a>
-  <a href="#use-it-from-your-code"><img alt="OpenAI-compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-412991?logo=openai&logoColor=white"></a>
+  <a href="#current-status"><img alt="Status" src="https://img.shields.io/badge/status-pre--release%20(pilot)-FDD835"></a>
+  <a href="#quick-start"><img alt="Platform" src="https://img.shields.io/badge/platform-Apple%20Silicon%20macOS-000000?logo=apple&logoColor=white"></a>
+  <a href="docs/local-dev.md#api-endpoints"><img alt="OpenAI-compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-412991?logo=openai&logoColor=white"></a>
   <a href="https://github.com/ml-explore/mlx"><img alt="MLX" src="https://img.shields.io/badge/inference-MLX--LM-FF6F00"></a>
-  <a href="#tech-stack"><img alt="Postgres" src="https://img.shields.io/badge/Postgres-16%2B-4169E1?logo=postgresql&logoColor=white"></a>
+  <a href="docs/local-dev.md#prerequisites"><img alt="Postgres 15+" src="https://img.shields.io/badge/Postgres-15%2B-4169E1?logo=postgresql&logoColor=white"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-6B7280"></a>
 </p>
 
@@ -30,344 +30,240 @@
   <a href="openspec/README.md"><img alt="OpenSpec" src="https://img.shields.io/badge/OpenSpec-strict%20validation-2563EB"></a>
 </p>
 
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="SPEC.md">Build contract</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+Orchard turns Apple Silicon Macs into a shared internal LLM service.
+Applications get one OpenAI-compatible endpoint, while operators control which Workspaces can use each model and can inspect how requests move through the system.
+Inference runs with MLX-LM on hardware inside your network.
+
+Running inference for a team means handling separate access, deny-by-default model grants, request visibility, scheduling, health, and day-two operations.
+Orchard brings those responsibilities into one Elixir/OTP control plane backed by Postgres.
+
 > **Experimental source-only publication.**
 > Orchard is published here as source only under the Apache License 2.0, with Copyright 2026 AI Singapore, for covered Orchard-authored software and technical documentation.
 > No official binary, supported release, SLA, or maintenance commitment is provided.
 > Existing tags are pre-public development history and do not identify supported releases.
-> Any future macOS binary remains subject to the existing build, verification, signing, notarization, stapling, and publication gates.
+
+## See Orchard
+
+These captures show the source-development Console populated with synthetic demo Workspaces.
+
+![Workspace model access in the Orchard Console](docs/media/workspace-model-access.png)
+
+*Workspace-scoped model grants remain separate from catalog state and inference readiness.*
+
+[Watch the 35-second Console walkthrough (MP4)](docs/media/orchard-console-walkthrough.mp4).
+The walkthrough tours the Model Catalog and Workspace access controls; it does not demonstrate successful model inference.
+
+<details>
+<summary>Model catalog and Workspace overview</summary>
+
+**Model catalog**
+
+![Imported models in the Orchard Model Catalog](docs/media/model-catalog.png)
+
+*The Model Catalog shows imported models and their lifecycle state.*
+
+**Workspace overview**
+
+![Workspace overview in the Orchard Console](docs/media/workspace-overview.jpg)
+
+*The Workspace overview keeps portal membership, model access, and inference credentials distinct.*
+
+</details>
 
 ## Why Orchard
 
-Teams that cannot send prompts to a cloud provider still want the developer
-experience of one. Orchard turns a handful of Macs you already own into a
-governed inference service: your applications keep talking to an
-OpenAI-compatible endpoint, while every token, key, and request stays inside
-your network and under your audit trail.
+- **Keep inference under your control.**
+  Models run on Apple Silicon Macs in your environment with no cloud inference dependency.
+- **Give teams one service boundary.**
+  The Controller authenticates callers, applies Workspace policy, selects an eligible runtime, and relays the result.
+- **Grant model access deliberately.**
+  A model is unavailable to a Workspace until an operator grants it explicitly.
+- **See what happened to a request.**
+  Orchard records durable request state and scheduler explanations for diagnostics and accounting.
+- **Keep the operating surface focused.**
+  Postgres is the sole persistence and coordination layer, so the control plane does not require Kubernetes, Redis, Kafka, or a separate message broker.
 
-- **Sovereign by construction** — inference runs on your hardware, behind your
-  firewall, with no cloud inference dependency.
-- **Drop-in for existing code** — point any OpenAI SDK at your controller and
-  change the base URL and key.
-- **Governed, not just exposed** — organizations, tenants, RBAC, API keys,
-  deny-by-default model access, and audit logs are part of the product, not an
-  afterthought. Full configurable quota policy is still being completed.
-- **Operable by one person** - the approved macOS native distribution design uses a signed `Orchard.app` inside a DMG, launchd-managed services, a guided `orchardctl init`, and a web Console.
-  No Kubernetes, no containers, no message broker.
-- **Apple Silicon native** — models execute on [MLX](https://github.com/ml-explore/mlx),
-  Apple's native ML stack, on the Macs you already have.
+Orchard is aimed at platform teams, regulated organizations, labs, and studios that want to share local inference without turning each Mac into a separately managed endpoint.
 
-## Who it's for
+## Quick start
 
-- Regulated or air-gap-leaning teams (finance, defence, healthcare, public
-  sector) that need self-hosted LLM inference with an auditable access model.
-- Platform teams who want one internal inference endpoint shared by several
-  product teams, with per-tenant keys and model grants.
-- Small labs and studios with Apple Silicon capacity that should serve the whole
-  team instead of one laptop.
+The current public path is source development on Apple Silicon macOS.
+**Choose one setup method:** let a coding agent handle setup, or follow the manual instructions yourself.
+Both paths reach the same result.
 
-## What you get
+### With a coding agent (recommended)
 
-**Inference API**
+Give your coding agent this prompt:
 
-- `/v1/responses` as the canonical abstraction, `/v1/chat/completions` as a
-  compatibility facade, both with SSE streaming and client-disconnect
-  cancellation.
-- `/v1/models` scoped to what the calling tenant is actually granted.
-- Every request lifecycle transition, deadline, and attempt outcome persisted in
-  Postgres for diagnostics and accounting.
+```text
+Set up https://github.com/kapitan-ai/orchard on this Mac.
+Clone the repository if needed, read AGENTS.md, docs/tooling.md, and docs/local-dev.md, and inspect the machine and any existing Orchard installation.
+Install and configure prerequisites using the pinned toolchain and repository setup, including the optional MLX dependencies.
+Start source development in an interactive session, then follow the documented Node trust and admission flow: initialize Node trust, create an Enrollment Bundle, join the local Node Agent, admit the registered Node with every required policy and evidence input, and wait for the Node to become active.
+Prepare a compatible model bundle, create a Workspace and API token, grant explicit model access, and verify a real API response.
+If testing the Playground, grant Playground access explicitly.
+Keep credentials private, preserve existing data, and report the Console URL plus the commands to stop and restart.
+```
 
-**Governance**
+### Or, set up manually
 
-- Organizations and tenants, cluster-admin bootstrap, and role-based operator
-  access.
-- Tenant-direct API keys, API Clients for service-account-owned tokens (with
-  bulk provisioning), and tenant-scoped admission controls. Full configurable
-  per-tenant quota policy is specified but not yet shipped.
-- Deny-by-default Tenant-to-Model access grants — a loaded model serves nobody
-  until it is explicitly granted.
-- A TLS-only Developer Portal where invited, named Portal Users mint, list, and
-  revoke their own keys without filing a ticket with an operator.
+Use this path if you are setting up Orchard without a coding agent.
 
-**Operations**
-
-- Console (Phoenix LiveView): cluster overview, nodes, models and model hub,
-  tenants, keys, request inspection, settings, and a built-in playground.
-- `orchardctl`: guided first run, node trust and enrollment, admission review,
-  node lifecycle (cordon, drain, decommission), model import and access grants,
-  request diagnostics with scheduler explanations, cluster status, TLS and
-  transport setup, upgrades, and redacted support bundles.
-- Prometheus exposition on `/metrics`, health and readiness endpoints, and
-  request-correlated logs; structured logging and OpenTelemetry tracing are
-  specified but not yet shipped.
-
-**Packaging and availability**
-
-- The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`, with an app-owned, root-authorized service lifecycle and role selection for `all`, `controller`, and `node-agent` hosts.
-- The initial source-availability transition is source-only under the repository's Apache-2.0 grant for covered Orchard-authored software and technical documentation.
-  Source visibility alone grants no rights beyond the applicable license terms.
-  It does not provide an official binary, supported release, SLA, or maintenance commitment.
-- A supported public binary requires an explicit release decision and completion of every applicable build, verification, signing, notarization, stapling, and publication gate.
-- Native PKG is not a supported current distribution channel. Any future native
-  package requires a fresh accepted OpenSpec proposal and implementing PR.
-- Packaged controller installs use operator-managed external PostgreSQL 16+;
-  managed Postgres is not available in this build. There is no broker, cache, or
-  extra control-plane store to operate.
-
-## Use it from your code
-
-Once an operator has granted your tenant a model and issued you a key, Orchard
-is an OpenAI-compatible endpoint:
+Before running these commands, complete the [local development prerequisites](docs/local-dev.md#prerequisites): install mise, start PostgreSQL 15 or newer with TCP enabled, and provide the configured database role with database-create privileges.
+You also need a local [Orchard Model Bundle](docs/local-dev.md#preparing-a-smoke-test-bundle-from-huggingface) before inference can run.
+The repository pins the application toolchain in [`mise.toml`](mise.toml).
 
 ```bash
-curl -N -X POST https://orchard.internal/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $ORCHARD_API_KEY" \
-  -d '{
-    "model": "your-model@v1",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
-```
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="https://orchard.internal/v1", api_key=ORCHARD_API_KEY)
-client.responses.create(model="your-model@v1", input="Hello!")
-```
-
-Operators with approved release media follow [`packaging/README.md`](packaging/README.md) and [`packaging/dmg/README.md`](packaging/dmg/README.md).
-Contributors run from source with `make dev` as documented in [`docs/local-dev.md`](docs/local-dev.md).
-
-## Status & roadmap
-
-Orchard is **pre-release** (`0.5.0-dev`) and currently runs internal pilots. It
-is built from a normative contract ([`SPEC.md`](SPEC.md)); features land as
-spec-traced slices.
-
-Working today: authenticated `/v1/models`, `/v1/chat/completions` with SSE, a
-bounded `/v1/responses` slice, tenant model grants, tenant-direct API tokens,
-bulk API Client provisioning, the Developer Portal, the Console, Prometheus
-metrics, and — on the operations side — node trust initialization, secure
-single-node enrollment and join, admission review, node lifecycle execution
-(cordon, drain, decommission; maintenance previews only), request diagnostics
-with scheduler explanations, cluster and control-plane status, and redacted
-support bundles.
-
-Not yet operator-usable: multi-node cluster bootstrap beyond the one-controller
-one-node enrollment tracer, broader production multi-node scheduling, full
-configurable tenant quota policy, Active/Standby failover, and managed Postgres
-— packaged controller installs require an external PostgreSQL 16+ server.
-
-| Milestone | Scope | State |
-|-----------|-------|-------|
-| M0 | Skeleton and packaging foundation | Complete |
-| M1 | Single-node inference MVP (models, chat completions, SSE, MLX worker) | Complete |
-| M2 | Responses API and governance core | Partial (quota policy incomplete) |
-| M3 | Node lifecycle and cluster join | Partial (enrollment/lifecycle tracer) |
-| M4 | Multi-node scheduler and placements | In progress (broader production scheduling pending) |
-| M5 | Observability and diagnostics | Partial (metrics floor, diagnostics) |
-| M6 | Security hardening and air-gap | Partial (transport/certificate slices) |
-| M7 | Upgrade safety and Active/Standby controller | Planned |
-| M8 | Portable Orchard control-plane core and Linux Controller profile | Accepted target |
-
-## Architecture
-
-```
-Clients (SDKs / curl / apps)
-        │
-   HTTPS / SSE
-        │
-   Controller (Elixir/OTP)
-   ├── Inference API    ── `/v1/responses` canonical, `/v1/chat/completions` facade
-   ├── Auth / RBAC      ── API Tokens, API Clients + tenant admission controls
-   ├── Scheduler        ── Runtime Endpoint selection, queueing, fairness
-   ├── Dispatch         ── Runtime Endpoint operations + stream relay
-   └── Observability    ── Prometheus metrics, request-correlated logs
-        │
-   Runtime Endpoint Interface
-        │
-   Runtime Endpoint adapter(s)
-   ├── first-party BEAM adapter
-   └── gRPC compatibility adapter
-        │
-   Node Agent Runtime Endpoint(s)
-   ├── Model cache + verification
-   ├── Worker supervisor
-   └── MLX runtime (Apple Silicon native)
-        │
-     Postgres (sole persistence + coordination layer)
-```
-
-**Design rules:**
-
-- All durable state lives in Postgres — no separate message broker or cache to
-  operate.
-- Controller-to-node communication goes through the Runtime Endpoint
-  Interface, with a first-party BEAM adapter and a gRPC compatibility adapter.
-- Workers are local to node agents and are never exposed on the network.
-- Token streams always pass through the controller for governance and
-  accounting.
-- Target Active/Standby model: exactly one active leader via Postgres advisory
-  locks, with no active/active consensus. Failover is not yet operator-usable.
-
-Transport defaults and guardrails for source development are documented in
-[`docs/local-dev.md`](docs/local-dev.md);
-[`docs/architecture.md`](docs/architecture.md) maps the repo and runtime
-boundaries.
-
-## Tech stack
-
-| Layer | Choice |
-|-------|--------|
-| Language | Elixir/OTP (umbrella app) |
-| Database | Postgres 16+ |
-| Inference | MLX-LM runtime adapter managed by the node agent |
-| Runtime endpoint transport | Runtime Endpoint Interface (first-party BEAM adapter; gRPC compatibility adapter) |
-| APIs | Phoenix/Plug with SSE streaming |
-| Console | Phoenix LiveView |
-| Packaging | macOS native distribution profile with `Orchard.app` inside a DMG, app-owned service lifecycle, and launchd |
-| CLI | `orchardctl` |
-| Toolchain | mise-pinned Erlang/OTP, Elixir, Python, uv, Node.js, npm, and OpenSpec |
-
-## Deployment modes
-
-1. **All-in-one** — a single Mac runs everything: controller, node agent, and
-   worker.
-2. **Controller + workers** — one Mac as the control plane, 1–3 Macs as worker
-   nodes. The packaged private-network path is a first cut with unresolved
-   production acceptance gaps, not yet a general support claim.
-3. **Active/Standby (target)** — up to 2 controllers with exactly 1 active
-   leader, still within the overall 1–4 Mac limit. Failover is not yet
-   operator-usable.
-4. **Linux Controller + macOS MLX Nodes (accepted target)** - a Linux Controller profile using external Postgres operates admitted Apple Silicon macOS Nodes under the macOS MLX Node runtime profile.
-   That target is not supported until the mixed-platform acceptance profile and the remaining Milestone 8 gates in `SPEC.md` pass.
-
-All controller-bearing installs currently require an external Postgres
-database. The app lifecycle supports `all`, `controller`, and `node-agent`
-roles; see [`packaging/README.md`](packaging/README.md) for the operator runbook.
-
-### Transport and TLS
-
-App-installed releases start on degraded loopback HTTP until an operator selects
-direct HTTPS or reverse-proxy mode. TLS is provider-neutral: bring
-reverse-proxy termination, operator-supplied certificates, internal PKI, or
-the local-CA helper (`orchardctl tls init`) for dev-lab bootstrap. CORS is an
-explicit origin allowlist, disabled by default. Full transport configuration,
-including nginx/Caddy/Traefik snippets, is in
-[`packaging/README.md`](packaging/README.md).
-
-### Building the app payload
-
-```bash
-mise exec -- ./scripts/build-payload.sh
-```
-
-The command prints the validated `PAYLOAD_ROOT` used by the app assembler.
-Run `make setup` first; see [`packaging/README.md`](packaging/README.md#shared-distribution-neutral-payload)
-for the payload contract.
-
-## Run from source
-
-This path is for developers and contributors.
-Operators with approved release media use the `Orchard.app`-inside-DMG flow above.
-On Apple Silicon macOS, install the mise-pinned toolchain from [`mise.toml`](mise.toml), and have a local PostgreSQL ≥15 instance accepting TCP connections before starting the dev server.
-See [`docs/local-dev.md`](docs/local-dev.md) and [`docs/tooling.md`](docs/tooling.md) for prerequisites and pinned command forms.
-
-```bash
+git clone https://github.com/kapitan-ai/orchard.git
+cd orchard
 make setup
+mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
 make dev
 ```
 
-`make dev` wraps `mise exec -- bin/dev`: it creates the dev database, runs
-migrations, and starts `iex -S mix phx.server`. The controller listens on
-`http://localhost:4000`, and the node-agent gRPC server listens on
-`127.0.0.1:50071`.
+`make dev` creates the development database, runs migrations, and starts Orchard in the foreground.
+The Console is available at `http://localhost:4000` and the source-development Node Agent gRPC endpoint listens on `127.0.0.1:50071`.
+The extra `uv sync` installs the optional MLX worker dependencies needed for real inference on the Mac.
 
-From the running IEx session, import a model, create a dev tenant and API key,
-then grant the model to both the dev tenant and the seeded `legacy` tenant used
-by the Console Playground:
+Starting the service does not make it inference-ready.
+Before sending inference requests, complete the supported [Node enrollment and admission flow](docs/local-dev.md#two-node-source-dev-cluster-testing): initialize Node trust, create an Enrollment Bundle, join the local Node Agent, admit the registered Node with every documented policy and evidence input, and wait for the Node to become `active`.
+Source development is inference-ready only when the local Node is admitted and active, in addition to satisfying the model and Workspace conditions below.
+In the running IEx session, import and activate a Model Bundle, create a Workspace and direct API Token, then grant the Workspace access to the model.
+The CLI currently uses `tenant` in these commands for the Workspace identifier.
 
 ```elixir
 OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
 OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
-OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
+OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id returned above>", "--name", "dev"])
 OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>", "--tenant", "dev"])
-OrchardCLI.main(["models", "access", "grant", "<model_id>@<version>", "--tenant", "legacy"])
 ```
 
-Model access is deny-by-default, so both explicit grants are required before
-the corresponding tenant can list the model or make a `/v1` inference call.
-For multi-host source development, use `make dev-controller` and
-`make dev-node-agent` (or the equivalent `mise exec -- bin/...` commands);
-see [`docs/local-dev.md`](docs/local-dev.md) for the split-role setup.
+Copy the one-time API Token printed by `api-keys create` into `ORCHARD_API_KEY` in the shell where you will call Orchard.
+Use the exact `<model_id>@<version>` printed by `models import` in both the access grant and the request below.
+Catalog activation, Workspace access, and runtime residency are separate states.
+The [local development guide](docs/local-dev.md) covers Model Bundles, routing policies, residency, Console Playground access, and multi-host setup.
 
-### Set up with a coding agent
+```bash
+printf 'Orchard API Token: ' >&2
+read -r -s ORCHARD_API_KEY
+export ORCHARD_API_KEY
+printf '\n' >&2
 
-This checkout is agent-friendly: [`AGENTS.md`](AGENTS.md) is the canonical
-automation and agent workflow contract, and [`CLAUDE.md`](CLAUDE.md) imports it
-for Claude Code. Developers have successfully used agentic CLIs such as Codex,
-Claude Code, Pi, and similar tools to drive source-dev setup from the checkout;
-this is workflow guidance, not a project-supported or tested agent integration.
-Point your agent at [`AGENTS.md`](AGENTS.md) and
-[`docs/local-dev.md`](docs/local-dev.md), and ask it to use the documented
-command surface rather than improvise:
+curl -X POST http://localhost:4000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${ORCHARD_API_KEY}" \
+  -d '{
+    "model": "<model_id>@<version>",
+    "messages": [{"role": "user", "content": "Hello from Orchard"}]
+  }'
+```
+
+Treat this first request as the end-to-end inference check.
+It succeeds only when the API Token resolves to the Workspace, the local Node is admitted and active, the exact model is active and granted, and an eligible runtime has the model loaded or can load it within the routing policy's cold-start budget.
+`/v1/responses` is Orchard's canonical inference abstraction.
+`/v1/chat/completions` is a compatibility facade, and `/v1/models` lists only active models granted to the calling Workspace.
+See the [API examples](docs/local-dev.md#api-endpoints) for streaming and Responses requests.
+
+## What Orchard includes
+
+**Controller**
+
+The Elixir/OTP Controller authenticates requests, resolves Workspace policy, schedules work, relays token streams, and records durable request state.
+Applications call the Controller rather than individual model workers.
+
+**Node Agent and MLX workers**
+
+Each inference Mac runs a Node Agent that manages local model artifacts and MLX-LM workers.
+Workers stay behind the Node Agent and are not exposed as public endpoints.
+
+**Console and CLI**
+
+The Phoenix LiveView Console presents nodes, models, Workspaces, keys, request inspection, settings, and a Playground.
+`orchardctl` covers bootstrap, model import and access, node trust and enrollment, lifecycle actions, transport setup, diagnostics, and redacted support bundles.
+
+**Postgres**
+
+Postgres stores control-plane state and coordinates leadership and work.
+Current Controller-bearing installations require operator-provided external Postgres.
 
 ```text
-Read AGENTS.md and docs/local-dev.md. Set up Orchard source development from
-this checkout with make setup and make dev, then use the running IEx session
-to import a model, create the dev tenant and API key, and add the required
-dev and legacy model-access grants.
+Applications and SDKs
+         |
+     HTTPS + SSE
+         |
+ Orchard Controller -------- Postgres
+         |
+ Runtime Endpoint interface
+         |
+     Node Agent
+         |
+   MLX-LM workers
 ```
 
-You still need the mise toolchain and local PostgreSQL ready first. `make dev`
-is foreground and blocking, so the agent should expect an interactive IEx
-session rather than backgrounding the server.
+Read [`docs/architecture.md`](docs/architecture.md) for runtime boundaries and the repository map.
 
-Contributors can run `make test` for the test suite or `make check-elixir` for
-the full Elixir quality workflow. See [`AGENTS.md`](AGENTS.md) and
-[`docs/tooling.md`](docs/tooling.md) for the repository workflow.
+## Current status
+
+Orchard is pre-release software at `0.5.0-dev` and is being developed against the normative [`SPEC.md`](SPEC.md).
+Implemented behavior and target architecture are intentionally described separately.
+
+Available in the current source tree:
+
+- Authenticated `/v1/models` and `/v1/chat/completions`, including server-sent event streaming.
+- A bounded `/v1/responses` subset.
+- Workspace-scoped API Tokens, API Clients, and deny-by-default model access grants.
+- The Console, Developer Portal, Prometheus metrics, request diagnostics, and redacted support bundles.
+- Node trust initialization, single-node enrollment and join, admission review, and bounded lifecycle actions.
+- Client-executed function-tool passthrough for model configurations qualified with the `tool_calling` capability.
+
+Current limits:
+
+- The ordinary source-development path is single-node on Apple Silicon macOS.
+- Production multi-node scheduling, Active/Standby failover, full configurable Workspace quota policy, and managed Postgres are incomplete.
+- The accepted Linux Controller profile is not supported until its mixed-platform acceptance gates pass.
+- Tool calls are returned to the client for execution.
+  Orchard does not execute client-supplied tools on the server in base v1.
+- Model support depends on qualification of the exact model, artifacts, runtime, Orchard revision, hardware, and operating policy.
+- There is no supported public binary.
+
+The approved native macOS distribution design is a signed and notarized DMG containing `Orchard.app` with launchd-managed services.
+Any public binary requires a separate release decision and completion of its build, verification, signing, notarization, stapling, and publication gates.
+See [`packaging/dmg/README.md`](packaging/dmg/README.md) for those gates.
 
 ## Documentation
 
-For operators:
+- [`docs/local-dev.md`](docs/local-dev.md) explains source setup, Model Bundles, API examples, routing policy, and multi-host development.
+- [`docs/architecture.md`](docs/architecture.md) explains components, runtime boundaries, and qualified platform profiles.
+- [`docs/operator-journey.md`](docs/operator-journey.md) describes current and target operator workflows.
+- [`docs/pilots/README.md`](docs/pilots/README.md) defines the current source-development pilot bar.
+- [`SPEC.md`](SPEC.md) is the normative product and system contract.
+- [`docs/README.md`](docs/README.md) maps the rest of the documentation.
 
-- [`docs/operator-journey.md`](docs/operator-journey.md) — current and target
-  operator journeys, friction baseline, recovery points, and ordered
-  improvement slices.
-- [`packaging/dmg/README.md`](packaging/dmg/README.md) — `Orchard.app` DMG
-  verification and app-owned service lifecycle.
-- [`packaging/README.md`](packaging/README.md) - install, roles, transport,
-  TLS, and operator runbook.
-- [`docs/pilots/README.md`](docs/pilots/README.md) — pilot start bar and
-  runbook.
+## Developing Orchard
 
-For contributors:
+Orchard is an Elixir/OTP umbrella application with Phoenix LiveView, Postgres, native MLX integration, and macOS packaging work.
+Use the repository command surface and the pinned toolchain documented in [`docs/tooling.md`](docs/tooling.md).
 
-- [`SPEC.md`](SPEC.md) — the normative build contract; every implementation
-  decision traces back to it, and it governs the roadmap and target behavior.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — human collaboration workflow.
-- [`AGENTS.md`](AGENTS.md) — the canonical automation and agent workflow guide
-  ([`CLAUDE.md`](CLAUDE.md) imports it for Claude Code).
-- [`docs/README.md`](docs/README.md) — the collaborator docs hub, including
-  architecture, tooling, local development, process, design, and the product
-  glossary.
-- [`openspec/README.md`](openspec/README.md) — the OpenSpec change workflow
-  subordinate to `SPEC.md`.
+```bash
+make test
+make check-elixir
+```
 
-## Background
-
-Orchard is a ground-up rewrite of
-[Kapitan Orchard](https://github.com/najibninaba/kapitan-orchard)
-(v1: Rust + Kafka + Redis + Tauri). The rewrite replaces the distributed
-streaming architecture with Elixir/OTP + Postgres for simpler operations,
-better fault tolerance, and native macOS integration.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before proposing a change.
+[`AGENTS.md`](AGENTS.md) defines the automation workflow, and [`CLAUDE.md`](CLAUDE.md) imports it for Claude Code.
+Substantial behavior and architecture changes use the [OpenSpec workflow](openspec/README.md) under `SPEC.md`.
 
 ## License
 
-Covered Orchard-authored software and technical documentation in this repository are licensed under the Apache License, Version 2.0.
+Covered Orchard-authored software and technical documentation in this repository are licensed under the [Apache License, Version 2.0](LICENSE).
 Copyright 2026 AI Singapore.
-See [`LICENSE`](LICENSE).
 
 This experimental publication is source-only.
 It provides no official binary, supported release, SLA, or maintenance commitment.
