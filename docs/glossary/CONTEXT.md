@@ -59,9 +59,10 @@ The Acceptance Profile that proves a portable Controller, including a Linux Cont
 _Avoid_: Mixed-platform Platform Profile, deployment topology alone, Linux support claim without acceptance
 
 **Initial Source-Availability Transition**:
-The first period in which Orchard source is readable in this repository before any supported public binary is published.
-It neither promises a supported public binary nor changes Orchard's licensing terms.
-_Avoid_: Curated OSS, open source release, public binary availability, licensing change
+The first period in which Orchard source is readable in this repository under the Apache-2.0 grant for covered Orchard-authored software and technical documentation defined in `SPEC.md` §11.
+Third-party material and distinctive brand assets remain excluded from that grant, and source visibility alone grants no rights beyond the applicable license terms.
+This source-only publication provides no official binary, supported release, SLA, or maintenance commitment.
+_Avoid_: Curated OSS, supported binary release, public binary availability, support commitment
 
 **Normative Build Contract**:
 The top-level product and system contract that governs Orchard behavior and resolves conflicts between docs, tests, and implementation.

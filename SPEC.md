@@ -5134,9 +5134,12 @@ Its final distribution format, host manager, paths, service integration, and pub
 No Linux distribution is supported by this contract-only amendment.
 
 The macOS native distribution profile SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
-The initial source-availability transition MAY be source-first, meaning Orchard source is readable in this repository before any public binary is published.
-Source availability SHALL NOT be represented as public binary availability or support, and a supported public binary requires an explicit release decision plus every applicable build, verification, signing, notarization, stapling, and publication gate.
-Source availability SHALL NOT be represented as a change to Orchard's licensing terms, which remain the terms stated in the repository.
+The initial source-availability transition SHALL be source-only under the Apache License, Version 2.0, for covered Orchard-authored software and technical documentation, with Copyright 2026 AI Singapore.
+Third-party software, models, tokenizers, assets, and other separately licensed material SHALL be excluded from that grant and remain subject to their own terms and notices.
+Orchard logos and distinctive brand assets, including tracked assets under `apps/orchard_controller/priv/static/images/` and `assets/brand/`, are excluded from that grant, and trademark rights are not granted.
+Source visibility alone SHALL NOT grant rights beyond the applicable license terms.
+Source availability SHALL NOT be represented as public binary availability or support, and initial source publication provides no official binary, supported release, SLA, or maintenance commitment.
+A supported public binary requires an explicit release decision plus every applicable build, verification, signing, notarization, stapling, and publication gate.
 Native PKG distribution is not a supported current Orchard distribution channel.
 Legacy PKG receipt detection SHALL be retained solely to prevent silent app ownership takeover of an existing installation, as required by §11.4, and does not define a supported distribution channel, a release artifact, or a validation gate.
 Any future native package or additional distribution channel SHALL require a fresh accepted OpenSpec proposal and a separate implementing pull request that updates this contract, security posture, operator documentation, and validation gates before support is claimed.
