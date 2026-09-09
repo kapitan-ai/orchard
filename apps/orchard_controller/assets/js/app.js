@@ -4,12 +4,18 @@ import "phoenix_html"
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import topbar from "../vendor/topbar"
+import {WorkspaceSections} from "./workspace_sections.mjs"
+import {
+  downloadNodeEnrollmentBundle,
+  nodeEnrollmentBundleAcknowledgement
+} from "./node_enrollment_bundle_download.mjs"
 
 // ===========================================================================
 // LiveView Hooks
 // ===========================================================================
 
 let Hooks = {}
+Hooks.WorkspaceSections = WorkspaceSections
 
 const QUICKSTART_COOKIE_OPTIONS = {
   path: "/console",
@@ -467,6 +473,24 @@ Hooks.CopyGeneratedSecret = {
 
   destroyed() {
     this.el.removeEventListener("click", this._onClick)
+  }
+}
+
+/**
+ * NodeEnrollmentBundleDownload downloads a one-time enrollment bundle from a
+ * LiveView event without placing its secret content in the DOM or a URL.
+ */
+Hooks.NodeEnrollmentBundleDownload = {
+  mounted() {
+    this.handleEvent("node_enrollment_bundle", async (payload) => {
+      let result = await downloadNodeEnrollmentBundle(payload)
+      let acknowledgement = nodeEnrollmentBundleAcknowledgement(result)
+
+      if (acknowledgement) {
+        this.pushEvent(acknowledgement.event, acknowledgement.payload)
+      }
+      payload = null
+    })
   }
 }
 

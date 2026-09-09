@@ -38,7 +38,7 @@ defmodule OrchardShared.MixProject do
       {:grpc_server, "~> 1.0"},
       {:gun, "~> 2.4"},
       {:protobuf, "~> 0.17.0"},
-      {:hackney, "~> 1.8", runtime: false},
+      {:hackney, "~> 4.7", runtime: false},
       {:req, "~> 0.5", only: :test}
     ]
   end

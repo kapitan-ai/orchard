@@ -65,7 +65,7 @@ mise exec -- bin/dev
 # 3. Import a model bundle (in the running IEx session)
 OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
 
-# 4. Create an Organization and direct API Token for /v1 API calls (in the running IEx session)
+# 4. Create a Workspace and direct API Token for /v1 API calls (in the running IEx session)
 OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
 OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
 
@@ -171,12 +171,13 @@ When running from a source checkout (`make dev`, `mise exec -- bin/dev`, or
 - No TLS setup is required
 
 All `curl` examples in this document use plain HTTP because they target the source dev controller.
-API examples assume `ORCHARD_API_KEY` contains a tenant-direct API Token or a service-account-owned API Token whose API Client has the `inference_client` Access Level for the Organization.
+API examples assume `ORCHARD_API_KEY` contains a tenant-direct API Token or a service-account-owned API Token whose API Client has the `inference_client` Access Level for the Workspace.
 
 ### Bulk API Client provisioning
 
-Use `orchardctl api-clients bulk-provision` when a source-dev Organization needs service-account-owned API Tokens for internal developers, applications, coding agents, or automation clients.
-The input CSV must target one Organization slug and include `organization`, `api_client`, `owner_contact`, and `key_name`.
+Use `orchardctl api-clients bulk-provision` when a source-dev Workspace needs service-account-owned API Tokens for internal developers, applications, coding agents, or automation clients.
+Workspace is the product-facing Tenant label; CLI commands and the CSV `organization` column retain their existing names.
+The input CSV must target one Workspace slug and include `organization`, `api_client`, `owner_contact`, and `key_name`.
 Optional columns are `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
 
 ```csv
@@ -321,6 +322,10 @@ back to that same full digest whenever the receipt is missing, invalid, or no
 longer matches the cache tree.
 By default, source-dev worker Unix sockets live under a short, worktree-specific `/tmp/od-<hash>/ws` directory to avoid macOS Unix socket path length limits.
 Set `ORCHARD_WORKER_SOCKET_DIR` to override that location.
+On macOS, the complete worker socket path must fit within 103 UTF-8 bytes, including the directory, separator, and generated `orchard-worker-<16 hex digits>.sock` filename.
+Keep the expanded directory path at most 66 bytes and use a directory owned by the node-agent user, isolated from other running instances.
+Linux validation allows 107 bytes for the complete path, or 70 bytes for the directory.
+An oversized path returns `worker_socket_path_too_long` before launching a worker or removing an existing socket; shorten `ORCHARD_WORKER_SOCKET_DIR` and restart the node agent.
 `ORCHARD_FAKE_RUNTIME` is a release/runtime config knob; source-dev tests use
 the fake runtime through `config/test.exs`, not a dev env override.
 Batch generation mode can admit multiple same-model requests up to the worker-reported limit.
@@ -661,6 +666,8 @@ operator workflow, permission expectations, and external certificate setup.
 ## Two-Node Source-Dev Cluster Testing
 
 Single-node all-in-one remains available through `bin/dev`.
+The README quick start uses the explicitly unmanaged static compatibility target and does not require Node enrollment or admission.
+That fallback is available only when static fallback is enabled, trusted admitted or active inventory is confirmed empty, and the target matches the configured source-development target; it never becomes production inventory or production authority.
 Use the BEAM Runtime Endpoint flow for the default split-role source-dev cluster path.
 Use the gRPC compatibility flow only when you intentionally opt out with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` or need side-by-side comparison.
 
@@ -670,6 +677,8 @@ If publication cannot be confirmed after credential authority commits, the comma
 The command refuses a second init with `cluster_already_initialized` and supports `--force-new-admin --yes` recovery minting, `--client-name`, and `--json`.
 `orchardctl nodes trust init` initializes the internal Node trust authority on the controller host and is a required, idempotent, leader-gated prerequisite before any enrollment bundle can be issued; it is separate from the credential-only `orchardctl cluster init`.
 `orchardctl nodes enrollment create --output PATH` issues an owner-only, single-Node Enrollment bundle from the active controller, and `orchardctl node join --enrollment-bundle PATH` redeems it with pinned controller trust before persisting the Node identity and validated gRPC compatibility advertisement.
+Bundle issuance also requires Controller endpoint metadata for a reachable HTTPS endpoint and its public CA certificate; the default `plain_http_localhost` transport does not provide those inputs.
+The current source-dev enrollment and join slice proves registration and persisted identity, while production-managed scheduling additionally requires a runtime that presents that registered identity, administrator admission, and fresh authenticated evidence before the Node becomes active.
 Set `ORCHARD_NODE_AGENT_ADVERTISE_HOST` to a Controller-reachable private address when `ORCHARD_NODE_AGENT_LISTEN_HOST` is `0.0.0.0`; wildcard addresses fail closed and are never persisted as trusted targets.
 `orchardctl cluster status [--json]` is implemented for read-only cluster and control-plane status, with the shared `ControlPlaneStatus` payload and a control-plane summary in `--json` mode.
 `orchardctl nodes inspect`, `orchardctl nodes pending`, `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for the current node-admission-review slice, with stable JSON and human output, `--dry-run` previews, and `--yes` execution gating; `orchardctl nodes reject` additionally requires a nonblank `--reason`.
@@ -841,7 +850,7 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 
 ### Verification
 
-1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status with distinct display names and reachable status.
+1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
 3. `GET /v1/models` should return `200` and list the Models granted to the calling Tenant.
 4. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request, after the Model is granted to the calling Tenant (`legacy` for the Console Playground).
@@ -864,7 +873,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | BEAM `connect` / `:gen_tcp` returns `:ehostunreach` while `ping` works | macOS Local Network Privacy blocked the BEAM launch context | Relaunch controller/node-agent from Terminal.app (or another GUI app with Local Network allowed). |
 | Source-dev BEAM bootstrap reports wildcard-bound EPMD | Another `epmd` is listening on `0.0.0.0`/`*` for that port | `ERL_EPMD_PORT=<port> epmd -kill`, confirm only the address-constrained listener remains, rerun. |
 | Console boot warns `Sentry.LiveViewHook` unavailable / LiveView crashes lack Sentry context | Sentry was compiled without LiveView on the compile path | Console still mounts. To restore LiveView Sentry context: `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
-| Live Cluster healthy but Registered Nodes inventory is zero / candidates stuck `pending_observed` | Configured-target observation is not bootstrapping durable admission inventory yet | Inference may still work via configured targets. See issue #192. |
+| Live Cluster healthy but Registered Nodes inventory is zero while `pending_observed` candidates exist | Configured-target observation creates admission candidates but does not register or admit Nodes automatically | Complete Node enrollment and `orchardctl node join` first, then review and admit the resulting registered Node through the normal admission path. If no candidate appears, verify configured-target reachability and ActivationProbe evidence. |
 | Model load fails with missing `tokenizer.json` or `artifact_hash_mismatch` | Incomplete artifact copy on controller or worker | Re-import a complete bundle and sync the full artifact directory to the worker path. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
 | BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ipv4` or uses the wrong role service | Use `orchard_controller@<controller-ipv4>` for the controller and exactly `orchard_node_agent@<node-ipv4>` for node-agents. |
@@ -1289,7 +1298,7 @@ All-in-one local boot (dev):
    - Controller boots: Endpoint, Repo, membership owner, Inference supervisor, Runtime Endpoint clients
    - Node-agent boots: ModelManager, WorkerSupervisor, Runtime Endpoint task supervisor, gRPC server
 3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
-4. Create an Organization and API Token with `OrchardCLI.main(["tenants", ...])` and
+4. Create a Workspace and API Token with `OrchardCLI.main(["tenants", ...])` and
    `OrchardCLI.main(["api-keys", ...])`
 5. Source-dev HTTP is live at `/health/live`; status-only `/health/ready` can
    remain degraded under the staged `orchard.readiness.legacy_m0.v1` predicate and

@@ -19,17 +19,12 @@ class ToolCallingContext:
     requires_tool_call: bool = False
     in_tool_call: bool = False
     saw_tool_call: bool = False
-    current_tool_text: str = ""
+    tool_text_parts: list[str] = field(default_factory=list)
     next_tool_index: int = 0
     pending_events: list[dict[str, Any]] = field(default_factory=list)
     pending_error: BackendError | None = None
     text_buffer: str = ""
     tool_end_buffer: str = ""
-    active_tool_call_id: str | None = None
-    active_tool_index: int | None = None
-    active_tool_name: str | None = None
-    active_type_emitted: bool = False
-    active_name_emitted: bool = False
 
     @property
     def stop_buffer_disabled(self) -> bool:
@@ -118,7 +113,7 @@ def finalize(
     *,
     terminal_kind: str = "completed",
 ) -> BackendError | None:
-    if terminal_kind not in {"completed", "cancelled", "failed"}:
+    if terminal_kind not in {"completed", "cancelled", "failed", "truncated"}:
         raise ValueError(f"unsupported terminal kind: {terminal_kind!r}")
 
     if ctx.text_buffer:
@@ -127,18 +122,26 @@ def finalize(
 
     if ctx.in_tool_call:
         if ctx.tool_end_buffer:
-            _append_tool_argument_fragment(ctx, ctx.tool_end_buffer)
+            ctx.tool_text_parts.append(ctx.tool_end_buffer)
             ctx.tool_end_buffer = ""
 
-        if terminal_kind == "completed":
+        if terminal_kind == "completed" and not ctx.tool_call_end:
             _finalize_active_tool_call(ctx)
         else:
+            if terminal_kind in {"completed", "truncated"}:
+                ctx.pending_error = BackendError(
+                    "tool_call_parse_failed", "generation ended before a complete tool call", False
+                )
             _reset_active_tool_call(ctx)
 
     if ctx.pending_error is not None:
         return ctx.pending_error
 
-    if terminal_kind == "completed" and ctx.requires_tool_call and not ctx.saw_tool_call:
+    if (
+        terminal_kind in {"completed", "truncated"}
+        and ctx.requires_tool_call
+        and not ctx.saw_tool_call
+    ):
         if ctx.named_tool_name is not None:
             return BackendError(
                 "tool_choice_not_satisfied",
@@ -175,7 +178,7 @@ def _consume_normal_text(ctx: ToolCallingContext, text: str) -> str:
 
 def _consume_tool_text(ctx: ToolCallingContext, text: str) -> str:
     if ctx.tool_call_end == "":
-        _append_tool_argument_fragment(ctx, text)
+        ctx.tool_text_parts.append(text)
         return ""
 
     combined = ctx.tool_end_buffer + text
@@ -184,11 +187,11 @@ def _consume_tool_text(ctx: ToolCallingContext, text: str) -> str:
 
     if end_pos == -1:
         safe_text, suffix = _split_partial_marker(combined, ctx.tool_call_end)
-        _append_tool_argument_fragment(ctx, safe_text)
+        ctx.tool_text_parts.append(safe_text)
         ctx.tool_end_buffer = suffix
         return ""
 
-    _append_tool_argument_fragment(ctx, combined[:end_pos])
+    ctx.tool_text_parts.append(combined[:end_pos])
     _finalize_active_tool_call(ctx)
     return combined[end_pos + len(ctx.tool_call_end) :]
 
@@ -205,163 +208,99 @@ def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
 
 
 def _start_tool_call(ctx: ToolCallingContext) -> None:
-    index = ctx.next_tool_index
-    ctx.next_tool_index += 1
     ctx.in_tool_call = True
-    ctx.current_tool_text = ""
+    ctx.tool_text_parts.clear()
     ctx.tool_end_buffer = ""
-    ctx.active_tool_call_id = f"call_{index}"
-    ctx.active_tool_index = index
-    ctx.active_tool_name = _inferred_tool_name(ctx)
-    ctx.active_type_emitted = False
-    ctx.active_name_emitted = False
-
-
-def _append_tool_argument_fragment(ctx: ToolCallingContext, fragment: str) -> None:
-    if fragment == "":
-        return
-
-    if ctx.active_tool_call_id is None or ctx.active_tool_index is None:
-        _start_tool_call(ctx)
-
-    ctx.current_tool_text += fragment
-
-    function_delta: dict[str, Any] = {"arguments_delta": fragment}
-    if ctx.active_tool_name is not None and not ctx.active_name_emitted:
-        function_delta["name"] = ctx.active_tool_name
-        ctx.active_name_emitted = True
-
-    delta: dict[str, Any] = {"index": ctx.active_tool_index, "function": function_delta}
-    if not ctx.active_type_emitted:
-        delta["type"] = "function"
-        ctx.active_type_emitted = True
-
-    ctx.pending_events.append(
-        {
-            "kind": "tool_call_delta",
-            "tool_call_id": ctx.active_tool_call_id,
-            "delta": delta,
-        }
-    )
-    ctx.saw_tool_call = True
-
-
-def _emit_tool_name_delta(ctx: ToolCallingContext, name: str) -> None:
-    if ctx.active_tool_call_id is None or ctx.active_tool_index is None or ctx.active_name_emitted:
-        return
-
-    ctx.active_tool_name = name
-    delta: dict[str, Any] = {
-        "index": ctx.active_tool_index,
-        "function": {"name": name},
-    }
-    if not ctx.active_type_emitted:
-        delta["type"] = "function"
-        ctx.active_type_emitted = True
-
-    ctx.pending_events.append(
-        {
-            "kind": "tool_call_delta",
-            "tool_call_id": ctx.active_tool_call_id,
-            "delta": delta,
-        }
-    )
-    ctx.active_name_emitted = True
-    ctx.saw_tool_call = True
 
 
 def _finalize_active_tool_call(ctx: ToolCallingContext) -> None:
-    if ctx.active_tool_call_id is None or ctx.active_tool_index is None:
-        ctx.in_tool_call = False
-        return
-
     try:
-        parsed = ctx.tool_parser(ctx.current_tool_text, ctx.tools)
-    except Exception as exc:
+        parsed = ctx.tool_parser("".join(ctx.tool_text_parts), ctx.tools)
+    except Exception:
+        # Provider parser exceptions can include generated content; keep them local.
         ctx.pending_error = BackendError(
-            "tool_call_parse_failed",
-            f"failed to parse tool call: {exc}",
-            False,
+            "tool_call_parse_failed", "provider could not parse the tool call", False
         )
         _reset_active_tool_call(ctx)
         return
 
     parsed_calls = parsed if isinstance(parsed, list) else [parsed]
-    if len(parsed_calls) != 1:
+    if not parsed_calls:
         ctx.pending_error = BackendError(
-            "tool_call_parse_failed",
-            f"tool parser returned {len(parsed_calls)} calls for a single tool block",
-            False,
+            "tool_call_parse_failed", "provider returned no tool calls", False
         )
         _reset_active_tool_call(ctx)
         return
 
     try:
-        normalized = _normalize_parsed_tool_call(parsed_calls[0])
-    except ValueError as exc:
-        ctx.pending_error = BackendError("tool_call_parse_failed", str(exc), False)
+        normalized = [_normalize_parsed_tool_call(ctx, call) for call in parsed_calls]
+    except BackendError as exc:
+        ctx.pending_error = exc
         _reset_active_tool_call(ctx)
         return
 
-    name = normalized["name"]
-    if ctx.named_tool_name is not None and name != ctx.named_tool_name:
-        ctx.pending_error = BackendError(
-            "tool_choice_not_satisfied",
-            f"model emitted tool {name!r} but tool_choice requires {ctx.named_tool_name!r}",
-            False,
+    for name, arguments in normalized:
+        index = ctx.next_tool_index
+        ctx.next_tool_index += 1
+        ctx.pending_events.append(
+            {
+                "kind": "tool_call_delta",
+                "tool_call_id": f"call_{index}",
+                "delta": {
+                    "index": index,
+                    "type": "function",
+                    "function": {"name": name, "arguments_delta": arguments},
+                },
+            }
         )
-        _reset_active_tool_call(ctx)
-        return
-
-    if ctx.active_tool_name is not None and name != ctx.active_tool_name:
-        ctx.pending_error = BackendError(
-            "tool_call_parse_failed",
-            f"parsed tool name {name!r} did not match emitted tool name {ctx.active_tool_name!r}",
-            False,
-        )
-        _reset_active_tool_call(ctx)
-        return
-
-    _emit_tool_name_delta(ctx, name)
+    ctx.saw_tool_call = True
     _reset_active_tool_call(ctx)
 
 
 def _reset_active_tool_call(ctx: ToolCallingContext) -> None:
     ctx.in_tool_call = False
-    ctx.current_tool_text = ""
+    ctx.tool_text_parts.clear()
     ctx.tool_end_buffer = ""
-    ctx.active_tool_call_id = None
-    ctx.active_tool_index = None
-    ctx.active_tool_name = None
-    ctx.active_type_emitted = False
-    ctx.active_name_emitted = False
 
 
-def _inferred_tool_name(ctx: ToolCallingContext) -> str | None:
-    if ctx.named_tool_name is not None:
-        return ctx.named_tool_name
-    if len(ctx.tools) != 1:
-        return None
-
-    tool = ctx.tools[0]
-    function = tool.get("function") if isinstance(tool, dict) else None
-    name = function.get("name") if isinstance(function, dict) else None
-    return name if isinstance(name, str) and name else None
-
-
-def _normalize_parsed_tool_call(parsed_call: Any) -> dict[str, str | None]:
+def _normalize_parsed_tool_call(ctx: ToolCallingContext, parsed_call: Any) -> tuple[str, str]:
     if not isinstance(parsed_call, dict):
-        raise ValueError(f"tool parser returned unsupported payload: {parsed_call!r}")
+        raise BackendError(
+            "tool_call_parse_failed", "provider returned an invalid tool call", False
+        )
 
     name = parsed_call.get("name")
     if not isinstance(name, str) or not name:
-        raise ValueError(f"tool parser returned invalid function name: {name!r}")
+        raise BackendError(
+            "tool_call_parse_failed", "provider returned an invalid tool name", False
+        )
 
-    tool_call_id = parsed_call.get("id")
-    if tool_call_id is not None and (not isinstance(tool_call_id, str) or not tool_call_id):
-        raise ValueError(f"tool parser returned invalid tool call id: {tool_call_id!r}")
+    if ctx.named_tool_name is not None and name != ctx.named_tool_name:
+        raise BackendError(
+            "tool_choice_not_satisfied", "model did not emit the required function", False
+        )
+    requested_names = {
+        tool["function"]["name"]
+        for tool in ctx.tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and isinstance(tool["function"].get("name"), str)
+    }
+    if name not in requested_names:
+        raise BackendError("tool_call_parse_failed", "model emitted an unrequested function", False)
 
-    return {"id": tool_call_id, "name": name}
+    arguments = parsed_call.get("arguments")
+    if not isinstance(arguments, dict):
+        raise BackendError(
+            "tool_call_parse_failed", "provider tool arguments must be a JSON object", False
+        )
+    try:
+        encoded = json.dumps(arguments, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        raise BackendError(
+            "tool_call_parse_failed", "provider tool arguments are not valid JSON", False
+        ) from None
+    return name, encoded
 
 
 def _normalize_tool_choice(

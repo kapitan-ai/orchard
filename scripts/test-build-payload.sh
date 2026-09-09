@@ -151,6 +151,10 @@ exit 0
 BIN
   chmod +x "\$root/_build/prod/rel/\$release/bin/\$release"
   : > "\$root/_build/prod/rel/\$release/erts-16.4/bin/beam.smp"
+  nif_dir="\$root/_build/prod/rel/\$release/lib/fixture_nif-1.0/priv"
+  mkdir -p "\$nif_dir/fixture_nif.so.dSYM/Contents/Resources/DWARF"
+  printf 'runtime NIF\\n' > "\$nif_dir/fixture_nif.so"
+  printf 'debug symbols\\n' > "\$nif_dir/fixture_nif.so.dSYM/Contents/Resources/DWARF/fixture_nif.so"
   if [ "\$release" = "orchard_controller" ]; then
     app_root="\$root/_build/prod/rel/\$release/lib/orchard_controller-$FAKE_VERSION"
     mkdir -p "\$app_root/ebin"
@@ -255,6 +259,18 @@ fi
 # The printed path is the handoff contract with scripts/build-app.sh, so it must
 # name a real staged tree rather than a value the build merely intended.
 test -d "$PAYLOAD_ROOT" || fail 'PAYLOAD_ROOT does not name a directory'
+test -d "$PAYLOAD_ROOT/support/openssl" ||
+    fail 'app payload requires support/openssl even without Homebrew OpenSSL load commands'
+
+for release in orchard_controller orchard_node_agent orchard_cli; do
+    nif_path="lib/fixture_nif-1.0/priv/fixture_nif.so"
+    test -d "$REPO_ROOT/_build/prod/rel/$release/$nif_path.dSYM" ||
+        fail "source release lost its debug symbols: $release"
+    test ! -e "$PAYLOAD_ROOT/releases/$release/$nif_path.dSYM" ||
+        fail "runtime payload includes an xattr-signed debug companion: $release"
+    test -f "$PAYLOAD_ROOT/releases/$release/$nif_path" ||
+        fail "runtime payload lost its NIF: $release"
+done
 
 for staged in \
     "share/bin/orchardctl" \

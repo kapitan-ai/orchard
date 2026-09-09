@@ -1057,42 +1057,59 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         "messages" => [%{"role" => "user", "content" => "hello"}]
       }
 
+      Process.put(:queue_admission_runtime_pids, [])
       first = Task.async(fn -> post_chat(params, token) end)
+      Process.put(:queue_admission_runtime_tasks, [first])
 
-      assert_receive {:queue_admission_runtime_started, first_pid, first_request_id,
-                      "chat-queue-tenant-active-cap-model"},
-                     2_000
+      try do
+        {first_pid, first_request_id} =
+          runtime_start_message("chat-queue-tenant-active-cap-model", 5_000)
 
-      second = Task.async(fn -> post_chat(params, token) end)
+        remember_runtime_pid(first_pid)
+        second = Task.async(fn -> post_chat(params, token) end)
+        Process.put(:queue_admission_runtime_tasks, [second, first])
 
-      assert wait_for_queued_request("chat-queue-tenant-active-cap-model@v1")
+        assert wait_for_queued_request("chat-queue-tenant-active-cap-model@v1")
 
-      refute_receive {:queue_admission_runtime_started, _pid, _request_id,
-                      "chat-queue-tenant-active-cap-model"},
-                     100
+        refute_receive {:queue_admission_runtime_started, _pid, _request_id,
+                        "chat-queue-tenant-active-cap-model"},
+                       100
 
-      send(first_pid, :queue_admission_runtime_release)
-      first_conn = Task.await(first, 5_000)
+        send(first_pid, :queue_admission_runtime_release)
+        first_conn = Task.await(first, 5_000)
 
-      assert_receive {:queue_admission_runtime_started, second_pid, second_request_id,
-                      "chat-queue-tenant-active-cap-model"},
-                     2_000
+        {second_pid, second_request_id} =
+          runtime_start_message("chat-queue-tenant-active-cap-model", 5_000)
 
-      assert first_conn.status == 200
-      refute second_request_id == first_request_id
+        remember_runtime_pid(second_pid)
+        assert first_conn.status == 200
+        refute second_request_id == first_request_id
 
-      send(second_pid, :queue_admission_runtime_release)
-      second_conn = Task.await(second, 5_000)
+        send(second_pid, :queue_admission_runtime_release)
+        second_conn = Task.await(second, 5_000)
 
-      assert second_conn.status == 200
+        assert second_conn.status == 200
 
-      immediate =
-        request_with_queue_result!("chat-queue-tenant-active-cap-model@v1", "immediate")
+        immediate =
+          request_with_queue_result!("chat-queue-tenant-active-cap-model@v1", "immediate")
 
-      queued = request_with_queue_result!("chat-queue-tenant-active-cap-model@v1", "queued")
+        queued = request_with_queue_result!("chat-queue-tenant-active-cap-model@v1", "queued")
 
-      assert_queue_metadata(immediate, "immediate", granted?: true)
-      assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
+        assert_queue_metadata(immediate, "immediate", granted?: true)
+        assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
+      after
+        Enum.each(Process.get(:queue_admission_runtime_pids, []), fn pid ->
+          send(pid, :queue_admission_runtime_release)
+        end)
+
+        Enum.each(
+          Process.get(:queue_admission_runtime_tasks, []),
+          &Task.shutdown(&1, :brutal_kill)
+        )
+
+        Process.delete(:queue_admission_runtime_pids)
+        Process.delete(:queue_admission_runtime_tasks)
+      end
     end
 
     test "SPEC.md §7.2.7 returns top-level chat envelopes for busy and queue execute errors" do

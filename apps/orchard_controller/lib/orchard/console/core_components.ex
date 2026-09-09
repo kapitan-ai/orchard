@@ -105,6 +105,8 @@ defmodule OrchardConsole.CoreComponents do
     "hero-server-stack" =>
       "M5.25 14.25h13.5m-13.5 0a3 3 0 0 1-3-3m3 3a3 3 0 1 0 0 6h13.5a3 3 0 1 0 0-6m-16.5-3a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3m-19.5 0a4.5 4.5 0 0 1 .9-2.7L5.737 5.1a3.375 3.375 0 0 1 2.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 0 1 .9 2.7m0 0a3 3 0 0 1-3 3m0 3h.008v.008h-.008v-.008Zm0-6h.008v.008h-.008v-.008ZM6.75 14.25h.008v.008H6.75v-.008Z",
     "hero-check" => "m4.5 12.75 6 6 9-13.5",
+    "hero-heart" =>
+      "M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z",
     "hero-key" =>
       "M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z",
     "hero-computer-desktop" =>
@@ -1439,6 +1441,29 @@ defmodule OrchardConsole.CoreComponents do
 
   defp sidebar_nav_item_classes, do: @sidebar_nav_item_classes
 
+  @doc "Navigation between the imported catalog and provider discovery."
+  attr(:active, :atom, required: true, values: [:catalog, :discover])
+
+  def models_navigation(assigns) do
+    ~H"""
+    <nav id="models-navigation" aria-label="Models" class="flex flex-wrap gap-2 mb-6">
+      <.link
+        :for={{key, label, path} <- [{:catalog, "Catalog", "/console/models"}, {:discover, "Discover", "/console/models/discover"}]}
+        navigate={path}
+        aria-current={if @active == key, do: "page"}
+        class={[
+          "inline-flex items-center justify-center font-medium rounded-md transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
+          button_size(:md),
+          button_variant(if @active == key, do: :primary, else: :secondary)
+        ]}
+      >
+        {label}
+      </.link>
+    </nav>
+    """
+  end
+
   @nav_items [
     %{
       key: :overview,
@@ -1469,17 +1494,10 @@ defmodule OrchardConsole.CoreComponents do
       enabled: true
     },
     %{
-      key: :model_hub,
-      label: "Model Hub",
-      icon: "hero-magnifying-glass",
-      path: "/console/model-hub",
-      enabled: true
-    },
-    %{
       key: :tenants,
-      label: "Organizations",
+      label: "Access",
       icon: "hero-key",
-      path: "/console/tenants",
+      path: "/console/access",
       enabled: true
     },
     %{

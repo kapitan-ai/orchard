@@ -104,6 +104,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Validate Product Version consistency
@@ -171,6 +172,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Install conformance dependencies
@@ -191,7 +193,7 @@ jobs:
     name: macOS host validation
     needs: changes
     if: needs.changes.outputs.macos == 'true'
-    runs-on: nscloud-macos-sequoia-stable-arm64-6x14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -217,6 +219,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Install Elixir dependencies
@@ -245,7 +248,7 @@ jobs:
     name: MLX provider validation
     needs: changes
     if: needs.changes.outputs.mlx == 'true'
-    runs-on: nscloud-macos-sequoia-stable-arm64-6x14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -256,6 +259,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Bootstrap MLX environment from lockfile
@@ -272,7 +276,7 @@ jobs:
     name: Orchard.app and DMG validation
     needs: changes
     if: needs.changes.outputs.packaging == 'true'
-    runs-on: nscloud-macos-sequoia-stable-arm64-6x14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Check out repository
@@ -298,6 +302,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: false
 
       - name: Install repository dependencies
@@ -345,6 +350,7 @@ jobs:
       - name: Install pinned toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
+          version: 2026.9.2
           cache: true
 
       - name: Install OpenSpec dependencies

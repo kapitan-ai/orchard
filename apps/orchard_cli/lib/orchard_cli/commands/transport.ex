@@ -3,8 +3,9 @@ defmodule OrchardCLI.Commands.Transport do
   CLI handler for `orchardctl transport` commands.
   """
 
+  alias Orchard.EndpointMetadata
   alias OrchardCLI.Commands.{LifecycleSupport, TLS}
-  alias OrchardCLI.{EndpointMetadata, ShellEnv}
+  alias OrchardCLI.ShellEnv
 
   @default_support_root "/Library/Application Support/Orchard"
   @default_https_port 8443

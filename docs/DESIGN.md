@@ -503,12 +503,25 @@ Blocker rows must read as non-bypassable and must disable or omit the execute co
 Warnings and consequences may use compact badges plus short copy, but stable codes remain visible or inspectable when the code is part of the user-facing contract.
 Confirmation requirements sit directly above the execution control they gate.
 Page-local preview panels are valid for node actions when they keep review context visible.
+Node action previews appear in the Actions section directly after the available action controls.
+Opening a preview focuses its panel, and closing it restores focus to the originating control.
+If refreshed action facts or consequences change, clear the prior confirmation and require the operator to review the updated preview.
+Candidate transport and raw identity evidence retain their observation time and are not labeled as current health.
 Typed-identifier confirmation inputs require the operator to retype the exact target identifier; do not prefill, autocomplete, or accept partial matches.
 Consequence acknowledgement controls default to unacknowledged and name the consequence they accept.
 The execute control stays disabled until every confirmation requirement is satisfied, and satisfying requirements never bypasses blockers.
 When one page offers several previewable actions, show one open preview panel at a time so review context stays unambiguous.
 
+Nodes uses Inventory, Admission, Runtime, and Diagnostics as page-local sections.
+Node detail uses Overview, Evidence, and Actions with shared identity and refresh context.
+Section links update a whitelisted URL parameter and replace the visible section rather than scrolling to another card.
+Inactive sections are hidden from both keyboard navigation and the accessibility tree; the selected navigation link exposes `aria-current`.
+
 Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, warnings, and observe-only memory telemetry in labeled groups instead of flattening them into a generic table.
+Node detail provides an explicit read-only refresh action.
+If refresh fails, retain the last successful evidence for the same target with its observation time and a visible stale warning.
+Stale evidence cannot authorize an action preview or execution; a successful refresh restores those controls.
+Changing the target clears retained evidence before loading the new target.
 The memory telemetry group renders only when runtime memory-budget data is present, stays labeled as observe-only and non-gating, and fails open to omission when no budget is reported.
 Use `<.detail_grid>`, `<.detail_field>`, and compact status badges for grouped facts.
 Source and compatibility badges should stay close to the identity or inventory field they qualify.
@@ -531,7 +544,18 @@ When raw decision debug JSON is shown, apply the same key-based unsafe-key deny-
 
 ### 6.7 Portal User Management and Portal Isolation
 
-The Organization detail surface manages Portal Users through three stacked Console cards.
+Access opens a Workspace list with the existing default Workspace first and a secondary Create workspace action leading to a separate form.
+Display the untouched seeded name as Default workspace, preserve customized names, and use a Default badge based on stable identity.
+Workspace detail keeps its name and slug visible above reloadable Overview, Model access, Portal users, and API credentials sections.
+Section changes replace the visible content; inactive sections are hidden from layout, keyboard navigation, and the accessibility tree.
+Known legacy fragments map to their corresponding section through a whitelisted client hook, preserving the Workspace identity.
+Unknown section values fall back to Overview; unknown fragments do not change scope.
+Return controls remain visible and preserve the destination context.
+Portal membership, model access, tenant-direct API Tokens, and API Client credentials remain independently explained.
+Team appears only as optional API Client grouping metadata, including an Ungrouped state, without membership or role controls.
+Invitation instructions explain that the operator separately copies and delivers the invite URL; no email delivery is implied.
+
+The Portal users section manages Portal Users through three related Console cards.
 The first card is the Portal User invite form, with an email field and a navy primary **Invite** action.
 Submitting **Invite** creates the Portal User in `invited` status without issuing a token or showing a Portal Invite URL.
 The operator then uses **Copy invite** on that invited Portal User to issue the first token.
@@ -558,16 +582,32 @@ The operator manages developer access through Portal Invites and Portal User dis
 
 The Developer Portal remains a separate, dark-pinned surface and does not inherit the Console theme preference.
 It must not render Console chrome or operator controls.
-It remains isolated to the Organization named by the route and to the portal-minted keys owned by the signed-in Portal User.
-The three operator cards remain Console surfaces and use the existing Console card, tactile-well, focus, and navy primary-action tokens in both Console theme modes.
+It remains isolated to the Workspace named by the route and to the portal-minted keys owned by the signed-in Portal User.
+These operator cards remain Console surfaces and use the existing Console card, tactile-well, focus, and navy primary-action tokens in both Console theme modes.
 
-### 6.8 Organization API Token Mint Attribution
+The guided colleague handoff is a separate six-step journey: Workspace, Model access, Portal invitation, Review scope, Colleague handoff, and First request.
+Show the complete numbered sequence, current step count, and dimmed future steps without spreading two active steps across the entire page.
+Each step replaces the previous step's content, with a compact responsive orientation and the selected Workspace and exact Model identity kept visible.
+If the default Workspace is the only scope, resolve step 1 visibly and start at step 2 of 6.
+Preserve non-secret inputs on Back and recoverable retries; changing scope clears scoped drafts and transient secrets.
+Leaving the invite reveal step clears its plaintext URL and timer, so returning requires explicit reissue.
+Successful refresh returns to Model access when the selected Model disappears, or Portal invitation when the selected Portal User disappears or becomes disabled, and locks the later steps until their prerequisites recover.
+Model access shows actual enabled, disabled, not-granted, inactive, or unavailable evidence.
+Where browser command authority is absent, provide scoped, shell-quoted operator command guidance and a refresh action rather than an unchecked grant control.
+An already-active Portal User with missing model access needs grant recovery, not another invitation.
+Keep Portal User creation and Copy invite as separate actions with real persisted status, explicit manual delivery, expiry, and reissue behavior.
+Opening the actual HTTPS Portal is a handoff, not evidence that the colleague accepted an invitation or ran a request.
+Console request guidance uses placeholder credentials and does not show completion without actual request evidence.
+Deprecated Models remain schedulable under SPEC section 6.2; handoff guidance must not describe deprecation alone as blocking inference.
+The Portal's one-time request example uses an authorized active exact Model and clearly states that runtime readiness remains unverified.
 
-The Organization API Tokens table places a **Minted via** column after **Name** and before **Prefix**.
-For `issuance_surface = "developer_portal"` with a Portal User from the same Organization, render **Developer Portal** as the primary line and the normalized Portal User email as visible secondary text.
+### 6.8 Workspace API Token Mint Attribution
+
+The Workspace API Tokens table places a **Minted via** column after **Name** and before **Prefix**.
+For `issuance_surface = "developer_portal"` with a Portal User from the same Workspace, render **Developer Portal** as the primary line and the normalized Portal User email as visible secondary text.
 For `issuance_surface = "governance"` with no Portal User association, render **Operator tooling**.
-For a Developer Portal API Token whose Portal User attribution is null, missing, deleted, or associated with another Organization, render **Developer Portal** with **Attribution unavailable** as visible secondary text.
-Any inconsistent association must fail closed without exposing another Organization's Portal User email.
+For a Developer Portal API Token whose Portal User attribution is null, missing, deleted, or associated with another Workspace, render **Developer Portal** with **Attribution unavailable** as visible secondary text.
+Any inconsistent association must fail closed without exposing another Workspace's Portal User email.
 These values describe mint-time provenance only.
 They do not identify API Token ownership, the Public Inference Bearer principal, current Portal User status, effective access, or revocation state.
 Disabling a Portal User does not automatically revoke minted API Tokens, and the existing **Status** column remains the credential-state presentation.
@@ -698,9 +738,9 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
   dark).
 - [ ] Placeholder contrast is readable.
 
-**Form input wells (Organizations + Organization Detail)**
+**Form input wells (Workspaces + Workspace Detail)**
 
-- [ ] Organization create `<.input>` renders as a tactile well.
+- [ ] Workspace create `<.input>` renders as a tactile well.
 - [ ] API Token create `<.input>` renders as a tactile well.
 
 **Form input wells (Playground)**
@@ -818,10 +858,6 @@ subsequent page loads. Live OS-appearance changes require the client theme
 control to register a `matchMedia` change listener; without JavaScript,
 `system` cannot resolve and the Console uses the light selector state.
 
-Tailwind's `dark:` utilities and Console dark custom rules are keyed from
-`<html data-theme="dark">`. Do not mix media-query driven app CSS with this
-selector contract.
-
 ### 13.3 Control Contract
 
 The theme control is a three-segment radiogroup mounted in the sidebar footer
@@ -840,3 +876,158 @@ fits inside the clipped sidebar without adding a second control style.
 This state-model addition satisfies §12 Change Discipline. It does not relax
 §11: no new Tailwind color tokens, font extensions, palette values, or `@theme`
 changes are part of theme mode control.
+
+## 14. Models Catalog and Discovery
+
+Models uses one sidebar entry with shared `models_navigation/1` links for Catalog and Discover.
+Catalog is the primary Models destination and distinguishes imported records from Controller-session import activity, including paused and cancelled jobs.
+Session activity is not a persisted Model record and does not imply an imported artifact.
+Catalog activity opens a dedicated exact-job detail with Back to Catalog, validated against server-held history.
+Unknown or expired activity links show a recovery destination without starting a download.
+Both pages retain the Models active sidebar state, including the legacy Model Hub URL.
+The subnavigation uses existing button sizing, palette, and focus tokens with `aria-current="page"` on the current link.
+
+Discovery labels capability controls as filters of returned provider results.
+Provider capability labels describe metadata, not verified runtime compatibility.
+Unknown metadata remains explicit.
+Empty catalogs offer Discover; search misses and provider errors have distinct recovery actions.
+The Import action identifies the selected repository and revision and explains catalog effects before starting.
+Import leaves the Model registered; completion directs the operator to the existing Catalog Activate action before granting access.
+Completion and catalog rows preserve exact versions and stored bundle digests, and do not imply Node or request readiness.
+Cards retain their own desktop scroll areas; the page scrolls naturally on smaller viewports with enough bottom padding to reach every action.
+Discovery results use compact list cards so repository identity and Import remain visible without horizontal scrolling in the search panel.
+Import on a result advances from Discover models to a dedicated Catalog step that replaces the discovery results.
+The six-step indicator shows Discover models, Catalog, Access, Placement, Acquire, and Test inference, with an explicit current step number and dimmed future steps.
+Future steps remain unavailable and visibly identified until implemented.
+Discovery shows the installation's Node inventory and truthful fit annotations; absent hardware-memory and exact runtime requirement evidence is unverified, never a compatible verdict based on repository size or parameter count.
+The Catalog step carries the exact repository and revision, focuses its heading on entry, and keeps detailed provider metadata collapsed behind Provider details and files.
+Back to Discover preserves the live search, capability filter, selection, and originating control focus without cancelling a background import.
+The result identity and metadata form a keyboard-accessible selection button with `aria-pressed` and a visible Selected label.
+Selecting a result updates its details without moving focus away from the results; Import remains a separate setup action.
+Result cards group publisher and model name with a neutral model icon, capability and access badges, and labelled activity metrics.
+Provider-supplied library, parameter count, and update date are shown when available; model names are not used to infer specifications.
+The setup action is labelled Import this revision to distinguish entering setup from starting the download.
+
+Download progress and recovery appear inside the Catalog import card, before provider details, without a separate scroll destination.
+A sticky Downloads summary stays reachable while browsing and reports running and paused counts separately.
+Its expandable list preserves each repository and exact revision, including terminal results, and supports reopening any job.
+Pause keeps partial files for resumption; cancel stops the job and removes its partial files.
+Pause and cancel are unavailable once bundle preparation or import finalization begins.
+Job controls are validated against server-held identities and current lifecycle stages.
+Collapsed controls preserve keyboard focus and do not hide the count of running downloads.
+
+Open Catalog on a download replaces discovery with that job's Catalog view and recorded repository and revision.
+Provider metadata appears only when its revision matches the recorded job; otherwise the job identity and progress remain visible with an explanation.
+Returning to Discover restores the prior search and selection and reopens Downloads for focus continuity.
+
+Cancelled downloads offer Restart download for the original recorded revision, starting from the beginning rather than resuming partial data.
+Cancelled byte totals describe historical transfer and never render as an active progress bar.
+Remove from Downloads removes terminal history only, leaving Catalog models and other downloads intact.
+Removing the currently opened download returns to its Catalog or Discover origin; other tabs receive the history removal.
+
+Tailwind's `dark:` utilities and Console dark custom rules are keyed from
+`<html data-theme="dark">`.
+Do not mix media-query driven app CSS with this selector contract.
+
+### 14.1 Model Availability Projections
+
+Model availability surfaces may group desired availability policy, Node-local Model files, Runtime Endpoint loadedness, derived scheduling eligibility, and current transition progress only when each fact has an authoritative source.
+Each fact remains separately labelled, and missing evidence remains unknown rather than being collapsed into `Ready`.
+This grouped presentation creates no Cache Residency resource, durable model-operation object, Runtime Provider selector, or Runtime Endpoint identity beyond the contracts that already own those concepts.
+
+---
+
+## 15. Guided Setup And One-Time Output
+
+Guided setup connects operator actions to system-observed state without inventing a second lifecycle model.
+These rules apply to Node Enrollment and to later multi-step setup experiences.
+
+### 15.1 Progress Structure
+
+- Use one ordered progress list with numbered steps and short verb labels.
+- Completed, current, pending, and blocked steps pair color with an icon, number, line style, or visible state text.
+- The accessible label must name the durable lifecycle or operation state.
+- Presentation labels such as **Activating** must not replace a persisted lifecycle value.
+- The main content starts with the current operator outcome, not an implementation phase name.
+- Each operator action states where it runs, what it produces, and what it does not prove.
+- Automatic state changes use a polite live region and never move keyboard focus.
+
+### 15.2 Recommended Order
+
+When independent prerequisites may occur in either order, the normal guided path still recommends the order that minimizes expiry, custody, and recovery risk.
+The interface may explain that the system does not require that order.
+It must not present operational independence as a reason to make the operator choose an order without guidance.
+
+For Node Enrollment, prepare the target Mac before issuing the short-lived bundle.
+Installation, configured service state, enrollment, registration, trust, admission, authorization, health, and scheduling remain separate visible concepts.
+
+### 15.3 Current Blocker And Recovery
+
+- Show one primary current blocker instead of a stack of warning-colored incomplete states.
+- State what is waiting, why it matters, and the exact corrective action.
+- Include stable reason codes as supplemental technical detail when the shared domain contract provides them.
+- Do not use warning or error treatment for ordinary system-managed waiting.
+- Terminal failures name whether identity, trust, or durable state was created.
+- Recovery actions must be safe for the exact state and must not imply that confirmation can bypass a blocker.
+
+### 15.4 Automatic Observation
+
+- Registration, service observation, authorization delivery, health, and activation refresh automatically at a bounded interval.
+- Show the last successful check time.
+- A **Refresh now** control may remain as a fallback.
+- Never ask the operator to record or certify a system fact that Orchard can observe directly.
+- Do not add a manual **Activate** action when lifecycle advancement is system-managed.
+
+### 15.5 One-Time Secret Output
+
+One-time secret output is visible or deliverable exactly once.
+Keep secret material in socket-owned transient state only for the response that delivers it.
+Never place it in a URL, flash message, session, cookie, log, audit payload, `data-*` attribute, or reusable endpoint.
+
+When a client hook consumes one-time output, deliver the bytes through an authenticated same-origin event.
+The hook must clear its in-memory reference and revoke any object URL after success or failure.
+The acknowledgement returns only a bounded non-secret identifier.
+The server validates that identifier against socket-owned state before changing durable publication state.
+
+Delivery failure, disconnect, or lost acknowledgement must fail closed.
+The interface must not redisplay, resend, restore, or silently renew the same secret.
+The recovery action creates new one-time output under a new durable record.
+It does not reissue onto the previous provisioned record, and the interface must say that a distinct Node name is required when uniqueness is enforced.
+
+### 15.6 Browser Download
+
+A browser download proves only that the client accepted a download attempt.
+It does not prove destination-file custody, protected transfer, or target-machine use.
+Copy must tell the operator to use a protected administrative transfer channel and keep the file out of chat, logs, tickets, and shell history.
+
+Use `application/json` for a Node Enrollment Bundle and a bounded sanitized filename.
+The visible page may show the filename and exact consuming command, but not the Bootstrap Token or raw bundle content.
+After delivery, say that the browser accepted the download attempt and continue with durable status only.
+Do not call that acknowledgement confirmed target custody or transfer.
+
+### 15.7 Form And Action Copy
+
+- Use **New machine**, not **Another machine**, for the machine being added.
+- Use **Create enrollment** for the Controller-side operation.
+- Use **Download bundle** for browser delivery.
+- Use **Create Enrollment and Download** when one action performs both operations.
+- Use **Admit Node** for the explicit human authorization boundary.
+- Use **Create new enrollment** for expired, revoked, or failed output.
+- Identify `orchardctl node join --enrollment-bundle PATH` as a target-Mac command.
+- Describe Pool as an existing scheduling group and say where it can be changed.
+- Do not use **Ready** as an umbrella state.
+
+### 15.8 Browser Verification
+
+For a guided Node Enrollment change, verify at least these states in light and dark mode:
+
+- Add Node discovery from the Nodes workspace.
+- Ordered target-Mac preparation and Controller enrollment creation.
+- Form validation and disabled action behavior.
+- Successful one-time download and exact join command.
+- Download failure without secret redisplay.
+- Registration waiting with automatic refresh and last-checked time.
+- Registered handoff to explicit admission review.
+- Expired, revoked, and output-failed recovery.
+- Narrow viewport wrapping for filenames, identifiers, commands, and evidence.
+- Keyboard focus, live-region announcements, and reduced motion.

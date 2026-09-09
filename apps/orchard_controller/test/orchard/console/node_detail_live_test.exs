@@ -47,14 +47,17 @@ defmodule OrchardConsole.NodeDetailLiveTest do
   use Orchard.ConnCase, async: false
 
   import Orchard.TestSupport.ModelRequestFixtures, only: [create_model!: 1]
+  import Ecto.Query
   import Phoenix.LiveViewTest
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.DispatchCapacity.Policy
+  alias Orchard.NodeEnrollments
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
   alias Orchard.NodeTrust
   alias Orchard.Repo
+  alias Phoenix.HTML.Safe
 
   @moduletag :live
   @moduletag :db
@@ -94,6 +97,188 @@ defmodule OrchardConsole.NodeDetailLiveTest do
   end
 
   describe "node detail drill-in" do
+    test "refresh after deletion clears the old title and refresh timestamp", %{conn: conn} do
+      node = insert_node!(%{display_name: "deleted-node-detail", state: :registered})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+      assert has_element?(view, "#node-detail-last-success")
+      Repo.delete!(node)
+      view |> element("#node-detail-refresh") |> render_click()
+      assert has_element?(view, "#node-detail-not-found")
+      refute has_element?(view, "#node-detail-last-success")
+      refute has_element?(view, "#node-detail-content")
+      assert :sys.get_state(view.pid).socket.assigns.page_title == "Node Detail"
+    end
+
+    test "detail sections replace visible evidence and preserve an open action", %{conn: conn} do
+      node = insert_node!(%{state: :registered, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+      assert has_element?(view, "#node-detail-lifecycle:not([hidden])")
+      assert has_element?(view, "#node-detail-runtime[hidden]")
+      view |> element("#node-detail-section-evidence") |> render_click()
+      assert has_element?(view, "#node-detail-runtime:not([hidden])")
+      assert has_element?(view, "#node-detail-lifecycle[hidden]")
+      view |> element("#node-detail-section-actions") |> render_click()
+      assert has_element?(view, "#node-detail-actions-section:not([hidden])")
+      view |> element("#node-detail-open-admit") |> render_click()
+      assert has_element?(view, "#node-action-preview")
+      view |> element("#node-detail-section-overview") |> render_click()
+      assert has_element?(view, "#node-detail-actions-section[hidden]")
+      view |> element("#node-detail-section-actions") |> render_click()
+      assert has_element?(view, "#node-action-preview")
+      view |> element("#action-close-preview") |> render_click()
+      refute has_element?(view, "#node-action-preview")
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "deep linked Actions retains Admission Review return context", %{conn: conn} do
+      node = insert_node!(%{state: :registered, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}?section=actions&from=admissions")
+      assert has_element?(view, "#node-detail-section-actions[aria-current='page']")
+      assert has_element?(view, "a[href='/console/nodes?section=admissions']")
+      view |> element("#node-detail-section-evidence") |> render_click()
+      assert has_element?(view, "a[href='/console/nodes?section=admissions']")
+    end
+
+    test "candidate evidence labels historical transport and keeps Admission Review through the linked Node",
+         %{conn: conn} do
+      node = insert_node!(%{state: :registered, health: :healthy})
+      observed_at = DateTime.add(DateTime.utc_now(), -120, :second)
+
+      candidate =
+        insert_candidate!(%{
+          node_id: node.id,
+          compatibility_evidence: %{"health" => "healthy"},
+          last_observed_at: observed_at
+        })
+
+      {:ok, view, html} =
+        live(conn, "/console/nodes/pending/#{candidate.id}?section=evidence&from=admissions")
+
+      assert html =~ "Observation: Unreachable"
+
+      assert has_element?(
+               view,
+               "#node-detail-transport:not([hidden])",
+               "Transport at last observation"
+             )
+
+      assert has_element?(view, "#node-detail-transport-status", "Observed transport")
+      assert has_element?(view, "#node-detail-transport-observed-at")
+
+      expected_time = observed_at |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+      assert has_element?(
+               view,
+               ~s(#node-detail-transport-observed-at time[datetime="#{expected_time}"])
+             )
+
+      linked_path = "/console/nodes/#{node.id}?from=admissions"
+      assert has_element?(view, "#node-detail-review-linked-node[href='#{linked_path}']")
+
+      {:ok, linked_view, _html} =
+        view
+        |> element("#node-detail-review-linked-node")
+        |> render_click()
+        |> follow_redirect(conn)
+
+      assert has_element?(linked_view, "a[href='/console/nodes?section=admissions']")
+    end
+
+    test "manual refresh reloads inventory detail without a lifecycle action", %{conn: conn} do
+      node = insert_node!(%{display_name: "before-refresh", state: :registered, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+      node |> Ecto.Changeset.change(display_name: "after-refresh") |> Repo.update!()
+      html = view |> element("#node-detail-refresh") |> render_click()
+      assert html =~ "after-refresh"
+      assert html =~ "Last successful page refresh"
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "failed refresh retains labeled evidence and blocks actions until recovery", %{
+      conn: conn
+    } do
+      node = insert_node!(%{display_name: "retained-node", state: :registered, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+      socket = :sys.get_state(view.pid).socket
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        parent = self()
+
+        spawn(fn ->
+          Repo.put_dynamic_repo(:unavailable_node_detail_repo)
+          result = OrchardConsole.NodeDetailLive.handle_event("refresh_detail", %{}, socket)
+          send(parent, {:unavailable_refresh, result})
+        end)
+
+        assert_receive {:unavailable_refresh, {:noreply, stale}}, 2000
+
+        Process.cancel_timer(stale.assigns.refresh_timer)
+        assert stale.assigns.load_status == :stale
+        assert stale.assigns.record.id == node.id
+        assert stale.assigns.last_successful_refresh == socket.assigns.last_successful_refresh
+        assert stale.assigns.action == nil
+
+        html =
+          stale.assigns
+          |> OrchardConsole.NodeDetailLive.render()
+          |> Safe.to_iodata()
+          |> IO.iodata_to_binary()
+
+        assert html =~ "Showing the last successful detail"
+        refute html =~ "id=\"node-detail-actions\""
+
+        {:noreply, blocked} =
+          OrchardConsole.NodeDetailLive.handle_event(
+            "open_lifecycle",
+            %{"action" => "cordon"},
+            stale
+          )
+
+        assert blocked.assigns.action == nil
+        assert blocked.assigns.flash["error"] =~ "Refresh Node detail successfully"
+
+        {:noreply, recovered} =
+          OrchardConsole.NodeDetailLive.handle_event(
+            "refresh_detail",
+            %{},
+            stale
+          )
+
+        Process.cancel_timer(recovered.assigns.refresh_timer)
+        assert recovered.assigns.load_status == :ok
+        assert recovered.assigns.record.id == node.id
+      end)
+    end
+
+    test "action preview opens before evidence and closes without executing", %{conn: conn} do
+      node = insert_node!(%{state: :registered, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+      html = view |> element("#node-detail-open-admit") |> render_click()
+      {header, _} = :binary.match(html, "id=\"node-detail-header-card\"")
+      {preview, _} = :binary.match(html, "id=\"node-action-preview\"")
+      {evidence, _} = :binary.match(html, "id=\"node-detail-status-groups\"")
+      assert header < preview
+      assert preview < evidence
+      assert has_element?(view, "#node-action-preview-heading[tabindex='-1'][phx-mounted]")
+      view |> element("#action-close-preview") |> render_click()
+      refute has_element?(view, "#node-action-preview")
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "a queued refresh cancels the currently scheduled detail timer", %{conn: conn} do
+      node = insert_node!(%{state: :registered, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+      timer = Process.send_after(self(), :unexpected_detail_timer, 60_000)
+      socket = Phoenix.Component.assign(:sys.get_state(view.pid).socket, refresh_timer: timer)
+
+      {:noreply, refreshed} =
+        OrchardConsole.NodeDetailLive.handle_info(:refresh_node_detail, socket)
+
+      assert Process.read_timer(timer) == false
+      assert is_reference(refreshed.assigns.refresh_timer)
+      Process.cancel_timer(refreshed.assigns.refresh_timer)
+    end
+
     test "renders separated status groups and pending actions", %{conn: conn} do
       node =
         insert_node!(%{
@@ -115,7 +300,7 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert html =~ "node-detail-scheduling"
       assert html =~ "Blocked"
       assert html =~ "node_not_admitted"
-      assert html =~ "Preview admit"
+      assert html =~ "Admit Node"
       assert html =~ "Preview reject"
     end
 
@@ -202,7 +387,7 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert html =~ "node-detail-inventory-evidence"
       assert html =~ "node-detail-compatibility-evidence"
       assert html =~ "Preview reject"
-      refute html =~ "Preview admit"
+      refute html =~ "Admit Node"
     end
 
     test "renders not found state for missing candidates", %{conn: conn} do
@@ -237,7 +422,7 @@ defmodule OrchardConsole.NodeDetailLiveTest do
 
       refute html =~ "otherwise clears it"
       assert html =~ "Preview reject"
-      refute html =~ "Preview admit"
+      refute html =~ "Admit Node"
     end
 
     test "renders command sequence as a visibly numbered recessed code well", %{conn: conn} do
@@ -302,6 +487,46 @@ defmodule OrchardConsole.NodeDetailLiveTest do
   end
 
   describe "admission action previews" do
+    test "pre-fills the non-authoritative pool intent from Node Enrollment", %{conn: conn} do
+      trust = establish_local_controller_identity!()
+      now = DateTime.utc_now()
+
+      assert {:ok, result} =
+               NodeEnrollments.create(
+                 %{
+                   cluster_id: trust.cluster_id,
+                   expected_controller_id: trust.controller_id,
+                   trust_authority_id: trust.trust_authority_id,
+                   creator_type: "operator",
+                   expires_at: DateTime.add(now, 3_600, :second),
+                   node: %{display_name: "pool-intent-node"},
+                   audit_metadata: %{
+                     "surface" => "console",
+                     "initial_pool_id" => "general"
+                   }
+                 },
+                 now: now
+               )
+
+      from(node in Node, where: node.id == ^result.enrollment.node_id)
+      |> Repo.update_all(
+        set: [
+          state: :registered,
+          hostname: "pool-intent-node.local",
+          advertise_addr: "10.40.0.20",
+          rpc_port: 50_071,
+          connect_host: "10.40.0.20",
+          connect_port: 50_071
+        ]
+      )
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{result.enrollment.node_id}")
+      view |> element("#node-detail-open-admit") |> render_click()
+
+      assert has_element?(view, "#action-pool-id[value='general']")
+      assert render(view) =~ "Admit Node Preview"
+    end
+
     test "previews and executes node admit with shared blockers and confirmation", %{conn: conn} do
       trust = establish_local_controller_identity!()
 
@@ -421,9 +646,78 @@ defmodule OrchardConsole.NodeDetailLiveTest do
                "Resolve blockers and confirm the preview before executing."
              )
     end
+
+    test "retains confirmation when a refresh leaves the action preview unchanged", %{conn: conn} do
+      node = insert_node!(%{state: :active, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}?section=actions")
+
+      view |> element("#node-detail-open-lifecycle-cordon") |> render_click()
+
+      view
+      |> form("#node-action-form", %{"action" => %{"confirmed" => "true"}})
+      |> render_change()
+
+      assert :sys.get_state(view.pid).socket.assigns.action.confirmed
+
+      send(view.pid, :refresh_node_detail)
+      _ = :sys.get_state(view.pid)
+
+      assert :sys.get_state(view.pid).socket.assigns.action.confirmed
+      assert has_element?(view, "#action-confirmed[checked]")
+    end
+
+    test "clears confirmation when refreshed authoritative preview facts change", %{conn: conn} do
+      node = insert_node!(%{state: :active, health: :healthy})
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}?section=actions")
+
+      view |> element("#node-detail-open-lifecycle-cordon") |> render_click()
+
+      view
+      |> form("#node-action-form", %{"action" => %{"confirmed" => "true"}})
+      |> render_change()
+
+      assert :sys.get_state(view.pid).socket.assigns.action.confirmed
+
+      node
+      |> Ecto.Changeset.change(health: :degraded)
+      |> Repo.update!()
+
+      send(view.pid, :refresh_node_detail)
+      _ = :sys.get_state(view.pid)
+
+      refute :sys.get_state(view.pid).socket.assigns.action.confirmed
+      refute has_element?(view, "#action-confirmed[checked]")
+      assert has_element?(view, "#action-submit[disabled]")
+      assert has_element?(view, "#node-detail-header-card", "Health: Degraded")
+    end
   end
 
   describe "lifecycle action previews" do
+    test "Current reports Node lifecycle and stays unknown when current evidence is absent", %{
+      conn: conn
+    } do
+      node = insert_node!(state: :cordoned, health: :healthy)
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+      view |> element("#node-detail-open-lifecycle-uncordon") |> render_click()
+      assert has_element?(view, "#action-preview-current-state", "Cordoned")
+      socket = :sys.get_state(view.pid).socket
+      action = Map.update!(socket.assigns.action, :preview, &Map.put(&1, :current, %{}))
+      assigns = Phoenix.Component.assign(socket, :action, action).assigns
+      html = render_component(&OrchardConsole.NodeDetailLive.render/1, assigns)
+
+      assert html
+             |> LazyHTML.from_document()
+             |> LazyHTML.query("#action-preview-current-state")
+             |> LazyHTML.text() =~ "unknown"
+    end
+
+    test "Current reports the candidate admission category before rejection", %{conn: conn} do
+      candidate = insert_candidate!(target_ref: "10.4.0.92:50071")
+      {:ok, view, _html} = live(conn, "/console/nodes/pending/#{candidate.id}")
+      view |> element("#node-detail-open-reject") |> render_click()
+      assert has_element?(view, "#action-preview-current-state", "Pending observed")
+    end
+
     test "renders lifecycle preview affordances for node rows only", %{conn: conn} do
       node = insert_node!(state: :active, display_name: "lifecycle-affordance-node")
       candidate = insert_candidate!(target_ref: "10.4.0.88:50071")

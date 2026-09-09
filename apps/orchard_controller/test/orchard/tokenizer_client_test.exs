@@ -900,7 +900,7 @@ defmodule Orchard.Tokenizer.ClientTest do
     )
   end
 
-  test "safe mode caches only tokenizer and template incompatibility helper errors" do
+  test "safe mode does not cache unclassified runtime helper errors" do
     fixture_root = fixture_root_with_tokenizer_config!()
     manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
 
@@ -932,11 +932,7 @@ defmodule Orchard.Tokenizer.ClientTest do
                    bundle_sha256: trusted_bundle_sha256()
                  )
 
-        assert {:incompatible,
-                %{
-                  "category" => "dual_render_mismatch",
-                  "outer_category" => "safe_tokenization_incompatible_template"
-                }} =
+        assert :unknown =
                  CompatibilityCache.get(
                    trusted_bundle_sha256(),
                    manifest.safe_tokenization.catalog_sha256
@@ -981,6 +977,7 @@ defmodule Orchard.Tokenizer.ClientTest do
           category: "safe_tokenization_incompatible_template",
           message: "segmented helper failed",
           details: %{
+            "evaluation_scope" => "artifact_preflight",
             "reason" => %{
               "category" => "dual_render_mismatch",
               "leaf_class" => "messages[0].content",
@@ -1027,7 +1024,7 @@ defmodule Orchard.Tokenizer.ClientTest do
   end
 
   describe "runtime error-envelope diagnostics" do
-    test "caches per-codepoint decode mismatch details without requiring verdict literal" do
+    test "request decode mismatch fails without caching a bundle verdict" do
       fixture_root = fixture_root_with_tokenizer_config!()
       manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
 
@@ -1069,12 +1066,7 @@ defmodule Orchard.Tokenizer.ClientTest do
                      bundle_sha256: trusted_bundle_sha256()
                    )
 
-          assert {:incompatible,
-                  %{
-                    "category" => "per_codepoint_decode_mismatch",
-                    "outer_category" => "safe_tokenization_incompatible_tokenizer",
-                    "first_diff_offset" => 4
-                  }} =
+          assert :unknown =
                    CompatibilityCache.get(
                      trusted_bundle_sha256(),
                      manifest.safe_tokenization.catalog_sha256
@@ -1083,7 +1075,7 @@ defmodule Orchard.Tokenizer.ClientTest do
       )
     end
 
-    test "caches dual-render guard details without requiring verdict leaf metadata" do
+    test "request dual-render mismatch fails without caching a bundle verdict" do
       fixture_root = fixture_root_with_tokenizer_config!()
       manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
 
@@ -1125,12 +1117,7 @@ defmodule Orchard.Tokenizer.ClientTest do
                      bundle_sha256: trusted_bundle_sha256()
                    )
 
-          assert {:incompatible,
-                  %{
-                    "category" => "dual_render_mismatch",
-                    "outer_category" => "safe_tokenization_incompatible_template",
-                    "first_diff_offset" => 9
-                  }} =
+          assert :unknown =
                    CompatibilityCache.get(
                      trusted_bundle_sha256(),
                      manifest.safe_tokenization.catalog_sha256
@@ -1138,6 +1125,179 @@ defmodule Orchard.Tokenizer.ClientTest do
         end
       )
     end
+  end
+
+  test "SPEC 3.5 request failures preserve successful A-B-A rendering without cache reset" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+    success = write_response_executable!(segmented_response())
+
+    on_exit(fn ->
+      File.rm(success)
+      File.rm_rf!(fixture_root)
+    end)
+
+    tokenize = fn executable ->
+      with_inference_overrides(
+        [tokenizer_mode: :port, tokenizer_safe_mode: :on, tokenizer_executable: executable],
+        fn ->
+          Client.tokenize(canonical_request(),
+            manifest: manifest,
+            bundle_root: fixture_root,
+            bundle_sha256: trusted_bundle_sha256()
+          )
+        end
+      )
+    end
+
+    for {category, reason} <- [
+          {"safe_tokenization_incompatible_template", "dual_render_mismatch"},
+          {"safe_tokenization_incompatible_template", "marker_walk_mismatch"},
+          {"safe_tokenization_incompatible_tokenizer", "per_codepoint_decode_mismatch"}
+        ] do
+      failure =
+        write_response_executable!(%{
+          contract_version: 3,
+          ok: false,
+          error: %{
+            category: category,
+            message: "request failed",
+            details: %{reason: %{category: reason, first_diff_offset: 4056}}
+          }
+        })
+
+      on_exit(fn -> File.rm(failure) end)
+
+      assert {:ok, _} = tokenize.(success)
+      assert {:error, {_, "request failed"}} = tokenize.(failure)
+
+      assert {:compatible, %{sentinel_preflight_validated: true}} =
+               CompatibilityCache.get(
+                 trusted_bundle_sha256(),
+                 manifest.safe_tokenization.catalog_sha256
+               )
+
+      assert {:ok, _} = tokenize.(success)
+    end
+  end
+
+  test "runtime cache admission requires artifact scope, category agreement, and valid evidence" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+    on_exit(fn -> File.rm_rf!(fixture_root) end)
+
+    template_reason = %{
+      "category" => "dual_render_mismatch",
+      "leaf_class" => "messages[0].content",
+      "sentinel_index" => 0,
+      "first_diff_offset" => 3
+    }
+
+    tokenizer_reason = %{"category" => "reserved_id_persists", "literal" => "<|im_end|>"}
+
+    for {category, scope, reason, cache?} <- [
+          {"safe_tokenization_incompatible_template", "request", template_reason, false},
+          {"safe_tokenization_incompatible_template", nil, template_reason, false},
+          {"safe_tokenization_incompatible_template", "artifact_tokenizer", template_reason,
+           false},
+          {"safe_tokenization_incompatible_template", "artifact_preflight",
+           Map.delete(template_reason, "sentinel_index"), false},
+          {"safe_tokenization_incompatible_template", "artifact_preflight", tokenizer_reason,
+           false},
+          {"safe_tokenization_incompatible_tokenizer", "artifact_tokenizer", tokenizer_reason,
+           true},
+          {"safe_tokenization_incompatible_tokenizer", "request", tokenizer_reason, false},
+          {"safe_tokenization_incompatible_tokenizer", "artifact_tokenizer",
+           Map.delete(tokenizer_reason, "literal"), false}
+        ] do
+      CompatibilityCache.clear()
+
+      executable =
+        write_response_executable!(%{
+          contract_version: 3,
+          ok: false,
+          error: %{
+            category: category,
+            message: "incompatible",
+            details: %{evaluation_scope: scope, reason: reason}
+          }
+        })
+
+      on_exit(fn -> File.rm(executable) end)
+
+      with_inference_overrides(
+        [tokenizer_mode: :port, tokenizer_safe_mode: :on, tokenizer_executable: executable],
+        fn ->
+          assert {:error, {_, "incompatible"}} =
+                   Client.tokenize(canonical_request(),
+                     manifest: manifest,
+                     bundle_root: fixture_root,
+                     bundle_sha256: trusted_bundle_sha256()
+                   )
+
+          verdict =
+            CompatibilityCache.get(
+              trusted_bundle_sha256(),
+              manifest.safe_tokenization.catalog_sha256
+            )
+
+          if cache?,
+            do: assert(match?({:incompatible, _}, verdict)),
+            else: assert(verdict == :unknown)
+        end
+      )
+    end
+  end
+
+  test "SPEC 3.5 actual helper recovers after request-specific render failure without cache reset" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    on_exit(fn -> File.rm_rf!(fixture_root) end)
+
+    File.cp!(
+      Path.expand("../fixtures/tokenizer/safe_hf/tokenizer.json", __DIR__),
+      Path.join(fixture_root, "tokenizer.json")
+    )
+
+    File.write!(
+      Path.join(fixture_root, "chat_template.jinja"),
+      "{% if 'trigger-mismatch' in messages[0].content %}{{ messages[0].content | replace('_', '') }}{% else %}{{ messages[0].content }}{% endif %}"
+    )
+
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+    opts = [manifest: manifest, bundle_root: fixture_root, bundle_sha256: trusted_bundle_sha256()]
+    good = canonical_request(input_items: [%{role: "user", content: "hello orchard"}])
+    bad = canonical_request(input_items: [%{role: "user", content: "trigger-mismatch"}])
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: tokenizer_executable()
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, _}} =
+                 Client.tokenize(bad, opts)
+
+        assert :unknown =
+                 CompatibilityCache.get(
+                   trusted_bundle_sha256(),
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+
+        assert {:ok, %{rendered_prompt: "hello orchard"}} = Client.tokenize(good, opts)
+
+        assert {:error, {:safe_tokenization_incompatible_template, _}} =
+                 Client.tokenize(bad, opts)
+
+        assert {:compatible, %{sentinel_preflight_validated: true}} =
+                 CompatibilityCache.get(
+                   trusted_bundle_sha256(),
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+
+        assert {:ok, %{rendered_prompt: "hello orchard"}} = Client.tokenize(good, opts)
+      end
+    )
   end
 
   test "safe mode maps cached direct dual_render_mismatch to template incompatibility" do

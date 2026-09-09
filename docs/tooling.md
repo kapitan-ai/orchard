@@ -32,6 +32,10 @@ mise trust
 mise install
 ```
 
+Required CI bootstraps mise `2026.9.2` through explicit `version` inputs in `.github/workflows/required-validation.yml`.
+This bootstrap pin is separate from the runtime and developer-tool pins in `mise.toml`.
+Update every mise-action invocation together only after the matching platform release assets and signed checksums are published.
+
 The pinned toolchain currently covers:
 
 | Tool | Pin | Purpose |
@@ -124,6 +128,7 @@ scripts/test-build-macos-native-helpers.sh
 
 The first forces a first-party umbrella recompile behind an `xcrun` tripwire and rejects any newly emitted or changed Orchard Darwin helper artifact.
 The second exercises the explicit helper builder and proves a production-only build excludes the test-only terminal helper.
+It also runs the lifecycle process-snapshot syscall regressions with LLVM coverage, including inaccessible unrelated processes and fail-closed BEAM identity checks.
 Run both when changing umbrella compile configuration, the retained helper sources, or the helper builder.
 
 Required CI lane proofs:

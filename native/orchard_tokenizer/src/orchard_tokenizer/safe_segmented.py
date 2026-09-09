@@ -123,11 +123,61 @@ class SafeSegmentedError(Exception):
         *,
         reason: dict[str, Any] | None = None,
         literal: str | None = None,
+        evaluation_scope: str = "request",
     ) -> None:
         super().__init__(message)
         self.category = category
         self.reason = reason
         self.literal = literal
+        self.evaluation_scope = evaluation_scope
+
+
+def reject_marker_transform(operation: str) -> None:
+    raise SafeSegmentedError(
+        "safe_tokenization_incompatible_template",
+        "chat template uses an unsupported caller-string transformation",
+        reason={"category": "marker_transform_unsupported", "operation": operation},
+    )
+
+
+class _MarkerString(str):
+    """Keep direct Python iteration and slicing from discarding provenance."""
+
+    def __iter__(self):
+        reject_marker_transform("string_iteration")
+
+    def __getitem__(self, key):
+        reject_marker_transform("string_index")
+
+
+class _TaggedString(_MarkerString):
+    """Preserve caller provenance when templates trim the original string."""
+
+    _caller_value: str
+    _begin: str
+    _end: str
+
+    def __new__(cls, value: str, begin: str, end: str) -> _TaggedString:
+        result = super().__new__(cls, begin + value + end)
+        result._caller_value = value
+        result._begin = begin
+        result._end = end
+        return result
+
+    def __getnewargs__(self) -> tuple[str, str, str]:
+        return self._caller_value, self._begin, self._end
+
+    def strip(self, chars: str | None = None) -> str:
+        return self._retag(self._caller_value.strip(chars))
+
+    def lstrip(self, chars: str | None = None) -> str:
+        return self._retag(self._caller_value.lstrip(chars))
+
+    def rstrip(self, chars: str | None = None) -> str:
+        return self._retag(self._caller_value.rstrip(chars))
+
+    def _retag(self, value: str) -> str:
+        return type(self)(value, self._begin, self._end) if value else ""
 
 
 class _TaggedKeyDict(dict[Any, Any]):
@@ -176,6 +226,7 @@ def marker_prefix(nonce: str) -> str:
 
 
 def catalog_sha256(control_tokens: Sequence[str]) -> str:
+
     return hashlib.sha256("\0".join(control_tokens).encode("utf-8")).hexdigest()
 
 
@@ -214,16 +265,13 @@ def tag_caller_strings(
     marker_pairs: list[MarkerPair] = []
 
     def wrap(path: str, value: str) -> str:
+        if value == "":
+            return value
         index = len(marker_pairs)
         begin = tag_begin(nonce, index)
         end = tag_end(nonce, index)
         marker_pairs.append(MarkerPair(index, begin, end, path))
-        stripped = value.strip()
-        if not stripped:
-            return f"{value}{begin}{end}"
-        leading = value[: len(value) - len(value.lstrip())]
-        trailing = value[len(value.rstrip()) :]
-        return f"{leading}{begin}{stripped}{end}{trailing}"
+        return _TaggedString(value, begin, end)
 
     tagged_input_items = _tag_messages(copy.deepcopy(input_items), wrap)
     tagged_tools = _tag_tools(copy.deepcopy(tools), wrap)
@@ -244,6 +292,7 @@ def strip_markers(rendered: str, marker_pairs: Sequence[MarkerPair]) -> str:
 
 
 def walk_rendered(rendered: str, marker_pairs: Sequence[MarkerPair]) -> list[RenderedSegment]:
+    rendered = str(rendered)
     begin_markers = {pair.begin: pair for pair in marker_pairs}
     end_markers = {pair.end for pair in marker_pairs}
     segments: list[RenderedSegment] = []
@@ -415,6 +464,7 @@ def dual_render_guard(
     *,
     leaf_class: str | None = None,
     sentinel_index: int | None = None,
+    evaluation_scope: str = "request",
 ) -> None:
     stripped = strip_markers(tagged_render, marker_pairs)
     if stripped == baseline_render:
@@ -433,6 +483,7 @@ def dual_render_guard(
         "safe_tokenization_incompatible_template",
         "tagged chat-template render differs from untagged render after marker removal",
         reason=reason,
+        evaluation_scope=evaluation_scope,
     )
 
 
@@ -512,6 +563,7 @@ def dual_render_guard_sentinel_matrix(
     render_payload: Callable[[dict[str, Any]], str],
     *,
     nonce_factory: Callable[[], str] = make_request_nonce,
+    render_tagged_payload: Callable[[dict[str, Any], Sequence[MarkerPair]], str] | None = None,
 ) -> None:
     for leaf_class, sentinel_index, payload in sentinel_payloads(catalog):
         nonce = choose_marker_nonce(
@@ -521,14 +573,34 @@ def dual_render_guard_sentinel_matrix(
             nonce_factory=nonce_factory,
         )
         tagged_payload, marker_pairs = tag_caller_strings(
-            payload["input_items"], payload["tools"], payload["tool_choice"], nonce
+            payload["input_items"],
+            payload["tools"],
+            payload["tool_choice"],
+            nonce,
         )
+        baseline = render_payload(payload)
+        try:
+            tagged_render = (
+                render_tagged_payload(tagged_payload, marker_pairs)
+                if render_tagged_payload is not None
+                else render_payload(tagged_payload)
+            )
+        except SafeSegmentedError as exc:
+            if exc.reason and exc.reason.get("category") == "marker_transform_unsupported":
+                exc.evaluation_scope = "artifact_preflight"
+                exc.reason = {
+                    **exc.reason,
+                    "leaf_class": leaf_class,
+                    "sentinel_index": sentinel_index,
+                }
+            raise
         dual_render_guard(
-            render_payload(payload),
-            render_payload(tagged_payload),
+            baseline,
+            tagged_render,
             marker_pairs,
             leaf_class=leaf_class,
             sentinel_index=sentinel_index,
+            evaluation_scope="artifact_preflight",
         )
 
 
@@ -568,7 +640,11 @@ def sentinel_payloads(catalog: Sequence[str]) -> list[tuple[str, int, dict[str, 
                     "tools": [
                         {
                             "type": "function",
-                            "function": {"name": "lookup", "description": value},
+                            "function": {
+                                "name": "lookup",
+                                "description": value,
+                                "parameters": {"type": "object", "properties": {}, "required": []},
+                            },
                         }
                     ],
                     "tool_choice": None,
@@ -586,7 +662,12 @@ def sentinel_payloads(catalog: Sequence[str]) -> list[tuple[str, int, dict[str, 
                             "type": "function",
                             "function": {
                                 "name": "lookup",
-                                "parameters": {"type": "object", "description": value},
+                                "parameters": {
+                                    "type": "object",
+                                    "description": value,
+                                    "properties": {},
+                                    "required": [],
+                                },
                             },
                         }
                     ],
@@ -640,7 +721,11 @@ def _message_item_strings(item: Mapping[str, Any], index: int) -> list[tuple[str
                     function_map = cast(dict[str, Any], function)
                     function_base = f"{call_base}.function"
                     _append_string_field(strings, function_map, "name", function_base)
-                    _append_string_field(strings, function_map, "arguments", function_base)
+                    strings.extend(
+                        _extra_string_values(
+                            function_map.get("arguments"), f"{function_base}.arguments"
+                        )
+                    )
                     strings.extend(
                         _extra_string_values(
                             function_map,
@@ -905,7 +990,10 @@ def _tag_message_tool_calls(
             function_map = cast(dict[str, Any], function)
             function_base = f"{call_base}.function"
             _tag_string_field(function_map, "name", function_base, wrap)
-            _tag_string_field(function_map, "arguments", function_base, wrap)
+            if "arguments" in function_map:
+                function_map["arguments"] = _tag_extra_string_values(
+                    function_map["arguments"], f"{function_base}.arguments", wrap
+                )
             tool_call_map["function"] = _tag_extra_string_values(
                 function_map,
                 function_base,
@@ -1184,6 +1272,7 @@ def _raise_tokenizer_incompatible(literal: str, category: str) -> None:
         "safe_tokenization_incompatible_tokenizer",
         "safe tokenization catalog literal cannot be encoded without reserved IDs",
         literal=literal,
+        evaluation_scope="artifact_tokenizer",
         reason={"category": category, "literal": literal},
     )
 
@@ -1200,7 +1289,7 @@ def event_to_dict(event: SafeEncodingEvent) -> dict[str, Any]:
 
 
 def details_for_error(exc: SafeSegmentedError) -> dict[str, Any]:
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = {"evaluation_scope": exc.evaluation_scope}
     if exc.reason is not None:
         details["reason"] = exc.reason
     if exc.literal is not None:

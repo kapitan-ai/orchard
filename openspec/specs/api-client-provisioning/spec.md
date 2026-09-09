@@ -5,7 +5,7 @@ Define how Orchard issues and authenticates API Tokens and provisions and govern
 These requirements cover canonical credential issuance with legacy compatibility, first-admin cluster initialization, bulk CSV provisioning, one-time secret output handling, typed principal resolution at request time, API Client Disablement, audit redaction, and the Console management surface.
 ## Requirements
 ### Requirement: API Clients are non-interactive principals
-Orchard SHALL support API Clients as product-facing Service Accounts within an Organization.
+Orchard SHALL support API Clients as product-facing Service Accounts within a Workspace.
 An API Client SHALL be a non-interactive principal that may own API Tokens and tenant-scoped or cluster-scoped Access Levels where explicitly authorized.
 Owner Contact and Team SHALL be metadata on the API Client and SHALL NOT authenticate, authorize, own quota, define model access, define routing policy, or create a nested Tenant.
 This changes `SPEC.md` §10.3 and §10.4 by making the service-account principal path the default for bulk-provisioned public inference access.
@@ -93,14 +93,14 @@ Tenant-direct API Keys SHALL remain valid for manual, bootstrap, and compatibili
 This changes `SPEC.md` §7.4.4, §8.2, §10.2, and §10.3 by requiring bulk-created credentials to resolve through Service Account ownership.
 
 #### Scenario: Bulk row creates API Client and API Token
-- **WHEN** an operator applies a valid bulk provisioning row for Organization `acme`, API Client `alice-codex-dev`, Owner Contact `alice@example.com`, and key name `default`
-- **THEN** Orchard creates or updates the API Client inside Organization `acme`
+- **WHEN** an operator applies a valid bulk provisioning row for Workspace `acme`, API Client `alice-codex-dev`, Owner Contact `alice@example.com`, and key name `default`
+- **THEN** Orchard creates or updates the API Client inside Workspace `acme`
 - **AND** Orchard creates an API Token owned by that API Client
 - **AND** Orchard does not create a tenant-direct API Key for that row
 
 ### Requirement: Bulk provisioning uses stable API Client identity and safe token creation
-Bulk provisioning SHALL match API Clients by Organization plus External Reference when an External Reference is present.
-Bulk provisioning SHALL otherwise match API Clients by Organization plus API Client name.
+Bulk provisioning SHALL match API Clients by Workspace plus External Reference when an External Reference is present.
+Bulk provisioning SHALL otherwise match API Clients by Workspace plus API Client name.
 Bulk provisioning SHALL NOT silently create duplicate active API Tokens when the same API Client and key name already have an active token.
 Bulk provisioning SHALL reject rows targeting disabled API Clients.
 Replacement token creation SHALL require an explicit Key Rotation mode.
@@ -113,7 +113,7 @@ This changes `SPEC.md` §10.2 and §10.9 by defining safe repeated provisioning 
 
 ### Requirement: Bulk provisioning supports dry run and all-or-nothing apply
 The bulk provisioning CLI SHALL support Dry Run and Apply modes.
-Dry Run SHALL validate the entire input, duplicate behavior, referenced Organizations, API Client identity, API Token names, optional expiry values, JSON metadata, and output destination readiness without mutating state or generating token secrets.
+Dry Run SHALL validate the entire input, duplicate behavior, referenced Workspaces, API Client identity, API Token names, optional expiry values, JSON metadata, and output destination readiness without mutating state or generating token secrets.
 Apply SHALL reject the entire batch before creating token secrets when validation fails.
 Apply SHALL commit all validated provisioning changes as one batch or roll back the batch on failure.
 Post-commit One-time Secret Output delivery failure SHALL mark the Provisioning Batch `output_failed`, emit a redacted audit event, and return API Token prefixes for revocation or rotation.
@@ -212,12 +212,12 @@ This changes `SPEC.md` §10.9 by adding bulk provisioning audit requirements.
 - **AND** no audit payload includes a plaintext API Token secret
 
 ### Requirement: Console surfaces API Client management without bulk secret export
-Orchard Console SHALL show Organizations, API Clients, Team metadata, Owner Contact metadata, API Token prefixes, creation timestamps, last-used timestamps, revocation state, expiry state, and API Client Disablement state.
+Orchard Console SHALL show Workspaces, API Clients, Team metadata, Owner Contact metadata, API Token prefixes, creation timestamps, last-used timestamps, revocation state, expiry state, and API Client Disablement state.
 Orchard Console SHALL allow operators with sufficient access to revoke API Tokens and disable API Clients.
 The first slice SHALL NOT require Console bulk secret export or a bulk Admin API endpoint.
 This changes `SPEC.md` §2.3 and §10.3 by defining the initial Console management surface for API Client access.
 
 #### Scenario: Console shows API Client token provenance
-- **WHEN** an operator opens an Organization's API Client management view
+- **WHEN** an operator opens a Workspace's API Client management view
 - **THEN** Orchard Console shows each API Client with Team and Owner Contact metadata
 - **AND** Orchard Console shows owned API Tokens by prefix without plaintext token secrets

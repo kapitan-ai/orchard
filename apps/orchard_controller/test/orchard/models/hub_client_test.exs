@@ -28,6 +28,19 @@ defmodule Orchard.Models.HubClientTest do
       assert conn.query_params["direction"] == "-1"
       assert conn.query_params["limit"] == "20"
       assert conn.query_params["search"] == "Qwen"
+
+      assert conn.query_params["expand"] == %{
+               "0" => "author",
+               "1" => "downloads",
+               "2" => "likes",
+               "3" => "tags",
+               "4" => "pipeline_tag",
+               "5" => "library_name",
+               "6" => "lastModified",
+               "7" => "gated",
+               "8" => "safetensors"
+             }
+
       assert Plug.Conn.get_req_header(conn, "authorization") == []
 
       json_response(conn, 200, [%{"id" => "mlx-community/Qwen2.5-7B-Instruct-4bit"}])
@@ -127,6 +140,30 @@ defmodule Orchard.Models.HubClientTest do
                 gated: false
               }
             ]} = HubClient.search_models(nil, [])
+  end
+
+  test "search_models/2 retains expanded provider metadata without inferring model size", %{
+    stub_name: stub_name
+  } do
+    Req.Test.stub(stub_name, fn conn ->
+      json_response(conn, 200, [
+        %{
+          "id" => "prism-ml/Bonsai-27B-mlx-1bit",
+          "library_name" => "mlx",
+          "lastModified" => "2026-07-14T21:39:12.000Z",
+          "safetensors" => %{"total" => 1_724_001_520}
+        },
+        %{"id" => "owner/model-7B", "safetensors" => %{"total" => -1}},
+        %{"id" => "owner/model-8B", "safetensors" => "invalid"}
+      ])
+    end)
+
+    assert {:ok, [result, invalid, malformed]} = HubClient.search_models(nil, [])
+    assert result.library_name == "mlx"
+    assert result.last_modified == "2026-07-14T21:39:12.000Z"
+    assert result.safetensors_total == 1_724_001_520
+    assert invalid.safetensors_total == nil
+    assert malformed.safetensors_total == nil
   end
 
   test "search_models/2 drops malformed result entries without repo ids", %{stub_name: stub_name} do

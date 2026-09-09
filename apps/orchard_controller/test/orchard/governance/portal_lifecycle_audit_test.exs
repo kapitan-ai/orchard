@@ -252,7 +252,7 @@ defmodule Orchard.Governance.PortalLifecycleAuditTest do
                "portal_user.invite_reissued" => 1
              }
 
-      [earlier_expiry, later_expiry] = results |> Enum.map(& &1.expires_at) |> Enum.sort()
+      [earlier_expiry, later_expiry] = results |> Enum.map(& &1.expires_at) |> Enum.sort(DateTime)
       assert DateTime.compare(later_expiry, earlier_expiry) == :gt
 
       reissued = Enum.find(audits, &(&1.action == "portal_user.invite_reissued"))

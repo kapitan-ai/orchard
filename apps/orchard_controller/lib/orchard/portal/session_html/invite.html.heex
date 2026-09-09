@@ -4,7 +4,10 @@
       {if @invite_token, do: "Set your password", else: "Invite unavailable"}
     </h1>
     <p :if={@invite_token} class="mt-1 text-sm text-slate-300">
-      Activate your named Portal User for {@organization_slug}.
+      Activate your named Portal User for Workspace <span class="font-mono">{@organization_slug}</span>.
+    </p>
+    <p :if={@invite_token && @requested_model} class="mt-1 text-xs text-slate-400">
+      Requested Model: <span class="font-mono text-slate-300">{@requested_model}</span>
     </p>
     <p
       :if={!@invite_token}
@@ -15,7 +18,7 @@
       This invite is invalid, expired, or already used.
     </p>
 
-    <form :if={@invite_token} action={"/portal/#{@organization_slug}/invites/#{@invite_token}"} method="post" class="mt-6 space-y-4">
+    <form :if={@invite_token} action={@form_action} method="post" class="mt-6 space-y-4">
       <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
       <div>
         <label for="invite-password" class="block text-sm font-medium text-slate-200">Password</label>

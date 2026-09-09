@@ -1,7 +1,7 @@
-defmodule OrchardCLI.EndpointMetadataTest do
+defmodule Orchard.EndpointMetadataTest do
   use ExUnit.Case, async: true
 
-  alias OrchardCLI.EndpointMetadata
+  alias Orchard.EndpointMetadata
 
   @schema_keys ~w(
     api_bind_ip

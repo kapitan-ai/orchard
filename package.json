@@ -9,10 +9,11 @@
     "npm": "11.13.0"
   },
   "scripts": {
-    "openspec": "OPENSPEC_TELEMETRY=0 openspec"
+    "openspec": "OPENSPEC_TELEMETRY=0 openspec",
+    "test:assets": "node --test apps/orchard_controller/assets/test/*.test.mjs"
   },
   "devDependencies": {
-    "@fission-ai/openspec": "1.10.0",
+    "@fission-ai/openspec": "1.11.0",
     "@tailwindcss/cli": "4.3.3",
     "esbuild": "0.28.2",
     "tailwindcss": "4.3.3"

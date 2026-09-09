@@ -5199,7 +5199,7 @@ def _tool_call_tools_json() -> bytes:
     return b'[{"type":"function","function":{"name":"lookup_weather","parameters":{}}}]'
 
 
-def test_tool_choice_auto_emits_incremental_tool_call_deltas_and_tool_calls_finish_reason() -> None:
+def test_tool_choice_auto_emits_parsed_tool_call_and_tool_calls_finish_reason() -> None:
     def parser(text: str, tools: Any) -> dict[str, Any]:
         assert tools == [
             {"type": "function", "function": {"name": "lookup_weather", "parameters": {}}}
@@ -5225,22 +5225,15 @@ def test_tool_choice_auto_emits_incremental_tool_call_deltas_and_tool_calls_fini
 
     assert [event["kind"] for event in events] == [
         "tool_call_delta",
-        "tool_call_delta",
         "completed",
     ]
-    assert [event["tool_call_id"] for event in events[:-1]] == ["call_0", "call_0"]
+    assert events[0]["tool_call_id"] == "call_0"
     assert events[0]["delta"] == {
         "index": 0,
         "type": "function",
         "function": {
             "name": "lookup_weather",
-            "arguments_delta": '{"city":"Sing',
-        },
-    }
-    assert events[1]["delta"] == {
-        "index": 0,
-        "function": {
-            "arguments_delta": 'apore"}',
+            "arguments_delta": '{"city":"Singapore"}',
         },
     }
     assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
@@ -5249,7 +5242,7 @@ def test_tool_choice_auto_emits_incremental_tool_call_deltas_and_tool_calls_fini
 def test_tool_call_markers_can_share_chunks_with_text() -> None:
     def parser(text: str, tools: Any) -> dict[str, Any]:
         assert text == '{"city":"Singapore"}'
-        return {"name": "lookup_weather", "arguments": text}
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
 
     responses = [
         FakeGenerationResponse(
@@ -5283,7 +5276,7 @@ def test_tool_call_markers_can_share_chunks_with_text() -> None:
     assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
 
 
-def test_multi_tool_auto_emits_late_name_delta_after_argument_fragments() -> None:
+def test_multi_tool_auto_emits_parser_selected_name_with_normalized_arguments() -> None:
     tools_json = (
         b"["
         b'{"type":"function","function":{"name":"lookup_weather","parameters":{}}},'
@@ -5294,7 +5287,7 @@ def test_multi_tool_auto_emits_late_name_delta_after_argument_fragments() -> Non
     def parser(text: str, tools: Any) -> dict[str, Any]:
         assert text == '{"city":"Singapore"}'
         assert len(tools) == 2
-        return {"name": "lookup_time", "arguments": text}
+        return {"name": "lookup_time", "arguments": json.loads(text)}
 
     responses = [
         FakeGenerationResponse(text="<tool_call>", token=10),
@@ -5314,22 +5307,12 @@ def test_multi_tool_auto_emits_late_name_delta_after_argument_fragments() -> Non
 
     assert [event["kind"] for event in events] == [
         "tool_call_delta",
-        "tool_call_delta",
-        "tool_call_delta",
         "completed",
     ]
     assert events[0]["delta"] == {
         "index": 0,
         "type": "function",
-        "function": {"arguments_delta": '{"city":"Sing'},
-    }
-    assert events[1]["delta"] == {
-        "index": 0,
-        "function": {"arguments_delta": 'apore"}'},
-    }
-    assert events[2]["delta"] == {
-        "index": 0,
-        "function": {"name": "lookup_time"},
+        "function": {"name": "lookup_time", "arguments_delta": '{"city":"Singapore"}'},
     }
     assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
 
@@ -5359,7 +5342,7 @@ def test_tool_choice_required_fails_when_no_tool_call_is_emitted() -> None:
 def test_required_tool_choice_without_tools_raises_backend_error() -> None:
     session = _make_fake_session(
         tool_calling={"supported": True, "parser_type": "json_tools"},
-        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": text},
+        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": json.loads(text)},
         tool_call_start="<tool_call>",
         tool_call_end="</tool_call>",
     )
@@ -5393,17 +5376,13 @@ def test_named_tool_choice_fails_when_model_uses_wrong_function() -> None:
 
     events = _collect_events(session, request, _make_deps(responses))
 
-    assert events[0]["kind"] == "tool_call_delta"
-    assert events[0]["delta"]["function"] == {
-        "name": "lookup_weather",
-        "arguments_delta": '{"city":"Singapore"}',
-    }
+    assert not any(event["kind"] == "tool_call_delta" for event in events)
     assert events[-1]["kind"] == "failed"
     assert events[-1]["code"] == "tool_choice_not_satisfied"
     assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
 
 
-def test_cancel_mid_tool_call_emits_partial_tool_call_before_cancelled_terminal() -> None:
+def test_cancel_mid_tool_call_discards_unparsed_call_before_cancelled_terminal() -> None:
     cancel = threading.Event()
 
     def stream_with_cancel(model, tokenizer, prompt_ids, **kwargs):
@@ -5418,7 +5397,7 @@ def test_cancel_mid_tool_call_emits_partial_tool_call_before_cancelled_terminal(
     )
     session = _make_fake_session(
         tool_calling={"supported": True, "parser_type": "json_tools"},
-        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": text},
+        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": json.loads(text)},
         tool_call_start="<tool_call>",
         tool_call_end="</tool_call>",
     )
@@ -5426,20 +5405,7 @@ def test_cancel_mid_tool_call_emits_partial_tool_call_before_cancelled_terminal(
 
     events = _collect_events(session, request, deps, cancel_event=cancel)
 
-    assert events[:-1] == [
-        {
-            "kind": "tool_call_delta",
-            "tool_call_id": "call_0",
-            "delta": {
-                "index": 0,
-                "type": "function",
-                "function": {
-                    "name": "lookup_weather",
-                    "arguments_delta": '{"city":"Sing',
-                },
-            },
-        }
-    ]
+    assert events[:-1] == []
     assert events[-1]["kind"] == "failed"
     assert events[-1]["code"] == "cancelled"
     assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
@@ -5447,7 +5413,7 @@ def test_cancel_mid_tool_call_emits_partial_tool_call_before_cancelled_terminal(
 
 def test_stop_sequences_do_not_truncate_tool_call_arguments() -> None:
     def parser(text: str, tools: Any) -> dict[str, Any]:
-        return {"name": "lookup_weather", "arguments": text}
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
 
     responses = [
         FakeGenerationResponse(text="<tool_call>", token=10),
@@ -5479,7 +5445,7 @@ def test_tool_choice_none_disables_tool_call_parsing() -> None:
     ]
     session = _make_fake_session(
         tool_calling={"supported": True, "parser_type": "json_tools"},
-        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": text},
+        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": json.loads(text)},
         tool_call_start="<tool_call>",
         tool_call_end="</tool_call>",
     )
@@ -5497,6 +5463,53 @@ def test_tool_choice_none_disables_tool_call_parsing() -> None:
         "completed",
     ]
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", "length", None])
+@pytest.mark.parametrize("closing_marker", ["</tool_call>", ""])
+def test_spec_7_5_2_unclosed_tool_block_requires_clean_delimiter_free_stop(
+    finish_reason: str | None, closing_marker: str
+) -> None:
+    parser = MagicMock(return_value={"name": "lookup_weather", "arguments": {"city": "Paris"}})
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end=closing_marker,
+    )
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Paris"}', token=11, finish_reason=finish_reason),
+    ]
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+    events = _collect_events(session, request, _make_deps(responses))
+
+    if closing_marker == "" and finish_reason == "stop":
+        parser.assert_called_once()
+        assert events[0]["kind"] == "tool_call_delta"
+        assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+    else:
+        parser.assert_not_called()
+        assert not any(event["kind"] == "tool_call_delta" for event in events)
+        assert events[-1]["kind"] == "failed"
+        assert events[-1]["code"] == "tool_call_parse_failed"
+
+
+def test_spec_7_5_2_required_tool_choice_rejects_length_limit_without_a_call() -> None:
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=MagicMock(),
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json(), tool_choice_json=b'"required"')
+    events = _collect_events(
+        session,
+        request,
+        _make_deps([FakeGenerationResponse(text="No call", token=10, finish_reason="length")]),
+    )
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "tool_choice_not_satisfied"
 
 
 # ===========================================================================
@@ -5556,7 +5569,7 @@ def test_tool_call_arguments_with_braces_escaped_quotes_and_nesting_stream_intac
 def test_tool_call_end_marker_split_across_response_chunks() -> None:
     def parser(text: str, tools: Any) -> dict[str, Any]:
         assert text == '{"city":"Paris"}'
-        return {"name": "lookup_weather", "arguments": text}
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
 
     responses = [
         FakeGenerationResponse(text="<tool_call>", token=10),

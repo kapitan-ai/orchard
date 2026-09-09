@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import sentencepiece as sentencepiece
 from tokenizers import Tokenizer
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
@@ -13,9 +15,11 @@ from tokenizers.trainers import BpeTrainer
 
 from orchard_tokenizer import __version__
 from orchard_tokenizer.cli import (
+    TokenizerCliError,
     build_error_response,
     build_success_response,
     main,
+    normalize_tool_history,
 )
 from orchard_tokenizer.safe_segmented import SafeSegmentedError, catalog_sha256
 
@@ -888,6 +892,132 @@ def test_segmented_render_and_count_accepts_trimmed_caller_content(tmp_path: Pat
     assert result["rendered_prompt"] == "hello orchard"
 
 
+@pytest.mark.parametrize("skip_preflight", [False, True])
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(messages[0].content ~ '') | trim('_0123456789')",
+        "(messages[0].content ~ '').strip('_0123456789')",
+        "(messages[0].content ~ '').lstrip('_0123456789').rstrip('_0123456789')",
+        "(messages[0].content ~ '')['strip']('_0123456789')",
+    ],
+)
+def test_spec_coerced_marker_trim_fails_closed(
+    tmp_path, capsys, monkeypatch, skip_preflight, expression
+):
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text("{{ " + expression + " }}", encoding="utf-8")
+    if skip_preflight:
+        monkeypatch.setenv("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT", "1")
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [{"role": "user", "content": "<|im_end|>"}]
+    assert main(["--request-json", json.dumps(payload)]) != 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["error"]["category"] == "safe_tokenization_incompatible_template"
+    assert response["error"]["details"]["reason"]["category"] == "marker_transform_unsupported"
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [" \nhello\t "],
+        ["\n"],
+        ["", "\n", ""],
+        [" \thello ", " orchard\n "],
+        ["", " <|im_end|> ", ""],
+        [" __123_0_4__caller__123_1_4__ "],
+    ],
+)
+def test_spec_text_parts_trim_like_combined_scalar_with_caller_provenance(tmp_path, capsys, parts):
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text("{{ messages[0].content | trim }}", encoding="utf-8")
+    outputs = []
+    for content in ("".join(parts), [{"type": "text", "text": part} for part in parts]):
+        payload = segmented_payload(bundle, ["<|im_end|>"])
+        payload["request"]["input_items"] = [{"role": "user", "content": content}]
+        assert main(["--request-json", json.dumps(payload)]) == 0
+        result = assert_single_success_result(json.loads(capsys.readouterr().out))
+        assert result["rendered_prompt"] == "".join(parts).strip()
+        reserved = Tokenizer.from_file(str(bundle["tokenizer_path"])).token_to_id("<|im_end|>")
+        assert reserved not in result["prompt_token_ids"]
+        outputs.append(result["prompt_token_ids"])
+    assert outputs[0] == outputs[1]
+
+
+def test_spec_template_authored_marker_like_literal_can_trim(tmp_path, capsys):
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ ('__123_0_4__hello__123_1_4__' ~ '') | trim('_0123456789') }}{{ messages[0].content }}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    result = assert_single_success_result(json.loads(capsys.readouterr().out))
+    assert result["rendered_prompt"] == "hellohello orchard"
+
+
+@pytest.mark.parametrize("skip_preflight", [False, True])
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{{ messages[0].content"
+        + "".join(" | replace('" + char + "','')" for char in "_0123456789")
+        + " }}",
+        "{{ messages[0].content.replace('_', '') }}",
+        "{{ (messages[0].content ~ '').replace('_', '') }}",
+        "{{ messages[0].content['replace']('_', '') }}",
+        "{{ messages[0].content | attr('replace')('_', '') }}",
+        "{{ messages[0].content[0] }}",
+        "{{ (messages[0].content ~ '')[0:] }}",
+        "{% for char in messages[0].content %}{{ char }}{% endfor %}",
+        "{% for char in messages[0].content ~ '' %}{{ char }}{% endfor %}",
+        "{{ messages[0].content.split('_') | join('') }}",
+        "{{ ''.join([messages[0].content]) }}",
+        "{{ '%s' | format(messages[0].content) }}",
+        "{{ '%.0s' % messages[0].content }}",
+        "{{ '{}'.format(messages[0].content) }}",
+        "{{ '{x}'.format_map({'x': messages[0].content}) }}",
+        "{{ messages[0].content * 2 }}",
+        "{{ messages[0].content | upper }}",
+        "{{ messages[0].content | truncate(3) }}",
+        "{{ messages[0].content | list | join('') }}",
+        "{{ [messages[0].content] | map('replace', '_', '') | join('') }}",
+        "{% set discarded = messages[0].content.replace('__', '_') %}safe",
+        "{{ messages[0].content | replace('', '_') }}",
+        "{{ messages[0].content | replace('_', '', 1) }}",
+        "{% set mutate = messages[0].content.replace %}{{ mutate('_', '') }}",
+        "{% set s = messages[0].content %}{{ s[s.find('<'):s.rfind('>') + 1] }}",
+        "{% if '<' in messages[0].content %}"
+        "{% set a,b,c,d,e,f,g = messages[0].content %}{{ a ~ b ~ c ~ d ~ e ~ f ~ g }}{% endif %}",
+        "{% if '<' in messages[0].content %}"
+        "{% for a,b,c,d,e,f,g in [messages[0].content ~ ''] %}"
+        "{{ a ~ b ~ c ~ d ~ e ~ f ~ g }}{% endfor %}{% endif %}",
+    ],
+)
+def test_spec_unaudited_caller_transform_fails_before_prompt_ids(
+    tmp_path, capsys, monkeypatch, skip_preflight, template
+):
+    bundle = _make_segmented_bundle(tmp_path)
+    tokenizer = Tokenizer.from_file(str(bundle["tokenizer_path"]))
+    tokenizer.add_special_tokens(["<|eot|>"])
+    tokenizer.save(str(bundle["tokenizer_path"]))
+    bundle["chat_template_path"].write_text(template, encoding="utf-8")
+    if skip_preflight:
+        monkeypatch.setenv("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT", "1")
+    payload = segmented_payload(bundle, ["<|eot|>"])
+    payload["request"]["input_items"] = [{"role": "user", "content": "<|eot|>"}]
+    assert main(["--request-json", json.dumps(payload)]) != 0
+    response = json.loads(capsys.readouterr().out)
+    assert "result" not in response
+    assert response["error"]["category"] == "safe_tokenization_incompatible_template"
+    details = response["error"]["details"]
+    assert details["reason"]["category"] == "marker_transform_unsupported"
+    assert details["evaluation_scope"] == ("request" if skip_preflight else "artifact_preflight")
+    if not skip_preflight:
+        assert isinstance(details["reason"]["leaf_class"], str)
+        assert isinstance(details["reason"]["sentinel_index"], int)
+
+
 def test_segmented_treats_empty_null_and_omitted_tools_as_no_tools_for_llama_style_templates(
     tmp_path: Path, capsys
 ) -> None:
@@ -968,12 +1098,172 @@ def test_segmented_render_and_count_preserves_message_tool_fields(tmp_path: Path
     assert response["result"]["rendered_prompt"] == "lookup:call_1"
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [({"path": "<|im_end|>"}, "path=<|im_end|>;"), ({"<|im_end|>": "value"}, "<|im_end|>=value;")],
+)
+def test_spec_tool_history_arguments_render_as_mapping_with_safe_strings(
+    tmp_path: Path, capsys, arguments, expected
+):
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for message in messages %}{% for call in message.get('tool_calls', []) %}"
+        "{% for key, value in call.function.arguments|items %}"
+        "{{ key }}={{ value }};{% endfor %}{% endfor %}{% endfor %}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "lookup", "arguments": json.dumps(arguments)}}
+            ],
+        },
+        {"role": "tool", "content": "ok", "tool_call_id": "call_1"},
+    ]
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    result = assert_single_success_result(json.loads(capsys.readouterr().out))
+    assert result["rendered_prompt"] == expected
+    assert result["safe_encoding_events"]
+
+
+@pytest.mark.parametrize("serialized", [True, False])
+def test_tool_history_normalization_preserves_json_types_and_request(serialized):
+    arguments = {"nested": ["雪", 3, 1.5, True, None, {"key": "value"}]}
+    request = {
+        "input_items": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "lookup",
+                            "arguments": json.dumps(arguments) if serialized else arguments,
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+    original = deepcopy(request)
+    result = normalize_tool_history(request)
+    assert result["input_items"][0]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert request == original
+    result["input_items"][0]["tool_calls"][0]["function"]["arguments"]["nested"].append("new")
+    assert request == original
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "secret-invalid",
+        "[]",
+        "null",
+        "3",
+        '"secret"',
+        '{"x": NaN}',
+        '{"x": Infinity}',
+        [],
+        None,
+        '{"x":1,"x":2}',
+        '{"nested":{"x":1,"x":2}}',
+    ],
+)
+def test_tool_history_normalization_rejects_invalid_arguments_without_echo(arguments):
+    request = {"input_items": [{"tool_calls": [{"function": {"arguments": arguments}}]}]}
+    with pytest.raises(TokenizerCliError, match="must be a valid JSON object") as error:
+        normalize_tool_history(request)
+    assert error.value.category == "invalid_input"
+    assert "secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("content", [None, "omitted", "", "\n", " \t\r\n"])
+def test_spec_assistant_tool_history_absent_or_blank_content_continues(tmp_path, capsys, content):
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for message in messages %}"
+        "{% if message.content is string and message.content|trim|length > 0 %}"
+        "{{ message.content }}{% endif %}"
+        "{% for call in message.get('tool_calls', []) %}"
+        "{{ call.function.name }}:{{ call.function.arguments.path }};{% endfor %}"
+        "{% endfor %}",
+        encoding="utf-8",
+    )
+    assistant = {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read", "arguments": '{"path":"nonce.txt"}'},
+            }
+        ],
+    }
+    if content == "omitted":
+        del assistant["content"]
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [
+        assistant,
+        {"role": "tool", "tool_call_id": "call_1", "content": "nonce-42"},
+    ]
+    original = deepcopy(payload)
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    result = assert_single_success_result(json.loads(capsys.readouterr().out))
+    assert result["rendered_prompt"] == "read:nonce.txt;nonce-42"
+    assert payload == original
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"role": "user", "content": None},
+        {"role": "tool", "tool_call_id": "call_1"},
+        {"role": "assistant", "content": None},
+        {"role": "assistant", "tool_calls": []},
+        {"role": "assistant", "tool_calls": [{}]},
+        {"role": "assistant", "tool_calls": [{"function": {"name": "read", "arguments": "{}"}}]},
+    ],
+)
+def test_absent_content_does_not_exempt_invalid_history(tmp_path, capsys, item):
+    payload = segmented_payload(_make_segmented_bundle(tmp_path), ["<|im_end|>"])
+    payload["request"]["input_items"] = [item]
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["category"] == "invalid_input"
+
+
+def test_tool_history_argument_transform_still_fails_dual_render(tmp_path: Path, capsys):
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for message in messages %}{% for call in message.get('tool_calls', []) %}"
+        "{% if call.function.arguments.path == 'exact' %}MATCH{% else %}OTHER{% endif %}"
+        "{% endfor %}{% endfor %}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "lookup", "arguments": '{"path":"exact"}'}}],
+        }
+    ]
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["error"]["category"] == "safe_tokenization_incompatible_template"
+    assert response["error"]["details"]["reason"]["category"] == "dual_render_mismatch"
+    assert response["error"]["details"]["evaluation_scope"] == "request"
+
+
 def test_segmented_render_and_count_rejects_template_that_fails_sentinel_preflight(
     tmp_path: Path, capsys
 ) -> None:
     bundle = _make_segmented_bundle(tmp_path)
     bundle["chat_template_path"].write_text(
-        "{% if messages[0]['content'] == '' %}EMPTY{% else %}"
+        "{% if messages[0]['content'] == 'hello world' %}MATCH{% else %}"
         "{{ messages[0]['content'] }}{% endif %}",
         encoding="utf-8",
     )
@@ -986,9 +1276,10 @@ def test_segmented_render_and_count_rejects_template_that_fails_sentinel_preflig
     assert response["ok"] is False
     assert response["error"]["category"] == "safe_tokenization_incompatible_template"
     reason = response["error"]["details"]["reason"]
+    assert response["error"]["details"]["evaluation_scope"] == "artifact_preflight"
     assert reason["category"] == "dual_render_mismatch"
     assert reason["leaf_class"] == "messages[0].content"
-    assert reason["sentinel_index"] == 0
+    assert reason["sentinel_index"] == 2
     assert isinstance(reason["first_diff_offset"], int)
 
 
@@ -997,7 +1288,7 @@ def test_segmented_render_and_count_non_one_env_runs_sentinel_preflight(
 ) -> None:
     bundle = _make_segmented_bundle(tmp_path)
     bundle["chat_template_path"].write_text(
-        "{% if messages[0]['content'] == '' %}EMPTY{% else %}"
+        "{% if messages[0]['content'] == 'hello world' %}MATCH{% else %}"
         "{{ messages[0]['content'] }}{% endif %}",
         encoding="utf-8",
     )
@@ -1018,7 +1309,7 @@ def test_segmented_render_and_count_can_skip_sentinel_preflight_by_env(
 ) -> None:
     bundle = _make_segmented_bundle(tmp_path)
     bundle["chat_template_path"].write_text(
-        "{% if messages[0]['content'] == '' %}EMPTY{% else %}"
+        "{% if messages[0]['content'] == 'hello world' %}MATCH{% else %}"
         "{{ messages[0]['content'] }}{% endif %}",
         encoding="utf-8",
     )
@@ -1303,7 +1594,7 @@ def test_preflight_safe_tokenization_dual_render_mismatch_returns_compatible_fal
     tmp_path: Path, capsys
 ) -> None:
     bundle = _make_segmented_bundle(tmp_path)
-    write_template_that_branches_on_empty(bundle["chat_template_path"])
+    write_template_that_branches_on_hello(bundle["chat_template_path"])
     payload = preflight_payload(bundle, ["<|im_end|>"])
 
     assert main(["--request-json", json.dumps(payload)]) == 0
@@ -1571,13 +1862,13 @@ def assert_dual_render_mismatch_result(result: dict[str, Any]) -> None:
     assert result["template_compatible"] is False
     assert result["incompatibility_reason"]["category"] == "dual_render_mismatch"
     assert result["incompatibility_reason"]["leaf_class"] == "messages[0].content"
-    assert result["incompatibility_reason"]["sentinel_index"] == 0
+    assert result["incompatibility_reason"]["sentinel_index"] == 2
     assert isinstance(result["incompatibility_reason"]["first_diff_offset"], int)
 
 
-def write_template_that_branches_on_empty(path: Path) -> None:
+def write_template_that_branches_on_hello(path: Path) -> None:
     path.write_text(
-        "{% if messages[0]['content'] == '' %}EMPTY{% else %}"
+        "{% if messages[0]['content'] == 'hello world' %}MATCH{% else %}"
         "{{ messages[0]['content'] }}{% endif %}",
         encoding="utf-8",
     )

@@ -69,6 +69,18 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest.ConcurrentFailureOutput do
   def release(_reservation), do: {:error, :simulated_cleanup_failure}
 end
 
+defmodule OrchardCLI.Commands.NodeEnrollmentTest.ReconciliationFailureBundle do
+  @moduledoc false
+
+  @enrollment_id "33333333-3333-4333-8333-333333333333"
+
+  def issue(_attrs) do
+    {:error,
+     {:bundle_publication_reconciliation_failed, @enrollment_id, :bundle_too_large,
+      :database_unavailable}}
+  end
+end
+
 defmodule OrchardCLI.Commands.NodeEnrollmentTest do
   use ExUnit.Case, async: false
 
@@ -76,6 +88,7 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.EndpointMetadata
   alias Orchard.Governance.AuditLog
   alias Orchard.NodeEnrollments
   alias Orchard.Nodes.{Enrollment, Node}
@@ -86,8 +99,8 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
   alias OrchardCLI.Commands.NodeEnrollmentTest.ConcurrentFailureOutput
   alias OrchardCLI.Commands.NodeEnrollmentTest.PendingObservationOutput
   alias OrchardCLI.Commands.NodeEnrollmentTest.PublicationFailureOutput
+  alias OrchardCLI.Commands.NodeEnrollmentTest.ReconciliationFailureBundle
   alias OrchardCLI.Commands.Nodes
-  alias OrchardCLI.EndpointMetadata
 
   setup do
     :ok = Sandbox.checkout(Repo)
@@ -103,6 +116,7 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
     support_root = Path.join(root, "support")
 
     previous = %{
+      bundle_impl: Application.get_env(:orchard_cli, :node_enrollment_bundle_impl),
       control_plane: Application.get_env(:orchard_controller, :control_plane),
       node_trust: Application.get_env(:orchard_controller, :node_trust),
       output_impl: Application.get_env(:orchard_cli, :node_enrollment_output_impl),
@@ -116,6 +130,7 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
     System.put_env("ORCHARD_SUPPORT_ROOT", support_root)
     Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
     Application.put_env(:orchard_controller, :node_trust, root: trust_root)
+    Application.delete_env(:orchard_cli, :node_enrollment_bundle_impl)
     Application.delete_env(:orchard_cli, :node_enrollment_output_impl)
     Application.delete_env(:orchard_cli, :node_enrollment_publication_fault_injector)
 
@@ -124,6 +139,7 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
       restore_env("ORCHARD_SUPPORT_ROOT", previous.support_root)
       restore_app_env(:orchard_controller, :control_plane, previous.control_plane)
       restore_app_env(:orchard_controller, :node_trust, previous.node_trust)
+      restore_app_env(:orchard_cli, :node_enrollment_bundle_impl, previous.bundle_impl)
       restore_app_env(:orchard_cli, :node_enrollment_output_impl, previous.output_impl)
 
       restore_app_env(
@@ -214,6 +230,49 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
     assert message =~ "output path already exists"
     assert File.read!(output_path) == "operator-owned-existing-content"
     assert_no_enrollment_mutation()
+  end
+
+  test "post-create builder failure reports the output_failed Enrollment and publishes no file",
+       %{
+         root: root
+       } do
+    https_ca_path = Path.join([root, "support", "public", "ca.crt"])
+    File.write!(https_ca_path, File.read!(https_ca_path) <> String.duplicate(" ", 65_536))
+    output_path = Path.join(root, "oversized-enrollment.json")
+
+    assert {:error, message, 1} =
+             Nodes.run(["enrollment", "create", "--output", output_path])
+
+    enrollment = Repo.one!(Enrollment)
+
+    assert message =~ enrollment.id
+    assert message =~ "is output_failed"
+    assert message =~ "exceeded 65536 bytes"
+    assert message =~ "No bundle was published"
+    refute File.exists?(output_path)
+    assert enrollment.state == :output_failed
+  end
+
+  test "unresolved post-create reconciliation reports the pending Enrollment identity", %{
+    root: root
+  } do
+    Application.put_env(
+      :orchard_cli,
+      :node_enrollment_bundle_impl,
+      ReconciliationFailureBundle
+    )
+
+    output_path = Path.join(root, "unresolved-enrollment.json")
+
+    assert {:error, message, 1} =
+             Nodes.run(["enrollment", "create", "--output", output_path])
+
+    assert message =~ "33333333-3333-4333-8333-333333333333"
+    assert message =~ "no bundle was published"
+    assert message =~ "remains non-redeemable pending reconciliation"
+    assert message =~ "provisioned Node name remains reserved"
+    assert message =~ "distinct Node name"
+    refute File.exists?(output_path)
   end
 
   test "OpenSpec task 2.3 explains how to remediate a non-owner-only output directory", %{

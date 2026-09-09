@@ -64,6 +64,21 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     GenServer.call(__MODULE__, {:latest_snapshot_for_repo, repo_id})
   end
 
+  @doc "Lists the latest attempt for every repository and revision in this Controller session."
+  @spec list_snapshots() :: [map()]
+  def list_snapshots, do: GenServer.call(__MODULE__, :list_snapshots)
+
+  @doc "Controls a transfer before bundle preparation begins."
+  @spec control_download({String.t(), String.t() | nil}, :pause | :resume | :cancel) ::
+          {:ok, map()} | {:error, :not_found | :not_available}
+  def control_download(key, action),
+    do: GenServer.call(__MODULE__, {:control_download, key, action})
+
+  @doc "Removes terminal transfer history without deleting Catalog models or artifacts."
+  @spec remove_download({String.t(), String.t() | nil}) ::
+          :ok | {:error, :not_found | :not_available}
+  def remove_download(key), do: GenServer.call(__MODULE__, {:remove_download, key})
+
   @doc "Subscribe to `{:model_hub_download, snapshot}` broadcasts."
   def subscribe do
     Phoenix.PubSub.subscribe(Orchard.PubSub, @topic)
@@ -118,6 +133,74 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     {:reply, snapshot, state}
   end
 
+  def handle_call(:list_snapshots, _from, state) do
+    snapshots =
+      state.jobs_by_ref
+      |> Map.values()
+      |> Enum.sort_by(& &1.sequence, :desc)
+      |> Enum.uniq_by(& &1.snapshot.key)
+      |> Enum.map(& &1.snapshot)
+
+    {:reply, snapshots, state}
+  end
+
+  def handle_call({:control_download, key, action}, _from, state) do
+    job =
+      state.jobs_by_ref
+      |> Map.values()
+      |> Enum.filter(&(&1.snapshot.key == key))
+      |> Enum.max_by(& &1.sequence, fn -> nil end)
+
+    control_job(job, action, state)
+  end
+
+  def handle_call({:remove_download, key}, _from, state) do
+    jobs = state.jobs_by_ref |> Map.values() |> Enum.filter(&(&1.snapshot.key == key))
+
+    cond do
+      jobs == [] ->
+        {:reply, {:error, :not_found}, state}
+
+      Enum.any?(jobs, &(not terminal?(&1.snapshot.status))) ->
+        {:reply, {:error, :not_available}, state}
+
+      true ->
+        state = remove_terminal_jobs(state, jobs)
+        Phoenix.PubSub.broadcast(Orchard.PubSub, @topic, {:model_hub_download_removed, key})
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:download_phase, ref, phase}, _from, state) do
+    case get_active_job(state, ref) do
+      nil ->
+        {:reply, {:error, :cancelled}, state}
+
+      %{snapshot: %{status: status}} when status in [:pausing, :paused] ->
+        {:reply, {:error, :paused}, state}
+
+      %{snapshot: %{status: :cancelling}} ->
+        {:reply, {:error, :cancelled}, state}
+
+      job ->
+        snapshot = %{job.snapshot | status: phase}
+        broadcast(snapshot)
+        {:reply, :ok, update_job_snapshot(state, ref, snapshot)}
+    end
+  end
+
+  def handle_call({:download_paused, ref}, _from, state) do
+    case get_active_job(state, ref) do
+      %{snapshot: %{status: :pausing}} = job ->
+        snapshot = %{job.snapshot | status: :paused}
+        broadcast(snapshot)
+        {:reply, :ok, update_job_snapshot(state, ref, snapshot)}
+
+      _ ->
+        {:reply, :ok, state}
+    end
+  end
+
   def handle_call(:reset, _from, state) do
     cleanup_all_jobs(state)
     {:reply, :ok, initial_state()}
@@ -132,7 +215,12 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
       job ->
         progress = normalize_download_started(payload, job.snapshot.progress)
 
-        snapshot = %{job.snapshot | status: :downloading, progress: progress}
+        snapshot = %{
+          job.snapshot
+          | status: preserve_control_status(job.snapshot.status, :downloading),
+            progress: progress
+        }
+
         state = update_job_snapshot(state, ref, snapshot)
         broadcast(snapshot)
         {:noreply, state}
@@ -148,7 +236,12 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
         {status, progress} =
           normalize_download_progress(payload, job.snapshot.progress, job.snapshot.status)
 
-        snapshot = %{job.snapshot | status: status, progress: progress}
+        snapshot = %{
+          job.snapshot
+          | status: preserve_control_status(job.snapshot.status, status),
+            progress: progress
+        }
+
         state = update_job_snapshot(state, ref, snapshot)
         broadcast(snapshot)
         {:noreply, state}
@@ -165,7 +258,14 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
   def handle_info({:model_hub, ref, :download_finished, {:error, error}}, state) do
     finalize_download(ref, state, fn job ->
       error_map = if is_map(error), do: Redaction.sanitize_error_map(error), else: default_error()
-      %{job.snapshot | status: :error, result: nil, error: error_map}
+      error_map = cancellation_error(job.snapshot.status, error_map)
+
+      %{
+        job.snapshot
+        | status: if(error_map[:code] == "download_cancelled", do: :cancelled, else: :error),
+          result: nil,
+          error: error_map
+      }
     end)
   end
 
@@ -289,6 +389,8 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
       ref: ref,
       repo_id: repo_id,
       requested_revision: requested_revision,
+      sequence: System.unique_integer([:monotonic, :positive]),
+      control: :atomics.new(1, []),
       task_pid: nil,
       monitor_ref: nil,
       snapshot: snapshot
@@ -297,7 +399,7 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     state = put_in(state, [:jobs_by_ref, ref], job)
 
     # Build seam opts
-    seam_opts = [activate: activate?]
+    seam_opts = [activate: activate?, control: job.control]
 
     seam_opts =
       if requested_revision,
@@ -489,6 +591,17 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     }
   end
 
+  defp cancellation_error(:cancelling, %{code: "download_cleanup_failed"} = error), do: error
+
+  defp cancellation_error(:cancelling, _error),
+    do: %{
+      status: :error,
+      code: "download_cancelled",
+      message: "Download cancelled. Temporary files removed."
+    }
+
+  defp cancellation_error(_status, error), do: error
+
   defp default_error do
     %{
       status: :error,
@@ -497,8 +610,46 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     }
   end
 
-  defp active?(status), do: status in [:starting, :downloading, :preparing, :importing]
-  defp terminal?(status), do: status in [:completed, :error]
+  defp active?(status),
+    do:
+      status in [:starting, :downloading, :pausing, :paused, :cancelling, :preparing, :importing]
+
+  defp terminal?(status), do: status in [:completed, :error, :cancelled]
+
+  defp preserve_control_status(status, _next) when status in [:pausing, :paused, :cancelling],
+    do: status
+
+  defp preserve_control_status(_status, next), do: next
+
+  defp control_job(nil, _action, state), do: {:reply, {:error, :not_found}, state}
+
+  defp control_job(job, action, state) do
+    transition = control_transition(job.snapshot.status, action)
+
+    if transition do
+      {status, signal} = transition
+      :atomics.put(job.control, 1, signal)
+
+      if action in [:resume, :cancel] && is_pid(job.task_pid),
+        do: send(job.task_pid, {:model_hub_control, job.ref, action})
+
+      snapshot = %{job.snapshot | status: status}
+      broadcast(snapshot)
+      {:reply, {:ok, snapshot}, update_job_snapshot(state, job.ref, snapshot)}
+    else
+      {:reply, {:error, :not_available}, state}
+    end
+  end
+
+  defp control_transition(status, :pause) when status in [:starting, :downloading],
+    do: {:pausing, 1}
+
+  defp control_transition(:paused, :resume), do: {:downloading, 0}
+
+  defp control_transition(status, :cancel)
+       when status in [:starting, :downloading, :pausing, :paused], do: {:cancelling, 2}
+
+  defp control_transition(_status, _action), do: nil
 
   defp get_active_job(state, ref) do
     case Map.get(state.jobs_by_ref, ref) do
@@ -509,7 +660,12 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
 
   defp update_job_snapshot(state, ref, snapshot) do
     state
-    |> update_in([:jobs_by_ref, ref], fn job -> %{job | snapshot: snapshot} end)
+    |> update_in([:jobs_by_ref, ref], fn job ->
+      Map.merge(job, %{
+        snapshot: snapshot,
+        updated_sequence: System.unique_integer([:monotonic, :positive])
+      })
+    end)
     |> Map.put(:latest_ref, ref)
     |> Map.put(:latest_ref_by_repo, Map.put(state.latest_ref_by_repo, snapshot.repo_id, ref))
   end
@@ -542,6 +698,43 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
       end
     end
   end
+
+  defp remove_terminal_jobs(state, removed_jobs) do
+    state = Enum.reduce(removed_jobs, state, fn job, acc -> cleanup_monitor(acc, job) end)
+    retained = Map.drop(state.jobs_by_ref, Enum.map(removed_jobs, & &1.ref))
+
+    ordered =
+      retained
+      |> Map.values()
+      |> Enum.sort_by(&Map.get(&1, :updated_sequence, &1.sequence), :desc)
+
+    latest_by_repo =
+      Map.filter(state.latest_ref_by_repo, fn {_repo, ref} -> Map.has_key?(retained, ref) end)
+
+    latest_by_repo =
+      Enum.reduce(ordered, latest_by_repo, fn job, acc ->
+        Map.put_new(acc, job.repo_id, job.ref)
+      end)
+
+    latest =
+      if Map.has_key?(retained, state.latest_ref), do: state.latest_ref, else: newest_ref(ordered)
+
+    %{
+      state
+      | jobs_by_ref: retained,
+        latest_ref: latest,
+        latest_ref_by_repo: latest_by_repo,
+        active_ref_by_repo:
+          Map.filter(state.active_ref_by_repo, fn {_repo, ref} -> Map.has_key?(retained, ref) end),
+        monitor_ref_to_job_ref:
+          Map.filter(state.monitor_ref_to_job_ref, fn {_monitor, ref} ->
+            Map.has_key?(retained, ref)
+          end)
+    }
+  end
+
+  defp newest_ref([job | _]), do: job.ref
+  defp newest_ref([]), do: nil
 
   defp validate_repo_id(repo_id) when is_binary(repo_id) do
     if String.trim(repo_id) != "", do: :ok, else: {:error, default_error()}

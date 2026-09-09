@@ -858,7 +858,7 @@ validate_captured_source_identity
 # Create staging directory
 log_info "Creating payload staging..."
 STAGING="$EXPECTED_STAGING_ROOT"
-mkdir -p "$STAGING"/{releases,native,share/{bin,launchd},config,logs,support}
+mkdir -p "$STAGING"/{releases,native,share/{bin,launchd},config,logs,support/openssl}
 STAGING_CREATED=true
 
 # Copy releases
@@ -866,6 +866,9 @@ log_info "Copying releases to staging..."
 copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_controller" "$STAGING/releases/"
 copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_node_agent" "$STAGING/releases/"
 copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_cli" "$STAGING/releases/"
+
+log_info "Excluding debug-symbol bundles from staged runtime releases..."
+find -P "$STAGING/releases" -type d -name '*.dSYM' -prune -exec rm -rf {} +
 
 log_info "Remediating OTP OpenSSL Mach-O closure..."
 OPENSSL_PROVENANCE="$STAGING_BASE.openssl-provenance.txt"

@@ -642,11 +642,85 @@ defmodule OrchardConsole.NodesLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "GET /console/nodes" do
+    test "a queued refresh cancels the currently scheduled inventory timer", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+      timer = Process.send_after(self(), :unexpected_inventory_timer, 60_000)
+      socket = Phoenix.Component.assign(:sys.get_state(view.pid).socket, refresh_timer: timer)
+      {:noreply, refreshed} = OrchardConsole.NodesLive.handle_info(:refresh_nodes, socket)
+      assert Process.read_timer(timer) == false
+      assert is_reference(refreshed.assigns.refresh_timer)
+      Process.cancel_timer(refreshed.assigns.refresh_timer)
+    end
+
+    test "unavailable inventory reports unknown counts rather than an empty fleet", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+      socket = :sys.get_state(view.pid).socket
+      parent = self()
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        spawn(fn ->
+          Repo.put_dynamic_repo(:unavailable_inventory_repo)
+
+          send(
+            parent,
+            {:inventory_refresh,
+             OrchardConsole.NodesLive.handle_event("refresh_now", %{}, socket)}
+          )
+        end)
+
+        assert_receive {:inventory_refresh, {:noreply, failed}}, 2000
+        Process.cancel_timer(failed.assigns.refresh_timer)
+        assert failed.assigns.inventory.status == :error
+        assert failed.assigns.inventory.summary.total == nil
+
+        assert Enum.all?(failed.assigns.inventory.summary.by_health, fn {_health, count} ->
+                 is_nil(count)
+               end)
+      end)
+    end
+
+    test "section navigation replaces visible content and survives refresh", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+      assert has_element?(view, "#nodes-inventory-card:not([hidden])")
+      assert has_element?(view, "#nodes-pending-admissions-card[hidden]")
+      view |> element("#nodes-section-admissions") |> render_click()
+      assert_patch(view, "/console/nodes?section=admissions")
+      assert has_element?(view, "#nodes-pending-admissions-card:not([hidden])")
+      assert has_element?(view, "#nodes-inventory-card[hidden]")
+      view |> element("#nodes-refresh-now") |> render_click()
+      assert has_element?(view, "#nodes-section-admissions[aria-current='page']")
+      view |> element("#nodes-section-runtime") |> render_click()
+      assert has_element?(view, "#nodes-live-cluster-card:not([hidden])")
+      assert has_element?(view, "#nodes-control-plane-status-card[hidden]")
+      view |> element("#nodes-section-diagnostics") |> render_click()
+      assert has_element?(view, "#nodes-safe-tokenization-telemetry-card:not([hidden])")
+      assert has_element?(view, "#nodes-runtime-targets[hidden]")
+    end
+
+    test "Add Node remains a shared destination across all Nodes sections", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      for section <- ~w(inventory admissions runtime diagnostics) do
+        render_patch(view, "/console/nodes?section=#{section}")
+        assert has_element?(view, "#add-node[href='/console/nodes/new']", "Add Node")
+        refute has_element?(view, "[hidden] #add-node")
+        assert has_element?(view, "#nodes-section-#{section}[aria-current='page']")
+      end
+    end
+
+    test "unknown section falls back to Inventory", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes?section=not-a-section")
+      assert has_element?(view, "#nodes-section-inventory[aria-current='page']")
+    end
+
     test "renders nodes page with section titles", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
+      assert html =~ "Add Node"
+      assert html =~ "/console/nodes/new"
       assert html =~ "Inventory Summary"
       assert html =~ "Registered Nodes"
+      assert html =~ "Lifecycle and health are separate"
       assert html =~ "Live Cluster"
       assert html =~ "Control Plane"
     end
@@ -656,9 +730,9 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert html =~ ~s(class="text-xl font-semibold text-slate-900 dark:text-slate-100")
       assert html =~ ~s(class="max-w-none px-6 sm:px-8 lg:px-10 py-6")
-      assert html =~ ~s(class="grid gap-6 xl:grid-cols-12")
-      assert html =~ ~s(class="xl:col-span-8")
-      assert html =~ ~s(class="xl:col-span-4 space-y-6")
+      assert has_element?(view, "#nodes-sections[aria-label=\"Nodes sections\"]")
+      assert has_element?(view, "#nodes-inventory-card:not([hidden])")
+      assert has_element?(view, "#nodes-live-cluster-card[hidden]")
 
       cluster = element(view, "#nodes-live-cluster-card") |> render()
       assert cluster =~ "bg-slate-100/70"
@@ -875,6 +949,7 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
       assert html =~ "test-node"
+      assert html =~ "Inspect Node"
       assert html =~ "test.local"
       assert html =~ "192.168.1.10:50071"
       assert html =~ "active"
@@ -1550,7 +1625,7 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
       assert html =~ "nodes-freshness"
-      assert html =~ "Last refreshed"
+      assert html =~ "Last refresh attempt"
       assert html =~ ~s(phx-hook="LocalTime")
       assert html =~ ~s(data-local-time-format="time_second")
     end

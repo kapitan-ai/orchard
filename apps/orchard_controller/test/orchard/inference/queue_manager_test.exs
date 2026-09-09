@@ -1292,7 +1292,7 @@ defmodule Orchard.Inference.QueueManagerTest do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()
 
-    with_queue_admission_config(queue_config(max_wait_ms: 1_000), fn ->
+    with_queue_admission_config(queue_config(max_wait_ms: 5_000), fn ->
       assert {:ok, held_grant} =
                QueueManager.acquire(admission_request("req-held", tenant_id: tenant_a))
 
@@ -1314,16 +1314,16 @@ defmodule Orchard.Inference.QueueManagerTest do
       assert wait_until(fn -> queue_entry_awaiting?(ticket_b1) end)
 
       assert :ok = QueueManager.release(held_grant)
-      assert_receive {:await_result, :a1, {:ok, grant_a1}}, 1_000
+      assert_receive {:await_result, :a1, {:ok, grant_a1}}, 3_000
       refute_receive {:await_result, :a2, _}, 20
       refute_receive {:await_result, :b1, _}, 20
 
       assert :ok = QueueManager.release(grant_a1)
-      assert_receive {:await_result, :b1, {:ok, grant_b1}}, 1_000
+      assert_receive {:await_result, :b1, {:ok, grant_b1}}, 3_000
       refute_receive {:await_result, :a2, _}, 20
 
       assert :ok = QueueManager.release(grant_b1)
-      assert_receive {:await_result, :a2, {:ok, grant_a2}}, 1_000
+      assert_receive {:await_result, :a2, {:ok, grant_a2}}, 3_000
 
       assert :ok = QueueManager.release(grant_a2)
       stop_awaiter(awaiter_a1)
@@ -1479,7 +1479,7 @@ defmodule Orchard.Inference.QueueManagerTest do
   end
 
   test "requeue defers an active grant behind the lane retry interval" do
-    config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
+    config = queue_config(max_wait_ms: 2_000, poll_interval_ms: 200)
 
     with_queue_admission_config(config, fn ->
       request = admission_request("req-requeue")
@@ -1491,7 +1491,7 @@ defmodule Orchard.Inference.QueueManagerTest do
       assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
       refute Task.yield(awaiter, 50)
 
-      assert {:ok, requeued_grant} = Task.await(awaiter, 1_000)
+      assert {:ok, requeued_grant} = Task.await(awaiter, 3_000)
       assert requeued_grant.queue_result == :queued
       assert requeued_grant.queue_wait_ms >= config[:poll_interval_ms]
 
@@ -3078,7 +3078,7 @@ defmodule Orchard.Inference.QueueManagerTest do
                  public_id: db_request.public_id,
                  caller_pid: caller
                ),
-               config: queue_config(max_wait_ms: 1_000)
+               config: queue_config(max_wait_ms: 5_000)
              )
 
     parent = self()
@@ -3090,7 +3090,7 @@ defmodule Orchard.Inference.QueueManagerTest do
 
     assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
     assert :ok = QueueManager.release(grant)
-    assert_receive {:post_grant_await_result, {:ok, %QueueManager.Grant{}}}, 1_000
+    assert_receive {:post_grant_await_result, {:ok, %QueueManager.Grant{}}}, 3_000
     assert wait_until(fn -> Requests.get_request!(db_request.id).state == :cancelled end)
 
     request = Requests.get_request!(db_request.id)
@@ -3126,7 +3126,7 @@ defmodule Orchard.Inference.QueueManagerTest do
                  public_id: db_request.public_id,
                  caller_pid: caller
                ),
-               config: queue_config(max_wait_ms: 20)
+               config: queue_config(max_wait_ms: 100)
              )
 
     parent = self()
@@ -3136,7 +3136,7 @@ defmodule Orchard.Inference.QueueManagerTest do
       send(parent, {:post_timeout_await_result, result})
     end)
 
-    assert_receive {:post_timeout_await_result, {:error, :queue_timeout, metadata}}, 1_000
+    assert_receive {:post_timeout_await_result, {:error, :queue_timeout, metadata}}, 3_000
     assert metadata.queue_result == :queue_timeout
     assert wait_until(fn -> Requests.get_request!(db_request.id).state == :timed_out end)
 

@@ -42,6 +42,7 @@ defmodule Orchard.Models.HubClient do
           pipeline_tag: String.t() | nil,
           library_name: String.t() | nil,
           used_storage_bytes: non_neg_integer() | nil,
+          safetensors_total: non_neg_integer() | nil,
           last_modified: String.t() | nil,
           gated: boolean()
         }
@@ -56,6 +57,7 @@ defmodule Orchard.Models.HubClient do
           pipeline_tag: String.t() | nil,
           library_name: String.t() | nil,
           used_storage_bytes: non_neg_integer() | nil,
+          safetensors_total: non_neg_integer() | nil,
           last_modified: String.t() | nil,
           gated: boolean(),
           metadata_summary: %{
@@ -125,6 +127,12 @@ defmodule Orchard.Models.HubClient do
       direction: "-1",
       limit: @default_limit
     ]
+
+    expansions =
+      ~w(author downloads likes tags pipeline_tag library_name lastModified gated safetensors)
+      |> Enum.with_index(fn field, index -> {"expand[#{index}]", field} end)
+
+    params = params ++ expansions
 
     case normalize_non_empty_string(query) do
       nil -> params
@@ -317,10 +325,16 @@ defmodule Orchard.Models.HubClient do
       pipeline_tag: normalize_non_empty_string(Map.get(payload, "pipeline_tag")),
       library_name: normalize_non_empty_string(Map.get(payload, "library_name")),
       used_storage_bytes: normalize_non_negative_integer(Map.get(payload, "usedStorage")),
+      safetensors_total: normalize_safetensors_total(Map.get(payload, "safetensors")),
       last_modified: normalize_non_empty_string(Map.get(payload, "lastModified")),
       gated: normalize_gated(Map.get(payload, "gated"))
     }
   end
+
+  defp normalize_safetensors_total(%{"total" => total}),
+    do: normalize_non_negative_integer(total)
+
+  defp normalize_safetensors_total(_safetensors), do: nil
 
   defp normalize_author(payload, repo_id) do
     normalize_non_empty_string(Map.get(payload, "author")) || repo_owner(repo_id)

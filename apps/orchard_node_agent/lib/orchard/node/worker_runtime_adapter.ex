@@ -40,6 +40,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @poll_interval_ms 50
   @rpc_timeout_ms 1_000
+  # sockaddr_un reserves 104 bytes on macOS and 108 on Linux, including the NUL.
+  @max_worker_socket_path_bytes if(:os.type() == {:unix, :linux}, do: 107, else: 103)
   # Slice of the shutdown budget reserved to confirm an uncatchable SIGKILL.
   @kill_confirm_ms 250
   @default_generation_mode "batch"
@@ -290,7 +292,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     owner_pid = Keyword.get(opts, :owner, self())
 
     result =
-      with {:ok, resolved_model_path} <- resolve_model_path(model_ref, models_root),
+      with :ok <- validate_socket_path(socket_path),
+           {:ok, resolved_model_path} <- resolve_model_path(model_ref, models_root),
            {:ok, resolved_executable} <- resolve_executable(executable),
            :ok <- ensure_socket_parent(socket_path),
            :ok <- ensure_log_parent(log_path),
@@ -663,6 +666,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     |> File.mkdir_p()
   end
 
+  defp validate_socket_path(socket_path) do
+    if byte_size(socket_path) <= @max_worker_socket_path_bytes do
+      :ok
+    else
+      {:error,
+       {:worker_socket_path_too_long,
+        "worker socket path is #{byte_size(socket_path)} bytes; maximum is " <>
+          "#{@max_worker_socket_path_bytes} bytes. Set ORCHARD_WORKER_SOCKET_DIR " <>
+          "to a shorter directory owned by the node-agent user"}}
+    end
+  end
+
   defp ensure_log_parent(log_path) do
     log_path
     |> Path.dirname()
@@ -823,16 +838,29 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp try_connect_and_check(socket_path, port, deadline) do
     remaining_ms = deadline - System.monotonic_time(:millisecond)
 
-    case connect_worker_socket(socket_path) do
+    case connect_worker_socket(socket_path,
+           await_timeout: max(0, min(remaining_ms, @poll_interval_ms))
+         ) do
       {:ok, channel} ->
-        check_connected_worker(channel, socket_path, port, deadline, remaining_ms)
+        check_connected_worker(channel, socket_path, port, deadline)
 
       {:error, _reason} ->
         retry_wait_for_worker_ready(socket_path, port, deadline)
     end
   end
 
-  defp check_connected_worker(channel, socket_path, port, deadline, remaining_ms) do
+  defp check_connected_worker(channel, socket_path, port, deadline) do
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+    if remaining_ms <= 0 do
+      _ = disconnect_channel(channel)
+      {:error, :worker_ready_timeout}
+    else
+      check_worker_status(channel, socket_path, port, deadline, remaining_ms)
+    end
+  end
+
+  defp check_worker_status(channel, socket_path, port, deadline, remaining_ms) do
     timeout_ms = min(remaining_ms, @rpc_timeout_ms)
 
     case WorkerRuntimeService.Stub.get_status(
@@ -861,7 +889,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp retry_wait_for_worker_ready(socket_path, port, deadline) do
-    Process.sleep(@poll_interval_ms)
+    remaining_ms = max(0, deadline - System.monotonic_time(:millisecond))
+    Process.sleep(min(remaining_ms, @poll_interval_ms))
     do_wait_for_worker_ready(socket_path, port, deadline)
   end
 
@@ -869,24 +898,27 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # does not register it with the connection supervisor refresh path. Gun's
   # open_unix/2 success typing expects the local socket path as a charlist.
   # Public only so tests can assert direct UDS channel behavior without worker startup.
-  # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
+  # credo:disable-for-lines:4 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
-  @spec connect_worker_socket(String.t()) :: {:ok, Orchard.GRPCTypes.channel()} | {:error, term()}
-  def connect_worker_socket(socket_path) when is_binary(socket_path) do
-    %Channel{
-      host: {:local, String.to_charlist(socket_path)},
-      port: 0,
-      scheme: "unix",
-      cred: nil,
-      ref: make_ref(),
-      adapter: Gun,
-      codec: Proto,
-      interceptors: [],
-      compressor: nil,
-      accepted_compressors: [],
-      headers: []
-    }
-    |> Gun.connect([])
+  @spec connect_worker_socket(String.t(), keyword()) ::
+          {:ok, Orchard.GRPCTypes.channel()} | {:error, term()}
+  def connect_worker_socket(socket_path, opts \\ []) when is_binary(socket_path) do
+    with :ok <- validate_socket_path(socket_path) do
+      %Channel{
+        host: {:local, String.to_charlist(socket_path)},
+        port: 0,
+        scheme: "unix",
+        cred: nil,
+        ref: make_ref(),
+        adapter: Gun,
+        codec: Proto,
+        interceptors: [],
+        compressor: nil,
+        accepted_compressors: [],
+        headers: []
+      }
+      |> Gun.connect(opts)
+    end
   end
 
   # Classify worker health from GetStatus response.
