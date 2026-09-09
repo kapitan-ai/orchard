@@ -26,6 +26,10 @@ for label in com.orchard.controller com.orchard.node-agent; do
   printf '%s\n' "$label" > "$PAYLOAD/share/launchd/$label.plist"
 done
 
+mkdir -p "$TARGET_ROOT/Library/Application Support/Orchard/support"
+printf 'retain-initial-install\n' \
+  > "$TARGET_ROOT/Library/Application Support/Orchard/support/operator-initial-note.txt"
+
 ORCHARD_APP_PAYLOAD_ROOT="$PAYLOAD" \
 ORCHARD_APP_CONTRACT_PATH="$REPO_ROOT/packaging/service-lifecycle.json" \
 swift run --package-path "$REPO_ROOT/packaging/app" orchard-service \
@@ -36,6 +40,8 @@ grep -Fq '"role":"controller"' "$TMP_ROOT/install.json"
 test -f "$TARGET_ROOT/Library/LaunchDaemons/com.orchard.controller.plist"
 test ! -e "$TARGET_ROOT/Library/LaunchDaemons/com.orchard.node-agent.plist"
 test -L "$TARGET_ROOT/usr/local/bin/orchardctl"
+grep -Fq 'retain-initial-install' \
+  "$TARGET_ROOT/Library/Application Support/Orchard/support/operator-initial-note.txt"
 
 if ORCHARD_APP_PAYLOAD_ROOT="$PAYLOAD" \
   ORCHARD_APP_CONTRACT_PATH="$REPO_ROOT/packaging/service-lifecycle.json" \
