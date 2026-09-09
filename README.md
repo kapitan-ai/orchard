@@ -53,11 +53,10 @@ Orchard brings those responsibilities into one Elixir/OTP control plane backed b
 
 Choose a model, try it in the Playground, and follow each request from generation to execution details.
 
-[![Watch real Qwen3.8 inference in the Orchard Playground](docs/media/playground-inference.png)](https://youtu.be/lChCSLT3ra8)
+[![Watch the Orchard demo: Local AI, shared by your team (1:11)](docs/media/walkthrough-thumbnail.png)](https://youtu.be/lChCSLT3ra8)
 
 *Run Qwen on your own Apple Silicon hardware and inspect the answer in the Playground.*
 
-[Watch the Orchard inference walkthrough on YouTube](https://youtu.be/lChCSLT3ra8) · [Download the MP4](docs/media/orchard-console-walkthrough.mp4).
 Follow the model catalog, Workspace access, live Qwen3.8 inference, and the same request's execution details.
 
 ![Completed inference request in the Orchard Console](docs/media/request-details.png)
