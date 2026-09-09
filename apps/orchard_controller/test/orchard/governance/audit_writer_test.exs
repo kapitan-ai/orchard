@@ -239,6 +239,7 @@ defmodule Orchard.Governance.AuditWriterTest do
   end
 
   test "SPEC.md §9.1 an unmapped audit action domain emits no out-of-vocabulary label" do
+    on_exit(fn -> Status.recover({:series_admission, :rejected}) end)
     ref = attach_metric()
 
     assert {:error, :invalid_labels} =
