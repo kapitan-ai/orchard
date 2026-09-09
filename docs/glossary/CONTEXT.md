@@ -120,7 +120,7 @@ A Node-local implementation that satisfies the provider-neutral Worker Runtime I
 _Avoid_: model artifact format, acceleration implementation, device resource
 
 **Worker Capability Profile**:
-An indivisible provider-neutral tuple of artifact format, acceleration, device binding, memory semantics, concurrency, runtime features, and cache capabilities advertised in one Worker Runtime capability envelope.
+A provider-neutral tuple of artifact format, acceleration, device binding, memory semantics, concurrency, runtime features, and cache capabilities advertised in one Worker Runtime capability envelope.
 It remains diagnostic evidence until a separately accepted scheduling cutover makes it authoritative.
 _Avoid_: Runtime-Provider Profile, flattened capability union, provider choice
 
@@ -605,12 +605,13 @@ A model's global publication state in the Model Catalog, independent of node-loc
 _Avoid_: Placement State, loadedness
 
 **Model Placement**:
-The Node-scoped residency and runtime-load state for one exact Catalog Model under `SPEC.md` §§6.1 and 8.2.
+For first-party v1 runtimes, the Node-scoped residency and runtime-load state for one exact Catalog Model under `SPEC.md` §§6.1 and 8.2.
 Runtime Endpoint observations may project placement and capacity evidence without changing that durable identity.
 _Avoid_: Catalog entry, Runtime Model Placement, Cache Residency
 
 **Placement State**:
-The Node-scoped lifecycle state of a Model Placement across artifact absence, acquisition, verification, caching, runtime loading, unloading, eviction, or failure.
+For first-party v1 runtimes, the Node-scoped lifecycle state of a Model Placement across artifact absence, acquisition, verification, caching, runtime loading, unloading, eviction, or failure.
+Runtime Endpoint observations may project placement state and capacity evidence without changing that durable identity.
 _Avoid_: Catalog State, scheduler eligibility, provider availability, tenant-visible model activation
 
 **Placement Capacity**:
