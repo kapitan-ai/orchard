@@ -54,4 +54,4 @@
 - [x] 8.2 Record explicit owner acceptance for the retirement contract.
 - [x] 8.3 Synchronize the accepted capability deltas, archive this change, and validate all OpenSpec materials strictly.
 - [x] 8.4 Append partial-supersession annotations to ADR 0003, ADR 0005, and ADR 0008 without rewriting their historical decisions.
-- [ ] 8.5 Open an unmerged pull request that closes issue #356 and reports exact validation evidence and residual risks.
+- [x] 8.5 Open an unmerged pull request that closes issue #356 and reports exact validation evidence and residual risks.
