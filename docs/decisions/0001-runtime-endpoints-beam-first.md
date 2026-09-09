@@ -92,7 +92,9 @@ It may still become useful for external Runtime Endpoint adapters or compatibili
 Node lifecycle remains first-party and Node-specific.
 Runtime Endpoint Availability becomes the scheduler-facing availability concept for both first-party and future external endpoints.
 Runtime Endpoint Observations remain durable scheduler and operator inputs even when live first-party communication uses BEAM monitoring.
-Model Placement becomes scoped to Runtime Endpoints rather than only Nodes.
+The first-party v1 durable Model Placement identity remains Node-scoped under `SPEC.md` §§6.1 and 8.2.
+Runtime Endpoint Observations project placement and capacity evidence without creating a different durable identity.
+Any future external, non-Node Runtime Endpoint durable placement identity requires an accepted contract change.
 Placement Capacity becomes a Runtime Endpoint Observation rather than a protobuf-specific `runtime_model_placements` field.
 The queue and scheduling semantics from `gnhf/objective-fully-impl-369718` should be preserved while adapting their transport-specific shell.
 The conservative unknown-capacity rule is part of that behavior, not a gRPC artifact.
