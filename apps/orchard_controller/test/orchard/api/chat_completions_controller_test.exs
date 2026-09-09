@@ -1222,6 +1222,87 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   describe "POST /v1/chat/completions bounded automatic retry" do
     @tag :live
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.9 and 5.10: pre-acceptance capacity refusal stays busy across JSON and SSE", %{
+      bundle: bundle
+    } do
+      create_queue_model!(bundle, "chat-preacceptance-refusal")
+      %{token: token, tenant: tenant} = create_api_key_with_token!("chat-preacceptance-refusal")
+      grant_active_models!(tenant)
+
+      for stream? <- [false, true] do
+        nodes =
+          configure_retry_nodes!(
+            [[InferenceEvent.failed("model_busy", "capacity exhausted", true)]],
+            accepted?: false
+          )
+
+        conn =
+          post_chat_endpoint(
+            %{
+              "model" => "chat-preacceptance-refusal@v1",
+              "messages" => [%{"role" => "user", "content" => "hello"}],
+              "stream" => stream?
+            },
+            token,
+            if(stream?, do: "text/event-stream", else: "application/json")
+          )
+
+        if stream? do
+          assert conn.status == 200
+          assert [{:error, error}] = parse_sse_body(conn.resp_body)
+          assert error["error"]["code"] == "model_busy"
+        else
+          assert conn.status == 503
+          assert Jason.decode!(conn.resp_body)["error"]["code"] == "model_busy"
+        end
+
+        request = latest_request!("chat-preacceptance-refusal@v1", stream?)
+        assert_preacceptance_capacity_refusal!(request, nodes)
+      end
+    end
+
+    @tag :live
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.10: capacity refusal on the alternate attempt retains classification", %{
+      bundle: bundle
+    } do
+      create_queue_model!(bundle, "chat-alternate-refusal")
+      %{token: token, tenant: tenant} = create_api_key_with_token!("chat-alternate-refusal")
+      grant_active_models!(tenant)
+
+      nodes =
+        configure_retry_nodes!([
+          [InferenceEvent.failed("worker_down", "worker unavailable", true)],
+          {:pre_acceptance, [InferenceEvent.failed("model_busy", "capacity exhausted", true)]}
+        ])
+
+      conn =
+        post_chat_endpoint(
+          %{
+            "model" => "chat-alternate-refusal@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}],
+            "stream" => false
+          },
+          token,
+          "application/json"
+        )
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "model_busy"
+      request = latest_request!("chat-alternate-refusal@v1", false)
+      assert_failed_retry!(request, nodes)
+
+      terminal =
+        request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+      assert terminal["failure_class"] == "capacity_rejection"
+      assert terminal["failure_code"] == "model_busy"
+      assert terminal["accepted"] == false
+      assert terminal["capacity_release_outcome"] == "released"
+    end
+
+    @tag :live
     test "SPEC.md M4 retries one uncommitted attempt across JSON and SSE", %{bundle: bundle} do
       create_queue_model!(bundle, "chat-bounded-retry")
       %{token: token, tenant: tenant} = create_api_key_with_token!("chat-bounded-retry")

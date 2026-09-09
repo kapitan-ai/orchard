@@ -1050,6 +1050,52 @@ defmodule Orchard.API.ResponsesControllerTest do
   end
 
   @tag :live
+  @tag :pre_acceptance_refusal
+  test "SPEC 5.9 and 5.10: Responses preserves pre-acceptance busy without acceptance or retry",
+       %{
+         bundle: bundle
+       } do
+    create_queue_model!(bundle, "responses-preacceptance-refusal")
+
+    %{token: token, tenant: tenant} =
+      create_api_key_with_token!("responses-preacceptance-refusal")
+
+    grant_active_models!(tenant)
+
+    for stream? <- [false, true] do
+      nodes =
+        configure_retry_nodes!(
+          [[InferenceEvent.failed("model_busy", "capacity exhausted", false)]],
+          accepted?: false
+        )
+
+      conn =
+        post_responses_endpoint(
+          %{
+            "model" => "responses-preacceptance-refusal@v1",
+            "input" => "hello",
+            "stream" => stream?
+          },
+          token,
+          if(stream?, do: "text/event-stream", else: "application/json")
+        )
+
+      if stream? do
+        assert conn.status == 200
+        events = parse_typed_sse_events(conn)
+        assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+        assert List.last(events).data["response"]["error"]["code"] == "model_busy"
+      else
+        assert conn.status == 503
+        assert Jason.decode!(conn.resp_body)["error"]["code"] == "model_busy"
+      end
+
+      request = latest_request!("responses-preacceptance-refusal@v1", stream?)
+      assert_preacceptance_capacity_refusal!(request, nodes)
+    end
+  end
+
+  @tag :live
   test "SPEC.md M4 retries one uncommitted attempt across JSON and typed SSE", %{bundle: bundle} do
     create_queue_model!(bundle, "responses-bounded-retry")
     %{token: token, tenant: tenant} = create_api_key_with_token!("responses-bounded-retry")

@@ -66,7 +66,6 @@ end
 defmodule Orchard.TestSupport.RetryAPI.RuntimeClient do
   @moduledoc false
 
-  alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
   alias Orchard.TestSupport.DispatchCapacityFixtures
   alias Orchard.TestSupport.RetryAPI
@@ -112,11 +111,6 @@ defmodule Orchard.TestSupport.RetryAPI.RuntimeClient do
 
     send(self(), {:retry_api_execute, request.request_id, channel})
 
-    send(
-      owner,
-      {:runtime_endpoint_event, stream_ref, request.request_id, InferenceEvent.accepted(0)}
-    )
-
     Enum.each(RetryAPI.next_attempt_events(), fn event ->
       send(owner, {:runtime_endpoint_event, stream_ref, request.request_id, event})
     end)
@@ -137,7 +131,9 @@ defmodule Orchard.TestSupport.RetryAPI do
 
   import ExUnit.Assertions
 
+  alias Orchard.CircuitBreakers.Failure
   alias Orchard.DispatchCapacity
+  alias Orchard.DispatchCapacity.AllocationAuthority
   alias Orchard.DispatchCapacity.Policy
   alias Orchard.InferenceEvent
   alias Orchard.Nodes.AdmissionDecision
@@ -224,6 +220,7 @@ defmodule Orchard.TestSupport.RetryAPI do
       nodes: nodes,
       statuses: statuses,
       event_lists: attempt_event_lists,
+      accepted?: Keyword.get(opts, :accepted?, true),
       selection_mode: Keyword.get(opts, :selection_mode, :different_node)
     })
 
@@ -283,9 +280,13 @@ defmodule Orchard.TestSupport.RetryAPI do
     state = fetch_state!(@state_key)
 
     case state.event_lists do
-      [events | rest] ->
+      [{:pre_acceptance, events} | rest] ->
         Process.put(@state_key, %{state | event_lists: rest})
         events
+
+      [events | rest] ->
+        Process.put(@state_key, %{state | event_lists: rest})
+        if state.accepted?, do: [InferenceEvent.accepted(0) | events], else: events
 
       [] ->
         flunk("retry API fixture observed an unexpected third inference attempt")
@@ -405,6 +406,39 @@ defmodule Orchard.TestSupport.RetryAPI do
 
     assert [%{id: request_id}] = matching_requests
     assert request_id == request.id
+  end
+
+  def assert_preacceptance_capacity_refusal!(request, nodes) do
+    assert_declined_retry!(request, nodes, "not_retryable", "capacity_rejection")
+    assert request.state == :failed
+    assert request.http_status == 503
+    assert request.error_code == "model_busy"
+    assert request.reserved_output_tokens == 0
+    assert request.first_token_at == nil
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["accepted"] == false
+    assert terminal["failure_code"] == "model_busy"
+    assert terminal["capacity_release_outcome"] == "released"
+    assert terminal["execution_resolution"] == "terminated"
+
+    states = request |> Requests.list_request_events() |> Enum.map(& &1.state)
+    assert Enum.count(states, &(&1 in [:completed, :failed, :cancelled, :timed_out])) == 1
+    refute Enum.any?(states, &(&1 in [:queued, :running, :streaming]))
+
+    refute Enum.any?(Repo.all(Failure), &(&1.node_id == nodes.first.id))
+    assert AllocationAuthority.claim_count(nodes.first.id) == 0
+
+    assert {:ok, lease} =
+             AllocationAuthority.try_acquire_acceptance_gate(
+               AllocationAuthority,
+               nodes.first.id,
+               100
+             )
+
+    AllocationAuthority.release_acceptance_gate(lease)
   end
 
   def latest_request!(requested_model, stream?) do
