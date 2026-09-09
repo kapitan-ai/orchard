@@ -46,7 +46,8 @@
 - [x] 7.5 Run `make macos-native-test-helpers`.
 - [x] 7.6 Run `mise exec -- mix test`.
 - [x] 7.7 Run `mise exec -- mix test --cover`.
-- [ ] 7.8 Run the portable Linux control-plane suite and record the OS, toolchain, result, and cleanup evidence.
+- [x] 7.8 Run the portable Linux control-plane suite and record the OS, toolchain, result, and cleanup evidence.
+  Evidence: GitHub Actions run 34347574085 completed the Linux portable control-plane job successfully on Ubuntu 24.04.5 LTS with mise 2026.9.2, Erlang/OTP 29.0.2, Elixir 1.20.0-otp-29, Node 24.17.0, Python 3.11.15, and uv 0.11.23; all static gates and portable tests passed, and the job completed container/network and orphan-process cleanup.
 
 ## 8. Acceptance And Handoff
 
