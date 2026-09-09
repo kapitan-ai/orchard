@@ -24,9 +24,26 @@ branch reconciles the conflict. `SPEC.md` wins until explicitly updated.
 
 Issues and feedback are welcome.
 Implementation participation requires prior maintainer agreement.
+Implementation PRs are limited to designated contributors who are members of the `kapitan-ai` organization with Orchard-specific access through the `orchard-contributors` team, and to Najib as project owner.
+Organization membership alone does not grant implementation access.
+Public contributors should share bug reports, reproduction steps, analysis, and proposals in issues before writing an implementation for submission.
 Najib retains final authority over project direction, contribution acceptance, merges, releases, and publication.
 AI-assisted work must have an accountable human contributor who reviews and stands behind the result.
 Keep discussions and contributions respectful.
+
+### Repository Access And Merging
+
+The `orchard-contributors` team has Write access to Orchard so designated contributors can create branches, submit PRs, and review changes.
+GitHub restricts PR creation to repository collaborators with Write access or higher.
+Public issues remain enabled.
+Access to other organization repositories is granted separately; organization base repository permission is None.
+
+Only Najib may merge PRs into `main`.
+Branch protection restricts updates to `najibninaba` and requires a PR, the up-to-date `Required Orchard validation gate`, and resolved review conversations.
+These requirements apply to administrators, and force pushes and branch deletion are disabled.
+The required approving-review count remains zero so Najib can merge his own PRs after satisfying those gates.
+Review participation and team Write access do not confer authority to merge into `main`.
+Repository Admin access is reserved for Najib; granting it to another person would expand the merge-control trust boundary.
 
 ## Contribution Terms
 
