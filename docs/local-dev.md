@@ -1242,15 +1242,7 @@ that procedure.
 
 `orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for a request, with stable human and `--json` output from the shared Operator API presenter.
 Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
-`orchardctl support bundle create` creates a
-local diagnostic `.tar.gz` containing bounded redacted logs, redacted config,
-service status, node snapshots, shared cluster-management node status, and
-request summaries; use `--support-root` and
-`--output` to point it at an isolated source-dev fixture. Use
-`--max-log-bytes` to cap each retained log tail and `--json` when scripting
-bundle creation. It records `support_bundle.generated` only when the controller
-Repo is already available. `orchardctl nodes list --json` emits the same shared
-cluster-management node status contract for scripting node inventory checks.
+`orchardctl nodes list --json` emits the shared cluster-management node status contract for scripting node inventory checks.
 Console request views, authenticated `/ops/v1/health`, public status-only health,
 and controller or node-agent logs remain useful for interactive source-dev
 diagnostics.

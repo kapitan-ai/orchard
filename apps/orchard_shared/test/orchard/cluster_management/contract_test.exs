@@ -23,9 +23,6 @@ defmodule Orchard.ClusterManagement.ContractTest do
     assert "active_requests_present" in ReasonCodes.consequence_codes()
     assert "future_scheduling_revoked" in ReasonCodes.consequence_codes()
     assert "no_rejoin_with_same_node_id" in ReasonCodes.consequence_codes()
-    assert "control_plane" in ReasonCodes.support_scope_codes()
-    legacy_scope = Enum.join(["ha", "lite"], "_")
-    refute legacy_scope in ReasonCodes.support_scope_codes()
   end
 
   test "node status golden fixture matches shared JSON contract" do

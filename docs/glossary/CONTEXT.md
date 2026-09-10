@@ -107,6 +107,7 @@ _Avoid_: BEAM Authorization Root, model cache, generic support directory
 **Runtime Endpoint**:
 A schedulable execution boundary that can receive model runtime work from the Controller through Orchard's runtime semantics.
 Orchard's v1 Runtime Endpoint is the first-party Node Agent; future Runtime Endpoints may be external compute or provider integrations.
+Worker Runtimes and Runtime Providers supervised by the v1 Node Agent remain internal to that Runtime Endpoint rather than becoming separate Runtime Endpoints.
 A Runtime Endpoint is not necessarily a Node.
 _Avoid_: Worker Runtime, transport protocol, durable cluster truth, managed Mac
 
@@ -117,6 +118,11 @@ _Avoid_: Public API server, permanent launchd service
 **Runtime Provider**:
 A Node-local implementation that satisfies the provider-neutral Worker Runtime Interface for a runtime family such as MLX-LM.
 _Avoid_: model artifact format, acceleration implementation, device resource
+
+**Worker Capability Profile**:
+A provider-neutral tuple of artifact format, acceleration, device binding, memory semantics, concurrency, runtime features, and cache capabilities advertised in one Worker Runtime capability envelope.
+It remains diagnostic evidence until a separately accepted scheduling cutover makes it authoritative.
+_Avoid_: Runtime-Provider Profile, flattened capability union, provider choice
 
 **Acceleration Implementation**:
 A hardware or software execution backend used by a Runtime Provider, such as Apple Metal through MLX.
@@ -234,7 +240,7 @@ The compatibility API at `/v1/chat/completions` backed by Orchard's canonical re
 _Avoid_: Canonical inference abstraction
 
 **Operator API**:
-The runtime-operations HTTP API surface for nodes, requests, diagnostics, scheduler explanations, and support bundles.
+The runtime-operations HTTP API surface for nodes, requests, diagnostics, and scheduler explanations.
 _Avoid_: Admin API, Public Inference API, tenant/key mutation unless also admin
 
 **Admin API**:
@@ -314,7 +320,7 @@ _Avoid_: principal, RBAC Role, Bootstrap Token, Node Certificate, token when ref
 
 **One-time Secret Output**:
 The one-time display or export of newly generated API Token secrets at creation.
-_Avoid_: persisted secret, audit payload, support bundle content
+_Avoid_: persisted secret, audit payload, durable local evidence
 
 **Owner Contact**:
 Descriptive human or team contact metadata for an API Client.
@@ -381,11 +387,11 @@ _Avoid_: Quota, Scheduler Decision
 
 **Audit Log**:
 A durable governance or security event record for significant administrative and operator actions.
-_Avoid_: Support Bundle, debug log, structured log, trace span
+_Avoid_: debug log, structured log, trace span
 
 **Payload Capture Mode**:
 A tenant setting that controls how much prompt and response payload data Orchard may retain, resolved into an effective mode that each Request snapshots for its whole lifetime.
-_Avoid_: Audit Log, Support Bundle, logging level
+_Avoid_: Audit Log, logging level
 
 ### Requests and Inference
 
@@ -599,12 +605,14 @@ A model's global publication state in the Model Catalog, independent of node-loc
 _Avoid_: Placement State, loadedness
 
 **Model Placement**:
-The per-Runtime Endpoint residency, cache, availability, or load state for a model.
-_Avoid_: Catalog entry
+For first-party v1 runtimes, the Node-scoped residency and runtime-load state for one exact Catalog Model under `SPEC.md` §§6.1 and 8.2.
+Runtime Endpoint observations may project placement and capacity evidence without changing that durable identity.
+_Avoid_: Catalog entry, Runtime Model Placement, Cache Residency
 
 **Placement State**:
-A per-Runtime Endpoint model state describing whether a model is unavailable, cached, loaded, provider-available, failed, or in transition.
-_Avoid_: Catalog State, tenant-visible model activation
+For first-party v1 runtimes, the Node-scoped lifecycle state of a Model Placement across artifact absence, acquisition, verification, caching, runtime loading, unloading, eviction, or failure.
+Runtime Endpoint observations may project placement state and capacity evidence without changing that durable identity.
+_Avoid_: Catalog State, scheduler eligibility, provider availability, tenant-visible model activation
 
 **Placement Capacity**:
 The Node-owned active request count and concurrency bound for one Model Placement, reported through Runtime Endpoint Observations.
@@ -622,6 +630,11 @@ _Avoid_: Runtime status, hashed artifact contents
 **Artifact Bundle**:
 A filesystem copy and hash unit for model contents after Orchard validates and imports a Model Bundle.
 _Avoid_: Model Manifest, Model Catalog record
+
+**Model Cache Verification Receipt**:
+Node-local verification fast-path evidence outside an Artifact Bundle that binds the Catalog digest and canonical cache path to an unchanged complete filesystem inventory.
+It is not Model Placement identity, a Cache Residency resource, or a competing integrity digest.
+_Avoid_: Artifact Bundle digest, cache identity, trust root
 
 **Qualification Tuple**:
 The exact model checkpoint, quantization, tokenizer or renderer, Worker Runtime, Orchard revision, Artifact Bundle digest, hardware, operating system, configuration, topology, and tested capability envelope to which qualification evidence applies.
@@ -813,9 +826,10 @@ Runtime telemetry about prefix-cache configuration, counters, and bounded HMAC f
 _Avoid_: Readiness gate, admission gate, scheduler eligibility gate, tenant-facing signal, raw prompt or token data
 
 **Runtime Model Placement**:
-Compatibility-protocol status for one loaded Model Placement, including `active_request_count` and `max_concurrency`.
+The gRPC compatibility-protocol encoding of Placement Capacity for one loaded Model Placement, including `active_request_count` and `max_concurrency`.
 The scheduler uses it only to prove same-model placement capacity and to rank by requested-placement load.
 Queue admission also uses valid loaded-placement observations to wake queued same-model work, and treats non-loaded, invalid, duplicate, or exhausted placement observations as unavailable capacity.
+It is not the durable Model Placement record or a new placement identity.
 _Avoid_: Catalog State, durable placement record, model manifest metadata
 
 **Runtime Node Capacity**:
@@ -960,15 +974,6 @@ _Avoid_: Deployment topology, External Database Mode
 A database ownership mode where Orchard uses an operator-managed PostgreSQL database.
 _Avoid_: Managed Database Mode, All-in-One Deployment
 
-**Support Bundle**:
-An operator-generated diagnostic package for logs, config, snapshots, and request summaries.
-_Avoid_: Audit Log, Payload Capture Mode, raw local evidence
-
-**Support Bundle v2**:
-The required diagnostic bundle format for cluster-management evidence, including sanitized admission candidates, Node Admission Decisions, scheduler explanations, support scope, omitted sections, and redaction manifest.
-v1 compatibility must not weaken v2 contents or redaction rules.
-_Avoid_: Support Bundle v1, raw local evidence, prompt export
-
 **DMG Installer**:
 The approved interactive deployment artifact for the macOS Native Distribution Profile whose primary artifact is a verified `Orchard.app` that owns the root-authorized service lifecycle.
 Native PKG is not a supported current Orchard distribution channel.
@@ -983,7 +988,7 @@ A launchd-managed user agent that starts the Tray/Menu Bar App in a user context
 _Avoid_: LaunchDaemon, system service
 
 **Tray/Menu Bar App**:
-The local macOS app for status, onboarding, logs, and support-bundle entry.
+The local macOS app for status, onboarding, and logs.
 _Avoid_: Orchard Console, LaunchDaemon
 
 **Install Role**:
