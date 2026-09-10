@@ -17,7 +17,10 @@ from jinja2 import meta as jinja_meta
 from tokenizers import Tokenizer
 
 from orchard_tokenizer import __version__
-from orchard_tokenizer.catalog import extract_safe_tokenization_catalog
+from orchard_tokenizer.catalog import (
+    extract_safe_tokenization_catalog,
+    extract_wrapper_tool_markers,
+)
 from orchard_tokenizer.safe_segmented import (
     MarkerPair,
     SafeSegmentedError,
@@ -310,6 +313,24 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
         except OSError as exc:
             raise TokenizerCliError("missing_assets", str(exc), 3) from exc
 
+    if command == "preflight_tool_capability":
+        if int(contract_version) != CONTRACT_VERSION:
+            raise TokenizerCliError(
+                "invalid_input",
+                "preflight_tool_capability requires contract_version 3",
+                2,
+            )
+
+        try:
+            return {
+                "contract_version": int(contract_version),
+                **_execute_preflight_tool_capability(payload),
+            }
+        except FileNotFoundError as exc:
+            raise TokenizerCliError("missing_assets", str(exc), 3) from exc
+        except OSError as exc:
+            raise TokenizerCliError("missing_assets", str(exc), 3) from exc
+
     raise TokenizerCliError("invalid_input", f"unsupported command: {command!r}", 2)
 
 
@@ -345,6 +366,135 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         "rendered_prompt": rendered_prompt,
         "input_token_count": input_token_count,
     }
+
+
+def _execute_preflight_tool_capability(payload: dict[str, Any]) -> dict[str, Any]:
+    assets = require_mapping(payload, "assets")
+    options = payload.get("options", {})
+
+    if not isinstance(options, dict):
+        raise TokenizerCliError("invalid_input", "options must be an object", 2)
+
+    tokenizer_config_path = Path(
+        require_non_empty_string(assets, "tokenizer_config_path", category="missing_assets")
+    )
+    chat_template_path = Path(
+        require_non_empty_string(assets, "chat_template_path", category="missing_assets")
+    )
+    parser_type = options.get("tool_parser_type")
+
+    if parser_type is not None and not isinstance(parser_type, str):
+        raise TokenizerCliError(
+            "invalid_input", "options.tool_parser_type must be a string or null", 2
+        )
+
+    if not tokenizer_config_path.is_file() or not chat_template_path.is_file():
+        raise FileNotFoundError("tool capability preflight assets are missing")
+
+    parser_recognized = bool(
+        isinstance(parser_type, str) and parser_type and extract_wrapper_tool_markers(parser_type)
+    )
+
+    definition_rendered = _tool_capability_definition_rendered(
+        chat_template_path, tokenizer_config_path
+    )
+    history_rendered = _tool_capability_history_rendered(chat_template_path, tokenizer_config_path)
+
+    return {
+        "parser_recognized": parser_recognized,
+        "definition_rendered": definition_rendered,
+        "history_rendered": history_rendered,
+    }
+
+
+def _tool_capability_definition_rendered(
+    chat_template_path: Path, tokenizer_config_path: Path
+) -> bool:
+    definition_name = "orchard_capability_probe_definition"
+    definition_description = "orchard_capability_probe_description"
+
+    try:
+        rendered = render_prompt(
+            [{"role": "user", "content": "orchard_capability_probe_request"}],
+            ["user orchard_capability_probe_request"],
+            chat_template_path,
+            tokenizer_config_path,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": definition_name,
+                        "description": definition_description,
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "value": {
+                                    "type": "string",
+                                    "description": "orchard_capability_probe_schema",
+                                }
+                            },
+                        },
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+    except (TemplateError, ValueError, TypeError):
+        return False
+
+    return definition_name in rendered and definition_description in rendered
+
+
+def _tool_capability_history_rendered(
+    chat_template_path: Path, tokenizer_config_path: Path
+) -> bool:
+    function_name = "orchard_capability_probe_history"
+    argument_value = "orchard_capability_probe_argument"
+    result_value = "orchard_capability_probe_result"
+
+    try:
+        request = normalize_tool_history(
+            {
+                "input_items": [
+                    {"role": "user", "content": "orchard_capability_probe_request"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_orchard_capability_probe",
+                                "type": "function",
+                                "function": {
+                                    "name": function_name,
+                                    "arguments": {"value": argument_value},
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_orchard_capability_probe",
+                        "content": result_value,
+                    },
+                ]
+            }
+        )
+        rendered = render_prompt(
+            request["input_items"],
+            [
+                "user orchard_capability_probe_request",
+                "assistant ",
+                f"tool {result_value}",
+            ],
+            chat_template_path,
+            tokenizer_config_path,
+            tools=[],
+            tool_choice=None,
+        )
+    except (TemplateError, ValueError, TypeError):
+        return False
+
+    return function_name in rendered and argument_value in rendered and result_value in rendered
 
 
 def _execute_preflight_safe_tokenization(payload: dict[str, Any]) -> dict[str, Any]:

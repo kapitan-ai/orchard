@@ -74,6 +74,50 @@ defmodule Orchard.Models.ImporterTest do
       assert message =~ "already exists"
     end
 
+    test "keeps an imported tuple immutable and admits a capability repair only at a new version",
+         %{
+           artifacts_root: artifacts_root
+         } do
+      original_bundle =
+        create_bundle(artifacts_root, %{
+          "capability_evidence" => tool_capability_evidence("unknown"),
+          "version" => "mlx-q4-v1"
+        })
+
+      assert {:ok, original} =
+               Importer.import_bundle(original_bundle, artifacts_root: artifacts_root)
+
+      original_manifest = read_imported_manifest!(original)
+
+      duplicate_bundle =
+        create_bundle(artifacts_root, %{
+          "capabilities" => ["chat", "tool_calling"],
+          "capability_evidence" => tool_capability_evidence("declared"),
+          "version" => "mlx-q4-v1"
+        })
+
+      assert {:error, {:duplicate, _message}} =
+               Importer.import_bundle(duplicate_bundle, artifacts_root: artifacts_root)
+
+      assert read_imported_manifest!(original) == original_manifest
+
+      repaired_bundle =
+        create_bundle(artifacts_root, %{
+          "capabilities" => ["chat", "tool_calling"],
+          "capability_evidence" => tool_capability_evidence("declared"),
+          "version" => "mlx-q4-v1-tool-admission"
+        })
+
+      assert {:ok, repaired} =
+               Importer.import_bundle(repaired_bundle, artifacts_root: artifacts_root)
+
+      assert repaired.version == "mlx-q4-v1-tool-admission"
+      assert repaired.capabilities == ["chat", "tool_calling"]
+
+      assert read_imported_manifest!(repaired)["capability_evidence"]["tool_calling"]["result"] ==
+               "declared"
+    end
+
     test "rejects nonexistent source path", %{artifacts_root: artifacts_root} do
       assert {:error, {:source_not_found, "/nonexistent/path"}} =
                Importer.import_bundle("/nonexistent/path", artifacts_root: artifacts_root)
@@ -1077,6 +1121,40 @@ defmodule Orchard.Models.ImporterTest do
       "compatible" => true,
       "template_compatible" => true
     })
+  end
+
+  defp tool_capability_evidence("unknown") do
+    %{
+      "tool_calling" => %{
+        "source_repository" => "mlx-community/test-model",
+        "source_revision" => "0123456789abcdef",
+        "base_model_refs" => [],
+        "preflight" => %{
+          "parser_recognized" => false,
+          "definition_rendered" => false,
+          "history_rendered" => false
+        },
+        "result" => "unknown",
+        "runtime_qualification" => "not_established"
+      }
+    }
+  end
+
+  defp tool_capability_evidence("declared") do
+    %{
+      "tool_calling" => %{
+        "source_repository" => "mlx-community/test-model",
+        "source_revision" => "0123456789abcdef",
+        "base_model_refs" => [],
+        "preflight" => %{
+          "parser_recognized" => true,
+          "definition_rendered" => true,
+          "history_rendered" => true
+        },
+        "result" => "declared",
+        "runtime_qualification" => "not_established"
+      }
+    }
   end
 
   defp base_manifest_without_resident do

@@ -24,6 +24,33 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
     end)
   end
 
+  test "tool capability preflight accepts the bounded helper verdict", %{tmp_dir: tmp_dir} do
+    helper =
+      write_response_helper!(tmp_dir, %{
+        "contract_version" => 3,
+        "ok" => true,
+        "result" => %{
+          "parser_recognized" => true,
+          "definition_rendered" => true,
+          "history_rendered" => true
+        }
+      })
+
+    with_inference_overrides([tokenizer_executable: helper], fn ->
+      assert {:ok, %{parser_recognized: true, definition_rendered: true, history_rendered: true}} =
+               SafeTokenizationPreflight.run_tool_capability(tool_capability_input(tmp_dir))
+    end)
+  end
+
+  test "tool capability preflight fails closed on malformed helper output", %{tmp_dir: tmp_dir} do
+    helper = write_response_helper!(tmp_dir, compatible_response())
+
+    with_inference_overrides([tokenizer_executable: helper], fn ->
+      assert {:error, {:tool_capability_preflight_failed, :invalid_response}} =
+               SafeTokenizationPreflight.run_tool_capability(tool_capability_input(tmp_dir))
+    end)
+  end
+
   test "product module load creates atoms for all helper reason keys in a fresh child BEAM" do
     code_paths =
       :code.get_path()
@@ -574,6 +601,14 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
       catalog_sha256: hash_catalog(["<reserved>"])
     }
     |> Map.merge(overrides)
+  end
+
+  defp tool_capability_input(tmp_dir) do
+    %{
+      tokenizer_config_path: Path.join(tmp_dir, "tokenizer_config.json"),
+      chat_template_path: Path.join(tmp_dir, "chat_template.jinja"),
+      tool_parser_type: "glm47"
+    }
   end
 
   defp compatible_response do

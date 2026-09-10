@@ -69,6 +69,33 @@ defmodule Orchard.Inference.ToolingValidationTest do
                })
     end
 
+    test "rejects non-object inline function parameters before dispatch" do
+      assert {:error, :invalid_value, "tools", "function parameters must be an object"} =
+               ToolingValidation.validate(%{
+                 "tools" => [
+                   %{
+                     "type" => "function",
+                     "function" => %{"name" => "lookup_weather", "parameters" => "nope"}
+                   }
+                 ]
+               })
+    end
+
+    test "accepts an object inline function parameters schema" do
+      assert :ok =
+               ToolingValidation.validate(%{
+                 "tools" => [
+                   %{
+                     "type" => "function",
+                     "function" => %{
+                       "name" => "lookup_weather",
+                       "parameters" => %{"type" => "object"}
+                     }
+                   }
+                 ]
+               })
+    end
+
     test "rejects mixed function and ref entries" do
       assert {:error, :invalid_value, "tools",
               "each tool must include either function or ref, not both"} =

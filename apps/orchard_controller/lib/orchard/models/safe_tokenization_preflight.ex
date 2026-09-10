@@ -113,6 +113,21 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
              }}
           | {:error, {:safe_tokenization_preflight_failed, term()}}
 
+  @type tool_capability_preflight_input :: %{
+          required(:tokenizer_config_path) => Path.t(),
+          required(:chat_template_path) => Path.t(),
+          required(:tool_parser_type) => String.t()
+        }
+
+  @type tool_capability_preflight_result ::
+          {:ok,
+           %{
+             parser_recognized: boolean(),
+             definition_rendered: boolean(),
+             history_rendered: boolean()
+           }}
+          | {:error, {:tool_capability_preflight_failed, term()}}
+
   @spec run(preflight_input()) :: preflight_result()
   def run(input) when is_map(input) do
     cond do
@@ -128,6 +143,26 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
   end
 
   def run(_input), do: :disabled
+
+  @doc false
+  @spec run_tool_capability(tool_capability_preflight_input()) ::
+          tool_capability_preflight_result()
+  # Contract tests and BundleBuilder use this internal helper seam without making it product API.
+  # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
+  def run_tool_capability(input) when is_map(input) do
+    cond do
+      not enabled?() ->
+        tool_capability_error(:disabled)
+
+      not tool_capability_preflightable?(input) ->
+        tool_capability_error(:ineligible)
+
+      true ->
+        do_run_tool_capability(input)
+    end
+  end
+
+  def run_tool_capability(_input), do: tool_capability_error(:ineligible)
 
   @spec merge_into_safe_tokenization_map(map(), preflight_result()) :: map()
   def merge_into_safe_tokenization_map(safe_tokenization, {:compatible, result})
@@ -151,6 +186,68 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
   end
 
   def merge_into_safe_tokenization_map(safe_tokenization, _result), do: safe_tokenization
+
+  defp do_run_tool_capability(input) do
+    with {:ok, executable_path} <- resolve_executable(Orchard.Inference.tokenizer_executable()),
+         payload = build_tool_capability_payload(input),
+         {:ok, response_json, exit_status} <-
+           run_helper(executable_path, Jason.encode!(payload), timeout_ms()),
+         {:ok, response} <- decode_response(response_json) do
+      classify_tool_capability_response(response, exit_status)
+    else
+      {:error, reason} -> tool_capability_error(reason)
+    end
+  end
+
+  defp tool_capability_preflightable?(%{
+         tokenizer_config_path: tokenizer_config_path,
+         chat_template_path: chat_template_path,
+         tool_parser_type: tool_parser_type
+       }) do
+    non_empty_binary?(tokenizer_config_path) and non_empty_binary?(chat_template_path) and
+      non_empty_binary?(tool_parser_type)
+  end
+
+  defp tool_capability_preflightable?(_input), do: false
+
+  defp build_tool_capability_payload(input) do
+    %{
+      "contract_version" => @contract_version,
+      "command" => "preflight_tool_capability",
+      "assets" => %{
+        "tokenizer_config_path" => Map.fetch!(input, :tokenizer_config_path),
+        "chat_template_path" => Map.fetch!(input, :chat_template_path)
+      },
+      "options" => %{"tool_parser_type" => Map.fetch!(input, :tool_parser_type)}
+    }
+  end
+
+  defp classify_tool_capability_response(
+         %{
+           "contract_version" => @contract_version,
+           "ok" => true,
+           "result" => %{
+             "parser_recognized" => parser_recognized,
+             "definition_rendered" => definition_rendered,
+             "history_rendered" => history_rendered
+           }
+         },
+         0
+       )
+       when is_boolean(parser_recognized) and is_boolean(definition_rendered) and
+              is_boolean(history_rendered) do
+    {:ok,
+     %{
+       parser_recognized: parser_recognized,
+       definition_rendered: definition_rendered,
+       history_rendered: history_rendered
+     }}
+  end
+
+  defp classify_tool_capability_response(_response, _exit_status),
+    do: tool_capability_error(:invalid_response)
+
+  defp tool_capability_error(reason), do: {:error, {:tool_capability_preflight_failed, reason}}
 
   defp do_run(input) do
     metadata = telemetry_metadata(input)

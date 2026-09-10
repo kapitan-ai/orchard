@@ -111,9 +111,18 @@ defmodule Orchard.Inference.ToolingValidation do
     invalid_mixed_tool_entry()
   end
 
-  defp validate_tool(%{"type" => "function", "function" => %{"name" => name}})
+  defp validate_tool(%{"type" => "function", "function" => %{"name" => name} = function})
        when is_binary(name) and name != "" do
-    {:ok, {:inline, name}}
+    case Map.fetch(function, "parameters") do
+      :error ->
+        {:ok, {:inline, name}}
+
+      {:ok, parameters} when is_map(parameters) ->
+        {:ok, {:inline, name}}
+
+      {:ok, _parameters} ->
+        {:error, :invalid_value, "tools", "function parameters must be an object"}
+    end
   end
 
   defp validate_tool(%{"type" => "function", "ref" => ref}) when is_binary(ref) do

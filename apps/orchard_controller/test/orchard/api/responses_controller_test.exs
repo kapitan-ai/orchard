@@ -123,6 +123,27 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert body["error"]["param"] == "stream"
   end
 
+  test "rejects non-object inline tool parameters before model lookup or dispatch" do
+    conn =
+      post_responses(%{
+        "model" => "not-looked-up@v1",
+        "input" => "hello",
+        "tools" => [
+          %{
+            "type" => "function",
+            "function" => %{"name" => "lookup_weather", "parameters" => "nope"}
+          }
+        ]
+      })
+
+    assert conn.status == 400
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "invalid_value"
+    assert body["error"]["param"] == "tools"
+    assert body["error"]["message"] =~ "function parameters must be an object"
+  end
+
   test "returns context_length_exceeded for an oversized request" do
     %{token: token} = create_api_key_with_token!("responses-context-overflow")
 

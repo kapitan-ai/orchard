@@ -1478,6 +1478,88 @@ def test_segmented_render_and_count_requires_explicit_tokenizer_config(
     assert response["error"]["category"] == "missing_assets"
 
 
+def test_preflight_tool_capability_recognizes_a_known_parser_and_safe_history(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for tool in tools %}"
+        "{{ tool.function.name }} {{ tool.function.description }}"
+        "{% endfor %}{% for message in messages %}{{ message.content }}"
+        "{% if message.role == 'assistant' %}{% for call in message.tool_calls %}"
+        "{{ call.function.name }} {{ call.function.arguments.value }}{% endfor %}{% endif %}"
+        "{% endfor %}",
+        encoding="utf-8",
+    )
+
+    assert main(["--request-json", json.dumps(tool_capability_payload(bundle, "glm47"))]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert assert_single_success_result(response) == {
+        "parser_recognized": True,
+        "definition_rendered": True,
+        "history_rendered": True,
+    }
+
+
+def test_preflight_tool_capability_does_not_infer_an_unknown_parser(tmp_path: Path, capsys) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for tool in tools %}"
+        "{{ tool.function.name }} {{ tool.function.description }}"
+        "{% endfor %}{% for message in messages %}{{ message.content }}"
+        "{% if message.role == 'assistant' %}{% for call in message.tool_calls %}"
+        "{{ call.function.name }} {{ call.function.arguments.value }}{% endfor %}{% endif %}"
+        "{% endfor %}",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(["--request-json", json.dumps(tool_capability_payload(bundle, "unqualified_parser"))])
+        == 0
+    )
+
+    response = json.loads(capsys.readouterr().out)
+    assert assert_single_success_result(response) == {
+        "parser_recognized": False,
+        "definition_rendered": True,
+        "history_rendered": True,
+    }
+
+
+def test_preflight_tool_capability_requires_structured_history_rendering(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for tool in tools %}"
+        "{{ tool.function.name }} {{ tool.function.description }}"
+        "{% endfor %}{% for message in messages %}{{ message.content }}{% endfor %}",
+        encoding="utf-8",
+    )
+
+    assert main(["--request-json", json.dumps(tool_capability_payload(bundle, "glm47"))]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert assert_single_success_result(response) == {
+        "parser_recognized": True,
+        "definition_rendered": True,
+        "history_rendered": False,
+    }
+
+
+def test_preflight_tool_capability_reports_missing_assets(tmp_path: Path, capsys) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = tool_capability_payload(bundle, "glm47")
+    payload["assets"]["chat_template_path"] = str(tmp_path / "missing.jinja")
+
+    assert main(["--request-json", json.dumps(payload)]) == 3
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "missing_assets"
+
+
 def test_preflight_safe_tokenization_compatible_returns_compatible_true(
     tmp_path: Path, capsys
 ) -> None:
@@ -1829,6 +1911,18 @@ def preflight_payload(bundle: dict[str, Path], control_tokens: list[str]) -> dic
     payload["command"] = "preflight_safe_tokenization"
     del payload["request"]
     return payload
+
+
+def tool_capability_payload(bundle: dict[str, Path], parser_type: str) -> dict[str, Any]:
+    return {
+        "contract_version": 3,
+        "command": "preflight_tool_capability",
+        "assets": {
+            "tokenizer_config_path": str(bundle["tokenizer_config_path"]),
+            "chat_template_path": str(bundle["chat_template_path"]),
+        },
+        "options": {"tool_parser_type": parser_type},
+    }
 
 
 def render_payload(

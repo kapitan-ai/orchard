@@ -72,6 +72,8 @@ defmodule OrchardConsole.ModelHub do
     * `:activate` — activate model after import (default: `true`)
     * `:revision` - Selected immutable HF revision (default: detail's `revision_sha`).
       Refreshed provider detail must still match this revision before downloading.
+    * `:catalog_version` - Explicit distinct Catalog version for a normal reimport.
+      The source revision remains the selected immutable HF revision.
   """
   @spec start_download_import(pid(), term(), String.t(), keyword()) :: {:ok, pid()}
   def start_download_import(owner, ref, repo_id, opts \\ []) do
@@ -342,7 +344,14 @@ defmodule OrchardConsole.ModelHub do
       )
     end
 
-    {detail, effective_revision}
+    catalog_version = resolve_catalog_version(opts, effective_revision)
+
+    detail_for_bundle =
+      detail
+      |> Map.put(:revision_sha, catalog_version)
+      |> Map.put(:source_revision_sha, effective_revision)
+
+    {detail_for_bundle, effective_revision}
   end
 
   defp download_model!(downloader, owner, ref, repo_id, revision, temp_dir, opts) do
@@ -545,6 +554,22 @@ defmodule OrchardConsole.ModelHub do
     end
   end
 
+  defp resolve_catalog_version(opts, default_version) do
+    case Keyword.get(opts, :catalog_version) do
+      nil ->
+        default_version
+
+      version when is_binary(version) ->
+        case String.trim(version) do
+          "" -> throw({:pipeline_error, {:error, invalid_catalog_version_error()}})
+          trimmed -> trimmed
+        end
+
+      _other ->
+        throw({:pipeline_error, {:error, invalid_catalog_version_error()}})
+    end
+  end
+
   defp resolve_revision_from_detail(detail) do
     case Map.get(detail, :revision_sha) do
       sha when is_binary(sha) and sha != "" -> sha
@@ -592,6 +617,14 @@ defmodule OrchardConsole.ModelHub do
       status: :error,
       code: "download_import_failed",
       message: "Model download and import failed."
+    }
+  end
+
+  defp invalid_catalog_version_error do
+    %{
+      status: :error,
+      code: "invalid_catalog_version",
+      message: "Catalog version must be a non-empty string."
     }
   end
 

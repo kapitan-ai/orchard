@@ -72,6 +72,16 @@ defmodule Orchard.Models.BundleBuilder do
              template_asset,
              safe_tokenization
            ),
+         capability_evidence =
+           build_capability_evidence(
+             download_dir,
+             repo_id,
+             version,
+             extract_source_revision(detail_metadata, version),
+             detail_metadata,
+             tokenizer_config_asset,
+             template_asset
+           ),
          {:ok, size_bytes} <- compute_bundle_size(download_dir),
          resident_memory_bytes = estimate_resident_memory_bytes(download_dir),
          kv_cache_bytes_per_token = estimate_kv_cache_bytes_per_token(config),
@@ -85,7 +95,8 @@ defmodule Orchard.Models.BundleBuilder do
              kv_cache_bytes_per_token: kv_cache_bytes_per_token,
              template_asset: template_asset,
              tokenizer_config_asset: tokenizer_config_asset,
-             safe_tokenization: safe_tokenization
+             safe_tokenization: safe_tokenization,
+             capability_evidence: capability_evidence
            }),
          :ok <- write_and_validate_manifest(download_dir, manifest) do
       {:ok, download_dir}
@@ -131,6 +142,12 @@ defmodule Orchard.Models.BundleBuilder do
           "Detail metadata must include a non-empty :revision_sha for model versioning."}}
     end
   end
+
+  defp extract_source_revision(%{source_revision_sha: revision}, _version)
+       when is_binary(revision) and revision != "",
+       do: revision
+
+  defp extract_source_revision(_detail_metadata, version), do: version
 
   # -- Config Parsing --------------------------------------------------------
 
@@ -246,7 +263,13 @@ defmodule Orchard.Models.BundleBuilder do
       with {:ok, json} <-
              read_json_file(path, :invalid_tokenizer_config, :invalid_tokenizer_config),
            {:ok, config} <- decode_json_object(json, :invalid_tokenizer_config) do
-        {:ok, %{path: @tokenizer_config_name, absolute_path: path, config: config}}
+        {:ok,
+         %{
+           path: @tokenizer_config_name,
+           absolute_path: path,
+           config: config,
+           sha256: compute_sha256(json)
+         }}
       end
     else
       {:ok, nil}
@@ -801,6 +824,131 @@ defmodule Orchard.Models.BundleBuilder do
     end
   end
 
+  # -- Tool Capability Evidence ----------------------------------------------
+
+  defp build_capability_evidence(
+         download_dir,
+         repo_id,
+         _version,
+         source_revision,
+         detail_metadata,
+         tokenizer_config_asset,
+         template_asset
+       ) do
+    preflight =
+      run_tool_capability_preflight(download_dir, tokenizer_config_asset, template_asset)
+
+    result = tool_capability_result(preflight, tokenizer_config_asset)
+
+    %{
+      "tool_calling" =>
+        %{
+          "source_repository" => repo_id,
+          "source_revision" => source_revision,
+          "base_model_refs" => base_model_refs(detail_metadata),
+          "preflight" => stringify_tool_capability_preflight(preflight),
+          "result" => result,
+          "runtime_qualification" => "not_established"
+        }
+        |> maybe_put_tokenizer_config_digest(tokenizer_config_asset)
+        |> maybe_put_chat_template_digest(template_asset)
+        |> maybe_put_tool_parser_type(tokenizer_config_asset)
+    }
+  end
+
+  defp run_tool_capability_preflight(download_dir, tokenizer_config_asset, template_asset) do
+    case tool_capability_preflight_input(download_dir, tokenizer_config_asset, template_asset) do
+      {:ok, input} ->
+        case SafeTokenizationPreflight.run_tool_capability(input) do
+          {:ok, result} -> result
+          {:error, _reason} -> empty_tool_capability_preflight()
+        end
+
+      :ineligible ->
+        empty_tool_capability_preflight()
+    end
+  end
+
+  defp tool_capability_preflight_input(
+         download_dir,
+         %{absolute_path: tokenizer_config_path} = tokenizer_config_asset,
+         %{path: template_path}
+       ) do
+    case tool_parser_type(tokenizer_config_asset) do
+      parser_type when is_binary(parser_type) and parser_type != "" ->
+        {:ok,
+         %{
+           tokenizer_config_path: tokenizer_config_path,
+           chat_template_path: Path.join(download_dir, template_path),
+           tool_parser_type: parser_type
+         }}
+
+      _other ->
+        :ineligible
+    end
+  end
+
+  defp tool_capability_preflight_input(_download_dir, _tokenizer_config_asset, _template_asset),
+    do: :ineligible
+
+  defp empty_tool_capability_preflight do
+    %{parser_recognized: false, definition_rendered: false, history_rendered: false}
+  end
+
+  defp tool_capability_result(
+         %{parser_recognized: true, definition_rendered: true, history_rendered: true},
+         _tokenizer_config_asset
+       ),
+       do: "declared"
+
+  defp tool_capability_result(_preflight, tokenizer_config_asset) do
+    if is_binary(tool_parser_type(tokenizer_config_asset)) do
+      "conflicted"
+    else
+      "unknown"
+    end
+  end
+
+  defp stringify_tool_capability_preflight(preflight) do
+    %{
+      "parser_recognized" => Map.fetch!(preflight, :parser_recognized),
+      "definition_rendered" => Map.fetch!(preflight, :definition_rendered),
+      "history_rendered" => Map.fetch!(preflight, :history_rendered)
+    }
+  end
+
+  defp base_model_refs(detail_metadata) do
+    detail_metadata
+    |> get_in([:metadata_summary, :base_models])
+    |> case do
+      refs when is_list(refs) -> refs
+      _other -> []
+    end
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp maybe_put_tokenizer_config_digest(evidence, %{sha256: sha256}) when is_binary(sha256),
+    do: Map.put(evidence, "tokenizer_config_sha256", sha256)
+
+  defp maybe_put_tokenizer_config_digest(evidence, _tokenizer_config_asset), do: evidence
+
+  defp maybe_put_chat_template_digest(evidence, %{sha256: sha256}) when is_binary(sha256),
+    do: Map.put(evidence, "chat_template_sha256", sha256)
+
+  defp maybe_put_chat_template_digest(evidence, _template_asset), do: evidence
+
+  defp maybe_put_tool_parser_type(evidence, tokenizer_config_asset) do
+    case tool_parser_type(tokenizer_config_asset) do
+      parser_type when is_binary(parser_type) and parser_type != "" ->
+        Map.put(evidence, "tool_parser_type", parser_type)
+
+      _other ->
+        evidence
+    end
+  end
+
   # -- Manifest Assembly -----------------------------------------------------
 
   defp build_manifest(attrs) do
@@ -823,7 +971,8 @@ defmodule Orchard.Models.BundleBuilder do
       "kv_cache_bytes_per_token" => attrs.kv_cache_bytes_per_token,
       "prefill_workspace_bytes_per_token" => 0,
       "max_context_tokens" => attrs.max_context_tokens,
-      "capabilities" => ["chat"],
+      "capabilities" => capabilities_from_evidence(attrs.capability_evidence),
+      "capability_evidence" => attrs.capability_evidence,
       "tokenizer" => tokenizer,
       "safe_tokenization" => attrs.safe_tokenization,
       "runtime_requirements" => %{
@@ -846,6 +995,11 @@ defmodule Orchard.Models.BundleBuilder do
   end
 
   defp maybe_put_tokenizer_config_path(tokenizer, _tokenizer_config_asset), do: tokenizer
+
+  defp capabilities_from_evidence(%{"tool_calling" => %{"result" => "declared"}}),
+    do: ["chat", "tool_calling"]
+
+  defp capabilities_from_evidence(_capability_evidence), do: ["chat"]
 
   # -- Manifest Write & Validation -------------------------------------------
 

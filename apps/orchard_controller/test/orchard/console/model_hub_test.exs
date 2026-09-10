@@ -894,6 +894,53 @@ defmodule OrchardConsole.ModelHubTest do
       assert result.artifact_sha256 == final_tree_sha256
     end
 
+    test "reimports through the Model Hub pipeline at an explicit catalog version", _ctx do
+      detail = stub_detail()
+      catalog_version = detail.revision_sha <> "-tool-admission"
+      stub_client(detail: {:ok, detail})
+      stub_downloader(download: :success, capture_download: true)
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, detail.repo_id,
+          revision: detail.revision_sha,
+          catalog_version: catalog_version,
+          activate: false
+        )
+
+      assert_receive {:captured_download, _, download_opts}, 2000
+      assert download_opts[:revision] == detail.revision_sha
+      assert_receive {:model_hub, ^ref, :download_finished, {:ok, result}}, 2000
+      assert result.version == catalog_version
+
+      model = Models.get_model_by_identity(detail.repo_id, catalog_version)
+      assert {:ok, artifact_path} = Models.artifact_local_path(model)
+
+      evidence =
+        artifact_path
+        |> Path.join("manifest.json")
+        |> File.read!()
+        |> Jason.decode!()
+        |> get_in(["capability_evidence", "tool_calling"])
+
+      assert evidence["source_revision"] == detail.revision_sha
+      assert evidence["result"] == "unknown"
+      assert evidence["runtime_qualification"] == "not_established"
+    end
+
+    test "rejects a blank explicit catalog version before downloading" do
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: :success, capture_download: true)
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, "mlx-community/test", catalog_version: "  ")
+
+      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+      assert error.code == "invalid_catalog_version"
+      refute_receive {:captured_download, _, _}, 100
+    end
+
     test "normalizes exceptions to download_import_failed" do
       stub_client(detail: {:ok, stub_detail()})
       stub_downloader(download: :raise)

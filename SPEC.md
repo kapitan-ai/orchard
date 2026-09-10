@@ -547,6 +547,7 @@ Explicit structured prior-reasoning input is unsupported in the first reasoning-
 Tooling contract rules:
 
 * request `tools` entries MAY be inline function definitions or registry refs of the form `tool://<name>@<version>`
+* when present, an inline function definition's `parameters` field SHALL be a JSON object; non-object schema values SHALL fail request validation before model lookup, tokenization, scheduling, or dispatch
 * `tooling.requested_tools` SHALL preserve the normalized request `tools` array in original order
 * `tooling.tools` SHALL contain only controller-resolved runtime-ready tool definitions; registry ref placeholders SHALL NOT be forwarded past request preparation
 * `tooling.registry_snapshot.entries` SHALL capture controller-side registry provenance for ref-backed tools only and SHALL be empty when no registry refs were requested
@@ -2009,6 +2010,12 @@ Supported consumers SHALL accept otherwise valid manifests with or without it an
 When present, it SHALL be a non-empty string but SHALL NOT supply, override, or be compared with the authoritative Catalog Artifact Bundle digest.
 BundleBuilder SHALL retain its current legacy emission during this compatibility phase.
 Producer omission MUST be implemented only in a separate accepted change that cites repo-owned minimum-consumer-version evidence proving every supported consumer accepts omission.
+
+A Model Hub-generated manifest MAY add optional `capability_evidence.tool_calling` without a manifest-version bump. It SHALL be a closed typed object containing the source repository and exact immutable source revision, sorted unique base-model references as provenance only, tokenizer-config and chat-template SHA-256 values when present, the exact parser type when present, a closed boolean preflight result (`parser_recognized`, `definition_rendered`, and `history_rendered`), a result of `declared`, `unknown`, or `conflicted`, and `runtime_qualification: "not_established"`.
+
+The Model Hub SHALL derive this object only from the resolved repository/revision and downloaded bundle artifacts. It SHALL NOT infer capability from a model name, family-name substring, publisher tag, base-model reference, arbitrary model card text, generic tag absence, or a successful chat-only render. `declared` requires all three preflight booleans true: an exact known parser type, a bounded tool-definition render, and a bounded structured assistant function-call plus tool-result history render. The history render SHALL use the same contract-v3 safe argument normalization required by §3.5. `declared` is the only result that may place `tool_calling` in `capabilities`; `unknown` and `conflicted` SHALL remain chat-only. A Model Hub declaration is Catalog admission evidence only; it SHALL NOT establish runtime qualification, a support claim, or server-side tool execution.
+
+The importer SHALL preserve the manifest evidence with the Artifact Bundle and reject duplicate `{model_id, version}` identities. It SHALL NOT mutate a Catalog row to repair a capability. A repair SHALL use the normal Model Hub download/build/import path against the same exact source revision and a distinct explicit Catalog version; the new manifest SHALL continue to record the original source revision. Such reimport does not by itself transfer qualification or support evidence between artifacts.
 
 `models.artifact_sha256` SHALL remain the authoritative lowercase SHA-256 digest of the final stored Artifact Bundle after secure staging and all importer-owned mutations.
 The existing digest algorithm recursively collects regular files, rejects symlinks and unsupported entries, sorts bundle-relative paths, and hashes each relative path followed by the file's exact bytes.

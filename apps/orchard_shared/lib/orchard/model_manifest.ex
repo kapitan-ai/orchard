@@ -99,6 +99,49 @@ defmodule Orchard.ModelManifest do
           }
   end
 
+  defmodule CapabilityEvidence do
+    @moduledoc false
+
+    defmodule ToolCalling do
+      @moduledoc false
+
+      @enforce_keys [
+        :source_repository,
+        :source_revision,
+        :base_model_refs,
+        :preflight,
+        :result,
+        :runtime_qualification
+      ]
+      defstruct source_repository: nil,
+                source_revision: nil,
+                base_model_refs: [],
+                tokenizer_config_sha256: nil,
+                chat_template_sha256: nil,
+                tool_parser_type: nil,
+                preflight: nil,
+                result: nil,
+                runtime_qualification: nil
+
+      @type t :: %__MODULE__{
+              source_repository: String.t(),
+              source_revision: String.t(),
+              base_model_refs: [String.t()],
+              tokenizer_config_sha256: String.t() | nil,
+              chat_template_sha256: String.t() | nil,
+              tool_parser_type: String.t() | nil,
+              preflight: map(),
+              result: String.t(),
+              runtime_qualification: String.t()
+            }
+    end
+
+    @enforce_keys [:tool_calling]
+    defstruct tool_calling: nil
+
+    @type t :: %__MODULE__{tool_calling: ToolCalling.t()}
+  end
+
   defmodule RuntimeRequirements do
     @moduledoc false
 
@@ -108,7 +151,13 @@ defmodule Orchard.ModelManifest do
     @type t :: %__MODULE__{adapter: String.t(), min_agent_capability: String.t()}
   end
 
-  alias __MODULE__.{ChatTemplate, RuntimeRequirements, SafeTokenization, Tokenizer}
+  alias __MODULE__.{
+    CapabilityEvidence,
+    ChatTemplate,
+    RuntimeRequirements,
+    SafeTokenization,
+    Tokenizer
+  }
 
   @enforce_keys [
     :model_id,
@@ -132,6 +181,7 @@ defmodule Orchard.ModelManifest do
             prefill_workspace_bytes_per_token: nil,
             max_context_tokens: nil,
             capabilities: [],
+            capability_evidence: nil,
             tokenizer: nil,
             chat_template: nil,
             safe_tokenization: nil,
@@ -150,6 +200,7 @@ defmodule Orchard.ModelManifest do
           prefill_workspace_bytes_per_token: non_neg_integer() | nil,
           max_context_tokens: pos_integer() | nil,
           capabilities: [String.t()],
+          capability_evidence: CapabilityEvidence.t() | nil,
           tokenizer: Tokenizer.t(),
           chat_template: ChatTemplate.t() | nil,
           safe_tokenization: SafeTokenization.t() | nil,
@@ -170,6 +221,7 @@ defmodule Orchard.ModelManifest do
     |> cast_nested(:chat_template, ChatTemplate)
     |> cast_nested(:runtime_requirements, RuntimeRequirements)
     |> cast_nested(:safe_tokenization, SafeTokenization)
+    |> cast_nested(:capability_evidence, CapabilityEvidence)
     |> cast_safe_tokenization_nested()
     |> then(&build_struct!(__MODULE__, &1))
     |> validate_required!([
@@ -202,6 +254,94 @@ defmodule Orchard.ModelManifest do
     |> validate_runtime_requirements!()
     |> validate_chat_template!()
     |> validate_safe_tokenization!()
+    |> validate_capability_evidence!()
+  end
+
+  defp validate_capability_evidence!(%__MODULE__{capability_evidence: nil} = struct), do: struct
+
+  defp validate_capability_evidence!(
+         %__MODULE__{capability_evidence: %CapabilityEvidence{} = evidence} = struct
+       ) do
+    tool_calling = cast_tool_calling_evidence!(evidence.tool_calling)
+
+    validate_non_empty_string!(tool_calling.source_repository, :source_repository)
+    validate_non_empty_string!(tool_calling.source_revision, :source_revision)
+    validate_sorted_unique_strings!(tool_calling.base_model_refs, :base_model_refs)
+    validate_optional_sha256!(tool_calling.tokenizer_config_sha256, :tokenizer_config_sha256)
+    validate_optional_sha256!(tool_calling.chat_template_sha256, :chat_template_sha256)
+    validate_optional_non_empty_string!(tool_calling.tool_parser_type, :tool_parser_type)
+    validate_tool_capability_preflight!(tool_calling.preflight)
+
+    unless tool_calling.result in ["declared", "unknown", "conflicted"] do
+      raise ArgumentError, "tool capability evidence result is invalid"
+    end
+
+    unless tool_calling.runtime_qualification == "not_established" do
+      raise ArgumentError, "tool capability evidence runtime qualification is invalid"
+    end
+
+    validate_tool_capability_cohesion!(struct.capabilities, tool_calling)
+    %{struct | capability_evidence: %{evidence | tool_calling: tool_calling}}
+  end
+
+  defp validate_capability_evidence!(%__MODULE__{}) do
+    raise ArgumentError, "capability_evidence must be a valid capability evidence object"
+  end
+
+  defp cast_tool_calling_evidence!(%CapabilityEvidence.ToolCalling{} = tool_calling),
+    do: tool_calling
+
+  defp cast_tool_calling_evidence!(tool_calling) when is_map(tool_calling) do
+    build_struct!(CapabilityEvidence.ToolCalling, tool_calling)
+  end
+
+  defp cast_tool_calling_evidence!(tool_calling) do
+    raise ArgumentError, "tool_calling evidence must be an object, got: #{inspect(tool_calling)}"
+  end
+
+  defp validate_non_empty_string!(value, field) do
+    unless is_binary(value) and value != "" do
+      raise ArgumentError, "#{field} must be a non-empty string"
+    end
+  end
+
+  defp validate_optional_non_empty_string!(nil, _field), do: :ok
+
+  defp validate_optional_non_empty_string!(value, field),
+    do: validate_non_empty_string!(value, field)
+
+  defp validate_sorted_unique_strings!(values, field) do
+    unless is_list(values) and Enum.all?(values, &(is_binary(&1) and &1 != "")) and
+             values == Enum.sort(values) and values == Enum.uniq(values) do
+      raise ArgumentError, "#{field} must be a sorted list of unique non-empty strings"
+    end
+  end
+
+  defp validate_optional_sha256!(nil, _field), do: :ok
+
+  defp validate_optional_sha256!(value, field) do
+    unless is_binary(value) and Regex.match?(~r/\A[0-9a-f]{64}\z/, value) do
+      raise ArgumentError, "#{field} must be a lowercase SHA-256 hex digest"
+    end
+  end
+
+  defp validate_tool_capability_preflight!(preflight) do
+    expected_keys = [:definition_rendered, :history_rendered, :parser_recognized]
+
+    unless is_map(preflight) and Enum.sort(Map.keys(preflight)) == expected_keys and
+             Enum.all?(expected_keys, &is_boolean(Map.fetch!(preflight, &1))) do
+      raise ArgumentError, "tool capability evidence preflight is invalid"
+    end
+  end
+
+  defp validate_tool_capability_cohesion!(capabilities, tool_calling) do
+    declared? = tool_calling.result == "declared"
+    tool_capable? = "tool_calling" in capabilities
+    complete_preflight? = Enum.all?(Map.values(tool_calling.preflight), & &1)
+
+    unless declared? == tool_capable? and (not declared? or complete_preflight?) do
+      raise ArgumentError, "tool capability evidence does not match capabilities"
+    end
   end
 
   @spec identity(t()) :: {String.t(), String.t()}

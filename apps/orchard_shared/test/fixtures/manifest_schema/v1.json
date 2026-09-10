@@ -3,6 +3,7 @@
   "top_level_keys": [
     "artifact_layout",
     "capabilities",
+    "capability_evidence",
     "chat_template",
     "entrypoint",
     "format",
@@ -29,6 +30,7 @@
     "version"
   ],
   "optional_top_level_keys": [
+    "capability_evidence",
     "chat_template",
     "kv_cache_bytes_per_token",
     "max_context_tokens",
@@ -42,6 +44,25 @@
     "sha256"
   ],
   "nested_keys": {
+    "capability_evidence": [
+      "tool_calling"
+    ],
+    "capability_evidence.tool_calling": [
+      "base_model_refs",
+      "chat_template_sha256",
+      "preflight",
+      "result",
+      "runtime_qualification",
+      "source_repository",
+      "source_revision",
+      "tokenizer_config_sha256",
+      "tool_parser_type"
+    ],
+    "capability_evidence.tool_calling.preflight": [
+      "definition_rendered",
+      "history_rendered",
+      "parser_recognized"
+    ],
     "chat_template": [
       "path",
       "sha256"

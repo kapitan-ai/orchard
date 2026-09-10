@@ -56,10 +56,24 @@ def test_worker_known_keys_match_manifest_schema_contract() -> None:
     assert "safe_tokenization" not in contract["worker_validates_nested_keys"]
 
 
-def test_parse_manifest_json_accepts_top_level_safe_tokenization_without_parsing_it() -> None:
+def test_parse_manifest_json_accepts_catalog_capability_evidence_without_parsing_it() -> None:
     payload = {
         "artifact_layout": "directory",
         "capabilities": ["chat"],
+        "capability_evidence": {
+            "tool_calling": {
+                "source_repository": "test-org/tiny-llm",
+                "source_revision": "0123456789abcdef",
+                "base_model_refs": [],
+                "preflight": {
+                    "parser_recognized": False,
+                    "definition_rendered": False,
+                    "history_rendered": False,
+                },
+                "result": "unknown",
+                "runtime_qualification": "not_established",
+            }
+        },
         "chat_template": {
             "path": "chat_template.jinja",
             "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -113,3 +127,4 @@ def test_parse_manifest_json_accepts_top_level_safe_tokenization_without_parsing
     assert manifest.model_id == "test-org/tiny-llm"
     assert manifest.tokenizer.path == "tokenizer.json"
     assert not hasattr(manifest, "safe_tokenization")
+    assert not hasattr(manifest, "capability_evidence")

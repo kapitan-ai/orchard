@@ -24,6 +24,7 @@ defmodule Orchard.Models.ManifestParser do
     "prefill_workspace_bytes_per_token" => :prefill_workspace_bytes_per_token,
     "max_context_tokens" => :max_context_tokens,
     "capabilities" => :capabilities,
+    "capability_evidence" => :capability_evidence,
     "tokenizer" => :tokenizer,
     "chat_template" => :chat_template,
     "safe_tokenization" => :safe_tokenization,
@@ -44,6 +45,28 @@ defmodule Orchard.Models.ManifestParser do
   @runtime_requirements_key_map %{
     "adapter" => :adapter,
     "min_agent_capability" => :min_agent_capability
+  }
+
+  @capability_evidence_key_map %{
+    "tool_calling" => :tool_calling
+  }
+
+  @tool_calling_evidence_key_map %{
+    "source_repository" => :source_repository,
+    "source_revision" => :source_revision,
+    "base_model_refs" => :base_model_refs,
+    "tokenizer_config_sha256" => :tokenizer_config_sha256,
+    "chat_template_sha256" => :chat_template_sha256,
+    "tool_parser_type" => :tool_parser_type,
+    "preflight" => :preflight,
+    "result" => :result,
+    "runtime_qualification" => :runtime_qualification
+  }
+
+  @tool_calling_preflight_key_map %{
+    "parser_recognized" => :parser_recognized,
+    "definition_rendered" => :definition_rendered,
+    "history_rendered" => :history_rendered
   }
 
   @safe_tokenization_key_map %{
@@ -193,6 +216,10 @@ defmodule Orchard.Models.ManifestParser do
         tokenizer: Map.keys(@tokenizer_key_map) |> Enum.sort(),
         chat_template: Map.keys(@chat_template_key_map) |> Enum.sort(),
         runtime_requirements: Map.keys(@runtime_requirements_key_map) |> Enum.sort(),
+        capability_evidence: Map.keys(@capability_evidence_key_map) |> Enum.sort(),
+        capability_evidence_tool_calling: Map.keys(@tool_calling_evidence_key_map) |> Enum.sort(),
+        capability_evidence_tool_calling_preflight:
+          Map.keys(@tool_calling_preflight_key_map) |> Enum.sort(),
         safe_tokenization: Map.keys(@safe_tokenization_key_map) |> Enum.sort(),
         safe_tokenization_catalog_source: Map.keys(@catalog_source_key_map) |> Enum.sort(),
         safe_tokenization_incompatibility_reason:
@@ -207,6 +234,7 @@ defmodule Orchard.Models.ManifestParser do
          {:ok, atom_map} <- atomize_nested(atom_map, :tokenizer, @tokenizer_key_map),
          {:ok, atom_map} <- atomize_nested(atom_map, :chat_template, @chat_template_key_map),
          {:ok, atom_map} <- atomize_safe_tokenization(atom_map),
+         {:ok, atom_map} <- atomize_capability_evidence(atom_map),
          {:ok, atom_map} <-
            atomize_nested(atom_map, :runtime_requirements, @runtime_requirements_key_map),
          :ok <- validate_safe_tokenization(atom_map) do
@@ -292,6 +320,62 @@ defmodule Orchard.Models.ManifestParser do
   end
 
   defp atomize_safe_tokenization_nested(atom_map), do: {:ok, atom_map}
+
+  defp atomize_capability_evidence(atom_map) do
+    with {:ok, atom_map} <-
+           atomize_nested(atom_map, :capability_evidence, @capability_evidence_key_map),
+         {:ok, atom_map} <-
+           atomize_capability_evidence_nested(
+             atom_map,
+             :tool_calling,
+             @tool_calling_evidence_key_map
+           ) do
+      atomize_capability_evidence_preflight(atom_map)
+    end
+  end
+
+  defp atomize_capability_evidence_nested(
+         %{capability_evidence: evidence} = atom_map,
+         nested_key,
+         key_map
+       )
+       when is_map(evidence) do
+    case Map.get(evidence, nested_key) do
+      nested when is_map(nested) ->
+        with {:ok, %{nested: atomized}} <-
+               atomize_nested_map(%{nested: nested}, :nested, nested, key_map) do
+          {:ok, put_in(atom_map, [:capability_evidence], Map.put(evidence, nested_key, atomized))}
+        end
+
+      _other ->
+        {:ok, atom_map}
+    end
+  end
+
+  defp atomize_capability_evidence_nested(atom_map, _nested_key, _key_map), do: {:ok, atom_map}
+
+  defp atomize_capability_evidence_preflight(
+         %{capability_evidence: %{tool_calling: tool_calling}} = atom_map
+       )
+       when is_map(tool_calling) do
+    case Map.get(tool_calling, :preflight) do
+      preflight when is_map(preflight) ->
+        with {:ok, %{preflight: atomized}} <-
+               atomize_nested_map(
+                 %{preflight: preflight},
+                 :preflight,
+                 preflight,
+                 @tool_calling_preflight_key_map
+               ) do
+          {:ok, put_in(atom_map, [:capability_evidence, :tool_calling, :preflight], atomized)}
+        end
+
+      _other ->
+        {:ok, atom_map}
+    end
+  end
+
+  defp atomize_capability_evidence_preflight(atom_map), do: {:ok, atom_map}
 
   defp atomize_catalog_source(atom_map) do
     case get_in(atom_map, [:safe_tokenization, :catalog_source]) do
