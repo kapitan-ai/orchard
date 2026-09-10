@@ -1,10 +1,11 @@
 ## 1. Contract acceptance and baseline reconciliation
 
-All tasks below remain pending future implementation and acceptance.
-OpenSpec artifact readiness is not implementation authorization or a COMPLETE family claim.
+Only the contract-acceptance and documentation-reconciliation tasks are complete.
+All implementation, migration, production cutover, validation, and COMPLETE-family acceptance tasks remain pending.
+OpenSpec artifact readiness and accepted design are not runtime delivery or permission to skip implementation review and release gates.
 
-- [ ] 1.1 Review and accept the policy decisions in ADR 0033 and this package, retaining explicit API admission and Portal/Node/recovery boundaries.
-- [ ] 1.2 Reconcile the proposal's affected `SPEC.md` sections, especially §7.1 Admin API admission wording, named RoleBindings, typed/schema-discriminated audit, the CLI family boundary, and §13 launch/ingress rollback enforcement.
+- [x] 1.1 Review and accept the policy decisions in ADR 0033 and this package, retaining explicit API admission and Portal/Node/recovery boundaries.
+- [x] 1.2 Reconcile the proposal's affected `SPEC.md` sections, especially §7.1 Admin API admission wording, named RoleBindings, typed/schema-discriminated audit, the CLI family boundary, and §13 launch/ingress rollback enforcement.
 - [ ] 1.3 Inventory all Console handlers/data paths and credential-family Console/API/CLI entry points; define a cluster-admin action-time guard or fail-closed behavior for non-migrated Console paths.
 - [ ] 1.4 Implement the settled shared lock order, audit schema selection, 15-minute setup lifetime, explicit API/CLI envelopes, and currently unwired key-route delegates; verify password parameters and concrete storage/transport mechanisms before implementation review.
 

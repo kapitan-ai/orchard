@@ -4,6 +4,9 @@
 
 Defines where Orchard operator commands execute and how portable clients, Controller-owned durable operations, host-local tooling, and bounded bootstrap or recovery channels keep their authorities separate.
 
+The portable command-family architecture is an accepted target; existing local Controller-runtime authority remains the implementation baseline identified in `SPEC.md` §11.9.
+The open `cross-surface-authorization-contract` change accepts the first credential family's detailed target under `SPEC.md` §10.11, but its implementation and COMPLETE gate remain pending.
+
 ## Requirements
 
 ### Requirement: Controller Owns Durable Operator Operations

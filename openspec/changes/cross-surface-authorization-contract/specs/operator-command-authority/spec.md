@@ -1,8 +1,10 @@
 ## ADDED Requirements
 
+These requirements are accepted target behavior under `SPEC.md` §10.11 and remain pending implementation and cutover; they do not establish a COMPLETE family.
+
 ### Requirement: Complete family migration requires shared authorization parity
 
-Under proposed `SPEC.md` §§7.3, 7.4, 10.4, 10.9, and 11.9, each Controller-owned operation family SHALL be marked COMPLETE only after Console, API, and portable CLI use the same authoritative action/resource/scope policy and domain operation contract.
+Under the accepted target in `SPEC.md` §§7.3, 7.4, 10.4, 10.9, and 11.9, each Controller-owned operation family SHALL be marked COMPLETE only after Console, API, and portable CLI use the same authoritative action/resource/scope policy and domain operation contract.
 Its contract SHALL define authentication audiences, principal and target scope, leadership, audit actor, idempotency, preview/confirmation, secret return, revocation concurrency, and degraded-Controller behavior.
 Parity SHALL be evaluated for equivalent effective authority admitted by each surface and MUST NOT imply a transport supports principals its admission policy denies.
 The implementation SHALL inventory all existing family entry points and remove or delegate alternate authority paths before completion.

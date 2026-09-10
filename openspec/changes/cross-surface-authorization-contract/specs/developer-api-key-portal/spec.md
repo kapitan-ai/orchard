@@ -1,5 +1,7 @@
 ## MODIFIED Requirements
 
+These amendments are accepted target behavior under `SPEC.md` §10.11 and remain pending implementation and cutover; unchanged current behavior remains the pre-cutover baseline.
+
 ### Requirement: Portal Lifecycle Mutations Produce Atomic Tenant Audit Evidence
 
 Every effective Portal User lifecycle mutation SHALL commit one tenant-scoped audit row inside the same outermost `AuditWriter.transaction/1` boundary as its authoritative state changes.

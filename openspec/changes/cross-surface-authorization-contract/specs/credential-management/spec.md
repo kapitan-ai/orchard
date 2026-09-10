@@ -1,8 +1,10 @@
 ## ADDED Requirements
 
+These requirements are accepted target behavior under `SPEC.md` §10.11 and remain pending implementation and cutover; they do not establish a COMPLETE family.
+
 ### Requirement: Complete credential inspection and revocation surfaces
 
-Under proposed `SPEC.md` §§7.4 and 11.9, the first migrated family SHALL provide list, inspect, domain-side-effect-free revoke preview with the explicit Console idle-bookkeeping exception, and revoke for `api_key`, `api_token`, and `console_session` through shared Controller-owned operations.
+Under the accepted target in `SPEC.md` §§7.4 and 11.9, the first migrated family SHALL provide list, inspect, domain-side-effect-free revoke preview with the explicit Console idle-bookkeeping exception, and revoke for `api_key`, `api_token`, and `console_session` through shared Controller-owned operations.
 Console, Admin API, and portable CLI SHALL use the same action identifiers, scope policy, domain outcome codes, and target semantics.
 COMPLETE SHALL mean equivalent policy outcomes for equivalent authority admitted by each surface; Tenant-admin machine/API/CLI admission SHALL remain deferred without a scoped cross-surface parity claim.
 The new Admin API surface SHALL use `GET /admin/v1/credentials`, `GET /admin/v1/credentials/:kind/:id`, and `POST /admin/v1/credentials/:kind/:id/revoke` under existing cluster-admin API Client admission.
@@ -34,7 +36,7 @@ Credential creation/rotation, API Client disablement, and grant editing SHALL re
 
 ### Requirement: Credential authority is scoped to full target privilege
 
-Under proposed `SPEC.md` §10.4, cluster admins SHALL have family authority across the cluster.
+Under the accepted target in `SPEC.md` §10.4, cluster admins SHALL have family authority across the cluster.
 A Console Identity with exact-Tenant `tenant_admin` SHALL inspect/revoke only inference-only API Keys and API Client API Tokens whose entire effective authority is inside that Tenant.
 An API Client with any cluster grant, cross-Tenant grant, or non-inference management grant SHALL be excluded from Tenant-admin token inspection and revocation even when its owning Tenant matches.
 For tenant-direct keys, including Portal-owned and legacy unowned Portal keys, management classification SHALL inspect the union of Tenant-principal and key-specific RoleBindings.
@@ -79,7 +81,7 @@ Caller grants SHALL be additive, but multiple Tenant-admin scopes SHALL NOT comb
 
 ### Requirement: Inspection exposes bounded metadata only
 
-Under proposed `SPEC.md` §§10.2 and 10.8, list/inspect/preview SHALL return a closed non-secret projection containing typed target ID, display name or token prefix where applicable, typed owner ID, Tenant scope, lifecycle timestamps, effective status, and revision.
+Under the accepted target in `SPEC.md` §§10.2 and 10.8, list/inspect/preview SHALL return a closed non-secret projection containing typed target ID, display name or token prefix where applicable, typed owner ID, Tenant scope, lifecycle timestamps, effective status, and revision.
 Console Session metadata SHALL include activity timestamps and a current-session indicator without exposing the bearer.
 No response, audit payload, error, or diagnostic SHALL expose passwords, credential/session/invite hashes, bearer cookies, raw request fields, or recoverable secrets.
 List SHALL use cursor pagination with default 50 and maximum 100 items and apply authorization filtering before counts and pagination.
@@ -113,7 +115,7 @@ List SHALL return no total count, and rows inserted before the cursor SHALL requ
 
 ### Requirement: Credential carriers preserve exact request and result contracts
 
-Under proposed `SPEC.md` §§7.4 and 11.9, successes SHALL use `{data: ...}` and errors `{error: {code, message}}` with bounded generic messages.
+Under the accepted target in `SPEC.md` §§7.4 and 11.9, successes SHALL use `{data: ...}` and errors `{error: {code, message}}` with bounded generic messages.
 List data SHALL be `{items, next_cursor}`, inspect data the closed metadata object, revoke data `{status: "revoked" | "already_revoked", credential}`, and preview data `{status: "preview", target: {kind, id, revision}, blockers, warnings, consequence_codes, confirmation_requirements}` using the shared presenter.
 The revoke body SHALL accept only `dry_run`, `expected_revision`, `reason`, `confirmed`, and `acknowledge_self_revocation`; preview SHALL need only `dry_run: true`, while execution SHALL require revision, reason, and confirmation.
 CLI SHALL expose `--dry-run`, `--expected-revision`, `--reason`, `--yes`, `--acknowledge-self-revocation`, and `--json`, with list flags matching the allowed filters.
@@ -135,7 +137,7 @@ CLI JSON SHALL preserve the HTTP envelope without secret output; human output SH
 
 ### Requirement: Revocation requires current preview preconditions and explicit acknowledgement
 
-Under proposed `SPEC.md` §§7.4 and 11.9, revoke preview SHALL be domain-side-effect-free except for eligible Console idle bookkeeping and return exact target kind/ID, current revision, blockers, warnings, consequences, and confirmation requirements.
+Under the accepted target in `SPEC.md` §§7.4 and 11.9, revoke preview SHALL be domain-side-effect-free except for eligible Console idle bookkeeping and return exact target kind/ID, current revision, blockers, warnings, consequences, and confirmation requirements.
 Execution SHALL require `expected_revision`, a reason of 1-512 Unicode characters after trimming, and explicit confirmation through `confirmed: true`, CLI `--yes`, or the equivalent Console confirmation.
 A current-session or current-token revoke SHALL additionally require `acknowledge_self_revocation` and SHALL permit the action even for the last working credential after that acknowledgement.
 Preview SHALL NOT confer authority or exempt mutation-time authentication, grant, target, or leadership checks.
@@ -186,7 +188,7 @@ Revocation SHALL take effect at the next authentication or operation boundary wi
 
 ### Requirement: Family leadership failures and audit are coherent
 
-Under proposed `SPEC.md` §§7.4, 10.9, and 11.9, family reads, previews, and mutations SHALL execute only on the active Controller against available authoritative Postgres state.
+Under the accepted target in `SPEC.md` §§7.4, 10.9, and 11.9, family reads, previews, and mutations SHALL execute only on the active Controller against available authoritative Postgres state.
 Standby SHALL refuse as `not_active_controller`; unavailable authority SHALL refuse as `authority_unavailable` without cached authorization success or local Repo fallback.
 HTTP adapters SHALL map those refusals to retryable `503`, invalid authentication to `401`, hidden targets to `404`, forbidden actions to `403`, stale revisions to `409`, and invalid input/confirmation to `422`.
 CLI SHALL expose matching domain codes in JSON and exit nonzero on refusal; Console SHALL NOT present refusal as completion.

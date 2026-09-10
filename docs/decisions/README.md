@@ -23,4 +23,5 @@ Start from [`_template.md`](_template.md) when useful. Decisions already fixed b
 
 ## Decision index
 
-The current sequence includes [ADR 0030: Managed Node composition and activation](0030-managed-node-composition-activation.md) and ends with [ADR 0031: Workspace display and Access navigation](0031-workspace-display-and-access-navigation.md).
+The current sequence includes [ADR 0030: Managed Node composition and activation](0030-managed-node-composition-activation.md), [ADR 0031: Workspace display and Access navigation](0031-workspace-display-and-access-navigation.md), and [ADR 0032: Source-only Apache publication](0032-source-only-apache-publication.md).
+[ADR 0033: Named Console identities and shared management authorization](0033-cross-surface-authorization.md) is an accepted target contract whose implementation and cutover remain pending.

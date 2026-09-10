@@ -2,9 +2,10 @@
 
 ## Status
 
-Proposed.
-This record and the associated `cross-surface-authorization-contract` OpenSpec package are reviewable change intent, not accepted behavior or implementation authorization.
-`SPEC.md` remains authoritative until a separately reviewed implementation reconciles the changes below.
+Accepted target contract.
+`SPEC.md` §10.11 and the reconciled identity, API admission, audit, CLI, and upgrade sections accept these policy decisions.
+Named authentication, schema migrations, shared operation implementation, production cutover, and the COMPLETE credential-family claim remain pending separately reviewed implementation.
+The associated `cross-surface-authorization-contract` OpenSpec package remains open with implementation tasks unchecked; acceptance does not archive or declare it implemented.
 
 ## Context
 
@@ -12,7 +13,7 @@ Console currently admits browsers through shared Basic Auth and a boolean sessio
 That marker identifies neither a person nor a revocable server-side session.
 Admin and Operator APIs instead use enabled API Clients with cluster-scoped RoleBindings under ADRs 0004 and 0007.
 ADR 0024 requires normal Console and CLI operations to converge on Controller-owned authority, migrating complete command families while retaining bounded local bootstrap and recovery.
-`SPEC.md` §10.9 explicitly requires null Console audit actor IDs, so named attribution requires a contract change rather than only an authentication patch.
+The pre-cutover baseline uses null Console audit actor IDs; the accepted amendments in `SPEC.md` §§10.9 and 10.11 require stable named attribution after cutover while preserving historical rows.
 
 ## Decision
 
@@ -50,16 +51,11 @@ Grant changes take effect through action-time policy resolution without relying 
 Only successful authorized client operations in an explicit activity class refresh idle time, including explicit previews; background traffic and denied checks never do.
 Session activity bookkeeping is the sole preview side-effect exception, cannot revive expired authority, and is not proof of human presence.
 
-Prepare a named cluster administrator through an explicit operator-controlled setup before Console cutover.
-A currently authorized cluster-admin API Client creates a `pending_setup` identity through `POST /admin/v1/console-identities`, explicitly requesting the initial cluster-admin grant without an implicit default.
-The identity, initial grant, and audit commit together; no Console authority exists until redemption activates the identity.
-`POST /admin/v1/console-identities/:id/setup-invitations` issues a 15-minute single-use invitation, and HTTPS `POST /console/setup` redeems it outside legacy Basic Auth admission.
-The token never appears in an HTTP request path/query or logs, and retries never recover plaintext.
-Each verifier binds the target identity UUID, setup purpose, captured authentication epoch, generation, and expiry; revoking its issuer after committed issuance does not cancel the target's invitation.
-A deployment without an available admin credential first uses existing local `orchardctl cluster init --force-new-admin --yes --output <path>`, then calls those same authenticated APIs.
-There is no new local identity setup/recovery bypass and no unauthenticated first-authority minting endpoint.
-Subsequent provisioning accepts one explicit initial cluster admin/operator or exact-Tenant tenant-admin assignment; general grant editing remains deferred.
-Identity disablement is a bounded cluster-admin prerequisite, while setup invitations cannot reset or enable an already activated or disabled identity.
+Prepare a named cluster administrator through explicit operator-controlled pending-identity setup before Console cutover, with no implicit grant or authority before redemption and login.
+[SPEC §10.11](../../SPEC.md#1011-named-console-and-shared-management-authorization-target) fixes the identity, initial-grant, session, and recovery decisions; [Named setup has authenticated carriers and bounded recovery](../../openspec/changes/cross-surface-authorization-contract/specs/management-authorization/spec.md#requirement-named-setup-has-authenticated-carriers-and-bounded-recovery) owns their exact carriers, invitation bindings/lifetime, revisions, idempotency, and one-time delivery sequence.
+Initial setup uses an authorized cluster-admin API Client; in `named_active` after cutover, named Console cluster admins invoke the same operations under their own sessions without acquiring machine credentials.
+If no usable administrator credential remains, existing bounded local recovery first restores machine authority, followed by ordinary authenticated named provisioning.
+There is no local identity-provisioning bypass or unauthenticated first-authority minting endpoint, and setup cannot reset or reenable an activated or disabled identity.
 
 Cutover is cluster-wide and refuses activation without a currently valid, unexpired, unrevoked Console Session for an enabled named cluster administrator and compatible evidence from every non-retired eligible Controller.
 Activation revalidates that identity's current enabled state and cluster-admin grant rather than treating a historical login as current authority.
@@ -74,7 +70,7 @@ Disabling Console alone does not isolate old API, CLI, Portal, or database write
 An unenforceable isolation/rollback profile is unsupported, and an isolated older environment does not retain the COMPLETE family claim.
 After compatible software and host/service/database/ingress isolation are verified, rollback may expose only restricted HTTPS setup redemption, named login/logout, and restoration preview/confirmation, with no legacy Console or general LiveView access.
 This permits fresh setup/login when no valid session survives; provisioning still uses authenticated Admin API authority, and local recovery only mints the machine credential.
-Activation and restoration use same-origin named-session operations at `/console/auth/activation` and `/console/auth/restoration`, outside Basic Auth and with CSRF, explicit state/version preconditions, and typed confirmation.
+[Policy preparation has explicit named-session carriers](../../openspec/changes/cross-surface-authorization-contract/specs/management-authorization/spec.md#requirement-policy-preparation-has-explicit-named-session-carriers) owns the activation/restoration routes, requests, and results under SPEC's same-origin, current-session, CSRF, preview, state/version, and typed-confirmation requirements.
 Restoration requires the acting named cluster admin's current valid session, epoch, and grant plus compatible deployment proof; `console_auth.access_restored` commits with policy state before general access opens, and failure keeps it closed.
 Local recovery remains bounded to minting additional machine recovery authority, followed by ordinary authenticated named identity provisioning.
 It cannot impersonate a human or become a general direct-Repo channel.
@@ -92,7 +88,7 @@ Classification conservatively includes retained owner-principal and key-specific
 It does not change inference authentication; grantless credentials with matching ownership remain eligible, and multiple Tenant-admin grants cannot combine into cross-Tenant target authority.
 An `operator` receives no key-management permission merely from that role.
 Console Identities may inspect and revoke their own Console Sessions; only cluster admins may manage another identity's sessions.
-Existing Admin API admission continues to require a cluster-admin API Client, so this proposal does not silently expose a Tenant-admin bearer endpoint.
+Existing Admin API admission continues to require a cluster-admin API Client, so this decision does not expose a Tenant-admin bearer endpoint.
 COMPLETE means parity for equivalent authority admitted by each surface; Tenant-admin machine/API/CLI admission remains deferred.
 
 Authorization and mutation serialize against concurrent actor revocation, grant changes, target ownership or privilege changes, and target revocation.
@@ -116,6 +112,8 @@ New top-level `actor_principal_type`, `actor_credential_type`, and `actor_creden
 New Portal-origin audit events select `portal_lifecycle.v1` and retain their current closed payloads, including when the same Portal-minted key is otherwise manageable by an administrator.
 Schema selection follows the executing operation, not key ownership; null discriminators identify unchanged legacy rows.
 Session creation/logout and effective cutover/rollback/restoration receive explicit atomic lifecycle audit events, and retained authentication references are never nulled by credential/session cleanup.
+The accepted storage contract realizes API Key audit-reference retention with `ON DELETE RESTRICT`: an API Key row SHALL NOT be physically deleted while an audit row references it.
+Revocation and lifecycle cleanup must preserve those referenced rows rather than null or rewrite append-only audit evidence.
 
 Portal Users and Portal Sessions remain confined to Portal self-service under ADR 0020.
 Disabling a Portal User ends its sessions but does not revoke minted inference keys.
@@ -137,7 +135,8 @@ The first family is complete only after its alternate paths are closed and parit
 
 ## SPEC.md impact
 
-Reconciliation is required in §§2.3, 7.1, 7.3, 7.4, 7.4a, 8, 10.1, 10.4, 10.8, 10.9, 11.9, and 13.
-The proposal's impact table identifies changed and preserved contracts.
+The accepted core contract is self-contained in `SPEC.md` §10.11, with reconciled clauses in §§2.3, 7.1, 7.3, 7.4, 7.4a, 8, 10.1, 10.4, 10.8, 10.9, 11.9, and 13.
+The OpenSpec proposal's impact table identifies changed and preserved contracts, and its accepted design/deltas retain detailed envelopes, closed schemas, and adversarial acceptance scenarios.
+Current Basic Auth, anonymous audit, and local CLI behavior remain explicitly identified as the pre-cutover implementation baseline, not evidence that the accepted target is complete.
 ADRs 0002, 0004, 0007, 0011, and 0020 retain their machine-principal, transport-admission, bootstrap, and Portal boundaries.
-This proposal refines ADR 0024's family migration and introduces first-class humans only for Console administration.
+This decision refines ADR 0024's family migration and introduces first-class humans only for Console administration.
