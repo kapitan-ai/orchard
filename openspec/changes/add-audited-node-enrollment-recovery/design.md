@@ -122,7 +122,7 @@ All participating writers lock in this order:
 The implementation must refactor the current Enrollment-first redemption order before adding recovery so it cannot deadlock with the new path.
 Locking an Enrollment alone is not sufficient because another writer could insert contradictory trust evidence for the same Node.
 
-Each Node receives a monotonic `enrollment_recovery_revision` advanced by every participating eligibility-changing writer.
+Each Node receives a monotonic `enrollment_recovery_revision` advanced atomically with every authoritative state change by a participating writer, including eligibility-preserving recovery, revocation, expiry normalization, publication acknowledgement, and stale-publication reconciliation.
 Action Preview returns the Node ID, expected recovery revision, current Enrollment ID, current generation, and current Enrollment lock version.
 Execution requires those exact values and returns `node_recovery_stale_preview` without mutation when any value changed.
 Execution still performs full mutation-time revalidation even when all optimistic values match.

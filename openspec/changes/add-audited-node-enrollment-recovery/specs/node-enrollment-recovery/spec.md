@@ -83,6 +83,7 @@ Any predecessor with successor linkage SHALL remain permanently non-redeemable.
 
 Recovery, redemption, revocation, expiry normalization, publication acknowledgement, stale-publication reconciliation, and every writer that can establish or contradict Node trust SHALL use the Node row as their common first lock.
 Affected Enrollment generations SHALL then be locked in deterministic generation and ID order.
+Every participating writer SHALL atomically advance the Node's monotonic recovery revision with each authoritative state change, including eligibility-preserving recovery, revocation, expiry normalization, publication acknowledgement, and stale-publication reconciliation.
 Execution SHALL revalidate authorization, leadership, complete-history eligibility, chain integrity, publication state, expiry, optimistic concurrency, and confirmation while those locks are held.
 
 #### Scenario: Redemption commits before recovery

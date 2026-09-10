@@ -6,7 +6,7 @@
 - [ ] 1.4 Record closed result-field enums, versioned request-fingerprint canonicalization, same-Node linkage and current-pointer integrity constraints, and stable blocker, warning, consequence, and confirmation codes before implementing persistence or presenters.
 - [ ] 1.5 Inventory every certificate, trust, registration, admission, and authorization evidence source and writer, and define the retention guarantee that makes negative history complete for the retained Node lifetime.
 - [ ] 1.6 Prove whether certificate issuance can leave a usable external effect after its database transaction rolls back, or add a durable issuance-attempt fence before signing and make any started attempt permanently recovery-ineligible.
-- [ ] 1.7 Require every eligibility-changing writer to take the shared Node-first lock and advance the recovery revision before any recovery surface is enabled.
+- [ ] 1.7 Require every participating writer to take the shared Node-first lock and atomically advance the recovery revision with each authoritative state change, including eligibility-preserving recovery, revocation, expiry normalization, publication acknowledgement, and stale-publication reconciliation, before any recovery surface is enabled.
 - [ ] 1.8 Reject Controller or trust-authority scope changes, legacy Nodes without complete Enrollment history, and uncertain issuance for separately approved migration or repair rather than inferring eligibility.
 
 ## 2. Vertical TDD Slice One: Output-Failed Recovery
