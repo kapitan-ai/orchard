@@ -239,7 +239,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 
 | Component               | Packaging                    | Responsibility                                             |
 | ----------------------- | ---------------------------- | ---------------------------------------------------------- |
-| Tray/menu bar app       | macOS `.app` + LaunchAgent   | local status, onboarding, logs, support bundle entry point |
+| Tray/menu bar app       | macOS `.app` + LaunchAgent   | local status, onboarding, and logs                         |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
 | Orchard Console         | controller LiveView          | local/operator UI for runtime status, node inventory and admission review, action previews, requests, Workspaces, API Tokens, and API Clients |
 | Developer Portal        | controller LiveView          | Invite-only, Workspace-scoped self-service mint, list, and revoke of a Portal User's tenant-direct API Keys |
@@ -369,8 +369,7 @@ Orchard.Application
 └─ Orchard.LeaderTasks
    ├─ Orchard.Leader.LockManager
    ├─ Orchard.Leader.RetentionSweeper
-   ├─ Orchard.Leader.QuotaSweeper
-   └─ Orchard.Leader.SupportBundleManager
+   └─ Orchard.Leader.QuotaSweeper
 ```
 
 The inference subtree SHALL start `Orchard.DispatchCapacity.AllocationAuthority` ahead of the request supervisor and queue manager under a `rest_for_one` strategy, so losing the Controller allocation authority also restarts the processes whose dispatch claims it tracked instead of leaving orphaned claims behind.
@@ -2696,7 +2695,6 @@ POST   /ops/v1/requests/:request_id/cancel
 POST   /ops/v1/requests/:request_id/retry
 GET    /ops/v1/scheduler/explanations/:request_id
 POST   /ops/v1/nodes/:node_id/diagnostics
-POST   /ops/v1/support-bundles
 ```
 
 Operator API requests SHALL authenticate with a service-account-owned API Token whose owning API Client is enabled and holds a cluster-scoped `operator` or `admin` RoleBinding.
@@ -2706,7 +2704,7 @@ Missing or invalid credentials SHALL return `401 invalid_api_key`; authenticated
 Eligibility-changing or destructive Operator and Admin node actions SHALL provide an Action Preview before execution.
 Action Previews SHALL be side-effect-free and SHALL NOT create domain rows, audit events, or Node Admission Decisions unless a future preview-audit contract explicitly says otherwise.
 The preview response SHALL separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements`.
-Blocker, warning, consequence, and confirmation requirement codes SHALL be stable machine-readable identifiers shared by Admin API, Operator API, CLI, Console, support bundles, and tests.
+Blocker, warning, consequence, and confirmation requirement codes SHALL be stable machine-readable identifiers shared by Admin API, Operator API, CLI, Console, and tests.
 Blockers are non-bypassable safety, permission, leadership, write-path, lifecycle, or data-integrity constraints.
 Warnings are advisory and MAY require confirmation.
 Consequence codes describe expected effects accepted only through explicit parameters or confirmation requirements.
@@ -2730,11 +2728,6 @@ Under `f11_enforcing`, a reduction below Controller-accounted Allocation SHALL r
 The submitted expected version SHALL equal the locked singleton row's required contract version and SHALL NOT change it during cutover.
 Its Action Preview SHALL list every missing or unapproved admitted production Node, every non-retired Controller with missing, stale, incompatible, or all-consumers-not-ready capability evidence, and the exact policies that would advance.
 Successful approval, ceiling change, and enforcement cutover SHALL persist a cluster-scoped audit event in the same transaction as the authoritative mutation.
-
-`POST /ops/v1/support-bundles` SHALL produce the `orchard.support_bundle.v2` format for cluster-management evidence.
-Support Bundle v2 SHALL include bundle format, generated time, Orchard version, scope, included sections, omitted sections, redaction manifest, max log bytes, and relevant SPEC references.
-Supported scopes SHALL include `cluster`, `node`, `request`, `scheduler_decision`, `runtime_endpoint`, `control_plane`.
-v1 compatibility MAY remain only if it is documented separately and does not satisfy or weaken v2 manifest or redaction requirements.
 
 #### 7.3.2 Node drain request example
 
@@ -2833,7 +2826,7 @@ Response example:
 
 Snapshot and bounded compatibility candidates SHALL use the `cluster_management.scheduler_explanation.v1` selected/scored, rejected, and skipped structures with stable reason codes. Candidate diagnostics SHALL remain bounded and set `candidate_source = "monitor_snapshot"` for snapshot candidates or `candidate_source = "bounded_compatibility_probe"` for the unmanaged exception.
 Scheduler explanations are produced whenever at least one runtime target is configured and the scheduler coherently evaluates snapshot or bounded compatibility candidates. For a coherent snapshot of lifecycle-managed targets, selected, rejected, and skipped entries remain observable even when all candidates are rejected and the existing `cluster_busy` or queue-waitable live-node-capacity outcome follows. Missing or structurally malformed snapshot facts use `dispatch_capacity_facts_unavailable`, stale facts use `node_observation_stale`, identity conflicts use `runtime_identity_mismatch`, eligible lower-tier candidates use `lower_tier_not_considered`, and existing runtime and shared-capacity failures retain their stable codes. If trusted inventory is unavailable, MultiNode preserves internal `:no_active_nodes` and emits no explanation. If the snapshot read fails after target resolution, it preserves the existing `:cluster_busy` or bounded queue outcome and emits no candidate explanation because no coherent candidate evaluation can be proven. Neither failure path probes production targets or uses stale process memory.
-Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and tests.
+Reason codes SHALL be shared by Operator API, CLI, Console, and tests.
 Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
 Rejected candidates SHALL include at least one stable rejection reason code.
 Skipped candidates SHALL be represented in `skipped_candidates` outside the rejected-candidate list and SHALL include at least one stable skip reason code.
@@ -3223,7 +3216,7 @@ The initial stable operator-facing production BEAM failure vocabulary SHALL incl
 * `beam_rpc_failed`
 
 These failures SHALL be visible through shared operator diagnostics without exposing certificates, grant values, hashes, local paths, or raw OTP exception terms.
-The current adapter outcomes `unknown_beam_node`, `node_unavailable`, `node_timeout`, and `beam_rpc_error` SHALL normalize to `beam_target_unknown`, `beam_node_unavailable`, `beam_node_timeout`, and `beam_rpc_failed` before reaching CLI, Console, support bundles, or tests.
+The current adapter outcomes `unknown_beam_node`, `node_unavailable`, `node_timeout`, and `beam_rpc_error` SHALL normalize to `beam_target_unknown`, `beam_node_unavailable`, `beam_node_timeout`, and `beam_rpc_failed` before reaching CLI, Console, or tests.
 Transport and liveness failures SHALL remain distinguishable from Peer Grant and certificate failures.
 When BEAM is selected, none of these failures may cause the same Runtime Endpoint operation to retry through gRPC compatibility.
 Certificate and Peer Grant recovery through the explicitly selected gRPC/mTLS control path is not an inference fallback.
@@ -4452,7 +4445,7 @@ Both references MAY later become null through retention cleanup, because decisio
 Audit log `scope` SHALL distinguish tenant-scoped and cluster-scoped governance events.
 Tenant-scoped audit events SHALL set `scope = 'tenant'` and a non-null `tenant_id`.
 Cluster-scoped audit events SHALL set `scope = 'cluster'` and a null `tenant_id`.
-Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, Controller Dispatch Ceiling approval or change, dispatch-capacity enforcement cutover, Controller-instance retirement, node decommission, Active/Standby status-affecting writes, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
+Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, Controller Dispatch Ceiling approval or change, dispatch-capacity enforcement cutover, Controller-instance retirement, node decommission, and Active/Standby status-affecting writes SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
 Audit log `actor_type` SHALL identify the provenance class of the action.
 `operator` represents operator and admin product surfaces such as Orchard Console, Orchard CLI, Operator API, and Admin API actions.
 `actor_id` MAY be null for `system` actions and for local operator actions before Orchard has an authenticated first-class operator identity.
@@ -4748,11 +4741,11 @@ Metric labels SHALL use closed vocabularies and SHALL NOT contain Request IDs, N
 * `orchard_api_key_auth_failures_total`
 * `orchard_audit_events_total{action,outcome}`
 
-The audit action label SHALL use only `tenant`, `api_key`, `service_account`, `role_binding`, `routing_policy`, `tenant_model_access`, `support_bundle`, `node_admission`, `node_lifecycle`, `circuit_breaker`, `cluster`, or `portal_user`.
+The audit action label SHALL use only `tenant`, `api_key`, `service_account`, `role_binding`, `routing_policy`, `tenant_model_access`, `node_admission`, `node_lifecycle`, `circuit_breaker`, `cluster`, or `portal_user`.
 The audit outcome label SHALL use only `succeeded`, `failed`, or `denied`.
-Those twelve domains and three outcomes reserve exactly 36 audit series.
-The accepted Portal lifecycle metrics floor is 2,600 series.
-The already accepted and implemented inference attempt and retry families add 229 series, so the runtime worksheet SHALL total 2,829 and retain 2,171 series of headroom below the 5,000-series ceiling.
+Those eleven domains and three outcomes reserve exactly 33 audit series.
+The accepted Controller metrics floor is 2,597 series.
+The already accepted and implemented inference attempt and retry families add 229 series, so the runtime worksheet SHALL total 2,826 and retain 2,174 series of headroom below the 5,000-series ceiling.
 
 ### 9.2 Tracing
 
@@ -4806,7 +4799,7 @@ Required fields:
 
 No secrets SHALL be logged.
 Prompt/response bodies SHALL only be logged when tenant capture mode = `full`.
-Hidden reasoning content SHALL never be logged, traced, attached to metrics, included in crash evidence, or placed in diagnostic or support-bundle payloads, including when capture mode is `full`.
+Hidden reasoning content SHALL never be logged, traced, attached to metrics, included in crash evidence, or placed in diagnostic payloads, including when capture mode is `full`.
 
 ### 9.4 Recommended Grafana dashboards
 
@@ -4880,7 +4873,7 @@ Requirements:
 * comparison MUST be constant-time
 * key secret displayed once only at creation
 * revocation is immediate
-* plaintext secrets MUST NOT be stored in Postgres, audit logs, provisioning batches, support bundles, or durable local evidence artifacts
+* plaintext secrets MUST NOT be stored in Postgres, audit logs, provisioning batches, or durable local evidence artifacts
 
 Previously issued `orch_<public>.<secret>` API Tokens SHALL remain valid compatibility credentials.
 Compatibility authentication SHALL preserve their existing `orch_<public>` lookup prefix and complete-token SHA-256 semantics without rewriting persisted credentials.
@@ -5040,7 +5033,6 @@ Audit logs SHALL capture:
 * registration or trust event used to permit re-admission
 * Controller Dispatch Ceiling creation, approval, raising, lowering, and enforcement-state change
 * operator drain/cancel/retry actions
-* support bundle generation
 * upgrade actions
 
 Every effective Portal User creation, invite issue or reissue, redemption, disablement, Portal-owned API Key mint, and effective revoke SHALL commit its tenant-scoped audit row inside the same outermost `AuditWriter.transaction/1` boundary as the authoritative mutation.
@@ -5101,7 +5093,7 @@ For the Responses API, `store=false` SHALL cap `full` at `metadata`, SHALL NOT w
 
 Reasoning retention SHALL follow projection rather than generation alone.
 Reasoning hidden by `projection = final_only` is ephemeral under `none`, `metadata`, and `full`.
-Hidden reasoning MUST NOT enter `canonical_request` content, `request_payload`, `response_payload`, `request_events`, `response_preview`, scheduler metadata, logs, traces, metrics, audit payloads, crash evidence, diagnostics, or support bundles.
+Hidden reasoning MUST NOT enter `canonical_request` content, `request_payload`, `response_payload`, `request_events`, `response_preview`, scheduler metadata, logs, traces, metrics, audit payloads, crash evidence, or diagnostics.
 The canonical Request MAY retain only the closed non-content reasoning policy, provenance, contract identifiers, and exact or unknown usage detail allowed by its effective capture mode.
 If a later accepted contract enables public `reasoning_structured`, `full` SHALL retain that selected public reasoning in the exact assembled response payload needed for idempotent replay, while `none` and `metadata` SHALL retain no reasoning content.
 For `projection = final_only`, `response_preview` SHALL derive only from final-answer text.
@@ -5220,8 +5212,8 @@ A future managed replacement or cross-installer handover protocol SHALL require 
 
 The BEAM Peer Grant Store Lock is the operation-scoped lock used by `Orchard.Node.BeamPeerGrantStore` to serialize one grant store install or load operation, including atomic publication when installing in the owner-only Node Identity Root.
 It SHALL end with that store operation and SHALL NOT become a process-lifetime Node Identity Root Lease.
-Install and update SHALL preserve operator-owned `config`, `data`, `models`, `bundles`, `logs`, and support-bundle contents.
-Default uninstall SHALL remove app-owned payloads, installed commands and links, launchd plists, and install markers while retaining those operator-owned paths.
+Install and update SHALL preserve operator-owned `config`, `data`, `models`, `bundles`, `logs`, and non-app-owned contents under the retained `support/` namespace.
+Default uninstall SHALL remove app-owned payloads, installed commands and links, launchd plists, install markers, and app-owned support entries while retaining those operator-owned contents.
 Destructive purge behavior is not part of the v1 app lifecycle contract.
 The app lifecycle SHALL preserve complete existing TLS state, SHALL reject partial TLS state before mutation, SHALL NOT generate or trust production TLS material, and SHALL NOT mutate system trust stores.
 The app lifecycle SHALL refuse system-root install, update, and uninstall while a `com.orchard.pkg` receipt exists, SHALL fail closed before any mutation, and SHALL report that blocking receipt in non-mutating lifecycle status.
@@ -5298,7 +5290,6 @@ Tray app SHALL provide:
 * node join status
 * recent errors
 * open logs
-* open support bundle wizard
 * version/build info
 
 ### 11.9 CLI
@@ -5332,7 +5323,6 @@ Required commands:
 * `orchardctl api-clients bulk-provision`
 * `orchardctl models import`
 * `orchardctl requests inspect`
-* `orchardctl support bundle create`
 * `orchardctl upgrade plan`
 
 Node-admission CLI commands SHALL provide stable human and JSON output for list, inspect, pending-review, admit, and reject workflows.
@@ -5379,10 +5369,6 @@ Successful initialization output SHOULD direct operators to provision named admi
 
 `orchardctl requests inspect` SHALL render a request's persisted scheduler explanation through the shared scheduler explanation reason-code contract in stable human and JSON forms.
 Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
-
-`orchardctl support bundle create` SHALL be able to emit `orchard.support_bundle.v2` for cluster-management support bundles.
-Console-triggered support bundles and CLI-created support bundles SHALL use the same v2 archive format for the same scope.
-Request and scheduler-decision scoped bundles SHALL include sanitized metadata only and MUST NOT include prompt bodies, response bodies, raw token sequences, raw prefix-cache fingerprints, tenant secret material, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
 
 ---
 
@@ -5721,14 +5707,12 @@ Deliver:
 * OTel tracing
 * structured logs
 * node diagnostics endpoint
-* support bundle creation
 * recommended Grafana dashboards JSON
 
 Acceptance:
 
 * p95 latency visible in Grafana
 * a request trace spans auth→schedule→execute→stream
-* Support Bundle v2 contains scoped logs, config, node snapshots, request summaries, scheduler explanations, sanitized Node Admission evidence, omitted-section metadata, and a redaction manifest
 
 ### Milestone 6 - Security hardening and air-gap
 

@@ -702,7 +702,6 @@ Use these operator surfaces before changing host state:
 - authenticated `/metrics`
 - controller and node-agent logs
 - `orchardctl requests inspect <request-id>`
-- `orchardctl support bundle create`
 
 The `/metrics` route uses the same controller listener as the API and Console and requires an Operator or admin API Client token.
 Do not publish it outside the trusted private network or VPN.

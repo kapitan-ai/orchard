@@ -22,7 +22,6 @@ defmodule Orchard.Governance.AuditWriterTest do
     {"api_key.auth_failed", "api_key", "denied"},
     {"service_account.disabled", "service_account", "succeeded"},
     {"role_binding.created", "role_binding", "succeeded"},
-    {"support_bundle.generated", "support_bundle", "succeeded"},
     {"node_admission.rejected", "node_admission", "denied"},
     {"node_enrollment.issued", "node_admission", "succeeded"},
     {"node_trust.initialized", "node_admission", "succeeded"},
@@ -32,6 +31,24 @@ defmodule Orchard.Governance.AuditWriterTest do
     {"provisioning_batch.failed", "service_account", "failed"},
     {"cluster_admin_bootstrap.minted", "cluster", "succeeded"}
   ]
+
+  test "retired support-bundle actions degrade bounded metrics without changing the audit write" do
+    on_exit(fn -> Status.recover({:series_admission, :rejected}) end)
+    ref = attach_metric()
+
+    assert {:ok, %AuditLog{}} =
+             "support_bundle.generated"
+             |> valid_changeset()
+             |> AuditWriter.insert()
+
+    refute_receive {^ref, _measurements, _metadata}
+    assert :ets.member(Status, {:series_admission, :rejected})
+  end
+
+  test "historical support-bundle audit rows remain readable through the generic audit store" do
+    assert {:ok, %AuditLog{}} = Repo.insert(valid_changeset("support_bundle.generated"))
+    assert Repo.get_by(AuditLog, action: "support_bundle.generated")
+  end
 
   test "SPEC.md §10.9 refuses to run inside an independently owned Repo transaction" do
     ref = attach_metric()
@@ -222,6 +239,7 @@ defmodule Orchard.Governance.AuditWriterTest do
   end
 
   test "SPEC.md §9.1 an unmapped audit action domain emits no out-of-vocabulary label" do
+    on_exit(fn -> Status.recover({:series_admission, :rejected}) end)
     ref = attach_metric()
 
     assert {:error, :invalid_labels} =

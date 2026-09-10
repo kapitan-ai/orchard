@@ -17,3 +17,6 @@ That layer is deliberate because `orchard_shared` must not depend on Ecto schema
 SPEC.md impact: no change required.
 
 Amended 2026-07-05: the HA-lite read-only status contract described above is renamed to `ControlPlaneStatus` (`cluster_management.control_plane_status`), and the Active/Standby term replaces HA-lite; see ADR 0008.
+
+Partially superseded 2026-09-02: support bundles were retired before beta.
+The shared cluster-management structures remain the contract for implemented and future operator surfaces, but support bundles are no longer a consumer or delivery target.

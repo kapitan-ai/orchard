@@ -11,3 +11,6 @@ The `ha_lite` support-bundle scope merges into `control_plane`: its defined evid
 The design constraint keeps its force under the new name: at most two Controller instances, exactly one Active Leader, Postgres advisory-lock election, no active/active consensus. "HA-lite" remains only in historical records (archived change packages, investigation notes, milestone notes, and ADR 0005 as amended).
 
 SPEC.md impact: update required in the deployment-mode, controller-leadership, leader-only write, audit, and upgrade sections, plus the Milestone 7 title — same semantics, renamed mode.
+
+Partially superseded 2026-09-02: support bundles were retired before beta.
+The `ha_lite` to `control_plane` vocabulary decision remains historical context, while no support-bundle scope vocabulary remains in the live product contract.
