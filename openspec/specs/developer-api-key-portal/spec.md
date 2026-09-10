@@ -4,6 +4,10 @@
 Define Orchard's invite-only Developer Portal for named Portal Users who manage only their own tenant-direct API Keys.
 These requirements cover identity and invite lifecycle, isolated authentication, user-owned sessions and keys, login throttling, activation guidance, legacy key compatibility, and TLS-only access.
 
+The anonymous Console-attribution clauses below describe the current pre-cutover baseline.
+Accepted `SPEC.md` §§10.9 and 10.11 and the open `cross-surface-authorization-contract` delta require named Console actors and operation-selected audit schemas after the separately implemented cutover.
+The delta remains unimplemented and is not synced into these baseline requirements by contract acceptance.
+
 ## Requirements
 ### Requirement: Developer Portal Is Isolated From Every Platform Authority
 

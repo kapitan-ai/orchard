@@ -1,9 +1,10 @@
 ## Context
 
-This design is proposed and depends on acceptance of [ADR 0033](../../../docs/decisions/0033-cross-surface-authorization.md).
+This design is the accepted implementation target under `SPEC.md` §10.11 and [ADR 0033](../../../docs/decisions/0033-cross-surface-authorization.md).
+It remains unimplemented: accepting the contract does not claim schema/runtime delivery, production cutover, or a COMPLETE family.
 `OrchardConsole.Auth` currently trusts `_orchard_console_authenticated = true` on requests and LiveView mount or reconnect.
 `Orchard.Governance.RoleBinding` currently has no Console Identity principal type.
-`SPEC.md` §10.9 requires anonymous Console actors and closed per-action Portal audit payloads.
+The pre-cutover implementation retains anonymous Console actors; `SPEC.md` §§10.9 and 10.11 now require named attribution after cutover and explicit schema selection while preserving Portal-origin closed payloads.
 ADRs 0004, 0007, 0011, 0020, and 0024 constrain API admission, first-admin recovery, Portal independence, and Controller-owned operation migration.
 
 ## Goals / Non-Goals
@@ -16,7 +17,7 @@ ADRs 0004, 0007, 0011, 0020, and 0024 constrain API admission, first-admin recov
 
 **Non-Goals:**
 
-- Implement runtime behavior in this proposal or declare existing operation families complete.
+- Implement runtime behavior in this contract-acceptance change or declare existing operation families complete.
 - Introduce SSO, arbitrary custom policy languages, delegated agent credentials, WebMCP tools, or automatic email delivery.
 - Merge Portal Users, API Clients, Tenants, Node identities, or host-local authority into Console identities.
 - Migrate all Console operations or all CLI commands at once.
@@ -201,7 +202,7 @@ Until other families migrate, scoped Console identities see only their supported
 Out-of-scope inspect/revoke targets return the same `not_found` result as missing targets, and list pagination, counts, and filters never expose excluded resources.
 Target scope is checked before revision handling: scope lost after preview returns `not_found`, while `conflict` is reserved for still-visible authorized targets.
 
-Proposed new Admin API routes are `GET /admin/v1/credentials`, `GET /admin/v1/credentials/:kind/:id`, and `POST /admin/v1/credentials/:kind/:id/revoke`.
+The accepted target Admin API routes are `GET /admin/v1/credentials`, `GET /admin/v1/credentials/:kind/:id`, and `POST /admin/v1/credentials/:kind/:id/revoke`.
 `SPEC.md` lists `GET /admin/v1/api-keys` and `POST /admin/v1/api-keys/:key_id/revoke`, but neither is wired at this baseline; implement both as thin delegates with the family envelope and execution gates, never independent authority.
 Actual baseline paths are `TenantDetailLive` key list/revoke, `orchardctl api-keys revoke` through `RepoRuntime` and unscoped `Governance.revoke_api_key/2`, the scoped governance overload, Portal own-key revoke, and bulk rotation's multi-key revoke.
 Console paths delegate to family authority; the old CLI revoke becomes a portable alias that resolves persisted key kind server-side under the same policy, and unscoped direct revoke becomes internal to the operation or is removed.
@@ -293,7 +294,7 @@ True no-ops, denied calls, and previews produce no successful mutation audit row
 Protected reads and denied actions use bounded security telemetry with explicit outcome, not fabricated mutation audit successes.
 Success telemetry is emitted only after commit.
 All Console actions migrated to named authentication use stable named actors, including existing Portal administration actions.
-Amend §10.9's null actor rule and apply these discriminator-specific allowlists before accepting implementation; historic anonymous records stay unchanged.
+The accepted §10.9 amendment replaces the post-cutover null actor rule; implementation must apply these discriminator-specific allowlists before acceptance, while historic anonymous records stay unchanged.
 Reasons are bounded operator input and absent from denial diagnostics; audit validation rejects secret-bearing fields and retains the repository's redaction rules.
 
 ## Risks / Trade-offs
@@ -307,7 +308,7 @@ Reasons are bounded operator input and absent from denial diagnostics; audit val
 
 ## Migration Plan
 
-1. Accept the contract and reconcile the precise `SPEC.md` sections and ADR status before implementing changed behavior.
+1. Contract acceptance and precise `SPEC.md`/ADR reconciliation are complete; all runtime, migration, cutover, and family-completion steps below remain pending implementation.
 2. Add backward-compatible identity/session and actor-context persistence, keeping existing inference credentials and historical audit rows unchanged.
 3. Implement and test shared authority fences, named setup/login/session lifecycle, and the complete credential family while production cutover remains disabled.
 4. Use an existing cluster-admin API credential for explicit named setup, or invoke local `cluster init --force-new-admin` recovery when none is usable, preserving protected one-time output.
@@ -327,6 +328,6 @@ Reasons are bounded operator input and absent from denial diagnostics; audit val
 
 ## Open Questions
 
-No policy or scope decision is delegated to implementation by this proposal.
+No policy or scope decision is delegated to implementation by this accepted contract.
 Implementation review must verify the concrete database lock mechanism, password-verifier parameters, transport compatibility, and mixed-version rollout evidence before acceptance.
 Those details may refine implementation but cannot relax the authority, recovery, or completion requirements here.

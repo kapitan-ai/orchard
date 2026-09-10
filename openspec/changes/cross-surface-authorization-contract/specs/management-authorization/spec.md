@@ -1,8 +1,10 @@
 ## ADDED Requirements
 
+These requirements are accepted target behavior under `SPEC.md` §10.11 and remain pending implementation and cutover; they do not establish a COMPLETE family.
+
 ### Requirement: Typed management identity and authority
 
-Under the proposed changes to `SPEC.md` §§2.3, 7.1, 8, 10.1, and 10.4, Orchard SHALL distinguish principal, credential, session, grant, action, resource, scope, and audit actor.
+Under the accepted target in `SPEC.md` §§2.3, 7.1, 8, 10.1, and 10.4, Orchard SHALL distinguish principal, credential, session, grant, action, resource, scope, and audit actor.
 A Console Identity SHALL identify one named human with a stable UUID, unique normalized login name, `pending_setup | enabled | disabled` state, a password verifier only after setup, and authentication epoch.
 API Clients SHALL remain non-interactive principals and Portal Users SHALL remain Portal-only identities.
 Role grants SHALL bind a typed principal to an explicit cluster or Tenant scope and SHALL resolve through a closed server-owned action policy.
@@ -23,7 +25,7 @@ Owner Contact, display names, source addresses, and tool names MUST NOT authenti
 
 ### Requirement: Named Console sessions are revocable authentication results
 
-Under proposed `SPEC.md` §§10.1 and 10.8, Console login SHALL authenticate an enabled named identity and mint a fresh independent random session bearer.
+Under the accepted target in `SPEC.md` §§10.1 and 10.8, Console login SHALL authenticate an enabled named identity and mint a fresh independent random session bearer.
 Only its verifier SHALL be persisted, with identity ID, captured authentication epoch, activity timestamps, expiry, and revocation state.
 Sessions SHALL expire after 12 hours absolutely or 30 minutes idle, whichever occurs first.
 Activity SHALL NOT extend absolute expiry.
@@ -53,7 +55,7 @@ Console sessions MUST NOT authorize public inference, Admin API, Operator API, o
 
 ### Requirement: Idle activity is explicit and cannot resurrect authority
 
-Under proposed `SPEC.md` §§10.1 and 10.8, Console expiry SHALL use server time with `now >= min(created_at + 12 hours, last_activity_at + 30 minutes)` meaning expired.
+Under the accepted target in `SPEC.md` §§10.1 and 10.8, Console expiry SHALL use server time with `now >= min(created_at + 12 hours, last_activity_at + 30 minutes)` meaning expired.
 Only successfully authorized client-initiated operations in the server-owned activity class SHALL advance activity monotonically under the session protocol.
 Explicit credential list, inspect, and preview operations SHALL qualify; background polling, automatic refreshes, heartbeats, subscriptions, asynchronous delivery, and denied checks SHALL NOT qualify.
 An eligible touch SHALL revalidate session status, epoch, and both deadlines before commit and MUST NOT resurrect expired/revoked authority or extend absolute expiry.
@@ -75,7 +77,7 @@ Client initiation SHALL identify the protocol event, not prove human presence; a
 
 ### Requirement: Named setup has authenticated carriers and bounded recovery
 
-Under proposed `SPEC.md` §§7.4, 8, 10.1, 10.9, and 11.9, `POST /admin/v1/console-identities` SHALL use existing enabled cluster-admin API Client admission and active Controller authority before or after cutover.
+Under the accepted target in `SPEC.md` §§7.4, 8, 10.1, 10.9, and 11.9, `POST /admin/v1/console-identities` SHALL use existing enabled cluster-admin API Client admission and active Controller authority before or after cutover.
 Its exact body SHALL be `login_name`, `initial_access`, `reason`, `confirmed`, and UUID `idempotency_key`.
 `initial_access` SHALL contain `role` and `tenant_id`, allowing cluster `admin`/`operator` only with null Tenant or `tenant_admin` only with one existing exact Tenant UUID.
 The first identity SHALL require explicitly supplied cluster `admin`, with no implicit grant default; non-admin creation SHALL require an already enabled named cluster admin.
@@ -165,7 +167,7 @@ No new local identity-recovery bypass or unauthenticated first-authority mint en
 
 ### Requirement: Authorization is enforced at the Controller operation boundary
 
-Under proposed `SPEC.md` §§7.3, 7.4, 10.4, and 11.9, Console, API, and CLI adapters SHALL invoke one Controller-owned action policy and domain operation boundary for each migrated family.
+Under the accepted target in `SPEC.md` §§7.3, 7.4, 10.4, and 11.9, Console, API, and CLI adapters SHALL invoke one Controller-owned action policy and domain operation boundary for each migrated family.
 That boundary SHALL validate current principal state, credential/session validity, grants, action, authoritative resource ownership and privilege, scope, and leadership.
 Page admission, API plug authentication, LiveView mount, earlier previews, hidden controls, and client-side tool registration MUST NOT substitute for operation authorization.
 Protected reads, previews, mutations, and delivery of newly fetched protected data SHALL perform current validation.
@@ -198,7 +200,7 @@ Console operations SHALL use the human's own authority without an implicitly min
 
 ### Requirement: Restrictive authority changes and operations serialize
 
-Under proposed `SPEC.md` §§10.2, 10.4, and 10.9, protected operations SHALL share a transaction protocol with actor disablement, credential/session revocation, grant edits, and target ownership or privilege changes.
+Under the accepted target in `SPEC.md` §§10.2, 10.4, and 10.9, protected operations SHALL share a transaction protocol with actor disablement, credential/session revocation, grant edits, and target ownership or privilege changes.
 The protocol SHALL fence actor and target principals, including concurrent addition of previously absent grants, and lock credential/session and target rows in a deterministic order.
 After fences are acquired, the operation SHALL reread principal status, credential/session revocation and expiry, idle/absolute expiry, authentication epoch, current grants, and target state before authorizing.
 Existing grant, credential, identity, and API Client mutation paths SHALL participate in these fences even if their broader family has not migrated.
@@ -222,7 +224,7 @@ Revocation SHALL block the next authentication or operation boundary without imp
 
 ### Requirement: Every retained authority writer participates in cutover
 
-Under proposed `SPEC.md` §§10 and 13, the required contract version SHALL cover action policy, session validity, credential/grant writes, authority fences, and audit behavior across every writer.
+Under the accepted target in `SPEC.md` §§10 and 13, the required contract version SHALL cover action policy, session validity, credential/grant writes, authority fences, and audit behavior across every writer.
 The closure ledger SHALL explicitly cover management aliases/governance overloads; Portal own-key mint/revoke; Portal invitation/redemption/disable/logout/epoch paths; Console login/logout/setup/disable/session revoke; API Client disable/grant creation/edit; bulk provisioning/rotation; local `cluster init` including forced recovery; and retained direct-DB CLI entry points.
 Each ledger entry SHALL identify its authorized operation, complete affected fence set and row order, applicable atomic-audit contract, and whether its broader family is complete or retained pending migration.
 Portal operations SHALL retain their narrower session/ownership contract and Portal User-before-key row order while joining affected credential fences; logout/epoch mutation SHALL NOT be exempt from serialization merely because its current audit contract omits a new success event.
@@ -238,7 +240,7 @@ Deferred broader family migration SHALL NOT excuse an incompatible writer attach
 
 ### Requirement: Explicit Basic Auth cutover and bounded recovery
 
-Under proposed `SPEC.md` §§10.1, 11.9, and 13, named Console setup SHALL require explicit cluster-admin authority and expiring single-use protected setup material.
+Under the accepted target in `SPEC.md` §§10.1, 11.9, and 13, named Console setup SHALL require explicit cluster-admin authority and expiring single-use protected setup material.
 A deployment without an available admin credential SHALL use existing local `orchardctl cluster init` recovery authority first, preserving its leader, confirmation, one-time output, and audit contract.
 No installer, environment variable, shared Basic Auth login, Portal User, or node Bootstrap Token SHALL seed or imply a named human administrator.
 A durable cluster-wide cutover SHALL require a currently valid unexpired/unrevoked Console Session for an enabled named cluster administrator, verified recovery, and compatible support from every non-retired eligible Controller.
@@ -301,7 +303,7 @@ Local bootstrap/recovery SHALL remain locally authenticated, narrow, Controller-
 
 ### Requirement: Policy preparation has explicit named-session carriers
 
-Under proposed `SPEC.md` §§7.1, 10.1, 10.9, and 13, activation SHALL use `GET/POST /console/auth/activation` and restoration `GET/POST /console/auth/restoration` as restricted same-origin HTTPS controller/form routes outside Basic Auth, without general LiveView transport.
+Under the accepted target in `SPEC.md` §§7.1, 10.1, 10.9, and 13, activation SHALL use `GET/POST /console/auth/activation` and restoration `GET/POST /console/auth/restoration` as restricted same-origin HTTPS controller/form routes outside Basic Auth, without general LiveView transport.
 GET SHALL render only the authenticated form/current policy state; POST SHALL use the acting cluster-admin Console Session with existing CSRF, rate-limit, authority-fence, and audit protections.
 API Bearers and another session's UUID SHALL NOT authenticate these operations; no new Console bearer audience is introduced.
 The exact body SHALL be `dry_run`, `expected_state`, `expected_contract_version`, `confirmed`, and `typed_confirmation`.
@@ -318,7 +320,7 @@ Execution SHALL return `{data: {state, required_contract_version}}` only after a
 
 ### Requirement: Named audit attribution preserves historical evidence and closed schemas
 
-Under proposed `SPEC.md` §§8 and 10.9, authenticated Console operations SHALL record `actor_type = 'operator'` and the stable Console Identity UUID as non-null `actor_id`.
+Under the accepted target in `SPEC.md` §§8 and 10.9, authenticated Console operations SHALL record `actor_type = 'operator'` and the stable Console Identity UUID as non-null `actor_id`.
 API and portable CLI management operations SHALL retain `actor_type = 'operator'` and record the authenticated API Client UUID as actor, independently of surface provenance.
 New nullable top-level fields SHALL be `payload_schema`, `actor_principal_type`, `actor_credential_type`, and `actor_credential_id`.
 New management revokes SHALL require principal type `console_identity` with credential type `console_session` or principal type `service_account` with credential type `api_key`, plus the corresponding persisted authentication-record UUID.

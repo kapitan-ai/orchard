@@ -5,8 +5,10 @@ A named, revocable principal and one action-time policy contract are needed befo
 
 ## What Changes
 
-This package is **proposed change intent only**.
-It does not accept the linked ADR, change current `SPEC.md` behavior, authorize implementation, or claim a completed migration.
+This package is an **accepted target contract**, reconciled with `SPEC.md` §10.11 and accepted ADR 0033.
+Acceptance settles the policy decisions and supplies the contract for a separately reviewed implementation.
+It does not implement named authentication or schema changes, authorize production cutover, or claim a COMPLETE command family.
+The change remains open with implementation tasks pending and the current pre-cutover baseline explicitly retained.
 
 - Define principal, credential, session, grant, action, resource, scope, and audit actor as separate concepts with a default-deny Controller-owned authorization boundary.
 - Introduce named Console Identities and revocable server-side Console Sessions, separate from non-interactive API Clients and Portal Users.
@@ -33,22 +35,22 @@ It does not accept the linked ADR, change current `SPEC.md` behavior, authorize 
 
 ### SPEC.md impact statement
 
-`SPEC.md` remains unchanged in this proposal branch.
-Before implementation is accepted, the implementation branch must reconcile the following focused changes, the ADR, relevant existing OpenSpec requirements, documentation, tests, and actual behavior together.
+`SPEC.md` §10.11 now owns the accepted core invariants, and the following affected sections have been reconciled with ADR 0033 and these deltas.
+The current implementation remains the pre-cutover baseline; later implementation review must prove runtime behavior, migrations, tests, compatible-writer closure, and cutover against the accepted contract before declaring completion.
 
-| Section | Proposed change or retained invariant |
+| Section | Accepted target change or retained invariant |
 |---|---|
 | §§2.3, 7.1 | Add Console Identity and Console Session without merging Portal User or API Client identities; reconcile the Admin API summary's `admin/tenant-admin` wording with retained cluster-admin API Client admission. |
 | §§7.3, 7.4 | Define shared operation policy and credential-family endpoints; preserve Operator API cluster operator/admin and existing Admin API cluster-admin admission. |
 | §7.4a | Preserve Portal scope and inference-key independence; change only attribution for Console-originated Portal administration. |
 | §8 | Add pending-setup identities, sessions, initial RoleBindings, and typed/schema audit columns; reconcile audit foreign-key `ON DELETE SET NULL` behavior so cleanup cannot null historical actor/authentication/target references. |
-| §§10.1, 10.4 | Add named Console authentication, session lifecycle, explicit action/resource/scope evaluation, and cross-surface authority rules. |
+| §§10.1, 10.4, 10.11 | Add named Console authentication, session lifecycle, explicit action/resource/scope evaluation, and cross-surface authority rules. |
 | §§10.2, 10.3, 10.5, 10.6 | Preserve inference principals and credential formats, API Client disablement, certificates, node-join Bootstrap Tokens, and Peer Grant authority. |
 | §§10.8, 10.9 | Store only credential/session verifiers; replace the explicit null Console `actor_id` rule with named attribution, including a deliberate amendment of affected closed audit allowlists. |
 | §11.9 | Preserve `cluster init` and protected one-time output; add bounded named Console setup and migrate only the complete credential inspection/revocation family away from local Repo authority. |
 | §13 | Add authority-writer compatibility, named-Console cutover and rollback states, persistent service/ingress fencing including direct HTTP/LiveView, isolation of incompatible DB writers, and unsupported-downgrade limits. |
 
-The proposed [ADR 0033](../../../docs/decisions/0033-cross-surface-authorization.md) refines ADR 0024 and the Console identity boundary without silently superseding accepted ADRs 0002, 0004, 0007, 0011, or 0020.
+Accepted [ADR 0033](../../../docs/decisions/0033-cross-surface-authorization.md) refines ADR 0024 and the Console identity boundary without silently superseding accepted ADRs 0002, 0004, 0007, 0011, or 0020.
 Affected implementation areas are Controller governance, authentication, audit, Console LiveViews, API request contexts, and CLI client routing.
 This documentation-only change adds no runtime dependency or migration.
 The later implementation must stage database compatibility before Console cutover and pass the security and parity scenarios in this package.

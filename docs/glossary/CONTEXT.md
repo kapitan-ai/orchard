@@ -285,6 +285,17 @@ A human or local administrative actor who configures, governs, or operates Orcha
 An Operator is not a Service Account, API Client, API Key, Tenant, or Portal User.
 _Avoid_: Service Account, API Client, API Key, Tenant, Portal User
 
+**Console Identity**:
+A stable named-human management principal in the accepted named-Console target (`SPEC.md` §10.11), distinct from API Clients and Portal Users.
+Its current state, authentication epoch, and typed RoleBindings determine authority through Controller-owned action policy.
+Named Console authentication remains pending implementation and cutover.
+_Avoid_: API Client, Portal User, Owner Contact, shared Basic Auth username
+
+**Console Session**:
+A revocable server-side authentication result bound to one Console Identity and authentication epoch in the accepted target.
+Its browser bearer proves the session, while current grants and target scope authorize each protected operation.
+_Avoid_: RoleBinding, API Token, Portal Session, human-presence proof
+
 **Tenant**:
 A governance boundary for model access, quotas, keys, retention, and usage accounting.
 Product-facing label: Workspace.

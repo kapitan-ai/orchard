@@ -11,6 +11,10 @@ Current Controller-bearing installations require operator-provided external Post
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
 That Linux Controller profile SHALL NOT be represented as supported until the Milestone 8 acceptance contract passes.
 
+Named Console authentication and shared management authorization in §10.11 are an accepted implementation target, not currently implemented behavior or a completed command-family migration.
+The current pre-cutover baseline still uses shared Console Basic Auth and anonymous Console audit actors, and the credential family still includes local Controller-runtime CLI authority.
+That baseline SHALL remain explicitly distinguished from the target until the implementation, compatibility, and cutover gates in §10.11 pass.
+
 Unless otherwise noted, implementation-facing names in this spec use the Orchard namespace: `Orchard.*` for Elixir modules, `orchard_*` for OTP apps and repositories, `orchard-*` for binaries/daemons, `orchardctl` for the CLI, and `com.orchard.*` for bundle identifiers, launchd labels, and similar platform identifiers. This naming policy does not apply to OpenAI-compatible wire protocol fields, endpoints, event names, or error envelopes, which SHALL remain unchanged for compatibility.
 
 The platform exposes **OpenAI-compatible** inference APIs. Internally, it SHALL treat **`/v1/responses` as the canonical inference abstraction** and implement **`/v1/chat/completions` as a compatibility facade**, because OpenAI currently recommends the Responses API for new projects while keeping Chat Completions supported, and streaming is based on server-sent events. ([OpenAI Developers][1])
@@ -250,6 +254,9 @@ Access SHALL be the Console navigation destination for Workspace management; it 
 Tenant schemas, UUIDs, slugs, API fields, CLI vocabulary, audit identifiers, CSV `organization`, and `/portal/:organization_slug` URLs SHALL remain compatible.
 Existing `/console/tenants` and `/console/tenants/:id` links SHALL remain usable alongside canonical `/console/access` and `/console/access/workspaces/:id` routes.
 Team SHALL remain API Client grouping metadata, without membership, authorization, model grants, or quotas.
+
+The accepted Console target SHALL authenticate a named Console Identity through a revocable Console Session under §10.11.
+Console Identity, non-interactive API Client, and Workspace-scoped Portal User SHALL remain distinct principals even when descriptive metadata matches.
 
 The seeded Tenant `00000000-0000-0000-0000-000000000000` SHALL be the default Workspace.
 Its untouched built-in name `Legacy Single Tenant` SHALL display as `Default workspace`; a customized name SHALL be preserved and the stable default identity indicated separately.
@@ -2288,21 +2295,21 @@ The platform SHALL expose five API surfaces:
    * runtime operations
    * HTTPS JSON for public/operator traffic in `reverse_proxy` and `direct_https` transport modes
    * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
-   * operator/admin auth
+   * enabled API Client with cluster-scoped `operator` or `admin` RoleBinding
 
 3. **Admin API**
 
    * governance/configuration
    * HTTPS JSON for public/admin traffic in `reverse_proxy` and `direct_https` transport modes
    * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
-   * admin/tenant-admin auth
+   * enabled API Client with cluster-scoped `admin` RoleBinding; Tenant-admin machine admission remains deferred
 
 4. **Developer Portal**
 
    * Workspace-scoped browser surface at `/portal/:organization_slug`
    * TLS-only in `reverse_proxy` and `direct_https` transport modes
    * unavailable in degraded `plain_http_localhost` mode
-   * invite-only Portal User email-and-password authentication, not Console Basic Auth and not a Public Inference Bearer
+   * invite-only Portal User email-and-password authentication, separate from Console authentication and Public Inference Bearers
 
 5. **Runtime Endpoint and Worker Interfaces**
 
@@ -2673,6 +2680,9 @@ That heuristic MUST NOT become generation-policy authority, parser authority, ca
 
 Base path: `/ops/v1`
 
+Operator API admission SHALL require an enabled API Client with cluster-scoped `operator` or `admin` authority.
+For migrated operation families, transport admission SHALL be followed by the shared action-time authorization contract in §10.11; it SHALL NOT replace that contract or admit a Console cookie.
+
 #### 7.3.1 Endpoints
 
 ```text
@@ -2849,7 +2859,12 @@ Invalid explanation payloads SHALL NOT be persisted; the controller SHALL drop t
 
 Base path: `/admin/v1`
 
+Admin API admission SHALL require an enabled API Client with cluster-scoped `admin` authority.
+The accepted credential-management target in §10.11 SHALL retain this admission boundary and add shared action-time authorization without introducing Tenant-admin machine admission or accepting Console cookies.
+
 #### 7.4.1 Endpoints
+
+Accepted target credential-management and Console Identity provisioning routes are specified in §10.11; those additions remain pending implementation.
 
 ```text
 GET    /admin/v1/tenants
@@ -3004,6 +3019,7 @@ It SHALL NOT render operator Console chrome, other Workspaces, nodes, or cluster
 A Portal User SHALL be an interactive identity scoped to one Workspace and SHALL authorize only Developer Portal access.
 A Portal User SHALL NOT be treated as an Operator, Service Account, Owner Contact, Tenant Admin, Public Inference principal, or authority for Console, Operator API, or Admin API access.
 Portal sessions SHALL NOT authorize Public Inference, Operator API, Admin API, or Console access.
+Named Console authentication SHALL change attribution for Console-originated Portal administration under §§10.9 and 10.11 without changing Portal identity scope or inference-key independence.
 
 Routes:
 
@@ -4384,9 +4400,14 @@ create table audit_logs (
   id bigserial primary key,
   scope text not null default 'tenant' check (scope in ('tenant', 'cluster')),
   tenant_id uuid references tenants(id),
-  api_key_id uuid references api_keys(id) on delete set null,
+  api_key_id uuid references api_keys(id) on delete restrict, -- accepted target (§10.11), pending migration
   actor_type actor_type not null,
   actor_id text,
+  -- Accepted target schema and typed authentication fields (§10.11), pending migration.
+  payload_schema text,
+  actor_principal_type text,
+  actor_credential_type text,
+  actor_credential_id uuid,
   action text not null,
   target_type text not null,
   target_id text,
@@ -4448,15 +4469,27 @@ Cluster-scoped audit events SHALL set `scope = 'cluster'` and a null `tenant_id`
 Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, Controller Dispatch Ceiling approval or change, dispatch-capacity enforcement cutover, Controller-instance retirement, node decommission, and Active/Standby status-affecting writes SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
 Audit log `actor_type` SHALL identify the provenance class of the action.
 `operator` represents operator and admin product surfaces such as Orchard Console, Orchard CLI, Operator API, and Admin API actions.
-`actor_id` MAY be null for `system` actions and for local operator actions before Orchard has an authenticated first-class operator identity.
+`actor_id` MAY be null for `system` actions, historical anonymous Console records, and bounded local recovery actions that do not authenticate a named human.
+The accepted named-Console target SHALL use the actual Console Identity UUID under §10.11; a local recovery actor SHALL NOT be represented as a named human.
 Audit log `payload` MAY include `surface` to preserve the originating product surface, for example `console` or `cli`, when that context is useful for governance review.
+For the migrated credential family, server-known provenance SHALL be `console` or `admin_api`; a portable CLI's HTTP request SHALL use `admin_api` and SHALL NOT establish trusted CLI provenance through a client claim.
+
+The audit schema above includes accepted target columns and restrictive key-reference retention required by §10.11; it does not claim those migrations are implemented.
+Expand migrations SHALL add nullable schema and typed authentication fields without backfilling historical attribution or rewriting append-only audit rows.
+New discriminated events SHALL meet §10.11's schema-specific requirements; null discriminators SHALL preserve legacy decoding.
+Credential, session, and identity cleanup SHALL retain stable historical actor, authenticating-credential, and target identifiers and MUST NOT null, rewrite, or cascade-delete them.
+The current pre-cutover key foreign-key behavior that permits `ON DELETE SET NULL` SHALL be replaced before cleanup is accepted under the named authorization contract.
 
 ### 8.3 Supplemental governance tables
+
+The `console_identity` RoleBinding subject below is an accepted target extension under §10.11 and remains pending implementation with Console Identity and Session storage.
+The extension SHALL preserve existing machine/inference subjects and SHALL NOT convert their descriptive metadata into human grants.
 
 ```sql
 create table role_bindings (
   id uuid primary key default gen_random_uuid(),
-  principal_type text not null check (principal_type in ('tenant', 'service_account', 'api_key')),
+  -- console_identity is an accepted target subject (§10.11), pending migration.
+  principal_type text not null check (principal_type in ('tenant', 'service_account', 'api_key', 'console_identity')),
   principal_id uuid not null,
   role text not null check (role in ('admin', 'operator', 'tenant_admin', 'inference_client')),
   tenant_scope_id uuid references tenants(id) on delete cascade,
@@ -4852,6 +4885,8 @@ Supported auth types:
 * service accounts
 * node certificates
 * bootstrap tokens for initial node join only
+* named Console password authentication and revocable Console Sessions as the accepted target in §10.11
+* existing Portal password authentication and Portal Sessions, confined to Developer Portal access
 
 ### 10.2 API keys
 
@@ -4923,6 +4958,10 @@ Permissions:
 Bulk-provisioned API Clients SHALL receive tenant-scoped `inference_client` access by default.
 Public inference requests authenticated by service-account-owned API Tokens SHALL require `inference_client` access for the effective Tenant.
 No implicit cross-tenant access.
+
+These role summaries SHALL NOT themselves widen a transport's admission or complete a command-family migration.
+For the accepted credential family, §10.11 defines the authoritative action/resource/scope policy, exact-Tenant privilege classification, own-session access, and action-time revalidation.
+Non-migrated Console families SHALL permit only action-time cluster-admin authority or fail closed when named Console authentication is activated.
 
 ### 10.5 Node trust
 
@@ -5006,6 +5045,7 @@ Secrets SHALL be stored:
 * Portal User passwords stored only as a password hash, never plaintext
 * Portal Invite tokens stored only as a hash, with plaintext shown only in the newly issued URL
 * Developer Portal session tokens stored only as a hash
+* accepted named-Console passwords stored only through a slow password KDF, with Console Session bearers and single-use setup tokens stored only as hashes under §10.11
 
 Portal User password hashing SHALL use a slow password KDF.
 It SHALL NOT reuse API key SHA-256 hashing.
@@ -5046,11 +5086,15 @@ A rejected request or true no-op SHALL NOT create a success audit row or succeed
 Portal User creation SHALL use `portal_user.invited`.
 First invite issuance SHALL use `portal_user.invite_issued`, invite replacement SHALL use `portal_user.invite_reissued`, redemption SHALL use `portal_user.invite_redeemed`, and effective disablement SHALL use `portal_user.disabled`.
 Portal-owned API Key mint and effective revoke SHALL reuse `api_key.created` and `api_key.revoked`.
-Console actions SHALL use `actor_type = 'operator'`, null `actor_id`, and `surface = 'console'`.
+Before named Console cutover, Console actions retain the implemented baseline of `actor_type = 'operator'`, null `actor_id`, and `surface = 'console'`.
+After cutover, authenticated Console actions SHALL use the actual Console Identity UUID as non-null `actor_id` and typed authentication references under §10.11, including Console-originated Portal administration.
+Historical anonymous rows SHALL remain unchanged.
 Redemption and Portal-owned key actions SHALL use `actor_type = 'user'`, the Portal User ID as `actor_id`, and `surface = 'developer_portal'` as provenance only.
 Portal User actions SHALL target the Portal User, while key actions SHALL target the API Key and set the matching `api_key_id`.
 
 Portal lifecycle audit payloads SHALL use closed per-action allowlists.
+Under the accepted target, new Portal lifecycle and self-service rows SHALL select `payload_schema = 'portal_lifecycle.v1'`, while management-family revocation SHALL select `credential_management.v1` under §10.11 even when its target was minted through Portal.
+Schema selection SHALL follow the executing operation, not issuance provenance; the following Portal payloads SHALL remain unchanged for Portal lifecycle operations, including named Console-originated Portal administration.
 `portal_user.invited`, `portal_user.invite_redeemed`, and `portal_user.disabled` SHALL contain exactly `surface`.
 `portal_user.invite_issued` and `portal_user.invite_reissued` SHALL contain exactly `surface` and the committed invite `expires_at`.
 Portal-owned `api_key.created` and `api_key.revoked` SHALL contain only `name`, `token_prefix`, `owner_type`, `surface`, `issuance_surface`, `portal_user_id`, and `expires_at` when present.
@@ -5112,6 +5156,150 @@ Idempotent replay requires a retained `response_payload`; otherwise Orchard SHAL
 Existing `none` and `metadata` rows that contain forbidden content SHALL be purged in place rather than relabeled as `full`.
 When legacy nested event or scheduler values cannot be proven safe by the migration, Orchard SHALL discard the entire nested payload rather than copy key-allowlisted values forward; the migration MAY retain only a syntactically valid cache-affinity HMAC and its closed typed operational fields.
 The purge verification SHALL explicitly enumerate every content-bearing Request column and `request_events.payload`, and schema-drift coverage SHALL fail when a new text, JSON, or binary Request column is not classified.
+
+---
+
+### 10.11 Named Console and shared management authorization target
+
+This section accepts the policy decisions in [ADR 0033](docs/decisions/0033-cross-surface-authorization.md).
+The associated [OpenSpec change](openspec/changes/cross-surface-authorization-contract/proposal.md) retains the detailed operation envelopes, closed schemas, writer ledger, and acceptance scenarios under this contract.
+Acceptance settles the target design only: named authentication, the shared operation implementation, schema migrations, cutover, and the first COMPLETE family remain pending.
+The current shared Basic Auth/anonymous audit/local CLI baseline is temporary and SHALL NOT be presented as satisfying this target.
+
+#### 10.11.1 Principals, sessions, and setup
+
+Principal, credential, session, grant, action, resource, scope, and audit actor SHALL remain distinct concepts.
+A Console Identity SHALL be a named human principal with a stable UUID, unique normalized login name, `pending_setup`, `enabled`, or `disabled` state, a password verifier after setup, and an authentication epoch.
+Typed RoleBindings SHALL admit `console_identity` subjects while preserving existing Tenant, API Client (`service_account`), and API Key subjects.
+Identity names, API Client Owner Contact, Team, and other descriptive metadata SHALL NOT establish authority or merge identities.
+An API Client SHALL remain non-interactive; Portal identities/sessions, Public Inference principals, Node certificates, node-join Bootstrap Tokens, Peer Grants, and host-local authority SHALL retain their separate audiences.
+Console SHALL NOT mint or retain an administrator API Token to act on a named user's behalf.
+
+Local password login SHALL use a slow password KDF, generic rate-limited failures, effective HTTPS under the trusted-proxy contract, CSRF protection for browser writes, and validated LiveView origins.
+Successful login SHALL mint a fresh independent opaque bearer, persist only its hash in a server-side Console Session, and rotate a distinct Secure, HttpOnly, SameSite=Lax cookie.
+A Console Session SHALL bind one identity and its authentication epoch with creation/activity timestamps, expiry, and revocation state.
+Using server time, it SHALL expire when `now >= min(created_at + 12 hours, last_activity_at + 30 minutes)`.
+Only successful authorized client operations in an explicit server-owned activity class, including explicit list, inspect, and revoke preview, MAY advance activity monotonically while authority is still valid.
+Background polling, heartbeats, subscriptions, asynchronous delivery, denied checks, and completion after expiry SHALL NOT revive or extend authority.
+This bookkeeping is the sole preview side-effect exception and SHALL NOT be claimed as evidence of human presence.
+An agent using a browser session has that session's authority; hidden controls, tool allowlists, and agent labels SHALL NOT be treated as authorization restrictions.
+Identity disablement SHALL invalidate all sessions and outstanding setup invitations; session revocation/logout SHALL end only its target session.
+Password reset, identity reenablement, SSO, fine-grained delegated agents, and WebMCP implementation remain deferred.
+
+Identity provisioning SHALL execute through active-Controller-owned operations.
+After cutover in `named_active`, a named cluster-admin Console Session SHALL invoke the same creation, inspection, invitation, and disable operations under its own authority without acquiring an API Token.
+The Admin API carriers below SHALL require a currently enabled cluster-admin API Client before or after cutover and SHALL NOT admit a Console cookie:
+
+```text
+POST /admin/v1/console-identities
+GET  /admin/v1/console-identities/:id
+POST /admin/v1/console-identities/:id/setup-invitations
+POST /admin/v1/console-identities/:id/disable
+```
+
+Creation SHALL explicitly supply `initial_access` containing exactly `role` and `tenant_id`; cluster `admin` or `operator` requires null Tenant, and `tenant_admin` requires one existing exact Tenant UUID.
+The first identity SHALL explicitly request cluster `admin` without an implicit default; scoped/operator provisioning SHALL require an already enabled named cluster admin.
+Creation SHALL atomically persist the pending identity, initial grant, and audit without enabling Console authority until redemption.
+Creation SHALL use a principal-bound UUID idempotency key; a currently authorized identical retry SHALL return its original non-secret result, and changed input SHALL conflict.
+Current inspection SHALL return exactly `{data: {identity_id, state, revision}}` without authentication material.
+Identity revision SHALL begin at `1` and advance once per effective invitation issue/replacement, redemption, disablement, or grant change; replay, failed attempts, passive expiry, login, and activity SHALL NOT advance it.
+Historical idempotency results SHALL NOT replace a fresh authorized inspection before a separately confirmed mutation retry.
+
+Setup issuance SHALL accept only pending identities, require current revision, reason, confirmation, and a UUID idempotency key, and issue a 15-minute single-use token once through a protected no-store response.
+Its stored verifier SHALL bind identity UUID, setup purpose, captured authentication epoch, generation, and expiry; target state/epoch, replacement, consumption, or expiry SHALL terminate it, while issuer revocation after committed issuance SHALL NOT.
+Replacing an unconsumed invitation SHALL require explicit replacement and a fresh idempotency key and SHALL atomically invalidate the prior generation.
+Same-key retries SHALL return only the original non-secret issuance metadata; lost plaintext delivery SHALL require explicit replacement after current inspection.
+HTTPS `GET/POST /console/setup` SHALL be outside legacy Basic Auth and redeem only pending setup; tokens SHALL NOT appear in HTTP paths, query strings, logs, or durable plaintext storage.
+Any optional URL-fragment carrier SHALL be cleared before application scripts and submitted only through the protected redemption POST.
+There SHALL be no public signup, Basic Auth identity conversion, environment-seeded named administrator, or new unauthenticated authority-minting endpoint.
+If no usable admin API credential exists, local `orchardctl cluster init --force-new-admin --yes --output <path>` SHALL first recover machine authority under its existing protected-output contract; named provisioning SHALL then use those same authenticated APIs.
+Recovery SHALL NOT impersonate a human or introduce a local identity-setup/grant bypass.
+
+#### 10.11.2 Action-time authority and the first complete family
+
+Each migrated Console/API/CLI adapter SHALL construct trusted caller context from its own supported authentication mechanism and invoke one Controller-owned action/resource/scope policy and domain operation boundary.
+Unknown actions, missing grants, stale credentials/sessions, disabled principals, epoch mismatch, and scope mismatch SHALL deny by default.
+Admission at an HTTP plug, page, socket, tool, or command SHALL NOT authorize a later operation; every protected read, preview, mutation, and data delivery SHALL resolve current authority.
+The active Controller and authoritative Postgres SHALL be required for family reads, previews, and writes; Standby or unavailable authority SHALL return stable refusal without cached success or local Repo fallback.
+Normal API transport admission SHALL remain API Client-only under §§7.3 and 7.4, even when Console permits narrower named-human authority.
+
+Authority-changing writers and protected operations SHALL share transaction-scoped fences in deterministic typed-principal UUID order, followed by credential/session and resource rows in deterministic typed-ID order.
+Fences SHALL exist independently of grant rows, protect insertion of absent grants, deduplicate actor/target identity, and cover every affected principal in batch mutations before any change.
+After acquiring fences, operations SHALL reread actor validity, principal state, epoch, grants, target ownership, and privilege classification before authorization.
+The writer closure SHALL include Console/API/CLI revoke, Portal self-service and Portal session/logout/epoch paths, Console identity/session/setup lifecycle, API Client disablement, grant changes, bulk provisioning/rotation, and every retained local recovery or direct-database CLI entry point.
+Larger families MAY remain unmigrated, but their authority-changing writes SHALL NOT bypass these fences or the applicable atomic audit contract.
+If a restrictive authority change commits first, the operation SHALL fail from current authority; if the operation commits first, later revocation SHALL NOT undo that effect.
+Protected reads SHALL linearize at admission to the server transmission queue under current authority, not at earlier database fetch; stale fetched data SHALL be revalidated before admission, while already admitted bytes cannot be recalled.
+One bounded acknowledgement of an already committed mutation, including self-revocation, MAY be delivered under that transaction's authorization without becoming a fresh protected read.
+Already admitted Public Inference work SHALL retain its existing lifecycle; credential revocation blocks subsequent authentication and SHALL NOT silently cancel in-flight inference.
+
+The first family SHALL provide metadata list, inspect, revoke preview, and revoke for exactly `api_key`, `api_token`, and `console_session`.
+Cluster admins SHALL manage every target; an exact-Tenant Console `tenant_admin` SHALL manage only that Tenant's wholly inference-only API credentials.
+For tenant-direct keys, classification SHALL examine the union of Tenant-principal and key-specific grants; for API Tokens, it SHALL examine API Client-principal and key-specific grants.
+Every retained grant in that union SHALL be `inference_client` within the same authoritative Tenant for Tenant-admin eligibility; zero grants remain eligible when ownership matches.
+Cluster, foreign-Tenant, or non-inference grants SHALL exclude the target even when the owner is disabled or the credential is expired/revoked.
+Multiple Tenant-admin grants SHALL NOT combine into permission over a privileged or cross-Tenant target.
+`operator` alone SHALL convey no API-credential management permission; every valid Console Identity MAY inspect/revoke its own sessions, and only cluster admins MAY manage another identity's sessions.
+Missing, out-of-scope, or wrong supported-kind targets SHALL yield indistinguishable `not_found` before revision comparison; lists SHALL filter before pagination without leaking excluded counts or records.
+Credential creation/rotation, API Client disablement, general grant editing, and other management families remain separately contracted work; existing Portal self-service SHALL retain its narrower operation while joining shared serialization.
+
+The accepted Admin API family SHALL add `GET /admin/v1/credentials`, `GET /admin/v1/credentials/:kind/:id`, and `POST /admin/v1/credentials/:kind/:id/revoke`.
+The specified but currently unwired key list/revoke routes in §7.4.1 SHALL be thin family delegates; existing Console, scoped/unscoped governance, and CLI aliases SHALL have no standalone management-revoke bypass.
+Portable CLI commands in §11.9 SHALL require explicit HTTPS `--controller` and owner-only regular `--token-file`, verify TLS, and never forward authentication through a redirect or fall back to local Repo authority.
+Lists SHALL use a closed non-secret projection, exact typed filters, actor/scope-bound opaque cursors, default page size `50`, maximum `100`, and no total counts.
+Metadata responses SHALL use `Cache-Control: no-store` and SHALL NOT disclose reusable secrets, verifiers, cookies, raw request metadata, or secret-bearing errors.
+Preview SHALL bind exact target kind/ID and current non-secret revision and return blockers, warnings, consequences, and confirmation requirements without domain mutation or audit success.
+Execution SHALL freshly authorize and require a well-formed `expected_revision`, trimmed reason of 1-512 Unicode characters, explicit confirmation, and acknowledgement when revoking the caller's own credential/session.
+All unrevoked targets, including expired, disabled-owner, and epoch-invalid targets, SHALL require revision equality; changed still-visible targets SHALL return `conflict`.
+An already-revoked authorized target SHALL be a true `already_revoked` no-op that waives only revision equality, never request shape, confirmation, reason, acknowledgement, authentication, or scope.
+Effective revocation SHALL return the committed revision and set revocation once; audit failure SHALL roll back revocation, preserving prior lifecycle state, and lost response SHALL remain an unknown client outcome until authorized inspection or retry resolves it.
+The detailed accepted envelopes, filter vocabulary, revision inputs, and status/error mappings are retained in the [credential-management delta](openspec/changes/cross-surface-authorization-contract/specs/credential-management/spec.md).
+
+#### 10.11.3 Accountable audit and retained references
+
+Authenticated management actions SHALL use `actor_type = 'operator'` and the actual stable principal UUID as `actor_id`.
+Console SHALL set `actor_principal_type = 'console_identity'`, `actor_credential_type = 'console_session'`, and its persisted session UUID; Admin API calls, including portable CLI calls, SHALL use `service_account`, `api_key`, and the authenticating API Key UUID.
+The target `api_key_id` SHALL continue to identify the affected key rather than the actor credential; session targets SHALL leave it null.
+New management API Key and API Token revokes SHALL preserve `api_key.revoked`, `target_type = 'api_key'`, and the existing key target reference while selecting `payload_schema = 'credential_management.v1'`.
+Their closed required payload SHALL be exactly `name`, `token_prefix`, `owner_type`, `surface`, `credential_kind`, `reason`, `previous_revision`, and `revision`, with only `service_account_id`, `expires_at`, `issuance_surface`, and `portal_user_id` additionally present when the corresponding persisted values exist.
+`console_session.revoked` SHALL use that schema with target type `console_session` and exactly `surface`, `credential_kind`, `reason`, `previous_revision`, and `revision` in its payload.
+Session events and privileged API credentials SHALL use cluster audit scope with null Tenant; wholly inference-only API credentials within one Tenant SHALL use that exact Tenant scope under the same conservative grant classification as authorization.
+New Portal-origin lifecycle/self-service rows SHALL preserve §10.9's closed payloads through `portal_lifecycle.v1`, retain the Portal User actor, and SHALL NOT acquire management authority through attribution.
+Historical null discriminators SHALL retain legacy decoding without inferred identities; cleanup SHALL preserve all recorded actor/authentication/target identifiers under §8.
+
+Named identity lifecycle SHALL use `console_identity.v1`, cluster scope, target type `console_identity`, and the actual named/API caller's typed references.
+The actions SHALL be `console_identity.created`, `console_identity.setup_issued`, `console_identity.setup_replaced`, `console_identity.setup_redeemed`, and `console_identity.disabled`.
+Their closed payloads SHALL respectively be `{surface, reason, initial_access}`, `{surface, reason, invitation_generation, expires_at}`, `{surface, reason, invitation_generation, expires_at}`, `{surface}`, and `{surface, reason}`.
+Redemption SHALL attribute the target Console Identity with `console_setup_invitation` and its persisted invitation UUID as authentication reference; local recovery SHALL retain its separate actor contract without inventing a human UUID.
+Session creation/logout SHALL use `console_session.created` and `console_session.logged_out`, schema `console_session_lifecycle.v1`, cluster scope, target type `console_session`, null `api_key_id`, and exactly `{surface}`.
+Session creation SHALL persist its session and audit before publishing the cookie, and effective logout SHALL revoke and audit atomically once.
+Policy transitions SHALL use `console_auth.cutover_activated`, `console_auth.rollback_disabled`, and `console_auth.access_restored`, schema `console_auth_lifecycle.v1`, cluster scope, target type `console_auth_policy`, target ID `cluster`, and exactly `{surface, previous_state, state, required_contract_version}`.
+Every effective mutation and its required audit SHALL commit atomically with explicit action-domain telemetry mappings; successful telemetry SHALL occur only after commit, and no-op, denied, or preview outcomes SHALL NOT fabricate successful mutation audit.
+
+#### 10.11.4 Cutover, rollback, and completion
+
+Named Console authority SHALL use a durable singleton with `pre_cutover`, `named_active`, or `rollback_console_disabled` state and a required Console-auth contract version covering action policy, session validity, every credential/grant writer, authority fences, and audit semantics.
+Activation SHALL require the acting named cluster admin's currently valid, unexpired, unrevoked Console Session, enabled identity, current epoch and grant, plus fresh compatible evidence for every non-retired eligible Controller, including Standby and disconnected instances that may return.
+Historical login or stale Controller evidence SHALL NOT suffice; missing compatibility evidence SHALL block until refreshed or the instance is explicitly retired and isolated.
+Persistent host/service launch gates, ingress fencing, and authority-database access isolation SHALL prevent incompatible writers from running against the live post-cutover store, including retained direct-database CLI writers.
+Ingress gates SHALL cover direct backend HTTP listeners and actual Console LiveView handshake/transport, close existing sockets, and block the affected listener when safe separation is impossible.
+At activation, legacy browser markers SHALL be invalidated and shared Basic Auth or production `auth: :none` SHALL no longer authorize Console; no automatic downgrade or parallel fallback is permitted.
+Every non-migrated protected Console route, event, parameter, asynchronous result, subscription, and data-delivery path SHALL enforce a fresh cluster-admin guard or fail closed before scoped named sessions gain access.
+
+Restricted pre-cutover `GET /console/login`, `POST /console/session`, and `POST /console/logout` SHALL exist outside Basic Auth for preparation only.
+Activation SHALL use `GET/POST /console/auth/activation`, and restoration SHALL use `GET/POST /console/auth/restoration`, as same-origin HTTPS controller/form operations without general LiveView transport.
+POST SHALL use the acting named cluster-admin session with CSRF, exact `dry_run`, `expected_state`, `expected_contract_version`, `confirmed`, and `typed_confirmation` fields, and the literal `ACTIVATE NAMED CONSOLE` or `RESTORE NAMED CONSOLE` for execution.
+API Bearers, supplied session UUIDs, and historical login evidence SHALL NOT substitute for the acting current Console Session.
+Before any pre-cutover binary starts, rollback SHALL close Console HTTP/LiveView, terminate sockets, persist Console-disabled launch configuration, and isolate incompatible API/CLI/Portal/database writers from the live authority store.
+An older binary cannot enforce a new database marker; Console disablement alone is insufficient, and a downgrade profile without verifiable writer isolation SHALL be unsupported.
+After compatible software and host/service/database/ingress proof are restored, only restricted setup, named login/logout, and restoration preview/confirmation MAY reopen, permitting fresh setup/login when no valid session survives.
+Provisioning in that recovery state SHALL still require authenticated Admin API authority, and local recovery SHALL only recover the machine credential.
+Restoration SHALL revalidate the acting named admin's current session, epoch, and grant and atomically commit policy state plus `console_auth.access_restored` before general access opens.
+Failed verification, audit, or enablement SHALL keep general Console and LiveView closed across restart/failover; software rollback SHALL NOT erase durable cutover state or retain the COMPLETE claim in an isolated historical environment.
+
+Only reviewed implementation evidence for admitted-authority parity across Console/API/portable CLI, failure and concurrency behavior, coverage, live transport fencing, compatible writers, and closure of every alternate family path SHALL permit the credential family to be marked COMPLETE.
+OpenSpec structural validation and acceptance of this contract SHALL NOT satisfy that gate.
+Other command families and Tenant-admin machine/API/CLI admission SHALL remain explicitly deferred.
 
 ---
 
@@ -5304,6 +5492,10 @@ A narrow locally authenticated Controller bootstrap or recovery channel MAY rema
 
 The existing local Controller-runtime CLI authority below remains the implemented migration baseline.
 It SHALL be replaced command family by command family only through separately reviewed security-led changes with explicit authentication, authorization, audit, leader, idempotency, confirmation, secret-output, and degraded-Controller contracts.
+The accepted first family in §10.11 covers credential list, inspect, revoke preview, and revoke, but remains unimplemented and MUST NOT be marked COMPLETE until its implementation and closure gates pass.
+That family SHALL use portable `orchardctl credentials list`, `credentials inspect <kind> <id>`, and `credentials revoke <kind> <id>` commands with an explicit HTTPS Controller and protected API Token file.
+The existing `orchardctl api-keys revoke` alias SHALL delegate through that same authenticated family, resolving persisted credential kind on the server without a local Repo fallback.
+Named Console setup from the CLI or recovery path SHALL use authenticated Admin APIs after obtaining ordinary administrator API authority; existing `cluster init --force-new-admin --yes --output <path>` recovery SHALL remain bounded to machine-credential recovery and SHALL NOT become a local identity-provisioning bypass.
 
 Required commands:
 
@@ -5516,6 +5708,10 @@ Rolling upgrades SHALL NOT silently downgrade an explicit reasoning mode, change
 
 All DB migrations SHALL follow **expand / migrate / contract**.
 
+The accepted named-authorization migration SHALL additionally satisfy §10.11's whole-authority-writer compatibility and cutover contract.
+Additive Console Identity/Session/RoleBinding and typed audit storage SHALL precede activation; acceptance of the design SHALL NOT authorize production cutover or declare its migrations complete.
+Every retained API, CLI, Portal, session, grant, batch, and local recovery writer SHALL participate in the common authority fences before activation, even when its larger command family remains unmigrated.
+
 Rules:
 
 * additive columns/tables first
@@ -5536,6 +5732,10 @@ The contract phase SHALL reject any otherwise eligible admitted production Node 
 Migration ownership SHALL be protected by advisory lock.
 
 ### 13.3 Controller upgrade
+
+For named authorization, the generic upgrade sequences below SHALL be constrained by §10.11's durable cutover/rollback states, compatible-writer evidence, host/service launch gates, ingress fencing, and isolation from the live post-cutover authority database.
+Console disablement alone SHALL NOT make an incompatible API, CLI, Portal, or direct-database writer safe to run.
+Downgrades without verifiable database isolation SHALL be unsupported, and an isolated historical environment SHALL NOT retain the COMPLETE credential-family claim.
 
 **Single-controller deployment**
 
