@@ -3,12 +3,14 @@
 ### Requirement: Node Activation Authority Is Separate From Distribution Approval
 
 Product release governance SHALL define a Release Activation Attestation before the dedicated Node distribution can implement install, enrollment, update, or serving startup.
-The attestation SHALL bind contract version and activation purpose, Product Version, release channel, Candidate Manifest digest, exact Node artifact identity, eligible verified candidate and distribution state, bundle identifier, platform tuple, monotonically increasing artifact-lineage sequence, release-registry generation and signing key identity, issue time, not-before time, expiry time, withdrawal or supersession relationship, maximum clock uncertainty, and offline verification policy.
+The attestation SHALL bind contract version and activation purpose, Product Version, release channel, Candidate Manifest digest, exact Node artifact identity, eligible verified candidate and distribution state, bundle identifier, platform tuple, monotonically increasing artifact-lineage sequence, release-registry generation and signing key identity, issue time, not-before time, expiry time, withdrawal, supersession, or replacement relationship, maximum clock uncertainty, and offline verification policy.
 Distribution approval, publication approval, GitHub state, Amore state, a checksum, or a Candidate Manifest alone SHALL NOT authorize activation.
 Known withdrawal SHALL take precedence over an older unexpired attestation.
 Replay below the locally recorded highest accepted lineage sequence SHALL fail closed.
 Release trust SHALL bootstrap from owner-approved root key identifiers and fingerprints plus the expected Apple Team identity and SHALL NOT accept a root introduced only by the candidate it verifies.
 Registry rotation SHALL require authorization by a previously trusted unrevoked root, a monotonic generation, explicit key identities and effective times, and rollback protection.
+Release governance SHALL own renewal issuance and authenticated trusted-time/state recovery evidence; the Node verifier SHALL consume that evidence through an authorized recovery path that does not require production BEAM or a currently valid activation attestation.
+Recovery SHALL preserve existing release trust, withdrawal precedence, and lineage replay protection, and SHALL NOT reset trust or treat an uncertain local clock as authority.
 Exact attestation lifetime, maximum clock uncertainty, root identities, key custody, rotation ceremony, and recovery SHALL be accepted and implemented before candidate qualification.
 
 #### Scenario: Published candidate has no activation attestation

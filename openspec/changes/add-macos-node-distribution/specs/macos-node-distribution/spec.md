@@ -141,10 +141,7 @@ The record and final Candidate Manifest SHALL remain detached from the sealed DM
 Installed verification SHALL reproduce the authenticated app and payload identity.
 
 Install, update, enrollment, and serving startup SHALL additionally require a governance-owned Release Activation Attestation accepted before implementation.
-The attestation SHALL bind contract version and purpose, Product Version, channel, Candidate Manifest and artifact identity, eligible verified candidate and distribution state, bundle identifier, platform tuple, monotonically increasing artifact-lineage sequence, release-registry generation and key identity, issue time, not-before time, expiry time, withdrawal or supersession relationship, maximum clock uncertainty, and offline verification policy.
-A publication or distribution approval SHALL NOT implicitly serve as activation authority.
-Known withdrawal SHALL take precedence over a later-expiring older authorization.
-Replay below the locally recorded highest accepted lineage sequence SHALL fail closed.
+The attestation fields, release eligibility, withdrawal precedence, and lineage replay protection SHALL follow [Node Activation Authority Is Separate From Distribution Approval](../product-release-governance/spec.md#requirement-node-activation-authority-is-separate-from-distribution-approval).
 Unknown or rolled-back time, excessive clock uncertainty, stale or unavailable authority, incompatibility, or unverifiable installed bytes SHALL block the new transition.
 Connected refresh SHALL verify the same authority and SHALL NOT replace bytes automatically.
 
@@ -169,16 +166,8 @@ Automatic recall, forced shutdown, and unattended replacement require a separate
 
 ### Requirement: Node App Uses Governed Apple Build Allocation
 
-The release-governance owner SHALL approve an Apple build-number allocator for `com.orchard.node` before qualification.
-The proposed allocator SHALL use one global monotonic sequence in the accepted `1..9999` range across `com.orchard.app` and `com.orchard.node`.
-It SHALL consume one distinct allocation per governed app artifact before app construction.
-The allocation idempotency key SHALL be `{build_kind, candidate_or_internal_build_identity, full_source_commit, product_version, channel, bundle_identifier, staged_payload_identity}`.
-For a tagged Candidate the construction identity SHALL be its signed tag, while an Internal Build SHALL use a unique governance-issued construction identity.
-The Candidate Manifest SHALL record each app artifact's bundle identifier, `CFBundleShortVersionString`, and allocated `CFBundleVersion`.
-An unchanged pre-seal retry with the same allocation idempotency key SHALL reuse its allocation, while a changed key SHALL consume a new number and an abandoned allocation SHALL NOT be recycled.
-The final manifest SHALL bind the allocation record to the final sealed artifact digest after construction and signing.
-A changed Product Version, channel, staged payload identity, signed tag, Internal Build construction identity, or other pre-seal key field SHALL receive a new allocation.
-Historical maxima SHALL be verified before the first Node allocation.
+The dedicated Node app SHALL consume the allocator and artifact binding defined by [Apple Build Allocation Covers Every Governed App Identity](../product-release-governance/spec.md#requirement-apple-build-allocation-covers-every-governed-app-identity).
+The release-governance owner SHALL approve and seed that allocator before Node qualification.
 
 #### Scenario: Candidate contains both app identities
 
@@ -204,6 +193,18 @@ Status SHALL identify the missing or stale authorization without downloading or 
 - **WHEN** a stopped Node has no valid replacement attestation at restart
 - **THEN** serving startup remains blocked
 - **AND** status requests refreshed authorization without modifying installed bytes
+
+#### Scenario: Stopped Node recovers activation authority
+
+- **WHEN** an authorized operator supplies valid governance renewal and trusted-time/state recovery evidence through connected refresh or offline import after expiry, clock rollback, or unavailable trusted state
+- **THEN** the Node verifies it under existing release trust, withdrawal precedence, and replay protection without requiring production BEAM or current activation authority
+- **AND** it atomically restores verified authorization state without replacing installed bytes or Node identity
+- **AND** serving remains stopped until the ordinary startup gates pass
+
+#### Scenario: Recovery evidence cannot establish current authority
+
+- **WHEN** evidence is forged, replayed, withdrawn, interrupted, or cannot establish trusted time and state
+- **THEN** the Node remains stopped with a specific recovery blocker without resetting trust or bypassing freshness
 
 ### Requirement: Admission Preserves Capacity Policy And Initial Grant Atomicity
 
@@ -295,7 +296,7 @@ When neither receipt nor retained ownership evidence proves custody, repair SHAL
 
 Rollback MAY restore prior verified Node-owned bytes and records, but restart SHALL revalidate current activation, compatibility, identity, admission, Peer Grant, transport, and runtime readiness.
 Withdrawn or expired rollback bytes SHALL remain stopped.
-Default removal SHALL verify process exit, remove Node-owned executable state, and retain configuration, identity, models, bundles, logs, support material, and ownership evidence.
+Default removal SHALL verify process exit, remove Node-owned executable state, and retain configuration, identity, models, bundles, logs, retained operator-owned contents under the `support/` namespace, and ownership evidence.
 Remote decommission SHALL remain separate.
 An unreachable Controller SHALL produce `remote revocation pending`, not a decommission or destructive-purge claim.
 

@@ -45,8 +45,8 @@ Those contracts and implementation must land before Node activation or qualifica
 A profile-aware guidance amendment must land before the dedicated artifact is offered through Add Node.
 - CLI dependency: PR #333 removed the reverse Controller-to-CLI release dependency.
 It did not remove the Node CLI's transitive Controller closure and is not Stage A evidence.
-- Enrollment recovery dependency: issue #371 remains open and `needs-triage` for audited same-name recovery after a lost or failed enrollment; draft PR #384 proposes a contract but is not merged or current authority on this baseline.
-This proposal preserves current no-redisplay and identity-bound resume behavior and must not promise same-name replacement until that issue receives an accepted contract and implementation.
+- Enrollment recovery dependency: PR #384 merged the audited recovery contract for issue #371, but did not implement same-name recovery.
+This proposal preserves current no-redisplay and identity-bound resume behavior and must not promise same-name replacement until the accepted recovery contract is implemented.
 - Admission dependency: current Controller dispatch-capacity authority is part of Node admission and must remain in the same transaction as admission, decision, audit, and initial Peer Grant metadata.
 - Transport dependency: the gRPC deprecation contract removes only first-party inference compatibility in staged release epochs.
 Certificate lifecycle, enrollment, Peer Grant delivery and recovery, diagnostics, and Worker Runtime gRPC remain until their own accepted replacements exist.

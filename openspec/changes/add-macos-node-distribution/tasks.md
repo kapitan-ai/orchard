@@ -1,7 +1,7 @@
 ## 0. Proposal Acceptance Gates
 
 - [ ] 0.1 Obtain explicit Repository Owner acceptance for all nine decisions in `design.md`: profile and artifact identifiers, Apple build-number authority, Release Activation Attestation, release-trust bootstrap and rotation, Console and #371 recovery behavior, repair ownership evidence, production BEAM integration ownership, the first qualification matrix, and privileged-operation authorization.
-- [ ] 0.2 Record exact dependency state at implementation start for PR #105 release governance, PR #333 CLI decoupling, PR #359 Console enrollment, issue #371 and draft PR #384 recovery, Controller dispatch-capacity authority, PR #351 gRPC deprecation, and PR #358 managed composition.
+- [ ] 0.2 Record exact dependency state at implementation start for PR #105 release governance, PR #333 CLI decoupling, PR #359 Console enrollment, issue #371 and merged contract-only PR #384 recovery, Controller dispatch-capacity authority, PR #351 gRPC deprecation, and PR #358 managed composition.
 - [ ] 0.3 Obtain collaborator acceptance of this proposal, design, six capability deltas, dependency order, staged acceptance, and pull-request boundaries without marking implementation complete.
 
 ## 1. Implementation PR 1 - Apex And Governance Reconciliation
@@ -11,7 +11,7 @@ It is contract-only and changes no runtime behavior.
 
 - [ ] 1.1 Amend only the required `SPEC.md` sections and affected main OpenSpec specifications to reserve the dedicated distribution profile, permit `Orchard Node.app`, preserve `Orchard.app`, define the Node-local authority boundary, preserve atomic admission capacity policy, and define the manual stopped lifecycle and repair entry.
 - [ ] 1.2 Add or update one durable decision record that fixes the accepted identifiers, clean-host ownership, release trust, activation authorization, repair evidence, and explicit exclusion of the managed source-baseline transition.
-- [ ] 1.3 Extend product release governance with the accepted Release Activation Attestation, lineage sequence, eligible states, withdrawal and offline clock rules, trusted-root bootstrap and rotation, and the approved `com.orchard.node` Apple build-number allocator using a pre-construction immutable key and post-construction sealed-digest binding.
+- [ ] 1.3 Extend product release governance with the accepted Release Activation Attestation, lineage sequence, eligible states, withdrawal and offline clock rules, trusted-root bootstrap and rotation, renewal issuance and trusted-time/state recovery policy with an explicit governance implementation owner, and the approved `com.orchard.node` Apple build-number allocator using a pre-construction immutable key and post-construction sealed-digest binding.
 - [ ] 1.4 Reconcile profile-aware Add Node guidance and issue #371 boundaries so existing profiles retain `orchardctl`, the dedicated profile receives expected post-install join guidance without a Controller-side installed-state claim, and no same-name replacement is promised.
 - [ ] 1.5 Strictly validate the focused change and complete OpenSpec tree, review generated main specifications for placeholder prose, and obtain exact-diff architecture and security review before merging the contract.
 
@@ -39,14 +39,16 @@ It is contract-only and changes no runtime behavior.
 
 ## 5. Implementation PR 5 - Release Trust, Activation Verification, And Clean Install
 
-This pull request is blocked until Implementation PR 1 and the required release-governance implementation are merged.
+This pull request is blocked until Implementation PR 1 and the required release-governance implementation, including renewal issuance and trusted-time/state recovery evidence, are merged.
 
 - [ ] 5.1 Implement the app-specific release-trust store and fixed trust-install operation using the accepted compiled root fingerprints, Apple Team identity, monotonic registry generations, already-trusted rotation, revocation, and rollback protection.
 - [ ] 5.2 Implement Candidate Manifest projection and installed app and payload reproduction without changing the sealed DMG or treating a filename, receipt, checksum, candidate record, or publication approval as sufficient authority.
 - [ ] 5.3 Implement Release Activation Attestation verification for eligible states, artifact lineage sequence, withdrawal precedence, compatibility, not-before and expiry, maximum clock uncertainty, offline snapshots, and connected refresh without automatic replacement.
 - [ ] 5.4 First enable real-system clean installation behind successful release and activation verification, using serialized lifecycle custody, a durable incomplete-operation marker, atomic receipt and ownership updates, verified rollback, and fail-stopped recovery from interruption.
 - [ ] 5.5 In the same pull request, cover self-authorizing candidates, unknown roots, signer changes, stale and replayed sequences, withdrawn candidates, expired or future attestations, rolled-back clocks, incompatible Controllers, altered installed bytes, absent network egress, concurrent install, interruption at every mutation boundary, and rollback uncertainty.
-- [ ] 5.6 Run governance, packaging, Swift, signing-contract, DMG, failure-path, coverage, and strict OpenSpec validation without using release credentials or enabling production installation against an unverified engineering artifact.
+- [ ] 5.6 Implement the Node-side activation recovery operation for explicit connected refresh and offline import without production BEAM or already-valid activation authority, using the accepted governance renewal and trusted-time/state evidence, existing release trust, helper authorization, withdrawal precedence, and replay protection.
+- [ ] 5.7 In the same pull request, prove that recovery after expiry, clock rollback, and unavailable trusted state preserves installed bytes and Node identity, atomically restores verified authorization state, and reruns ordinary startup gates; reject forged, replayed, withdrawn, uncertain, or interrupted recovery without trust reset or automatic serving restoration.
+- [ ] 5.8 Run governance, packaging, Swift, signing-contract, DMG, failure-path, coverage, and strict OpenSpec validation without using release credentials or enabling production installation against an unverified engineering artifact.
 
 ## 6. Implementation PR 6 - Profile-Aware Acquisition Guidance
 
@@ -104,16 +106,18 @@ This pull request is blocked until Implementation PR 1 and the required release-
 ## 13. Implementation PR 13 - Repair, Removal, And Decommission Reporting
 
 - [ ] 13.1 Implement the distinct repair entry from an intact active receipt or matching retained ownership record, with diagnostic-first behavior, restart suppression, serialized local custody, exact Node Agent and Worker Runtime exit proof before runtime-affecting mutation, and a non-mutating terminal blocker when custody or quiescence cannot be proved.
-- [ ] 13.2 Implement default local removal that retains configuration, identity, models, bundles, logs, support material, and ownership evidence while reporting remote decommission or revocation as a separate pending Controller action when unreachable.
+- [ ] 13.2 Implement default local removal that retains configuration, identity, models, bundles, logs, retained operator-owned contents under the `support/` namespace, and ownership evidence while reporting remote decommission or revocation as a separate pending Controller action when unreachable.
 - [ ] 13.3 Require Controller maintenance exclusion when reachable; when unreachable, permit only verified local repair with launchd disabled and `remote coordination pending`, with no restart or eligibility restoration before Controller state is reconciled.
 - [ ] 13.4 In the same pull request, cover missing and corrupt receipts, retained-identity-only state, running processes, restart races, interrupted repair, partial TLS, wrong service identity, symlink and permission attacks, Controller unavailability, repeat removal, and no destructive purge or serving restoration.
 - [ ] 13.5 Run the applicable Swift, lifecycle, app, signing-contract, DMG, Elixir, native, coverage, and strict OpenSpec gates.
 
 ## 14. Implementation PR 14 - Exact Stage C Qualification
 
+PR 5 activation recovery evidence is a prerequisite for offline-expiry and restart qualification.
+
 - [ ] 14.1 Freeze and record the accepted exact Controller, Node, macOS, hardware, provider, interpreter, model, tokenizer, feature, release-authorization, and network tuple before execution.
 - [ ] 14.2 Under separate credential and candidate-activation authorization, qualify the exact signed, notarized, stapled, activation-authorized candidate for real Apple Silicon model load, inference, streaming, cancellation, failure normalization, capacity, restart, reconnect, certificate renewal, grant rotation and revocation, compatibility rejection, and no fallback.
-- [ ] 14.3 Qualify offline acquisition and activation, authorization expiry at every new-activation boundary, manual update, rollback, interrupted replacement, repair, local removal, and remote-decommission reporting.
+- [ ] 14.3 Qualify offline acquisition and activation, authorization expiry at every new-activation boundary, successful renewal and trusted-time/state recovery after expiry or clock rollback, refusal of invalid recovery, manual update, rollback, interrupted replacement, repair, local removal, and remote-decommission reporting.
 - [ ] 14.4 Record failures and residual matrix exclusions without widening the support claim, substituting experimental Peer Grant or shared-cookie smoke, or treating Stage B as completion.
 - [ ] 14.5 Re-run the exact full repository and platform workflows required by `AGENTS.md`, strict validation for this change, strict validation for the complete OpenSpec tree, and an independent exact-head RepoPrompt architecture, security, and release-governance review.
 
