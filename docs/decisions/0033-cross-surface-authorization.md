@@ -51,16 +51,11 @@ Grant changes take effect through action-time policy resolution without relying 
 Only successful authorized client operations in an explicit activity class refresh idle time, including explicit previews; background traffic and denied checks never do.
 Session activity bookkeeping is the sole preview side-effect exception, cannot revive expired authority, and is not proof of human presence.
 
-Prepare a named cluster administrator through an explicit operator-controlled setup before Console cutover.
-A currently authorized cluster-admin API Client creates a `pending_setup` identity through `POST /admin/v1/console-identities`, explicitly requesting the initial cluster-admin grant without an implicit default.
-The identity, initial grant, and audit commit together; no Console authority exists until redemption activates the identity.
-`POST /admin/v1/console-identities/:id/setup-invitations` issues a 15-minute single-use invitation, and HTTPS `POST /console/setup` redeems it outside legacy Basic Auth admission.
-The token never appears in an HTTP request path/query or logs, and retries never recover plaintext.
-Each verifier binds the target identity UUID, setup purpose, captured authentication epoch, generation, and expiry; revoking its issuer after committed issuance does not cancel the target's invitation.
-A deployment without an available admin credential first uses existing local `orchardctl cluster init --force-new-admin --yes --output <path>`, then calls those same authenticated APIs.
-There is no new local identity setup/recovery bypass and no unauthenticated first-authority minting endpoint.
-Subsequent provisioning accepts one explicit initial cluster admin/operator or exact-Tenant tenant-admin assignment; general grant editing remains deferred.
-Identity disablement is a bounded cluster-admin prerequisite, while setup invitations cannot reset or enable an already activated or disabled identity.
+Prepare a named cluster administrator through explicit operator-controlled pending-identity setup before Console cutover, with no implicit grant or authority before redemption and login.
+[SPEC §10.11](../../SPEC.md#1011-named-console-and-shared-management-authorization-target) fixes the identity, initial-grant, session, and recovery decisions; [Named setup has authenticated carriers and bounded recovery](../../openspec/changes/cross-surface-authorization-contract/specs/management-authorization/spec.md#requirement-named-setup-has-authenticated-carriers-and-bounded-recovery) owns their exact carriers, invitation bindings/lifetime, revisions, idempotency, and one-time delivery sequence.
+Initial setup uses an authorized cluster-admin API Client; in `named_active` after cutover, named Console cluster admins invoke the same operations under their own sessions without acquiring machine credentials.
+If no usable administrator credential remains, existing bounded local recovery first restores machine authority, followed by ordinary authenticated named provisioning.
+There is no local identity-provisioning bypass or unauthenticated first-authority minting endpoint, and setup cannot reset or reenable an activated or disabled identity.
 
 Cutover is cluster-wide and refuses activation without a currently valid, unexpired, unrevoked Console Session for an enabled named cluster administrator and compatible evidence from every non-retired eligible Controller.
 Activation revalidates that identity's current enabled state and cluster-admin grant rather than treating a historical login as current authority.
@@ -75,7 +70,7 @@ Disabling Console alone does not isolate old API, CLI, Portal, or database write
 An unenforceable isolation/rollback profile is unsupported, and an isolated older environment does not retain the COMPLETE family claim.
 After compatible software and host/service/database/ingress isolation are verified, rollback may expose only restricted HTTPS setup redemption, named login/logout, and restoration preview/confirmation, with no legacy Console or general LiveView access.
 This permits fresh setup/login when no valid session survives; provisioning still uses authenticated Admin API authority, and local recovery only mints the machine credential.
-Activation and restoration use same-origin named-session operations at `/console/auth/activation` and `/console/auth/restoration`, outside Basic Auth and with CSRF, explicit state/version preconditions, and typed confirmation.
+[Policy preparation has explicit named-session carriers](../../openspec/changes/cross-surface-authorization-contract/specs/management-authorization/spec.md#requirement-policy-preparation-has-explicit-named-session-carriers) owns the activation/restoration routes, requests, and results under SPEC's same-origin, current-session, CSRF, preview, state/version, and typed-confirmation requirements.
 Restoration requires the acting named cluster admin's current valid session, epoch, and grant plus compatible deployment proof; `console_auth.access_restored` commits with policy state before general access opens, and failure keeps it closed.
 Local recovery remains bounded to minting additional machine recovery authority, followed by ordinary authenticated named identity provisioning.
 It cannot impersonate a human or become a general direct-Repo channel.
