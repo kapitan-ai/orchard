@@ -27,12 +27,17 @@ This requirement traces to `SPEC.md` §3.6, §3.7.1, §5.3, §5.4, §5.8, §5.9,
 - **AND** Orchard starts no third attempt
 
 #### Scenario: Attempt 2 negotiated acceptance proof fails
-- **WHEN** a Controller-detected negotiated acceptance-proof failure terminalizes attempt 2 before deadline terminalization is proven
+- **WHEN** a Controller-detected negotiated acceptance-proof failure terminalizes attempt 2 as `failed` with no committed output before deadline terminalization is proven
 - **THEN** its terminal evidence records `not_retryable`
 - **AND** Orchard starts no third attempt
 
 #### Scenario: Deadline precedes attempt 2 negotiated acceptance proof failure
-- **WHEN** deadline terminalization is proven before a Controller-detected negotiated acceptance-proof failure wins the terminal race
+- **WHEN** the Request's absolute deadline is already exhausted at attempt 2's retry boundary and a Controller-detected negotiated acceptance-proof failure would otherwise apply
+- **THEN** its terminal evidence records `retry_exhausted`
+- **AND** Orchard starts no third attempt
+
+#### Scenario: Attempt 2 commits output before its negotiated acceptance proof failure evidence
+- **WHEN** attempt 2 committed output and its terminal evidence would otherwise carry a Controller-detected negotiated acceptance-proof failure
 - **THEN** its terminal evidence records `retry_exhausted`
 - **AND** Orchard starts no third attempt
 

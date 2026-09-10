@@ -70,13 +70,31 @@ defmodule Orchard.Requests.InferenceAttemptFailureTest do
   end
 
   test "SPEC.md §7.2.7 preserves runtime-incompatible pre-acceptance evidence" do
-    assert InferenceAttemptFailure.normalize(%{
-             category: :pre_acceptance,
-             code: :runtime_incompatible
-           }) == %{
+    evidence =
+      InferenceAttemptFailure.normalize(%{
+        category: :pre_acceptance,
+        code: :runtime_incompatible
+      })
+
+    assert evidence == %{
              "failure_class" => "pre_acceptance_unavailable",
              "failure_code" => "runtime_incompatible"
            }
+
+    assert InferenceAttemptFailure.acceptance_proof_failure?(
+             evidence["failure_class"],
+             evidence["failure_code"]
+           )
+  end
+
+  test "SPEC.md §7.5.3a closes the shared acceptance-proof evidence pair" do
+    for {failure_class, failure_code} <- [
+          {"pre_acceptance_unavailable", "runtime_unavailable"},
+          {"runtime_failure", "runtime_incompatible"},
+          {"pre_acceptance_unavailable", "internal_error"}
+        ] do
+      refute InferenceAttemptFailure.acceptance_proof_failure?(failure_class, failure_code)
+    end
   end
 
   test "unknown source failures fail closed" do

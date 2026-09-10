@@ -28,6 +28,8 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   @model_load_codes ~w(
     load_timeout acquisition_failed runtime_unavailable resource_exhausted model_invalid internal_error
   )
+  @acceptance_proof_failure_class "pre_acceptance_unavailable"
+  @acceptance_proof_failure_code "runtime_incompatible"
   @type evidence :: %{required(String.t()) => String.t()}
 
   @spec stable_error_codes() :: [String.t()]
@@ -38,6 +40,15 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   @spec model_load_codes() :: [String.t()]
   def model_load_codes, do: @model_load_codes
+
+  @spec acceptance_proof_failure?(String.t(), String.t()) :: boolean()
+  def acceptance_proof_failure?(
+        @acceptance_proof_failure_class,
+        @acceptance_proof_failure_code
+      ),
+      do: true
+
+  def acceptance_proof_failure?(_failure_class, _failure_code), do: false
 
   @spec normalize(map()) :: evidence()
   def normalize(source) when is_map(source) do

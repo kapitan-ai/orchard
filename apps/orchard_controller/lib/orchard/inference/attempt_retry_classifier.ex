@@ -4,6 +4,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   """
 
   alias Orchard.Inference.ModelLoadFailure
+  alias Orchard.Requests.InferenceAttemptFailure
 
   @type model_load_category :: Orchard.Inference.ModelLoadFailure.category() | nil
 
@@ -107,14 +108,11 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   def pre_schedule(%Boundary{attempt: 2, deadline_status: :exhausted}),
     do: {:declined, :retry_exhausted}
 
-  def pre_schedule(%Boundary{
-        attempt: 2,
-        failure_class: "pre_acceptance_unavailable",
-        failure_code: "runtime_incompatible"
-      }),
-      do: {:declined, :not_retryable}
+  def pre_schedule(%Boundary{attempt: 2, output_committed: true}),
+    do: {:declined, :retry_exhausted}
 
-  def pre_schedule(%Boundary{attempt: 2}), do: {:declined, :retry_exhausted}
+  def pre_schedule(%Boundary{attempt: 2} = boundary),
+    do: {:declined, attempt_two_decision(boundary)}
 
   def pre_schedule(%Boundary{attempt: 1} = boundary),
     do: Enum.find_value(@attempt_one_gates, :eligible_for_alternate, &gate_decision(&1, boundary))
@@ -243,6 +241,12 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
   defp taxonomy_verdict(%Boundary{} = boundary) do
     if retry_eligible?(boundary), do: nil, else: {:declined, :not_retryable}
+  end
+
+  defp attempt_two_decision(%Boundary{failure_class: failure_class, failure_code: failure_code}) do
+    if InferenceAttemptFailure.acceptance_proof_failure?(failure_class, failure_code),
+      do: :not_retryable,
+      else: :retry_exhausted
   end
 
   defp alternate_decision(:different_node), do: :retried

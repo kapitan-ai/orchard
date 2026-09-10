@@ -275,22 +275,29 @@ defmodule Orchard.Requests.InferenceAttemptResult do
        when decision in @attempt_one_decisions,
        do: :ok
 
-  defp validate_retry_decision(
-         2,
-         %{
-           "retry_decision" => "not_retryable",
-           "failure_class" => "pre_acceptance_unavailable",
-           "failure_code" => "runtime_incompatible"
-         }
-       ),
-       do: :ok
-
   defp validate_retry_decision(2, %{"retry_decision" => decision})
        when decision in @attempt_two_decisions,
        do: :ok
 
+  defp validate_retry_decision(2, result) do
+    if acceptance_proof_exception?(result),
+      do: :ok,
+      else: {:error, "retry_decision is invalid for attempt 2"}
+  end
+
   defp validate_retry_decision(attempt, _result),
     do: {:error, "retry_decision is invalid for attempt #{attempt}"}
+
+  defp acceptance_proof_exception?(%{
+         "retry_decision" => "not_retryable",
+         "attempt_outcome" => "failed",
+         "output_committed" => false,
+         "failure_class" => failure_class,
+         "failure_code" => failure_code
+       }),
+       do: InferenceAttemptFailure.acceptance_proof_failure?(failure_class, failure_code)
+
+  defp acceptance_proof_exception?(_result), do: false
 
   defp validate_outcome_failure_consistency(%{
          "attempt_outcome" => "cancelled",

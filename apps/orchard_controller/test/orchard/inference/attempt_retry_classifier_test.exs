@@ -237,6 +237,9 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
              Map.merge(acceptance_proof_failure, %{attempt: 2, deadline_status: :exhausted})
            ) == {:declined, :retry_exhausted}
 
+    assert classify(Map.merge(acceptance_proof_failure, %{attempt: 2, output_committed: true})) ==
+             {:declined, :retry_exhausted}
+
     assert classify(%{
              attempt: 2,
              failure_class: "runtime_failure",
