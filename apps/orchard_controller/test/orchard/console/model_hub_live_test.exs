@@ -1924,13 +1924,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
       _results = load_initial_results_and_detail(view)
       enter_catalog(view)
 
-      render_submit(view, "repair_model", %{
-        "model_hub_repair" => %{"catalog_version" => "../escape"}
-      })
+      for version <- ["../escape", "v1/tool-admission"] do
+        render_submit(view, "repair_model", %{
+          "model_hub_repair" => %{"catalog_version" => version}
+        })
 
-      assert render(view) =~ "may use only"
-
-      refute_receive {:stub_download_ref, _, _, _}, 50
+        assert render(view) =~ "may use only"
+        refute_receive {:stub_download_ref, _, _, _}, 50
+      end
     end
 
     test "clicking download starts the seam and shows starting state", %{conn: conn} do

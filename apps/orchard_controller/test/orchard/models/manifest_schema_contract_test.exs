@@ -276,7 +276,7 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
     assert message =~ "unknown manifest keys"
   end
 
-  test "SPEC 6.4 parser preserves revision-bound declared capability evidence from its sidecar" do
+  test "SPEC 6.4 a structurally valid declared sidecar cannot replace missing artifacts" do
     bundle_path =
       Path.join(System.tmp_dir!(), "manifest-schema-#{System.unique_integer([:positive])}")
 
@@ -296,10 +296,8 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
       Jason.encode!(tool_capability_evidence("declared"))
     )
 
-    assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_from_bundle(bundle_path)
-    assert manifest.capabilities == ["chat", "tool_calling"]
-    assert manifest.capability_evidence.tool_calling.source_revision == "0123456789abcdef"
-    assert manifest.capability_evidence.tool_calling.preflight.history_rendered
+    assert {:error, {:validation, message}} = ManifestParser.parse_from_bundle(bundle_path)
+    assert message =~ "does not verify against bundle artifacts"
   end
 
   test "SPEC 6.4 parser accepts compatible optional safe-tokenization metadata literal" do

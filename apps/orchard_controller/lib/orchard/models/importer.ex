@@ -60,13 +60,13 @@ defmodule Orchard.Models.Importer do
   @doc """
   Returns whether `value` is safe as a bundle identity path segment.
 
-  Callers that accept an operator-supplied `model_id` or `version` before a
+  Callers that accept an operator-supplied `version` before a
   bundle exists share this rule so an unsafe identity is rejected up front
   instead of only after staging.
   """
   @spec identity_segment_safe?(term()) :: boolean()
   def identity_segment_safe?(value) when is_binary(value),
-    do: validate_path_segment(value, "value") == :ok
+    do: validate_path_segment(value, "version") == :ok
 
   def identity_segment_safe?(_value), do: false
 
@@ -99,7 +99,8 @@ defmodule Orchard.Models.Importer do
     result =
       with {:ok, manifest} <- maybe_top_up_resident_memory(staged_path, source_manifest),
            {:ok, manifest} <- ensure_chat_template(staged_path, manifest),
-           {:ok, manifest} <- maybe_run_eager_preflight(staged_path, manifest),
+           {:ok, _manifest} <- maybe_run_eager_preflight(staged_path, manifest),
+           {:ok, manifest} <- ManifestParser.parse_from_bundle(staged_path),
            {:ok, sha256} <- compute_sha256(staged_path),
            {:ok, dest_path} <- finalize_staged(staged_path, manifest, artifacts_root) do
         case insert_catalog_record(manifest, dest_path, sha256, activate?) do
@@ -147,6 +148,9 @@ defmodule Orchard.Models.Importer do
     cond do
       String.contains?(value, "..") ->
         {:error, {:validation, "#{field} contains path traversal sequence: #{inspect(value)}"}}
+
+      field == "version" and String.contains?(value, "/") ->
+        {:error, {:validation, "version must be a single path component"}}
 
       not Regex.match?(@identity_pattern, value) ->
         {:error, {:validation, "#{field} contains unsafe characters: #{inspect(value)}"}}
@@ -892,8 +896,23 @@ defmodule Orchard.Models.Importer do
     dest_path = artifact_destination_path(artifacts_root, model_id, version)
 
     with :ok <- validate_dest_contained(dest_path, artifacts_root, staged_path),
-         :ok <- validate_dest_fresh(dest_path, staged_path) do
+         :ok <- validate_dest_fresh(dest_path, staged_path),
+         :ok <-
+           validate_bundle_ancestors(
+             Path.dirname(Path.expand(dest_path)),
+             Path.expand(artifacts_root)
+           ) do
       move_staged_to_dest(staged_path, dest_path)
+    end
+  end
+
+  defp validate_bundle_ancestors(path, root) when path == root, do: :ok
+
+  defp validate_bundle_ancestors(path, root) do
+    if File.exists?(Path.join(path, "manifest.json")) do
+      {:error, {:destination_exists, "artifact destination is inside an existing bundle"}}
+    else
+      validate_bundle_ancestors(Path.dirname(path), root)
     end
   end
 

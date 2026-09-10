@@ -14,6 +14,7 @@ defmodule Orchard.Models.ManifestParser do
   """
 
   alias Orchard.ModelManifest
+  alias Orchard.Models.SafeTokenizationPreflight
 
   @manifest_filename "manifest.json"
   @tool_capability_evidence_filename "tool_capability_evidence.json"
@@ -184,8 +185,10 @@ defmodule Orchard.Models.ManifestParser do
     case File.read(manifest_path) do
       {:ok, json} ->
         with {:ok, manifest_map} <- decode_manifest_json(json),
-             {:ok, capability_evidence} <- read_capability_evidence(bundle_path) do
-          atomize_and_build(manifest_map, capability_evidence)
+             {:ok, capability_evidence} <- read_capability_evidence(bundle_path),
+             {:ok, manifest} <- atomize_and_build(manifest_map, capability_evidence),
+             :ok <- verify_tool_capability(bundle_path, manifest) do
+          {:ok, manifest}
         end
 
       {:error, :enoent} ->
@@ -248,6 +251,62 @@ defmodule Orchard.Models.ManifestParser do
          {:capability_evidence_read, "failed to read #{evidence_path}: #{inspect(reason)}"}}
     end
   end
+
+  defp verify_tool_capability(
+         bundle_path,
+         %{capability_evidence: %{tool_calling: %{result: "declared"} = evidence}} = manifest
+       ) do
+    with {:ok, config_path, config_json} <-
+           evidence_asset(
+             bundle_path,
+             manifest.tokenizer.config_path,
+             evidence.tokenizer_config_sha256
+           ),
+         {:ok, template_path, _template} <-
+           evidence_asset(
+             bundle_path,
+             manifest.chat_template && manifest.chat_template.path,
+             evidence.chat_template_sha256
+           ),
+         {:ok, config} when is_map(config) <- Jason.decode(config_json),
+         parser when is_binary(parser) <-
+           Enum.find(
+             [config["tool_parser_type"], config["tool_parser"]],
+             &(is_binary(&1) and &1 != "")
+           ),
+         true <- parser == evidence.tool_parser_type,
+         {:ok, %{parser_recognized: true, definition_rendered: true, history_rendered: true}} <-
+           SafeTokenizationPreflight.run_tool_capability(%{
+             tokenizer_config_path: config_path,
+             chat_template_path: template_path,
+             tool_parser_type: parser
+           }) do
+      :ok
+    else
+      _ ->
+        {:error,
+         {:validation, "tool capability evidence does not verify against bundle artifacts"}}
+    end
+  end
+
+  defp verify_tool_capability(_bundle_path, _manifest), do: :ok
+
+  defp evidence_asset(bundle_path, relative_path, expected_digest)
+       when is_binary(relative_path) and is_binary(expected_digest) do
+    path = Path.expand(relative_path, bundle_path)
+
+    with {:ok, root} <- Orchard.PathUtils.resolve_realpath(bundle_path),
+         {:ok, path} <- Orchard.PathUtils.resolve_realpath(path),
+         true <- String.starts_with?(path, root <> "/"),
+         {:ok, bytes} <- File.read(path),
+         ^expected_digest <- :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower) do
+      {:ok, path, bytes}
+    else
+      _ -> :invalid
+    end
+  end
+
+  defp evidence_asset(_bundle_path, _relative_path, _expected_digest), do: :invalid
 
   @doc false
   @spec schema_keys() :: map()

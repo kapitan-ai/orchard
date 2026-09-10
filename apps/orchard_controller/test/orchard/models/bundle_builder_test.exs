@@ -410,11 +410,12 @@ defmodule Orchard.Models.BundleBuilderTest do
           "wrapper_tool_markers_count" => 0
         })
 
-      with_inference_overrides([tokenizer_executable: helper], fn ->
-        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, detail_metadata)
-      end)
+      {:ok, manifest} =
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, detail_metadata)
+          ManifestParser.parse_from_bundle(ctx.tmp_dir)
+        end)
 
-      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.capabilities == ["chat", "tool_calling"]
 
       refute Map.has_key?(
@@ -554,11 +555,12 @@ defmodule Orchard.Models.BundleBuilderTest do
           "wrapper_tool_markers_count" => 2
         })
 
-      with_inference_overrides([tokenizer_executable: helper], fn ->
-        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
-      end)
+      {:ok, manifest} =
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          ManifestParser.parse_from_bundle(ctx.tmp_dir)
+        end)
 
-      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.tokenizer.config_path == "tokenizer_config.json"
 
       assert manifest.safe_tokenization.control_tokens == [
@@ -865,11 +867,12 @@ defmodule Orchard.Models.BundleBuilderTest do
           "wrapper_tool_markers_count" => 2
         })
 
-      with_inference_overrides([tokenizer_executable: helper], fn ->
-        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
-      end)
+      {:ok, manifest} =
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          ManifestParser.parse_from_bundle(ctx.tmp_dir)
+        end)
 
-      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.safe_tokenization.control_tokens == ["</tool_call>", "<tool_call>"]
       assert manifest.safe_tokenization.catalog_source.added_tokens_count == 0
       assert manifest.safe_tokenization.catalog_source.wrapper_tool_markers_count == 2

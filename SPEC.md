@@ -2017,7 +2017,11 @@ The Model Hub SHALL derive this sidecar only from the resolved repository/revisi
 
 Manifest `capabilities` alone SHALL NOT admit `tool_calling` for any bundle, including an offline-authored Model Bundle. Manifest parsing SHALL drop a `tool_calling` entry unless the same bundle carries a sidecar whose result is `declared`, and SHALL leave every other manifest capability unchanged. A `declared` sidecar whose manifest omits `tool_calling`, or whose preflight booleans are not all true, SHALL fail manifest validation rather than admit a partial tuple.
 
+For every `declared` sidecar, bundle parsing SHALL verify both recorded digests against the manifest-selected tokenizer config and chat template, verify the parser declaration against that config, and rerun the bounded tokenizer-only tool preflight. Missing assets or digests, mismatches, unsuccessful renders, and unavailable preflight SHALL fail validation; producer-supplied booleans alone are not proof.
+
 The importer SHALL validate and preserve the sidecar in the Artifact Bundle, copy it to the immutable Catalog model record, and reject duplicate `{model_id, version}` identities. It SHALL NOT mutate a Catalog row to repair a capability. The Console Model Hub SHALL offer an operator repair action that uses the normal download/build/import path against the same exact source revision and a distinct explicit Catalog version; the new manifest records the distinct Catalog version as its `version`, while the new sidecar SHALL continue to record the original source revision. Such reimport does not by itself transfer qualification or support evidence between artifacts.
+
+Catalog versions SHALL be single path components without separators. Namespaced model IDs remain permitted, but an import destination SHALL NOT overlap or descend beneath an existing Artifact Bundle.
 
 `models.artifact_sha256` SHALL remain the authoritative lowercase SHA-256 digest of the final stored Artifact Bundle after secure staging and all importer-owned mutations.
 The existing digest algorithm recursively collects regular files, rejects symlinks and unsupported entries, sorts bundle-relative paths, and hashes each relative path followed by the file's exact bytes.

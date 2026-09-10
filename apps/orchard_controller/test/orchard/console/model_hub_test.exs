@@ -945,22 +945,25 @@ defmodule OrchardConsole.ModelHubTest do
       refute_receive {:captured_download, _, _}, 50
     end
 
-    test "rejects an unsafe catalog version before downloading" do
+    test "rejects a nested repair catalog version before downloading" do
       detail = stub_detail()
       stub_client(detail: {:ok, detail})
       stub_downloader(download: :success, capture_download: true)
-      ref = make_ref()
 
-      {:ok, _pid} =
-        ModelHub.start_download_import(self(), ref, detail.repo_id,
-          revision: detail.revision_sha,
-          catalog_version: "../escape"
-        )
+      for version <- ["../escape", "v1/tool-admission"] do
+        ref = make_ref()
 
-      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
-      assert error.code == "invalid_catalog_version"
-      assert error.message =~ "may use only"
-      refute_receive {:captured_download, _, _}, 50
+        {:ok, _pid} =
+          ModelHub.start_download_import(self(), ref, detail.repo_id,
+            revision: detail.revision_sha,
+            catalog_version: version
+          )
+
+        assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+        assert error.code == "invalid_catalog_version"
+        assert error.message =~ "may use only"
+        refute_receive {:captured_download, _, _}, 50
+      end
     end
 
     test "rejects an over-long catalog version before downloading" do

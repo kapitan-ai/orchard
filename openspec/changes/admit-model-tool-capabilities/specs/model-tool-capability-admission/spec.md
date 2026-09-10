@@ -40,6 +40,12 @@ Manifest `capabilities` SHALL NOT admit `tool_calling` for any Model Bundle, inc
 - **WHEN** a sidecar reports `declared` but the manifest omits `tool_calling`, or any preflight boolean is false
 - **THEN** manifest validation rejects the bundle instead of admitting the partial tuple
 
+#### Scenario: Offline positive claims require artifact verification
+
+- **WHEN** any bundle supplies a `declared` sidecar
+- **THEN** parsing SHALL verify the recorded digests and parser against the manifest-selected config and template and rerun bounded tool preflight
+- **AND THEN** missing assets or digests, mismatches, failed renders, or unavailable preflight SHALL reject the bundle
+
 ### Requirement: Tool capability is not qualification or server execution authority
 
 A Catalog `tool_calling` capability permits only the existing request-scoped function-tool passthrough gate. It SHALL NOT establish Worker Runtime support, manual qualification, a product support claim, a hosted-tool eligibility fact, or controller-side execution.
@@ -66,6 +72,12 @@ Orchard SHALL NOT silently change an existing Catalog model's capabilities, Arti
 - **WHEN** an operator attempts to import evidence under an existing `model_id@version`
 - **THEN** the importer rejects the duplicate
 - **AND THEN** the existing Catalog row and final Artifact Bundle remain unchanged
+
+#### Scenario: Distinct identities cannot overlap artifact directories
+
+- **WHEN** a repair version contains a separator, or a namespaced model ID places the destination inside an existing bundle
+- **THEN** Orchard SHALL reject the import without changing the existing bundle or Catalog digest
+- **AND THEN** Console SHALL reject separator-bearing versions before transfer
 
 ### Requirement: Inline function schemas fail before dispatch
 

@@ -605,8 +605,8 @@ defmodule OrchardConsole.ModelHub do
 
       not Importer.identity_segment_safe?(version) ->
         {:error,
-         "Catalog version may use only letters, digits, dots, underscores, hyphens, " <>
-           "and slashes, and must start with a letter or digit."}
+         "Catalog version may use only letters, digits, dots, underscores, and hyphens, " <>
+           "and must start with a letter or digit."}
 
       true ->
         {:ok, version}
