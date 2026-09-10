@@ -945,6 +945,42 @@ defmodule OrchardConsole.ModelHubTest do
       refute_receive {:captured_download, _, _}, 50
     end
 
+    test "rejects an unsafe catalog version before downloading" do
+      detail = stub_detail()
+      stub_client(detail: {:ok, detail})
+      stub_downloader(download: :success, capture_download: true)
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, detail.repo_id,
+          revision: detail.revision_sha,
+          catalog_version: "../escape"
+        )
+
+      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+      assert error.code == "invalid_catalog_version"
+      assert error.message =~ "may use only"
+      refute_receive {:captured_download, _, _}, 50
+    end
+
+    test "rejects an over-long catalog version before downloading" do
+      detail = stub_detail()
+      stub_client(detail: {:ok, detail})
+      stub_downloader(download: :success, capture_download: true)
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, detail.repo_id,
+          revision: detail.revision_sha,
+          catalog_version: String.duplicate("v", 129)
+        )
+
+      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+      assert error.code == "invalid_catalog_version"
+      assert error.message =~ "at most 128 characters"
+      refute_receive {:captured_download, _, _}, 50
+    end
+
     test "rejects a blank explicit catalog version before downloading" do
       stub_client(detail: {:ok, stub_detail()})
       stub_downloader(download: :success, capture_download: true)

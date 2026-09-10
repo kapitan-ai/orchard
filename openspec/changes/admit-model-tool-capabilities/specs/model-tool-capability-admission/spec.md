@@ -37,12 +37,13 @@ A Catalog `tool_calling` capability permits only the existing request-scoped fun
 
 ### Requirement: Explicit immutable repair import
 
-Orchard SHALL NOT silently change an existing Catalog model's capabilities, Artifact Bundle, or authoritative digest to repair an earlier chat-only import. The Console Model Hub SHALL offer an operator repair action that builds and imports a new bundle with an explicit distinct Catalog version through the normal build/import path. The new sidecar bytes and resulting Artifact Bundle digest are distinct from the prior import.
+Orchard SHALL NOT silently change an existing Catalog model's capabilities, Artifact Bundle, or authoritative digest to repair an earlier chat-only import. The Console Model Hub SHALL offer an operator repair action that builds and imports a new bundle with an explicit distinct Catalog version through the normal build/import path. The resulting Artifact Bundle digest SHALL be distinct from the prior import because the new manifest records the distinct Catalog version.
 
 #### Scenario: Console repair is explicit
 
 - **WHEN** an operator submits a repair version through Console Model Hub
 - **THEN** Console forwards only the selected server-side source revision and the distinct Catalog version to the normal import coordinator
+- **AND THEN** a blank, source-revision-matching, over-long, or path-unsafe Catalog version is rejected before any provider or transfer work
 - **AND THEN** no existing Catalog row is mutated
 
 #### Scenario: Duplicate identity is not repaired in place

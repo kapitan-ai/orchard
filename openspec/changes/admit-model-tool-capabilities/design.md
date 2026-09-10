@@ -20,7 +20,7 @@ The tokenizer helper renders a fixed synthetic function definition and a fixed s
 
 ### Keep repair explicit and immutable
 
-The importer continues to reject a duplicate `model_id@version`. To repair an existing chat-only entry, the operator uses the Console Model Hub repair action to build and import a new bundle under an explicitly different Catalog version. The original artifact directory, `models.artifact_sha256`, Catalog record, grants, and state are unchanged. The new bundle receives its own final digest because its sidecar bytes differ.
+The importer continues to reject a duplicate `model_id@version`. To repair an existing chat-only entry, the operator uses the Console Model Hub repair action to build and import a new bundle under an explicitly different Catalog version. The original artifact directory, `models.artifact_sha256`, Catalog record, grants, and state are unchanged. The new bundle receives its own final digest because its `manifest.json` records the distinct Catalog version; the sidecar bytes additionally differ whenever the new preflight reaches a different evidence result.
 
 ### Validate inline schemas before any request work
 

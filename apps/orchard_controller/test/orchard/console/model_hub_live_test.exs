@@ -1919,6 +1919,20 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute_receive {:stub_download_ref, _, _, _}, 50
     end
 
+    test "repair import rejects an unsafe Catalog version before any transfer work", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
+
+      render_submit(view, "repair_model", %{
+        "model_hub_repair" => %{"catalog_version" => "../escape"}
+      })
+
+      assert render(view) =~ "may use only"
+
+      refute_receive {:stub_download_ref, _, _, _}, 50
+    end
+
     test "clicking download starts the seam and shows starting state", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)

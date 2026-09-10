@@ -6,7 +6,7 @@ Model Hub currently replaces every downloaded Hugging Face bundle's capabilities
 
 - Add a revision-bound Model Hub capability-evidence sidecar to Artifact Bundles and persist it in the Catalog without changing the closed worker manifest schema.
 - Admit `tool_calling` only when the exact downloaded artifact supplies a recognized parser declaration and its exact chat template renders both a synthetic function definition and a structured function-call/result history.
-- Preserve the source repository, resolved revision, tokenizer-config digest, chat-template digest, parser identity, artifact preflight result, and `runtime_qualification: not_established` in the immutable bundle manifest.
+- Preserve the source repository, resolved revision, tokenizer-config digest, chat-template digest, parser identity, artifact preflight result, and `runtime_qualification: not_established` in the immutable Artifact Bundle capability-evidence sidecar and the Catalog model record. The closed worker manifest gains no evidence key.
 - Keep missing, unknown, conflicting, malformed, or unsupported evidence chat-only. Base-model links remain provenance only and cannot supply inherited admission evidence without checks against the converted artifact.
 - Continue using the existing Catalog capability gate and Worker Runtime parser fence. A declared Catalog capability permits request-scoped client tool passthrough; it is neither runtime qualification nor a product support claim.
 - Reject malformed inline function schemas before request persistence, prompt rendering, scheduling, or worker dispatch.

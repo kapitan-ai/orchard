@@ -51,6 +51,28 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
     end)
   end
 
+  test "tool capability preflight preserves a structured helper error", %{tmp_dir: tmp_dir} do
+    helper =
+      write_response_helper!(tmp_dir, %{
+        "contract_version" => 3,
+        "ok" => false,
+        "error" => %{
+          "category" => "missing_assets",
+          "message" => "chat template is unreadable",
+          "details" => %{"path" => "chat_template.jinja"}
+        }
+      })
+
+    with_inference_overrides([tokenizer_executable: helper], fn ->
+      assert {:error, {:tool_capability_preflight_failed, {:helper_error, error}}} =
+               SafeTokenizationPreflight.run_tool_capability(tool_capability_input(tmp_dir))
+
+      assert error.category == "missing_assets"
+      assert error.message == "chat template is unreadable"
+      assert error.details == %{"path" => "chat_template.jinja"}
+    end)
+  end
+
   test "product module load creates atoms for all helper reason keys in a fresh child BEAM" do
     code_paths =
       :code.get_path()

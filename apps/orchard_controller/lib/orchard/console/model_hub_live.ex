@@ -5,6 +5,7 @@ defmodule OrchardConsole.ModelHubLive do
 
   use OrchardConsole, :live_view
 
+  alias OrchardConsole.ModelHub
   alias OrchardConsole.Redaction
   alias Phoenix.LiveView.AsyncResult
   alias Phoenix.LiveView.JS
@@ -1244,34 +1245,29 @@ defmodule OrchardConsole.ModelHubLive do
   end
 
   defp handle_repair_model(socket, raw_catalog_version) do
-    catalog_version = normalize_query(raw_catalog_version)
     assigns = socket.assigns
 
-    cond do
-      not download_ready_for_selected?(assigns) ->
-        {:noreply, socket}
+    if download_ready_for_selected?(assigns) do
+      case ModelHub.validate_catalog_version(
+             raw_catalog_version,
+             assigns.model_detail.revision_sha
+           ) do
+        {:ok, catalog_version} ->
+          {:noreply,
+           socket
+           |> assign(repair_form: repair_form())
+           |> start_download_via_coordinator(
+             assigns.model_detail.repo_id,
+             assigns.model_detail.revision_sha,
+             catalog_version
+           )}
 
-      catalog_version == "" ->
-        {:noreply,
-         assign_repair_form_error(socket, catalog_version, "Choose a new Catalog version.")}
-
-      catalog_version == assigns.model_detail.revision_sha ->
-        {:noreply,
-         assign_repair_form_error(
-           socket,
-           catalog_version,
-           "Catalog version must differ from the source revision."
-         )}
-
-      true ->
-        {:noreply,
-         socket
-         |> assign(repair_form: repair_form())
-         |> start_download_via_coordinator(
-           assigns.model_detail.repo_id,
-           assigns.model_detail.revision_sha,
-           catalog_version
-         )}
+        {:error, message} ->
+          {:noreply,
+           assign_repair_form_error(socket, normalize_query(raw_catalog_version), message)}
+      end
+    else
+      {:noreply, socket}
     end
   end
 

@@ -58,6 +58,19 @@ defmodule Orchard.Models.Importer do
   @identity_pattern ~r/\A[a-zA-Z0-9][a-zA-Z0-9._\-\/]*\z/
 
   @doc """
+  Returns whether `value` is safe as a bundle identity path segment.
+
+  Callers that accept an operator-supplied `model_id` or `version` before a
+  bundle exists share this rule so an unsafe identity is rejected up front
+  instead of only after staging.
+  """
+  @spec identity_segment_safe?(term()) :: boolean()
+  def identity_segment_safe?(value) when is_binary(value),
+    do: validate_path_segment(value, "value") == :ok
+
+  def identity_segment_safe?(_value), do: false
+
+  @doc """
   Imports a model bundle from `source_path` into the artifact store and catalog.
 
   ## Options

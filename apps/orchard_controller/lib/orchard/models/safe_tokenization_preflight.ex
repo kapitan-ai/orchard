@@ -244,8 +244,9 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
      }}
   end
 
-  defp classify_tool_capability_response(_response, _exit_status),
-    do: tool_capability_error(:invalid_response)
+  defp classify_tool_capability_response(response, _exit_status) do
+    tool_capability_error(helper_error_reason(response))
+  end
 
   defp tool_capability_error(reason), do: {:error, {:tool_capability_preflight_failed, reason}}
 
@@ -412,19 +413,17 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
     normalize_success_result(result)
   end
 
-  defp classify_response(
-         %{
-           "contract_version" => @contract_version,
-           "ok" => false,
-           "error" => %{"category" => category, "message" => message} = error
-         },
-         _exit_status
-       )
-       when is_binary(category) and is_binary(message) do
-    error_result({:helper_error, normalize_helper_error(error)})
-  end
+  defp classify_response(response, _exit_status), do: error_result(helper_error_reason(response))
 
-  defp classify_response(_response, _exit_status), do: error_result(:invalid_response)
+  defp helper_error_reason(%{
+         "contract_version" => @contract_version,
+         "ok" => false,
+         "error" => %{"category" => category, "message" => message} = error
+       })
+       when is_binary(category) and is_binary(message),
+       do: {:helper_error, normalize_helper_error(error)}
+
+  defp helper_error_reason(_response), do: :invalid_response
 
   defp normalize_success_result(
          %{

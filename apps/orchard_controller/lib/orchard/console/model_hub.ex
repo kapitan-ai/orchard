@@ -40,9 +40,31 @@ defmodule OrchardConsole.ModelHub do
           message: String.t()
         }
 
+  @catalog_version_max_bytes 128
+  @catalog_version_blank_message "Choose a new Catalog version."
+
   # ===========================================================================
   # Public API
   # ===========================================================================
+
+  @doc """
+  Normalizes and validates an operator-entered repair Catalog version.
+
+  Returns `{:ok, catalog_version}` with the trimmed value, or `{:error, message}`
+  with an operator-facing message. The version becomes both the manifest
+  `version` and an artifact path segment, so it is checked against the importer's
+  identity rules here — before any provider or transfer work — and the Console
+  mirrors this call for immediate form feedback.
+  """
+  @spec validate_catalog_version(term(), term()) :: {:ok, String.t()} | {:error, String.t()}
+  def validate_catalog_version(version, source_revision) when is_binary(version) do
+    version
+    |> String.trim()
+    |> validate_trimmed_catalog_version(source_revision)
+  end
+
+  def validate_catalog_version(_version, _source_revision),
+    do: {:error, @catalog_version_blank_message}
 
   @doc """
   Starts an async model search and returns `{:ok, pid}` immediately.
@@ -559,15 +581,35 @@ defmodule OrchardConsole.ModelHub do
       nil ->
         default_version
 
-      version when is_binary(version) ->
-        case String.trim(version) do
-          "" -> throw({:pipeline_error, {:error, invalid_catalog_version_error()}})
-          ^default_version -> throw({:pipeline_error, {:error, invalid_catalog_version_error()}})
-          trimmed -> trimmed
-        end
+      version ->
+        case validate_catalog_version(version, default_version) do
+          {:ok, catalog_version} ->
+            catalog_version
 
-      _other ->
-        throw({:pipeline_error, {:error, invalid_catalog_version_error()}})
+          {:error, message} ->
+            throw({:pipeline_error, {:error, invalid_catalog_version_error(message)}})
+        end
+    end
+  end
+
+  defp validate_trimmed_catalog_version("", _source_revision),
+    do: {:error, @catalog_version_blank_message}
+
+  defp validate_trimmed_catalog_version(version, version),
+    do: {:error, "Catalog version must differ from the source revision."}
+
+  defp validate_trimmed_catalog_version(version, _source_revision) do
+    cond do
+      byte_size(version) > @catalog_version_max_bytes ->
+        {:error, "Catalog version must be at most #{@catalog_version_max_bytes} characters."}
+
+      not Importer.identity_segment_safe?(version) ->
+        {:error,
+         "Catalog version may use only letters, digits, dots, underscores, hyphens, " <>
+           "and slashes, and must start with a letter or digit."}
+
+      true ->
+        {:ok, version}
     end
   end
 
@@ -621,12 +663,8 @@ defmodule OrchardConsole.ModelHub do
     }
   end
 
-  defp invalid_catalog_version_error do
-    %{
-      status: :error,
-      code: "invalid_catalog_version",
-      message: "Catalog version must be non-empty and differ from the source revision."
-    }
+  defp invalid_catalog_version_error(message) do
+    %{status: :error, code: "invalid_catalog_version", message: message}
   end
 
   defp revision_unavailable_error do

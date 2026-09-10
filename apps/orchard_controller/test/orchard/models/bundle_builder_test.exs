@@ -512,7 +512,10 @@ defmodule Orchard.Models.BundleBuilderTest do
         end)
 
       assert log =~ "tool capability preflight failed"
-      assert log =~ "invalid_response"
+      assert log =~ "helper_error"
+      assert log =~ "missing_assets"
+      assert log =~ "helper is unavailable"
+      refute log =~ "invalid_response"
 
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.capabilities == ["chat"]
