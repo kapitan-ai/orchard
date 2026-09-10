@@ -9,6 +9,7 @@ step() {
 
 step "Installing missing system packages"
 packages=(
+  acl
   autoconf
   build-essential
   libncurses-dev
@@ -47,7 +48,12 @@ fi
 
 step "Installing the pinned Orchard toolchain"
 mise trust --yes mise.toml
-mise install
+# Amp orbs run Debian 12, which mise cannot map to one of its compatible
+# precompiled Erlang targets. Without the explicit target, mise falls back to
+# compiling OTP from source and can consume the entire orb setup window.
+MISE_ERLANG_PRECOMPILED_OS=ubuntu-22.04 \
+  MISE_ERLANG_COMPILE=false \
+  mise install
 
 step "Starting and tuning PostgreSQL"
 postgres_config="$(find /etc/postgresql -path '*/main/postgresql.conf' -print -quit)"
