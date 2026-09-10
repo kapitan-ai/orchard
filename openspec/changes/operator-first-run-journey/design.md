@@ -370,7 +370,7 @@ Required failure classes include:
 - Model source unavailable, transfer interrupted, checksum mismatch, disk exhaustion, or load failure.
 - Upgrade preflight, drain, update, health verification, or resume failure.
 
-Secrets, private keys, DSNs, raw local evidence, and machine-specific paths never enter audit logs, support bundles, or durable docs.
+Secrets, private keys, DSNs, raw local evidence, and machine-specific paths never enter audit logs or durable docs.
 
 ## Ordered Slices
 
