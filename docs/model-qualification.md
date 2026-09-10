@@ -134,15 +134,21 @@ Typical cells include:
 - recovery after load, worker, Node, or transport failure.
 
 Record the prompt class, input and output token limits, context window exercised, sample count, concurrency, topology, and acceptance rule for each cell.
-Reasoning behavior remains `unknown` unless evidence is evaluated under the contract that issue #190 establishes. Qualified reasoning-effort selection is a separate capability cell: a record that names canonical `low`, `medium`, or `high` must identify the exact artifact/template renderer mapping and the exact negotiated tuple for each tier.
+Reasoning behavior remains `unknown` unless evidence is evaluated under the contract that issue #190 establishes.
+Qualified reasoning-effort selection is a separate capability cell: a record that names canonical `low`, `medium`, or `high` must identify the exact artifact/template renderer mapping and the exact negotiated tuple for each tier.
 
-Static renderer acceptance proves only that exact mapping. Runtime conformance separately proves fresh complete-tuple advertisement and loaded-worker acceptance before invocation; semantic qualification separately proves predeclared tier assertions and final-only separation; and an approved scoped support claim separately decides what may be represented as offered. None of those later boundaries is implied by the prior one, and manual qualification never replaces Runtime Endpoint dispatch proof.
+Static renderer acceptance proves only that exact mapping.
+Runtime conformance separately proves fresh complete-tuple advertisement and loaded-worker acceptance before invocation; semantic qualification separately proves predeclared tier assertions and final-only separation; and an approved scoped support claim separately decides what may be represented as offered.
+None of those later boundaries is implied by the prior one, and manual qualification never replaces Runtime Endpoint dispatch proof.
 
-Because a selected tier is valid only with `generation_policy = enabled`, semantic qualification must also prove that the tier yields valid non-empty reasoning content across the envelope it claims, including its shortest and simplest prompt classes. A tier whose renderer can legitimately return no reasoning for a claimed prompt class fails the `SPEC.md` §7.5.3a enabled-conformance rule and is recorded as `unsupported` for that exact tuple rather than being offered and then surfacing as a terminal conformance failure.
+Because a selected tier is valid only with `generation_policy = enabled`, semantic qualification must also prove that the tier yields valid non-empty reasoning content across the envelope it claims, including its shortest and simplest prompt classes.
+A tier whose renderer can legitimately return no reasoning for a claimed prompt class fails the `SPEC.md` §7.5.3a enabled-conformance rule and is recorded as `unsupported` for that exact tuple rather than being offered and then surfacing as a terminal conformance failure.
 
-That record governs only what may be offered or represented as supported. Runtime advertisement proves just the exact renderer mapping and provider-neutral protocol conformance, and dispatch additionally requires exact loaded-worker acceptance proof, so a qualification record never becomes a Runtime Endpoint capability, scheduling fact, or dispatch authority under `SPEC.md` §6.4.
+That record governs only what may be offered or represented as supported.
+Runtime advertisement proves just the exact renderer mapping and provider-neutral protocol conformance, and dispatch additionally requires exact loaded-worker acceptance proof, so a qualification record never becomes a Runtime Endpoint capability, scheduling fact, or dispatch authority under `SPEC.md` §6.4.
 
-Because runtime advertisement carries no semantic assertion, this record is the only place a tier's semantics are evaluated. If an offered tier nevertheless completes without valid non-empty reasoning, the Request fails closed as a `500 api_error` terminal conformance failure under `SPEC.md` §7.5.3a; keeping an unqualified tier out of a support claim is how Orchard avoids inviting callers into that outcome.
+Because runtime advertisement carries no semantic assertion, this record is the only place a tier's semantics are evaluated.
+If an offered tier nevertheless completes without valid non-empty reasoning, the Request fails closed as a `500 api_error` terminal conformance failure under `SPEC.md` §7.5.3a; keeping an unqualified tier out of a support claim is how Orchard avoids inviting callers into that outcome.
 
 Every claim classifies a capability as:
 

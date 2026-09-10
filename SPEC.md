@@ -516,11 +516,14 @@ All public inference requests SHALL normalize into one internal struct:
 Reasoning generation and public projection are independent canonical axes.
 `generation_policy` controls whether the selected model is allowed to use its template-owned default, is required not to generate reasoning, or is required to generate reasoning.
 `projection` controls whether decoded output remains one legacy blended text channel, exposes final answer text only, or selects structured reasoning as public output in addition to final answer text.
-`reasoning_effort` is a separate optional canonical axis with the closed provider-neutral vocabulary `low`, `medium`, and `high`. It controls only the qualified renderer's requested reasoning effort; it MUST NOT derive or replace generation policy or public projection.
-A non-`nil` reasoning effort is valid only for a negotiated Request with `generation_policy = enabled` and `projection = final_only`. Supplying effort with `generation_policy = model_default` or `disabled` is contradictory and SHALL fail before the first Request write, scheduling, dispatch, or model invocation. Effort remains optional for `enabled + final_only`; omission selects no tier and SHALL preserve that generation policy's existing semantics.
+`reasoning_effort` is a separate optional canonical axis with the closed provider-neutral vocabulary `low`, `medium`, and `high`.
+It controls only the qualified renderer's requested reasoning effort; it MUST NOT derive or replace generation policy or public projection.
+A non-`nil` reasoning effort is valid only for a negotiated Request with `generation_policy = enabled` and `projection = final_only`.
+Supplying effort with `generation_policy = model_default` or `disabled` is contradictory and SHALL fail before the first Request write, scheduling, dispatch, or model invocation.
+Effort remains optional for `enabled + final_only`; omission selects no tier and SHALL preserve that generation policy's existing semantics.
 The Controller SHALL preserve the policy source and resolve the complete effective contract before dispatch.
 The effective contract SHALL remain pinned for every attempt of the logical Request and SHALL NOT be inferred again after scheduling.
-The Controller MUST NOT derive either axis from the other.
+The Controller MUST NOT derive the generation-policy and projection axes from each other.
 The outer `generation_policy`, `projection`, and `reasoning_effort` fields are the sole authority for those axes and MUST NOT be duplicated inside `effective_contract`.
 An omitted legacy Request SHALL use exactly `%{mode: :legacy}` and SHALL retain no nullable negotiated identity fields.
 An explicit negotiated Request SHALL use `mode = negotiated` and SHALL carry every listed identity field as a non-empty value.
@@ -545,7 +548,8 @@ That omitted mode SHALL preserve the complete current legacy pipeline, including
 An omitted control MUST NOT silently enter the negotiated reasoning pipeline merely because a model, template, tokenizer, Worker Runtime, or Runtime Endpoint advertises reasoning support.
 For an omitted public control, the `body_hash` domain SHALL remain the exact pre-reasoning-control domain.
 The synthesized reasoning defaults and `%{mode: :legacy}` marker MUST NOT be added to that hash input, so an otherwise identical public body retains its existing idempotency and integrity identity.
-An omitted effort MUST NOT be serialized or hashed as a synthesized `null`, default tier, or provider-specific value. An accepted explicit public control that omits effort SHALL preserve the selected generation policy's existing body and serialization semantics while recording no canonical tier.
+An omitted effort MUST NOT be serialized or hashed as a synthesized `null`, default tier, or provider-specific value.
+An accepted explicit public control that omits effort SHALL preserve the selected generation policy's existing body and serialization semantics while recording no canonical tier.
 An accepted explicit public control remains part of the normalized public request body and therefore participates in the existing public-body idempotency hash.
 
 Ordinary assistant input content is opaque caller-authored content.
@@ -3731,7 +3735,8 @@ Runtime capacity and Placement Capacity observation semantics:
 #### 7.5.3a Negotiated reasoning-generation contract
 
 Reasoning generation and parsing SHALL be a versioned capability of the transport-independent Runtime Endpoint Interface and provider-neutral Worker Runtime contract.
-Reasoning capability SHALL advertise complete supported tuples of generation policy, projection, reasoning effort, model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version. A `nil` effort is part of the existing non-tier-selected negotiated contract; a non-`nil` effort is valid only for `enabled + final_only` and identifies the exact qualified renderer mapping through the pinned render contract and version.
+Reasoning capability SHALL advertise complete supported tuples of generation policy, projection, reasoning effort, model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version.
+A `nil` effort is part of the existing non-tier-selected negotiated contract; a non-`nil` effort is valid only for `enabled + final_only` and identifies the exact qualified renderer mapping through the pinned render contract and version.
 Separate lists whose Cartesian product could authorize a tuple that was not explicitly advertised are invalid capability evidence.
 Candidate-time observations are advisory selection evidence only and cannot replace the loaded-worker execution proof; the narrow negotiated reasoning eligibility exception is specified below.
 The Controller SHALL select an endpoint for an explicit `final_only` or `reasoning_structured` request only when a fresh observation advertises the exact complete tuple, including the selected effort when present.
