@@ -83,15 +83,6 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     no_rejoin_with_same_node_id
   )
 
-  @support_scope_codes ~w(
-    cluster
-    node
-    request
-    scheduler_decision
-    runtime_endpoint
-    control_plane
-  )
-
   @dispatch_capacity_codes ~w(
     runtime_endpoint_management_class_missing
     runtime_endpoint_management_class_invalid
@@ -136,8 +127,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     scheduler_skip: @scheduler_skip_codes,
     action_blocker: @action_blocker_codes,
     confirmation_requirement: @confirmation_requirement_codes,
-    consequence: @consequence_codes,
-    support_scope: @support_scope_codes
+    consequence: @consequence_codes
   }
 
   @type vocabulary ::
@@ -146,7 +136,6 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
           | :action_blocker
           | :confirmation_requirement
           | :consequence
-          | :support_scope
 
   @spec scheduler_rejection_codes() :: [String.t()]
   def scheduler_rejection_codes, do: @scheduler_rejection_codes_with_capacity
@@ -162,9 +151,6 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
 
   @spec consequence_codes() :: [String.t()]
   def consequence_codes, do: @consequence_codes
-
-  @spec support_scope_codes() :: [String.t()]
-  def support_scope_codes, do: @support_scope_codes
 
   @doc """
   Returns dispatch-capacity reason codes in the order surfaces must render them.

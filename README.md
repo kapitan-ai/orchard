@@ -53,11 +53,10 @@ Orchard brings those responsibilities into one Elixir/OTP control plane backed b
 
 Choose a model, try it in the Playground, and follow each request from generation to execution details.
 
-![Qwen3.8 running in the Orchard Playground](docs/media/playground-inference.png)
+[![Watch the Orchard demo: Local AI, shared by your team (1:11)](docs/media/walkthrough-thumbnail.png)](https://youtu.be/lChCSLT3ra8)
 
 *Run Qwen on your own Apple Silicon hardware and inspect the answer in the Playground.*
 
-[Watch the Orchard inference walkthrough (MP4)](docs/media/orchard-console-walkthrough.mp4).
 Follow the model catalog, Workspace access, live Qwen3.8 inference, and the same request's execution details.
 
 ![Completed inference request in the Orchard Console](docs/media/request-details.png)
@@ -197,7 +196,7 @@ Workers stay behind the Node Agent and are not exposed as public endpoints.
 **Console and CLI**
 
 The Phoenix LiveView Console presents nodes, models, Workspaces, keys, request inspection, settings, and a Playground.
-`orchardctl` covers bootstrap, model import and access, node trust and enrollment, lifecycle actions, transport setup, diagnostics, and redacted support bundles.
+`orchardctl` covers bootstrap, model import and access, node trust and enrollment, lifecycle actions, transport setup, and diagnostics.
 
 **Postgres**
 
@@ -230,7 +229,7 @@ Available in the current source tree:
 - Authenticated `/v1/models` and `/v1/chat/completions`, including server-sent event streaming.
 - A bounded `/v1/responses` subset.
 - Workspace-scoped API Tokens, API Clients, and deny-by-default model access grants.
-- The Console, Developer Portal, Prometheus metrics, request diagnostics, and redacted support bundles.
+- The Console, Developer Portal, Prometheus metrics, and request diagnostics.
 - Node trust initialization, single-node enrollment and join, admission review, and bounded lifecycle actions.
 - Client-executed function-tool passthrough for model configurations qualified with the `tool_calling` capability.
 

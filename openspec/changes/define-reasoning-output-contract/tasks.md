@@ -33,7 +33,7 @@
 
 ## 5. Implement capture and history boundaries
 
-- [ ] 5.1 Enforce hidden-reasoning disposal before public, persistence, logging, tracing, metrics, crash, diagnostic, and support-bundle boundaries under every capture mode.
+- [ ] 5.1 Enforce hidden-reasoning disposal before public, persistence, logging, tracing, metrics, crash, and diagnostic boundaries under every capture mode.
 - [ ] 5.2 Hash and replay only the exact assembled public projection and prohibit historical reclassification.
 - [ ] 5.3 Keep Console transcript reasoning separate and re-feed final-answer content only.
 - [ ] 5.4 Preserve issue #189 as a display-only fallback for legacy blended output.

@@ -70,7 +70,7 @@ Admission decision history SHALL be append-only.
 Admission decision rows SHOULD reference a candidate or Node when created if that row exists.
 Admission decision rows MAY later have null candidate and Node references after retention cleanup, because bounded snapshot fields preserve the durable decision record.
 Candidate and decision metadata SHALL be sanitized and MUST NOT include plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
-Node Admission candidate review, rejection, rejection clearance, admission after rejection, decommission, Active/Standby write-path decisions, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events with no tenant id.
+Node Admission candidate review, rejection, rejection clearance, admission after rejection, decommission, and Active/Standby write-path decisions SHALL use cluster-scoped audit events with no tenant id.
 Candidate review queries SHALL have indexes for admission category and recent observation time.
 Recent-observation indexes SHALL order candidates without an observation timestamp after candidates with observed timestamps.
 Decision review queries SHALL have indexes by candidate, node, and audit log reference.
@@ -132,7 +132,7 @@ This refines `SPEC.md` §3.3, §4.2, §4.5, §4.6.1, §5.5, and §7.5.
 
 ### Requirement: Scheduler Explanations Use Stable Reason Codes
 Scheduler explanations SHALL expose stable reason codes for selected, skipped, and rejected candidates.
-Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and tests.
+Reason codes SHALL be shared by Operator API, CLI, Console, and tests.
 Reason codes SHALL be machine-readable and SHALL NOT be replaced by free-text-only explanations.
 Rejected candidates SHALL include at least one stable rejection reason code.
 Selected candidates MAY have an empty reason-code array.
@@ -159,7 +159,7 @@ This refines `SPEC.md` §5.5, §5.7, §5.8, §5.10, and §7.3.5.
 - **AND** skipped candidates are not reported as rejected candidates
 
 ### Requirement: CLI And Console Expose Equivalent Cluster Management Semantics
-Orchard CLI and Orchard Console SHALL expose equivalent cluster-management semantics for node list, node detail, pending admission review, admission, lifecycle action previews, scheduler explanations, diagnostics, support bundle creation, and control-plane read-only status.
+Orchard CLI and Orchard Console SHALL expose equivalent cluster-management semantics for node list, node detail, pending admission review, admission, lifecycle action previews, scheduler explanations, diagnostics, and control-plane read-only status.
 CLI output MAY differ visually from Console, but JSON output SHALL preserve the same status categories and reason-code arrays.
 Console copy SHALL not invent meanings that are absent from the shared domain contract.
 This refines `SPEC.md` §7.3, §7.4, §11.8, and §11.9.
@@ -236,28 +236,16 @@ This refines `SPEC.md` §4.3, §4.4, and §4.8 per ADR 0009.
 - **THEN** Orchard revalidates at execution time and reports `drain_not_running`
 - **AND** Orchard does not execute the stale preview
 
-### Requirement: Diagnostics And Support Bundles Share One Artifact Contract
-Console-triggered support bundles and `orchardctl support bundle create` SHALL use one shared support bundle artifact contract.
-This change SHALL define `orchard.support_bundle.v2` for shared Console and CLI cluster-management support bundles.
-The fields required by this change SHALL be mandatory for the v2 contract.
-Any v1 compatibility behavior SHALL be documented separately and SHALL NOT weaken the v2 manifest or redaction requirements.
-The support bundle manifest SHALL include bundle format, generated time, Orchard version, scope, included sections, omitted sections, redaction manifest, max log bytes, and relevant SPEC references.
-Supported scopes SHALL include `cluster`, `node`, `request`, `scheduler_decision`, `runtime_endpoint`, `control_plane`.
-Scoped bundles SHALL include only evidence relevant to the selected scope and SHALL record omitted sections.
-Request and scheduler-decision scopes SHALL include sanitized metadata only.
-Support bundles MUST NOT include plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw token sequences, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
-Support bundles MUST NOT include raw prefix-cache fingerprints or tenant secret material.
+### Requirement: Diagnostics Reuse Shared Domain Contracts
+Orchard diagnostics SHALL reuse the shared node status, request inspection, scheduler explanation, Runtime Endpoint observation, dispatch-capacity, and control-plane status contracts.
+CLI, Console, and Operator API presentation MAY differ, but each surface SHALL preserve stable machine-readable codes and bounded sanitized metadata.
+Diagnostics MUST NOT include plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw token sequences, raw local evidence logs, local tool session identifiers, machine-specific prompt exports, raw prefix-cache fingerprints, or tenant secret material.
 This refines `SPEC.md` §7.3, §9, §10.2, §11.8, and §11.9.
 
-#### Scenario: Console creates support bundle
-- **WHEN** an operator creates a cluster-scoped support bundle from Console
-- **THEN** Orchard produces the same bundle format as the CLI support bundle command
-- **AND** the manifest records scope, included sections, redaction manifest, and relevant SPEC references
-
-#### Scenario: Redaction manifest omits secret values
-- **WHEN** a support bundle redacts sensitive configuration
-- **THEN** the redaction manifest may include redaction classes and counts
-- **AND** the redaction manifest does not include the secret values that were redacted
+#### Scenario: Operator inspects shared diagnostics
+- **WHEN** an operator inspects a node, request, scheduler explanation, Runtime Endpoint observation, dispatch-capacity result, or control-plane status
+- **THEN** Orchard presents the corresponding shared domain contract
+- **AND** the surface preserves stable reason codes and bounded sanitized metadata
 
 ### Requirement: Control-Plane Status Is Read-Only In The First Cluster UX
 Orchard SHALL expose control-plane status as read-only cluster status before any mutating Active/Standby control action is introduced.

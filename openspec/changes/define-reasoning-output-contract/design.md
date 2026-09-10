@@ -137,7 +137,7 @@ Issue #189 remains a display-only fallback for legacy blended output and has no 
 ### Make hidden reasoning ephemeral under every capture mode
 
 Reasoning hidden by `final_only` is discarded at the Worker contract boundary after accounting.
-It cannot enter public payloads or events, request or response payloads, request events, previews, logs, traces, metrics, audit payloads, crash evidence, diagnostics, or support bundles.
+It cannot enter public payloads or events, request or response payloads, request events, previews, logs, traces, metrics, audit payloads, crash evidence, or diagnostics.
 This applies under `none`, `metadata`, and `full`.
 
 If a later accepted contract enables selected public structured reasoning, only `full` may retain that content as part of the exact assembled public response needed for replay.
