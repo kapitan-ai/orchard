@@ -21,7 +21,7 @@ Model Hub currently replaces every downloaded Hugging Face bundle's capabilities
 
 ### Modified Capabilities
 
-- `safe-tool-history`: Retains the Controller tokenizer's structured assistant tool-history safety requirements as a prerequisite for tool-capable artifact preflight.
+None.
 
 ## Impact
 
@@ -29,4 +29,5 @@ Model Hub currently replaces every downloaded Hugging Face bundle's capabilities
 - Elixir: Model Hub detail/build path, manifest parsing, import/catalog persistence, and shared tool request validation.
 - Python: tokenizer-only artifact preflight and its tests; no Worker Runtime protocol or server-side execution change.
 - Existing bundles remain immutable and chat-only. Operators repair one only by producing and importing a distinct, explicitly versioned bundle through the normal build/import path.
+- Depends on the `safe-tool-history` capability proposed by the pending `qualify-mlx-tool-calling` change as the prerequisite for tool-capable artifact preflight; none of its requirements change here.
 - Qualification and support claims remain governed by ADR 0028 and `docs/model-qualification.md`; this change creates no such claim.

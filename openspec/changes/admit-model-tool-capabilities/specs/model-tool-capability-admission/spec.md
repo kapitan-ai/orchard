@@ -25,6 +25,21 @@ The Artifact Bundle SHALL retain a closed `tool_capability_evidence.json` sideca
 - **THEN** Orchard retains the base-model reference only as provenance
 - **AND THEN** it does not admit `tool_calling`
 
+### Requirement: Manifest capabilities alone never admit tool calling
+
+Manifest `capabilities` SHALL NOT admit `tool_calling` for any Model Bundle, including an offline-authored bundle that never passed through Model Hub. Manifest parsing SHALL drop a `tool_calling` entry unless the same bundle carries a capability-evidence sidecar whose result is `declared`, and SHALL leave every other capability unchanged. A `declared` sidecar whose manifest omits `tool_calling`, or whose preflight booleans are not all true, SHALL fail manifest validation rather than admit a partial tuple.
+
+#### Scenario: Offline-authored bundle without a sidecar stays chat-only
+
+- **WHEN** a Model Bundle declares `tool_calling` in `capabilities` and carries no `tool_capability_evidence.json` sidecar
+- **THEN** manifest parsing drops `tool_calling` and preserves the remaining capabilities
+- **AND THEN** the imported Catalog model is chat-only
+
+#### Scenario: Partial declared tuple is rejected
+
+- **WHEN** a sidecar reports `declared` but the manifest omits `tool_calling`, or any preflight boolean is false
+- **THEN** manifest validation rejects the bundle instead of admitting the partial tuple
+
 ### Requirement: Tool capability is not qualification or server execution authority
 
 A Catalog `tool_calling` capability permits only the existing request-scoped function-tool passthrough gate. It SHALL NOT establish Worker Runtime support, manual qualification, a product support claim, a hosted-tool eligibility fact, or controller-side execution.
