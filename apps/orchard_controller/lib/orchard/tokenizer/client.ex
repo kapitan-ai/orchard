@@ -19,6 +19,7 @@ defmodule Orchard.Tokenizer.Client do
 
   @render_and_count_contract_version 2
   @render_and_count_segmented_contract_version 3
+  @render_and_count_reasoning_contract_version 4
   @default_timeout_ms 5_000
   @default_runtime_max_stdout_bytes 16_777_216
   @control_token_catalog_kinds ~w(huggingface_tokenizer_json tokenizer_json)
@@ -132,6 +133,18 @@ defmodule Orchard.Tokenizer.Client do
   def mode, do: Orchard.Inference.tokenizer_mode()
   def executable, do: Orchard.Inference.tokenizer_executable()
 
+  defp default_tokenize(
+         %CanonicalRequest{reasoning: %{effective_contract: %{mode: :negotiated}}} = request,
+         opts
+       ) do
+    if mode() == :port do
+      port_tokenize(request, opts)
+    else
+      {:error,
+       {:invalid_input, "negotiated reasoning tokenization requires tokenizer_mode=:port"}}
+    end
+  end
+
   defp default_tokenize(%CanonicalRequest{} = request, opts) do
     case mode() do
       :fake -> fake_tokenize(request)
@@ -175,6 +188,13 @@ defmodule Orchard.Tokenizer.Client do
     end
   end
 
+  defp build_tokenization_plan(
+         %CanonicalRequest{reasoning: %{effective_contract: %{mode: :negotiated}}} = request,
+         opts
+       ) do
+    build_negotiated_plan(request, opts)
+  end
+
   defp build_tokenization_plan(%CanonicalRequest{} = request, opts) do
     case Orchard.Inference.tokenizer_safe_mode() do
       :off -> build_legacy_plan(request, opts)
@@ -186,6 +206,21 @@ defmodule Orchard.Tokenizer.Client do
   defp build_legacy_plan(%CanonicalRequest{} = request, opts) do
     with {:ok, assets} <- resolve_legacy_assets(opts) do
       {:ok, %{mode: :legacy, payload: legacy_payload(request, assets)}}
+    end
+  end
+
+  defp build_negotiated_plan(
+         %CanonicalRequest{reasoning: %CanonicalRequest.Reasoning{} = reasoning} = request,
+         opts
+       ) do
+    with {:ok, assets} <- resolve_legacy_assets(opts),
+         {:ok, identity} <- negotiated_identity(opts) do
+      {:ok,
+       %{
+         mode: :negotiated,
+         expected_reasoning: serialize_reasoning(reasoning),
+         payload: negotiated_payload(request, Map.merge(assets, identity))
+       }}
     end
   end
 
@@ -248,6 +283,16 @@ defmodule Orchard.Tokenizer.Client do
     }
   end
 
+  defp negotiated_payload(%CanonicalRequest{} = request, assets) do
+    %{
+      contract_version: @render_and_count_reasoning_contract_version,
+      command: "render_and_count_reasoning",
+      assets: assets,
+      request:
+        Map.put(request_payload(request), :reasoning, serialize_reasoning(request.reasoning))
+    }
+  end
+
   defp segmented_payload(%CanonicalRequest{} = request, assets, safe_tokenization) do
     %{
       contract_version: @render_and_count_segmented_contract_version,
@@ -260,6 +305,21 @@ defmodule Orchard.Tokenizer.Client do
       request: request_payload(request)
     }
   end
+
+  defp serialize_reasoning(%CanonicalRequest.Reasoning{} = reasoning) do
+    %{
+      "generation_policy" => Atom.to_string(reasoning.generation_policy),
+      "projection" => Atom.to_string(reasoning.projection),
+      "source" => Atom.to_string(reasoning.source),
+      "effective_contract" =>
+        Map.new(reasoning.effective_contract, fn {key, value} ->
+          {Atom.to_string(key), serialize_reasoning_value(value)}
+        end)
+    }
+  end
+
+  defp serialize_reasoning_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp serialize_reasoning_value(value), do: value
 
   defp request_payload(%CanonicalRequest{} = request) do
     %{
@@ -519,6 +579,26 @@ defmodule Orchard.Tokenizer.Client do
          tokenizer_path: resolved_tokenizer_path,
          chat_template_path: resolved_chat_template_path
        }}
+    end
+  end
+
+  defp negotiated_identity(opts) do
+    with bundle_sha256 when is_binary(bundle_sha256) <- Keyword.get(opts, :bundle_sha256),
+         true <- String.match?(bundle_sha256, @sha256_hex),
+         %ModelManifest{chat_template: %{sha256: chat_template_digest}} <-
+           Keyword.get(opts, :manifest),
+         true <-
+           is_binary(chat_template_digest) and String.match?(chat_template_digest, @sha256_hex) do
+      {:ok,
+       %{
+         model_artifact_digest: bundle_sha256,
+         chat_template_digest: chat_template_digest
+       }}
+    else
+      _other ->
+        {:error,
+         {:invalid_input,
+          "negotiated reasoning requires trusted lowercase model artifact and chat template SHA-256 digests"}}
     end
   end
 
@@ -830,6 +910,41 @@ defmodule Orchard.Tokenizer.Client do
 
   defp normalize_response(
          %{
+           "contract_version" => @render_and_count_reasoning_contract_version,
+           "ok" => true,
+           "result" => %{
+             "rendered_prompt" => rendered_prompt,
+             "input_token_count" => input_token_count,
+             "reasoning" => reasoning
+           }
+         },
+         0,
+         %{mode: :negotiated, expected_reasoning: expected_reasoning}
+       )
+       when is_binary(rendered_prompt) and is_integer(input_token_count) and
+              input_token_count >= 0 and is_map(reasoning) do
+    if reasoning == expected_reasoning do
+      {:ok, %{rendered_prompt: rendered_prompt, input_token_count: input_token_count}}
+    else
+      {:error, :invalid_response}
+    end
+  end
+
+  defp normalize_response(
+         %{
+           "contract_version" => @render_and_count_reasoning_contract_version,
+           "ok" => false,
+           "error" => %{"category" => category, "message" => message}
+         },
+         _exit_status,
+         %{mode: :negotiated}
+       )
+       when is_binary(category) and is_binary(message) do
+    {:error, {normalize_error_category(category), message}}
+  end
+
+  defp normalize_response(
+         %{
            "contract_version" => @render_and_count_segmented_contract_version,
            "ok" => true,
            "result" => result
@@ -1063,6 +1178,7 @@ defmodule Orchard.Tokenizer.Client do
     do: normalize_error_category(category)
 
   defp normalize_error_category("invalid_input"), do: :invalid_input
+  defp normalize_error_category("unsupported_reasoning_control"), do: :invalid_input
   defp normalize_error_category("missing_assets"), do: :missing_assets
   defp normalize_error_category("unsupported_tokenizer"), do: :unsupported_tokenizer
 

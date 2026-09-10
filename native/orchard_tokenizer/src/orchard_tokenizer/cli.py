@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +22,7 @@ from orchard_tokenizer.catalog import (
     extract_safe_tokenization_catalog,
     extract_wrapper_tool_markers,
 )
+from orchard_tokenizer.reasoning_contracts import resolve as resolve_reasoning_contract
 from orchard_tokenizer.safe_segmented import (
     MarkerPair,
     SafeSegmentedError,
@@ -57,7 +59,10 @@ _EXTRACTABLE_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset(
 )
 
 CONTRACT_VERSION: Final[int] = 3
-SUPPORTED_CONTRACT_VERSIONS: Final[frozenset[int]] = frozenset({1, 2, CONTRACT_VERSION})
+REASONING_RENDER_CONTRACT_VERSION: Final[int] = 4
+SUPPORTED_CONTRACT_VERSIONS: Final[frozenset[int]] = frozenset(
+    {1, 2, CONTRACT_VERSION, REASONING_RENDER_CONTRACT_VERSION}
+)
 HF_TOKENIZER_KINDS: Final[set[str]] = {"huggingface_tokenizer_json", "tokenizer_json"}
 SENTENCEPIECE_KINDS: Final[set[str]] = {
     "sentencepiece_model",
@@ -235,6 +240,19 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
     if command == "render_and_count":
         return _execute_render_and_count(payload, int(contract_version))
 
+    if command == "render_and_count_reasoning":
+        if int(contract_version) != REASONING_RENDER_CONTRACT_VERSION:
+            raise TokenizerCliError(
+                "invalid_input",
+                "render_and_count_reasoning requires contract_version 4",
+                2,
+            )
+
+        return {
+            "contract_version": int(contract_version),
+            **_execute_render_and_count_reasoning(payload),
+        }
+
     if command == "render_and_count_segmented":
         if int(contract_version) != CONTRACT_VERSION:
             raise TokenizerCliError(
@@ -365,6 +383,109 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         "contract_version": contract_version,
         "rendered_prompt": rendered_prompt,
         "input_token_count": input_token_count,
+    }
+
+
+def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, Any]:
+    _require_exact_keys(payload, {"contract_version", "command", "assets", "request"}, "payload")
+    assets = require_mapping(payload, "assets")
+    request = require_mapping(payload, "request")
+    _require_exact_keys(
+        assets,
+        {
+            "tokenizer_kind",
+            "tokenizer_path",
+            "chat_template_path",
+            "model_artifact_digest",
+            "chat_template_digest",
+        },
+        "assets",
+    )
+    _require_exact_keys(
+        request,
+        {"input_items", "tools", "tool_choice", "reasoning"},
+        "request",
+    )
+
+    tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
+    tokenizer_path = Path(
+        require_non_empty_string(assets, "tokenizer_path", category="missing_assets")
+    )
+    chat_template_path = Path(
+        require_non_empty_string(assets, "chat_template_path", category="missing_assets")
+    )
+    model_artifact_digest = _require_sha256_digest(assets, "model_artifact_digest")
+    chat_template_digest = _require_sha256_digest(assets, "chat_template_digest")
+    _verify_chat_template_digest(chat_template_path, chat_template_digest)
+
+    reasoning = require_mapping(request, "reasoning")
+    _require_exact_keys(
+        reasoning,
+        {"generation_policy", "projection", "source", "effective_contract"},
+        "request.reasoning",
+    )
+    generation_policy = _require_reasoning_enum(
+        reasoning,
+        "generation_policy",
+        {"model_default", "disabled", "enabled"},
+    )
+    projection = _require_reasoning_enum(
+        reasoning,
+        "projection",
+        {"final_only"},
+    )
+    source = _require_reasoning_enum(
+        reasoning,
+        "source",
+        {"console_default", "console_explicit", "explicit_public"},
+    )
+
+    resolved_contract = resolve_reasoning_contract(
+        model_artifact_digest,
+        chat_template_digest,
+        generation_policy,
+        projection,
+    )
+
+    if resolved_contract is None:
+        raise TokenizerCliError(
+            "unsupported_reasoning_control",
+            "no exact tokenizer reasoning contract supports this request",
+            2,
+        )
+
+    if reasoning["effective_contract"] != resolved_contract.effective_contract:
+        raise TokenizerCliError(
+            "unsupported_reasoning_control",
+            "requested reasoning contract does not match the exact tokenizer contract",
+            2,
+        )
+
+    messages = normalize_messages(request)
+    tools = normalize_optional_tools(request["tools"])
+    tool_choice = request["tool_choice"]
+    prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
+    tokenizer_config_path = tokenizer_path.parent / "tokenizer_config.json"
+    rendered_prompt = render_prompt(
+        messages,
+        prompt_lines,
+        chat_template_path,
+        tokenizer_config_path,
+        tools=tools,
+        tool_choice=tool_choice,
+        template_arguments=resolved_contract.template_arguments,
+    )
+    input_token_count = count_tokens(rendered_prompt, tokenizer_kind, tokenizer_path)
+
+    return {
+        "rendered_prompt": rendered_prompt,
+        "input_token_count": input_token_count,
+        "reasoning": {
+            "generation_policy": generation_policy,
+            "projection": projection,
+            "source": source,
+            "effective_contract": resolved_contract.effective_contract,
+        },
     }
 
 
@@ -747,6 +868,57 @@ def _first_diff_offset(left: str, right: str) -> int:
     return min(len(left), len(right))
 
 
+def _require_exact_keys(value: dict[str, Any], expected: set[str], field_name: str) -> None:
+    if set(value) != expected:
+        raise TokenizerCliError(
+            "invalid_input",
+            f"{field_name} has unsupported or missing fields",
+            2,
+        )
+
+
+def _require_sha256_digest(payload: dict[str, Any], field_name: str) -> str:
+    value = require_non_empty_string(payload, field_name, category="invalid_input")
+
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise TokenizerCliError(
+            "invalid_input",
+            f"{field_name} must be a lowercase SHA-256 digest",
+            2,
+        )
+
+    return value
+
+
+def _verify_chat_template_digest(path: Path, expected_digest: str) -> None:
+    try:
+        actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TokenizerCliError(
+            "missing_assets", f"chat template asset is missing: {path}", 3
+        ) from exc
+
+    if actual_digest != expected_digest:
+        raise TokenizerCliError(
+            "unsupported_reasoning_control",
+            "chat template digest does not match the exact tokenizer contract",
+            2,
+        )
+
+
+def _require_reasoning_enum(payload: dict[str, Any], field_name: str, supported: set[str]) -> str:
+    value = payload.get(field_name)
+
+    if value in supported:
+        return cast(str, value)
+
+    raise TokenizerCliError(
+        "invalid_input",
+        f"request.reasoning.{field_name} is unsupported",
+        2,
+    )
+
+
 def require_mapping(payload: dict[str, Any], field_name: str) -> dict[str, Any]:
     value = payload.get(field_name)
 
@@ -1026,6 +1198,7 @@ def render_prompt(
     tool_choice: Any = None,
     render_time: datetime | None = None,
     marker_pairs: Sequence[MarkerPair] = (),
+    template_arguments: Mapping[str, bool] | None = None,
 ) -> str:
     if not chat_template_path.is_file():
         raise TokenizerCliError(
@@ -1067,6 +1240,7 @@ def render_prompt(
             tools=tools,
             tool_choice=tool_choice,
             **special_tokens,
+            **(template_arguments or {}),
         )
     except TemplateRequestError as exc:
         raise TokenizerCliError(

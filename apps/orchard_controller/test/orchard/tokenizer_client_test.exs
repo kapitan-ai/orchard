@@ -179,6 +179,93 @@ defmodule Orchard.Tokenizer.ClientTest do
     )
   end
 
+  test "negotiated reasoning sends only the v4 closed contract and verifies returned identity" do
+    {capture_executable, capture_file} =
+      write_capture_request_executable!(negotiated_capture_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{rendered_prompt: "negotiated", input_token_count: 2}} =
+                 Client.tokenize(negotiated_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root(),
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+
+        assert {:ok, raw_request} = File.read(capture_file)
+
+        assert %{
+                 "contract_version" => 4,
+                 "command" => "render_and_count_reasoning",
+                 "assets" => %{
+                   "model_artifact_digest" => model_artifact_digest,
+                   "chat_template_digest" => chat_template_digest
+                 },
+                 "request" => %{
+                   "reasoning" => %{
+                     "generation_policy" => "disabled",
+                     "projection" => "final_only",
+                     "source" => "console_default",
+                     "effective_contract" => %{"mode" => "negotiated"} = effective_contract
+                   }
+                 }
+               } = Jason.decode!(raw_request)
+
+        assert effective_contract["model_artifact_digest"] == model_artifact_digest
+        assert effective_contract["chat_template_digest"] == chat_template_digest
+      end
+    )
+  end
+
+  test "negotiated reasoning rejects a mismatched helper identity" do
+    response =
+      negotiated_capture_response(%{
+        "reasoning" => %{
+          "generation_policy" => "disabled",
+          "projection" => "final_only",
+          "source" => "console_default",
+          "effective_contract" => %{
+            "mode" => "negotiated",
+            "model_artifact_digest" => trusted_bundle_sha256(),
+            "chat_template_digest" => String.duplicate("b", 64),
+            "render_contract" => "synthetic-render-v1",
+            "render_contract_version" => "1",
+            "parser_family" => "synthetic-parser",
+            "parser_version" => "unexpected",
+            "runtime_contract_version" => "1",
+            "event_binding_version" => "1"
+          }
+        }
+      })
+
+    response_executable = write_response_executable!(response)
+    on_exit(fn -> File.rm(response_executable) end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: response_executable
+      ],
+      fn ->
+        assert {:error, :invalid_response} =
+                 Client.tokenize(negotiated_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root(),
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+      end
+    )
+  end
+
   test "port mode rejects contract v3 response for render_and_count" do
     response_executable =
       write_response_executable!(%{
@@ -2598,6 +2685,27 @@ defmodule Orchard.Tokenizer.ClientTest do
     CanonicalRequest.new(Map.merge(base, Map.new(overrides)))
   end
 
+  defp negotiated_request do
+    canonical_request(%{
+      reasoning: %{
+        generation_policy: :disabled,
+        projection: :final_only,
+        source: :console_default,
+        effective_contract: %{
+          mode: :negotiated,
+          model_artifact_digest: trusted_bundle_sha256(),
+          chat_template_digest: String.duplicate("b", 64),
+          render_contract: "synthetic-render-v1",
+          render_contract_version: "1",
+          parser_family: "synthetic-parser",
+          parser_version: "1",
+          runtime_contract_version: "1",
+          event_binding_version: "1"
+        }
+      }
+    })
+  end
+
   defp huggingface_manifest do
     manifest_with_chat_template("chat_template.jinja")
   end
@@ -2957,6 +3065,35 @@ defmodule Orchard.Tokenizer.ClientTest do
 
   defp restore_skip_sentinel_preflight_env(value) do
     System.put_env("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT", value)
+  end
+
+  defp negotiated_capture_response(overrides \\ %{}) do
+    result =
+      Map.merge(
+        %{
+          "rendered_prompt" => "negotiated",
+          "input_token_count" => 2,
+          "reasoning" => %{
+            "generation_policy" => "disabled",
+            "projection" => "final_only",
+            "source" => "console_default",
+            "effective_contract" => %{
+              "mode" => "negotiated",
+              "model_artifact_digest" => trusted_bundle_sha256(),
+              "chat_template_digest" => String.duplicate("b", 64),
+              "render_contract" => "synthetic-render-v1",
+              "render_contract_version" => "1",
+              "parser_family" => "synthetic-parser",
+              "parser_version" => "1",
+              "runtime_contract_version" => "1",
+              "event_binding_version" => "1"
+            }
+          }
+        },
+        overrides
+      )
+
+    %{contract_version: 4, ok: true, result: result}
   end
 
   defp legacy_capture_response do

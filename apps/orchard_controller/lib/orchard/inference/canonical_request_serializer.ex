@@ -30,6 +30,35 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
       "admission" => serialize_admission(canonical.admission),
       "resolved_policy" => serialize_resolved_policy(canonical.resolved_policy)
     }
+    |> maybe_put_reasoning(canonical.reasoning)
+  end
+
+  defp maybe_put_reasoning(serialized, %CanonicalRequest.Reasoning{
+         generation_policy: generation_policy,
+         projection: projection,
+         source: source,
+         effective_contract: %{mode: :legacy}
+       })
+       when generation_policy == :model_default and projection == :legacy_blended and
+              source == :omitted_public do
+    serialized
+  end
+
+  defp maybe_put_reasoning(
+         serialized,
+         %CanonicalRequest.Reasoning{
+           generation_policy: generation_policy,
+           projection: projection,
+           source: source,
+           effective_contract: %{mode: :negotiated} = effective_contract
+         }
+       ) do
+    Map.put(serialized, "reasoning", %{
+      "generation_policy" => Atom.to_string(generation_policy),
+      "projection" => Atom.to_string(projection),
+      "source" => Atom.to_string(source),
+      "effective_contract" => normalize_plain_data(effective_contract)
+    })
   end
 
   @spec sampling_params(CanonicalRequest.Sampling.t()) :: map()

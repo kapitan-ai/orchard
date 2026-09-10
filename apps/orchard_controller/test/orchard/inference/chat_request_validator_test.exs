@@ -40,6 +40,18 @@ defmodule Orchard.Inference.ChatRequestValidatorTest do
       assert {:error, :unsupported_parameter, "frequency_penalty"} =
                ChatRequestValidator.validate(params)
     end
+
+    test "rejects unaccepted reasoning controls and arbitrary template keyword arguments" do
+      assert {:error, :unsupported_parameter, "reasoning"} =
+               @valid_params
+               |> Map.put("reasoning", %{"effort" => "low"})
+               |> ChatRequestValidator.validate()
+
+      assert {:error, :unsupported_parameter, "template_kwargs"} =
+               @valid_params
+               |> Map.put("template_kwargs", %{"enable_thinking" => false})
+               |> ChatRequestValidator.validate()
+    end
   end
 
   describe "required fields" do
