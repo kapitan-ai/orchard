@@ -11,7 +11,7 @@ The pre-implementation source tree had useful foundations but did not yet implem
 `apps/orchard_controller/lib/orchard/nodes.ex` described observational node discovery and inserted new nodes from successful Runtime Endpoint observations with `state: :active`.
 `apps/orchard_controller/lib/orchard/console/nodes_live.ex` renders persisted inventory and live Runtime Endpoint diagnostics, but it does not yet expose pending admission review or safe lifecycle actions.
 `apps/orchard_cli/lib/orchard_cli/commands/nodes.ex` supports `orchardctl nodes list`, while `orchardctl nodes admit` is a deferred command.
-`apps/orchard_cli/lib/orchard_cli/commands/support.ex` already has a redacted support bundle flow that can become the shared diagnostics foundation.
+Existing node, request, scheduler, and Runtime Endpoint diagnostics provide the shared evidence foundation without requiring a packaged archive contract.
 
 ## Goals
 
@@ -19,7 +19,7 @@ The pre-implementation source tree had useful foundations but did not yet implem
 - Give operators a stable vocabulary for why a node is allowed, healthy, compatible, schedulable, warning-only, or blocked.
 - Keep CLI, Console, Operator API, and Admin API behavior consistent enough that automation and human review speak the same language.
 - Make risky node actions reviewable before execution, especially drain, maintenance, resume, and decommission.
-- Let support and diagnostic workflows collect useful evidence without leaking secrets or collapsing local evidence logs into product truth.
+- Let diagnostic workflows collect useful evidence without leaking secrets or collapsing local evidence logs into product truth.
 - Show Active/Standby leadership and advisory-lock status as read-only status first.
 
 ## Non-Goals
@@ -36,7 +36,7 @@ The pre-implementation source tree had useful foundations but did not yet implem
 The cluster-management surface should feel operational, compact, and repeatable.
 It should favor dense but readable tables, clear filtering, restrained status badges, secondary detail panels, and reason-code drill-ins over decorative presentation.
 Dangerous actions should use explicit previews, concise consequence copy, affected-resource summaries, confirmation requirements, and visible success or failure feedback.
-Support bundle generation should start from scope selection, show included and omitted evidence categories, expose redaction status, and produce the same artifact contract from CLI and Console.
+Diagnostic entry points should expose bounded evidence through the same domain contracts used by CLI, Console, and Operator API surfaces.
 These UX conclusions are subordinate to `SPEC.md`, `docs/brand-identity.md`, `docs/DESIGN.md`, and the accepted OpenSpec requirements below.
 
 ## Decision Ledger
@@ -45,9 +45,8 @@ These UX conclusions are subordinate to `SPEC.md`, `docs/brand-identity.md`, `do
 |----------|--------|-----|
 | First-observed nodes enter pending admission and do not become `active` automatically. | `SPEC.md` §4.2, §4.3, §7.5.4, current `Orchard.Nodes` gap | Prevent accidental cluster expansion and reconcile current implementation with explicit admission. |
 | Status presentation separates lifecycle, health, freshness, transport, runtime, compatibility, scheduling, and warnings. | `SPEC.md` §4.5, §4.6.1, §5.5, §7.5 | Operators need to know whether the problem is trust, reachability, runtime readiness, version compatibility, or scheduler policy. |
-| Scheduler explanations use fixed reason codes shared by API, CLI, Console, support bundles, and tests. | `SPEC.md` §5.5, §7.3.5, §9.1 | Durable codes make automation and support analysis possible. |
+| Scheduler explanations use fixed reason codes shared by API, CLI, Console, and tests. | `SPEC.md` §5.5, §7.3.5, §9.1 | Durable codes make automation and support analysis possible. |
 | Node actions expose preview, eligibility, blockers, and consequences before mutation. | `SPEC.md` §4.4, §4.8, §7.3, §7.4, §13.4 | Cordon, drain, maintenance, resume, and decommission can affect live work. |
-| Support bundle creation has shared CLI and Console semantics, including scope and redaction manifest. | `SPEC.md` §7.3, §9, §10.2, §11.9, current support bundle CLI | Operators need one evidence artifact, not separate Console-only and CLI-only formats. |
 | Control-plane status starts read-only in Console and CLI. | `SPEC.md` §3.3, §12.6, §13.3 | Leadership and lock state are high-risk control-plane facts and mutating actions need a separate design. |
 
 ## UX Model
@@ -57,7 +56,7 @@ First: who is allowed in this cluster.
 Second: who is healthy, compatible, fresh, and schedulable right now.
 Third: what action is safe next.
 
-Console should organize these as a Nodes workspace with a pending admission queue, an admitted node inventory, per-node detail, scheduler explanation drill-in, diagnostics/support actions, and a read-only control-plane status section.
+Console should organize these as a Nodes workspace with a pending admission queue, an admitted node inventory, per-node detail, scheduler explanation drill-in, diagnostic actions, and a read-only control-plane status section.
 The existing `NodesLive` split between persisted inventory and live Runtime Endpoint diagnostics is a good starting structure.
 The next implementation should add pending admission and action review without turning the page into a single mixed table of ambiguous badges.
 
@@ -201,15 +200,6 @@ Action preview consequence codes should include these initial stable values:
 - `future_scheduling_revoked`
 - `no_rejoin_with_same_node_id`
 
-Support bundle and diagnostics scope codes should include:
-
-- `cluster`
-- `node`
-- `request`
-- `scheduler_decision`
-- `runtime_endpoint`
-- `control_plane`
-
 These vocabularies are intentionally small enough for tests and docs to lock down.
 Future implementation may add codes, but it should not replace accepted codes without a SPEC reconciliation.
 
@@ -233,22 +223,11 @@ Rejecting a pending admission is not the same as decommissioning an admitted nod
 Console should present action previews in focused dialogs.
 CLI should expose `--dry-run` and `--json` for previews, and require `--yes` plus any action-specific confirmation value for non-interactive destructive execution.
 
-## Diagnostics And Support Bundles
+## Diagnostics
 
-Diagnostics and support bundle creation should share a single mental model.
-Operators choose a scope, review included evidence categories, see redaction status, generate the artifact, and receive a durable path or download result.
-
-This change defines `orchard.support_bundle.v2` for shared Console and CLI cluster-management bundles.
-The v2 support bundle manifest should include bundle format, generated time, Orchard version, scope, included sections, omitted sections, redaction manifest, max log bytes, and relevant SPEC references.
-The existing v1 support bundle command may remain for compatibility only if v2 behavior is explicitly selected or made the default in the implementation slice.
-The fields required by this change are mandatory for the v2 contract.
-The redaction manifest should list redaction classes and counts, not secret values.
-Support bundles must exclude plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw token sequences, raw local evidence logs, and tool session identifiers.
-Scoped bundles should include only evidence relevant to the selected scope and should record omitted sections.
-Request and scheduler-decision scopes should include sanitized metadata only and should not include prompt bodies, response bodies, raw token sequences, raw prefix-cache fingerprints, or tenant secret material.
-
-Console-triggered bundles should produce the same v2 archive format as `orchardctl support bundle create`.
-Console may add a guided wizard, but it must not create a separate support artifact contract.
+Diagnostics should reuse the shared node status, request inspection, scheduler explanation, Runtime Endpoint observation, dispatch-capacity, and control-plane status contracts.
+CLI, Console, and Operator API presentation may differ, but each surface should preserve stable machine-readable codes and bounded sanitized metadata.
+Diagnostics must exclude plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw token sequences, raw local evidence logs, tool session identifiers, raw prefix-cache fingerprints, and tenant secret material.
 
 ## Control-Plane Read-Only Status
 
@@ -280,7 +259,7 @@ That increases risk before the read-only status model and permission/audit contr
 2. Add observed admission candidate persistence for first-observed Runtime Endpoint observations that are not yet lifecycle-managed nodes.
 3. Update the node persistence model so first-observed nodes do not become `active` without explicit admission.
 4. Add rejected-admission decision metadata and audit handling.
-5. Add CLI parity commands and JSON contracts for list, detail, admission, rejection, actions, explanations, and support bundles.
+5. Add CLI parity commands and JSON contracts for list, detail, admission, rejection, actions, explanations, and diagnostics.
 6. Add Console pending admission, detail drill-in, action preview dialogs, diagnostics entry points, and control-plane read-only status.
 7. Add scheduler explanation persistence and rendering using fixed reason-code vocabularies.
 8. Add tests that cite the accepted SPEC sections and verify CLI/Console parity.

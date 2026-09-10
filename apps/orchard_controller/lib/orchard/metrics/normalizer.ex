@@ -17,7 +17,7 @@ defmodule Orchard.Metrics.Normalizer do
     quota_reason:
       ~w(requests_per_minute input_tokens_per_day output_tokens_per_day tenant_concurrency),
     audit_action:
-      ~w(tenant api_key service_account role_binding routing_policy tenant_model_access support_bundle node_admission node_lifecycle circuit_breaker cluster portal_user),
+      ~w(tenant api_key service_account role_binding routing_policy tenant_model_access node_admission node_lifecycle circuit_breaker cluster portal_user),
     audit_outcome: ~w(succeeded failed denied)
   }
 

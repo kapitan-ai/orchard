@@ -196,7 +196,7 @@ Workers stay behind the Node Agent and are not exposed as public endpoints.
 **Console and CLI**
 
 The Phoenix LiveView Console presents nodes, models, Workspaces, keys, request inspection, settings, and a Playground.
-`orchardctl` covers bootstrap, model import and access, node trust and enrollment, lifecycle actions, transport setup, diagnostics, and redacted support bundles.
+`orchardctl` covers bootstrap, model import and access, node trust and enrollment, lifecycle actions, transport setup, and diagnostics.
 
 **Postgres**
 
@@ -229,7 +229,7 @@ Available in the current source tree:
 - Authenticated `/v1/models` and `/v1/chat/completions`, including server-sent event streaming.
 - A bounded `/v1/responses` subset.
 - Workspace-scoped API Tokens, API Clients, and deny-by-default model access grants.
-- The Console, Developer Portal, Prometheus metrics, request diagnostics, and redacted support bundles.
+- The Console, Developer Portal, Prometheus metrics, and request diagnostics.
 - Node trust initialization, single-node enrollment and join, admission review, and bounded lifecycle actions.
 - Client-executed function-tool passthrough for model configurations qualified with the `tool_calling` capability.
 
