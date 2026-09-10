@@ -134,7 +134,9 @@ Typical cells include:
 - recovery after load, worker, Node, or transport failure.
 
 Record the prompt class, input and output token limits, context window exercised, sample count, concurrency, topology, and acceptance rule for each cell.
-Reasoning behavior remains `unknown` unless evidence is evaluated under the contract that issue #190 eventually establishes.
+Reasoning behavior remains `unknown` unless evidence is evaluated under the contract that issue #190 establishes. Qualified reasoning-effort selection is a separate capability cell: a record that names canonical `low`, `medium`, or `high` must identify the exact artifact/template renderer mapping and the exact negotiated tuple for each tier.
+
+Static renderer acceptance proves only that exact mapping. Runtime conformance separately proves fresh complete-tuple advertisement and loaded-worker acceptance before invocation; semantic qualification separately proves predeclared tier assertions and final-only separation; and an approved scoped support claim separately decides what may be represented as offered. None of those later boundaries is implied by the prior one, and manual qualification never replaces Runtime Endpoint dispatch proof.
 
 Every claim classifies a capability as:
 
@@ -249,7 +251,7 @@ Expanding a claim requires approved evidence for every added capability or limit
 Requalification is required before a claim continues to apply when any of these changes can affect the tested envelope:
 
 - checkpoint revision, artifact bytes, Artifact Bundle digest, quantization, adapter, or artifact layout;
-- tokenizer, chat template, prompt renderer, processor, parser, or tool marker behavior;
+- tokenizer, chat template, prompt renderer, processor, parser, qualified reasoning-effort mapping, or tool marker behavior;
 - Worker Runtime provider, runtime dependencies, acceleration implementation, or Worker Runtime protocol;
 - Orchard revision, public API contract, Runtime Endpoint transport, or internal worker protocol;
 - routing, residency, pinning, prewarming, queue, concurrency, context, generation, memory, or failure-handling configuration;

@@ -1,0 +1,105 @@
+# Design: Define qualified reasoning-effort tiers
+
+## Context
+
+PR #325 established independent reasoning generation-policy and public-projection axes. A reasoning-capable renderer can still expose provider-specific effort values that vary by exact model artifact and template. Those values do not establish a portable public vocabulary, a Runtime Endpoint capability, semantic effect, or a model support claim.
+
+Issue #398 supplies the narrow missing contract. It must preserve omitted public requests on the complete legacy path and let future implementation select only exact, qualified mappings. The first fixture is `mlx-community/Qwen3.8-27B-4bit`, whose exact template values are `low`, `medium`, and `xhigh`; the third is evidence for canonical `high`, not a new canonical tier.
+
+## Goals and non-goals
+
+### Goals
+
+- Define a provider-neutral closed effort vocabulary and validity matrix.
+- Preserve independent generation-policy and projection authority.
+- Require exact renderer mapping and complete capability evidence before execution.
+- Preserve existing omitted-request, hidden-reasoning, retry, capture, hash, replay, and mixed-version guarantees.
+- Keep manual qualification evidence and support claims distinct from runtime dispatch authority.
+
+### Non-goals
+
+- Implement a public field, renderer mapping, protocol encoding, parser behavior, or model behavior.
+- Expose arbitrary template kwargs or provider values.
+- Infer mappings from a model name, publisher, template keyword, or model family.
+- Make Qwen3.8 an allowlist entry, offered model, default, or general support claim.
+- Change raw structured reasoning, prior-reasoning history, tool execution, or the legacy display fallback.
+
+## Decisions
+
+### Use a separate optional closed axis
+
+The canonical Request adds `reasoning_effort: nil | low | medium | high` beside `generation_policy` and `projection`. It answers how much qualified reasoning the renderer asks for; it neither selects whether reasoning is generated nor selects what becomes public output.
+
+A non-`nil` tier is valid only when all of the following hold:
+
+- the request is negotiated rather than omitted legacy;
+- `generation_policy = enabled`;
+- `projection = final_only`; and
+- the exact contract proves that tier.
+
+A tier with `generation_policy = model_default` or `disabled` is contradictory and fails closed before a Request write. This preserves the accepted meaning of `model_default`: Orchard permits the template-owned generation default rather than silently altering it. It also preserves the existing `disabled` conformance rule.
+
+Effort is optional even for `enabled + final_only`. Absence means no effort tier was selected; Orchard does not manufacture a default tier. Omitted public controls remain `model_default + legacy_blended` with `reasoning_effort = nil`, and their existing public-body bytes and hash domain remain unchanged.
+
+### Stage public vocabulary, not a wire name
+
+The provider-neutral vocabulary is exactly `low`, `medium`, and `high`. A later accepted issue #331 public-input contract will choose concrete field names for both endpoints. It must expose only this vocabulary, normalize it into the canonical axis, and use the existing closed `unsupported_reasoning_control` error mapping. It must not expose provider values or accept effort alone without an explicit enabled generation policy.
+
+This amendment therefore defines request semantics without preempting the concrete Chat Completions or Responses encoding that #331 owns.
+
+### Bind renderer mappings to an exact tuple
+
+The Controller selects a renderer mapping only through a closed mapping bound to the exact artifact digest, chat-template digest, render-contract name, and render-contract version. That mapping maps one canonical tier to the provider-specific key and value required by the exact renderer. Callers never supply that key or value.
+
+The selected canonical tier is part of the complete negotiated tuple:
+
+```text
+(generation_policy, projection, reasoning_effort,
+ model_artifact_digest, chat_template_digest,
+ render_contract, render_contract_version,
+ parser_family, parser_version,
+ runtime_contract_version, event_binding_version)
+```
+
+Each advertised tuple is atomic. Independent lists of tiers, artifact digests, template digests, or mapping values cannot authorize a Cartesian product. The loaded-worker acceptance proof echoes this same complete tuple and its worker incarnation before model invocation.
+
+The Qwen3.8 fixture proves only the exact qualified mapping `low -> low`, `medium -> medium`, and `high -> xhigh` for its exact artifact/template tuple. Missing mappings, unknown tiers, contradictory policy/tier input, stale evidence, and an incompatible loaded-worker proof all fail closed. The fixture does not infer mappings for any other artifact or template.
+
+### Preserve post-selection boundaries
+
+A selected tier does not change parser ordering: negotiated parsing remains before tools and caller stops, and only final answer text reaches the public final-only channel. Hidden reasoning stays ephemeral for every valid tier. Usage continues to account for exact total generated output or a validated lower bound without exposing a reasoning-token subset.
+
+Retries pin the selected tier together with all existing negotiated identity. Hashing and idempotency serialize only what the accepted public contract actually supplied; a missing effort never becomes an injected nullable or default value. Replay returns the retained public response without rerendering or reselecting effort.
+
+A Controller and Node Agent that lack the complete selected-effort contract exchange only legacy variants. An older or non-advertising binding never receives a selected tier or a new event variant.
+
+### Separate four evidence boundaries
+
+1. **Static render acceptance** proves that the exact renderer can apply one exact mapping to a rendered prompt. It proves neither generation, parser conformance, runtime negotiation, semantic effect, nor support.
+2. **Runtime conformance** proves that the exact selected tuple is advertised and accepted by the loaded worker before invocation. It is necessary for dispatch but does not prove semantic quality or a support claim.
+3. **Semantic tier qualification** evaluates predeclared meaningful assertions and final-only separation for each exact tuple, endpoint mode, and proposed tier envelope. A sample success is insufficient.
+4. **Approved support claim** is the separate manual-governance decision that may represent only the evidenced envelope. It is not a manifest field, scheduler gate, or execution permit.
+
+## Alternatives considered
+
+### Pass through template kwargs
+
+Rejected because it exposes provider vocabulary, prevents stable validation, and lets a caller form unsupported combinations.
+
+### Make effort another generation-policy value
+
+Rejected because it would collapse the independent concerns accepted in PR #325. Effort only refines an explicitly enabled generation request; it cannot silently change `model_default` or `disabled`.
+
+### Make `xhigh` canonical
+
+Rejected because it is an exact Qwen3.8 renderer value, not a provider-neutral product term. Canonical `high` preserves a stable contract while allowing qualified mapping evidence.
+
+### Treat qualification as dispatch proof
+
+Rejected because static and manual evidence cannot replace fresh tuple advertisement and loaded-worker acceptance proof.
+
+## Sequencing and validation
+
+Issue #326 owns canonical normalization and renderer implementation. Issue #327 owns the concrete negotiated Runtime Endpoint and Worker Runtime encoding. Issue #328 owns parser and final-only projection conformance. Issue #329 owns usage, retry, capture, hash, and replay implementation. Issue #331 owns public field names and endpoint behavior.
+
+Each implementation must use the exact fixture matrix: Qwen3.8 `low`, `medium`, and `xhigh`, plus missing, unknown, contradictory, incompatible, stale, and mixed-version evidence. It must distinguish the four evidence boundaries above and must not convert static or semantic fixture success into a broad model support claim.
