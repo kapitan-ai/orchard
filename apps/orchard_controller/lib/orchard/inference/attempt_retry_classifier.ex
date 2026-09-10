@@ -104,6 +104,16 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   def pre_schedule(%Boundary{attempt: 2, caller_status: :cancelled}),
     do: {:declined, :cancelled}
 
+  def pre_schedule(%Boundary{attempt: 2, deadline_status: :exhausted}),
+    do: {:declined, :retry_exhausted}
+
+  def pre_schedule(%Boundary{
+        attempt: 2,
+        failure_class: "pre_acceptance_unavailable",
+        failure_code: "runtime_incompatible"
+      }),
+      do: {:declined, :not_retryable}
+
   def pre_schedule(%Boundary{attempt: 2}), do: {:declined, :retry_exhausted}
 
   def pre_schedule(%Boundary{attempt: 1} = boundary),

@@ -66,6 +66,41 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
     end
   end
 
+  test "SPEC.md §7.2.7 permits typed attempt 2 acceptance-proof failure evidence" do
+    assert {:ok, attempt_2} =
+             InferenceAttemptResult.new(
+               "request_step.failed",
+               2,
+               failed_result(%{
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "runtime_incompatible",
+                 "node_id" => @node_2,
+                 "excluded_node_ids" => [@node_1],
+                 "retry_decision" => "not_retryable"
+               })
+             )
+
+    assert attempt_2["retry_decision"] == "not_retryable"
+
+    for {failure_class, failure_code} <- [
+          {"pre_acceptance_unavailable", "runtime_unavailable"},
+          {"runtime_failure", "runtime_incompatible"}
+        ] do
+      assert {:error, _reason} =
+               InferenceAttemptResult.new(
+                 "request_step.failed",
+                 2,
+                 failed_result(%{
+                   "failure_class" => failure_class,
+                   "failure_code" => failure_code,
+                   "node_id" => @node_2,
+                   "excluded_node_ids" => [@node_1],
+                   "retry_decision" => "not_retryable"
+                 })
+               )
+    end
+  end
+
   test "orphaned enriched fields and contradictory decisions fail closed" do
     assert InferenceAttemptResult.enriched?(%{"failure_class" => "runtime_failure"})
 

@@ -69,6 +69,16 @@ defmodule Orchard.Requests.InferenceAttemptFailureTest do
            }
   end
 
+  test "SPEC.md §7.2.7 preserves runtime-incompatible pre-acceptance evidence" do
+    assert InferenceAttemptFailure.normalize(%{
+             category: :pre_acceptance,
+             code: :runtime_incompatible
+           }) == %{
+             "failure_class" => "pre_acceptance_unavailable",
+             "failure_code" => "runtime_incompatible"
+           }
+  end
+
   test "unknown source failures fail closed" do
     assert InferenceAttemptFailure.normalize(%{category: :unknown, code: :private_code}) == %{
              "failure_class" => "controller_failure",

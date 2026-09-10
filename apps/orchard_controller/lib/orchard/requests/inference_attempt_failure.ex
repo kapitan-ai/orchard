@@ -134,7 +134,13 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   defp model_load_code(_code), do: "internal_error"
 
   defp pre_acceptance_code(code)
-       when code in ["node_unavailable", "node_timeout", "runtime_unavailable", "rpc_unavailable"],
+       when code in [
+              "node_unavailable",
+              "node_timeout",
+              "runtime_incompatible",
+              "runtime_unavailable",
+              "rpc_unavailable"
+            ],
        do: code
 
   defp pre_acceptance_code(_code), do: "internal_error"

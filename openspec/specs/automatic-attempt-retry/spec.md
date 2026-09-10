@@ -22,7 +22,17 @@ This requirement traces to `SPEC.md` §3.6, §3.7.1, §5.3, §5.4, §5.8, §5.9,
 - **AND** the Request terminalizes once from attempt 2
 
 #### Scenario: Attempt 2 fails
-- **WHEN** attempt 2 ends unsuccessfully without caller cancellation or disconnect
+- **WHEN** attempt 2 ends unsuccessfully without caller cancellation or disconnect and without a Controller-detected negotiated acceptance-proof failure winning the terminal race
+- **THEN** its terminal evidence records `retry_exhausted`
+- **AND** Orchard starts no third attempt
+
+#### Scenario: Attempt 2 negotiated acceptance proof fails
+- **WHEN** a Controller-detected negotiated acceptance-proof failure terminalizes attempt 2 before deadline terminalization is proven
+- **THEN** its terminal evidence records `not_retryable`
+- **AND** Orchard starts no third attempt
+
+#### Scenario: Deadline precedes attempt 2 negotiated acceptance proof failure
+- **WHEN** deadline terminalization is proven before a Controller-detected negotiated acceptance-proof failure wins the terminal race
 - **THEN** its terminal evidence records `retry_exhausted`
 - **AND** Orchard starts no third attempt
 

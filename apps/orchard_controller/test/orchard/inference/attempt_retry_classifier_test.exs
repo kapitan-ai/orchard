@@ -218,8 +218,32 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
            }) == {:declined, :identity_unresolved}
   end
 
-  test "SPEC.md §7.2.7 bounds attempt 2 to cancellation or retry exhaustion" do
-    assert classify(%{attempt: 2, caller_status: :cancelled}) == {:declined, :cancelled}
+  test "SPEC.md §§3.7.1, 5.8, and 7.5.3a preserves the typed acceptance-proof exception" do
+    acceptance_proof_failure = %{
+      failure_class: "pre_acceptance_unavailable",
+      failure_code: "runtime_incompatible",
+      runtime_retryable: false
+    }
+
+    assert classify(acceptance_proof_failure) == {:declined, :not_retryable}
+
+    assert classify(Map.put(acceptance_proof_failure, :attempt, 2)) ==
+             {:declined, :not_retryable}
+
+    assert classify(Map.merge(acceptance_proof_failure, %{attempt: 2, caller_status: :cancelled})) ==
+             {:declined, :cancelled}
+
+    assert classify(
+             Map.merge(acceptance_proof_failure, %{attempt: 2, deadline_status: :exhausted})
+           ) == {:declined, :retry_exhausted}
+
+    assert classify(%{
+             attempt: 2,
+             failure_class: "runtime_failure",
+             failure_code: "runtime_incompatible",
+             runtime_retryable: false
+           }) == {:declined, :retry_exhausted}
+
     assert classify(%{attempt: 2, caller_status: :live}) == {:declined, :retry_exhausted}
   end
 
