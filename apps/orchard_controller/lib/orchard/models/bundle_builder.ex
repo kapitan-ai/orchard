@@ -24,6 +24,7 @@ defmodule Orchard.Models.BundleBuilder do
   @template_candidates ["chat_template.jinja", "chat_template.jinja2"]
   @generated_template_name "chat_template.jinja"
   @tokenizer_config_name "tokenizer_config.json"
+  @tool_capability_evidence_name "tool_capability_evidence.json"
   @catalog_contract_version 3
   @default_catalog_timeout_ms 30_000
   @default_catalog_max_stdout_bytes 1_048_576
@@ -97,7 +98,7 @@ defmodule Orchard.Models.BundleBuilder do
              safe_tokenization: safe_tokenization,
              capability_evidence: capability_evidence
            }),
-         :ok <- write_and_validate_manifest(download_dir, manifest) do
+         :ok <- write_and_validate_manifest(download_dir, manifest, capability_evidence) do
       {:ok, download_dir}
     end
   end
@@ -833,10 +834,10 @@ defmodule Orchard.Models.BundleBuilder do
          tokenizer_config_asset,
          template_asset
        ) do
-    preflight =
+    {preflight_status, preflight} =
       run_tool_capability_preflight(download_dir, tokenizer_config_asset, template_asset)
 
-    result = tool_capability_result(preflight, tokenizer_config_asset)
+    result = tool_capability_result(preflight_status, preflight)
 
     %{
       "tool_calling" =>
@@ -859,7 +860,7 @@ defmodule Orchard.Models.BundleBuilder do
       {:ok, input} ->
         case SafeTokenizationPreflight.run_tool_capability(input) do
           {:ok, result} ->
-            result
+            {:verified, result}
 
           {:error, reason} ->
             Logger.warning(
@@ -867,11 +868,11 @@ defmodule Orchard.Models.BundleBuilder do
                 "Bundle stays chat-only."
             )
 
-            empty_tool_capability_preflight()
+            {:unavailable, empty_tool_capability_preflight()}
         end
 
       :ineligible ->
-        empty_tool_capability_preflight()
+        {:unavailable, empty_tool_capability_preflight()}
     end
   end
 
@@ -902,18 +903,16 @@ defmodule Orchard.Models.BundleBuilder do
   end
 
   defp tool_capability_result(
-         %{parser_recognized: true, definition_rendered: true, history_rendered: true},
-         _tokenizer_config_asset
+         :verified,
+         %{parser_recognized: true, definition_rendered: true, history_rendered: true}
        ),
        do: "declared"
 
-  defp tool_capability_result(_preflight, tokenizer_config_asset) do
-    if is_binary(tool_parser_type(tokenizer_config_asset)) do
-      "conflicted"
-    else
-      "unknown"
-    end
+  defp tool_capability_result(:verified, preflight) do
+    if Enum.any?(Map.values(preflight), & &1), do: "conflicted", else: "unknown"
   end
+
+  defp tool_capability_result(:unavailable, _preflight), do: "unknown"
 
   defp stringify_tool_capability_preflight(preflight) do
     %{
@@ -978,7 +977,6 @@ defmodule Orchard.Models.BundleBuilder do
       "prefill_workspace_bytes_per_token" => 0,
       "max_context_tokens" => attrs.max_context_tokens,
       "capabilities" => capabilities_from_evidence(attrs.capability_evidence),
-      "capability_evidence" => attrs.capability_evidence,
       "tokenizer" => tokenizer,
       "safe_tokenization" => attrs.safe_tokenization,
       "runtime_requirements" => %{
@@ -1009,26 +1007,31 @@ defmodule Orchard.Models.BundleBuilder do
 
   # -- Manifest Write & Validation -------------------------------------------
 
-  defp write_and_validate_manifest(download_dir, manifest) do
+  defp write_and_validate_manifest(download_dir, manifest, capability_evidence) do
     manifest_path = Path.join(download_dir, "manifest.json")
-    json = Jason.encode!(manifest, pretty: true)
+    evidence_path = Path.join(download_dir, @tool_capability_evidence_name)
 
-    case File.write(manifest_path, json) do
-      :ok ->
-        case ManifestParser.parse_from_bundle(download_dir) do
-          {:ok, _parsed} ->
-            :ok
+    with :ok <- File.write(manifest_path, Jason.encode!(manifest, pretty: true)),
+         :ok <- File.write(evidence_path, Jason.encode!(capability_evidence, pretty: true)) do
+      case ManifestParser.parse_from_bundle(download_dir) do
+        {:ok, _parsed} ->
+          :ok
 
-          {:error, reason} ->
-            File.rm(manifest_path)
+        {:error, reason} ->
+          File.rm(manifest_path)
+          File.rm(evidence_path)
 
-            {:error,
-             {:invalid_generated_manifest,
-              "Generated manifest failed validation: #{inspect(reason)}"}}
-        end
-
+          {:error,
+           {:invalid_generated_manifest,
+            "Generated manifest failed validation: #{inspect(reason)}"}}
+      end
+    else
       {:error, reason} ->
-        {:error, {:manifest_write, "Failed to write #{manifest_path}: #{inspect(reason)}"}}
+        File.rm(manifest_path)
+        File.rm(evidence_path)
+
+        {:error,
+         {:manifest_write, "Failed to write generated bundle metadata: #{inspect(reason)}"}}
     end
   end
 

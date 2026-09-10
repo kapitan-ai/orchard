@@ -938,6 +938,7 @@ defmodule Orchard.Models.Importer do
       state: state,
       format: manifest.format,
       capabilities: manifest.capabilities,
+      capability_evidence: capability_evidence_to_map(manifest.capability_evidence),
       tokenizer: tokenizer_to_map(manifest.tokenizer),
       artifact_uri: artifact_uri,
       artifact_source_uri: artifact_uri,
@@ -953,6 +954,37 @@ defmodule Orchard.Models.Importer do
 
     Models.create_model(attrs)
   end
+
+  defp capability_evidence_to_map(nil), do: nil
+
+  defp capability_evidence_to_map(%ModelManifest.CapabilityEvidence{
+         tool_calling: %ModelManifest.CapabilityEvidence.ToolCalling{} = tool_calling
+       }) do
+    %{
+      "tool_calling" =>
+        %{
+          "source_repository" => tool_calling.source_repository,
+          "source_revision" => tool_calling.source_revision,
+          "base_model_refs" => tool_calling.base_model_refs,
+          "preflight" => %{
+            "parser_recognized" => tool_calling.preflight.parser_recognized,
+            "definition_rendered" => tool_calling.preflight.definition_rendered,
+            "history_rendered" => tool_calling.preflight.history_rendered
+          },
+          "result" => tool_calling.result,
+          "runtime_qualification" => tool_calling.runtime_qualification
+        }
+        |> maybe_put_evidence_value(
+          "tokenizer_config_sha256",
+          tool_calling.tokenizer_config_sha256
+        )
+        |> maybe_put_evidence_value("chat_template_sha256", tool_calling.chat_template_sha256)
+        |> maybe_put_evidence_value("tool_parser_type", tool_calling.tool_parser_type)
+    }
+  end
+
+  defp maybe_put_evidence_value(map, _key, nil), do: map
+  defp maybe_put_evidence_value(map, key, value), do: Map.put(map, key, value)
 
   defp tokenizer_to_map(%ModelManifest.Tokenizer{kind: kind, path: path}) do
     %{"kind" => kind, "path" => path}

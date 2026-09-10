@@ -29,11 +29,11 @@ This policy supplies record and claim vocabulary only.
 
 ### Catalog tool-capability admission is not qualification
 
-A Model Hub-generated `capability_evidence.tool_calling` object records only the exact source repository and revision, downloaded tokenizer/template artifact digests, parser identity, and bounded definition/history rendering result used to admit `tool_calling` to the Catalog. It is not a manual qualification record. `runtime_qualification: not_established` remains explicit even when the Catalog capability is declared.
+A Model Hub-generated `tool_capability_evidence.json` sidecar records only the exact source repository and revision, downloaded tokenizer/template artifact digests, parser identity, and bounded definition/history rendering result used to admit `tool_calling` to the Catalog. The importer retains the sidecar in the Artifact Bundle and copies it to the immutable Catalog model record without changing the closed worker manifest schema. It is not a manual qualification record. `runtime_qualification: not_established` remains explicit even when the Catalog capability is declared.
 
 A declared Catalog capability permits the existing request-time capability gate; it does not support a claim, qualify a runtime, authorize server-side tool execution, or prove a particular model family. Missing evidence, an unknown tuple, or conflicting evidence remains chat-only. Base-model references are provenance only and cannot substitute for exact tuple evidence.
 
-If a capability repair is needed, use the normal Model Hub download/build/import path against the same immutable source revision with a distinct explicit Catalog version. Do not edit a Catalog row or its stored manifest. The new Artifact Bundle requires its own qualification analysis; no prior support claim transfers automatically.
+If a capability repair is needed, use the Console Model Hub repair action to enter a distinct explicit Catalog version for the same immutable source revision. Do not edit a Catalog row or its stored Artifact Bundle. The new Artifact Bundle requires its own qualification analysis; no prior support claim transfers automatically.
 
 ## Vocabulary and outcome model
 

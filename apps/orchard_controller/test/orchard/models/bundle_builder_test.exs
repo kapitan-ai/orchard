@@ -417,6 +417,13 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.capabilities == ["chat", "tool_calling"]
 
+      refute Map.has_key?(
+               Jason.decode!(File.read!(Path.join(ctx.tmp_dir, "manifest.json"))),
+               "capability_evidence"
+             )
+
+      assert File.exists?(Path.join(ctx.tmp_dir, "tool_capability_evidence.json"))
+
       evidence = manifest.capability_evidence.tool_calling
       assert evidence.source_repository == @repo_id
       assert evidence.source_revision == @revision_sha
@@ -509,7 +516,7 @@ defmodule Orchard.Models.BundleBuilderTest do
 
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.capabilities == ["chat"]
-      assert manifest.capability_evidence.tool_calling.result == "conflicted"
+      assert manifest.capability_evidence.tool_calling.result == "unknown"
     end
 
     test "records unknown evidence when the immutable tuple has no parser or template", ctx do

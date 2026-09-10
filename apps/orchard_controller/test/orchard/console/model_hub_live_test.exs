@@ -1876,6 +1876,49 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert opts[:revision] == "rev-llama"
     end
 
+    test "repair import sends a distinct Catalog version with the selected server revision", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      enter_catalog(view)
+      first = hd(results)
+
+      assert has_element?(view, "#model-hub-repair-form")
+
+      assert has_element?(
+               view,
+               "#model-hub-repair-note",
+               "does not alter an existing Catalog record"
+             )
+
+      render_submit(view, "repair_model", %{
+        "model_hub_repair" => %{"catalog_version" => "rev-llama-tool-admission"}
+      })
+
+      assert_receive {:stub_download_ref, _ref, repo_id, opts}, 200
+      assert repo_id == first.repo_id
+      assert opts[:activate] == false
+      assert opts[:revision] == "rev-llama"
+      assert opts[:catalog_version] == "rev-llama-tool-admission"
+    end
+
+    test "repair import rejects a Catalog version that matches the selected source revision", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+      enter_catalog(view)
+
+      render_submit(view, "repair_model", %{
+        "model_hub_repair" => %{"catalog_version" => "rev-llama"}
+      })
+
+      assert render(view) =~ "Catalog version must differ"
+
+      refute_receive {:stub_download_ref, _, _, _}, 50
+    end
+
     test "clicking download starts the seam and shows starting state", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = load_initial_results_and_detail(view)

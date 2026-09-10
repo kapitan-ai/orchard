@@ -45,7 +45,7 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
              ~w(artifact_layout capabilities entrypoint format model_id runtime_requirements tokenizer version)
 
     assert contract["optional_top_level_keys"] ==
-             ~w(capability_evidence chat_template kv_cache_bytes_per_token max_context_tokens prefill_workspace_bytes_per_token resident_memory_bytes safe_tokenization sha256 size_bytes)
+             ~w(chat_template kv_cache_bytes_per_token max_context_tokens prefill_workspace_bytes_per_token resident_memory_bytes safe_tokenization sha256 size_bytes)
 
     assert contract["deprecated_top_level_keys"] == ["sha256"]
 
@@ -266,56 +266,40 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
     assert manifest.safe_tokenization.catalog_source.extra_count == 0
   end
 
-  test "SPEC 6.4 parser preserves revision-bound declared tool capability evidence" do
+  test "SPEC 6.4 keeps capability evidence out of the N-1 worker manifest schema" do
     json =
       base_manifest_map()
-      |> Map.put("capabilities", ["chat", "tool_calling"])
-      |> Map.put("capability_evidence", %{
-        "tool_calling" => %{
-          "source_repository" => "mlx-community/example",
-          "source_revision" => "0123456789abcdef",
-          "base_model_refs" => ["upstream/example"],
-          "tokenizer_config_sha256" => String.duplicate("a", 64),
-          "chat_template_sha256" => String.duplicate("b", 64),
-          "tool_parser_type" => "glm47",
-          "preflight" => %{
-            "parser_recognized" => true,
-            "definition_rendered" => true,
-            "history_rendered" => true
-          },
-          "result" => "declared",
-          "runtime_qualification" => "not_established"
-        }
-      })
-      |> Jason.encode!()
-
-    assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_json(json)
-    assert manifest.capabilities == ["chat", "tool_calling"]
-    assert manifest.capability_evidence.tool_calling.source_revision == "0123456789abcdef"
-    assert manifest.capability_evidence.tool_calling.preflight.history_rendered
-  end
-
-  test "SPEC 6.4 parser rejects capability evidence that contradicts tool capability" do
-    json =
-      base_manifest_map()
-      |> Map.put("capability_evidence", %{
-        "tool_calling" => %{
-          "source_repository" => "mlx-community/example",
-          "source_revision" => "0123456789abcdef",
-          "base_model_refs" => [],
-          "preflight" => %{
-            "parser_recognized" => false,
-            "definition_rendered" => false,
-            "history_rendered" => false
-          },
-          "result" => "declared",
-          "runtime_qualification" => "not_established"
-        }
-      })
+      |> Map.put("capability_evidence", tool_capability_evidence("declared"))
       |> Jason.encode!()
 
     assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
-    assert message =~ "does not match capabilities"
+    assert message =~ "unknown manifest keys"
+  end
+
+  test "SPEC 6.4 parser preserves revision-bound declared capability evidence from its sidecar" do
+    bundle_path =
+      Path.join(System.tmp_dir!(), "manifest-schema-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(bundle_path)
+
+    on_exit(fn -> File.rm_rf!(bundle_path) end)
+
+    File.write!(
+      Path.join(bundle_path, "manifest.json"),
+      base_manifest_map()
+      |> Map.put("capabilities", ["chat", "tool_calling"])
+      |> Jason.encode!()
+    )
+
+    File.write!(
+      Path.join(bundle_path, "tool_capability_evidence.json"),
+      Jason.encode!(tool_capability_evidence("declared"))
+    )
+
+    assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_from_bundle(bundle_path)
+    assert manifest.capabilities == ["chat", "tool_calling"]
+    assert manifest.capability_evidence.tool_calling.source_revision == "0123456789abcdef"
+    assert manifest.capability_evidence.tool_calling.preflight.history_rendered
   end
 
   test "SPEC 6.4 parser accepts compatible optional safe-tokenization metadata literal" do
@@ -388,17 +372,32 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
     assert manifest.safe_tokenization.incompatibility_reason.first_diff_offset == 12
   end
 
+  defp tool_capability_evidence("declared") do
+    %{
+      "tool_calling" => %{
+        "source_repository" => "mlx-community/example",
+        "source_revision" => "0123456789abcdef",
+        "base_model_refs" => ["upstream/example"],
+        "tokenizer_config_sha256" => String.duplicate("a", 64),
+        "chat_template_sha256" => String.duplicate("b", 64),
+        "tool_parser_type" => "glm47",
+        "preflight" => %{
+          "parser_recognized" => true,
+          "definition_rendered" => true,
+          "history_rendered" => true
+        },
+        "result" => "declared",
+        "runtime_qualification" => "not_established"
+      }
+    }
+  end
+
   defp parser_contract_key_sets do
     schema_keys = ManifestParser.schema_keys()
 
     %{
       "top_level_keys" => schema_keys.top_level_keys,
       "nested_keys" => %{
-        "capability_evidence" => schema_keys.nested_keys.capability_evidence,
-        "capability_evidence.tool_calling" =>
-          schema_keys.nested_keys.capability_evidence_tool_calling,
-        "capability_evidence.tool_calling.preflight" =>
-          schema_keys.nested_keys.capability_evidence_tool_calling_preflight,
         "chat_template" => schema_keys.nested_keys.chat_template,
         "runtime_requirements" => schema_keys.nested_keys.runtime_requirements,
         "safe_tokenization" => schema_keys.nested_keys.safe_tokenization,

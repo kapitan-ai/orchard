@@ -7,7 +7,7 @@
 
 - [x] 2.1 Add tokenizer-only preflight for recognized parser plus synthetic definition and structured-history rendering.
 - [x] 2.2 Generate fail-closed evidence and Catalog capabilities in BundleBuilder without model-name heuristics.
-- [x] 2.3 Preserve manifest provenance through normal import and keep duplicate identities immutable.
+- [x] 2.3 Preserve sidecar provenance in the Artifact Bundle and Catalog through normal import, keep the worker manifest N-1 compatible, and keep duplicate identities immutable.
 
 ## 3. Request safety
 

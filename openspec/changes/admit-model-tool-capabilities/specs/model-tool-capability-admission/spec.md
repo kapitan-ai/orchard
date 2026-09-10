@@ -4,19 +4,20 @@
 
 For a Model Hub bundle, Orchard SHALL derive `tool_calling` only from a complete capability-evidence tuple bound to the exact downloaded Hugging Face repository and resolved revision, exact tokenizer-config digest, exact chat-template digest, and a recognized parser identity. The tuple SHALL include a tokenizer-only preflight that verifies the exact template carries a synthetic function definition and a synthetic structured assistant-call plus tool-result continuation. The resolver SHALL not use a model/family name, a generic Hub tag, arbitrary README prose, or a base-model link alone as positive evidence.
 
-The manifest SHALL retain a closed `capability_evidence.tool_calling` object containing source provenance, artifact digests, parser identity, preflight result, and `runtime_qualification`. `runtime_qualification` SHALL be `not_established` after import unless a separately accepted runtime evidence contract changes it.
+The Artifact Bundle SHALL retain a closed `tool_capability_evidence.json` sidecar containing source provenance, artifact digests, parser identity, preflight result, and `runtime_qualification`; the importer SHALL copy it to the immutable Catalog model record. The closed worker manifest SHALL not gain a top-level evidence key, preserving N-1 Worker Runtime compatibility. `runtime_qualification` SHALL be `not_established` after import unless a separately accepted runtime evidence contract changes it.
 
 #### Scenario: Complete recognized artifact tuple declares tool calling
 
 - **WHEN** Model Hub downloads one resolved revision whose tokenizer parser identity is recognized and whose exact template preflight carries both synthetic tool definition and structured history
 - **THEN** BundleBuilder writes `tool_calling` with a `declared` evidence result and the importer persists `tool_calling` in that new Catalog model's capabilities
-- **AND THEN** the manifest records `runtime_qualification: not_established`
+- **AND THEN** the sidecar and Catalog record retain `runtime_qualification: not_established`
 
 #### Scenario: Unknown evidence remains chat-only
 
 - **WHEN** a downloaded artifact lacks a recognized parser, a required exact asset digest, or a successful template preflight
 - **THEN** BundleBuilder writes `unknown` or `conflicted` evidence as applicable
 - **AND THEN** the generated manifest and imported Catalog model remain chat-only
+- **AND THEN** a preflight helper failure is `unknown`, while a successful partially positive preflight is `conflicted`
 
 #### Scenario: Base-model link does not prove converted artifact capability
 
@@ -36,7 +37,13 @@ A Catalog `tool_calling` capability permits only the existing request-scoped fun
 
 ### Requirement: Explicit immutable repair import
 
-Orchard SHALL NOT silently change an existing Catalog model's capabilities, Artifact Bundle, or authoritative digest to repair an earlier chat-only import. A repair SHALL build and import a new bundle with an explicit distinct Catalog version through the normal build/import path. The new manifest bytes and resulting Artifact Bundle digest are distinct from the prior import.
+Orchard SHALL NOT silently change an existing Catalog model's capabilities, Artifact Bundle, or authoritative digest to repair an earlier chat-only import. The Console Model Hub SHALL offer an operator repair action that builds and imports a new bundle with an explicit distinct Catalog version through the normal build/import path. The new sidecar bytes and resulting Artifact Bundle digest are distinct from the prior import.
+
+#### Scenario: Console repair is explicit
+
+- **WHEN** an operator submits a repair version through Console Model Hub
+- **THEN** Console forwards only the selected server-side source revision and the distinct Catalog version to the normal import coordinator
+- **AND THEN** no existing Catalog row is mutated
 
 #### Scenario: Duplicate identity is not repaired in place
 

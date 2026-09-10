@@ -10,6 +10,7 @@ defmodule Orchard.Models.ManifestParser do
   alias Orchard.ModelManifest
 
   @manifest_filename "manifest.json"
+  @tool_capability_evidence_filename "tool_capability_evidence.json"
 
   @top_level_key_map %{
     "model_id" => :model_id,
@@ -24,7 +25,6 @@ defmodule Orchard.Models.ManifestParser do
     "prefill_workspace_bytes_per_token" => :prefill_workspace_bytes_per_token,
     "max_context_tokens" => :max_context_tokens,
     "capabilities" => :capabilities,
-    "capability_evidence" => :capability_evidence,
     "tokenizer" => :tokenizer,
     "chat_template" => :chat_template,
     "safe_tokenization" => :safe_tokenization,
@@ -176,7 +176,10 @@ defmodule Orchard.Models.ManifestParser do
 
     case File.read(manifest_path) do
       {:ok, json} ->
-        parse_json(json)
+        with {:ok, manifest_map} <- decode_manifest_json(json),
+             {:ok, capability_evidence} <- read_capability_evidence(bundle_path) do
+          atomize_and_build(manifest_map, capability_evidence)
+        end
 
       {:error, :enoent} ->
         {:error, {:manifest_not_found, manifest_path}}
@@ -193,15 +196,47 @@ defmodule Orchard.Models.ManifestParser do
   """
   @spec parse_json(String.t()) :: {:ok, ModelManifest.t()} | {:error, term()}
   def parse_json(json) when is_binary(json) do
+    with {:ok, manifest_map} <- decode_manifest_json(json) do
+      atomize_and_build(manifest_map, nil)
+    end
+  end
+
+  defp decode_manifest_json(json) do
     case Jason.decode(json) do
       {:ok, map} when is_map(map) ->
-        atomize_and_build(map)
+        {:ok, map}
 
       {:ok, _other} ->
         {:error, {:json_decode, "manifest must be a JSON object"}}
 
       {:error, %Jason.DecodeError{} = err} ->
         {:error, {:json_decode, Exception.message(err)}}
+    end
+  end
+
+  defp read_capability_evidence(bundle_path) do
+    evidence_path = Path.join(bundle_path, @tool_capability_evidence_filename)
+
+    case File.read(evidence_path) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, evidence} when is_map(evidence) ->
+            {:ok, evidence}
+
+          {:ok, _other} ->
+            {:error, {:validation, "tool capability evidence must be a JSON object"}}
+
+          {:error, %Jason.DecodeError{} = err} ->
+            {:error,
+             {:validation, "invalid tool capability evidence JSON: #{Exception.message(err)}"}}
+        end
+
+      {:error, :enoent} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error,
+         {:capability_evidence_read, "failed to read #{evidence_path}: #{inspect(reason)}"}}
     end
   end
 
@@ -216,10 +251,6 @@ defmodule Orchard.Models.ManifestParser do
         tokenizer: Map.keys(@tokenizer_key_map) |> Enum.sort(),
         chat_template: Map.keys(@chat_template_key_map) |> Enum.sort(),
         runtime_requirements: Map.keys(@runtime_requirements_key_map) |> Enum.sort(),
-        capability_evidence: Map.keys(@capability_evidence_key_map) |> Enum.sort(),
-        capability_evidence_tool_calling: Map.keys(@tool_calling_evidence_key_map) |> Enum.sort(),
-        capability_evidence_tool_calling_preflight:
-          Map.keys(@tool_calling_preflight_key_map) |> Enum.sort(),
         safe_tokenization: Map.keys(@safe_tokenization_key_map) |> Enum.sort(),
         safe_tokenization_catalog_source: Map.keys(@catalog_source_key_map) |> Enum.sort(),
         safe_tokenization_incompatibility_reason:
@@ -228,16 +259,18 @@ defmodule Orchard.Models.ManifestParser do
     }
   end
 
-  defp atomize_and_build(string_map) do
+  defp atomize_and_build(string_map, capability_evidence) do
     with :ok <- validate_legacy_sha256(string_map),
          {:ok, atom_map} <- atomize_top_level(string_map),
          {:ok, atom_map} <- atomize_nested(atom_map, :tokenizer, @tokenizer_key_map),
          {:ok, atom_map} <- atomize_nested(atom_map, :chat_template, @chat_template_key_map),
          {:ok, atom_map} <- atomize_safe_tokenization(atom_map),
-         {:ok, atom_map} <- atomize_capability_evidence(atom_map),
+         {:ok, capability_evidence} <- atomize_capability_evidence(capability_evidence),
+         atom_map <- maybe_put_capability_evidence(atom_map, capability_evidence),
          {:ok, atom_map} <-
            atomize_nested(atom_map, :runtime_requirements, @runtime_requirements_key_map),
-         :ok <- validate_safe_tokenization(atom_map) do
+         :ok <- validate_safe_tokenization(atom_map),
+         {:ok, atom_map} <- admit_tool_capability(atom_map) do
       build_manifest(atom_map)
     end
   end
@@ -321,11 +354,18 @@ defmodule Orchard.Models.ManifestParser do
 
   defp atomize_safe_tokenization_nested(atom_map), do: {:ok, atom_map}
 
-  defp atomize_capability_evidence(atom_map) do
+  defp atomize_capability_evidence(nil), do: {:ok, nil}
+
+  defp atomize_capability_evidence(evidence) when is_map(evidence) do
     with {:ok, atom_map} <-
-           atomize_nested(atom_map, :capability_evidence, @capability_evidence_key_map),
-         {:ok, atom_map} <- atomize_capability_evidence_tool_calling(atom_map) do
-      atomize_capability_evidence_preflight(atom_map)
+           atomize_nested(
+             %{capability_evidence: evidence},
+             :capability_evidence,
+             @capability_evidence_key_map
+           ),
+         {:ok, atom_map} <- atomize_capability_evidence_tool_calling(atom_map),
+         {:ok, atom_map} <- atomize_capability_evidence_preflight(atom_map) do
+      {:ok, Map.fetch!(atom_map, :capability_evidence)}
     end
   end
 
@@ -372,6 +412,23 @@ defmodule Orchard.Models.ManifestParser do
   end
 
   defp atomize_capability_evidence_preflight(atom_map), do: {:ok, atom_map}
+
+  defp maybe_put_capability_evidence(atom_map, nil), do: atom_map
+
+  defp maybe_put_capability_evidence(atom_map, capability_evidence),
+    do: Map.put(atom_map, :capability_evidence, capability_evidence)
+
+  defp admit_tool_capability(
+         %{capability_evidence: %{tool_calling: %{result: "declared"}}} = atom_map
+       ),
+       do: {:ok, atom_map}
+
+  defp admit_tool_capability(%{capabilities: capabilities} = atom_map)
+       when is_list(capabilities) do
+    {:ok, Map.put(atom_map, :capabilities, Enum.reject(capabilities, &(&1 == "tool_calling")))}
+  end
+
+  defp admit_tool_capability(atom_map), do: {:ok, atom_map}
 
   defp atomize_catalog_source(atom_map) do
     case get_in(atom_map, [:safe_tokenization, :catalog_source]) do

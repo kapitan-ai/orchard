@@ -114,7 +114,10 @@ defmodule Orchard.Models.ImporterTest do
       assert repaired.version == "mlx-q4-v1-tool-admission"
       assert repaired.capabilities == ["chat", "tool_calling"]
 
-      assert read_imported_manifest!(repaired)["capability_evidence"]["tool_calling"]["result"] ==
+      refute Map.has_key?(read_imported_manifest!(repaired), "capability_evidence")
+      assert repaired.capability_evidence["tool_calling"]["result"] == "declared"
+
+      assert read_imported_tool_capability_evidence!(repaired)["tool_calling"]["result"] ==
                "declared"
     end
 
@@ -1187,6 +1190,14 @@ defmodule Orchard.Models.ImporterTest do
     |> Jason.decode!()
   end
 
+  defp read_imported_tool_capability_evidence!(model) do
+    model
+    |> artifact_path()
+    |> Path.join("tool_capability_evidence.json")
+    |> File.read!()
+    |> Jason.decode!()
+  end
+
   defp assert_safe_tokenization_verdict_fields_omitted!(model) do
     safe_tokenization = read_imported_manifest!(model)["safe_tokenization"]
 
@@ -1440,6 +1451,8 @@ defmodule Orchard.Models.ImporterTest do
   end
 
   defp write_manifest(bundle_dir, overrides) do
+    {capability_evidence, manifest_overrides} = Map.pop(overrides, "capability_evidence")
+
     manifest =
       Map.merge(
         %{
@@ -1458,9 +1471,16 @@ defmodule Orchard.Models.ImporterTest do
           "tokenizer" => %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
           "runtime_requirements" => %{"adapter" => "mlx_lm", "min_agent_capability" => "mlx"}
         },
-        overrides
+        manifest_overrides
       )
 
     File.write!(Path.join(bundle_dir, "manifest.json"), Jason.encode!(manifest))
+
+    if capability_evidence do
+      File.write!(
+        Path.join(bundle_dir, "tool_capability_evidence.json"),
+        Jason.encode!(capability_evidence)
+      )
+    end
   end
 end

@@ -918,14 +918,31 @@ defmodule OrchardConsole.ModelHubTest do
 
       evidence =
         artifact_path
-        |> Path.join("manifest.json")
+        |> Path.join("tool_capability_evidence.json")
         |> File.read!()
         |> Jason.decode!()
-        |> get_in(["capability_evidence", "tool_calling"])
+        |> Map.fetch!("tool_calling")
 
       assert evidence["source_revision"] == detail.revision_sha
       assert evidence["result"] == "unknown"
       assert evidence["runtime_qualification"] == "not_established"
+    end
+
+    test "rejects a catalog version that matches the source revision before downloading" do
+      detail = stub_detail()
+      stub_client(detail: {:ok, detail})
+      stub_downloader(download: :success, capture_download: true)
+      ref = make_ref()
+
+      {:ok, _pid} =
+        ModelHub.start_download_import(self(), ref, detail.repo_id,
+          revision: detail.revision_sha,
+          catalog_version: detail.revision_sha
+        )
+
+      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+      assert error.code == "invalid_catalog_version"
+      refute_receive {:captured_download, _, _}, 50
     end
 
     test "rejects a blank explicit catalog version before downloading" do

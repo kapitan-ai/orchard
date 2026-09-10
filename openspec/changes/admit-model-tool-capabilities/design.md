@@ -10,7 +10,7 @@ The goal is conservative admission of tool-aware artifacts through the normal Mo
 
 ### Bind evidence to the downloaded artifact
 
-`BundleBuilder` records one `capability_evidence.tool_calling` object in every generated Model Hub manifest. It identifies the downloaded Hugging Face repository and resolved revision, any unpinned base-model references for provenance only, the final tokenizer-config and chat-template digests, parser identity, exact template preflight result, and `runtime_qualification: not_established`.
+`BundleBuilder` records one `tool_capability_evidence.json` sidecar in every generated Model Hub Artifact Bundle. It identifies the downloaded Hugging Face repository and resolved revision, any unpinned base-model references for provenance only, the final tokenizer-config and chat-template digests, parser identity, exact template preflight result, and `runtime_qualification: not_established`. The closed worker manifest does not gain a top-level evidence key, so an N-1 Worker Runtime can load the bundle unchanged; the importer validates the sidecar and copies it to the Catalog record.
 
 The generated Catalog capability is `tool_calling` only when all positive artifact checks pass. The result is `unknown` when the artifact offers no tool evidence, `conflicted` when partially positive evidence disagrees, and `declared` only for the complete recognized tuple. Any helper failure, malformed metadata, unknown parser, missing asset, or mismatched digest remains chat-only. The resolver never uses repository/model names as a decision rule and treats missing generic Hub tags as unknown, not negative evidence.
 
@@ -20,7 +20,7 @@ The tokenizer helper renders a fixed synthetic function definition and a fixed s
 
 ### Keep repair explicit and immutable
 
-The importer continues to reject a duplicate `model_id@version`. To repair an existing chat-only entry, the operator builds and imports a new manifest under an explicitly different Catalog version. The original artifact directory, `models.artifact_sha256`, Catalog record, grants, and state are unchanged. The new bundle receives its own final digest because its manifest bytes differ.
+The importer continues to reject a duplicate `model_id@version`. To repair an existing chat-only entry, the operator uses the Console Model Hub repair action to build and import a new bundle under an explicitly different Catalog version. The original artifact directory, `models.artifact_sha256`, Catalog record, grants, and state are unchanged. The new bundle receives its own final digest because its sidecar bytes differ.
 
 ### Validate inline schemas before any request work
 

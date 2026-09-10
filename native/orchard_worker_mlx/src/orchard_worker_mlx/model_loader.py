@@ -317,7 +317,6 @@ _KNOWN_TOP_LEVEL_KEYS = frozenset(
         "chat_template",
         "runtime_requirements",
         "safe_tokenization",
-        "capability_evidence",
     }
 )
 

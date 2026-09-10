@@ -562,6 +562,7 @@ defmodule OrchardConsole.ModelHub do
       version when is_binary(version) ->
         case String.trim(version) do
           "" -> throw({:pipeline_error, {:error, invalid_catalog_version_error()}})
+          ^default_version -> throw({:pipeline_error, {:error, invalid_catalog_version_error()}})
           trimmed -> trimmed
         end
 
@@ -624,7 +625,7 @@ defmodule OrchardConsole.ModelHub do
     %{
       status: :error,
       code: "invalid_catalog_version",
-      message: "Catalog version must be a non-empty string."
+      message: "Catalog version must be non-empty and differ from the source revision."
     }
   end
 
