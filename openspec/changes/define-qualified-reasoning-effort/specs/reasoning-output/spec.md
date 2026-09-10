@@ -29,5 +29,5 @@ The Controller SHALL resolve a selected canonical tier only through a closed map
 #### Scenario: Render metadata reports a different applied effort
 
 - **WHEN** returned render metadata reports an applied effort that is absent or differs from the selected canonical tier
-- **THEN** Orchard fails the Request before dispatch
+- **THEN** Orchard fails the Request before dispatch with the existing `503 server_error` and `runtime_incompatible` mapping rather than a caller error
 - **AND** it does not accept the rendered prompt, infer a mapping, or reselect a tier

@@ -19,6 +19,8 @@
 - [ ] 3.1 In issue #327, accept a concrete wire encoding for complete selected-effort tuples and loaded-worker acceptance proof before dispatch.
 - [ ] 3.2 In issue #327, add `N` and `N-1` fixtures that keep selected effort and new variants off older or non-advertising bindings.
 - [ ] 3.3 In issue #328, prove provider-neutral parser and final-only conformance for each qualified tier without changing the omitted legacy pipeline.
+- [ ] 3.4 In issues #327 and #328, gate a provider's tier advertisement on the enabled-conformance fixtures for its exact tuple, without reading any repository-owned qualification record.
+- [ ] 3.5 In issue #326, fail an unprovable render-metadata result before dispatch through the existing `503 server_error` and `runtime_incompatible` mapping rather than a caller error.
 
 ## 4. Implement retention, retry, and public controls
 
@@ -30,5 +32,5 @@
 ## 5. Qualify any offered tier
 
 - [ ] 5.1 Record static mapping, runtime conformance, and semantic tier evidence separately for each exact qualification tuple.
-- [ ] 5.2 Prove valid non-empty reasoning content across each claimed tier envelope, and record a tier that cannot as `unsupported` for that exact tuple rather than offering it.
+- [ ] 5.2 Prove valid non-empty reasoning content across each claimed tier envelope, and record a tier that cannot as `unsupported` for that exact tuple rather than offering it; keep that record out of manifest fields, Runtime Endpoint capability, scheduling, and dispatch.
 - [ ] 5.3 Require an approved scoped support claim before representing a tier as offered; preserve unsupported and unknown results rather than generalizing the Qwen3.8 fixture.

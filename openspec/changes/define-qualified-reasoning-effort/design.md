@@ -55,6 +55,8 @@ The Controller selects a renderer mapping only through a closed mapping bound to
 
 `SPEC.md` §3.5 owns this render-time boundary alongside the existing typed generation-policy mapping, so a tier can never satisfy the contract by reaching the renderer as an unmapped template keyword. The tokenizer's effective render metadata must let the Controller prove the applied effort, and a metadata result that omits or contradicts the selected tier fails before dispatch.
 
+That failure is not a caller error. The tier was accepted and qualified, so an unprovable render result is a renderer or metadata defect and maps to the existing `503 server_error` and `runtime_incompatible` row rather than `400 unsupported_reasoning_control`. No new code is introduced: that row now covers every pre-invocation failure to prove the exact negotiated tuple, whether the unproven evidence is endpoint advertisement, render metadata, or loaded-worker acceptance. A tier with no exact qualified mapping at all remains the `400` capability row, because there the caller's requested combination is the thing that cannot be honored.
+
 The selected canonical tier is part of the complete negotiated tuple:
 
 ```text
@@ -82,6 +84,8 @@ A Controller and Node Agent that lack the complete selected-effort contract exch
 1. **Static render acceptance** proves that the exact renderer can apply one exact mapping to a rendered prompt. It proves neither generation, parser conformance, runtime negotiation, semantic effect, nor support.
 2. **Runtime conformance** proves that the exact selected tuple is advertised and accepted by the loaded worker before invocation. It is necessary for dispatch but does not prove semantic quality or a support claim.
 3. **Semantic tier qualification** evaluates predeclared meaningful assertions and final-only separation for each exact tuple, endpoint mode, and proposed tier envelope. A sample success is insufficient. Because a tier is valid only with `generation_policy = enabled`, this boundary must also prove valid non-empty reasoning content across the claimed envelope, including its shortest prompt classes; a tier that cannot is unsupported for that tuple rather than an offered tier that terminalizes as a conformance failure.
+
+The enabled-conformance rule binds both owners without joining them. A Worker Runtime decides runtime advertisement from provider conformance fixtures for its exact tuple, and the Controller dispatches only on that fresh advertisement plus loaded-worker acceptance proof. Repository-owned qualification decides only what may be offered or represented as supported. Keeping the split preserves `SPEC.md` §6.4: a governance record never becomes a Runtime Endpoint capability, scheduling fact, or dispatch authority, and a provider never reads one.
 4. **Approved support claim** is the separate manual-governance decision that may represent only the evidenced envelope. It is not a manifest field, scheduler gate, or execution permit.
 
 ## Alternatives considered
