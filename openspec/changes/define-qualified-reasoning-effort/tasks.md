@@ -19,8 +19,9 @@
 - [ ] 3.1 In issue #327, accept a concrete wire encoding for complete selected-effort tuples and loaded-worker acceptance proof before dispatch.
 - [ ] 3.2 In issue #327, add `N` and `N-1` fixtures that keep selected effort and new variants off older or non-advertising bindings.
 - [ ] 3.3 In issue #328, prove provider-neutral parser and final-only conformance for each qualified tier without changing the omitted legacy pipeline.
-- [ ] 3.4 In issues #327 and #328, gate a provider's tier advertisement on the enabled-conformance fixtures for its exact tuple, without reading any repository-owned qualification record.
-- [ ] 3.5 In issue #326, fail an unprovable render-metadata result before dispatch through the existing `503 server_error` and `runtime_incompatible` mapping rather than a caller error.
+- [ ] 3.4 In issues #327 and #328, gate a provider's tier advertisement on the exact renderer mapping plus provider-neutral protocol conformance only, adding no provider-owned semantic record, no manifest semantic assertion, and no read of a repository-owned qualification record.
+- [ ] 3.5 In issue #328, keep the fail-closed `500 api_error` and `internal_error` terminal conformance outcome when an advertised tier completes without valid non-empty reasoning content.
+- [ ] 3.6 In issue #326, fail an unprovable render-metadata result before dispatch through the existing `503 server_error` and `runtime_incompatible` mapping rather than a caller error.
 
 ## 4. Implement retention, retry, and public controls
 

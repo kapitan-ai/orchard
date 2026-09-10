@@ -15,7 +15,7 @@ A local-model qualification record or support claim that names a reasoning-effor
 - **WHEN** semantic qualification shows that an exact tuple's tier can complete without valid non-empty reasoning content for a claimed prompt class
 - **THEN** the record classifies that tier as `unsupported` for that exact tuple
 - **AND** the tier is not offered or represented as supported rather than being absorbed as a terminal conformance failure
-- **AND** the record does not become Runtime Endpoint capability, a scheduling fact, or dispatch authority, because provider conformance and loaded-worker acceptance separately own runtime advertisement
+- **AND** the record does not become Runtime Endpoint capability, a scheduling fact, or dispatch authority, because runtime advertisement separately proves only renderer mapping and protocol conformance
 
 #### Scenario: Qualified support claim names a tier
 

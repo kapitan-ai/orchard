@@ -140,7 +140,9 @@ Static renderer acceptance proves only that exact mapping. Runtime conformance s
 
 Because a selected tier is valid only with `generation_policy = enabled`, semantic qualification must also prove that the tier yields valid non-empty reasoning content across the envelope it claims, including its shortest and simplest prompt classes. A tier whose renderer can legitimately return no reasoning for a claimed prompt class fails the `SPEC.md` §7.5.3a enabled-conformance rule and is recorded as `unsupported` for that exact tuple rather than being offered and then surfacing as a terminal conformance failure.
 
-That record governs only what may be offered or represented as supported. Runtime advertisement and dispatch of a tier stay owned by provider conformance fixtures and exact loaded-worker acceptance proof, so a qualification record never becomes a Runtime Endpoint capability, scheduling fact, or dispatch authority under `SPEC.md` §6.4.
+That record governs only what may be offered or represented as supported. Runtime advertisement proves just the exact renderer mapping and provider-neutral protocol conformance, and dispatch additionally requires exact loaded-worker acceptance proof, so a qualification record never becomes a Runtime Endpoint capability, scheduling fact, or dispatch authority under `SPEC.md` §6.4.
+
+Because runtime advertisement carries no semantic assertion, this record is the only place a tier's semantics are evaluated. If an offered tier nevertheless completes without valid non-empty reasoning, the Request fails closed as a `500 api_error` terminal conformance failure under `SPEC.md` §7.5.3a; keeping an unqualified tier out of a support claim is what prevents callers from meeting that outcome.
 
 Every claim classifies a capability as:
 

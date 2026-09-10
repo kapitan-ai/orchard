@@ -3794,9 +3794,12 @@ For a negotiated Request with `generation_policy = disabled`, any observed reaso
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
 The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
-A Worker Runtime SHALL advertise a non-`nil` tier for an exact tuple only when that tuple satisfies this enabled-conformance rule under the provider-neutral conformance fixtures, and the Controller SHALL select and dispatch that tier only on the resulting fresh advertisement plus the exact loaded-worker acceptance proof.
-A tuple that cannot satisfy the rule is unsupported and MUST NOT be advertised, so a request selecting it fails the existing pre-dispatch capability boundary rather than reaching model invocation.
-Whether an advertised tier may additionally be offered or represented as supported is a separate repository-owned governance decision under §6.4; that evidence remains governance evidence only and MUST NOT become a Runtime Endpoint capability, a scheduling fact, or dispatch authority.
+Runtime advertisement of a non-`nil` tier proves only that the exact tuple has a qualified renderer mapping and that the provider passes the provider-neutral protocol conformance in §7.5.2a.
+Those fixtures are model-agnostic protocol artifacts, so advertisement SHALL NOT be read as asserting any per-artifact semantic property of a tier, and this specification defines no runtime producer for such an assertion.
+The Controller SHALL select and dispatch a tier only on a fresh complete-tuple advertisement plus the exact loaded-worker acceptance proof; a tuple with no qualified mapping or no matching advertised tuple fails the existing pre-dispatch capability boundary rather than reaching model invocation.
+When an advertised and dispatched tier nevertheless completes without valid non-empty reasoning content, the enabled-conformance rule above SHALL still terminalize the Request as `500 api_error` and `internal_error`.
+That fail-closed terminal outcome, rather than a relaxed conformance rule or a runtime semantic gate, is the contract for a tier whose semantics were never qualified.
+Whether a tier may be offered or represented as supported is a separate repository-owned governance decision under §6.4; that evidence remains governance evidence only and MUST NOT become a Runtime Endpoint capability, a scheduling fact, or dispatch authority.
 `generation_policy = model_default` does not require reasoning to be present or absent, but all negotiated parser and projection rules still apply.
 
 The Worker Runtime SHALL discard hidden reasoning content at the Worker contract boundary after accounting and MUST NOT forward it as text, metadata, errors, diagnostics, or an untyped event.
