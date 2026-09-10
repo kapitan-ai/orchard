@@ -299,6 +299,24 @@ defmodule Orchard.Tokenizer.ClientTest do
     )
   end
 
+  test "negotiated reasoning refuses tokenizer modes other than :port" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    on_exit(fn -> File.rm_rf!(fixture_root) end)
+
+    for tokenizer_mode <- [:fake, nil] do
+      with_inference_overrides([tokenizer_mode: tokenizer_mode], fn ->
+        assert {:error, {:invalid_input, message}} =
+                 Client.tokenize(negotiated_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: fixture_root,
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+
+        assert message == "negotiated reasoning tokenization requires tokenizer_mode=:port"
+      end)
+    end
+  end
+
   test "negotiated reasoning refuses safe tokenization modes that demand segmented rendering" do
     fixture_root = fixture_root_with_tokenizer_config!()
 
