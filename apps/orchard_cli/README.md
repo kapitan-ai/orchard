@@ -48,7 +48,6 @@ This README is orientation only. Normative CLI requirements live in
 - Request diagnostics through `requests inspect <request-id>`, including stable
   human and JSON scheduler-explanation output from the shared Operator API
   presenter and scheduler explanation contract.
-- Local diagnostic support bundle creation via `support bundle create`.
 - Bulk API Client provisioning through `api-clients bulk-provision`, including
   Dry Run, all-or-nothing Apply, output preflight, Key Rotation, and One-time
   Secret Output CSV delivery.
@@ -92,15 +91,6 @@ status from the local controller runtime.
 Use `--json` for a stable automation payload with the shared `ControlPlaneStatus`
 contract and an Active/Standby summary block; it exposes no leadership-transfer or
 failover actions.
-
-`orchardctl support bundle create` writes a local `.tar.gz` with bounded
-redacted logs, redacted config, service status, node snapshots, and request
-summaries. It records `support_bundle.generated` when the controller Repo is
-available and reports skipped audit status otherwise. By default the archive is
-written under `<support-root>/support/`; operators can override the destination
-with `--output`, read an alternate local state tree with `--support-root`, cap
-per-file log tail bytes with `--max-log-bytes`, and use `--json` for
-machine-readable output.
 
 ## Tenant Model access
 

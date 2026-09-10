@@ -141,16 +141,16 @@ defmodule Orchard.MetricsTest do
         total + descriptor.ceiling * cost
       end)
 
-    assert calculated == 2_829
-    assert Catalog.worksheet_total() == 2_829
+    assert calculated == 2_826
+    assert Catalog.worksheet_total() == 2_826
     assert Catalog.series_ceiling() == 5_000
-    assert calculated - 2_600 == 229
-    assert Catalog.series_ceiling() - calculated == 2_171
+    assert calculated - 2_597 == 229
+    assert Catalog.series_ceiling() - calculated == 2_174
   end
 
-  test "SPEC.md §9.1 admits exactly twelve audit domains by three outcomes" do
+  test "SPEC.md §9.1 admits exactly eleven audit domains by three outcomes" do
     domains =
-      ~w(tenant api_key service_account role_binding routing_policy tenant_model_access support_bundle node_admission node_lifecycle circuit_breaker cluster portal_user)
+      ~w(tenant api_key service_account role_binding routing_policy tenant_model_access node_admission node_lifecycle circuit_breaker cluster portal_user)
 
     outcomes = ~w(succeeded failed denied)
 
@@ -163,6 +163,12 @@ defmodule Orchard.MetricsTest do
 
     assert {:error, :invalid_labels} =
              Normalizer.normalize(:audit_events, %{action: "portal_user_id", outcome: "succeeded"})
+
+    assert {:error, :invalid_labels} =
+             Normalizer.normalize(:audit_events, %{
+               action: "support_bundle",
+               outcome: "succeeded"
+             })
   end
 
   test "bounded normalization rejects unknown categorical values and preserves identifiers" do

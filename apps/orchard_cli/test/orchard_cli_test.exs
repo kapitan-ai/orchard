@@ -89,13 +89,23 @@ defmodule OrchardCLITest do
     refute output =~ "not implemented yet"
 
     assert output =~
-             "status, start, stop, init, first-run, migrate, console, cluster, env, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
+             "status, start, stop, init, first-run, migrate, console, cluster, env, node, nodes, models, requests, tenants, api-clients, api-keys, tls, transport, upgrade"
 
     refute output =~ "license"
+    refute output =~ "support"
   end
 
   test "top-level help forms print usage on stdout and do not halt" do
-    for argv <- [["help"], ["--help"], ["-h"], ["help", "nodes"], ["--help", "nodes"]] do
+    for argv <- [
+          ["help"],
+          ["--help"],
+          ["-h"],
+          ["help", "nodes"],
+          ["--help", "nodes"],
+          ["help", "support"],
+          ["--help", "support"],
+          ["-h", "support"]
+        ] do
       parent = self()
 
       output =
@@ -105,6 +115,7 @@ defmodule OrchardCLITest do
 
       assert output =~ "Available commands:"
       refute output =~ "license"
+      refute output =~ "support"
       refute_received {:halt, _code}
     end
   end
@@ -196,37 +207,49 @@ defmodule OrchardCLITest do
     end
   end
 
-  test "support bundle create dispatches through main and writes an archive" do
+  test "retired support namespace forms reject through the unknown-command seam" do
+    parent = self()
+
+    commands = [
+      ["support"],
+      ["support", "--help"],
+      ["support", "bundle"],
+      ["support", "bundle", "--help"],
+      ["support", "bundle", "create", "--help"]
+    ]
+
+    for command <- commands do
+      stderr =
+        capture_io(:stderr, fn ->
+          OrchardCLI.main(command, halt_stub(parent))
+        end)
+
+      assert stderr =~ "Available commands:"
+      refute stderr =~ "support bundle"
+      assert_received {:halt_called, 1}
+    end
+  end
+
+  test "retired support bundle output path is not created" do
+    parent = self()
+
     tmp_dir =
       Path.join(System.tmp_dir!(), "orchard cli support #{System.unique_integer([:positive])}")
 
-    support_root = Path.join(tmp_dir, "Application Support/Orchard")
     output_dir = Path.join(tmp_dir, "bundles")
-
-    File.mkdir_p!(Path.join(support_root, "support"))
     on_exit(fn -> File.rm_rf(tmp_dir) end)
 
-    output =
-      capture_io(fn ->
+    stderr =
+      capture_io(:stderr, fn ->
         OrchardCLI.main(
-          [
-            "support",
-            "bundle",
-            "create",
-            "--support-root",
-            support_root,
-            "--output",
-            output_dir
-          ],
-          &no_halt/1
+          ["support", "bundle", "create", "--output", output_dir],
+          halt_stub(parent)
         )
       end)
 
-    assert [_, archive_path] = Regex.run(~r/Created support bundle: (.+\.tar\.gz)/, output)
-    assert File.regular?(archive_path)
-
-    assert output =~
-             "Contents: manifest.json, diagnostics/, redacted config/, bounded redacted logs/"
+    assert stderr =~ "Available commands:"
+    assert_received {:halt_called, 1}
+    refute File.exists?(output_dir)
   end
 
   test "env command without subcommand exits non-zero" do

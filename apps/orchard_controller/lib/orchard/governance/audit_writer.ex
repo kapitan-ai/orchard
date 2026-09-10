@@ -8,6 +8,7 @@ defmodule Orchard.Governance.AuditWriter do
 
   @pending_events_key {__MODULE__, :pending_events}
   @commit_verification_degradation {:audit_commit_verification, :unavailable}
+  @action_domain_degradation {:series_admission, :rejected}
 
   @spec transaction((-> result)) :: {:ok, result} | {:error, term()} when result: term()
   def transaction(fun) when is_function(fun, 0) do
@@ -99,11 +100,16 @@ defmodule Orchard.Governance.AuditWriter do
   end
 
   defp emit_safely(action, result) do
-    with {:ok, action_domain} <- action_domain(action) do
-      SeriesAdmission.emit(:audit_events, 1, %{
-        action: action_domain,
-        outcome: outcome(action, result)
-      })
+    case action_domain(action) do
+      {:ok, action_domain} ->
+        SeriesAdmission.emit(:audit_events, 1, %{
+          action: action_domain,
+          outcome: outcome(action, result)
+        })
+
+      :error ->
+        Status.degrade(@action_domain_degradation)
+        {:error, :metrics_degraded}
     end
   rescue
     _exception -> {:error, :metrics_degraded}
@@ -117,7 +123,6 @@ defmodule Orchard.Governance.AuditWriter do
   defp action_domain("role_binding." <> _rest), do: {:ok, "role_binding"}
   defp action_domain("routing_policy." <> _rest), do: {:ok, "routing_policy"}
   defp action_domain("tenant_model_access." <> _rest), do: {:ok, "tenant_model_access"}
-  defp action_domain("support_bundle." <> _rest), do: {:ok, "support_bundle"}
   defp action_domain("node_admission." <> _rest), do: {:ok, "node_admission"}
   defp action_domain("node_enrollment." <> _rest), do: {:ok, "node_admission"}
   defp action_domain("node_trust." <> _rest), do: {:ok, "node_admission"}
