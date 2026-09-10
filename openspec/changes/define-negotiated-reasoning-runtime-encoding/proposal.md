@@ -4,12 +4,16 @@
 
 The generic `WorkerCapabilities` envelope is diagnostic-only by its accepted contract. Negotiated reasoning needs a narrower exception: an explicit negotiated request may select only a loaded placement that proves its exact tuple through fresh live reasoning evidence. This does not promote generic capability evidence into readiness, admission, capacity, retry, or ordinary scheduler authority.
 
+That exception has to be reconciled with the two contracts it touches. `SPEC.md` §5.6 tier selection would otherwise still offer Tier 1 and Tier 2 candidates that no negotiated request can use, and §5.5 would otherwise still forbid every inline request-path observation. Both are amended here, and the live wave is bounded like the existing compatibility status-probe wave instead of fanning out per candidate.
+
 ## What Changes
 
 - Accept one indivisible ten-field reasoning tuple and its loaded-binding association; source provenance is not tuple identity.
 - Accept the deferred `WorkerLoadedBinding` allocation in `WorkerCapabilities` field 8, a sibling reasoning envelope in field 9, and shared Controller/Worker-facing definitions in `proto/cluster/v1/reasoning.proto`, after this change's source review confirmed those allocations are available.
 - Accept a unary `PrepareInference` operation whose proof and opaque single-use authorization form the pre-inference barrier. The authorization is redeemed only by the matching execution request after Controller proof validation.
 - Require opt-in, live-probe-only reasoning evidence and selection from already loaded placements. Heartbeats, persisted observations, and legacy projections do not carry or refresh reasoning evidence.
+- Restrict negotiated candidate selection to `SPEC.md` §5.6 Tier 0, make `residency_preference` and `max_cold_start_ms` inapplicable to it, and fail closed through the existing pre-dispatch incompatibility mapping when no Tier 0 candidate proves the tuple.
+- Bound the live wave to at most the first four deduplicated Tier 0 candidates, one attempt each for the whole logical request, a 2000 ms per-target timeout, and no retry. The explicit negotiated request is the only opt-in; there is no separate operator configuration flag.
 - Define presence-aware terminal wire totals, including `Failed.usage`; leave durable `output_usage_status` and Controller lower-bound synthesis to #328.
 - Pin automatic retry to the accepted tuple. For an operator retry, reuse `requests.canonical_request["reasoning"]` only when full capture retains it; otherwise fail with `retry_source_unavailable`. This adds no database column.
 - Keep production tuple registries empty and the feature dormant until #328's parser, accounting, and capture guarantees and model-qualification governance permit activation.
@@ -30,6 +34,8 @@ None.
 ## Impact
 
 - `SPEC.md` §7.5.3a gains the accepted encoding, activation, and sequencing contract.
+- `SPEC.md` §5.6 records the Tier 0-only negotiated exception, §3.4 records the routing-policy inapplicability, and §5.5 records the bounded reasoning wave as a second inline-observation exception.
+- `proto/cluster/v1/reasoning.proto` adds one `cluster.v1` dependency of the provider-neutral Worker Runtime boundary; its relocation or removal is sequenced by the later `cluster.v1` deprecation, not by this contract.
 - Future implementation may modify shared protocol source, Runtime Endpoint bindings, Worker Runtime bindings, Node Agent, Controller, and provider-neutral fixtures only after PR #401 has merged and this contract is accepted.
 - This PR intentionally contains no `.proto` field declaration, generated binding, migration, runtime implementation, registry entry, model-specific policy, or public API change.
 - The parent `define-reasoning-output-contract` implementation tasks remain incomplete; this package authorizes their #327 implementation handoff but does not mark code work complete.

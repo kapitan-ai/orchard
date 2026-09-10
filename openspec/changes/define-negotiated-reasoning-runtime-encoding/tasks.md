@@ -15,7 +15,8 @@
 
 ## 3. Dormant implementation handoff
 
-- [ ] 3.1 Implement loaded-binding-scoped live reasoning evidence, remaining-freshness handling, loaded-placement-only eligibility, and unary preparation with single-use authorization.
+- [ ] 3.1 Implement loaded-binding-scoped live reasoning evidence, remaining-freshness handling, Tier 0-only eligibility, and unary preparation with single-use authorization.
+- [ ] 3.1a Enforce the bounded live wave (at most four deduplicated Tier 0 candidates, one attempt each per logical request, 2000 ms per target, no retry) and cover the no-Tier-0 fail-closed path plus the attempt-2 no-second-wave path.
 - [ ] 3.2 Implement D1, D2, and D3 with direct failure-path and both-attempt regression coverage.
 - [ ] 3.3 Pin automatic and full-capture operator retry to `canonical_request["reasoning"]`; return `retry_source_unavailable` rather than rerendering or adding a column.
 - [ ] 3.4 Keep production registries empty and prove no production tuple is advertised before #328 plus qualification governance authorize activation.

@@ -217,7 +217,11 @@ policies, the effective deadline is that generation budget plus the policy's
 `max_queue_wait_ms` and `max_cold_start_ms`. This makes the stored cold-start
 budget reachable without extending `requests.timeout_at` after creation.
 `required_loaded` and `prefer_loaded` requests retain the selected generation
-budget. `ORCHARD_MAX_REQUEST_DEADLINE_MS` bounds the complete effective
+budget. An explicit negotiated reasoning request is selected only from already
+loaded `SPEC.md` §5.6 Tier 0 candidates, so its policy's cold-start budget stays
+unreachable and neither `residency_preference` nor `max_cold_start_ms` widens its
+candidate set; absent Tier 0 capacity it fails closed before dispatch.
+`ORCHARD_MAX_REQUEST_DEADLINE_MS` bounds the complete effective
 deadline, including generation, queue wait, and cold start. Its provisional
 default is 360000 ms pending Apple Silicon cold-load measurements under issue
 #255. Policies whose effective deadline exceeds the ceiling are rejected at

@@ -4,7 +4,7 @@
 
 A future Worker Runtime reasoning envelope SHALL be scoped to exactly one `WorkerLoadedBinding` and one `service_incarnation`. Each complete advertised tuple SHALL match that binding's artifact digest and resolve its selected profile exactly once in the enclosing capability envelope. A present incomplete envelope, duplicate or conflicting tuple, unknown required value, or missing loaded binding SHALL prove no reasoning support rather than legacy omission.
 
-The accepted future encoding lifts the deferred `WorkerCapabilities.loaded_binding` allocation at field 8, adds its sibling reasoning envelope at field 9, and shares cross-boundary definitions through `proto/cluster/v1/reasoning.proto`. This acceptance delta does not add those source declarations.
+The accepted future encoding lifts the deferred `WorkerCapabilities.loaded_binding` allocation at field 8, adds its sibling reasoning envelope at field 9, and shares cross-boundary definitions through `proto/cluster/v1/reasoning.proto`. This acceptance delta does not add those source declarations. The shared file makes the provider-neutral Worker Runtime boundary depend on `cluster.v1`; its relocation or removal SHALL be sequenced by the later `cluster.v1` deprecation alongside the existing Worker Runtime imports, and SHALL NOT be attempted by this contract or its implementation.
 
 Load replacement, unload, failed destructive unload, or Worker Runtime teardown SHALL invalidate advertised reasoning evidence and any preparation authorization for the affected loaded instance.
 
