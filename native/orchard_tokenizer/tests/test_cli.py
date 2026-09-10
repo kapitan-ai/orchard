@@ -1548,6 +1548,28 @@ def test_preflight_tool_capability_requires_structured_history_rendering(
     }
 
 
+def test_preflight_tool_capability_bounds_a_template_rejected_probe(tmp_path: Path, capsys) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for tool in tools %}"
+        "{{ tool.function.name }} {{ tool.function.description }}"
+        "{% endfor %}{% for message in messages %}"
+        "{% if message.role == 'tool' %}"
+        "{{ raise_exception('Unknown role: ' + message.role) }}"
+        "{% endif %}{{ message.content }}{% endfor %}",
+        encoding="utf-8",
+    )
+
+    assert main(["--request-json", json.dumps(tool_capability_payload(bundle, "glm47"))]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert assert_single_success_result(response) == {
+        "parser_recognized": True,
+        "definition_rendered": True,
+        "history_rendered": False,
+    }
+
+
 def test_preflight_tool_capability_reports_missing_assets(tmp_path: Path, capsys) -> None:
     bundle = _make_segmented_bundle(tmp_path)
     payload = tool_capability_payload(bundle, "glm47")

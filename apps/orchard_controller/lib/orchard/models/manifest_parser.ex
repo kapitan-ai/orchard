@@ -324,27 +324,23 @@ defmodule Orchard.Models.ManifestParser do
   defp atomize_capability_evidence(atom_map) do
     with {:ok, atom_map} <-
            atomize_nested(atom_map, :capability_evidence, @capability_evidence_key_map),
-         {:ok, atom_map} <-
-           atomize_capability_evidence_nested(
-             atom_map,
-             :tool_calling,
-             @tool_calling_evidence_key_map
-           ) do
+         {:ok, atom_map} <- atomize_capability_evidence_tool_calling(atom_map) do
       atomize_capability_evidence_preflight(atom_map)
     end
   end
 
-  defp atomize_capability_evidence_nested(
-         %{capability_evidence: evidence} = atom_map,
-         nested_key,
-         key_map
-       )
+  defp atomize_capability_evidence_tool_calling(%{capability_evidence: evidence} = atom_map)
        when is_map(evidence) do
-    case Map.get(evidence, nested_key) do
-      nested when is_map(nested) ->
-        with {:ok, %{nested: atomized}} <-
-               atomize_nested_map(%{nested: nested}, :nested, nested, key_map) do
-          {:ok, put_in(atom_map, [:capability_evidence], Map.put(evidence, nested_key, atomized))}
+    case Map.get(evidence, :tool_calling) do
+      tool_calling when is_map(tool_calling) ->
+        with {:ok, evidence} <-
+               atomize_nested_map(
+                 evidence,
+                 :tool_calling,
+                 tool_calling,
+                 @tool_calling_evidence_key_map
+               ) do
+          {:ok, Map.put(atom_map, :capability_evidence, evidence)}
         end
 
       _other ->
@@ -352,7 +348,7 @@ defmodule Orchard.Models.ManifestParser do
     end
   end
 
-  defp atomize_capability_evidence_nested(atom_map, _nested_key, _key_map), do: {:ok, atom_map}
+  defp atomize_capability_evidence_tool_calling(atom_map), do: {:ok, atom_map}
 
   defp atomize_capability_evidence_preflight(
          %{capability_evidence: %{tool_calling: tool_calling}} = atom_map
@@ -360,14 +356,14 @@ defmodule Orchard.Models.ManifestParser do
        when is_map(tool_calling) do
     case Map.get(tool_calling, :preflight) do
       preflight when is_map(preflight) ->
-        with {:ok, %{preflight: atomized}} <-
+        with {:ok, tool_calling} <-
                atomize_nested_map(
-                 %{preflight: preflight},
+                 tool_calling,
                  :preflight,
                  preflight,
                  @tool_calling_preflight_key_map
                ) do
-          {:ok, put_in(atom_map, [:capability_evidence, :tool_calling, :preflight], atomized)}
+          {:ok, put_in(atom_map, [:capability_evidence, :tool_calling], tool_calling)}
         end
 
       _other ->

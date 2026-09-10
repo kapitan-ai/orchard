@@ -77,7 +77,6 @@ defmodule Orchard.Models.BundleBuilder do
              download_dir,
              repo_id,
              version,
-             extract_source_revision(detail_metadata, version),
              detail_metadata,
              tokenizer_config_asset,
              template_asset
@@ -829,8 +828,7 @@ defmodule Orchard.Models.BundleBuilder do
   defp build_capability_evidence(
          download_dir,
          repo_id,
-         _version,
-         source_revision,
+         version,
          detail_metadata,
          tokenizer_config_asset,
          template_asset
@@ -844,7 +842,7 @@ defmodule Orchard.Models.BundleBuilder do
       "tool_calling" =>
         %{
           "source_repository" => repo_id,
-          "source_revision" => source_revision,
+          "source_revision" => extract_source_revision(detail_metadata, version),
           "base_model_refs" => base_model_refs(detail_metadata),
           "preflight" => stringify_tool_capability_preflight(preflight),
           "result" => result,
@@ -860,8 +858,16 @@ defmodule Orchard.Models.BundleBuilder do
     case tool_capability_preflight_input(download_dir, tokenizer_config_asset, template_asset) do
       {:ok, input} ->
         case SafeTokenizationPreflight.run_tool_capability(input) do
-          {:ok, result} -> result
-          {:error, _reason} -> empty_tool_capability_preflight()
+          {:ok, result} ->
+            result
+
+          {:error, reason} ->
+            Logger.warning(
+              "BundleBuilder tool capability preflight failed: #{inspect(reason)}. " <>
+                "Bundle stays chat-only."
+            )
+
+            empty_tool_capability_preflight()
         end
 
       :ineligible ->

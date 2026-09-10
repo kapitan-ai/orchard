@@ -473,6 +473,45 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert manifest.capability_evidence.tool_calling.runtime_qualification == "not_established"
     end
 
+    test "logs why a declared parser stayed chat-only when the preflight fails", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for message in messages %}{{ message.content }}{% endfor %}",
+        tokenizer_config: %{"tool_parser_type" => "glm47"}
+      )
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => [],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 0,
+            "wrapper_tool_markers_count" => 0
+          },
+          compatible_preflight_result(),
+          %{
+            "contract_version" => 3,
+            "ok" => false,
+            "error" => %{"category" => "missing_assets", "message" => "helper is unavailable"}
+          }
+        )
+
+      log =
+        capture_log(fn ->
+          with_inference_overrides([tokenizer_executable: helper], fn ->
+            assert {:ok, _} =
+                     BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          end)
+        end)
+
+      assert log =~ "tool capability preflight failed"
+      assert log =~ "invalid_response"
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.capabilities == ["chat"]
+      assert manifest.capability_evidence.tool_calling.result == "conflicted"
+    end
+
     test "records unknown evidence when the immutable tuple has no parser or template", ctx do
       write_minimal_bundle(ctx.tmp_dir)
 

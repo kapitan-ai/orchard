@@ -187,6 +187,37 @@ defmodule Orchard.Models.ManifestParserTest do
       assert message =~ "unknown keys in :safe"
     end
 
+    test "rejects unknown nested capability_evidence.tool_calling keys" do
+      json =
+        valid_manifest_json()
+        |> Jason.decode!()
+        |> Map.put("capability_evidence", %{
+          "tool_calling" => %{"result" => "unknown", "unexpected" => true}
+        })
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "unknown keys in :tool_calling"
+      assert message =~ "unexpected"
+    end
+
+    test "rejects unknown nested capability_evidence.tool_calling.preflight keys" do
+      json =
+        valid_manifest_json()
+        |> Jason.decode!()
+        |> Map.put("capability_evidence", %{
+          "tool_calling" => %{
+            "result" => "unknown",
+            "preflight" => %{"parser_recognized" => false, "unexpected" => true}
+          }
+        })
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "unknown keys in :preflight"
+      assert message =~ "unexpected"
+    end
+
     test "returns validation error when safe_tokenization is not an object" do
       json =
         valid_manifest_json()
