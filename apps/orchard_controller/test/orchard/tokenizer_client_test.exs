@@ -180,6 +180,98 @@ defmodule Orchard.Tokenizer.ClientTest do
   end
 
   test "negotiated reasoning sends only the v4 closed contract and verifies returned identity" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+
+    {capture_executable, capture_file} =
+      write_capture_request_executable!(negotiated_capture_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{rendered_prompt: "negotiated", input_token_count: 2}} =
+                 Client.tokenize(negotiated_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: fixture_root,
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+
+        assert {:ok, raw_request} = File.read(capture_file)
+
+        assert %{
+                 "contract_version" => 4,
+                 "command" => "render_and_count_reasoning",
+                 "assets" => %{
+                   "model_artifact_digest" => model_artifact_digest,
+                   "chat_template_digest" => chat_template_digest,
+                   "tokenizer_config_path" => tokenizer_config_path
+                 },
+                 "request" => %{
+                   "reasoning" => %{
+                     "generation_policy" => "disabled",
+                     "projection" => "final_only",
+                     "source" => "console_default",
+                     "effective_contract" => %{"mode" => "negotiated"} = effective_contract
+                   }
+                 }
+               } = Jason.decode!(raw_request)
+
+        assert effective_contract["model_artifact_digest"] == model_artifact_digest
+        assert effective_contract["chat_template_digest"] == chat_template_digest
+
+        assert tokenizer_config_path ==
+                 realpath!(Path.join(fixture_root, "tokenizer_config.json"))
+      end
+    )
+  end
+
+  test "negotiated reasoning resolves the manifest-declared tokenizer config path" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    declared_root = Path.join(fixture_root, "declared")
+    File.mkdir_p!(declared_root)
+    File.write!(Path.join(declared_root, "tokenizer_config.json"), Jason.encode!(%{}))
+
+    {capture_executable, capture_file} =
+      write_capture_request_executable!(negotiated_capture_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    manifest = manifest_with_tokenizer_config_path("declared/tokenizer_config.json")
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{rendered_prompt: "negotiated"}} =
+                 Client.tokenize(negotiated_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root,
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+
+        assert {:ok, raw_request} = File.read(capture_file)
+
+        assert Jason.decode!(raw_request)["assets"]["tokenizer_config_path"] ==
+                 realpath!(Path.join(declared_root, "tokenizer_config.json"))
+      end
+    )
+  end
+
+  test "negotiated reasoning fails closed without a tokenizer config asset" do
     {capture_executable, capture_file} =
       write_capture_request_executable!(negotiated_capture_response())
 
@@ -194,36 +286,51 @@ defmodule Orchard.Tokenizer.ClientTest do
         tokenizer_executable: capture_executable
       ],
       fn ->
-        assert {:ok, %{rendered_prompt: "negotiated", input_token_count: 2}} =
+        assert {:error, {:missing_assets, message}} =
                  Client.tokenize(negotiated_request(),
                    manifest: huggingface_manifest(),
                    bundle_root: huggingface_fixture_root(),
                    bundle_sha256: trusted_bundle_sha256()
                  )
 
-        assert {:ok, raw_request} = File.read(capture_file)
-
-        assert %{
-                 "contract_version" => 4,
-                 "command" => "render_and_count_reasoning",
-                 "assets" => %{
-                   "model_artifact_digest" => model_artifact_digest,
-                   "chat_template_digest" => chat_template_digest
-                 },
-                 "request" => %{
-                   "reasoning" => %{
-                     "generation_policy" => "disabled",
-                     "projection" => "final_only",
-                     "source" => "console_default",
-                     "effective_contract" => %{"mode" => "negotiated"} = effective_contract
-                   }
-                 }
-               } = Jason.decode!(raw_request)
-
-        assert effective_contract["model_artifact_digest"] == model_artifact_digest
-        assert effective_contract["chat_template_digest"] == chat_template_digest
+        assert message =~ "tokenizer.config_path"
+        refute File.exists?(capture_file)
       end
     )
+  end
+
+  test "negotiated reasoning refuses safe tokenization modes that demand segmented rendering" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+
+    {capture_executable, capture_file} =
+      write_capture_request_executable!(negotiated_capture_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    for safe_mode <- [:on, :reject] do
+      with_inference_overrides(
+        [
+          tokenizer_mode: :port,
+          tokenizer_safe_mode: safe_mode,
+          tokenizer_executable: capture_executable
+        ],
+        fn ->
+          assert {:error, {:invalid_input, message}} =
+                   Client.tokenize(negotiated_request(),
+                     manifest: safe_huggingface_manifest(),
+                     bundle_root: fixture_root,
+                     bundle_sha256: trusted_bundle_sha256()
+                   )
+
+          assert message =~ "tokenizer_safe_mode=#{inspect(safe_mode)}"
+          refute File.exists?(capture_file)
+        end
+      )
+    end
   end
 
   test "negotiated reasoning rejects a mismatched helper identity" do
@@ -247,8 +354,13 @@ defmodule Orchard.Tokenizer.ClientTest do
         }
       })
 
+    fixture_root = fixture_root_with_tokenizer_config!()
     response_executable = write_response_executable!(response)
-    on_exit(fn -> File.rm(response_executable) end)
+
+    on_exit(fn ->
+      File.rm(response_executable)
+      File.rm_rf!(fixture_root)
+    end)
 
     with_inference_overrides(
       [
@@ -259,7 +371,7 @@ defmodule Orchard.Tokenizer.ClientTest do
         assert {:error, :invalid_response} =
                  Client.tokenize(negotiated_request(),
                    manifest: huggingface_manifest(),
-                   bundle_root: huggingface_fixture_root(),
+                   bundle_root: fixture_root,
                    bundle_sha256: trusted_bundle_sha256()
                  )
       end
@@ -2728,6 +2840,13 @@ defmodule Orchard.Tokenizer.ClientTest do
       | tokenizer: %Tokenizer{tokenizer | config_path: config_path},
         safe_tokenization: safe_tokenization()
     }
+  end
+
+  defp manifest_with_tokenizer_config_path(config_path) do
+    base = huggingface_manifest()
+    %Tokenizer{} = tokenizer = base.tokenizer
+
+    %ModelManifest{base | tokenizer: %Tokenizer{tokenizer | config_path: config_path}}
   end
 
   defp explicit_preflight_compatible_manifest(opts \\ []) do

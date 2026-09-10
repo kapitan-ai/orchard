@@ -95,6 +95,31 @@ defmodule Orchard.CanonicalRequest do
             source: source(),
             effective_contract: effective_contract()
           }
+
+    @doc """
+    Renders the canonical reasoning policy into the single string-keyed wire shape
+    shared by durable persistence and tokenizer helper payloads.
+    """
+    @spec to_wire(t()) :: %{required(String.t()) => String.t() | map()}
+    def to_wire(%__MODULE__{} = reasoning) do
+      %{
+        "generation_policy" => Atom.to_string(reasoning.generation_policy),
+        "projection" => Atom.to_string(reasoning.projection),
+        "source" => Atom.to_string(reasoning.source),
+        "effective_contract" =>
+          Map.new(reasoning.effective_contract, fn {key, value} ->
+            {Atom.to_string(key), wire_value(value)}
+          end)
+      }
+    end
+
+    defp wire_value(value) when is_atom(value), do: Atom.to_string(value)
+    defp wire_value(value) when is_binary(value), do: value
+
+    defp wire_value(value) do
+      raise ArgumentError,
+            "#{inspect(__MODULE__)} effective_contract values must be atoms or binaries, got: #{inspect(value)}"
+    end
   end
 
   defmodule Admission do

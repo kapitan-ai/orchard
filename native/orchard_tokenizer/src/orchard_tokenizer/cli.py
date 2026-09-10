@@ -60,6 +60,7 @@ _EXTRACTABLE_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset(
 
 CONTRACT_VERSION: Final[int] = 3
 REASONING_RENDER_CONTRACT_VERSION: Final[int] = 4
+RENDER_AND_COUNT_CONTRACT_VERSIONS: Final[frozenset[int]] = frozenset({1, 2, CONTRACT_VERSION})
 SUPPORTED_CONTRACT_VERSIONS: Final[frozenset[int]] = frozenset(
     {1, 2, CONTRACT_VERSION, REASONING_RENDER_CONTRACT_VERSION}
 )
@@ -238,6 +239,13 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     if command == "render_and_count":
+        if int(contract_version) not in RENDER_AND_COUNT_CONTRACT_VERSIONS:
+            raise TokenizerCliError(
+                "invalid_input",
+                "render_and_count requires contract_version 1, 2, or 3",
+                2,
+            )
+
         return _execute_render_and_count(payload, int(contract_version))
 
     if command == "render_and_count_reasoning":
@@ -395,6 +403,7 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
         {
             "tokenizer_kind",
             "tokenizer_path",
+            "tokenizer_config_path",
             "chat_template_path",
             "model_artifact_digest",
             "chat_template_digest",
@@ -411,11 +420,22 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
     tokenizer_path = Path(
         require_non_empty_string(assets, "tokenizer_path", category="missing_assets")
     )
+    tokenizer_config_path = Path(
+        require_non_empty_string(assets, "tokenizer_config_path", category="missing_assets")
+    )
     chat_template_path = Path(
         require_non_empty_string(assets, "chat_template_path", category="missing_assets")
     )
     model_artifact_digest = _require_sha256_digest(assets, "model_artifact_digest")
     chat_template_digest = _require_sha256_digest(assets, "chat_template_digest")
+
+    if not tokenizer_config_path.is_file():
+        raise TokenizerCliError(
+            "missing_assets",
+            f"tokenizer config asset is missing: {tokenizer_config_path}",
+            3,
+        )
+
     _verify_chat_template_digest(chat_template_path, chat_template_digest)
 
     reasoning = require_mapping(request, "reasoning")
@@ -465,7 +485,6 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
     tools = normalize_optional_tools(request["tools"])
     tool_choice = request["tool_choice"]
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
-    tokenizer_config_path = tokenizer_path.parent / "tokenizer_config.json"
     rendered_prompt = render_prompt(
         messages,
         prompt_lines,

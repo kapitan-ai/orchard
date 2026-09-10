@@ -192,7 +192,15 @@ defmodule Orchard.Tokenizer.Client do
          %CanonicalRequest{reasoning: %{effective_contract: %{mode: :negotiated}}} = request,
          opts
        ) do
-    build_negotiated_plan(request, opts)
+    case Orchard.Inference.tokenizer_safe_mode() do
+      :off ->
+        build_negotiated_plan(request, opts)
+
+      safe_mode ->
+        {:error,
+         {:invalid_input,
+          "negotiated reasoning tokenization has no segmented caller-string rendering yet and refuses tokenizer_safe_mode=#{inspect(safe_mode)}"}}
+    end
   end
 
   defp build_tokenization_plan(%CanonicalRequest{} = request, opts) do
@@ -213,12 +221,12 @@ defmodule Orchard.Tokenizer.Client do
          %CanonicalRequest{reasoning: %CanonicalRequest.Reasoning{} = reasoning} = request,
          opts
        ) do
-    with {:ok, assets} <- resolve_legacy_assets(opts),
+    with {:ok, assets} <- resolve_negotiated_assets(opts),
          {:ok, identity} <- negotiated_identity(opts) do
       {:ok,
        %{
          mode: :negotiated,
-         expected_reasoning: serialize_reasoning(reasoning),
+         expected_reasoning: CanonicalRequest.Reasoning.to_wire(reasoning),
          payload: negotiated_payload(request, Map.merge(assets, identity))
        }}
     end
@@ -289,7 +297,11 @@ defmodule Orchard.Tokenizer.Client do
       command: "render_and_count_reasoning",
       assets: assets,
       request:
-        Map.put(request_payload(request), :reasoning, serialize_reasoning(request.reasoning))
+        Map.put(
+          request_payload(request),
+          :reasoning,
+          CanonicalRequest.Reasoning.to_wire(request.reasoning)
+        )
     }
   end
 
@@ -305,21 +317,6 @@ defmodule Orchard.Tokenizer.Client do
       request: request_payload(request)
     }
   end
-
-  defp serialize_reasoning(%CanonicalRequest.Reasoning{} = reasoning) do
-    %{
-      "generation_policy" => Atom.to_string(reasoning.generation_policy),
-      "projection" => Atom.to_string(reasoning.projection),
-      "source" => Atom.to_string(reasoning.source),
-      "effective_contract" =>
-        Map.new(reasoning.effective_contract, fn {key, value} ->
-          {Atom.to_string(key), serialize_reasoning_value(value)}
-        end)
-    }
-  end
-
-  defp serialize_reasoning_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp serialize_reasoning_value(value), do: value
 
   defp request_payload(%CanonicalRequest{} = request) do
     %{
@@ -603,12 +600,20 @@ defmodule Orchard.Tokenizer.Client do
   end
 
   defp resolve_segmented_assets(opts) do
-    manifest = Keyword.get(opts, :manifest)
-    bundle_root = Keyword.get(opts, :bundle_root)
+    with {:ok, manifest_assets} <- extract_manifest_assets(Keyword.get(opts, :manifest)),
+         :ok <- ensure_segmented_tokenizer_kind(manifest_assets.tokenizer_kind) do
+      resolve_configured_assets(manifest_assets, Keyword.get(opts, :bundle_root))
+    end
+  end
 
-    with {:ok, manifest_assets} <- extract_manifest_assets(manifest),
-         :ok <- ensure_segmented_tokenizer_kind(manifest_assets.tokenizer_kind),
-         {:ok, resolved_tokenizer_path} <-
+  defp resolve_negotiated_assets(opts) do
+    with {:ok, manifest_assets} <- extract_manifest_assets(Keyword.get(opts, :manifest)) do
+      resolve_configured_assets(manifest_assets, Keyword.get(opts, :bundle_root))
+    end
+  end
+
+  defp resolve_configured_assets(manifest_assets, bundle_root) do
+    with {:ok, resolved_tokenizer_path} <-
            resolve_asset_path(manifest_assets.tokenizer_path, bundle_root),
          {:ok, resolved_chat_template_path} <-
            resolve_asset_path(manifest_assets.chat_template_path, bundle_root),
@@ -654,7 +659,7 @@ defmodule Orchard.Tokenizer.Client do
       {:error, _reason} ->
         {:error,
          {:missing_assets,
-          "safe tokenization requires tokenizer.config_path or sibling tokenizer_config.json"}}
+          "manifest-configured rendering requires tokenizer.config_path or sibling tokenizer_config.json"}}
     end
   end
 

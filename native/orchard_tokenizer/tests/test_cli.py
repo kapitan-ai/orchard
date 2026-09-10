@@ -235,9 +235,12 @@ def tokenization_payload(
     }
 
 
-def test_reasoning_render_contract_requires_an_exact_registered_identity(capsys) -> None:
+def test_reasoning_render_contract_requires_an_exact_registered_identity(
+    tmp_path: Path, capsys
+) -> None:
     payload = reasoning_tokenization_payload(
         tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
         chat_template_path=fixture_root() / "chat_template.jinja",
     )
 
@@ -269,21 +272,16 @@ def test_reasoning_render_contract_uses_only_synthetic_registered_template_argum
         "REASONING_RENDER_CONTRACTS",
         {
             (model_digest, template_digest): {
-                ("disabled", "final_only"): {
-                    "render_contract": "synthetic-render-v1",
-                    "render_contract_version": "1",
-                    "parser_family": "synthetic-parser",
-                    "parser_version": "1",
-                    "runtime_contract_version": "1",
-                    "event_binding_version": "1",
-                    "template_arguments": {"enable_thinking": False},
-                }
+                ("disabled", "final_only"): synthetic_registration(
+                    template_arguments={"enable_thinking": False}
+                )
             }
         },
     )
 
     payload = reasoning_tokenization_payload(
         tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
         chat_template_path=template_path,
         model_artifact_digest=model_digest,
         chat_template_digest=template_digest,
@@ -308,9 +306,10 @@ def test_reasoning_render_contract_uses_only_synthetic_registered_template_argum
     }
 
 
-def test_reasoning_render_contract_rejects_request_template_kwargs(capsys) -> None:
+def test_reasoning_render_contract_rejects_request_template_kwargs(tmp_path: Path, capsys) -> None:
     payload = reasoning_tokenization_payload(
         tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
         chat_template_path=fixture_root() / "chat_template.jinja",
     )
     payload["request"]["template_kwargs"] = {"enable_thinking": False}
@@ -322,9 +321,104 @@ def test_reasoning_render_contract_rejects_request_template_kwargs(capsys) -> No
     assert response["error"]["message"] == "request has unsupported or missing fields"
 
 
+def test_reasoning_render_contract_reads_the_declared_tokenizer_config_path(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    template_path = tmp_path / "chat_template.jinja"
+    template_path.write_text("{{ eos_token }}|{{ messages[-1]['content'] }}", encoding="utf-8")
+    template_digest = hashlib.sha256(template_path.read_bytes()).hexdigest()
+    model_digest = "a" * 64
+    declared_config_root = tmp_path / "declared"
+    declared_config_root.mkdir()
+
+    monkeypatch.setattr(
+        reasoning_contracts,
+        "REASONING_RENDER_CONTRACTS",
+        {
+            (model_digest, template_digest): {
+                ("disabled", "final_only"): synthetic_registration(template_arguments={})
+            }
+        },
+    )
+
+    payload = reasoning_tokenization_payload(
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(
+            declared_config_root, {"eos_token": "<|declared-eos|>"}
+        ),
+        chat_template_path=template_path,
+        model_artifact_digest=model_digest,
+        chat_template_digest=template_digest,
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["result"]["rendered_prompt"] == "<|declared-eos|>|hello orchard"
+
+
+def test_reasoning_render_contract_fails_closed_without_a_tokenizer_config_asset(
+    tmp_path: Path, capsys
+) -> None:
+    payload = reasoning_tokenization_payload(
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=tmp_path / "tokenizer_config.json",
+        chat_template_path=fixture_root() / "chat_template.jinja",
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 3
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["contract_version"] == 4
+    assert response["error"]["category"] == "missing_assets"
+    assert "tokenizer config asset is missing" in response["error"]["message"]
+
+
+def test_render_and_count_rejects_the_reasoning_contract_version(capsys) -> None:
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=fixture_root() / "chat_template.jinja",
+        contract_version=4,
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response == {
+        "contract_version": 4,
+        "ok": False,
+        "error": {
+            "category": "invalid_input",
+            "message": "render_and_count requires contract_version 1, 2, or 3",
+        },
+    }
+
+
+def synthetic_registration(*, template_arguments: dict[str, bool]) -> dict[str, Any]:
+    return {
+        "render_contract": "synthetic-render-v1",
+        "render_contract_version": "1",
+        "parser_family": "synthetic-parser",
+        "parser_version": "1",
+        "runtime_contract_version": "1",
+        "event_binding_version": "1",
+        "template_arguments": template_arguments,
+    }
+
+
+def write_tokenizer_config(
+    directory: Path, contents: dict[str, Any] | None = None, name: str = "tokenizer_config.json"
+) -> Path:
+    tokenizer_config_path = directory / name
+    tokenizer_config_path.write_text(json.dumps(contents or {}), encoding="utf-8")
+    return tokenizer_config_path
+
+
 def reasoning_tokenization_payload(
     *,
     tokenizer_path: Path,
+    tokenizer_config_path: Path,
     chat_template_path: Path,
     model_artifact_digest: str = "a" * 64,
     chat_template_digest: str | None = None,
@@ -339,6 +433,7 @@ def reasoning_tokenization_payload(
         "assets": {
             "tokenizer_kind": "huggingface_tokenizer_json",
             "tokenizer_path": str(tokenizer_path),
+            "tokenizer_config_path": str(tokenizer_config_path),
             "chat_template_path": str(chat_template_path),
             "model_artifact_digest": model_artifact_digest,
             "chat_template_digest": template_digest,

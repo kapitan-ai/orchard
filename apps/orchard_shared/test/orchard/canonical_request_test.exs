@@ -147,6 +147,44 @@ defmodule Orchard.CanonicalRequestTest do
     end
   end
 
+  test "Reasoning.to_wire/1 renders one string-keyed shape for legacy and negotiated policies" do
+    assert CanonicalRequest.Reasoning.to_wire(base_request().reasoning) == %{
+             "generation_policy" => "model_default",
+             "projection" => "legacy_blended",
+             "source" => "omitted_public",
+             "effective_contract" => %{"mode" => "legacy"}
+           }
+
+    negotiated = %CanonicalRequest.Reasoning{
+      generation_policy: :disabled,
+      projection: :final_only,
+      source: :console_default,
+      effective_contract: negotiated_contract()
+    }
+
+    assert CanonicalRequest.Reasoning.to_wire(negotiated)["effective_contract"] == %{
+             "mode" => "negotiated",
+             "model_artifact_digest" => String.duplicate("a", 64),
+             "chat_template_digest" => String.duplicate("b", 64),
+             "render_contract" => "synthetic-render-v1",
+             "render_contract_version" => "1",
+             "parser_family" => "synthetic-parser",
+             "parser_version" => "1",
+             "runtime_contract_version" => "1",
+             "event_binding_version" => "1"
+           }
+  end
+
+  test "Reasoning.to_wire/1 rejects effective contract values that are not atoms or binaries" do
+    reasoning = %CanonicalRequest.Reasoning{
+      effective_contract: Map.put(negotiated_contract(), :render_contract_version, 1)
+    }
+
+    assert_raise ArgumentError, ~r/must be atoms or binaries/, fn ->
+      CanonicalRequest.Reasoning.to_wire(reasoning)
+    end
+  end
+
   defp negotiated_contract do
     %{
       mode: :negotiated,
