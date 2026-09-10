@@ -18,10 +18,16 @@ Orchard SHALL implement the closed `reasoning_effort = nil | low | medium | high
 
 ### Requirement: Exact renderer mappings remain provider-neutral at the canonical boundary
 
-The Controller SHALL resolve a selected canonical tier only through a closed mapping bound to the exact model artifact digest, chat-template digest, render-contract name, and render-contract version required by `SPEC.md` section 3.4. Public callers MUST NOT provide template keywords or provider-specific values.
+The Controller SHALL resolve a selected canonical tier only through a closed mapping bound to the exact model artifact digest, chat-template digest, render-contract name, and render-contract version required by `SPEC.md` sections 3.4 and 3.5. The returned render metadata MUST prove that the applied effort is exactly the selected tier before dispatch. Public callers MUST NOT provide template keywords or provider-specific values.
 
 #### Scenario: A qualified mapping uses a provider-specific value
 
 - **WHEN** an exact renderer mapping qualifies canonical `high` through a provider-specific value
 - **THEN** Orchard keeps `high` as the canonical policy value
 - **AND** it does not promote the provider-specific value into canonical vocabulary or another artifact's mapping
+
+#### Scenario: Render metadata reports a different applied effort
+
+- **WHEN** returned render metadata reports an applied effort that is absent or differs from the selected canonical tier
+- **THEN** Orchard fails the Request before dispatch
+- **AND** it does not accept the rendered prompt, infer a mapping, or reselect a tier

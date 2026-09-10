@@ -23,10 +23,12 @@
 ## 4. Implement retention, retry, and public controls
 
 - [ ] 4.1 In issue #329, pin effort across automatic and operator retry and prove every capture, usage, hashing, idempotency, and replay boundary preserves hidden-reasoning protections for each tier.
-- [ ] 4.2 In issue #331, accept concrete consistent Chat Completions and Responses fields, validation, and error envelopes before exposing effort publicly.
-- [ ] 4.3 Do not expose raw structured reasoning, typed prior-reasoning history, server-side tool execution, or a support/default-model claim as part of this work.
+- [ ] 4.2 In issue #331, accept concrete consistent Chat Completions and Responses fields, validation, and error envelopes before exposing effort publicly, setting `param` to the concrete offending accepted public field for both `unsupported_reasoning_control` rows.
+- [ ] 4.3 Keep the Console without an effort selector and at `reasoning_effort = nil` until a later accepted Console contract gates operator tier selection behind `enabled + final_only` and exact-tuple proof.
+- [ ] 4.4 Do not expose raw structured reasoning, typed prior-reasoning history, server-side tool execution, or a support/default-model claim as part of this work.
 
 ## 5. Qualify any offered tier
 
 - [ ] 5.1 Record static mapping, runtime conformance, and semantic tier evidence separately for each exact qualification tuple.
-- [ ] 5.2 Require an approved scoped support claim before representing a tier as offered; preserve unsupported and unknown results rather than generalizing the Qwen3.8 fixture.
+- [ ] 5.2 Prove valid non-empty reasoning content across each claimed tier envelope, and record a tier that cannot as `unsupported` for that exact tuple rather than offering it.
+- [ ] 5.3 Require an approved scoped support claim before representing a tier as offered; preserve unsupported and unknown results rather than generalizing the Qwen3.8 fixture.

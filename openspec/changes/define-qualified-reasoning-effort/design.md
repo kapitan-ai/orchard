@@ -45,11 +45,15 @@ Effort is optional even for `enabled + final_only`. Absence means no effort tier
 
 The provider-neutral vocabulary is exactly `low`, `medium`, and `high`. A later accepted issue #331 public-input contract will choose concrete field names for both endpoints. It must expose only this vocabulary, normalize it into the canonical axis, and use the existing closed `unsupported_reasoning_control` error mapping. It must not expose provider values or accept effort alone without an explicit enabled generation policy.
 
+That mapping now carries two distinct rows: a contradictory tier/policy combination that is never valid on any model, and an exact-tuple capability failure that another qualified model may honor. Both keep `400 invalid_request_error` and `unsupported_reasoning_control` and stay non-retryable, so the split is remediation guidance rather than a new envelope. #331 must set `param` to the concrete offending accepted public field — the reasoning-control field for a control failure and the effort field for a tier failure — while the Console, which supplies no public field, keeps `param = nil`.
+
 This amendment therefore defines request semantics without preempting the concrete Chat Completions or Responses encoding that #331 owns.
 
 ### Bind renderer mappings to an exact tuple
 
 The Controller selects a renderer mapping only through a closed mapping bound to the exact artifact digest, chat-template digest, render-contract name, and render-contract version. That mapping maps one canonical tier to the provider-specific key and value required by the exact renderer. Callers never supply that key or value.
+
+`SPEC.md` §3.5 owns this render-time boundary alongside the existing typed generation-policy mapping, so a tier can never satisfy the contract by reaching the renderer as an unmapped template keyword. The tokenizer's effective render metadata must let the Controller prove the applied effort, and a metadata result that omits or contradicts the selected tier fails before dispatch.
 
 The selected canonical tier is part of the complete negotiated tuple:
 
@@ -77,7 +81,7 @@ A Controller and Node Agent that lack the complete selected-effort contract exch
 
 1. **Static render acceptance** proves that the exact renderer can apply one exact mapping to a rendered prompt. It proves neither generation, parser conformance, runtime negotiation, semantic effect, nor support.
 2. **Runtime conformance** proves that the exact selected tuple is advertised and accepted by the loaded worker before invocation. It is necessary for dispatch but does not prove semantic quality or a support claim.
-3. **Semantic tier qualification** evaluates predeclared meaningful assertions and final-only separation for each exact tuple, endpoint mode, and proposed tier envelope. A sample success is insufficient.
+3. **Semantic tier qualification** evaluates predeclared meaningful assertions and final-only separation for each exact tuple, endpoint mode, and proposed tier envelope. A sample success is insufficient. Because a tier is valid only with `generation_policy = enabled`, this boundary must also prove valid non-empty reasoning content across the claimed envelope, including its shortest prompt classes; a tier that cannot is unsupported for that tuple rather than an offered tier that terminalizes as a conformance failure.
 4. **Approved support claim** is the separate manual-governance decision that may represent only the evidenced envelope. It is not a manifest field, scheduler gate, or execution permit.
 
 ## Alternatives considered

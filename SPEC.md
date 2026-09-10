@@ -612,10 +612,14 @@ Only validated deterministic tokenizer or sentinel-preflight incompatibilities M
 Runtime helper errors SHALL identify request, artifact-preflight, or artifact-tokenizer evaluation scope; cache admission requires explicit artifact scope, matching inner and outer error categories, and structurally valid deterministic evidence.
 Unscoped runtime errors SHALL remain request-local for compatibility with older helpers.
 
-For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, parser-family selection, and version selection.
+For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, typed reasoning effort, parser-family selection, and version selection.
 The public API MUST NOT accept arbitrary chat-template keyword arguments.
 The tokenizer SHALL map the typed generation policy through a closed contract for the exact model artifact and chat-template digest.
-The tokenizer SHALL return effective render metadata sufficient for the Controller to prove the generation policy, projection, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and policy provenance used for that Request.
+The tokenizer SHALL map a selected non-`nil` canonical reasoning-effort tier to renderer input only through a closed mapping bound to that same exact model artifact digest, chat-template digest, render contract, and render-contract version.
+A canonical tier MUST NOT reach the renderer as an unmapped template keyword argument, a provider-vocabulary pass-through, or a value inferred from a model name, publisher, family-name substring, or template inspection.
+A tier with no exact qualified mapping for that artifact and template SHALL fail closed before dispatch, and one artifact's mapping MUST NOT authorize another artifact, template digest, render contract, or render-contract version.
+The tokenizer SHALL return effective render metadata sufficient for the Controller to prove the generation policy, projection, applied reasoning effort, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and policy provenance used for that Request.
+The Controller SHALL reject the render result before dispatch when that metadata does not prove that the applied effort is exactly the selected canonical tier, or exactly no tier when none was selected.
 The Controller SHALL reject an explicit reasoning control before dispatch when the exact model and template contract cannot honor it.
 The Controller MUST NOT guess support from a model name, family-name substring, unversioned parser heuristic, or unqualified template inspection.
 `model_default` in omitted legacy mode means the existing template behavior and MUST NOT be rewritten into an explicit enabled or disabled template argument.
@@ -2052,7 +2056,8 @@ The authoritative value SHALL NOT be written into `manifest.json`, because doing
 This contract change SHALL NOT rehash existing Catalog rows or introduce a new digest algorithm.
 
 Reasoning-generation support is an additive, versioned runtime capability bound to an exact model artifact and chat-template digest.
-Its contract SHALL enumerate complete supported tuples containing generation policy, projection, parser family and version, template-render contract and version, Runtime Endpoint contract version, and event-binding version without relying on a model-name heuristic or a Cartesian product of independent lists.
+Its contract SHALL enumerate complete supported tuples containing generation policy, projection, reasoning effort, parser family and version, template-render contract and version, Runtime Endpoint contract version, and event-binding version without relying on a model-name heuristic or a Cartesian product of independent lists.
+Reasoning effort is never a free dimension of that enumeration: a `nil` effort belongs to the non-tier-selected tuple, and a non-`nil` effort SHALL appear only in a tuple whose generation policy is `enabled` and whose projection is `final_only`.
 Manifest compatibility and strict unknown-key handling SHALL follow the existing additive migration rules until an accepted manifest schema extension supplies typed fields.
 An older manifest that omits reasoning capability remains valid but SHALL NOT prove support for an explicitly negotiated reasoning mode.
 Repository-owned manual model qualification evidence is governance evidence only.
@@ -2690,20 +2695,29 @@ Reasoning-control failures use this closed mapping:
 
 | Failure phase | Public status, type, and code | `param` | Durable attempt evidence | Retry behavior |
 |---|---|---|---|---|
-| An explicit effort is supplied with `model_default` or `disabled`, or the exact model artifact, chat-template, and renderer contract cannot honor an accepted explicit control or tier | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public reasoning-control field; `nil` for the Console | no attempt and no Request write | non-retryable |
+| An explicit control supplies a reasoning-effort tier with `generation_policy = model_default` or `disabled` | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public effort field; `nil` for the Console | no attempt and no Request write | non-retryable |
+| The exact model artifact, chat-template, and renderer contract cannot honor an accepted explicit control or a selected effort tier | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public field carrying the offending value; `nil` for the Console | no attempt and no Request write | non-retryable |
 | No loaded placement proves the exact negotiated tuple under §7.5.3a's exhaustion rule, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists and the proof failure wins the terminal race; caller cancellation/disconnect and already-proven deadline terminalization retain their §3.7.1 decisions | non-retryable |
 | Parser or generation-policy conformance fails after model invocation | `500 api_error`, `internal_error` | `nil` | `terminal_conformance` plus `internal_error` | non-retryable |
+
+The first row is a caller-input contradiction that is never valid on any model; the second row is an exact-tuple capability failure that another qualified model, artifact, or template MAY be able to honor.
+Both remain `400 invalid_request_error` with `unsupported_reasoning_control` and remain non-retryable; the distinction is remediation guidance, not a different status, code, or retry decision.
 
 Messages for these mappings SHALL be bounded, content-free, and Controller-owned.
 Neither parser fragments nor model output may enter the public message, durable error detail outside `full`, or metric labels.
 The later public input-field contract MAY choose the concrete field name but MUST preserve these statuses, codes, and retry semantics.
+That contract SHALL set `param` to the concrete offending accepted public field: the accepted reasoning-control field when that control is the offending value, and the accepted effort field when the selected tier is the offending value.
+The Console SHALL keep `param = nil` for every row because it supplies no public request field.
 
 #### 7.2.8 Console Playground reasoning contract
 
 The Console Playground SHALL use the same canonical reasoning contract as the Public Inference API while preserving its distinct operator-facing defaults.
-Its default request SHALL set `generation_policy = disabled`, `projection = final_only`, and `source = console_default`.
+Its default request SHALL set `generation_policy = disabled`, `projection = final_only`, `reasoning_effort = nil`, and `source = console_default`.
 An operator MAY explicitly enable generation only when the Controller proves that the selected model, exact template, parser contract, and Runtime Endpoint contract can honor the request.
-Unsupported explicit Console control SHALL fail before dispatch and MUST NOT fall back to the template default, legacy blended mode, or display-only stripping.
+An operator effort selection is gated exactly like explicit enablement.
+A later accepted Console contract MAY offer a canonical `low`, `medium`, or `high` selection only for `source = console_explicit` with `generation_policy = enabled`, `projection = final_only`, and a proven exact complete negotiated tuple for that tier, and MUST NOT expose provider renderer values or template keyword arguments.
+Until that contract is accepted and implemented, the Console SHALL offer no effort selector and SHALL send `reasoning_effort = nil`.
+Unsupported explicit Console control or tier SHALL fail before dispatch with the §7.2.7 mapping and `param = nil`, and MUST NOT fall back to the template default, another tier, legacy blended mode, or display-only stripping.
 
 The Console SHALL keep final-answer and reasoning channels separate in its transcript state.
 It SHALL send only the final-answer channel as assistant history on a later turn unless a future accepted contract adds typed prior-reasoning preservation.
@@ -3777,6 +3791,8 @@ The terminal failure SHALL be deterministic and non-retryable unless the failure
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
+A tier SHALL therefore be advertised, offered, and selectable only when its qualification evidence proves that the exact tuple yields valid non-empty reasoning content across the qualified envelope; a tier that cannot satisfy that rule for its exact tuple is unsupported for it and SHALL fail the pre-dispatch capability boundary rather than reaching model invocation.
 `generation_policy = model_default` does not require reasoning to be present or absent, but all negotiated parser and projection rules still apply.
 
 The Worker Runtime SHALL discard hidden reasoning content at the Worker contract boundary after accounting and MUST NOT forward it as text, metadata, errors, diagnostics, or an untyped event.

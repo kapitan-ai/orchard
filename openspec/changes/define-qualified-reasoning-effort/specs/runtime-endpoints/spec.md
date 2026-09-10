@@ -2,7 +2,7 @@
 
 ### Requirement: Selected effort is part of complete negotiated evidence
 
-Runtime Endpoint implementations SHALL conform to `SPEC.md` sections 7.5.3a and 13.1 by advertising and proving a selected non-`nil` effort only as part of one complete tuple. The tuple MUST include generation policy, projection, reasoning effort, exact artifact and template digests, render contract and version, parser family and version, runtime contract version, and event-binding version. Separate lists MUST NOT authorize an unadvertised combination.
+Runtime Endpoint implementations SHALL conform to `SPEC.md` sections 6.4, 7.5.3a, and 13.1 by advertising and proving a selected non-`nil` effort only as part of one complete tuple. The tuple MUST include generation policy, projection, reasoning effort, exact artifact and template digests, render contract and version, parser family and version, runtime contract version, and event-binding version. Separate lists MUST NOT authorize an unadvertised combination.
 
 #### Scenario: Observation lists a tier but not its complete tuple
 

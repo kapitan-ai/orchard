@@ -10,6 +10,12 @@ A local-model qualification record or support claim that names a reasoning-effor
 - **THEN** the record classifies that result as static mapping evidence only
 - **AND** it does not represent semantic support, runtime dispatch authority, or an active support claim
 
+#### Scenario: A tier cannot prove non-empty reasoning across its envelope
+
+- **WHEN** semantic qualification shows that an exact tuple's tier can complete without valid non-empty reasoning content for a claimed prompt class
+- **THEN** the record classifies that tier as `unsupported` for that exact tuple
+- **AND** the tier is not offered, advertised, or selectable rather than being absorbed as a terminal conformance failure
+
 #### Scenario: Qualified support claim names a tier
 
 - **WHEN** an approved claim represents a reasoning-effort tier

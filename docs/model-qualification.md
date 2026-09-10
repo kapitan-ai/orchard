@@ -138,6 +138,8 @@ Reasoning behavior remains `unknown` unless evidence is evaluated under the cont
 
 Static renderer acceptance proves only that exact mapping. Runtime conformance separately proves fresh complete-tuple advertisement and loaded-worker acceptance before invocation; semantic qualification separately proves predeclared tier assertions and final-only separation; and an approved scoped support claim separately decides what may be represented as offered. None of those later boundaries is implied by the prior one, and manual qualification never replaces Runtime Endpoint dispatch proof.
 
+Because a selected tier is valid only with `generation_policy = enabled`, semantic qualification must also prove that the tier yields valid non-empty reasoning content across the envelope it claims, including its shortest and simplest prompt classes. A tier whose renderer can legitimately return no reasoning for a claimed prompt class fails the `SPEC.md` §7.5.3a enabled-conformance rule and is recorded as `unsupported` for that exact tuple rather than being offered and then surfacing as a terminal conformance failure.
+
 Every claim classifies a capability as:
 
 - `supported`: approved evidence covers the capability and the claim states its envelope;

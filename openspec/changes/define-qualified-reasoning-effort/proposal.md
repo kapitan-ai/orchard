@@ -11,8 +11,11 @@ Issue #398 adds only the contract needed to select a bounded effort tier after t
 - Add `reasoning_effort` as a separate optional canonical axis with the provider-neutral closed vocabulary `low | medium | high`.
 - Permit a non-`nil` effort only for a negotiated `generation_policy = enabled` and `projection = final_only` request. Effort with `model_default` or `disabled` fails closed before the first Request write, scheduling, dispatch, or model invocation.
 - Preserve the existing generation-policy semantics when effort is omitted. Neither normalization nor serialization may synthesize a default tier or change an omitted-request hash domain.
-- Require the exact artifact/template renderer to map a canonical tier through a closed qualified mapping. The renderer contract and version identify that mapping; public callers cannot pass arbitrary template keywords or provider values.
-- Extend exact capability and loaded-worker acceptance tuples to include the selected canonical tier when present, while preserving legacy-only behavior when no complete tuple is negotiated.
+- Require the exact artifact/template renderer to map a canonical tier through a closed qualified mapping bound to the exact artifact digest, chat-template digest, render contract, and render-contract version, and require render metadata to prove that the applied effort equals the selected tier before dispatch. Public callers cannot pass arbitrary template keywords or provider values.
+- Extend exact manifest, capability, and loaded-worker acceptance tuples to include the selected canonical tier when present, while preserving legacy-only behavior when no complete tuple is negotiated.
+- Separate the closed `unsupported_reasoning_control` mapping into a contradictory-combination row and an exact-tuple capability row, keeping identical statuses, codes, and retry semantics while fixing `param` to the concrete offending accepted public field and `nil` for the Console.
+- Gate any future Console effort selection behind `enabled + final_only` and exact-tuple proof, with no effort selector until that contract is accepted.
+- Preserve PR #325's enabled-conformance rule for every tier: a tier that cannot prove valid non-empty reasoning for its exact tuple is unsupported rather than offered.
 - Pin a selected tier and the exact mapping-bearing contract across retries, capture, hashing, idempotency, replay, rolling upgrades, and `N`/`N-1` compatibility.
 - Define the qualification boundary between static render acceptance, runtime conformance, semantic effort evidence, and an approved scoped support claim.
 
@@ -29,11 +32,13 @@ Issue #398 adds only the contract needed to select a bounded effort tier after t
 
 ## SPEC.md impact
 
-This change amends `SPEC.md` sections 3.4, 7.2.1, 7.2.7, 7.3.4, 7.5.3a, 9.3, and 13.1. `SPEC.md` remains the normative contract; this package is a focused implementation and review guide.
+This change amends `SPEC.md` sections 3.4, 3.5, 6.4, 7.2.1, 7.2.7, 7.2.8, 7.3.4, 7.5.3a, 10.10, and 13.1. `SPEC.md` remains the normative contract; this package is a focused implementation and review guide.
 
 ## Dependencies and sequencing
 
 This is a contract-only child of issue #190 and PR #325. It preserves PR #325's independent generation-policy and projection axes.
+
+Every capability this change touches must already exist in the main specs before these additive effort requirements are merged into them. The `define-reasoning-output-contract` change SHALL be archived into the main `reasoning-output` capability, the `enforce-inference-capture-modes` change SHALL be archived into the main `inference-capture` capability, and the `establish-model-qualification-governance` change SHALL be archived into the main `model-qualification-governance` capability before this change is archived, so the effort requirements cannot generate an incomplete capability or placeholder purpose prose on their own. The `runtime-endpoints`, `worker-runtime-providers`, and `automatic-attempt-retry` capabilities already exist in the main specs, but their reasoning requirements arrive with `define-reasoning-output-contract`, which SHALL therefore also be archived before this change.
 
 Implementation remains sequenced through issue #326 for canonical normalization and exact rendering, #327 for concrete Runtime Endpoint and Worker Runtime encoding, #328 for parser and final-only projection conformance, #329 for usage, retry, and capture implementation, and #331 for concrete public Chat Completions and Responses fields. This change does not create a parallel render, runtime, parser, capture, or public-control path.
 

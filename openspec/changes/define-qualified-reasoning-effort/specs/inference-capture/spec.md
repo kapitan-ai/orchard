@@ -2,7 +2,7 @@
 
 ### Requirement: Selected effort preserves capture and replay boundaries
 
-Inference capture, hashing, idempotency, preview, and replay implementations SHALL apply the `SPEC.md` section 9.3 hidden-reasoning rules identically for every valid selected effort. A selected tier is non-content policy evidence; an omitted tier MUST NOT be synthesized into the existing public-body hash or serializer domain.
+Inference capture, hashing, idempotency, preview, and replay implementations SHALL apply the `SPEC.md` sections 9.3 and 10.10 hidden-reasoning rules identically for every valid selected effort. A selected tier is non-content policy evidence; an omitted tier MUST NOT be synthesized into the existing public-body hash or serializer domain.
 
 #### Scenario: Final-only request selects a qualified tier
 
