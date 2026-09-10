@@ -217,10 +217,13 @@ policies, the effective deadline is that generation budget plus the policy's
 `max_queue_wait_ms` and `max_cold_start_ms`. This makes the stored cold-start
 budget reachable without extending `requests.timeout_at` after creation.
 `required_loaded` and `prefer_loaded` requests retain the selected generation
-budget. An explicit negotiated reasoning request is selected only from already
-loaded `SPEC.md` §5.6 Tier 0 candidates, so its policy's cold-start budget stays
-unreachable and neither `residency_preference` nor `max_cold_start_ms` widens its
-candidate set; absent Tier 0 capacity it fails closed before dispatch.
+budget. An explicit negotiated reasoning request always uses that loaded-only
+formula, whatever its policy says: `SPEC.md` §5.6 restricts it to already loaded
+Tier 0 candidates, so `residency_preference` and `max_cold_start_ms` are
+inapplicable to it and an `allow_cold_load` policy adds neither the queue-wait
+nor the cold-start term to its `requests.timeout_at`. A model with no loaded
+placement fails closed before dispatch, while a loaded placement that is merely
+at capacity keeps the ordinary queue-waitable busy outcome.
 `ORCHARD_MAX_REQUEST_DEADLINE_MS` bounds the complete effective
 deadline, including generation, queue wait, and cold start. Its provisional
 default is 360000 ms pending Apple Silicon cold-load measurements under issue

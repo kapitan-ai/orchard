@@ -523,7 +523,8 @@ An omitted legacy Request SHALL use exactly `%{mode: :legacy}` and SHALL retain 
 An explicit negotiated Request SHALL use `mode = negotiated` and SHALL carry every listed identity field as a non-empty value.
 Missing or nullable negotiated identity SHALL fail validation before scheduling.
 Because §5.6 restricts a negotiated Request to already loaded Tier 0 candidates, `resolved_policy.residency_preference` and `admission.max_cold_start_ms` SHALL NOT apply to its candidate selection.
-An `allow_cold_load` or `prefer_loaded` policy SHALL NOT admit a cold or cached candidate for it, a `required_loaded` policy SHALL NOT narrow it further, and its resolved cold-start budget SHALL remain unreachable rather than becoming a selection input.
+An `allow_cold_load` or `prefer_loaded` policy SHALL NOT admit a cold or cached candidate for it, and a `required_loaded` policy SHALL NOT narrow it further.
+Its `timeout_at` SHALL therefore resolve through §12.4's loaded-only formula for every resolved `residency_preference`, so a cold-start budget becomes neither a selection input nor deadline headroom.
 
 The currently valid source, generation, and projection combinations are closed:
 
@@ -1666,9 +1667,10 @@ Tier selection rule:
 * else consider Tier 2
 
 An explicit `final_only` or `reasoning_structured` Request is the sole exception to that rule.
-Its §7.5.3a narrow reasoning-specific eligibility predicate SHALL consider only Tier 0 candidates whose loaded Worker Runtime proves the exact reasoning tuple, so Tier 1 and Tier 2 candidates SHALL be ineligible for it.
-`residency_preference` and `max_cold_start_ms` SHALL NOT widen that candidate set, and Orchard SHALL NOT descend to Tier 1 or Tier 2 to discover or acquire reasoning support.
-When no Tier 0 candidate proves the exact tuple, Orchard SHALL fail the Request closed before dispatch through the §7.2.7 `503 server_error` plus `runtime_incompatible` mapping.
+Tier 1 and Tier 2 candidates SHALL be ineligible for it, `residency_preference` and `max_cold_start_ms` SHALL NOT widen that candidate set, and Orchard SHALL NOT descend to Tier 1 or Tier 2 to discover or acquire reasoning support.
+Its §7.5.3a narrow reasoning-specific eligibility predicate SHALL NOT run during tiering: the Tier 0 group and its §5.7 ranking SHALL be formed without that predicate, which SHALL then filter the ranked group.
+When the requested model has no loaded placement on an active trusted Node, or when every Tier 0 candidate the §7.5.3a bounded wave observed fails the exact-tuple predicate, Orchard SHALL fail the Request closed before dispatch through the §7.2.7 `503 server_error` plus `runtime_incompatible` mapping.
+When a loaded placement exists but ordinary capacity scarcity leaves no Tier 0 candidate, the Request SHALL keep its existing `cluster_busy` or `model_busy` queue-waitable outcome exactly as a legacy Request on the same cluster would, and that unobserved placement SHALL NOT be read as proof of no reasoning support.
 
 ### 5.7 Scoring formula
 
@@ -3720,9 +3722,13 @@ Reasoning evidence SHALL belong to exactly one valid loaded binding and that Wor
 
 Reasoning evidence SHALL be available only through an opt-in live observation projection with a remaining freshness budget. It SHALL NOT be persisted in heartbeats or durable observations, and forwarding or serialization SHALL NOT refresh it. The explicit negotiated Request is the sole opt-in for that projection; no separate operator configuration flag SHALL enable, disable, or widen it. For an explicit negotiated Request only, the Controller MAY apply a narrow reasoning-specific eligibility predicate to a fresh exact tuple and select only an already loaded placement. This exception SHALL NOT make generic capability evidence authoritative for readiness, request admission, model admission, placement capacity, legacy scheduling, retry, or ordinary Runtime Endpoint projection. A timeout, malformed or unsupported projection, task exit, transport failure, or missing evidence proves no support, and an unloaded placement SHALL NOT be selected merely to discover reasoning support.
 
-That predicate SHALL consider only §5.6 Tier 0 candidates, whether resident from earlier traffic or prewarmed by a §6.10 `preload = true` pinning policy, so negotiated reasoning availability depends on Tier 0 capacity that already exists. When no Tier 0 candidate proves the exact tuple, Orchard SHALL fail closed before dispatch under the §7.2.7 `503 server_error` plus `runtime_incompatible` mapping instead of loading, caching, or downloading an artifact to create a negotiated candidate.
+That predicate SHALL consider only §5.6 Tier 0 candidates, whether resident from earlier traffic or prewarmed by a §6.10 `preload = true` pinning policy, so negotiated reasoning availability depends on Tier 0 capacity that already exists. Orchard SHALL NOT load, cache, or download an artifact to create a negotiated candidate.
 
-The live observation SHALL run as one bounded wave over at most the first four deduplicated Tier 0 candidates, with one observation attempt per candidate for the entire logical Request through terminal completion, the existing **2000 ms** per-target timeout, and no retry. Deduplication SHALL use the same normalized target identity that §5.5 uses for the candidate universe. Automatic Attempt Retry SHALL NOT reallocate that budget or initiate a second wave: attempt 2 SHALL select only from the Tier 0 candidates the original wave already proved, and SHALL otherwise resolve `no_alternative_node` unless an earlier reason in the §5.8 decline precedence applies.
+The predicate SHALL NOT reclassify ordinary capacity scarcity as incompatibility. The §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when every Tier 0 candidate the bounded wave observed fails the exact-tuple predicate. When a loaded placement exists but no Tier 0 candidate remains because aggregate slots or Dispatch Headroom are exhausted, placement concurrency is exceeded, tenant active capacity is exhausted, or a circuit breaker suppresses dispatch, the Request SHALL take its existing `cluster_busy` or `model_busy` outcome and remain queue-waitable under §5.5's controller queue contract. A capacity-blocked loaded placement whose reasoning support was therefore never observed SHALL NOT be read as proof of no support, and that transient scarcity SHALL NOT record `retry_decision = not_retryable`.
+
+The live observation SHALL run as one bounded wave per Inference Attempt. Its universe SHALL be built without the reasoning predicate: ordinary §5.5 eligibility, §5.6 Tier 0 grouping, then the §5.7 ranking in force with its deterministic lexicographic `node_id` tie-break last, then deduplication on the same normalized target identity §5.5 uses for the candidate universe. The wave SHALL observe at most the first four candidates of that deterministic order, once each, with the existing **2000 ms** per-target timeout and no transport retry. Candidates beyond that bound SHALL remain unobserved, unobserved evidence proves no support, and Orchard SHALL NOT extend the wave to reach them.
+
+Automatic Attempt Retry SHALL run its own fresh bounded wave rather than reusing attempt 1's evidence, because forwarding SHALL NOT refresh a freshness budget and stale evidence proves no support. Attempt 2's wave SHALL apply `exclude_node_ids` first, rebuild and reorder its universe by that same deterministic rule, observe at most the first four deduplicated candidates once each under the same **2000 ms** per-target timeout with no transport retry, and obtain a new `PrepareInference` proof for the different selected endpoint. Each Inference Attempt SHALL run at most one wave, so a logical Request SHALL run at most two. When that wave proves no different eligible candidate, the retry decision SHALL resolve to `no_alternative_node` unless an earlier reason in the §5.8 decline precedence applies.
 
 The proof is carried by unary `PrepareInference` before negotiated execution. It SHALL return the authoritative complete-tuple and worker-incarnation proof plus an opaque single-use authorization bound to the Request, tuple, loaded binding, and current loaded worker instance. The Controller SHALL redeem the authorization only through the matching execution Request. Expiry, cancellation, duplicate redemption, worker restart, or loaded-instance replacement invalidates the authorization. A failed preparation leaves invocation, content, and usage at zero. Node Agent ownership of `Accepted` remains unchanged; negotiated `Accepted` follows successful preparation redemption.
 
@@ -5641,6 +5647,8 @@ Common error codes:
 Controller SHALL assign `timeout_at` once at Request creation during admission.
 Queueing, scheduling, model loading, attempt 1, cleanup, evidence persistence, alternate scheduling, and attempt 2 SHALL share that absolute deadline.
 Model-load and execution deadlines SHALL be capped by the remaining time and SHALL NOT extend `timeout_at`.
+An explicit negotiated reasoning Request SHALL resolve `timeout_at` through the loaded-only formula for every resolved `residency_preference`: the selected generation budget alone, with neither a `max_queue_wait_ms` nor a `max_cold_start_ms` term.
+`allow_cold_load` SHALL NOT widen that deadline, because §5.6 restricts the Request to already loaded Tier 0 candidates, and the configured maximum-request-deadline ceiling SHALL cap the result exactly as it caps any other Request.
 
 On timeout:
 
