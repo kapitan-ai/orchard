@@ -231,7 +231,8 @@ Available in the current source tree:
 - Workspace-scoped API Tokens, API Clients, and deny-by-default model access grants.
 - The Console, Developer Portal, Prometheus metrics, and request diagnostics.
 - Node trust initialization, single-node enrollment and join, admission review, and bounded lifecycle actions.
-- Client-executed function-tool passthrough for model configurations qualified with the `tool_calling` capability.
+- Client-executed function-tool passthrough for model configurations that carry the `tool_calling` capability.
+  Catalog admission of that capability is static artifact evidence, not qualification; see [`docs/model-qualification.md`](docs/model-qualification.md).
 
 Current limits:
 

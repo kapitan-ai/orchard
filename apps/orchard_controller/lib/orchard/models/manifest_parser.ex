@@ -5,6 +5,12 @@ defmodule Orchard.Models.ManifestParser do
   Bridges from JSON string-keyed maps to the atom-keyed domain struct,
   rejecting unknown top-level keys and normalizing nested structures
   before delegating to `ModelManifest.new/1` for domain validation.
+
+  The manifest schema stays closed so an N-1 Worker Runtime can load it, which
+  is why tool-capability evidence arrives from the bundle's optional
+  `tool_capability_evidence.json` sidecar instead. Per `SPEC.md` §6.4, a
+  manifest `tool_calling` capability is admitted only alongside a `declared`
+  sidecar and is dropped otherwise.
   """
 
   alias Orchard.ModelManifest
@@ -164,11 +170,12 @@ defmodule Orchard.Models.ManifestParser do
   end
 
   @doc """
-  Reads and parses `manifest.json` from a bundle directory.
+  Reads and parses `manifest.json` plus the optional
+  `tool_capability_evidence.json` sidecar from a bundle directory.
 
   Returns `{:ok, manifest}` or `{:error, reason}` where reason is
-  `{:manifest_not_found, path}`, `{:json_decode, message}`, or
-  `{:validation, message}`.
+  `{:manifest_not_found, path}`, `{:json_decode, message}`,
+  `{:capability_evidence_read, message}`, or `{:validation, message}`.
   """
   @spec parse_from_bundle(String.t()) :: {:ok, ModelManifest.t()} | {:error, term()}
   def parse_from_bundle(bundle_path) when is_binary(bundle_path) do
@@ -192,7 +199,9 @@ defmodule Orchard.Models.ManifestParser do
   @doc """
   Parses a JSON string into an `Orchard.ModelManifest`.
 
-  Returns `{:ok, manifest}` or `{:error, reason}`.
+  Returns `{:ok, manifest}` or `{:error, reason}`. There is no bundle
+  directory to read a capability-evidence sidecar from, so a `tool_calling`
+  capability in the JSON is always dropped.
   """
   @spec parse_json(String.t()) :: {:ok, ModelManifest.t()} | {:error, term()}
   def parse_json(json) when is_binary(json) do

@@ -1,6 +1,11 @@
 defmodule Orchard.ModelManifest do
   @moduledoc """
   Shared domain shape for imported Orchard model bundle manifests.
+
+  `capability_evidence` is the one field that does not come from `manifest.json`.
+  The manifest schema stays closed for N-1 Worker Runtime compatibility, so
+  callers populate it from the bundle's `tool_capability_evidence.json` sidecar
+  and must never emit it back into `manifest.json`.
   """
 
   import Orchard.StructCasting, only: [cast_nested: 3, build_struct!: 2]

@@ -2,9 +2,13 @@ defmodule Orchard.Models.BundleBuilder do
   @moduledoc """
   Generates a valid Orchard bundle manifest from downloaded HuggingFace model files.
 
-  Reads `config.json`, resolves chat templates, and writes `manifest.json` that
-  passes `ManifestParser.parse_from_bundle/1` validation. Bridges the gap between
+  Reads `config.json`, resolves chat templates, and writes `manifest.json` plus a
+  `tool_capability_evidence.json` sidecar that pass
+  `ManifestParser.parse_from_bundle/1` validation. Bridges the gap between
   `HubDownloader` output and `Importer.import_bundle/2` input.
+
+  Generated capabilities follow the sidecar: `tool_calling` is emitted only for a
+  `declared` evidence result, per `SPEC.md` §6.4.
 
   ## Chat Template Resolution Order
 

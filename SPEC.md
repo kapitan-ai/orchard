@@ -2015,7 +2015,9 @@ A Model Hub-generated Artifact Bundle MAY carry an optional `tool_capability_evi
 
 The Model Hub SHALL derive this sidecar only from the resolved repository/revision and downloaded bundle artifacts. It SHALL NOT infer capability from a model name, family-name substring, publisher tag, base-model reference, arbitrary model card text, generic tag absence, or a successful chat-only render. `declared` requires all three preflight booleans true: an exact known parser type, a bounded tool-definition render, and a bounded structured assistant function-call plus tool-result history render. The history render SHALL use the same contract-v3 safe argument normalization required by §3.5. `declared` is the only result that may place `tool_calling` in `capabilities`; `unknown` and `conflicted` SHALL remain chat-only. A Model Hub declaration is Catalog admission evidence only; it SHALL NOT establish runtime qualification, a support claim, or server-side tool execution.
 
-The importer SHALL validate and preserve the sidecar in the Artifact Bundle, copy it to the immutable Catalog model record, and reject duplicate `{model_id, version}` identities. It SHALL NOT mutate a Catalog row to repair a capability. The Console Model Hub SHALL offer an operator repair action that uses the normal download/build/import path against the same exact source revision and a distinct explicit Catalog version; the new manifest SHALL continue to record the original source revision. Such reimport does not by itself transfer qualification or support evidence between artifacts.
+Manifest `capabilities` alone SHALL NOT admit `tool_calling` for any bundle, including an offline-authored Model Bundle. Manifest parsing SHALL drop a `tool_calling` entry unless the same bundle carries a sidecar whose result is `declared`, and SHALL leave every other manifest capability unchanged. A `declared` sidecar whose manifest omits `tool_calling`, or whose preflight booleans are not all true, SHALL fail manifest validation rather than admit a partial tuple.
+
+The importer SHALL validate and preserve the sidecar in the Artifact Bundle, copy it to the immutable Catalog model record, and reject duplicate `{model_id, version}` identities. It SHALL NOT mutate a Catalog row to repair a capability. The Console Model Hub SHALL offer an operator repair action that uses the normal download/build/import path against the same exact source revision and a distinct explicit Catalog version; the new manifest records the distinct Catalog version as its `version`, while the new sidecar SHALL continue to record the original source revision. Such reimport does not by itself transfer qualification or support evidence between artifacts.
 
 `models.artifact_sha256` SHALL remain the authoritative lowercase SHA-256 digest of the final stored Artifact Bundle after secure staging and all importer-owned mutations.
 The existing digest algorithm recursively collects regular files, rejects symlinks and unsupported entries, sorts bundle-relative paths, and hashes each relative path followed by the file's exact bytes.
@@ -4089,6 +4091,7 @@ create table models (
   state model_catalog_state not null default 'registered',
   format text not null check (format in ('mlx', 'gguf')),
   capabilities jsonb not null default '{}'::jsonb,
+  capability_evidence jsonb,
   tokenizer jsonb not null default '{}'::jsonb,
   artifact_uri text,
   artifact_sha256 text not null,

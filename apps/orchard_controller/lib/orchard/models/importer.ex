@@ -5,7 +5,7 @@ defmodule Orchard.Models.Importer do
   Import steps per SPEC.md §6.5:
 
   1. Validate source path exists and is a directory
-  2. Parse and validate manifest.json
+  2. Parse and validate manifest.json plus any tool_capability_evidence.json sidecar
   3. Validate identity fields are safe path segments
   4. Check for duplicate (model_id + version)
   5. Copy bundle to a staging temp directory (rejecting symlinks)
