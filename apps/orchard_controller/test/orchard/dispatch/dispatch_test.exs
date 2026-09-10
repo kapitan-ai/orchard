@@ -61,7 +61,20 @@ defmodule Orchard.Dispatch.DispatchTest.TerminalContractClient do
 
   def disconnect(_channel), do: {:ok, :disconnected}
 
-  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+  def execute_inference(channel, request, opts \\ [])
+
+  def execute_inference(
+        _channel,
+        %Operation.ExecuteRequest{request_id: "req-dispatch-late-refusal"},
+        opts
+      ) do
+    ref = make_ref()
+    Process.put({__MODULE__, :late_refusal}, {Keyword.fetch!(opts, :owner), ref})
+    if caller = Process.delete({__MODULE__, :disconnect_caller}), do: send(caller, :stop)
+    {:ok, ref}
+  end
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts) do
     owner = Keyword.get(opts, :owner, self())
     ref = make_ref()
 
@@ -76,7 +89,23 @@ defmodule Orchard.Dispatch.DispatchTest.TerminalContractClient do
     {:ok, ref}
   end
 
-  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{request_id: request_id}, _opts \\ []) do
+    case Process.delete({__MODULE__, :late_refusal}) do
+      {owner, ref} ->
+        send(
+          owner,
+          {:runtime_endpoint_event, ref, request_id,
+           InferenceEvent.failed("model_busy", "late capacity refusal", false)}
+        )
+
+        send(owner, {:runtime_endpoint_done, ref, :ok})
+
+      nil ->
+        :ok
+    end
+
+    :ok
+  end
 
   defp events_for("req-dispatch-duplicate-terminal") do
     [
@@ -134,9 +163,44 @@ defmodule Orchard.Dispatch.DispatchTest.TerminalContractClient do
     ]
   end
 
+  defp events_for("req-dispatch-preaccept-empty"), do: []
+
+  defp events_for("req-dispatch-preaccept-completed"),
+    do: [InferenceEvent.completed(:finish_reason_stop, nil)]
+
+  defp events_for("req-dispatch-preaccept-duplicate") do
+    failed = InferenceEvent.failed("model_busy", "capacity exhausted", false)
+    [failed, failed]
+  end
+
+  defp events_for("req-dispatch-preaccept-late-accepted") do
+    [InferenceEvent.failed("model_busy", "capacity exhausted", false), InferenceEvent.accepted(0)]
+  end
+
+  defp events_for("req-dispatch-preaccept-hidden-output") do
+    [
+      InferenceEvent.output_text_delta("unaccepted output"),
+      InferenceEvent.failed("model_busy", "capacity exhausted", false)
+    ]
+  end
+
+  defp events_for("req-dispatch-preaccept-transport-error"),
+    do: [InferenceEvent.failed("model_busy", "capacity exhausted", false)]
+
+  defp events_for("req-dispatch-accepted-resource-exhausted") do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.failed("resource_exhausted", "runtime exhausted", true)
+    ]
+  end
+
+  defp events_for("req-dispatch-preaccept-" <> code),
+    do: [InferenceEvent.failed(code, "capacity exhausted", false)]
+
   defp events_for(_request_id), do: [InferenceEvent.accepted(0)]
 
   defp done_result("req-dispatch-post-terminal-error"), do: {:error, :stream_failed}
+  defp done_result("req-dispatch-preaccept-transport-error"), do: {:error, :node_unavailable}
   defp done_result(_request_id), do: :ok
 
   defp post_terminal_event("accepted"), do: InferenceEvent.accepted(1)
@@ -453,6 +517,184 @@ defmodule Orchard.Dispatch.DispatchTest do
                  model_load_request(bundle),
                  client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
                )
+    end
+
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.9: pre-acceptance capacity refusal retains failure without acceptance or output",
+         %{
+           bundle: bundle
+         } do
+      for {suffix, code} <- [
+            {"model_busy", "model_busy"},
+            {"cluster_busy", "cluster_busy"},
+            {"hidden-output", "model_busy"}
+          ] do
+        request_id = "req-dispatch-preaccept-" <> suffix
+        owner = self()
+
+        outcome =
+          RequestDispatcher.dispatch(
+            build_schedule(request_id),
+            execute_request(request_id),
+            model_load_request(bundle),
+            client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient,
+            on_accepted: fn _, _ -> send(owner, :unexpected_acceptance) end,
+            event_handler: fn _, event -> send(owner, {:refusal_event, event}) end
+          )
+
+        assert %AttemptOutcome{
+                 attempt_outcome: :failed,
+                 accepted: false,
+                 events: [%InferenceEvent{event: %InferenceEvent.Failed{code: ^code}} = failed],
+                 failure: %{"failure_class" => "capacity_rejection", "failure_code" => ^code},
+                 output_committed: false,
+                 first_token_at: nil,
+                 output_commitment_kind: nil,
+                 execution_resolution: :terminated,
+                 capacity_release_outcome: :not_applicable,
+                 runtime_retryable: false
+               } = outcome
+
+        selected =
+          AttemptOutcome.select(outcome, request_id, fn _, event ->
+            send(owner, {:refusal_event, event})
+            :ok
+          end)
+
+        assert selected.delivered_event_count == 1
+        assert_received {:refusal_event, ^failed}
+        refute_received {:refusal_event, _}
+        refute_received :unexpected_acceptance
+      end
+    end
+
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.9: transport failure takes precedence over buffered pre-acceptance refusal", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-preaccept-transport-error"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+        )
+
+      assert outcome.accepted == false
+      assert outcome.events == []
+      assert outcome.failure["failure_class"] == "pre_acceptance_unavailable"
+      assert outcome.failure["failure_code"] == "node_unavailable"
+      refute outcome.output_committed
+    end
+
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.9: timeout before late refusal keeps deadline evidence", %{bundle: bundle} do
+      request_id = "req-dispatch-late-refusal"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id, request_timeout_ms: 100),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+        )
+
+      assert outcome.attempt_outcome == :timed_out
+      assert outcome.accepted == false
+      assert outcome.events == []
+      assert outcome.failure["failure_class"] == "deadline"
+      assert outcome.failure["failure_code"] == "request_timeout"
+      refute outcome.output_committed
+
+      assert Process.get({Orchard.Dispatch.DispatchTest.TerminalContractClient, :late_refusal}) ==
+               nil
+    end
+
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.9: caller disconnect before late refusal keeps cancellation evidence", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-late-refusal"
+
+      caller =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      Process.put(
+        {Orchard.Dispatch.DispatchTest.TerminalContractClient, :disconnect_caller},
+        caller
+      )
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          caller: caller,
+          client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+        )
+
+      assert outcome.attempt_outcome == :cancelled
+      assert outcome.accepted == false
+      assert outcome.events == []
+      assert outcome.failure["failure_class"] == "cancellation"
+      assert outcome.failure["failure_code"] == "request_caller_disconnect"
+      refute outcome.output_committed
+
+      assert Process.get({Orchard.Dispatch.DispatchTest.TerminalContractClient, :late_refusal}) ==
+               nil
+    end
+
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.8: accepted retryable resource failure remains a runtime failure", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-accepted-resource-exhausted"
+
+      assert %AttemptOutcome{
+               accepted: true,
+               runtime_retryable: true,
+               failure: %{
+                 "failure_class" => "runtime_failure",
+                 "failure_code" => "resource_exhausted"
+               }
+             } =
+               RequestDispatcher.dispatch(
+                 build_schedule(request_id),
+                 execute_request(request_id),
+                 model_load_request(bundle),
+                 client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+               )
+    end
+
+    @tag :pre_acceptance_refusal
+    test "SPEC 5.9: missing acceptance and malformed pre-acceptance streams stay fail closed", %{
+      bundle: bundle
+    } do
+      for suffix <- ["empty", "completed", "duplicate", "late-accepted", "runtime_failed"] do
+        request_id = "req-dispatch-preaccept-" <> suffix
+
+        assert %AttemptOutcome{
+                 accepted: false,
+                 events: [],
+                 failure: %{
+                   "failure_class" => "pre_acceptance_unavailable",
+                   "failure_code" => "internal_error"
+                 },
+                 output_committed: false
+               } =
+                 RequestDispatcher.dispatch(
+                   build_schedule(request_id),
+                   execute_request(request_id),
+                   model_load_request(bundle),
+                   client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+                 )
+      end
     end
 
     test "SPEC 7.5.5: accepted stream without a terminal becomes one failed terminal", %{

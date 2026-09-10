@@ -456,6 +456,16 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp attempt_failure(_result, _terminal, :completed), do: nil
 
   defp attempt_failure(
+         {:ok, [%InferenceEvent{event: %InferenceEvent.Failed{code: code}}],
+          %AttemptEventDelivery{}},
+         _terminal,
+         _outcome
+       )
+       when code in ["model_busy", "cluster_busy"] do
+    InferenceAttemptFailure.normalize(%{category: :capacity, code: code})
+  end
+
+  defp attempt_failure(
          {:ok, _events, %AttemptEventDelivery{}},
          %InferenceEvent{event: %InferenceEvent.Failed{code: code}},
          _outcome
@@ -1707,6 +1717,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {%InferenceEvent{}, defect} ->
         synthesize_terminal_contract_failure(loop_ctx, events, metrics, defect)
     end
+  end
+
+  defp stream_done_result(
+         %{
+           accepted?: false,
+           cancellation_started_before_acceptance?: false,
+           terminal_event:
+             %InferenceEvent{event: %InferenceEvent.Failed{code: code}} = terminal_event,
+           conformance_defect: :none
+         } = loop_ctx,
+         [],
+         metrics
+       )
+       when code in ["model_busy", "cluster_busy"] do
+    delivery = AttemptEventDelivery.record(loop_ctx.delivery, terminal_event)
+    {:ok, [terminal_event], metrics, delivery}
   end
 
   defp stream_done_result(loop_ctx, events, metrics),
