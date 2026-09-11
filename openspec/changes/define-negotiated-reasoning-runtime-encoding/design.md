@@ -8,9 +8,9 @@ Implementation is blocked until all of these conditions hold:
 
 1. PR #401 has merged, so the canonical request owns the exact reasoning identity transported by this contract.
 2. This OpenSpec change and its `SPEC.md` amendment have been accepted.
-3. An owner-approved schema design defines the concrete wire declarations without substituting an unapproved number or shape.
+3. An owner-approved schema design defines the concrete message declarations that realize the accepted allocation, without substituting an unapproved number or shape.
 
-This reconciliation selects no concrete protobuf layout, enum value, `nil`-presence encoding, RPC or service owner, evidence/preparation/proof message layout, or execution-redemption shape.
+This reconciliation selects no enum value, `nil`-presence encoding, protobuf service or RPC declaration owner, evidence/preparation/proof message layout, or execution-redemption shape. It restates the `SPEC.md` §7.5.3a field allocation and the Runtime Endpoint Interface placement of unary `PrepareInference` as traceability rather than choosing either, and it adds no protocol source declaration.
 
 ## 2. Canonical tuple and loaded binding
 
@@ -30,7 +30,13 @@ The advertised and proven reasoning tuple has exactly these eleven equality fiel
 
 Every comparison is byte-exact after the validated canonical representation is formed. `source` is provenance and is not tuple identity. Independent value lists are invalid because they could fabricate a supported combination.
 
-Concrete schema work remains blocked pending owner-approved design. Earlier references to a `WorkerCapabilities` loaded-binding allocation, its sibling reasoning envelope, and shared cross-boundary reasoning definitions are traceability only in this reconciliation; they do not authorize source declarations. The pending design must decide the exact protobuf fields and tags, enum values, representation of omitted `reasoning_effort`, RPC and service ownership, evidence/preparation/proof message layouts, and execution-redemption shape. This contract supplies none of those choices.
+`SPEC.md` §7.5.3a already fixes the allocation this contract traces: `WorkerCapabilities` field 8 is the deferred `WorkerLoadedBinding` allocation with the previously recorded shape (`model_id`, `model_version`, `artifact_digest`, `selected_profile_id`), field 9 is its sibling placement-scoped reasoning envelope, and the shared tuple, evidence, preparation, and proof definitions live in `proto/cluster/v1/reasoning.proto`. Implementation must re-confirm those allocations when it begins and block on a conflicting upstream allocation rather than substitute a different number or shape.
+
+That shared file keeps cross-boundary reasoning types out of both the Worker package and the Controller transport package, following the existing precedent in `proto/orchard/worker/v1/worker_runtime.proto`, which already imports `cluster/v1` files, but it does add one more `cluster.v1` dependency of the provider-neutral Worker Runtime boundary. `deprecate-node-runtime-grpc-compatibility` already records Worker Runtime imports as the reason runtime messages cannot be deleted early, and reasoning types join that same set. Relocating or removing the shared file is therefore owned by the later `cluster.v1` deprecation sequencing, not by this contract or its #327 implementation.
+
+The declarations that realize that allocation remain blocked pending owner-approved schema design, which must decide the enum values, the representation of an omitted `reasoning_effort`, the protobuf service and RPC declaration ownership, the evidence, preparation, and proof message layouts, and the execution-redemption shape. This contract supplies none of those choices and assigns no source declaration in the present PR.
+
+The omitted-`reasoning_effort` representation is load-bearing rather than cosmetic. Because every comparison is byte-exact, an encoding that left an absent effort indistinguishable from a selected tier would let an advertisement that selected no tier compare equal to a tier-selected request tuple, fabricating exactly the unadvertised combination the indivisible tuple exists to prevent. `SPEC.md` §7.5.3a requires the fresh observation to advertise the exact complete tuple including the selected effort when present, so the pending design must keep those two cases distinguishable.
 
 A reasoning envelope is meaningful only with one valid loaded binding and that envelope's `service_incarnation`. Each advertised tuple's artifact digest equals that loaded binding's artifact digest, and its selected profile resolves exactly once in the same `WorkerCapabilities` envelope. A present but incomplete envelope, duplicate or conflicting tuple, unknown enum or version, missing required member, or invalid binding proves no support; it is not legacy omission. Loading, unloading, replacement, failed destructive unload, or worker teardown invalidates the affected evidence and any preparation associated with it.
 
