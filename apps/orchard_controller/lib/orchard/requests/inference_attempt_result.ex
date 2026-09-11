@@ -26,8 +26,16 @@ defmodule Orchard.Requests.InferenceAttemptResult do
     output_usage_status reasoning_tokens
   ))
 
+  unmarked_required_fields = @required_fields -- MapSet.to_list(@marker_fields)
+
+  if unmarked_required_fields != [] do
+    raise "required inference attempt result fields absent from the marker vocabulary: " <>
+            inspect(unmarked_required_fields)
+  end
+
   @attempt_outcomes ~w(completed failed cancelled timed_out interrupted)
-  @commitment_kinds ~w(text tool_call structured_output reasoning)
+  @commitment_kinds ~w(text tool_call structured_output)
+  @persisted_commitment_kinds @commitment_kinds ++ ~w(reasoning)
   @output_usage_statuses ~w(exact lower_bound)
   @execution_resolutions ~w(not_started terminated unresolved)
   @capacity_release_outcomes ~w(released already_released not_applicable unresolved)
@@ -45,6 +53,12 @@ defmodule Orchard.Requests.InferenceAttemptResult do
     "request_step.cancelled" => "cancelled",
     "request_step.timed_out" => "timed_out",
     "request_step.interrupted" => "interrupted"
+  }
+
+  @new_write_contract %{fields: @fields, commitment_kinds: @commitment_kinds}
+  @persisted_contract %{
+    fields: @persisted_fields,
+    commitment_kinds: @persisted_commitment_kinds
   }
 
   @type t :: map()
@@ -72,7 +86,7 @@ defmodule Orchard.Requests.InferenceAttemptResult do
 
   @spec new(String.t(), 1 | 2, map()) :: {:ok, t()} | {:error, String.t()}
   def new(event_type, attempt, result) when is_map(result),
-    do: validate(event_type, attempt, result, @fields)
+    do: validate(event_type, attempt, result, @new_write_contract)
 
   def new(_event_type, _attempt, _result), do: {:error, "inference attempt result must be a map"}
 
@@ -80,21 +94,25 @@ defmodule Orchard.Requests.InferenceAttemptResult do
   Validates terminal attempt evidence read from durable storage.
 
   Historical rows may omit the usage-status vocabulary. Rows that contain any
-  of that vocabulary must satisfy the complete current usage contract.
+  of that vocabulary must satisfy the complete current usage contract. The
+  `SPEC.md` §3.7.1 `reasoning` commitment kind is readable only here, while
+  `new/3` holds every current writer to the pre-reasoning vocabulary.
 
   Deploy this compatibility reader to every Controller and background reader
   before PR #418's new-format writers may merge; pre-bridge binaries reject it.
+  PR #418 stays blocked until those paired status writers are active, not
+  merely until the nullable column exists.
   """
   @spec from_persisted(String.t(), 1 | 2, map()) :: {:ok, t()} | {:error, String.t()}
   def from_persisted(event_type, attempt, result) when is_map(result),
-    do: validate(event_type, attempt, result, @persisted_fields)
+    do: validate(event_type, attempt, result, @persisted_contract)
 
   def from_persisted(_event_type, _attempt, _result),
     do: {:error, "inference attempt result must be a map"}
 
-  defp validate(event_type, attempt, result, allowed_fields) do
+  defp validate(event_type, attempt, result, contract) do
     with :ok <- validate_attempt(attempt),
-         {:ok, normalized} <- normalize_keys(result, allowed_fields),
+         {:ok, normalized} <- normalize_keys(result, contract.fields),
          :ok <- validate_persisted_usage(normalized),
          :ok <- validate_required_fields(normalized),
          :ok <- validate_enum(normalized, "attempt_outcome", @attempt_outcomes),
@@ -108,7 +126,12 @@ defmodule Orchard.Requests.InferenceAttemptResult do
          :ok <- validate_enum(normalized, "execution_resolution", @execution_resolutions),
          :ok <-
            validate_enum(normalized, "capacity_release_outcome", @capacity_release_outcomes),
-         :ok <- validate_optional_enum(normalized, "output_commitment_kind", @commitment_kinds),
+         :ok <-
+           validate_optional_enum(
+             normalized,
+             "output_commitment_kind",
+             contract.commitment_kinds
+           ),
          :ok <-
            validate_optional_enum(
              normalized,
@@ -124,7 +147,7 @@ defmodule Orchard.Requests.InferenceAttemptResult do
          :ok <- validate_optional_enum(normalized, "finish_reason", @finish_reasons),
          :ok <- validate_optional_strings(normalized),
          :ok <- validate_optional_integers(normalized),
-         :ok <- validate_commitment(normalized),
+         :ok <- validate_commitment(normalized, contract.commitment_kinds),
          :ok <- validate_acceptance_resolution(normalized),
          :ok <- validate_outcome_fields(attempt, normalized),
          :ok <- validate_outcome_failure_consistency(normalized),
@@ -298,13 +321,13 @@ defmodule Orchard.Requests.InferenceAttemptResult do
     end)
   end
 
-  defp validate_commitment(%{"output_committed" => true} = result) do
-    if result["output_commitment_kind"] in @commitment_kinds,
+  defp validate_commitment(%{"output_committed" => true} = result, commitment_kinds) do
+    if result["output_commitment_kind"] in commitment_kinds,
       do: :ok,
       else: {:error, "committed output requires output_commitment_kind"}
   end
 
-  defp validate_commitment(%{"output_committed" => false} = result) do
+  defp validate_commitment(%{"output_committed" => false} = result, _commitment_kinds) do
     if Map.has_key?(result, "output_commitment_kind"),
       do: {:error, "uncommitted output must omit output_commitment_kind"},
       else: :ok

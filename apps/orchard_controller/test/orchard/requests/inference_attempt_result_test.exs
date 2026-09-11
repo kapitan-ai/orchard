@@ -98,21 +98,32 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
     end
   end
 
-  test "SPEC.md §5.8 recognizes reasoning as commitment evidence" do
+  test "SPEC.md §5.8 reads reasoning commitment evidence without widening new writes" do
+    committed =
+      failed_result(%{
+        "accepted" => true,
+        "output_committed" => true,
+        "output_commitment_kind" => "reasoning",
+        "execution_resolution" => "terminated",
+        "retry_decision" => "output_committed"
+      })
+
     assert {:ok, result} =
-             InferenceAttemptResult.new(
-               "request_step.failed",
-               1,
-               failed_result(%{
-                 "accepted" => true,
-                 "output_committed" => true,
-                 "output_commitment_kind" => "reasoning",
-                 "execution_resolution" => "terminated",
-                 "retry_decision" => "output_committed"
-               })
-             )
+             InferenceAttemptResult.from_persisted("request_step.failed", 1, committed)
 
     assert result["output_commitment_kind"] == "reasoning"
+
+    assert {:error, "output_commitment_kind must be one of text, tool_call, structured_output"} =
+             InferenceAttemptResult.new("request_step.failed", 1, committed)
+
+    for kind <- ~w(text tool_call structured_output) do
+      assert {:ok, %{"output_commitment_kind" => ^kind}} =
+               InferenceAttemptResult.new(
+                 "request_step.failed",
+                 1,
+                 Map.put(committed, "output_commitment_kind", kind)
+               )
+    end
   end
 
   test "closed retry decisions reject impossible attempt states" do

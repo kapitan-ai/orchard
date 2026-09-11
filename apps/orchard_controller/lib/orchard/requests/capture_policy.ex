@@ -590,7 +590,7 @@ defmodule Orchard.Requests.CapturePolicy do
   end
 
   defp revalidate_attempt_result(result, event_type, attempt) do
-    case InferenceAttemptResult.from_persisted(event_type, attempt, result) do
+    case InferenceAttemptResult.new(event_type, attempt, result) do
       {:ok, validated} -> validated
       {:error, _reason} -> %{"result_invalid" => true}
     end
