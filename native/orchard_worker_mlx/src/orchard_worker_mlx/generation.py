@@ -2406,6 +2406,7 @@ def generate_events(
                 )
                 finalize_prefill_probe_if_needed(drained_prefill)
                 output_tokens += 1
+                yield _usage_event(input_tokens, output_tokens)
 
                 if output_tokens % stride == 0 and cancel_event.is_set():
                     if tool_context is None or not tool_context.stop_buffer_disabled:
@@ -2699,6 +2700,18 @@ def _completed_event(finish_reason: str, input_tokens: int, output_tokens: int) 
     return {
         "kind": "completed",
         "finish_reason": finish_reason,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }
+
+
+def _usage_event(input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    """Build a non-terminal cumulative usage event dict."""
+    return {
+        "kind": "usage",
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,

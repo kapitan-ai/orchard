@@ -5,13 +5,9 @@ defmodule Orchard.Inference.EventUsage do
 
   @spec find([InferenceEvent.t()]) :: InferenceEvent.Usage.t() | nil
   def find(events) when is_list(events) do
-    usage_event = Enum.find(events, &(InferenceEvent.kind(&1) == :usage))
-    completed_event = Enum.find(events, &(InferenceEvent.kind(&1) == :completed))
-
-    cond do
-      usage_event != nil -> usage_event.event.usage
-      completed_event != nil && completed_event.event.usage != nil -> completed_event.event.usage
-      true -> nil
-    end
+    Enum.reduce(events, nil, fn
+      %InferenceEvent{event: %{usage: usage}}, _latest_usage when usage != nil -> usage
+      _event, latest_usage -> latest_usage
+    end)
   end
 end
