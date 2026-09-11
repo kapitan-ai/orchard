@@ -6,13 +6,13 @@ For an explicit negotiated reasoning Request, the Runtime Endpoint Interface SHA
 
 The predicate SHALL consider only `SPEC.md` §5.6 Tier 0 candidates, whether resident from earlier traffic or prewarmed by a §6.10 `preload = true` pinning policy. Tier 1 and Tier 2 candidates SHALL be ineligible, `residency_preference` and `max_cold_start_ms` SHALL NOT apply to negotiated candidate selection, and a negotiated Request SHALL resolve `timeout_at` through the §12.4 loaded-only formula under every resolved policy.
 
-The predicate SHALL NOT reclassify capacity scarcity or unknown support as incompatibility, and capacity eligibility SHALL NOT narrow what it may observe. The closed §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when every loaded placement of that model was probed and each affirmatively returned an absent or mismatched tuple. When a proving placement exists but cannot be dispatched for capacity or tenant-cap reasons, or whenever any loaded placement's support remains unknown through an incomplete probe, an elapsed wave deadline, or a withheld target, the Request SHALL keep its existing `cluster_busy` or `model_busy` queue-waitable outcome as transient pre-dispatch unavailability, SHALL NOT record `not_retryable`, and SHALL NOT read that placement as proof of no support. A breaker that opens after a fresh proof SHALL be handled by ordinary §5.10 suppression and §5.4 queue handling without reclassifying reasoning compatibility. That equivalence covers queue outcome semantics only; queue wait and wave time consume the negotiated Request's own §12.4 loaded-only budget.
+The predicate SHALL NOT reclassify capacity scarcity or unknown support as incompatibility, and capacity eligibility SHALL NOT narrow what it may observe. The closed §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when every loaded placement of that model was probed and each returned confirmed non-support. When a proving placement exists but cannot be dispatched for capacity or tenant-cap reasons, or whenever any loaded placement's support remains unknown through an unknown-class result, an elapsed wave deadline, or a withheld target, the Request SHALL keep its existing `cluster_busy` or `model_busy` queue-waitable outcome as transient pre-dispatch unavailability, SHALL NOT record `not_retryable`, and SHALL NOT read that placement as proof of no support. A breaker that opens after a fresh proof SHALL be handled by ordinary §5.10 suppression and §5.4 queue handling without reclassifying reasoning compatibility. That equivalence covers queue outcome semantics only; queue wait and wave time consume the negotiated Request's own §12.4 loaded-only budget.
 
 The live observation SHALL run as one bounded wave over the reachable loaded-placement universe: every loaded placement of the requested model on a scheduler-fresh active trusted Node satisfying the §5.5 health condition exactly as stated there — `healthy`, or `degraded` while the shared capacity authority decision is `legacy_pre_cutover` — including those ordinary eligibility excludes solely for exhausted capacity or tenant active caps, deduplicated on the §5.5 normalized target identity and ordered by the §5.7 ranking as it would apply to them with the lexicographic `node_id` tie-break last. A target that is not scheduler-fresh, fails that health condition, or is suppressed by the node-level or `(node, model)` placement-level §5.10 breaker SHALL be withheld rather than probed, so it cannot hold an in-flight slot it will never answer and §5.10 suppression is preserved; its support SHALL remain unknown.
 
 The wave SHALL hold at most four probes in flight, advance through that deterministic order as probes complete, observe each placement at most once, and run under one 2000 ms wave deadline rather than a per-target timeout. It SHALL NOT retry an individual probe transport. Because the §5.7 ranking is capability-blind, the window SHALL advance rather than stay fixed on the leading four.
 
-Selection evidence and exhaustion evidence SHALL be distinct. A timeout, transport failure, task exit, or otherwise incomplete probe SHALL prove no support for selection while leaving that placement unobserved and its support unknown; only a completed observation returning an absent or mismatched tuple SHALL count a placement as observed and non-proving.
+Selection evidence and exhaustion evidence SHALL be distinct, and every probe result SHALL fall into exactly one of three closed classes. A completed well-formed response carrying the exact tuple within its freshness budget is proving, and only that class SHALL permit selection. A completed well-formed response that explicitly reports the reasoning projection or the requested tuple unsupported — including the mixed-version response of a binding advertising no negotiated reasoning contract — or that affirmatively returns valid evidence with an absent or mismatched tuple is confirmed non-support: the placement is observed, non-proving, and counted toward exhaustion. A completed response whose evidence is syntactically malformed or otherwise structurally invalid, a timeout, a task exit, a transport failure, a missing response, or an otherwise incomplete probe is unknown: it SHALL fail selection like confirmed non-support, but SHALL leave the placement unobserved, SHALL NOT count toward exhaustion, and SHALL route to the transient queue-waitable outcome.
 
 The wave SHALL resolve to the highest-ranked proving placement, never to whichever probe answered first, and a lower-ranked proof SHALL NOT end the wave until every higher-ranked in-flight probe has resolved non-proving. It SHALL otherwise stop on exhaustion of that universe or on the wave deadline, and exhaustion SHALL prove absent support only when no placement's support was left unknown.
 
@@ -64,15 +64,21 @@ Legacy status, execution, and event projections SHALL omit reasoning additions f
 
 #### Scenario: The loaded universe is exhausted without support
 
-- **WHEN** the wave probes every loaded placement of the requested model and each affirmatively returns an absent or mismatched tuple
+- **WHEN** the wave probes every loaded placement of the requested model and each returns confirmed non-support
 - **THEN** Orchard fails the Request before dispatch with the closed pre-dispatch incompatibility mapping
 - **AND** two identical scheduling attempts advance through the same deterministic order
 
+#### Scenario: Every loaded placement runs a non-advertising older binding
+
+- **WHEN** every loaded placement of the requested model completes its probe from an `N-1` binding that advertises no negotiated reasoning contract
+- **THEN** each of those completed responses counts as confirmed non-support toward exhaustion
+- **AND** Orchard fails the Request before dispatch with the closed pre-dispatch incompatibility mapping rather than holding it queue-waitable until `queue_timeout`
+
 #### Scenario: The one capable placement is briefly unreachable
 
-- **WHEN** the only tuple-proving loaded placement answers its probe with a transport failure and every other probed placement affirmatively returns a mismatched tuple
+- **WHEN** the only tuple-proving loaded placement answers its probe with a transport failure or syntactically malformed evidence and every other probed placement returns confirmed non-support
 - **THEN** Orchard returns the transient queue-waitable outcome rather than the incompatibility mapping
-- **AND** it records no `not_retryable` decision, because an incomplete probe leaves support unknown rather than disproven
+- **AND** it records no `not_retryable` decision, because an unknown-class result leaves support unknown rather than disproven
 
 #### Scenario: A breaker-suppressed target holds a loaded placement
 
