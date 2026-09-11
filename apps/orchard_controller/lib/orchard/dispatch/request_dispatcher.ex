@@ -2259,13 +2259,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp track_usage(
          %Metrics{} = metrics,
-         %InferenceEvent{event: %InferenceEvent.UsageUpdate{usage: usage}}
-       ) do
-    put_output_tokens(metrics, usage)
-  end
-
-  defp track_usage(
-         %Metrics{} = metrics,
          %InferenceEvent{event: %InferenceEvent.Completed{usage: usage}}
        ) do
     put_output_tokens(metrics, usage)

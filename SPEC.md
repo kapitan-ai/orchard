@@ -470,6 +470,7 @@ All public inference requests SHALL normalize into one internal struct:
   reasoning: %{
     generation_policy: :model_default | :disabled | :enabled,
     projection: :legacy_blended | :final_only | :reasoning_structured,
+    reasoning_effort: nil | :low | :medium | :high,
     source: :omitted_public | :explicit_public | :console_default | :console_explicit,
     effective_contract:
       %{mode: :legacy}
@@ -515,13 +516,21 @@ All public inference requests SHALL normalize into one internal struct:
 Reasoning generation and public projection are independent canonical axes.
 `generation_policy` controls whether the selected model is allowed to use its template-owned default, is required not to generate reasoning, or is required to generate reasoning.
 `projection` controls whether decoded output remains one legacy blended text channel, exposes final answer text only, or selects structured reasoning as public output in addition to final answer text.
+`reasoning_effort` is a separate optional canonical axis with the closed provider-neutral vocabulary `low`, `medium`, and `high`.
+It controls only the qualified renderer's requested reasoning effort; it MUST NOT derive or replace generation policy or public projection.
+A non-`nil` reasoning effort is valid only for a negotiated Request with `generation_policy = enabled` and `projection = final_only`.
+Supplying effort with `generation_policy = model_default` or `disabled` is contradictory and SHALL fail before the first Request write, scheduling, dispatch, or model invocation.
+Effort remains optional for `enabled + final_only`; omission selects no tier and SHALL preserve that generation policy's existing semantics.
 The Controller SHALL preserve the policy source and resolve the complete effective contract before dispatch.
 The effective contract SHALL remain pinned for every attempt of the logical Request and SHALL NOT be inferred again after scheduling.
-The Controller MUST NOT derive either axis from the other.
-The outer `generation_policy` and `projection` fields are the sole authority for those axes and MUST NOT be duplicated inside `effective_contract`.
+The Controller MUST NOT derive the generation-policy and projection axes from each other.
+The outer `generation_policy`, `projection`, and `reasoning_effort` fields are the sole authority for those axes and MUST NOT be duplicated inside `effective_contract`.
 An omitted legacy Request SHALL use exactly `%{mode: :legacy}` and SHALL retain no nullable negotiated identity fields.
 An explicit negotiated Request SHALL use `mode = negotiated` and SHALL carry every listed identity field as a non-empty value.
 Missing or nullable negotiated identity SHALL fail validation before scheduling.
+Because §5.6 restricts a negotiated Request to already loaded Tier 0 candidates, `resolved_policy.residency_preference` and `admission.max_cold_start_ms` SHALL NOT apply to its candidate selection.
+An `allow_cold_load` or `prefer_loaded` policy SHALL NOT admit a cold or cached candidate for it, and a `required_loaded` policy SHALL NOT narrow it further.
+Its `timeout_at` SHALL therefore resolve through §12.4's loaded-only formula for every resolved `residency_preference`, so a cold-start budget becomes neither a selection input nor deadline headroom.
 
 The currently valid source, generation, and projection combinations are closed:
 
@@ -531,6 +540,7 @@ The currently valid source, generation, and projection combinations are closed:
 * `explicit_public` may select `model_default`, `disabled`, or `enabled` only with `final_only`, and only after the concrete public input contract is accepted
 * `reasoning_structured` remains unavailable until its separate public contract expands this matrix
 
+For the canonical `reasoning_effort` axis, `omitted_public` and `console_default` require `nil`; `console_explicit` and `explicit_public` may select a non-`nil` tier only with `enabled + final_only`; and every other valid generation/projection combination requires `nil`.
 Every other combination SHALL fail before the first Request write and MUST NOT reach scheduling or dispatch.
 
 When both Chat Completions and Responses omit reasoning control, Orchard SHALL normalize the Request to `generation_policy = model_default`, `projection = legacy_blended`, and `source = omitted_public`.
@@ -538,6 +548,8 @@ That omitted mode SHALL preserve the complete current legacy pipeline, including
 An omitted control MUST NOT silently enter the negotiated reasoning pipeline merely because a model, template, tokenizer, Worker Runtime, or Runtime Endpoint advertises reasoning support.
 For an omitted public control, the `body_hash` domain SHALL remain the exact pre-reasoning-control domain.
 The synthesized reasoning defaults and `%{mode: :legacy}` marker MUST NOT be added to that hash input, so an otherwise identical public body retains its existing idempotency and integrity identity.
+An omitted effort MUST NOT be serialized or hashed as a synthesized `null`, default tier, or provider-specific value.
+An accepted explicit public control that omits effort SHALL preserve the selected generation policy's existing body and serialization semantics while recording no canonical tier.
 An accepted explicit public control remains part of the normalized public request body and therefore participates in the existing public-body idempotency hash.
 
 Ordinary assistant input content is opaque caller-authored content.
@@ -604,10 +616,14 @@ Only validated deterministic tokenizer or sentinel-preflight incompatibilities M
 Runtime helper errors SHALL identify request, artifact-preflight, or artifact-tokenizer evaluation scope; cache admission requires explicit artifact scope, matching inner and outer error categories, and structurally valid deterministic evidence.
 Unscoped runtime errors SHALL remain request-local for compatibility with older helpers.
 
-For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, parser-family selection, and version selection.
+For any explicitly negotiated reasoning mode, the Controller SHALL own typed generation policy, projection, typed reasoning effort, parser-family selection, and version selection.
 The public API MUST NOT accept arbitrary chat-template keyword arguments.
 The tokenizer SHALL map the typed generation policy through a closed contract for the exact model artifact and chat-template digest.
-The tokenizer SHALL return effective render metadata sufficient for the Controller to prove the generation policy, projection, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and policy provenance used for that Request.
+The tokenizer SHALL map a selected non-`nil` canonical reasoning-effort tier to renderer input only through a closed mapping bound to that same exact model artifact digest, chat-template digest, render contract, and render-contract version.
+A canonical tier MUST NOT reach the renderer as an unmapped template keyword argument, a provider-vocabulary pass-through, or a value inferred from a model name, publisher, family-name substring, or template inspection.
+A tier with no exact qualified mapping for that artifact and template SHALL fail closed before dispatch, and one artifact's mapping MUST NOT authorize another artifact, template digest, render contract, or render-contract version.
+The tokenizer SHALL return effective render metadata sufficient for the Controller to prove the generation policy, projection, applied reasoning effort, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and policy provenance used for that Request.
+The Controller SHALL reject the render result before dispatch when that metadata does not prove that the applied effort is exactly the selected canonical tier, or exactly no tier when none was selected, using the `503 server_error` plus `runtime_incompatible` mapping in §7.2.7 because the accepted caller input was already valid and qualified.
 The Controller SHALL reject an explicit reasoning control before dispatch when the exact model and template contract cannot honor it.
 The Controller MUST NOT guess support from a model name, family-name substring, unversioned parser heuristic, or unqualified template inspection.
 `model_default` in omitted legacy mode means the existing template behavior and MUST NOT be rewritten into an explicit enabled or disabled template argument.
@@ -742,7 +758,9 @@ One logical Request MAY contain at most two Inference Attempts for its first Inf
 Those attempts SHALL use `inference_turn:t1:a1` and `inference_turn:t1:a2`, remain under the same Request row and Request FSM, and SHALL NOT repeat admission, quota reservation, idempotency resolution, queue admission, or Payload Capture Mode resolution.
 Attempt 1 terminal evidence SHALL precede attempt 2 started evidence in request-event sequence order.
 A successful attempt SHALL carry no `retry_decision`.
-An unsuccessful attempt 2 SHALL carry `retry_decision = "retry_exhausted"` unless caller cancellation or disconnect caused its terminal outcome, in which case `cancelled` SHALL take precedence.
+An unsuccessful attempt 2 SHALL carry `retry_decision = "retry_exhausted"` unless caller cancellation or disconnect caused its terminal outcome, in which case `cancelled` SHALL take precedence, or a Controller-detected negotiated acceptance-proof failure under §7.5.3a wins the terminal race before deadline terminalization is proven, in which case it SHALL carry `not_retryable`. An already-proven deadline terminalization retains `retry_exhausted`.
+Deadline terminalization is proven when the Request's absolute deadline is already exhausted at attempt 2's retry boundary, mirroring attempt 1's `budget_exhausted` precedence over `not_retryable`.
+That `not_retryable` exception is available only to an attempt 2 whose `attempt_outcome` is `failed` with `output_committed = false`; a `cancelled`, `timed_out`, or `interrupted` attempt 2, and any attempt 2 that committed output, SHALL retain `cancelled` or `retry_exhausted`.
 Attempt 1 SHALL never carry `retry_exhausted`.
 
 The orchestrator SHALL append exactly one `request_step.started` event for each Inference Attempt.
@@ -1590,7 +1608,7 @@ The explicitly unmanaged static compatibility branch is available only when stat
 
 Automatic Attempt Retry SHALL NOT reallocate that probe budget. Alternate scheduling for attempt 2 SHALL NOT initiate a second compatibility status-probe wave or any further connect/status attempt, because the existing budget already covers the entire logical request through terminal completion. A logical Request whose attempt 1 was dispatched to an explicitly unmanaged compatibility candidate SHALL therefore start no attempt 2: its retry decision SHALL resolve to `no_alternative_node` unless an earlier reason in the §5.8 decline precedence applies, preserving attempt 1's stable public failure without queue re-entry or deadline extension.
 
-Production scheduling and dispatch SHALL perform no inline Runtime Endpoint status probe anywhere on the request path; the bounded explicitly unmanaged compatibility wave is the sole exception. Database unavailability, incomplete reads, or absent usable facts SHALL fail closed without stale process memory or the unmanaged compatibility branch.
+Production scheduling and dispatch SHALL perform no inline Runtime Endpoint status probe anywhere on the request path; the bounded explicitly unmanaged compatibility wave and the §7.5.3a bounded negotiated reasoning live-observation wave are its only exceptions, and neither becomes trusted inventory or production capacity authority. Database unavailability, incomplete reads, or absent usable facts SHALL fail closed without stale process memory or the unmanaged compatibility branch.
 
 A node is eligible only if all conditions are true:
 
@@ -1660,6 +1678,18 @@ Tier selection rule:
 * if any Tier 0 candidates exist, ignore Tier 1 and Tier 2
 * else if any Tier 1 candidates exist, ignore Tier 2
 * else consider Tier 2
+
+An explicit `final_only` or `reasoning_structured` Request is the sole exception to that rule.
+Tier 1 and Tier 2 candidates SHALL be ineligible for it, `residency_preference` and `max_cold_start_ms` SHALL NOT widen that candidate set, and Orchard SHALL NOT descend to Tier 1 or Tier 2 to discover or acquire reasoning support.
+Its §7.5.3a narrow reasoning-specific eligibility predicate SHALL NOT run during tiering, and capacity eligibility SHALL NOT narrow what that predicate may observe.
+The predicate's universe SHALL be every loaded placement of the requested model on a scheduler-fresh active trusted Node that satisfies the §5.5 health condition exactly as ordinary scheduling states it — `healthy`, or `degraded` while the shared capacity authority decision is `legacy_pre_cutover` — so the probe gate tightens with that existing cutover rather than diverging from it.
+That universe SHALL additionally include placements ordinary §5.5 eligibility excludes solely because aggregate slots or Dispatch Headroom are exhausted, placement concurrency is exceeded, or tenant active capacity is exhausted, and SHALL be ordered by the §5.7 ranking as it would apply to those placements with the deterministic lexicographic `node_id` tie-break last.
+A Node that is not scheduler-fresh, fails that health condition, or is suppressed by either §5.10 breaker SHALL NOT be probed, and breaker suppression SHALL be read at both scopes §5.5 already enforces: the node-level breaker and the `(node, model)` placement-level breaker.
+A withheld target's reasoning support stays unknown rather than disproven, and probing SHALL NOT circumvent §5.10 suppression.
+The predicate SHALL resolve to the highest-ranked placement that proves the exact tuple, and ordinary §5.5 eligibility SHALL then decide whether that placement can be dispatched now.
+When a proving placement exists but cannot be dispatched because aggregate slots or Dispatch Headroom are exhausted, placement concurrency is exceeded, or tenant active capacity is exhausted, and likewise whenever any loaded placement's reasoning support remains unknown through an unknown-class probe result under §7.5.3a, an elapsed wave deadline, or a withheld target, the Request SHALL keep its existing `cluster_busy` or `model_busy` outcome and stay queue-waitable under §5.4's controller queue contract; that is transient pre-dispatch unavailability, and no such placement SHALL be read as proof of no reasoning support.
+Only when the requested model has no loaded placement on an active trusted Node, or when every loaded placement of that model was probed and each returned confirmed non-support under §7.5.3a's classes, SHALL Orchard fail the Request closed before dispatch through the §7.2.7 `503 server_error` plus `runtime_incompatible` mapping.
+That parity covers the queue outcome semantics only, not deadline duration: §12.4 still resolves a negotiated Request's deadline through the loaded-only formula, so queue wait and wave time consume the same remaining request budget.
 
 ### 5.7 Scoring formula
 
@@ -1809,7 +1839,7 @@ Unknown classes, unknown codes, deterministic failures, `retryable: false`, term
 Retry-capable failures are limited to resolved pre-acceptance Node or transport unavailability, the closed transient model-load categories, resolved worker or Node loss before acceptance, and an accepted pre-commit transient failure whose drain proves termination.
 
 The attempt 1 decline precedence SHALL be `output_committed`, `cancelled`, `budget_exhausted`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
-An unsuccessful attempt 2 SHALL record `retry_exhausted` unless caller cancellation or disconnect caused its terminal outcome, in which case it SHALL record `cancelled`; no attempt 2 outcome SHALL trigger a third attempt.
+An unsuccessful attempt 2 SHALL record `retry_exhausted` unless caller cancellation or disconnect caused its terminal outcome, in which case it SHALL record `cancelled`, or a Controller-detected negotiated acceptance-proof failure under §7.5.3a wins the terminal race before deadline terminalization is proven, in which case it SHALL record `not_retryable`; no attempt 2 outcome SHALL trigger a third attempt. An already-proven deadline terminalization retains `retry_exhausted`, and §3.7.1 owns the evaluable boundary for that exception.
 If no different eligible Node exists, Orchard SHALL start no second attempt, SHALL NOT re-enter the queue or extend a budget, and SHALL preserve attempt 1's stable public failure while recording `no_alternative_node` as internal evidence.
 Attempt 1's stable failure classification SHALL be fixed in its typed outcome, and any breaker-eligible failure effect SHALL be durable before the fresh alternate scheduler decision.
 The alternate scheduler decision is side-effect-free with respect to dispatch.
@@ -1824,7 +1854,7 @@ The effective Payload Capture Mode SHALL resolve before the first Request write 
 
 ### 5.9 Dispatch rules
 
-A production candidate snapshot is selection evidence, not a dispatch permit. Production scheduling and dispatch SHALL NOT status-probe a Runtime Endpoint anywhere on the request path; the bounded explicitly unmanaged compatibility wave in §5.5 is the sole exception.
+A production candidate snapshot is selection evidence, not a dispatch permit. Production scheduling and dispatch SHALL NOT status-probe a Runtime Endpoint anywhere on the request path outside the bounded waves §5.5 enumerates as its only exceptions.
 
 Dispatch sequence:
 
@@ -2030,7 +2060,8 @@ The authoritative value SHALL NOT be written into `manifest.json`, because doing
 This contract change SHALL NOT rehash existing Catalog rows or introduce a new digest algorithm.
 
 Reasoning-generation support is an additive, versioned runtime capability bound to an exact model artifact and chat-template digest.
-Its contract SHALL enumerate complete supported tuples containing generation policy, projection, parser family and version, template-render contract and version, Runtime Endpoint contract version, and event-binding version without relying on a model-name heuristic or a Cartesian product of independent lists.
+Its contract SHALL enumerate complete supported tuples containing generation policy, projection, reasoning effort, parser family and version, template-render contract and version, Runtime Endpoint contract version, and event-binding version without relying on a model-name heuristic or a Cartesian product of independent lists.
+Reasoning effort is never a free dimension of that enumeration: a `nil` effort belongs to the non-tier-selected tuple, and a non-`nil` effort SHALL appear only in a tuple whose generation policy is `enabled` and whose projection is `final_only`.
 Manifest compatibility and strict unknown-key handling SHALL follow the existing additive migration rules until an accepted manifest schema extension supplies typed fields.
 An older manifest that omits reasoning capability remains valid but SHALL NOT prove support for an explicitly negotiated reasoning mode.
 Repository-owned manual model qualification evidence is governance evidence only.
@@ -2348,6 +2379,8 @@ The Public Inference API SHALL prioritize wire compatibility with OpenAI for:
 Reasoning control is an Orchard extension whose canonical semantics are defined in §3.4.
 The first reasoning-control release SHALL support an explicit request for `projection = final_only` on both Chat Completions and Responses when the exact model, template, parser, and Runtime Endpoint contract is compatible.
 This specification intentionally reserves the concrete public request field names until an accepted API contract defines them, and Orchard MUST NOT expose an ad hoc field before that contract is accepted.
+That later contract MAY expose only the provider-neutral effort vocabulary `low`, `medium`, and `high`; it MUST normalize a supplied tier to the canonical `reasoning_effort` axis and reject effort unless the same explicit control selects `generation_policy = enabled` and `projection = final_only`.
+It MUST NOT expose provider-specific renderer values, accept arbitrary template keyword arguments, or make effort alone imply enabled generation.
 When the control is omitted, both endpoints SHALL preserve `model_default + legacy_blended` behavior across sync and streaming responses.
 The first release SHALL reject Chat requests for raw structured reasoning output.
 Public Responses structured reasoning items and events SHALL remain disabled until a later accepted contract defines their wire names, raw-versus-summary semantics, sync representation, event ordering, terminal behavior, capture, and replay.
@@ -2666,20 +2699,31 @@ Reasoning-control failures use this closed mapping:
 
 | Failure phase | Public status, type, and code | `param` | Durable attempt evidence | Retry behavior |
 |---|---|---|---|---|
-| The exact model artifact and chat-template contract cannot honor an accepted explicit control | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public reasoning-control field; `nil` for the Console | no attempt and no Request write | non-retryable |
-| No eligible endpoint proves the exact negotiated tuple, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists | non-retryable |
+| An explicit control supplies a reasoning-effort tier with `generation_policy = model_default` or `disabled` | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public effort field; `nil` for the Console | no attempt and no Request write | non-retryable |
+| The exact model artifact, chat-template, and renderer contract cannot honor an accepted explicit control or a selected effort tier | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public field carrying the offending value; `nil` for the Console | no attempt and no Request write | non-retryable |
+| No loaded placement proves the exact negotiated tuple under §7.5.3a's exhaustion rule, returned render metadata cannot prove that the applied reasoning effort is exactly the selected tier, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists and the proof failure wins the terminal race; caller cancellation/disconnect and already-proven deadline terminalization retain their §3.7.1 decisions | non-retryable |
 | Parser or generation-policy conformance fails after model invocation | `500 api_error`, `internal_error` | `nil` | `terminal_conformance` plus `internal_error` | non-retryable |
+
+The first row is a caller-input contradiction that is never valid on any model; the second row is an exact-tuple capability failure that another qualified model, artifact, or template MAY be able to honor.
+Both remain `400 invalid_request_error` with `unsupported_reasoning_control` and remain non-retryable; the distinction is remediation guidance, not a different status, code, or retry decision.
+A render-metadata mismatch on an accepted and qualified caller input is a renderer or metadata defect rather than a caller error, so it uses the third row's existing `503 server_error` and `runtime_incompatible` mapping and introduces no additional code.
+That row therefore covers every pre-invocation failure to prove the exact negotiated tuple, whether the unproven evidence is endpoint advertisement, render metadata, or loaded-worker acceptance.
 
 Messages for these mappings SHALL be bounded, content-free, and Controller-owned.
 Neither parser fragments nor model output may enter the public message, durable error detail outside `full`, or metric labels.
 The later public input-field contract MAY choose the concrete field name but MUST preserve these statuses, codes, and retry semantics.
+That contract SHALL set `param` to the concrete offending accepted public field: the accepted reasoning-control field when that control is the offending value, and the accepted effort field when the selected tier is the offending value.
+The Console SHALL keep `param = nil` for every row because it supplies no public request field.
 
 #### 7.2.8 Console Playground reasoning contract
 
 The Console Playground SHALL use the same canonical reasoning contract as the Public Inference API while preserving its distinct operator-facing defaults.
-Its default request SHALL set `generation_policy = disabled`, `projection = final_only`, and `source = console_default`.
+Its default request SHALL set `generation_policy = disabled`, `projection = final_only`, `reasoning_effort = nil`, and `source = console_default`.
 An operator MAY explicitly enable generation only when the Controller proves that the selected model, exact template, parser contract, and Runtime Endpoint contract can honor the request.
-Unsupported explicit Console control SHALL fail before dispatch and MUST NOT fall back to the template default, legacy blended mode, or display-only stripping.
+An operator effort selection is gated exactly like explicit enablement.
+A later accepted Console contract MAY offer a canonical `low`, `medium`, or `high` selection only for `source = console_explicit` with `generation_policy = enabled`, `projection = final_only`, and a proven exact complete negotiated tuple for that tier, and MUST NOT expose provider renderer values or template keyword arguments.
+Until that contract is accepted and implemented, the Console SHALL offer no effort selector and SHALL send `reasoning_effort = nil`.
+Unsupported explicit Console control or tier SHALL fail before dispatch with the §7.2.7 mapping and `param = nil`, and MUST NOT fall back to the template default, another tier, legacy blended mode, or display-only stripping.
 
 The Console SHALL keep final-answer and reasoning channels separate in its transcript state.
 It SHALL send only the final-answer channel as assistant history on a later turn unless a future accepted contract adds typed prior-reasoning preservation.
@@ -2801,7 +2845,7 @@ Rules:
 * `retry_of_request_id` points to original
 * max operator retries per original request default = 3
 * the retry capture mode MUST NOT be wider than either the source Request snapshot or the current Tenant policy
-* a negotiated retry SHALL preserve the source Request's reasoning generation policy, projection, source provenance, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version
+* a negotiated retry SHALL preserve the source Request's reasoning generation policy, projection, reasoning effort, source provenance, exact model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version
 * an omitted legacy source Request SHALL preserve `effective_contract.mode = legacy`, remain omitted `model_default + legacy_blended`, and follow the existing legacy operator-retry semantics without fabricating negotiated identity
 * if a negotiated exact stored reasoning contract is unavailable or no compatible endpoint can honor it, the retry SHALL fail before dispatch rather than rerendering, renegotiating, downgrading, or widening capture
 
@@ -3691,11 +3735,13 @@ Runtime capacity and Placement Capacity observation semantics:
 #### 7.5.3a Negotiated reasoning-generation contract
 
 Reasoning generation and parsing SHALL be a versioned capability of the transport-independent Runtime Endpoint Interface and provider-neutral Worker Runtime contract.
-Reasoning capability SHALL advertise complete supported tuples of generation policy, projection, model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version.
+Reasoning capability SHALL advertise complete supported tuples of generation policy, projection, reasoning effort, model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version.
+A `nil` effort is part of the existing non-tier-selected negotiated contract; a non-`nil` effort is valid only for `enabled + final_only` and identifies the exact qualified renderer mapping through the pinned render contract and version.
 Separate lists whose Cartesian product could authorize a tuple that was not explicitly advertised are invalid capability evidence.
-Candidate-time observations are advisory selection evidence only.
-The Controller SHALL select an endpoint for an explicit `final_only` or `reasoning_structured` request only when a fresh observation advertises the exact complete tuple.
-Missing, stale, false, malformed, or unknown capability evidence SHALL prove no support.
+Candidate-time observations are advisory selection evidence only and cannot replace the loaded-worker execution proof; the narrow negotiated reasoning eligibility exception is specified below.
+The Controller SHALL select an endpoint for an explicit `final_only` or `reasoning_structured` request only when a fresh observation advertises the exact complete tuple, including the selected effort when present.
+The sole carve-out is the pre-start queue re-grant specified below, where the earlier wave's placement may be reused strictly as a non-authoritative scheduling hint: that hint SHALL claim no reasoning support and SHALL confer no invocation authority, and the authoritative `PrepareInference` proof before model invocation SHALL stand in for the fresh observation.
+Missing, stale, false, malformed, or unknown capability evidence SHALL prove no support for selection; whether such a result also counts toward exhaustion is decided by the closed probe result classes below.
 An endpoint without a negotiated reasoning contract SHALL receive and emit legacy requests and events only.
 
 For every negotiated dispatch, the loaded Worker Runtime SHALL validate the requested tuple and produce an authoritative execution-acceptance proof before model invocation.
@@ -3703,9 +3749,39 @@ That proof SHALL echo the complete tuple and identify the loaded worker incarnat
 The Node Agent and Worker Runtime MUST NOT begin model execution, emit content, or emit usage before producing that proof.
 The Controller SHALL validate the proof before accepting the attempt as running or forwarding any later event.
 A missing, malformed, stale, or mismatched proof SHALL fail as `runtime_incompatible` before model invocation and SHALL NOT be repaired by a later status observation.
-That Controller-detected acceptance failure SHALL record `retry_decision = not_retryable` and MUST NOT trigger Automatic Attempt Retry.
+That Controller-detected acceptance failure SHALL record `retry_decision = not_retryable` and MUST NOT trigger Automatic Attempt Retry, unless caller cancellation or disconnect caused the terminal outcome or deadline terminalization was already proven before the proof failure won the terminal race; those outcomes retain `cancelled` and `retry_exhausted`, respectively.
 An arbitrary Worker or Runtime Endpoint `Failed` event with code `runtime_incompatible` SHALL remain insufficient to authorize retry.
-The concrete additive encoding for the tuple, worker incarnation, and acceptance proof remains blocked behind a separately accepted Runtime Endpoint contract.
+The accepted additive encoding uses an indivisible eleven-field tuple of generation policy, projection, reasoning effort, model artifact digest, chat-template digest, render contract and version, parser family and version, runtime contract version, and event-binding version; source provenance is not tuple identity. `WorkerCapabilities` field 8 is the deferred `WorkerLoadedBinding` allocation and field 9 is its sibling reasoning envelope, with shared cross-boundary tuple, evidence, preparation, and proof definitions in `proto/cluster/v1/reasoning.proto`. The implementation MUST re-confirm those field allocations at implementation time and block rather than substitute a conflicting number or shape. That shared file keeps cross-boundary reasoning types out of both the Worker package and the Controller transport package, and it makes the provider-neutral Worker Runtime boundary depend on `cluster.v1`; relocating or removing it is owned by the later `cluster.v1` deprecation sequencing and SHALL NOT be attempted by this contract or its implementation.
+
+Reasoning evidence SHALL belong to exactly one valid loaded binding and that Worker Runtime's `service_incarnation`; every advertised tuple SHALL match that binding's artifact digest and resolve its selected profile exactly once. A present incomplete envelope, duplicate or conflicting tuple, unknown required value, missing binding, load replacement, unload, failed destructive unload, or worker teardown SHALL prove no support for selection and invalidate affected evidence and preparations; the probe result classes below decide whether such a result also counts toward exhaustion.
+
+Reasoning evidence SHALL be available only through an opt-in live observation projection with a remaining freshness budget. It SHALL NOT be persisted in heartbeats or durable observations, and forwarding or serialization SHALL NOT refresh it. The explicit negotiated Request is the sole opt-in for that projection; no separate operator configuration flag SHALL enable, disable, or widen it. For an explicit negotiated Request only, the Controller MAY apply a narrow reasoning-specific eligibility predicate to a fresh exact tuple and select only an already loaded placement. This exception SHALL NOT make generic capability evidence authoritative for readiness, request admission, model admission, placement capacity, legacy scheduling, retry, or ordinary Runtime Endpoint projection. Only a fresh exact tuple SHALL permit selection, and an unloaded placement SHALL NOT be selected merely to discover reasoning support.
+
+Every probe result SHALL fall into exactly one of three closed classes, because selection evidence SHALL NOT double as exhaustion evidence:
+
+* **Proving.** A completed well-formed response whose evidence carries the exact tuple within its remaining freshness budget. That placement is observed, and this is the only class that permits selection.
+* **Confirmed non-support.** A completed well-formed response that either explicitly reports the reasoning projection or the requested tuple unsupported, including the §13.1 mixed-version response of a binding that advertises no negotiated reasoning contract at all, or affirmatively returns valid evidence with an absent or mismatched tuple. That placement is observed and non-proving, and it counts toward exhaustion.
+* **Unknown.** A completed response whose evidence is syntactically malformed or otherwise structurally invalid, including a present incomplete envelope, a duplicate or conflicting tuple, or an unknown required value, and likewise a timeout, a task exit, a transport failure, a missing response, or an otherwise incomplete probe. That placement SHALL remain unobserved: the result fails selection exactly as confirmed non-support does, but it SHALL NOT count toward exhaustion and SHALL route to the transient queue-waitable pre-dispatch unavailability specified below, because such a response was unreadable rather than a denial of support.
+
+That reasoning-specific eligibility predicate SHALL consider only placements at §5.6 Tier 0 residency, whether resident from earlier traffic or prewarmed by a §6.10 `preload = true` pinning policy, so negotiated reasoning availability depends on loaded capacity that already exists. Orchard SHALL NOT load, cache, or download an artifact to create a negotiated candidate.
+
+The predicate SHALL NOT reclassify ordinary capacity scarcity or unknown support as incompatibility. The §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when every loaded placement of that model was probed and each returned confirmed non-support. When a proving placement exists but cannot be dispatched because aggregate slots or Dispatch Headroom are exhausted, placement concurrency is exceeded, or tenant active capacity is exhausted, and likewise whenever any loaded placement's support remains unknown through an unknown-class result, an elapsed wave deadline, or a withheld target, the Request SHALL take its existing `cluster_busy` or `model_busy` outcome and remain queue-waitable under §5.4's controller queue contract. Every one of those is transient pre-dispatch unavailability rather than proven incompatibility: a capacity-blocked, unreachable, or withheld loaded placement SHALL NOT be read as proof of no support, and none of those outcomes SHALL record `retry_decision = not_retryable`. Because a breaker-suppressed target is never probed, a breaker that opens after a fresh proof SHALL be handled by ordinary §5.10 scheduler suppression and §5.4 queue handling and SHALL NOT reclassify reasoning compatibility. That equivalence is limited to the queue outcome semantics: §12.4 still resolves the negotiated deadline through the loaded-only formula, so queue wait and wave time consume the same remaining request budget rather than a widened one.
+
+The live observation SHALL run as one bounded wave over the reachable loaded-placement universe rather than the capacity-eligible subset: every loaded placement of the requested model on a scheduler-fresh active trusted Node satisfying the §5.5 health condition exactly as stated there, including those ordinary §5.5 eligibility excludes solely for exhausted aggregate slots or Dispatch Headroom, exceeded placement concurrency, or exhausted tenant active capacity, deduplicated on the same normalized target identity §5.5 uses for the candidate universe, ordered by the §5.7 ranking as it would apply to those placements with the deterministic lexicographic `node_id` tie-break last. Observing the capacity-blocked placements too is what lets exhaustion distinguish absent support from merely absent free capacity. A target that is not scheduler-fresh, fails that health condition, or is suppressed by the node-level or `(node, model)` placement-level §5.10 breaker SHALL be withheld from the wave rather than probed, so a placement that ranks ahead on its low active-request count cannot hold an in-flight slot it will never answer, and §5.10 suppression is not circumvented; a withheld target's support stays unknown.
+
+The wave SHALL hold at most four probes in flight and SHALL advance through that deterministic order as probes complete, observing each placement at most once. Because the §5.7 ranking is capability-blind, a fixed leading window would strand reasoning-capable placements behind incapable higher-ranked ones; the advancing window SHALL NOT do so. One **2000 ms** deadline SHALL bound the whole wave rather than each target, and an individual probe transport SHALL NOT be retried.
+
+The wave SHALL resolve to the highest-ranked proving placement, never to whichever probe answered first. A proof from a lower-ranked placement SHALL NOT end the wave until every higher-ranked in-flight probe has resolved non-proving, so completion latency SHALL NOT displace the §5.7 ranking. The wave SHALL otherwise stop on exhaustion of that ordered universe or when the wave deadline elapses. Exhaustion SHALL prove absent support only when every placement in that universe was probed and each returned confirmed non-support. An unknown-class result, an elapsed deadline, or a Node the wave withheld leaves support unknown, and unknown support SHALL route to the transient queue-waitable branch rather than to the permanent mapping.
+
+The wave budget SHALL be per logical Request rather than per scheduling pass: one initial fresh wave, plus at most one further fresh wave for a real Automatic Attempt Retry after attempt 1 has started. A §5.4 pre-start busy re-grant SHALL run no new wave. It SHALL carry the wave's selected placement only as the non-authoritative scheduling hint carved out above from the fresh-observation selection rule. That hint SHALL claim no reasoning support and SHALL confer no invocation authority; `PrepareInference` remains the authoritative gate and SHALL revalidate the exact tuple against the current loaded binding before invocation, so a re-granted pass never invokes on expired selection evidence. A re-granted pass whose hinted placement still cannot be dispatched, or whose hint an unload or load replacement has invalidated, SHALL requeue or terminalize under §5.4's existing queue-wait budget and `queue_timeout` outcome rather than by re-probing.
+
+Automatic Attempt Retry SHALL run its second wave fresh rather than reusing attempt 1's evidence, because forwarding SHALL NOT refresh a freshness budget and stale evidence proves no support. Attempt 2's wave SHALL apply `exclude_node_ids` first, rebuild and reorder its universe by that same deterministic rule, advance through it under the same four-in-flight bound and one **2000 ms** wave deadline with no transport retry, and obtain a new `PrepareInference` proof for the different selected endpoint. Both waves SHALL draw on the same absolute deadline §12.4 assigned. When that wave proves no different eligible candidate, the retry decision SHALL resolve to `no_alternative_node` unless an earlier reason in the §5.8 decline precedence applies.
+
+The proof is carried by unary `PrepareInference` before negotiated execution. It SHALL return the authoritative complete-tuple and worker-incarnation proof plus an opaque single-use authorization bound to the Request, tuple, loaded binding, and current loaded worker instance. The Controller SHALL redeem the authorization only through the matching execution Request. Expiry, cancellation, duplicate redemption, worker restart, or loaded-instance replacement invalidates the authorization. A failed preparation leaves invocation, content, and usage at zero. Node Agent ownership of `Accepted` remains unchanged; negotiated `Accepted` follows successful preparation redemption.
+
+The additive terminal wire contract SHALL preserve presence-aware exact cumulative totals: a present zero is known zero and absent `Failed.usage` is missing evidence, never zero. Issue #327 owns that wire representation. Durable `output_usage_status` persistence and Controller-synthesized lower-bound usage remain #328 work. Reasoning-token subsets remain Worker-internal.
+
+Automatic retry SHALL pin all eleven tuple fields but not worker incarnation, selected profile, preparation identity, or authorization. Operator retry SHALL reuse `requests.canonical_request["reasoning"]` only when full capture retained a valid value; otherwise it SHALL fail closed with `retry_source_unavailable` and SHALL NOT rerender historical messages, renegotiate, downgrade, or add a persistence column. Production tuple registries SHALL remain empty and no production tuple may be advertised or selected until parser, accounting, and capture guarantees plus model-qualification governance accept the exact tuple. For a selected-effort tuple, the model-qualification-governance prerequisite means that the governance contract can classify the exact tuple; it MUST NOT be read as requiring an approved semantic qualification record or support claim for technical advertisement, selection, preparation, or dispatch.
 
 For a negotiated mode, the Worker Runtime SHALL run the pinned versioned stateful reasoning parser over the ordered decoded stream before tool-call classification and before caller stop-sequence classification.
 Only final-answer text SHALL enter tool-call parsing.
@@ -3722,6 +3798,16 @@ The terminal failure SHALL be deterministic and non-retryable unless the failure
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
+Runtime advertisement of a non-`nil` tier proves only that the exact tuple has a qualified renderer mapping and that the provider passes the provider-neutral protocol conformance in §7.5.2a.
+Those fixtures are model-agnostic protocol artifacts, so advertisement SHALL NOT be read as asserting any per-artifact semantic property of a tier, and this specification defines no runtime producer for such an assertion.
+The Controller SHALL select and dispatch a tier only to an already loaded placement selected by §7.5.3a's fresh complete-tuple observation and the required render proof; a tuple with no qualified mapping, invalid render proof, or no matching advertised tuple fails the existing pre-dispatch capability boundary rather than reaching model invocation.
+Before model invocation, unary `PrepareInference` SHALL produce the exact loaded-worker acceptance proof and single-use authorization required above, and the Controller SHALL validate them before accepting the attempt as running or forwarding later events.
+At these boundaries, an unqualified tier means one lacking the required exact mapping, render, advertised-tuple, or loaded-worker proof at its respective validation phase, not one lacking repository-owned semantic qualification.
+A technically proven tier MAY execute without semantic qualification; semantic qualification MUST NOT become an admission, selection, scheduling, preparation, or dispatch gate.
+When an advertised and dispatched tier nevertheless completes without valid non-empty reasoning content, the enabled-conformance rule above SHALL still terminalize the Request as `500 api_error` and `internal_error`.
+That fail-closed terminal outcome, rather than a relaxed conformance rule or a runtime semantic gate, is the contract for a tier whose semantics were never qualified.
+Whether a tier may be offered or represented as supported is a separate repository-owned governance decision under §6.4; that evidence remains governance evidence only and MUST NOT become a Runtime Endpoint capability, a scheduling fact, or dispatch authority.
 `generation_policy = model_default` does not require reasoning to be present or absent, but all negotiated parser and projection rules still apply.
 
 The Worker Runtime SHALL discard hidden reasoning content at the Worker contract boundary after accounting and MUST NOT forward it as text, metadata, errors, diagnostics, or an untyped event.
@@ -3734,7 +3820,7 @@ When the Worker Runtime can prove an exact reasoning-token subset, it MAY retain
 A Controller-synthesized terminal failure SHALL use the latest validated cumulative usage with `output_usage_status = lower_bound` when the Controller cannot prove the exact terminal total.
 The reasoning-token subset MUST NOT cross the Runtime Endpoint or public API boundary until separate presence-aware contracts are accepted.
 
-Automatic Attempt Retry for a negotiated Request SHALL pin the exact model artifact digest, chat-template digest, render contract and version, parser family and version, projection, generation policy, runtime contract version, and event-binding version from attempt 1.
+Automatic Attempt Retry for a negotiated Request SHALL pin the exact model artifact digest, chat-template digest, render contract and version, parser family and version, projection, generation policy, reasoning effort, runtime contract version, and event-binding version from attempt 1.
 Attempt 2 SHALL select a different endpoint that proves support for that same contract or Orchard SHALL decline retry.
 Retry MUST NOT rerender, renegotiate, downgrade, or silently switch to `legacy_blended`.
 An omitted legacy Request SHALL preserve `effective_contract.mode = legacy` and the existing legacy retry semantics rather than fabricating nullable negotiated identity.
@@ -5149,7 +5235,7 @@ For the Responses API, `store=false` SHALL cap `full` at `metadata`, SHALL NOT w
 * convenience previews remain bounded to 512 Unicode code points without splitting a grapheme cluster
 * a streaming Request stores its assembled final output only at terminal completion and does not durably duplicate individual chunks
 
-Reasoning retention SHALL follow projection rather than generation alone.
+Reasoning retention SHALL follow projection rather than generation alone and SHALL apply identically to every valid reasoning-effort tier.
 Reasoning hidden by `projection = final_only` is ephemeral under `none`, `metadata`, and `full`.
 Hidden reasoning MUST NOT enter `canonical_request` content, `request_payload`, `response_payload`, `request_events`, `response_preview`, scheduler metadata, logs, traces, metrics, audit payloads, crash evidence, or diagnostics.
 The canonical Request MAY retain only the closed non-content reasoning policy, provenance, contract identifiers, and exact or unknown usage detail allowed by its effective capture mode.
@@ -5618,6 +5704,9 @@ Common error codes:
 Controller SHALL assign `timeout_at` once at Request creation during admission.
 Queueing, scheduling, model loading, attempt 1, cleanup, evidence persistence, alternate scheduling, and attempt 2 SHALL share that absolute deadline.
 Model-load and execution deadlines SHALL be capped by the remaining time and SHALL NOT extend `timeout_at`.
+An explicit negotiated reasoning Request SHALL resolve `timeout_at` through the loaded-only formula for every resolved `residency_preference`: the selected generation budget alone, with neither a `max_queue_wait_ms` nor a `max_cold_start_ms` term.
+`allow_cold_load` SHALL NOT widen that deadline, because §5.6 restricts the Request to already loaded Tier 0 candidates, and the configured maximum-request-deadline ceiling SHALL cap the result exactly as it caps any other Request.
+Queue wait and the at most two §7.5.3a reasoning waves a logical Request may run SHALL consume that same budget rather than extend it, so a negotiated Request matches legacy traffic in queue outcome semantics but not in deadline duration.
 
 On timeout:
 
@@ -5685,12 +5774,13 @@ The system SHALL guarantee:
 * controller version `N` MUST support node agent versions `N` and `N-1`
 * node agent version `N` MUST support bundled worker version `N` only
 
-The reasoning-generation contract SHALL preserve the `N` and `N-1` support window with explicit capability negotiation.
+The reasoning-generation contract, including selected reasoning effort when present, SHALL preserve the `N` and `N-1` support window with explicit capability negotiation.
 A Controller and Node Agent pair that does not negotiate the complete reasoning contract SHALL exchange legacy requests and legacy event variants only.
 When an older Controller communicates with a newer Node Agent through an otherwise supported protocol pairing, the Node Agent MUST NOT infer reasoning mode or emit a new reasoning event.
 A Controller `N` communicating with a Node Agent `N-1` MAY dispatch an omitted public request through the complete legacy pipeline.
-A Controller `N` MUST NOT dispatch an explicit `final_only` or `reasoning_structured` request to a Node Agent `N-1` unless that endpoint affirmatively advertises the exact pinned reasoning contract and compatible event binding as one complete supported tuple.
-If no compatible endpoint exists, Orchard SHALL fail the explicit request before dispatch with the `503 server_error` plus `runtime_incompatible` mapping in §7.2.7.
+A Controller `N` MUST NOT dispatch an explicit `final_only` or `reasoning_structured` request to a Node Agent `N-1` unless that endpoint affirmatively advertises the exact pinned reasoning contract, including selected effort when present, and compatible event binding as one complete supported tuple.
+If no loaded placement proves that tuple under §7.5.3a's exhaustion rule, Orchard SHALL fail the explicit request before dispatch with the `503 server_error` plus `runtime_incompatible` mapping in §7.2.7.
+A completed response from an `N-1` binding that advertises no negotiated reasoning contract is confirmed non-support under those probe result classes, so a loaded universe in which every placement answers that way exhausts and fails closed under that mapping rather than remaining queue-waitable until `queue_timeout`.
 An endpoint that advertises the tuple but cannot reproduce it in the authoritative pre-execution acceptance proof SHALL fail under the same mapping before model invocation.
 The Controller MUST NOT send a new request field to an older binding or accept a new event variant from an endpoint that did not advertise it.
 Rolling upgrades SHALL NOT silently downgrade an explicit reasoning mode, change its public projection, or widen capture.

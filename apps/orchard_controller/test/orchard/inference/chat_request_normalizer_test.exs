@@ -25,6 +25,13 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
       assert req.sampling == %Sampling{temperature: 1.0, top_p: 1.0}
       assert req.response_format == %ResponseFormat{type: :text}
 
+      assert req.reasoning == %CanonicalRequest.Reasoning{
+               generation_policy: :model_default,
+               projection: :legacy_blended,
+               source: :omitted_public,
+               effective_contract: %{mode: :legacy}
+             }
+
       assert req.tooling == %Tooling{
                tools: [],
                requested_tools: [],

@@ -92,6 +92,7 @@ List every material capability that was untested, insufficiently tested, or bloc
 - `<capability and reason>`
 
 Reasoning behavior remains unknown unless it was qualified under an accepted contract owned by issue #190.
+A claim that represents a canonical reasoning-effort tier follows the reasoning-effort evidence rules in [the standing policy](../model-qualification.md).
 
 ## Exclusions
 

@@ -1450,6 +1450,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     %{
       attempt: attempt,
+      attempt_outcome: outcome.attempt_outcome,
       output_committed: outcome.output_committed,
       caller_status: snapshot.caller_status,
       deadline_status: snapshot.deadline_status,

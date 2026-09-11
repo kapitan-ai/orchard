@@ -189,7 +189,7 @@ defmodule Orchard.API.ChatCompletionsController do
         emit_stream_error(state, event)
 
       :usage ->
-        store_usage_from_update(state, event)
+        state
 
       _other ->
         state
@@ -266,10 +266,6 @@ defmodule Orchard.API.ChatCompletionsController do
       %InferenceEvent.Completed{usage: nil} -> state
       %InferenceEvent.Completed{usage: usage} -> %{state | usage: usage}
     end
-  end
-
-  defp store_usage_from_update(state, event) do
-    %{state | usage: event.event.usage}
   end
 
   defp send_sse_chunk(state, chunk_data) do
