@@ -108,7 +108,8 @@ message WorkerCapabilities {
   // At most 64 profiles. Empty is valid and proves nothing.
   repeated WorkerCapabilityProfile profiles = 7;
   // field 8 reserved for a future loaded_binding (WorkerLoadedBinding),
-  // deferred pending issue #327 acceptance
+  // deferred pending issue #327 acceptance and owner-approved schema design
+  // for its member tags and types
   reserved 8;
 }
 

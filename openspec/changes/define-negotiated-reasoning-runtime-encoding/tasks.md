@@ -3,7 +3,7 @@
 ## 1. Contract acceptance
 
 - [x] 1.1 Record the approved narrow reasoning-only eligibility exception, unary preparation proof, live-probe-only evidence, usage ownership split, canonical retry source, and dormant activation gate.
-- [x] 1.2 Reconcile the complete eleven-field tuple with the accepted effort axis, trace the `SPEC.md` §7.5.3a field 8 and field 9 allocation, `proto/cluster/v1/reasoning.proto` location, and re-confirm-and-block guard, and record the declarations that realize them as blocked pending owner-approved design; this package selects no enum, presence encoding, service or RPC declaration owner, message layout, or redemption shape.
+- [x] 1.2 Reconcile the complete eleven-field tuple with the accepted effort axis, trace the `SPEC.md` §7.5.3a field 8 and field 9 allocation, `proto/cluster/v1/reasoning.proto` location, and re-confirm-and-block guard, and record the declarations that realize them as blocked pending owner-approved design — including the comment-only field 8 reservation prerequisite in `proto/orchard/worker/v1/worker_runtime.proto`; this package selects no enum, presence encoding, service or RPC declaration owner, message layout, or redemption shape.
 - [x] 1.3 Run change-scoped strict OpenSpec validation.
 - [x] 1.4 Run all-change strict OpenSpec validation and inspect generated main specs for placeholder prose.
 

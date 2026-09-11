@@ -2,13 +2,13 @@
 
 ## 1. Status, scope, and sequencing
 
-This is an acceptance-only contract for issue #327. It reconciles the active package with `SPEC.md` §7.5.3a and the accepted `define-qualified-reasoning-effort` package. It does not modify protocol source, generated outputs, runtime code, persistence, or qualification data.
+This is an acceptance-only contract for issue #327. It reconciles the active package with `SPEC.md` §7.5.3a and the accepted `define-qualified-reasoning-effort` package. It changes no protocol declaration, generated output, runtime code, persistence, or qualification data; its only protocol-source edit adds condition 3 below to the existing field 8 reservation comment.
 
 Implementation is blocked until all of these conditions hold:
 
 1. PR #401 has merged, so the canonical request owns the exact reasoning identity transported by this contract.
 2. This OpenSpec change has been accepted. The `SPEC.md` §7.5.3a, §5.6, and §5.5 language this package traces already landed on `main`, so no further `SPEC.md` amendment is pending here.
-3. An owner-approved schema design defines the concrete message declarations that realize the accepted allocation, without substituting an unapproved number or shape. `AGENTS.md` routes protocol and API design of that weight through OpenSpec, so that approval is recorded by a separate accepted OpenSpec change package for the schema itself, plus a `docs/decisions/**` record for any durable decision `SPEC.md` §7.5.3a does not already fix. Neither this package nor its draft PR is that approval, and task 2.2 must not proceed on an implementer's own schema judgment.
+3. An owner-approved schema design defines the concrete message declarations that realize the accepted allocation, without substituting an unapproved number or shape. `AGENTS.md` routes protocol and API design of that weight through OpenSpec, so that approval is recorded by a separate accepted OpenSpec change package for the schema itself, plus a `docs/decisions/**` record for any durable decision `SPEC.md` §7.5.3a does not already fix. Neither this package nor its draft PR is that approval, and task 2.2 must not proceed on an implementer's own schema judgment. The field 8 reservation comment in `proto/orchard/worker/v1/worker_runtime.proto` names this prerequisite so that reservation cannot be lifted on issue #327 acceptance alone.
 
 This reconciliation selects no enum value, `nil`-presence encoding, protobuf service or RPC declaration owner, evidence/preparation/proof message layout, or execution-redemption shape. It restates the `SPEC.md` §7.5.3a field allocation and the Runtime Endpoint Interface placement of unary `PrepareInference` as traceability rather than choosing either, and it adds no protocol source declaration.
 
