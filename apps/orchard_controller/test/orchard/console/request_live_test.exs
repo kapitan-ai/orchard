@@ -99,7 +99,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      assert html =~ "Request Summary"
+      assert html =~ "Logical Request"
       assert html =~ request.public_id
       assert html =~ "running"
 
@@ -126,6 +126,82 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "token usage and performance" do
+    test "SPEC §3.7.1 recovered attempts stay separate from final outcome and logical usage", %{
+      conn: conn
+    } do
+      created = ~U[2026-09-11 14:32:05.000000Z]
+
+      request =
+        create_request!(%{
+          state: :completed,
+          payload_capture_mode: :metadata,
+          input_tokens: 128,
+          output_tokens: 86,
+          first_token_at: DateTime.add(created, 1680, :millisecond),
+          completed_at: DateTime.add(created, 4820, :millisecond),
+          http_status: 200
+        })
+
+      Repo.update_all(from(r in Orchard.Requests.Request, where: r.id == ^request.id),
+        set: [inserted_at: created]
+      )
+
+      for {number, outcome, start, finish} <- [
+            {1, "failed", 80, 1290},
+            {2, "completed", 1400, 4800}
+          ] do
+        result = %{
+          "attempt_outcome" => outcome,
+          "started_at" => DateTime.to_iso8601(DateTime.add(created, start, :millisecond)),
+          "ended_at" => DateTime.to_iso8601(DateTime.add(created, finish, :millisecond)),
+          "accepted" => true,
+          "output_committed" => number == 2,
+          "execution_resolution" => "terminated",
+          "capacity_release_outcome" => "released",
+          "node_id" => "550e8400-e29b-41d4-a716-44665544000#{number}",
+          "excluded_node_ids" =>
+            if(number == 1, do: [], else: ["550e8400-e29b-41d4-a716-446655440001"]),
+          "output_tokens" => if(number == 1, do: 37, else: 86)
+        }
+
+        result =
+          if number == 1,
+            do:
+              Map.merge(result, %{
+                "failure_class" => "worker_or_node_loss",
+                "failure_code" => "internal_error",
+                "retry_decision" => "retried"
+              }),
+            else: Map.put(result, "output_commitment_kind", "text")
+
+        assert {:ok, _} =
+                 Requests.append_request_step_events(request, [
+                   %{
+                     event_type: "request_step.#{outcome}",
+                     step_id: "inference_turn:t1:a#{number}",
+                     step_type: "inference_turn",
+                     turn_index: 1,
+                     attempt: number,
+                     boundary: "post_observation",
+                     result: result
+                   }
+                 ])
+      end
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+      assert has_element?(view, "#request-summary-card", "Completed after retry")
+      assert has_element?(view, "#request-attempt-1-1", "failed")
+      assert has_element?(view, "#request-attempt-1-2", "completed")
+      assert has_element?(view, "#request-ttft", "1.68 s")
+      refute has_element?(view, "#request-ttft", "280 ms")
+      assert has_element?(view, "#request-timeline-card", "1.21 s")
+      assert has_element?(view, "#request-timeline-card", "3.40 s")
+      assert has_element?(view, "#request-output-tokens", "86")
+      refute has_element?(view, "#request-output-tokens", "123")
+      assert has_element?(view, "#request-total-tokens", "214")
+      refute has_element?(view, "#request-more-evidence details[open]")
+    end
+
     test "renders token counts including zero", %{conn: conn} do
       request =
         create_request!(%{
@@ -136,7 +212,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      assert html =~ "Token Usage &amp; Performance"
+      assert html =~ "Logical Request usage"
       assert html =~ "150"
       assert html =~ "75"
       assert html =~ "225"
@@ -147,6 +223,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
+      assert has_element?(view, "#request-usage-card", "legacy placeholder")
       # Assert each metric tile renders "0" as the value, not "—"
       for tile_id <- ["request-input-tokens", "request-output-tokens", "request-total-tokens"] do
         tile_html = element(view, "##{tile_id}") |> render()
@@ -155,7 +232,7 @@ defmodule OrchardConsole.RequestLiveTest do
       end
     end
 
-    test "renders all 7 metric tile IDs", %{conn: conn} do
+    test "prioritizes usage and Request timing without misleading generation rates", %{conn: conn} do
       request = create_request!(%{state: :completed, input_tokens: 10, output_tokens: 5})
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
@@ -165,31 +242,35 @@ defmodule OrchardConsole.RequestLiveTest do
             "request-output-tokens",
             "request-total-tokens",
             "request-ttft",
-            "request-generation-time",
-            "request-total-latency",
-            "request-tokens-per-second"
+            "request-total-latency"
           ] do
         assert has_element?(view, "##{tile_id}"), "expected tile #{tile_id} to be present"
       end
+
+      refute has_element?(view, "#request-generation-time")
+      refute has_element?(view, "#request-tokens-per-second")
+      assert has_element?(view, "#request-usage-card", "measurement accuracy not recorded")
+      refute has_element?(view, "#request-usage-card", "legacy placeholder")
     end
 
-    test "timing tiles show dash when timestamps are nil", %{conn: conn} do
+    test "timing tiles identify absent timestamps without claiming zero", %{conn: conn} do
       request = create_request!(%{state: :received, input_tokens: 0, output_tokens: 0})
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
       for tile_id <- [
             "request-ttft",
-            "request-generation-time",
-            "request-total-latency",
-            "request-tokens-per-second"
+            "request-total-latency"
           ] do
         tile_html = element(view, "##{tile_id}") |> render()
-        assert tile_html =~ "—", "expected #{tile_id} to show em dash"
+        assert tile_html =~ "Not recorded"
+        refute tile_html =~ "0 ms"
       end
     end
 
-    test "completed request shows formatted durations and tok/s", %{conn: conn} do
+    test "SPEC §5.8 TTFT starts at Request creation, independently of generation duration", %{
+      conn: conn
+    } do
       request =
         create_request!(%{
           state: :completed,
@@ -212,20 +293,13 @@ defmodule OrchardConsole.RequestLiveTest do
       ttft_html = element(view, "#request-ttft") |> render()
       assert ttft_html =~ "250 ms"
 
-      # Generation: 1.5 s
-      gen_html = element(view, "#request-generation-time") |> render()
-      assert gen_html =~ "1.5 s"
-
-      # Total latency: 1.8 s (rounded from 1750 ms)
       latency_html = element(view, "#request-total-latency") |> render()
-      assert latency_html =~ "1.8 s"
-
-      # Tok/s: 75 / 1.5 = 50.0
-      tps_html = element(view, "#request-tokens-per-second") |> render()
-      assert tps_html =~ "50.0"
+      assert latency_html =~ "1.75 s"
     end
 
-    test "zero generation time shows 0 ms and dash for tok/s", %{conn: conn} do
+    test "coincident first output and completion do not produce a fabricated generation rate", %{
+      conn: conn
+    } do
       request =
         create_request!(%{
           state: :completed,
@@ -244,17 +318,9 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
-      # Generation time: 0 ms
-      gen_html = element(view, "#request-generation-time") |> render()
-      assert gen_html =~ "0 ms"
-
-      # Tok/s: em dash (division by zero guarded)
-      tps_html = element(view, "#request-tokens-per-second") |> render()
-      assert tps_html =~ "—"
-
-      # TTFT should still show 1.0 s
       ttft_html = element(view, "#request-ttft") |> render()
-      assert ttft_html =~ "1.0 s"
+      assert ttft_html =~ "1.00 s"
+      refute has_element?(view, "#request-tokens-per-second")
     end
   end
 
@@ -566,7 +632,7 @@ defmodule OrchardConsole.RequestLiveTest do
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
       assert html =~ "request-canonical-fallback"
-      assert html =~ "Not captured for this request"
+      assert html =~ "No retained content available for this request"
       refute html =~ "request-canonical-request"
     end
 
@@ -761,7 +827,7 @@ defmodule OrchardConsole.RequestLiveTest do
         view |> element("#request-retry-of-link") |> render_click() |> follow_redirect(conn)
 
       assert html =~ parent.public_id
-      assert html =~ "Request Summary"
+      assert html =~ "Logical Request"
 
       summary_html = element(new_view, "#request-summary-card") |> render()
       assert summary_html =~ parent.public_id
@@ -1061,6 +1127,24 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "unknown public_id" do
+    test "lookup exceptions expose recovery copy, not query details" do
+      socket = %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          public_id: %{private: "must-not-appear-in-error"},
+          refresh_timer: nil
+        }
+      }
+
+      assert {:noreply, socket} =
+               OrchardConsole.RequestLive.handle_event("refresh_request", %{}, socket)
+
+      assert socket.assigns.request_status == :error
+      assert socket.assigns.load_error == "Request details could not be loaded. Try Refresh now."
+      refute socket.assigns.load_error =~ "must-not-appear-in-error"
+      assert socket.assigns.refresh_timer == nil
+    end
+
     test "renders not-found card without crashing", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/requests/nonexistent-id-999")
 
@@ -1077,6 +1161,24 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "polling refresh" do
+    test "Refresh now recovers an absent request and stops polling on its final outcome", %{
+      conn: conn
+    } do
+      public_id = "req_refresh_recovery"
+      {:ok, view, _html} = live(conn, "/console/requests/#{public_id}")
+      assert has_element?(view, "#request-not-found-card")
+      request = create_request!(%{public_id: public_id, state: :running})
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-summary-card", "Current state")
+      assert has_element?(view, "#request-freshness", "Auto-refreshing")
+
+      assert {:ok, _} = Requests.mark_terminal(request, %{state: :completed, output_tokens: 17})
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
+      assert has_element?(view, "#request-output-tokens", "17")
+    end
+
     test "refresh updates DOM with new data", %{conn: conn} do
       request = create_request!(%{state: :running, input_tokens: 0, output_tokens: 0})
 
@@ -1258,11 +1360,11 @@ defmodule OrchardConsole.RequestLiveTest do
       debug_pos = :binary.match(html, "request-response-debug-card") |> elem(0)
       canonical_pos = :binary.match(html, "request-canonical-card") |> elem(0)
 
-      assert summary_pos < usage_pos
-      assert usage_pos < timeline_pos
+      assert summary_pos < error_pos
+      assert error_pos < timeline_pos
+      assert timeline_pos < usage_pos
       assert timeline_pos < execution_pos
-      assert execution_pos < error_pos
-      assert error_pos < provenance_pos
+      assert execution_pos < provenance_pos
       assert provenance_pos < debug_pos
       assert debug_pos < canonical_pos
     end
@@ -1331,7 +1433,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "request-response-preview-fallback"
       assert html =~ "request-response-payload-fallback"
       assert html =~ "request-scheduler-decision-fallback"
-      assert html =~ "Not captured for this request."
+      assert html =~ "No retained content available for this request."
       assert html =~ "Not recorded for this request."
 
       # Canonical fallback

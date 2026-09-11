@@ -398,3 +398,16 @@ body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] .co
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 0.75rem;
 }
+
+#request-detail .request-evidence-summary {
+  @apply cursor-pointer rounded-md text-sm text-slate-700 dark:text-slate-200;
+  overflow-wrap: anywhere;
+}
+
+#request-detail dd {
+  overflow-wrap: anywhere;
+}
+
+#request-detail :is(summary, button, a, pre):focus-visible {
+  @apply outline-none ring-2 ring-navy ring-offset-2 ring-offset-white dark:ring-sky-400 dark:ring-offset-slate-800;
+}
