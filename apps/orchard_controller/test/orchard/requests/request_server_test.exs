@@ -3,6 +3,7 @@ defmodule Orchard.Requests.RequestServerTest do
 
   @moduletag :db
 
+  alias Orchard.Metrics.InferenceAttemptProjection
   alias Orchard.Requests
   alias Orchard.Requests.{RequestServer, RequestStepEvent}
 
@@ -273,6 +274,46 @@ defmodule Orchard.Requests.RequestServerTest do
                RequestServer.start_attempt_two(request.id, attempt_two_schedule(node_id), steps)
     end
 
+    test "SPEC.md §§3.7.1 and 7.5.3a persists attempt two acceptance-proof evidence" do
+      request = running_request!()
+      node_id = Ecto.UUID.generate()
+
+      assert {:ok, _} = Requests.append_request_step_events(request, [started_step(1, %{})])
+
+      assert :ok =
+               RequestServer.start_attempt_two(
+                 request.id,
+                 attempt_two_schedule(node_id),
+                 attempt_two_boundary(node_id)
+               )
+
+      assert {:error, _reason} =
+               RequestStepEvent.new(
+                 attempt_two_terminal_attrs(node_id, "runtime_failure", "runtime_incompatible")
+               )
+
+      assert {:ok, _events} =
+               Requests.append_request_step_events(request, [
+                 RequestStepEvent.new!(
+                   attempt_two_terminal_attrs(
+                     node_id,
+                     "pre_acceptance_unavailable",
+                     "runtime_incompatible"
+                   )
+                 )
+               ])
+
+      step_events = Requests.list_request_step_events(request)
+      terminal = List.last(step_events).result
+
+      assert terminal["failure_class"] == "pre_acceptance_unavailable"
+      assert terminal["failure_code"] == "runtime_incompatible"
+      assert terminal["retry_decision"] == "not_retryable"
+
+      assert {:ok, %{retry: %{reason: "retried", result: "failed"}}} =
+               InferenceAttemptProjection.project(step_events)
+    end
+
     test "declined attempt one evidence never authorizes the retry edge" do
       request = running_request!()
       node_id = Ecto.UUID.generate()
@@ -377,15 +418,47 @@ defmodule Orchard.Requests.RequestServerTest do
     })
   end
 
-  defp attempt_two_started_step(excluded_node_id) do
-    RequestStepEvent.new!(%{
-      event_type: "request_step.started",
+  defp attempt_two_terminal_attrs(excluded_node_id, failure_class, failure_code) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{
+      event_type: "request_step.failed",
       step_id: RequestStepEvent.inference_turn_step_id(1, 2),
       step_type: "inference_turn",
       turn_index: 1,
       attempt: 2,
+      boundary: "post_observation",
+      result: %{
+        "attempt_outcome" => "failed",
+        "started_at" => now,
+        "ended_at" => now,
+        "accepted" => false,
+        "output_committed" => false,
+        "execution_resolution" => "not_started",
+        "capacity_release_outcome" => "released",
+        "excluded_node_ids" => [excluded_node_id],
+        "node_id" => Ecto.UUID.generate(),
+        "failure_class" => failure_class,
+        "failure_code" => failure_code,
+        "runtime_retryable" => false,
+        "retry_decision" => "not_retryable"
+      }
+    }
+  end
+
+  defp attempt_two_started_step(excluded_node_id) do
+    started_step(2, %{"excluded_node_ids" => [excluded_node_id]})
+  end
+
+  defp started_step(attempt, result) do
+    RequestStepEvent.new!(%{
+      event_type: "request_step.started",
+      step_id: RequestStepEvent.inference_turn_step_id(1, attempt),
+      step_type: "inference_turn",
+      turn_index: 1,
+      attempt: attempt,
       boundary: "pre_side_effect",
-      result: %{"excluded_node_ids" => [excluded_node_id]}
+      result: result
     })
   end
 end
