@@ -146,6 +146,7 @@ def test_corpus_matrix_is_complete_and_case_ids_are_unique() -> None:
         "terminal:length",
         "terminal:cancelled",
         "terminal:deadline",
+        "terminal:timed_out",
         "leakage",
         "no_marker",
     }

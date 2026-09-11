@@ -124,7 +124,8 @@ class StatefulReasoningParser:
         self._saw_reasoning_content = False
         self._saw_final_text = False
         self._pending_marker = ""
-        self._unclassified_text = ""
+        self._unclassified_parts: list[str] = []
+        self._unclassified_has_nonspace = False
         self._violation_reason: str | None = None
         self._finished = False
 
@@ -217,7 +218,7 @@ class StatefulReasoningParser:
             saw_reasoning_content=self._saw_reasoning_content,
             saw_final_text=self._saw_final_text,
             pending_marker=self._pending_marker,
-            has_unclassified_text=bool(self._unclassified_text),
+            has_unclassified_text=bool(self._unclassified_parts),
             violation_reason=self._violation_reason,
         )
 
@@ -250,7 +251,7 @@ class StatefulReasoningParser:
             self._saw_reasoning_content = True
             return
         if self._phase == "initial":
-            self._unclassified_text += text
+            self._append_unclassified(text)
             return
         self._saw_final_text = True
         emitted.append(text)
@@ -259,7 +260,7 @@ class StatefulReasoningParser:
         if marker == _OPEN_MARKER:
             if self._phase == "reasoning":
                 self._violation_reason = PARSER_NESTED_OPEN_MARKER
-            elif self._phase == "initial" and not self._unclassified_text.strip():
+            elif self._phase == "initial" and not self._unclassified_has_nonspace:
                 self._discard_unclassified_text()
                 self._phase = "reasoning"
                 self._saw_reasoning_frame = True
@@ -278,13 +279,20 @@ class StatefulReasoningParser:
         if self._phase == "reasoning":
             self._saw_reasoning_content = True
             return
-        self._unclassified_text += residual
+        self._append_unclassified(residual)
+
+    def _append_unclassified(self, text: str) -> None:
+        self._unclassified_parts.append(text)
+        if not self._unclassified_has_nonspace and text.strip():
+            self._unclassified_has_nonspace = True
 
     def _discard_unclassified_text(self) -> None:
-        self._unclassified_text = ""
+        self._unclassified_parts.clear()
+        self._unclassified_has_nonspace = False
 
     def _release_unclassified_text(self) -> str:
-        released, self._unclassified_text = self._unclassified_text, ""
+        released = "".join(self._unclassified_parts)
+        self._discard_unclassified_text()
         if released:
             self._saw_final_text = True
         return released

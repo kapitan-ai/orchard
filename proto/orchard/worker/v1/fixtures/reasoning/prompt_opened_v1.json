@@ -153,6 +153,22 @@
       "coverage": ["terminal:cancelled", "unclosed_marker"]
     },
     {
+      "id": "prompt-opened-timed-out-wins-over-unclosed-marker",
+      "generation_policy": "enabled",
+      "chunks": ["private"],
+      "terminal": "timed_out",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:timed_out", "unclosed_marker", "leakage"]
+    },
+    {
+      "id": "prompt-opened-preempting-terminal-does-not-synthesize-parser-failure",
+      "generation_policy": "model_default",
+      "chunks": ["one<think>two"],
+      "terminal": "deadline",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:deadline", "nested_marker", "leakage"]
+    },
+    {
       "id": "prompt-opened-deadline-wins-over-policy-failure",
       "generation_policy": "disabled",
       "chunks": ["private</think>answer"],

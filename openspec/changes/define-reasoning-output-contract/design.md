@@ -80,6 +80,19 @@ Parser framing markers are not content.
 Malformed, ambiguous, or incomplete parser state fails closed for explicit `final_only` or `reasoning_structured` requests.
 The failure cannot fall back to raw blended output, expose ambiguous bytes in an error, or reclassify them as final text or tool content.
 
+Ambiguity is a property of the streaming seam, not of the bytes themselves, so the terminal decides what the seam could not.
+A trailing partial-marker prefix retained by the shared chunk-boundary seam is ambiguous only while further decoded output can still arrive.
+At the non-truncating `completed` and `stop` terminals the provider has proved that no further output exists, so the retained prefix was never a framing marker.
+Under those terminals the parser is definitively in FINAL when no reasoning frame is open, either because its frame closed or because tagged-pair framing never opened one, and the retained prefix is then ordinary final-answer text.
+An actually open or incomplete reasoning frame still fails closed: an opened and unclosed frame fails with `parser_unclosed_marker`, and a prefix retained at the truncating `length` terminal fails with `parser_incomplete_marker`.
+This is neither a strictness or projection axis nor a legacy-blended exception; it is one closed rule applied to every negotiated request.
+
+Tagged-pair text that precedes any open marker is likewise unclassified until a complete reasoning frame or the terminal resolves it, so the parser withholds that text instead of streaming it.
+A later framing violation discards the withheld text rather than exposing it as final text or tool input, which makes the classification independent of how the provider happened to chunk the stream.
+
+A preempting `cancelled`, `deadline`, or `timed_out` terminal wins outright.
+The parser reports only that terminal, discards every still-unclassified byte including the tagged-pair pre-open buffer, and neither synthesizes a conformance failure nor flushes partial text.
+
 The parser also enforces generation policy.
 Any reasoning frame or content under `disabled`, and terminal completion without valid non-empty reasoning under `enabled`, fails with the same deterministic terminal-conformance boundary.
 `model_default` permits either presence or absence.
