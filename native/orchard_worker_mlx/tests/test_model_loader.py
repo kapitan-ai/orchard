@@ -2245,6 +2245,56 @@ class TestDefaultMlxDepsSamplerWiring:
             trust_remote_code=False,
         )
 
+    def test_default_mlx_deps_narrow_signature_loaders_stay_local_and_strip_trust(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """Issue #409: loaders without the trust kwargs still receive local paths only."""
+        import orchard_worker_mlx.model_loader as ml
+
+        model_calls: list[tuple[Any, dict[str, Any]]] = []
+        tokenizer_calls: list[Any] = []
+
+        def narrow_load_model(model_path, lazy=False, strict=True):
+            model_calls.append((model_path, {"lazy": lazy, "strict": strict}))
+            return (MagicMock(name="model"), {"model_type": "llama"})
+
+        def narrow_load_tokenizer(tokenizer_dir):
+            tokenizer_calls.append(tokenizer_dir)
+            return MagicMock(name="tokenizer")
+
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+
+        def _fake_import_required():
+            return (
+                fake_mx,
+                MagicMock(name="stream_generate"),
+                narrow_load_model,
+                narrow_load_tokenizer,
+            )
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+        sys.modules["mlx_lm"] = types.SimpleNamespace()
+        sys.modules.pop("mlx_lm.sample_utils", None)
+        bundle = tmp_path / "bundle"
+        weights = bundle / "weights"
+        weights.mkdir(parents=True)
+        (weights / "config.json").write_text(json.dumps({"model_type": "llama"}))
+
+        try:
+            deps = _default_mlx_deps()
+            deps.load_model(weights, lazy=True, strict=False, trust_remote_code=True)
+            deps.load_tokenizer(bundle / "tokenizer.json")
+        finally:
+            sys.modules.pop("mlx_lm", None)
+
+        assert model_calls == [(weights, {"lazy": True, "strict": False})]
+        assert tokenizer_calls == [bundle]
+
     def test_default_mlx_deps_rejects_model_file_config_before_upstream_load_model(
         self,
         monkeypatch,
