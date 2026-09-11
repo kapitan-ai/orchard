@@ -35,6 +35,32 @@ defmodule Orchard.Inference.ChatResponseSerializerTest do
     assert payload.usage == %{prompt_tokens: 3, completion_tokens: 2, total_tokens: 5}
   end
 
+  test "SPEC 7.5.3a keeps exact completed usage after cumulative updates" do
+    canonical = build_canonical("chatcmpl_usage_updates")
+
+    events = [
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 3,
+        output_tokens: 1,
+        total_tokens: 4
+      }),
+      InferenceEvent.output_text_delta("Hello"),
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 5
+      }),
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 3, output_tokens: 2, total_tokens: 5}
+      )
+    ]
+
+    payload = ChatResponseSerializer.completion_payload(canonical, events)
+
+    assert payload.usage == %{prompt_tokens: 3, completion_tokens: 2, total_tokens: 5}
+  end
+
   test "tool-call-only response includes tool_calls, null content, and tool_calls finish_reason" do
     canonical = build_canonical("chatcmpl_tools")
 

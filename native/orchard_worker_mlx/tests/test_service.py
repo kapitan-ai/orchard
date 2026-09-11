@@ -509,6 +509,57 @@ def test_happy_path_maps_progress_usage_and_completed() -> None:
     assert events[4].completed.usage.total_tokens == 7
 
 
+def test_generate_rejects_malformed_usage_before_emission() -> None:
+    servicer = _make_servicer(
+        HappyBackend(
+            events=[
+                {
+                    "kind": "usage",
+                    "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 99},
+                }
+            ]
+        )
+    )
+
+    events = _collect_events(servicer)
+
+    assert [event.WhichOneof("event") for event in events] == ["failed"]
+    assert events[0].failed.code == "backend_invalid_event"
+
+
+@pytest.mark.parametrize(
+    "regressing_event",
+    [
+        {"kind": "usage", "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6}},
+        {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+        },
+    ],
+)
+def test_generate_rejects_regressing_cumulative_usage_before_emission(
+    regressing_event: dict[str, Any],
+) -> None:
+    servicer = _make_servicer(
+        HappyBackend(
+            events=[
+                {
+                    "kind": "usage",
+                    "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+                },
+                regressing_event,
+            ]
+        )
+    )
+
+    events = _collect_events(servicer)
+
+    assert [event.WhichOneof("event") for event in events] == ["usage", "failed"]
+    assert events[0].usage.usage.output_tokens == 2
+    assert events[-1].failed.code == "backend_invalid_event"
+
+
 # ---------------------------------------------------------------------------
 # Test: accepted is rejected
 # ---------------------------------------------------------------------------

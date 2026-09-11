@@ -3160,6 +3160,139 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
   end
 
+  test "SPEC 3.7: exact completed usage supersedes cumulative updates",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2
+      }),
+      InferenceEvent.output_text_delta("Hello"),
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 1,
+        output_tokens: 4,
+        total_tokens: 5
+      }),
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 7, total_tokens: 8}
+      )
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-cumulative-usage")
+    canonical = canonical_request("request-orchestrator-cumulative-usage", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert TerminalCardinality.classify(events) == :exactly_one
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.input_tokens == 1
+    assert request.output_tokens == 7
+
+    terminal_step = Requests.list_request_step_events(request) |> List.last()
+    assert terminal_step.result["output_tokens"] == 7
+  end
+
+  test "SPEC 3.7: execute/3 does not persist a lower bound without its status",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 5
+      }),
+      InferenceEvent.output_text_delta("Hel"),
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 3,
+        output_tokens: 6,
+        total_tokens: 9
+      }),
+      InferenceEvent.failed("cancelled", "request cancelled by client", false)
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-cancelled-usage")
+    canonical = canonical_request("request-orchestrator-cancelled-usage", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert TerminalCardinality.classify(events) == :exactly_one
+
+    assert %InferenceEvent{
+             event: %InferenceEvent.UsageUpdate{
+               usage: %InferenceEvent.Usage{input_tokens: 3, output_tokens: 6}
+             }
+           } =
+             Enum.find(
+               events,
+               &(InferenceEvent.kind(&1) == :usage && &1.event.usage.output_tokens == 6)
+             )
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.input_tokens == 0
+    assert request.output_tokens == 0
+
+    terminal_step = Requests.list_request_step_events(request) |> List.last()
+    assert terminal_step.result["output_tokens"] == 0
+  end
+
+  test "SPEC 7.5.3a: synthesized terminal does not persist an unqualified lower bound",
+       %{bundle: bundle} do
+    target = [host: "10.0.0.1", port: 50_061]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+
+    stub_runtime_events([
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 4,
+        output_tokens: 2,
+        total_tokens: 6
+      }),
+      InferenceEvent.output_text_delta("Hel"),
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 4,
+        output_tokens: 5,
+        total_tokens: 9
+      })
+    ])
+
+    model = create_active_model!(bundle, "request-orchestrator-synthesized-terminal-usage")
+
+    canonical =
+      canonical_request("request-orchestrator-synthesized-terminal-usage", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert TerminalCardinality.classify(events) == :exactly_one
+
+    assert %InferenceEvent{
+             event: %InferenceEvent.Failed{code: "runtime_endpoint_missing_terminal"}
+           } = List.last(events)
+
+    assert %InferenceEvent{
+             event: %InferenceEvent.UsageUpdate{
+               usage: %InferenceEvent.Usage{input_tokens: 4, output_tokens: 5}
+             }
+           } =
+             Enum.find(
+               events,
+               &(InferenceEvent.kind(&1) == :usage && &1.event.usage.output_tokens == 5)
+             )
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :failed
+    assert request.input_tokens == 0
+    assert request.output_tokens == 0
+
+    terminal_step = Requests.list_request_step_events(request) |> List.last()
+    assert terminal_step.result["output_tokens"] == 0
+  end
+
   test "SPEC 7.5.5: execute/3 persists a missing terminal as a durable failure",
        %{bundle: bundle} do
     target = [host: "10.0.0.1", port: 50_061]

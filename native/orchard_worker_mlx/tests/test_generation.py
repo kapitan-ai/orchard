@@ -170,6 +170,10 @@ def _collect_events(
     return list(generate_events(session, request, cancel_event, deps=deps))
 
 
+def _without_usage_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if event["kind"] != "usage"]
+
+
 class _ToyDetokenizer:
     def __init__(self, tokenizer: _ToyTokenizer) -> None:
         self._tokenizer = tokenizer
@@ -825,7 +829,10 @@ def test_batch_generator_runtime_row_realign_fail_open_without_uids() -> None:
     finally:
         runtime.close()
 
-    assert [event["kind"] for event in events] == ["output_text_delta", "completed"]
+    assert [event["kind"] for event in _without_usage_events(events)] == [
+        "output_text_delta",
+        "completed",
+    ]
 
 
 def test_batch_generator_runtime_row_realign_keeps_unregistered_uid_slot() -> None:
@@ -950,7 +957,7 @@ def test_batch_generator_runtime_row_drift_warning_fires_once(
     finally:
         runtime.close()
 
-    assert [event["kind"] for event in events] == [
+    assert [event["kind"] for event in _without_usage_events(events)] == [
         "output_text_delta",
         "output_text_delta",
         "completed",
@@ -989,7 +996,10 @@ def test_batch_generator_runtime_builds_batch_generator_with_0_31_3_contract() -
     assert generator.constructor_kwargs["prefill_step_size"] == 4096
     assert "prompt_progress_callback" not in generator.constructor_kwargs
     assert generator.insert_returned_flat_uids is True
-    assert [event["kind"] for event in events] == ["output_text_delta", "completed"]
+    assert [event["kind"] for event in _without_usage_events(events)] == [
+        "output_text_delta",
+        "completed",
+    ]
 
 
 def test_batch_generator_runtime_uses_none_stop_tokens_when_session_has_no_eos() -> None:
@@ -1028,7 +1038,7 @@ def test_batch_prefill_attribution_updates_memory_budget_from_shared_runtime() -
     finally:
         runtime.close()
 
-    assert [event["kind"] for event in events] == [
+    assert [event["kind"] for event in _without_usage_events(events)] == [
         "progress",
         "output_text_delta",
         "completed",
@@ -1212,7 +1222,7 @@ def test_batch_prefill_attribution_finalizes_once_per_insert_set() -> None:
     finally:
         runtime.close()
 
-    assert [event["kind"] for event in events] == [
+    assert [event["kind"] for event in _without_usage_events(events)] == [
         "progress",
         "output_text_delta",
         "output_text_delta",
@@ -1306,7 +1316,7 @@ def test_batch_prefill_attribution_finalize_runs_after_notify() -> None:
             if events and events[-1]["kind"] == "completed":
                 break
             threading.Event().wait(0.01)
-        assert [event["kind"] for event in events] == [
+        assert [event["kind"] for event in _without_usage_events(events)] == [
             "progress",
             "output_text_delta",
             "completed",
@@ -2846,7 +2856,7 @@ def test_batch_runtime_does_not_clear_while_request_is_active() -> None:
     iterator = generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
 
     try:
-        first_event = next(iterator)
+        first_event = next(event for event in iterator if event["kind"] != "usage")
         assert first_event["kind"] == "output_text_delta"
         assert _wait_until(lambda: bool(runtime._active_by_uid))
         threading.Event().wait(0.05)
@@ -2898,7 +2908,7 @@ def test_batch_generator_runtime_generator_close_marks_request_cancelled_not_loc
     iterator = generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
 
     try:
-        first_event = next(iterator)
+        first_event = next(event for event in iterator if event["kind"] != "usage")
         assert first_event["kind"] == "output_text_delta"
 
         cast(Any, iterator).close()
@@ -3508,6 +3518,88 @@ def test_basic_generation_emits_deltas_and_completed() -> None:
         completed["usage"]["output_tokens"] == 3
     )  # all 3 responses counted (incl. empty-text terminal)
     assert completed["usage"]["total_tokens"] == 8
+
+
+def test_spec_7_5_3a_emits_cumulative_usage_before_completed() -> None:
+    responses = [
+        FakeGenerationResponse(text="Hello", token=10),
+        FakeGenerationResponse(text=" world", token=11),
+        FakeGenerationResponse(text="", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=5)
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    usage_events = [event for event in events if event["kind"] == "usage"]
+    assert [event["usage"] for event in usage_events] == [
+        {"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+        {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+        {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+    ]
+    assert all(set(event) == {"kind", "usage"} for event in usage_events)
+    assert events.index(usage_events[-1]) < len(events) - 1
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["usage"] == usage_events[-1]["usage"]
+
+
+def test_spec_7_5_3a_paces_cumulative_usage_on_the_decode_cancel_stride() -> None:
+    responses = [
+        FakeGenerationResponse(text="a", token=10),
+        FakeGenerationResponse(text="b", token=11),
+        FakeGenerationResponse(text="c", token=12),
+        FakeGenerationResponse(text="d", token=13),
+        FakeGenerationResponse(text="e", token=14, finish_reason="stop"),
+    ]
+    session = _make_fake_session(decode_cancel_stride=2)
+    request = _make_fake_request(input_tokens=5)
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    usage_events = [event for event in events if event["kind"] == "usage"]
+    assert [event["usage"]["output_tokens"] for event in usage_events] == [2, 4, 5]
+    assert events[-2] == {
+        "kind": "usage",
+        "usage": {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+    }
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["usage"] == usage_events[-1]["usage"]
+
+
+def test_spec_7_5_3a_emits_final_cumulative_usage_before_cancelled_terminal() -> None:
+    cancel = threading.Event()
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="a", token=10)
+        cancel.set()
+        yield FakeGenerationResponse(text="b", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(decode_cancel_stride=8)
+    request = _make_fake_request(input_tokens=3)
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    assert [event for event in events if event["kind"] == "usage"] == [
+        {"kind": "usage", "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}}
+    ]
+    assert events[-2]["kind"] == "usage"
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_spec_7_5_3a_omits_cumulative_usage_when_no_tokens_are_generated() -> None:
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=3)
+
+    events = _collect_events(session, request, _make_deps([]))
+
+    assert not any(event["kind"] == "usage" for event in events)
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["usage"] == {"input_tokens": 3, "output_tokens": 0, "total_tokens": 3}
 
 
 def test_non_batch_token_delta_opt_in_does_not_forward_unknown_kwargs() -> None:
@@ -5139,6 +5231,10 @@ def test_no_completed_after_cancel() -> None:
     kinds = [e["kind"] for e in events]
     # No completed should appear after failed
     assert "completed" not in kinds
+    assert events[-2] == {
+        "kind": "usage",
+        "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+    }
     assert kinds[-1] == "failed"  # type is failed
     assert events[-1]["code"] == "cancelled"
 
@@ -5223,12 +5319,13 @@ def test_tool_choice_auto_emits_parsed_tool_call_and_tool_calls_finish_reason() 
 
     events = _collect_events(session, request, _make_deps(responses))
 
-    assert [event["kind"] for event in events] == [
+    visible_events = _without_usage_events(events)
+    assert [event["kind"] for event in visible_events] == [
         "tool_call_delta",
         "completed",
     ]
-    assert events[0]["tool_call_id"] == "call_0"
-    assert events[0]["delta"] == {
+    assert visible_events[0]["tool_call_id"] == "call_0"
+    assert visible_events[0]["delta"] == {
         "index": 0,
         "type": "function",
         "function": {
@@ -5261,19 +5358,20 @@ def test_tool_call_markers_can_share_chunks_with_text() -> None:
 
     events = _collect_events(session, request, _make_deps(responses))
 
-    assert [event["kind"] for event in events] == [
+    visible_events = _without_usage_events(events)
+    assert [event["kind"] for event in visible_events] == [
         "output_text_delta",
         "tool_call_delta",
         "output_text_delta",
         "completed",
     ]
-    assert events[0]["delta"] == "Before "
-    assert events[1]["delta"]["function"] == {
+    assert visible_events[0]["delta"] == "Before "
+    assert visible_events[1]["delta"]["function"] == {
         "name": "lookup_weather",
         "arguments_delta": '{"city":"Singapore"}',
     }
-    assert events[2]["delta"] == " after"
-    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+    assert visible_events[2]["delta"] == " after"
+    assert visible_events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
 
 
 def test_multi_tool_auto_emits_parser_selected_name_with_normalized_arguments() -> None:
@@ -5305,16 +5403,17 @@ def test_multi_tool_auto_emits_parser_selected_name_with_normalized_arguments() 
 
     events = _collect_events(session, request, _make_deps(responses))
 
-    assert [event["kind"] for event in events] == [
+    visible_events = _without_usage_events(events)
+    assert [event["kind"] for event in visible_events] == [
         "tool_call_delta",
         "completed",
     ]
-    assert events[0]["delta"] == {
+    assert visible_events[0]["delta"] == {
         "index": 0,
         "type": "function",
         "function": {"name": "lookup_time", "arguments_delta": '{"city":"Singapore"}'},
     }
-    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+    assert visible_events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
 
 
 def test_tool_choice_required_fails_when_no_tool_call_is_emitted() -> None:
@@ -5405,9 +5504,10 @@ def test_cancel_mid_tool_call_discards_unparsed_call_before_cancelled_terminal()
 
     events = _collect_events(session, request, deps, cancel_event=cancel)
 
-    assert events[:-1] == []
-    assert events[-1]["kind"] == "failed"
-    assert events[-1]["code"] == "cancelled"
+    visible_events = _without_usage_events(events)
+    assert visible_events[:-1] == []
+    assert visible_events[-1]["kind"] == "failed"
+    assert visible_events[-1]["code"] == "cancelled"
     assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
 
 
@@ -5433,7 +5533,8 @@ def test_stop_sequences_do_not_truncate_tool_call_arguments() -> None:
 
     events = _collect_events(session, request, _make_deps(responses))
 
-    assert events[0]["delta"]["function"]["arguments_delta"] == '{"city":"Singapore"}'
+    tool_call_event = next(event for event in events if event["kind"] == "tool_call_delta")
+    assert tool_call_event["delta"]["function"]["arguments_delta"] == '{"city":"Singapore"}'
     assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
 
 
@@ -5456,7 +5557,7 @@ def test_tool_choice_none_disables_tool_call_parsing() -> None:
 
     events = _collect_events(session, request, _make_deps(responses))
 
-    assert [event["kind"] for event in events] == [
+    assert [event["kind"] for event in _without_usage_events(events)] == [
         "output_text_delta",
         "output_text_delta",
         "output_text_delta",
@@ -5486,8 +5587,9 @@ def test_spec_7_5_2_unclosed_tool_block_requires_clean_delimiter_free_stop(
 
     if closing_marker == "" and finish_reason == "stop":
         parser.assert_called_once()
-        assert events[0]["kind"] == "tool_call_delta"
-        assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+        visible_events = _without_usage_events(events)
+        assert visible_events[0]["kind"] == "tool_call_delta"
+        assert visible_events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
     else:
         parser.assert_not_called()
         assert not any(event["kind"] == "tool_call_delta" for event in events)
@@ -6320,7 +6422,7 @@ def test_clear_cache_called_on_mid_iteration_exception() -> None:
     it = generate_events(session, request, threading.Event(), deps=deps)
 
     # First event should be the output_text_delta from the successful yield.
-    first = next(it)
+    first = next(event for event in it if event["kind"] != "usage")
     assert first["kind"] == "output_text_delta"
     assert first["delta"] == "partial"
 
