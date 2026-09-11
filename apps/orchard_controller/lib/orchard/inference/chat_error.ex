@@ -12,6 +12,8 @@ defmodule Orchard.Inference.ChatError do
   alias Orchard.InferenceEvent
   alias Orchard.Requests.InferenceAttemptFailure
 
+  @reasoning_conformance_codes InferenceAttemptFailure.reasoning_conformance_codes()
+
   @type kind ::
           :missing_required_field
           | :unsupported_parameter
@@ -357,27 +359,12 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
-  def api_mapping(%__MODULE__{kind: :reasoning_conformance}) do
-    %{
-      status: :internal_server_error,
-      type: "api_error",
-      code: "internal_error",
-      message: "Internal error",
-      param: nil
-    }
-  end
-
-  def api_mapping(%__MODULE__{kind: :runtime_endpoint_conformance}) do
-    %{
-      status: :internal_server_error,
-      type: "api_error",
-      code: "internal_error",
-      message: "Internal error",
-      param: nil
-    }
-  end
-
-  def api_mapping(%__MODULE__{kind: :orchestration_crash}) do
+  def api_mapping(%__MODULE__{kind: kind})
+      when kind in [
+             :reasoning_conformance,
+             :runtime_endpoint_conformance,
+             :orchestration_crash
+           ] do
     %{
       status: :internal_server_error,
       type: "api_error",
@@ -425,16 +412,13 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
-  def sse_mapping(%__MODULE__{kind: :reasoning_conformance}) do
-    %{
-      type: "server_error",
-      code: "internal_error",
-      message: "Internal error",
-      param: nil
-    }
-  end
-
-  def sse_mapping(%__MODULE__{kind: :runtime_endpoint_conformance}) do
+  def sse_mapping(%__MODULE__{kind: kind})
+      when kind in [
+             :reasoning_conformance,
+             :runtime_endpoint_conformance,
+             :internal,
+             :orchestration_crash
+           ] do
     %{
       type: "server_error",
       code: "internal_error",
@@ -448,24 +432,6 @@ defmodule Orchard.Inference.ChatError do
       type: "server_error",
       code: error.source_code,
       message: error.source_message,
-      param: nil
-    }
-  end
-
-  def sse_mapping(%__MODULE__{kind: :internal}) do
-    %{
-      type: "server_error",
-      code: "internal_error",
-      message: "Internal error",
-      param: nil
-    }
-  end
-
-  def sse_mapping(%__MODULE__{kind: :orchestration_crash}) do
-    %{
-      type: "server_error",
-      code: "internal_error",
-      message: "Internal error",
       param: nil
     }
   end
@@ -642,15 +608,10 @@ defmodule Orchard.Inference.ChatError do
        when code in ["request_client_disconnect", "request_caller_disconnect"],
        do: :request_cancelled
 
-  defp failed_event_kind(code) do
-    if InferenceAttemptFailure.reasoning_conformance_code?(code) do
-      :reasoning_conformance
-    else
-      runtime_endpoint_failed_event_kind(code)
-    end
-  end
+  defp failed_event_kind(code) when code in @reasoning_conformance_codes,
+    do: :reasoning_conformance
 
-  defp runtime_endpoint_failed_event_kind(code)
+  defp failed_event_kind(code)
        when code in [
               "runtime_endpoint_missing_terminal",
               "runtime_endpoint_duplicate_terminal",
@@ -658,7 +619,7 @@ defmodule Orchard.Inference.ChatError do
             ],
        do: :runtime_endpoint_conformance
 
-  defp runtime_endpoint_failed_event_kind(_code), do: :request_failed
+  defp failed_event_kind(_code), do: :request_failed
 
   defp tokenization_internal_message(detail) when is_binary(detail),
     do: "Tokenization failed: #{detail}"

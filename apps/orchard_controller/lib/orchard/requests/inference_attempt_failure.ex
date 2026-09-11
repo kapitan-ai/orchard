@@ -44,6 +44,9 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   @spec model_load_codes() :: [String.t()]
   def model_load_codes, do: @model_load_codes
 
+  @spec reasoning_conformance_codes() :: [String.t()]
+  def reasoning_conformance_codes, do: @reasoning_conformance_codes
+
   @spec acceptance_proof_failure?(String.t(), String.t()) :: boolean()
   def acceptance_proof_failure?(
         @acceptance_proof_failure_class,
@@ -66,7 +69,7 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
     {failure_class, failure_code} = classify(category, code, phase)
 
     %{"failure_class" => failure_class, "failure_code" => failure_code}
-    |> maybe_put_raw_source_code(category, code, failure_code)
+    |> maybe_put_raw_source_code(code, failure_code)
   end
 
   def normalize(_source),
@@ -194,20 +197,14 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   defp controller_code(code) when code in ["orchestration_error", "request_interrupted"], do: code
   defp controller_code(_code), do: "internal_error"
 
-  defp maybe_put_raw_source_code(
-         evidence,
-         category,
-         code,
-         _stable
-       )
-       when category in [:terminal_conformance, "terminal_conformance"] and
-              code in @reasoning_conformance_codes,
+  defp maybe_put_raw_source_code(evidence, code, _stable)
+       when code in @reasoning_conformance_codes,
        do: evidence
 
-  defp maybe_put_raw_source_code(evidence, _category, nil, _stable), do: evidence
-  defp maybe_put_raw_source_code(evidence, _category, stable, stable), do: evidence
+  defp maybe_put_raw_source_code(evidence, nil, _stable), do: evidence
+  defp maybe_put_raw_source_code(evidence, stable, stable), do: evidence
 
-  defp maybe_put_raw_source_code(evidence, _category, raw_source_code, _stable),
+  defp maybe_put_raw_source_code(evidence, raw_source_code, _stable),
     do: Map.put(evidence, "raw_source_code", raw_source_code)
 
   defp value(source, key), do: Map.get(source, key, Map.get(source, Atom.to_string(key)))
