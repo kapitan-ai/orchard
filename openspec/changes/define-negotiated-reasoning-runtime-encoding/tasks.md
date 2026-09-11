@@ -16,8 +16,9 @@
 ## 3. Dormant implementation handoff
 
 - [ ] 3.1 Implement loaded-binding-scoped live reasoning evidence, remaining-freshness handling, Tier 0-only eligibility, and unary preparation with single-use authorization.
-- [ ] 3.1a Enforce the bounded live wave (full loaded-placement universe, at most four probes in flight advancing down the §5.7 ranking order, one 2000 ms wave deadline, no transport retry) with a determinism test proving identical passes advance through the same order.
-- [ ] 3.1b Cover the outcome split: no loaded placement and an exhausted universe fail closed as incompatible, while a proving-but-undispatchable placement or an elapsed wave deadline keeps the retryable queue-waitable busy path.
+- [ ] 3.1a Enforce the bounded live wave (reachable loaded-placement universe, at most four probes in flight advancing down the §5.7 ranking order, one 2000 ms wave deadline, no transport retry) with a determinism test proving identical passes advance through the same order.
+- [ ] 3.1b Cover the outcome split: no loaded placement and an affirmatively exhausted universe fail closed as incompatible, while a proving-but-undispatchable placement, an incomplete probe, an elapsed wave deadline, or a withheld Node keeps the retryable queue-waitable busy path.
+- [ ] 3.1e Prove the wave withholds stale, unhealthy, and breaker-suppressed Nodes, that withholding preserves §5.10 suppression, and that a withheld or unreachable placement blocks the permanent incompatibility conclusion.
 - [ ] 3.1c Prove the advancing window reaches capable placements ranked below incapable ones and that a lower-ranked proof never wins over an unresolved higher-ranked probe.
 - [ ] 3.1d Enforce the per-logical-Request wave budget: a pre-start busy re-grant runs no wave, carries a hint only, revalidates through `PrepareInference`, and terminalizes under the existing queue-wait budget; both waves plus queue wait consume the single §12.4 loaded-only deadline.
 - [ ] 3.2 Implement D1, D2, and D3 with direct failure-path and both-attempt regression coverage.

@@ -222,8 +222,11 @@ formula, whatever its policy says: `SPEC.md` §5.6 restricts it to already loade
 Tier 0 candidates, so `residency_preference` and `max_cold_start_ms` are
 inapplicable to it and an `allow_cold_load` policy adds neither the queue-wait
 nor the cold-start term to its `requests.timeout_at`. A model with no loaded
-placement fails closed before dispatch, while a loaded placement that is merely
-at capacity keeps the ordinary queue-waitable busy outcome — queue outcome
+placement, or one whose every reachable loaded placement answered that it does
+not support the tuple, fails closed before dispatch; a placement that is merely
+at capacity, unreachable, or withheld as stale, unhealthy, or breaker-suppressed
+leaves support unknown and keeps the ordinary queue-waitable busy outcome instead
+of a permanent refusal — queue outcome
 semantics match legacy traffic, deadline duration does not, and both queue wait
 and the at most two bounded reasoning waves a request may run come out of that
 same budget. Busy queue re-grants reuse the earlier wave's placement as a hint
