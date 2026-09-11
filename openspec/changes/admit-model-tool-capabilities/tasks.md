@@ -18,6 +18,10 @@
 
 ## 4. Validation and handoff
 
+Validation checkmarks record completed workflows, not certification of later
+commits. The follow-up PR must bind fresh validation results to its exact
+published head after integration with main.
+
 - [x] 4.1 Run focused Elixir and native tests, strict OpenSpec validation, and the full applicable Orchard quality workflow.
-- [ ] 4.2 Commit, run the no-mistakes AXI pipeline, push, create a PR, and wait for CI checks-passed without merging.
-- [ ] 4.3 Repeat the full applicable Elixir quality workflow for publication coordination and repair-version retention.
+- [ ] 4.2 Complete required CI and human review for the follow-up PR before merging.
+- [x] 4.3 Repeat the full applicable Elixir quality workflow for publication coordination and repair-version retention.
