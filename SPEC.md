@@ -3800,7 +3800,9 @@ Genuinely open, incomplete, malformed, ambiguous, or otherwise unsatisfied reaso
 The terminal failure SHALL be deterministic and non-retryable unless the failure occurred before model execution and independently satisfies the closed retry gates in §5.8.
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
+Whitespace-only decoded reasoning is framing rather than valid reasoning content and SHALL NOT satisfy that rule.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+That no-selected-output guarantee binds the parser terminal itself rather than only a later projection or API boundary, so a negotiated `enabled` stream SHALL withhold final-answer output until valid reasoning content is observed and SHALL emit no final-answer delta when the stream never observes it.
 The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
 Runtime advertisement of a non-`nil` tier proves only that the exact tuple has a qualified renderer mapping and that the provider passes the provider-neutral protocol conformance in §7.5.2a.
 Those fixtures are model-agnostic protocol artifacts, so advertisement SHALL NOT be read as asserting any per-artifact semantic property of a tier, and this specification defines no runtime producer for such an assertion.

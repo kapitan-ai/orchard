@@ -95,6 +95,9 @@ The parser reports only that terminal, discards every still-unclassified byte in
 
 The parser also enforces generation policy.
 Any reasoning frame or content under `disabled`, and terminal completion without valid non-empty reasoning under `enabled`, fails with the same deterministic terminal-conformance boundary.
+Whitespace-only decoded reasoning is framing rather than valid content, so an empty or whitespace-only frame does not satisfy `enabled`.
+The no-selected-output guarantee binds the parser terminal rather than only the later projection boundary, so the parser withholds final-answer text while the negotiated policy is still unsatisfied and a policy-conformance terminal releases nothing.
+Under `enabled` that means a stream which never produces valid reasoning emits no final-answer delta before it fails, for both the tagged-pair and prompt-opened families; once valid reasoning is observed, ordinary final text streams normally after the close transition.
 `model_default` permits either presence or absence.
 
 The current raw `TokenDelta` has no projection channel.

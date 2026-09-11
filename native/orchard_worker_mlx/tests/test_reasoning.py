@@ -139,6 +139,7 @@ def test_corpus_matrix_is_complete_and_case_ids_are_unique() -> None:
         "late_open_marker",
         "incomplete_marker",
         "residual_marker_flush",
+        "reasoning_content_validity",
         "tool_boundary",
         "stop_boundary",
         "terminal:completed",
@@ -247,6 +248,37 @@ def test_whitespace_before_an_open_marker_is_framing_not_output() -> None:
     terminal = unframed.finish("completed")
     assert terminal.ok
     assert terminal.final_text == "  "
+
+
+def test_enabled_policy_withholds_final_text_until_reasoning_is_proven() -> None:
+    parser = tagged_pair_parser(generation_policy="enabled")
+    assert parser.push("<think> \n </think>ans").final_text == ""
+    assert parser.push("wer").final_text == ""
+    assert not parser.snapshot().saw_reasoning_content
+
+    terminal = parser.finish("completed")
+    assert terminal.final_text == ""
+    assert terminal.failure_code == "reasoning_policy_conformance_failed"
+    assert terminal.failure_reason == "policy_enabled_reasoning_missing"
+
+
+def test_enabled_policy_streams_final_text_once_reasoning_is_proven() -> None:
+    parser = tagged_pair_parser(generation_policy="enabled")
+    assert parser.push("<think> why </think>ans").final_text == "ans"
+    assert parser.push("wer").final_text == "wer"
+
+    terminal = parser.finish("completed")
+    assert terminal.ok
+    assert terminal.final_text == ""
+
+
+def test_disabled_policy_withholds_final_text_from_the_first_delta() -> None:
+    parser = tagged_pair_parser(generation_policy="disabled")
+    assert parser.push("<think>private</think>answer").final_text == ""
+
+    terminal = parser.finish("completed")
+    assert terminal.final_text == ""
+    assert terminal.failure_reason == "policy_disabled_reasoning"
 
 
 def test_reasoning_parser_has_no_mlx_or_provider_imports() -> None:
