@@ -1,0 +1,139 @@
+{
+  "schema_version": "reasoning-corpus/v1",
+  "parser_family": "tagged_pair",
+  "parser_version": "v1",
+  "render_contract": "synthetic.tagged_pair",
+  "render_contract_version": "v1",
+  "cases": [
+    {
+      "id": "tagged-pair-model-default-hides-reasoning",
+      "generation_policy": "model_default",
+      "chunks": ["<think>private chain</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["policy:model_default", "marker_pair", "leakage", "terminal:completed"]
+    },
+    {
+      "id": "tagged-pair-disabled-allows-no-marker-final-output",
+      "generation_policy": "disabled",
+      "chunks": ["plain answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "plain answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["policy:disabled", "no_marker", "terminal:completed"]
+    },
+    {
+      "id": "tagged-pair-enabled-accepts-unicode-split-markers",
+      "generation_policy": "enabled",
+      "chunks": ["<thi", "nk>計", "画</th", "ink>回答🙂"],
+      "terminal": "completed",
+      "expected": {"final_text": "回答🙂", "failure_code": null, "failure_reason": null},
+      "coverage": ["policy:enabled", "split_marker", "chunk_boundary", "unicode", "terminal:completed"]
+    },
+    {
+      "id": "tagged-pair-disabled-rejects-reasoning-frame",
+      "generation_policy": "disabled",
+      "chunks": ["<think>private</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_policy_conformance_failed", "failure_reason": "policy_disabled_reasoning"},
+      "coverage": ["policy:disabled", "leakage"]
+    },
+    {
+      "id": "tagged-pair-enabled-requires-nonempty-reasoning",
+      "generation_policy": "enabled",
+      "chunks": ["answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "answer", "failure_code": "reasoning_policy_conformance_failed", "failure_reason": "policy_enabled_reasoning_missing"},
+      "coverage": ["policy:enabled", "no_marker"]
+    },
+    {
+      "id": "tagged-pair-rejects-nested-open-marker",
+      "generation_policy": "model_default",
+      "chunks": ["<think>one<think>two</think>answer"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_nested_open_marker"},
+      "coverage": ["nested_marker", "leakage"]
+    },
+    {
+      "id": "tagged-pair-rejects-stray-close-marker",
+      "generation_policy": "model_default",
+      "chunks": ["answer</think>"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_stray_close_marker"},
+      "coverage": ["stray_marker"]
+    },
+    {
+      "id": "tagged-pair-rejects-unclosed-reasoning-marker",
+      "generation_policy": "model_default",
+      "chunks": ["<think>private"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_unclosed_marker"},
+      "coverage": ["unclosed_marker", "leakage"]
+    },
+    {
+      "id": "tagged-pair-rejects-late-open-marker",
+      "generation_policy": "model_default",
+      "chunks": ["<think>private</think>answer<think>"],
+      "terminal": "completed",
+      "expected": {"final_text": "", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_late_open_marker"},
+      "coverage": ["late_open_marker"]
+    },
+    {
+      "id": "tagged-pair-length-rejects-incomplete-marker",
+      "generation_policy": "model_default",
+      "chunks": ["<think>private</think>answer<th"],
+      "terminal": "length",
+      "expected": {"final_text": "answer", "failure_code": "reasoning_parser_conformance_failed", "failure_reason": "parser_incomplete_marker"},
+      "coverage": ["incomplete_marker", "terminal:length"]
+    },
+    {
+      "id": "tagged-pair-passes-only-final-tool-input",
+      "generation_policy": "model_default",
+      "chunks": ["<think>private <tool_call>ignored</tool_call></think><tool_call>{\"name\":\"weather\"}</tool_call>"],
+      "terminal": "completed",
+      "expected": {"final_text": "<tool_call>{\"name\":\"weather\"}</tool_call>", "failure_code": null, "failure_reason": null},
+      "coverage": ["tool_boundary"],
+      "boundary": {"kind": "tool", "downstream_input": "<tool_call>{\"name\":\"weather\"}</tool_call>"}
+    },
+    {
+      "id": "tagged-pair-passes-only-final-stop-input",
+      "generation_policy": "model_default",
+      "chunks": ["<think>private STOP</think>answerSTOPafter"],
+      "terminal": "completed",
+      "expected": {"final_text": "answerSTOPafter", "failure_code": null, "failure_reason": null},
+      "coverage": ["stop_boundary"],
+      "boundary": {"kind": "stop", "sequence": "STOP", "downstream_input": "answerSTOPafter", "after_stop": "answer"}
+    },
+    {
+      "id": "tagged-pair-cancellation-wins-over-unclosed-marker",
+      "generation_policy": "enabled",
+      "chunks": ["<think>private"],
+      "terminal": "cancelled",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:cancelled", "unclosed_marker"]
+    },
+    {
+      "id": "tagged-pair-deadline-wins-over-policy-failure",
+      "generation_policy": "disabled",
+      "chunks": ["<think>private</think>answer"],
+      "terminal": "deadline",
+      "expected": {"final_text": "", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:deadline", "policy:disabled"]
+    },
+    {
+      "id": "tagged-pair-length-validates-complete-no-marker-output",
+      "generation_policy": "model_default",
+      "chunks": ["answer"],
+      "terminal": "length",
+      "expected": {"final_text": "answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:length", "no_marker"]
+    },
+    {
+      "id": "tagged-pair-stop-applies-parser-conformance",
+      "generation_policy": "enabled",
+      "chunks": ["<think>private</think>answer"],
+      "terminal": "stop",
+      "expected": {"final_text": "answer", "failure_code": null, "failure_reason": null},
+      "coverage": ["terminal:stop", "policy:enabled"]
+    }
+  ]
+}
