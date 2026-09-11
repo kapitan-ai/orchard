@@ -16,8 +16,9 @@
 ## 3. Dormant implementation handoff
 
 - [ ] 3.1 Implement loaded-binding-scoped live reasoning evidence, remaining-freshness handling, Tier 0-only eligibility, and unary preparation with single-use authorization.
-- [ ] 3.1a Enforce the bounded live wave (first four deduplicated candidates of the predicate-free ranking order, 2000 ms per target, no transport retry, one wave per Inference Attempt) with a determinism test proving identical attempts observe the same four candidates.
-- [ ] 3.1b Cover the outcome split: no loaded placement fails closed as incompatible, a tuple-proving but capacity-blocked placement keeps the queue-waitable busy path, and attempt 2 re-observes with a fresh wave and a new proof.
+- [ ] 3.1a Enforce the bounded live wave (at most four probes in flight advancing down the predicate-free ranking order, one 2000 ms wave deadline, no transport retry, one wave per Inference Attempt) with a determinism test proving identical attempts advance through the same order.
+- [ ] 3.1b Cover the outcome split: no loaded placement and ranked-list exhaustion fail closed as incompatible, while a capacity-blocked placement or an elapsed wave deadline keeps the retryable queue-waitable busy path.
+- [ ] 3.1c Prove the advancing window reaches capable candidates ranked below incapable ones, and that both waves plus queue wait consume the single §12.4 loaded-only deadline.
 - [ ] 3.2 Implement D1, D2, and D3 with direct failure-path and both-attempt regression coverage.
 - [ ] 3.3 Pin automatic and full-capture operator retry to `canonical_request["reasoning"]`; return `retry_source_unavailable` rather than rerendering or adding a column.
 - [ ] 3.4 Keep production registries empty and prove no production tuple is advertised before #328 plus qualification governance authorize activation.

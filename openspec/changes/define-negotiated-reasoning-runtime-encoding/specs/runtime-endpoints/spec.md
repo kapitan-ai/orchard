@@ -6,11 +6,11 @@ For an explicit negotiated reasoning Request, the Runtime Endpoint Interface SHA
 
 The predicate SHALL consider only `SPEC.md` §5.6 Tier 0 candidates, whether resident from earlier traffic or prewarmed by a §6.10 `preload = true` pinning policy. Tier 1 and Tier 2 candidates SHALL be ineligible, `residency_preference` and `max_cold_start_ms` SHALL NOT apply to negotiated candidate selection, and a negotiated Request SHALL resolve `timeout_at` through the §12.4 loaded-only formula under every resolved policy.
 
-The predicate SHALL run after ordinary eligibility and ranking and SHALL NOT reclassify capacity scarcity as incompatibility. The closed §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when every Tier 0 candidate the bounded wave observed fails the exact-tuple predicate. When a loaded placement exists but capacity scarcity leaves no Tier 0 candidate, the Request SHALL keep its existing `cluster_busy` or `model_busy` queue-waitable outcome, and that unobserved placement SHALL NOT be read as proof of no support.
+The predicate SHALL run after ordinary eligibility and ranking and SHALL NOT reclassify capacity scarcity as incompatibility. The closed §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when the bounded wave exhausts the ranked Tier 0 list without a candidate proving the exact tuple. When a loaded placement exists but capacity scarcity leaves no Tier 0 candidate, or when the wave deadline elapses with ranked candidates still unobserved, the Request SHALL keep its existing `cluster_busy` or `model_busy` queue-waitable outcome, SHALL NOT record `not_retryable`, and SHALL NOT read the unobserved placement as proof of no support. That equivalence covers queue outcome semantics only; queue wait and wave time consume the negotiated Request's own §12.4 loaded-only budget.
 
-The live observation SHALL run as one bounded wave per Inference Attempt. Its universe SHALL be built without the reasoning predicate — ordinary §5.5 eligibility, §5.6 Tier 0 grouping, then the §5.7 ranking in force with its lexicographic `node_id` tie-break last — and deduplicated on the §5.5 normalized target identity. The wave SHALL observe at most the first four candidates of that deterministic order, once each, with a 2000 ms per-target timeout and no transport retry. Candidates beyond the bound SHALL remain unobserved and SHALL prove no support without extending the wave.
+The live observation SHALL run as one bounded wave per Inference Attempt. Its universe SHALL be built without the reasoning predicate — ordinary §5.5 eligibility, §5.6 Tier 0 grouping, then the §5.7 ranking in force with its lexicographic `node_id` tie-break last — and deduplicated on the §5.5 normalized target identity. The wave SHALL hold at most four probes in flight, advance through that deterministic order as probes complete, observe each candidate at most once, and run under one 2000 ms wave deadline rather than a per-target timeout. It SHALL stop at the first candidate proving the exact tuple, on exhaustion of the ranked list, or when that deadline elapses, and SHALL NOT retry an individual probe transport. Because the §5.7 ranking is capability-blind, the window SHALL advance rather than stay fixed on the leading four.
 
-Automatic Attempt Retry SHALL run a fresh wave rather than reuse attempt 1's evidence, whose freshness budget forwarding SHALL NOT refresh. Attempt 2 SHALL apply `exclude_node_ids` first, rebuild and reorder its universe by the same deterministic rule, observe at most the first four deduplicated candidates under the same per-target timeout with no transport retry, and obtain a new `PrepareInference` proof for the different endpoint it selects. Each attempt SHALL run at most one wave, so a logical Request SHALL run at most two, and a wave proving no different eligible candidate SHALL resolve `no_alternative_node` unless an earlier §5.8 decline reason applies.
+Automatic Attempt Retry SHALL run a fresh wave rather than reuse attempt 1's evidence, whose freshness budget forwarding SHALL NOT refresh. Attempt 2 SHALL apply `exclude_node_ids` first, rebuild and reorder its universe by the same deterministic rule, advance through it under the same four-in-flight bound and 2000 ms wave deadline with no transport retry, and obtain a new `PrepareInference` proof for the different endpoint it selects. Each attempt SHALL run at most one wave, so a logical Request SHALL run at most two, and a wave proving no different eligible candidate SHALL resolve `no_alternative_node` unless an earlier §5.8 decline reason applies.
 
 The interface SHALL expose unary `PrepareInference` before execution. It SHALL return an exact-tuple proof and opaque single-use authorization bound to the Request and current loaded worker instance. The Controller SHALL validate the proof before accepting the attempt as running and redeem the authorization only through the matching execution request. Missing, stale, malformed, mismatched, expired, cancelled, or previously redeemed preparation evidence SHALL fail before invocation through the existing `runtime_incompatible` pre-acceptance behavior.
 
@@ -35,12 +35,23 @@ Legacy status, execution, and event projections SHALL omit reasoning additions f
 - **THEN** Orchard returns the ordinary queue-waitable `cluster_busy` or `model_busy` outcome rather than the incompatibility mapping
 - **AND** it records no `not_retryable` decision and does not treat the unobserved placement as proof of no reasoning support
 
-#### Scenario: The candidate universe exceeds the probe budget
+#### Scenario: Capable candidates rank below incapable ones
 
-- **WHEN** more than four deduplicated Tier 0 candidates could serve a negotiated reasoning Request
-- **THEN** the Controller observes the first four of the ranking order, once each, with a 2000 ms per-target timeout and no transport retry
-- **AND** two identical scheduling attempts observe the same four candidates
-- **AND** candidates beyond the bound stay unobserved and prove no support
+- **WHEN** a negotiated reasoning Request has ten deduplicated Tier 0 candidates and only those ranked fifth and lower prove the exact tuple
+- **THEN** the wave advances past the four incapable leaders as their probes complete and selects a proving candidate
+- **AND** it holds at most four probes in flight throughout and observes each candidate at most once
+
+#### Scenario: The wave deadline elapses before the list is exhausted
+
+- **WHEN** the 2000 ms wave deadline elapses with ranked Tier 0 candidates still unobserved
+- **THEN** Orchard returns the transient queue-waitable outcome rather than the incompatibility mapping
+- **AND** it records no `not_retryable` decision, because unobserved candidates are not proof that support is absent
+
+#### Scenario: The ranked list is exhausted without support
+
+- **WHEN** the wave observes every ranked Tier 0 candidate and none proves the exact tuple
+- **THEN** Orchard fails the Request before dispatch with the closed pre-dispatch incompatibility mapping
+- **AND** two identical scheduling attempts advance through the same deterministic order
 
 #### Scenario: Automatic retry needs reasoning evidence again
 
