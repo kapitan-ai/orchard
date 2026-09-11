@@ -90,13 +90,4 @@ defmodule Orchard.API.Ops.RequestRetriesController do
       "This controller has not proven local leadership."
     )
   end
-
-  defp send_error(conn, _reason) do
-    AdminErrorHelpers.send_error(
-      conn,
-      :internal_server_error,
-      "operator_retry_failed",
-      "Operator retry could not be completed."
-    )
-  end
 end

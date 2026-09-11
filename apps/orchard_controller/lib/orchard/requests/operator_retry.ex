@@ -1,5 +1,18 @@
 defmodule Orchard.Requests.OperatorRetry do
-  @moduledoc false
+  @moduledoc """
+  Operator-initiated retry of a terminal Request under `SPEC.md` §7.3.4.
+
+  Reservation and dispatch are separate phases. One transaction locks the
+  source Request, its original Request, and the source Tenant, re-resolves
+  current Model authorization, rebuilds the retained legacy canonical request,
+  and inserts a descendant only while the original has fewer than three. The
+  committed descendant is then dispatched through the ordinary request
+  lifecycle.
+
+  A retained negotiated reasoning snapshot cannot be reconstructed in this
+  revision, so it fails closed as `retry_source_unavailable` before any
+  descendant exists rather than being renegotiated or dropped.
+  """
 
   import Ecto.Query
 
@@ -69,6 +82,14 @@ defmodule Orchard.Requests.OperatorRetry do
           | :retry_source_not_eligible
           | :retry_source_unavailable
 
+  @doc """
+  Reserves and dispatches a retry descendant for the source Request.
+
+  A descendant whose dispatch reached a durable terminal outcome is returned as
+  `{:ok, request}` carrying that state, including a failed one. Only a
+  descendant whose terminal outcome could not be recorded returns
+  `{:error, :retry_dispatch_incomplete}`, and that descendant is retained.
+  """
   @spec retry(String.t(), keyword()) :: {:ok, Request.t()} | {:error, retry_error()}
   def retry(public_id, dispatch_opts \\ []) do
     with {:ok, reservation} <- reserve(public_id) do
@@ -76,6 +97,12 @@ defmodule Orchard.Requests.OperatorRetry do
     end
   end
 
+  @doc """
+  Runs only the reservation transaction for the source Request.
+
+  Separated from `retry/2` so reservation outcomes can be exercised without
+  dispatching inference.
+  """
   @spec reserve(String.t()) :: {:ok, reservation()} | {:error, retry_error()}
   def reserve(public_id) when is_binary(public_id) do
     Repo.transaction(fn -> reserve_locked(public_id) end)
