@@ -100,6 +100,42 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
 
     refute Map.has_key?(serialized, :endpoint)
     refute Map.has_key?(serialized, "prompt_token_ids")
+    refute Map.has_key?(serialized, "reasoning")
+  end
+
+  test "serialize/1 retains a complete negotiated reasoning identity" do
+    canonical =
+      CanonicalRequest.new(%{
+        internal_id: Ecto.UUID.generate(),
+        public_id: "chatcmpl-negotiated",
+        endpoint: :chat_completions,
+        tenant_id: Ecto.UUID.generate(),
+        model_ref: %{model_id: "test-model", version: "v1"},
+        admission: %{timeout_ms: 10_000},
+        reasoning: %{
+          generation_policy: :disabled,
+          projection: :final_only,
+          source: :console_default,
+          effective_contract: negotiated_contract()
+        }
+      })
+
+    assert CanonicalRequestSerializer.serialize(canonical)["reasoning"] == %{
+             "generation_policy" => "disabled",
+             "projection" => "final_only",
+             "source" => "console_default",
+             "effective_contract" => %{
+               "mode" => "negotiated",
+               "model_artifact_digest" => String.duplicate("a", 64),
+               "chat_template_digest" => String.duplicate("b", 64),
+               "render_contract" => "synthetic-render-v1",
+               "render_contract_version" => "1",
+               "parser_family" => "synthetic-parser",
+               "parser_version" => "1",
+               "runtime_contract_version" => "1",
+               "event_binding_version" => "1"
+             }
+           }
   end
 
   test "serialize/1 rejects embedded structs in plain data fields" do
@@ -133,5 +169,38 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
     assert_raise ArgumentError, ~r/admission timeout must be a positive integer/, fn ->
       CanonicalRequestSerializer.serialize(canonical)
     end
+  end
+
+  test "serialize/1 rejects a reasoning policy that skipped canonical validation" do
+    canonical = %CanonicalRequest{
+      internal_id: Ecto.UUID.generate(),
+      public_id: "chatcmpl-unvalidated",
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %CanonicalRequest.ModelRef{model_id: "test-model", version: "v1"},
+      sampling: %CanonicalRequest.Sampling{},
+      response_format: %CanonicalRequest.ResponseFormat{},
+      tooling: %CanonicalRequest.Tooling{},
+      admission: %CanonicalRequest.Admission{timeout_ms: 10_000},
+      resolved_policy: %CanonicalRequest.ResolvedPolicy{}
+    }
+
+    assert_raise ArgumentError, ~r/reasoning must be a supported legacy or negotiated/, fn ->
+      CanonicalRequestSerializer.serialize(canonical)
+    end
+  end
+
+  defp negotiated_contract do
+    %{
+      mode: :negotiated,
+      model_artifact_digest: String.duplicate("a", 64),
+      chat_template_digest: String.duplicate("b", 64),
+      render_contract: "synthetic-render-v1",
+      render_contract_version: "1",
+      parser_family: "synthetic-parser",
+      parser_version: "1",
+      runtime_contract_version: "1",
+      event_binding_version: "1"
+    }
   end
 end

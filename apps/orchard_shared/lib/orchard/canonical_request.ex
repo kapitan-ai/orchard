@@ -61,6 +61,67 @@ defmodule Orchard.CanonicalRequest do
           }
   end
 
+  defmodule Reasoning do
+    @moduledoc false
+
+    defstruct generation_policy: :model_default,
+              projection: :legacy_blended,
+              source: :omitted_public,
+              effective_contract: %{mode: :legacy}
+
+    @type generation_policy :: :model_default | :disabled | :enabled
+    @type projection :: :legacy_blended | :final_only | :reasoning_structured
+    @type source :: :omitted_public | :explicit_public | :console_default | :console_explicit
+
+    @type legacy_contract :: %{required(:mode) => :legacy}
+
+    @type negotiated_contract :: %{
+            required(:mode) => :negotiated,
+            required(:model_artifact_digest) => String.t(),
+            required(:chat_template_digest) => String.t(),
+            required(:render_contract) => String.t(),
+            required(:render_contract_version) => String.t(),
+            required(:parser_family) => String.t(),
+            required(:parser_version) => String.t(),
+            required(:runtime_contract_version) => String.t(),
+            required(:event_binding_version) => String.t()
+          }
+
+    @type effective_contract :: legacy_contract() | negotiated_contract()
+
+    @type t :: %__MODULE__{
+            generation_policy: generation_policy(),
+            projection: projection(),
+            source: source(),
+            effective_contract: effective_contract()
+          }
+
+    @doc """
+    Renders the canonical reasoning policy into the single string-keyed wire shape
+    shared by durable persistence and tokenizer helper payloads.
+    """
+    @spec to_wire(t()) :: %{required(String.t()) => String.t() | map()}
+    def to_wire(%__MODULE__{} = reasoning) do
+      %{
+        "generation_policy" => Atom.to_string(reasoning.generation_policy),
+        "projection" => Atom.to_string(reasoning.projection),
+        "source" => Atom.to_string(reasoning.source),
+        "effective_contract" =>
+          Map.new(reasoning.effective_contract, fn {key, value} ->
+            {Atom.to_string(key), wire_value(value)}
+          end)
+      }
+    end
+
+    defp wire_value(value) when is_atom(value), do: Atom.to_string(value)
+    defp wire_value(value) when is_binary(value), do: value
+
+    defp wire_value(value) do
+      raise ArgumentError,
+            "#{inspect(__MODULE__)} effective_contract values must be atoms or binaries, got: #{inspect(value)}"
+    end
+  end
+
   defmodule Admission do
     @moduledoc false
 
@@ -93,7 +154,15 @@ defmodule Orchard.CanonicalRequest do
           }
   end
 
-  alias __MODULE__.{Admission, ModelRef, ResolvedPolicy, ResponseFormat, Sampling, Tooling}
+  alias __MODULE__.{
+    Admission,
+    ModelRef,
+    Reasoning,
+    ResolvedPolicy,
+    ResponseFormat,
+    Sampling,
+    Tooling
+  }
 
   @enforce_keys [:internal_id, :public_id, :endpoint, :tenant_id, :model_ref]
   defstruct internal_id: nil,
@@ -114,6 +183,7 @@ defmodule Orchard.CanonicalRequest do
             stream_include_usage: false,
             sampling: nil,
             response_format: nil,
+            reasoning: nil,
             tooling: nil,
             metadata: %{},
             admission: nil,
@@ -141,6 +211,7 @@ defmodule Orchard.CanonicalRequest do
           stream_include_usage: boolean(),
           sampling: Sampling.t(),
           response_format: ResponseFormat.t(),
+          reasoning: Reasoning.t(),
           tooling: Tooling.t(),
           metadata: map(),
           admission: Admission.t(),
@@ -160,11 +231,13 @@ defmodule Orchard.CanonicalRequest do
     |> cast_nested(:model_ref, ModelRef)
     |> cast_nested(:sampling, Sampling)
     |> cast_nested(:response_format, ResponseFormat)
+    |> cast_nested(:reasoning, Reasoning)
     |> cast_nested(:tooling, Tooling)
     |> cast_nested(:admission, Admission)
     |> cast_nested(:resolved_policy, ResolvedPolicy)
     |> put_default_struct(:sampling, %Sampling{})
     |> put_default_struct(:response_format, %ResponseFormat{})
+    |> put_default_struct(:reasoning, %Reasoning{})
     |> put_default_struct(:tooling, %Tooling{})
     |> put_default_struct(:admission, %Admission{})
     |> put_default_struct(:resolved_policy, %ResolvedPolicy{})
@@ -182,6 +255,7 @@ defmodule Orchard.CanonicalRequest do
     |> validate_store!()
     |> validate_stream!()
     |> validate_sampling!()
+    |> validate_reasoning!()
     |> validate_tooling!()
     |> validate_metadata!()
     |> validate_response_format!()
@@ -402,6 +476,107 @@ defmodule Orchard.CanonicalRequest do
             "#{inspect(__MODULE__)} sampling contains invalid temperature/top_p/max_output_tokens/stop/seed values: #{inspect(sampling)}"
     end
   end
+
+  defp validate_reasoning!(
+         %__MODULE__{
+           reasoning: %Reasoning{
+             generation_policy: generation_policy,
+             projection: projection,
+             source: source,
+             effective_contract: effective_contract
+           }
+         } = struct
+       )
+       when generation_policy in [:model_default, :disabled, :enabled] and
+              projection in [:legacy_blended, :final_only, :reasoning_structured] and
+              source in [:omitted_public, :explicit_public, :console_default, :console_explicit] do
+    validate_reasoning_combination!(generation_policy, projection, source, effective_contract)
+    struct
+  end
+
+  defp validate_reasoning!(%__MODULE__{reasoning: reasoning}) do
+    raise ArgumentError,
+          "#{inspect(__MODULE__)} reasoning must include a supported generation_policy, projection, source, and effective_contract, got: #{inspect(reasoning)}"
+  end
+
+  defp validate_reasoning_combination!(
+         :model_default,
+         :legacy_blended,
+         :omitted_public,
+         %{mode: :legacy} = effective_contract
+       ) do
+    if Map.keys(effective_contract) == [:mode] do
+      :ok
+    else
+      invalid_reasoning_contract!(
+        "omitted_public legacy reasoning must use exactly %{mode: :legacy}",
+        effective_contract
+      )
+    end
+  end
+
+  defp validate_reasoning_combination!(
+         :disabled,
+         :final_only,
+         :console_default,
+         effective_contract
+       ) do
+    validate_negotiated_reasoning_contract!(effective_contract)
+  end
+
+  defp validate_reasoning_combination!(generation_policy, :final_only, source, effective_contract)
+       when generation_policy in [:model_default, :disabled, :enabled] and
+              source in [:console_explicit, :explicit_public] do
+    validate_negotiated_reasoning_contract!(effective_contract)
+  end
+
+  defp validate_reasoning_combination!(generation_policy, projection, source, effective_contract) do
+    invalid_reasoning_contract!(
+      "unsupported reasoning combination #{inspect({generation_policy, projection, source})}",
+      effective_contract
+    )
+  end
+
+  defp validate_negotiated_reasoning_contract!(%{mode: :negotiated} = effective_contract) do
+    expected_keys = [
+      :mode,
+      :model_artifact_digest,
+      :chat_template_digest,
+      :render_contract,
+      :render_contract_version,
+      :parser_family,
+      :parser_version,
+      :runtime_contract_version,
+      :event_binding_version
+    ]
+
+    if Map.keys(effective_contract) |> Enum.sort() == Enum.sort(expected_keys) and
+         Enum.all?(
+           expected_keys -- [:mode],
+           &valid_contract_identity?(Map.get(effective_contract, &1))
+         ) do
+      :ok
+    else
+      invalid_reasoning_contract!(
+        "negotiated reasoning requires every exact identity field as a non-empty binary",
+        effective_contract
+      )
+    end
+  end
+
+  defp validate_negotiated_reasoning_contract!(effective_contract) do
+    invalid_reasoning_contract!(
+      "negotiated reasoning requires mode: :negotiated and every exact identity field",
+      effective_contract
+    )
+  end
+
+  defp invalid_reasoning_contract!(reason, effective_contract) do
+    raise ArgumentError,
+          "#{inspect(__MODULE__)} #{reason}, got: #{inspect(effective_contract)}"
+  end
+
+  defp valid_contract_identity?(value), do: is_binary(value) and value != ""
 
   defp validate_tooling!(
          %__MODULE__{

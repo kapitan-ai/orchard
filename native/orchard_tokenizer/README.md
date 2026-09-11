@@ -22,6 +22,16 @@ downloaded template and returns bounded booleans for parser recognition and
 definition/history rendering, never prompts or generated content. See package
 tests for the validated surface.
 
+Contract v4 adds the `render_and_count_reasoning` command for the negotiated
+reasoning contract in `../../SPEC.md` §3.5. Template arguments come only from
+the closed registry in `src/orchard_tokenizer/reasoning_contracts.py`, keyed by
+the exact model artifact digest, chat-template digest, generation policy, and
+projection; callers cannot pass template keyword arguments. That product
+registry is intentionally empty until an exact qualified artifact, template,
+and version tuple is accepted, so every negotiated request currently fails
+closed with `unsupported_reasoning_control`; package tests cover the contract
+with synthetic exact-identity fixtures.
+
 ## Validation
 
 Contract-v3 segmented rendering decodes tool-call history argument JSON into objects before template rendering and caller-string tagging.
