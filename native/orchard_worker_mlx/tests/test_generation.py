@@ -3543,6 +3543,65 @@ def test_spec_7_5_3a_emits_cumulative_usage_before_completed() -> None:
     assert events[-1]["usage"] == usage_events[-1]["usage"]
 
 
+def test_spec_7_5_3a_paces_cumulative_usage_on_the_decode_cancel_stride() -> None:
+    responses = [
+        FakeGenerationResponse(text="a", token=10),
+        FakeGenerationResponse(text="b", token=11),
+        FakeGenerationResponse(text="c", token=12),
+        FakeGenerationResponse(text="d", token=13),
+        FakeGenerationResponse(text="e", token=14, finish_reason="stop"),
+    ]
+    session = _make_fake_session(decode_cancel_stride=2)
+    request = _make_fake_request(input_tokens=5)
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    usage_events = [event for event in events if event["kind"] == "usage"]
+    assert [event["usage"]["output_tokens"] for event in usage_events] == [2, 4, 5]
+    assert events[-2] == {
+        "kind": "usage",
+        "usage": {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+    }
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["usage"] == usage_events[-1]["usage"]
+
+
+def test_spec_7_5_3a_emits_final_cumulative_usage_before_cancelled_terminal() -> None:
+    cancel = threading.Event()
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="a", token=10)
+        cancel.set()
+        yield FakeGenerationResponse(text="b", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(decode_cancel_stride=8)
+    request = _make_fake_request(input_tokens=3)
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    assert [event for event in events if event["kind"] == "usage"] == [
+        {"kind": "usage", "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}}
+    ]
+    assert events[-2]["kind"] == "usage"
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_spec_7_5_3a_omits_cumulative_usage_when_no_tokens_are_generated() -> None:
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=3)
+
+    events = _collect_events(session, request, _make_deps([]))
+
+    assert not any(event["kind"] == "usage" for event in events)
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["usage"] == {"input_tokens": 3, "output_tokens": 0, "total_tokens": 3}
+
+
 def test_non_batch_token_delta_opt_in_does_not_forward_unknown_kwargs() -> None:
     calls: list[list[int]] = []
 
