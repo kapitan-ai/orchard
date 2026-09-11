@@ -1903,6 +1903,85 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert opts[:catalog_version] == "rev-llama-tool-admission"
     end
 
+    for {terminal, event} <- [{:error, "retry_download"}, {:cancelled, "restart_download"}],
+        remount <- [false, true] do
+      @terminal terminal
+      @event event
+      @remount remount
+      @tag :regression_402
+      test "SPEC 6.4 repair Catalog version survives #{@terminal}, remount=#{@remount}", %{
+        conn: conn
+      } do
+        {:ok, view, _html} = live(conn, "/console/model-hub")
+        results = load_initial_results_and_detail(view)
+        enter_catalog(view)
+        repo = hd(results).repo_id
+        version = "rev-llama-tool-admission"
+
+        assert {:ok, original} =
+                 Orchard.Models.create_model(%{
+                   model_id: repo,
+                   version: "rev-llama",
+                   state: :registered,
+                   format: "mlx",
+                   artifact_uri: "file:///synthetic-existing-model",
+                   artifact_sha256: String.duplicate("a", 64),
+                   artifact_size_bytes: 0,
+                   resident_memory_bytes: 0,
+                   kv_cache_bytes_per_token: 0,
+                   prefill_workspace_bytes_per_token: 0,
+                   tokenizer: %{},
+                   runtime_requirements: %{}
+                 })
+
+        render_submit(view, "repair_model", %{
+          "model_hub_repair" => %{"catalog_version" => version}
+        })
+
+        assert_receive {:stub_download_ref, ref, ^repo, initial_opts}
+        assert initial_opts[:catalog_version] == version
+        assert initial_opts[:revision] == "rev-llama"
+        starting = OrchardConsole.ModelHubDownloadCoordinator.latest_snapshot()
+
+        send_download_started(ref, %{repo_id: repo, revision: "rev-llama"})
+
+        code =
+          if @terminal == :cancelled, do: "download_cancelled", else: "download_import_failed"
+
+        send_download_error(ref, %{code: code})
+        terminal = OrchardConsole.ModelHubDownloadCoordinator.latest_snapshot()
+        assert terminal.status == @terminal
+        render(view)
+
+        view =
+          if @remount do
+            stop_view(view)
+            {:ok, remounted, _html} = live(conn, "/console/model-hub")
+            remounted
+          else
+            view
+          end
+
+        render_click(view, @event, %{
+          "repo_id" => repo,
+          "revision" => "rev-llama",
+          "catalog_version" => "forged-browser-version"
+        })
+
+        assert_receive {:stub_download_ref, _new_ref, ^repo, retry_opts}
+        assert retry_opts[:revision] == "rev-llama"
+
+        observed = %{
+          starting: Map.get(starting, :catalog_version),
+          terminal: Map.get(terminal, :catalog_version),
+          retry: retry_opts[:catalog_version]
+        }
+
+        assert observed == %{starting: version, terminal: version, retry: version}
+        assert Orchard.Models.get_model!(original.id) == original
+      end
+    end
+
     test "repair import rejects a Catalog version that matches the selected source revision", %{
       conn: conn
     } do

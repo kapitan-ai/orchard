@@ -79,6 +79,23 @@ Orchard SHALL NOT silently change an existing Catalog model's capabilities, Arti
 - **THEN** Orchard SHALL reject the import without changing the existing bundle or Catalog digest
 - **AND THEN** Console SHALL reject separator-bearing versions before transfer
 
+#### Scenario: Concurrent overlapping imports preserve stored digests
+
+- **WHEN** imports for overlapping artifact destinations run concurrently in separate importer processes
+- **THEN** destination validation, finalization, Catalog publication, and failure cleanup SHALL be coordinated so neither import can change an already published Artifact Bundle
+- **AND THEN** every surviving Catalog row retains the digest of its final stored bundle
+
+#### Scenario: Source identity changes during staging
+
+- **WHEN** the copied manifest identity differs from the initially validated identity, including a different otherwise valid version
+- **THEN** the importer SHALL reject it and remove staging without creating a Catalog row or final destination
+
+#### Scenario: Repair survives retry and restart
+
+- **WHEN** a repair attempt fails or is cancelled and the operator retries or restarts, including after Console remount
+- **THEN** the coordinator SHALL retain the selected distinct Catalog version and exact source revision in server-owned state
+- **AND THEN** retry and restart SHALL reuse those values rather than browser-supplied replacements
+
 ### Requirement: Inline function schemas fail before dispatch
 
 For both `/v1/chat/completions` and `/v1/responses`, an inline function tool SHALL have a non-empty name. If present, `parameters` SHALL be a JSON object. Invalid values SHALL return the existing invalid-request validation error before request persistence, prompt rendering, scheduling, or Worker Runtime dispatch. This requirement validates shape only and does not evaluate JSON Schema semantics.

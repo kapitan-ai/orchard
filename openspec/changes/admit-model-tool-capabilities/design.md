@@ -26,6 +26,16 @@ The importer continues to reject a duplicate `model_id@version`. To repair an ex
 
 Versions are single path components. Namespaced model IDs remain valid, but finalization rejects destinations beneath an existing bundle as well as existing destinations, preventing distinct identities from mutating an immutable ancestor.
 
+Publication uses one Postgres transaction-scoped advisory lock for model imports, shared by all importer processes using the Catalog. Destination and ancestor checks, parent creation, rename, Catalog insertion, and cleanup after a rejected insertion occur while holding that lock. Staging, preflight, and hashing remain concurrent. A Catalog-wide lock avoids treating overlapping namespaced identities or alternate paths to the same artifact root as independent lock domains; the short publication phase trades some import throughput for immutable artifacts. Process-local locks and a second unlocked filesystem check do not protect imports from other controller processes.
+
+Catalog insertion uses a savepoint: a rejected database constraint must roll back only the insertion, retaining the outer transaction's advisory lock until filesystem cleanup finishes. Without the savepoint, Postgres aborts the transaction and releases the lock before cleanup.
+
+Staging directories use UUID suffixes rather than VM-local counters, keeping concurrent CLI and controller staging independent before publication acquires its database lock.
+
+The staged manifest must retain the initially validated `model_id` and `version` and pass path-safety validation before importer-owned mutations or publication. Replacing source metadata during copying does not select a new import identity.
+
+The download coordinator retains the explicit Catalog version in its server-owned snapshot. Failure/retry and cancellation/restart reuse that version and the exact source revision, including after Console remount; event parameters cannot override the retained version.
+
 ### Validate inline schemas before any request work
 
 An inline `function` tool must have a non-empty name; optional `parameters` must be a JSON object. Invalid shape fails the shared validation used by Chat Completions and Responses before model capability checks, persistence, prompt rendering, scheduling, or dispatch. JSON Schema semantics are not evaluated in this slice.

@@ -25,6 +25,7 @@ defmodule Orchard.Models.Importer do
   alias Orchard.Models.ManifestParser
   alias Orchard.Models.MemoryEstimator
   alias Orchard.Models.SafeTokenizationPreflight
+  alias Orchard.Repo
 
   require Logger
 
@@ -97,20 +98,15 @@ defmodule Orchard.Models.Importer do
 
   defp import_staged_bundle(staged_path, source_manifest, artifacts_root, activate?) do
     result =
-      with {:ok, manifest} <- maybe_top_up_resident_memory(staged_path, source_manifest),
+      with {:ok, manifest} <- ManifestParser.parse_from_bundle(staged_path),
+           :ok <- validate_staged_identity(manifest, source_manifest),
+           {:ok, manifest} <- maybe_top_up_resident_memory(staged_path, manifest),
            {:ok, manifest} <- ensure_chat_template(staged_path, manifest),
            {:ok, _manifest} <- maybe_run_eager_preflight(staged_path, manifest),
            {:ok, manifest} <- ManifestParser.parse_from_bundle(staged_path),
-           {:ok, sha256} <- compute_sha256(staged_path),
-           {:ok, dest_path} <- finalize_staged(staged_path, manifest, artifacts_root) do
-        case insert_catalog_record(manifest, dest_path, sha256, activate?) do
-          {:ok, model} ->
-            {:ok, model}
-
-          {:error, _} = err ->
-            File.rm_rf(dest_path)
-            err
-        end
+           :ok <- validate_staged_identity(manifest, source_manifest),
+           {:ok, sha256} <- compute_sha256(staged_path) do
+        publish_staged_bundle(staged_path, manifest, artifacts_root, sha256, activate?)
       end
 
     case result do
@@ -121,6 +117,23 @@ defmodule Orchard.Models.Importer do
         if File.dir?(staged_path), do: File.rm_rf(staged_path)
         err
     end
+  end
+
+  defp publish_staged_bundle(staged_path, manifest, artifacts_root, sha256, activate?) do
+    Repo.transaction(fn ->
+      Repo.query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        ["orchard:models:artifact-publication"]
+      )
+
+      case finalize_staged(staged_path, manifest, artifacts_root) do
+        {:ok, dest_path} ->
+          insert_catalog_record(manifest, dest_path, sha256, activate?)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
   end
 
   # -- Validation -----------------------------------------------------------
@@ -141,6 +154,17 @@ defmodule Orchard.Models.Importer do
   defp validate_identity_safe(%ModelManifest{model_id: model_id, version: version}) do
     with :ok <- validate_path_segment(model_id, "model_id") do
       validate_path_segment(version, "version")
+    end
+  end
+
+  defp validate_staged_identity(manifest, source_manifest) do
+    with :ok <- validate_identity_safe(manifest) do
+      if {manifest.model_id, manifest.version} ==
+           {source_manifest.model_id, source_manifest.version} do
+        :ok
+      else
+        {:error, {:validation, "bundle identity changed during staging"}}
+      end
     end
   end
 
@@ -170,7 +194,7 @@ defmodule Orchard.Models.Importer do
   # -- Staging & copy -------------------------------------------------------
 
   defp stage_bundle(source_path, artifacts_root) do
-    staging_dir = Path.join(artifacts_root, ".staging-#{System.unique_integer([:positive])}")
+    staging_dir = Path.join(artifacts_root, ".staging-#{Ecto.UUID.generate()}")
 
     case File.mkdir_p(staging_dir) do
       :ok ->
@@ -984,7 +1008,17 @@ defmodule Orchard.Models.Importer do
       runtime_requirements: runtime_requirements_to_map(manifest.runtime_requirements)
     }
 
-    Models.create_model(attrs)
+    # A rejected insert must not release the publication lock before cleanup.
+    changeset = Models.Model.changeset(%Models.Model{}, attrs)
+
+    case Repo.insert(changeset, mode: :savepoint) do
+      {:ok, model} ->
+        model
+
+      {:error, reason} ->
+        File.rm_rf(dest_path)
+        Repo.rollback(reason)
+    end
   end
 
   defp capability_evidence_to_map(nil), do: nil
