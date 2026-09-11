@@ -2,40 +2,35 @@
 
 ## 1. Status, scope, and sequencing
 
-This is an acceptance-only contract for issue #327. It is based on `origin/main` at `b50fb80c118ced9ee489384d576c12c0bfb870a6`; field availability was reviewed at that revision. It does not modify protocol source, generated outputs, runtime code, persistence, or qualification data.
+This is an acceptance-only contract for issue #327. It reconciles the active package with `SPEC.md` §7.5.3a and the accepted `define-qualified-reasoning-effort` package. It does not modify protocol source, generated outputs, runtime code, persistence, or qualification data.
 
-Implementation is blocked until both conditions hold:
+Implementation is blocked until all of these conditions hold:
 
 1. PR #401 has merged, so the canonical request owns the exact reasoning identity transported by this contract.
 2. This OpenSpec change and its `SPEC.md` amendment have been accepted.
+3. An owner-approved schema design defines the concrete wire declarations without substituting an unapproved number or shape.
 
-The implementation must re-confirm source field availability when it begins. A conflicting upstream allocation blocks implementation rather than permitting a substitute number or shape.
+This reconciliation selects no concrete protobuf layout, enum value, `nil`-presence encoding, RPC or service owner, evidence/preparation/proof message layout, or execution-redemption shape.
 
 ## 2. Canonical tuple and loaded binding
 
-The advertised and proven reasoning tuple has exactly these ten equality fields:
+The advertised and proven reasoning tuple has exactly these eleven equality fields:
 
 1. generation policy;
 2. projection;
-3. model artifact digest;
-4. chat-template digest;
-5. render contract;
-6. render contract version;
-7. parser family;
-8. parser version;
-9. runtime contract version; and
-10. event-binding version.
+3. reasoning effort;
+4. model artifact digest;
+5. chat-template digest;
+6. render contract;
+7. render contract version;
+8. parser family;
+9. parser version;
+10. runtime contract version; and
+11. event-binding version.
 
 Every comparison is byte-exact after the validated canonical representation is formed. `source` is provenance and is not tuple identity. Independent value lists are invalid because they could fabricate a supported combination.
 
-At the reviewed base, `WorkerCapabilities` uses fields 1 through 7, reserves field 8 explicitly for the deferred `WorkerLoadedBinding`, and has no field 9. The accepted future schema allocation is therefore:
-
-- lift the reservation and use `WorkerCapabilities.loaded_binding = 8` with the previously recorded shape (`model_id`, `model_version`, `artifact_digest`, `selected_profile_id`); and
-- add the sibling placement-scoped reasoning envelope at `WorkerCapabilities` field 9.
-
-The future schema also introduces `proto/cluster/v1/reasoning.proto` for the shared tuple, evidence, preparation, and proof definitions. It prevents either the Worker package or Controller transport package from owning cross-boundary reasoning types. This contract assigns no source declaration in the present PR.
-
-That placement follows the existing precedent in `proto/orchard/worker/v1/worker_runtime.proto`, which already imports `cluster/v1` files, but it does add one more `cluster.v1` dependency of the provider-neutral Worker Runtime boundary. `deprecate-node-runtime-grpc-compatibility` already records Worker Runtime imports as the reason runtime messages cannot be deleted early, and reasoning types join that same set. Relocating or removing the shared file is therefore explicitly owned by the later `cluster.v1` deprecation sequencing, not by this contract or its #327 implementation; that deprecation must sequence the reasoning definitions alongside the existing Worker Runtime imports rather than treating them as an unplanned blocker.
+Concrete schema work remains blocked pending owner-approved design. Earlier references to a `WorkerCapabilities` loaded-binding allocation, its sibling reasoning envelope, and shared cross-boundary reasoning definitions are traceability only in this reconciliation; they do not authorize source declarations. The pending design must decide the exact protobuf fields and tags, enum values, representation of omitted `reasoning_effort`, RPC and service ownership, evidence/preparation/proof message layouts, and execution-redemption shape. This contract supplies none of those choices.
 
 A reasoning envelope is meaningful only with one valid loaded binding and that envelope's `service_incarnation`. Each advertised tuple's artifact digest equals that loaded binding's artifact digest, and its selected profile resolves exactly once in the same `WorkerCapabilities` envelope. A present but incomplete envelope, duplicate or conflicting tuple, unknown enum or version, missing required member, or invalid binding proves no support; it is not legacy omission. Loading, unloading, replacement, failed destructive unload, or worker teardown invalidates the affected evidence and any preparation associated with it.
 
@@ -104,11 +99,11 @@ Issue #327 owns the presence-aware wire representation of exact cumulative total
 
 Issue #328 owns durable `output_usage_status` persistence and Controller lower-bound synthesis. This change does not add either behavior or change terminal conformance mapping.
 
-Automatic retry pins all ten tuple fields and must use a different endpoint with a fresh proof for that same tuple; it never rerenders, renegotiates, or downgrades. An operator retry reuses `requests.canonical_request["reasoning"]` as its only frozen reasoning source when full capture made that value available. If it is absent or malformed, the retry fails closed with `retry_source_unavailable`; it must not reconstruct the contract from historical messages or add a database column.
+Automatic retry pins all eleven tuple fields and must use a different endpoint with a fresh proof for that same tuple; it never rerenders, renegotiates, or downgrades. An operator retry reuses `requests.canonical_request["reasoning"]` as its only frozen reasoning source when full capture made that value available. If it is absent or malformed, the retry fails closed with `retry_source_unavailable`; it must not reconstruct the contract from historical messages or add a database column.
 
 ## 6. Dormant activation and verified handoffs
 
-The production reasoning tuple registry remains empty. No production tuple may be advertised or selected until #328 has landed parser, accounting, and capture guarantees and a model-qualification-governance record accepts the exact supported tuple. This contract creates no Qwen- or effort-tier-specific policy; issue #398 remains separate.
+The production reasoning tuple registry remains empty. No production tuple may be advertised or selected until #328 has landed parser, accounting, and capture guarantees and a model-qualification-governance record accepts the exact supported tuple. The tuple includes the accepted `reasoning_effort = nil | low | medium | high` axis only as exact identity; this contract creates no Qwen- or effort-tier-specific policy and does not choose its wire representation.
 
 The following verified defects are handoffs only in this PR:
 

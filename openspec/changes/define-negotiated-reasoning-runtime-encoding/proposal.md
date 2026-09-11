@@ -8,9 +8,9 @@ That exception has to be reconciled with the two contracts it touches. `SPEC.md`
 
 ## What Changes
 
-- Accept one indivisible ten-field reasoning tuple and its loaded-binding association; source provenance is not tuple identity.
-- Accept the deferred `WorkerLoadedBinding` allocation in `WorkerCapabilities` field 8, a sibling reasoning envelope in field 9, and shared Controller/Worker-facing definitions in `proto/cluster/v1/reasoning.proto`, after this change's source review confirmed those allocations are available.
-- Accept a unary `PrepareInference` operation whose proof and opaque single-use authorization form the pre-inference barrier. The authorization is redeemed only by the matching execution request after Controller proof validation.
+- Reconcile the indivisible eleven-field reasoning tuple: generation policy, projection, reasoning effort, model artifact digest, chat-template digest, render contract, render contract version, parser family, parser version, runtime contract version, and event-binding version. Source provenance is not tuple identity.
+- Preserve the normative `PrepareInference` behavioral barrier: its proof and opaque single-use authorization form the pre-inference gate, and only the matching execution request redeems the authorization after Controller proof validation. This reconciliation selects no protobuf field or tag, enum value, `nil`-presence encoding, RPC or service owner, evidence/preparation/proof message layout, or execution-redemption shape.
+- Record the concrete schema declarations previously referenced for a loaded binding, reasoning envelope, and shared reasoning definitions as blocked pending owner-approved schema design. This PR adds no protocol source declaration or generated binding.
 - Require opt-in, live-probe-only reasoning evidence and selection from already loaded placements. Heartbeats, persisted observations, and legacy projections do not carry or refresh reasoning evidence.
 - Restrict negotiated candidate selection to `SPEC.md` §5.6 Tier 0 and make `residency_preference` and `max_cold_start_ms` inapplicable to it, including its `timeout_at`, which always uses the §12.4 loaded-only formula.
 - Observe the reachable loaded-placement universe — capacity- and tenant-cap-blocked placements included; targets that are not scheduler-fresh, fail §5.5's own health condition, or are suppressed by either §5.10 breaker scope withheld — so exhaustion can distinguish absent support from absent free capacity without circumventing suppression or inventing a reasoning-specific health gate.
@@ -37,9 +37,9 @@ None.
 
 ## Impact
 
-- `SPEC.md` §7.5.3a gains the accepted encoding, activation, and sequencing contract.
+- This package now traces its tuple, activation, and sequencing language to `SPEC.md` §7.5.3a and the accepted `define-qualified-reasoning-effort` contract.
 - `SPEC.md` §5.6 records the Tier 0-only negotiated exception and its capacity-versus-incompatibility split, §3.4 and §12.4 record the routing-policy and deadline inapplicability, and §5.5 records the bounded reasoning wave as a second inline-observation exception, which the `scheduler` capability spec records in turn. `SPEC.md` §13.1 records that a non-advertising `N-1` response is confirmed non-support, so an all-`N-1` loaded universe fails closed rather than waiting out `queue_timeout`.
-- `proto/cluster/v1/reasoning.proto` adds one `cluster.v1` dependency of the provider-neutral Worker Runtime boundary; its relocation or removal is sequenced by the later `cluster.v1` deprecation, not by this contract.
-- Future implementation may modify shared protocol source, Runtime Endpoint bindings, Worker Runtime bindings, Node Agent, Controller, and provider-neutral fixtures only after PR #401 has merged and this contract is accepted.
+- The concrete schema declaration, including any shared protocol source and its ownership or later relocation, remains blocked pending owner-approved schema design; this reconciliation neither chooses nor alters it.
+- Future implementation may modify shared protocol source, Runtime Endpoint bindings, Worker Runtime bindings, Node Agent, Controller, and provider-neutral fixtures only after PR #401 has merged, the schema design is owner-approved, and this contract is accepted.
 - This PR intentionally contains no `.proto` field declaration, generated binding, migration, runtime implementation, registry entry, model-specific policy, or public API change.
 - The parent `define-reasoning-output-contract` implementation tasks remain incomplete; this package authorizes their #327 implementation handoff but does not mark code work complete.
