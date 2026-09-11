@@ -6,9 +6,9 @@ For an explicit negotiated reasoning Request, the Runtime Endpoint Interface SHA
 
 The predicate SHALL consider only `SPEC.md` §5.6 Tier 0 candidates, whether resident from earlier traffic or prewarmed by a §6.10 `preload = true` pinning policy. Tier 1 and Tier 2 candidates SHALL be ineligible, `residency_preference` and `max_cold_start_ms` SHALL NOT apply to negotiated candidate selection, and a negotiated Request SHALL resolve `timeout_at` through the §12.4 loaded-only formula under every resolved policy.
 
-The predicate SHALL NOT reclassify capacity scarcity or unknown support as incompatibility, and capacity eligibility SHALL NOT narrow what it may observe. The closed §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when every loaded placement of that model was probed and each affirmatively returned an absent or mismatched tuple. When a proving placement exists but cannot be dispatched for capacity, breaker, or tenant-cap reasons, or whenever any loaded placement's support remains unknown through an incomplete probe, an elapsed wave deadline, or a Node withheld as stale, unhealthy, or breaker-suppressed, the Request SHALL keep its existing `cluster_busy` or `model_busy` queue-waitable outcome as transient pre-dispatch unavailability, SHALL NOT record `not_retryable`, and SHALL NOT read that placement as proof of no support. That equivalence covers queue outcome semantics only; queue wait and wave time consume the negotiated Request's own §12.4 loaded-only budget.
+The predicate SHALL NOT reclassify capacity scarcity or unknown support as incompatibility, and capacity eligibility SHALL NOT narrow what it may observe. The closed §7.2.7 `503 server_error` plus `runtime_incompatible` pre-dispatch mapping SHALL apply only when the requested model has no loaded placement on an active trusted Node, or when every loaded placement of that model was probed and each affirmatively returned an absent or mismatched tuple. When a proving placement exists but cannot be dispatched for capacity or tenant-cap reasons, or whenever any loaded placement's support remains unknown through an incomplete probe, an elapsed wave deadline, or a withheld target, the Request SHALL keep its existing `cluster_busy` or `model_busy` queue-waitable outcome as transient pre-dispatch unavailability, SHALL NOT record `not_retryable`, and SHALL NOT read that placement as proof of no support. A breaker that opens after a fresh proof SHALL be handled by ordinary §5.10 suppression and §5.4 queue handling without reclassifying reasoning compatibility. That equivalence covers queue outcome semantics only; queue wait and wave time consume the negotiated Request's own §12.4 loaded-only budget.
 
-The live observation SHALL run as one bounded wave over the reachable loaded-placement universe: every loaded placement of the requested model on a scheduler-fresh healthy active trusted Node, including those ordinary eligibility excludes solely for exhausted capacity or tenant active caps, deduplicated on the §5.5 normalized target identity and ordered by the §5.7 ranking as it would apply to them with the lexicographic `node_id` tie-break last. A stale, unhealthy, or circuit-breaker-suppressed Node SHALL be withheld rather than probed, so it cannot hold an in-flight slot it will never answer and §5.10 suppression is preserved; its support SHALL remain unknown.
+The live observation SHALL run as one bounded wave over the reachable loaded-placement universe: every loaded placement of the requested model on a scheduler-fresh active trusted Node satisfying the §5.5 health condition exactly as stated there — `healthy`, or `degraded` while the shared capacity authority decision is `legacy_pre_cutover` — including those ordinary eligibility excludes solely for exhausted capacity or tenant active caps, deduplicated on the §5.5 normalized target identity and ordered by the §5.7 ranking as it would apply to them with the lexicographic `node_id` tie-break last. A target that is not scheduler-fresh, fails that health condition, or is suppressed by the node-level or `(node, model)` placement-level §5.10 breaker SHALL be withheld rather than probed, so it cannot hold an in-flight slot it will never answer and §5.10 suppression is preserved; its support SHALL remain unknown.
 
 The wave SHALL hold at most four probes in flight, advance through that deterministic order as probes complete, observe each placement at most once, and run under one 2000 ms wave deadline rather than a per-target timeout. It SHALL NOT retry an individual probe transport. Because the §5.7 ranking is capability-blind, the window SHALL advance rather than stay fixed on the leading four.
 
@@ -74,11 +74,17 @@ Legacy status, execution, and event projections SHALL omit reasoning additions f
 - **THEN** Orchard returns the transient queue-waitable outcome rather than the incompatibility mapping
 - **AND** it records no `not_retryable` decision, because an incomplete probe leaves support unknown rather than disproven
 
-#### Scenario: A breaker-suppressed node holds a loaded placement
+#### Scenario: A breaker-suppressed target holds a loaded placement
 
-- **WHEN** a loaded placement of the requested model sits on a stale, unhealthy, or circuit-breaker-suppressed Node
-- **THEN** the wave withholds that Node rather than probing it, and §5.10 suppression is preserved
-- **AND** exhaustion of the remaining universe cannot conclude permanent incompatibility, because that Node's support stays unknown
+- **WHEN** a loaded placement of the requested model is suppressed by either the node-level or the `(node, model)` placement-level breaker, or its Node is stale or fails the §5.5 health condition
+- **THEN** the wave withholds that target rather than probing it, and §5.10 suppression is preserved
+- **AND** exhaustion of the remaining universe cannot conclude permanent incompatibility, because that target's support stays unknown
+
+#### Scenario: A degraded node is dispatchable before the capacity cutover
+
+- **WHEN** a loaded placement sits on a `degraded` Node while the shared capacity authority decision is `legacy_pre_cutover`
+- **THEN** the wave probes that Node, because the §5.5 health condition admits it for ordinary dispatch
+- **AND** the probe gate tightens with that condition once the cutover changes it, without a separate reasoning-specific health rule
 
 #### Scenario: A busy re-grant returns to the scheduler
 

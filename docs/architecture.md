@@ -224,13 +224,13 @@ inapplicable to it and an `allow_cold_load` policy adds neither the queue-wait
 nor the cold-start term to its `requests.timeout_at`. A model with no loaded
 placement, or one whose every reachable loaded placement answered that it does
 not support the tuple, fails closed before dispatch; a placement that is merely
-at capacity, unreachable, or withheld as stale, unhealthy, or breaker-suppressed
-leaves support unknown and keeps the ordinary queue-waitable busy outcome instead
-of a permanent refusal — queue outcome
-semantics match legacy traffic, deadline duration does not, and both queue wait
-and the at most two bounded reasoning waves a request may run come out of that
-same budget. Busy queue re-grants reuse the earlier wave's placement as a hint
-and re-probe nothing, so they cannot multiply that cost.
+at capacity, unreachable, or withheld for staleness, §5.5 health, or either
+§5.10 breaker scope leaves support unknown and keeps the ordinary queue-waitable
+busy outcome instead of a permanent refusal. Queue outcome semantics match
+legacy traffic, deadline duration does not, and both queue wait and the at most
+two bounded reasoning waves a request may run come out of that same budget.
+Busy queue re-grants reuse the earlier wave's placement as a hint and re-probe
+nothing, so they cannot multiply that cost.
 `ORCHARD_MAX_REQUEST_DEADLINE_MS` bounds the complete effective
 deadline, including generation, queue wait, and cold start. Its provisional
 default is 360000 ms pending Apple Silicon cold-load measurements under issue
