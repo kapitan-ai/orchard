@@ -408,6 +408,37 @@ body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] .co
   overflow-wrap: anywhere;
 }
 
+#request-detail p {
+  max-width: 65ch;
+}
+
+#request-detail .request-metadata-grid > div {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+#request-detail .request-metadata-grid dd {
+  margin-top: 0;
+}
+
+#request-detail .request-attempt-summary {
+  display: block;
+}
+
+@media (max-width: 639px) {
+  #console-shell:has(#request-detail) main > header,
+  #console-shell:has(#request-detail) main > div {
+    padding: 1rem 0.75rem;
+  }
+
+  #request-detail .request-metadata-grid > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.25rem;
+  }
+}
+
 #request-detail :is(summary, button, a, pre):focus-visible {
   @apply outline-none ring-2 ring-navy ring-offset-2 ring-offset-white dark:ring-sky-400 dark:ring-offset-slate-800;
 }

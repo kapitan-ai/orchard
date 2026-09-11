@@ -103,10 +103,7 @@ defmodule OrchardConsole.RequestLive do
           <.request_summary request={@request} attempts={@attempts} />
           <.request_errors request={@request} />
           <.request_timeline request={@request} events={@events} attempts={@attempts} />
-          <div class="grid min-w-0 items-start gap-6 xl:grid-cols-2">
-            <.request_attempts attempts={@attempts} />
-            <.request_usage request={@request} />
-          </div>
+          <.request_usage request={@request} />
           <.disclosure_section id="request-more-evidence" title="More evidence">
             <div class="space-y-6">
               <.request_execution_metadata request={@request} />
@@ -144,11 +141,12 @@ defmodule OrchardConsole.RequestLive do
         Back to Requests
       </.link>
 
+      <div class="flex flex-wrap items-center gap-3">
       <button type="button" phx-click="refresh_request" phx-disable-with="Checking…"
         class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-        <.icon name="hero-arrow-path" class="h-4 w-4" />Refresh now
+        <.icon name="hero-arrow-path" class="h-4 w-4" />Refresh
       </button>
-      <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400 font-mono">
+      <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400">
         <%= cond do %>
           <% @last_checked_at == nil and @refresh_mode == :polling -> %>
             Waiting for first live check · Auto-refreshing every {request_refresh_interval_label()}
@@ -157,9 +155,10 @@ defmodule OrchardConsole.RequestLive do
           <% @refresh_mode == :polling -> %>
             Last checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refreshing every {request_refresh_interval_label()}
           <% true -> %>
-            Last checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refresh stopped
+            Checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refresh stopped
         <% end %>
       </span>
+      </div>
     </div>
     """
   end
@@ -177,7 +176,7 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>
           <span class="flex flex-wrap items-center gap-3">
-            Logical Request · {if @request.state in Request.terminal_states(), do: "Final outcome", else: "Current state"}
+            {if @request.state in Request.terminal_states(), do: "Final outcome", else: "Current state"}
             <.badge tone={state_tone(@request.state)}>
               {format_state(@request.state)}
             </.badge>
@@ -187,26 +186,35 @@ defmodule OrchardConsole.RequestLive do
         <p class="mb-5 text-sm text-slate-500 dark:text-slate-400">
           {outcome_description(@request, @attempts)}
         </p>
-        <dl class="mb-5 grid gap-5 sm:grid-cols-2">
+        <dl class="mb-5">
+          <.detail_field id="request-requested-model" label="Model" mono>
+            <.model_identity id="request-requested-model-value" value={format_text(@request.requested_model)} />
+          </.detail_field>
+        </dl>
+        <dl class="mb-3 grid max-w-xl grid-cols-2 gap-5">
           <.request_metric id="request-ttft" icon="hero-clock" label="Time to first token (TTFT)"
             value={RequestEvidence.duration(RequestEvidence.ttft_ms(@request))}
-            note="Creation to first recorded public output, including waiting and retries. Not client receipt time." />
+            note="Until first public output" />
           <.request_metric id="request-total-latency" icon="hero-clock" label="Total request time"
             value={RequestEvidence.duration(TimeHelpers.elapsed_ms(@request.inserted_at, @request.completed_at))}
-            note="Creation to final outcome. Active requests have no final duration yet." />
+            note={if @request.state in Request.terminal_states(), do: "Until final outcome", else: "Available when request ends"} />
         </dl>
-        <.detail_grid class="grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+        <details id="request-timing-help" class="mb-5">
+          <summary class="request-evidence-summary">About these timings</summary>
+          <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            Timings start at Request creation and include waiting and retries.
+            TTFT ends at the first recorded public output, not client receipt.
+            Total time ends at the final outcome; active requests have no final duration.
+          </p>
+        </details>
+        <details id="request-metadata">
+          <summary class="request-evidence-summary">Request details</summary>
+        <.detail_grid class="mt-4 request-metadata-grid grid-cols-1 sm:grid-cols-2">
           <.detail_field id="request-public-id" label="Public ID" mono>
             {@request.public_id}
           </.detail_field>
           <.detail_field id="request-endpoint" label="Endpoint">
             {format_atom(@request.endpoint)}
-          </.detail_field>
-          <.detail_field id="request-requested-model" label="Model" mono>
-            <.model_identity
-              id="request-requested-model-value"
-              value={format_text(@request.requested_model)}
-            />
           </.detail_field>
           <.detail_field id="request-stream" label="Stream">
             {format_bool(@request.stream)}
@@ -220,10 +228,8 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-completed-at" label="Completed" mono>
             <.local_time value={@request.completed_at} format={:datetime_second} />
           </.detail_field>
-          <.detail_field id="request-state" label="State">
-            {format_state(@request.state)}
-          </.detail_field>
         </.detail_grid>
+        </details>
       </.card>
     </div>
     """
@@ -746,10 +752,9 @@ defmodule OrchardConsole.RequestLive do
     ~H"""
     <div id="request-timeline-card">
       <.card>
-        <:title>Execution Timeline</:title>
+        <:title>Execution Timeline · {length(@attempts)} recorded attempts</:title>
         <p class="mb-4 text-sm text-slate-500 dark:text-slate-400">
-          One logical Request. Attempt durations share its elapsed-time scale.
-          Gaps do not identify queue, loading, or cleanup phases.
+          Elapsed from Request creation. Expand an attempt to inspect its evidence.
         </p>
         <div :if={@total_ms && @total_ms > 0} class="mb-3 grid gap-2 lg:grid-cols-[14rem_minmax(0,1fr)_7rem]">
           <span class="text-xs text-slate-500 dark:text-slate-400">Elapsed from creation</span>
@@ -760,10 +765,11 @@ defmodule OrchardConsole.RequestLive do
         <div class="space-y-4">
           <.duration_bar request={@request} started_at={@request.inserted_at}
             ended_at={@request.completed_at} label="Logical Request" outcome={format_state(@request.state)} />
-          <.duration_bar :for={attempt <- @attempts} request={@request}
-            started_at={attempt.started_at} ended_at={attempt.ended_at}
-            label={"Turn #{attempt.turn} · Attempt #{attempt.number}"} outcome={attempt.outcome} />
+          <.request_attempts request={@request} attempts={@attempts} />
         </div>
+        <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">
+          Gaps do not identify queue, loading, or cleanup phases.
+        </p>
         <details id="request-recorded-events" class="mt-6">
           <summary class="request-evidence-summary">View {length(@events)} recorded events</summary>
           <p class="my-3 text-xs text-slate-500 dark:text-slate-400">
@@ -817,42 +823,42 @@ defmodule OrchardConsole.RequestLive do
       )
 
     ~H"""
-    <div class="grid min-w-0 gap-2 lg:grid-cols-[14rem_minmax(0,1fr)_7rem] lg:items-center">
-      <div class="text-sm">
+    <span class="grid min-w-0 gap-2 lg:grid-cols-[14rem_minmax(0,1fr)_7rem] lg:items-center">
+      <span class="text-sm">
+        <.icon name={attempt_icon(@outcome)} class="mr-1 inline-block h-4 w-4" />
         <span>{@label}</span>
         <span class="block text-xs text-slate-500 dark:text-slate-400">{@outcome}</span>
-      </div>
-      <div :if={@bar} class="relative h-3 rounded bg-slate-100 dark:bg-slate-900" aria-hidden="true">
-        <div class={["absolute h-3 rounded", attempt_bar_class(@outcome)]}
+      </span>
+      <span :if={@bar} class="relative block h-3 rounded bg-slate-100 dark:bg-slate-900" aria-hidden="true">
+        <span class={["absolute block h-3 rounded", attempt_bar_class(@outcome)]}
           style={"left: #{@bar.left}%; width: #{@bar.width}%;"} />
-      </div>
-      <p :if={!@bar} class="text-xs text-slate-500 dark:text-slate-400">No bounded timing interval</p>
+      </span>
+      <span :if={!@bar} class="text-xs text-slate-500 dark:text-slate-400">No bounded timing interval</span>
       <span class="font-mono text-xs lg:text-right">
         {RequestEvidence.duration(TimeHelpers.elapsed_ms(@started_at, @ended_at))}
       </span>
-    </div>
+    </span>
     """
   end
 
   attr(:attempts, :list, required: true)
+  attr(:request, :map, required: true)
 
   defp request_attempts(assigns) do
     ~H"""
     <div id="request-attempts-card" class="min-w-0">
-      <.card>
-        <:title>Persisted attempts ({length(@attempts)})</:title>
-        <:subtitle>Execution evidence within this Request, not separate requests.</:subtitle>
         <p :if={@attempts == []} class="text-sm text-slate-500 dark:text-slate-400">
           No readable Inference Attempt evidence recorded. Request state does not prove an attempt count.
         </p>
-        <ol class="space-y-4">
+        <ol class="divide-y divide-slate-200 dark:divide-slate-700">
           <li :for={attempt <- @attempts} id={"request-attempt-#{attempt.turn}-#{attempt.number}"}
-            class="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
-            <h3 class="flex flex-wrap items-center gap-2 text-sm font-semibold">
-              <.icon name={attempt_icon(attempt.outcome)} class="h-5 w-5" />
-              Turn {attempt.turn} · Attempt {attempt.number}
-              <span class="font-mono font-normal">{attempt.outcome}</span>
-            </h3>
+            class="py-3">
+            <details>
+              <summary class="request-evidence-summary request-attempt-summary">
+                <.duration_bar request={@request} started_at={attempt.started_at} ended_at={attempt.ended_at}
+                  label={"Turn #{attempt.turn} · Attempt #{attempt.number}"} outcome={attempt.outcome} />
+                <span class="mt-1 block text-xs text-navy dark:text-sky-400">Inspect attempt</span>
+              </summary>
             <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">
               Node: <span class="break-all font-mono">{attempt.result["node_id"] || "Not recorded"}</span>
             </p>
@@ -869,9 +875,9 @@ defmodule OrchardConsole.RequestLive do
               <.json_block data={attempt.result} content_id={"attempt-result-#{attempt.turn}-#{attempt.number}"}
                 fallback_id={"attempt-empty-#{attempt.turn}-#{attempt.number}"} fallback_text="No terminal result recorded." />
             </details>
+            </details>
           </li>
         </ol>
-      </.card>
     </div>
     """
   end
@@ -1241,17 +1247,16 @@ defmodule OrchardConsole.RequestLive do
 
   defp outcome_description(%{state: :completed}, attempts) do
     if Enum.any?(attempts, &(&1.result["retry_decision"] == "retried")) do
-      "Completed after retry. An earlier attempt failure is not the final Request outcome."
+      "Completed after retry."
     else
-      "The logical Request completed. Attempt details below show the retained execution evidence."
+      "Request completed."
     end
   end
 
   defp outcome_description(%{state: state}, _attempts) do
     if state in Request.terminal_states(),
-      do: "The logical Request ended. Inspect the recorded failure and attempt evidence below.",
-      else:
-        "The logical Request is in progress. Final outcome and total time are not yet recorded."
+      do: "Request ended. Inspect the failure and attempt evidence below.",
+      else: "Request in progress. Final outcome and total time are not yet recorded."
   end
 
   defp attempt_bar_class("completed"), do: "bg-forest dark:bg-emerald-400"

@@ -12,6 +12,7 @@ packages=(
   acl
   autoconf
   build-essential
+  fonts-liberation
   libncurses-dev
   libssh-dev
   libssl-dev

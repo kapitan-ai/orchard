@@ -192,6 +192,27 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(view, "#request-summary-card", "Completed after retry")
       assert has_element?(view, "#request-attempt-1-1", "failed")
       assert has_element?(view, "#request-attempt-1-2", "completed")
+
+      assert has_element?(
+               view,
+               "#request-timeline-card #request-attempt-1-1 > details > summary",
+               "1.21 s"
+             )
+
+      assert has_element?(
+               view,
+               "#request-timeline-card #request-attempt-1-2 > details > summary",
+               "3.40 s"
+             )
+
+      refute has_element?(view, "#request-attempt-1-1 > details[open]")
+      assert has_element?(view, "#request-attempt-1-1 > details", "internal_error")
+      assert has_element?(view, "#request-attempt-1-1 > details", "retried")
+      assert has_element?(view, "#request-timing-help", "not client receipt")
+      refute has_element?(view, "#request-timing-help[open]")
+      refute has_element?(view, "#request-metadata[open]")
+      refute has_element?(view, "#request-metadata #request-requested-model")
+      refute has_element?(view, "#request-total-latency", "Active requests")
       assert has_element?(view, "#request-ttft", "1.68 s")
       refute has_element?(view, "#request-ttft", "280 ms")
       assert has_element?(view, "#request-timeline-card", "1.21 s")
