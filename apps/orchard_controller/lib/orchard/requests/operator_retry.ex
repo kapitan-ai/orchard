@@ -206,8 +206,6 @@ defmodule Orchard.Requests.OperatorRetry do
       resolved_policy
       | routing_policy_id: routing_opts[:routing_policy_id],
         allowed_pool_ids: Keyword.get(routing_opts, :allowed_pool_ids, []),
-        max_active_requests:
-          Keyword.get(routing_opts, :max_active_requests, resolved_policy.max_active_requests),
         residency_preference:
           Keyword.get(
             routing_opts,
@@ -441,7 +439,8 @@ defmodule Orchard.Requests.OperatorRetry do
       |> CapturePolicy.resolve(canonical.store?)
 
     case RequestOrchestrator.persistable_request_attrs(canonical, model,
-           capture_mode: capture_mode
+           capture_mode: capture_mode,
+           admission_opts: retained_admission_opts(canonical)
          ) do
       {:ok, attrs, persisted_canonical} ->
         insert_descendant(attrs, original, persisted_canonical)
@@ -449,6 +448,14 @@ defmodule Orchard.Requests.OperatorRetry do
       {:error, _reason} ->
         {:error, :retry_source_unavailable}
     end
+  end
+
+  defp retained_admission_opts(%CanonicalRequest{admission: admission}) do
+    [
+      effective_timeout_ms: admission.timeout_ms,
+      queue_wait_ms: admission.queue_wait_ms,
+      max_cold_start_ms: admission.max_cold_start_ms
+    ]
   end
 
   defp insert_descendant(attrs, original, canonical) do
@@ -467,22 +474,27 @@ defmodule Orchard.Requests.OperatorRetry do
   end
 
   defp handle_dispatch_result({:error, {:terminal_persist_failed, _reason}}, request) do
-    log_incomplete_dispatch(request, "terminal_persist_failed")
+    Logger.warning(
+      "operator retry descendant retained without a terminal outcome: " <>
+        dispatch_identifiers(request) <> " outcome=terminal_persist_failed"
+    )
+
     {:error, :retry_dispatch_incomplete}
   end
 
   defp handle_dispatch_result({:error, reason}, request) do
-    log_incomplete_dispatch(request, outcome_label(reason))
+    Logger.info(
+      "operator retry dispatch failed: " <>
+        dispatch_identifiers(request) <> " outcome=#{outcome_label(reason)}"
+    )
+
     {:ok, Requests.get_request!(request.id)}
   end
 
   defp handle_dispatch_result(_result, request), do: {:ok, Requests.get_request!(request.id)}
 
-  defp log_incomplete_dispatch(request, outcome) do
-    Logger.warning(
-      "operator retry dispatch did not complete: public_id=#{request.public_id} " <>
-        "retry_of_request_id=#{request.retry_of_request_id} outcome=#{outcome}"
-    )
+  defp dispatch_identifiers(request) do
+    "public_id=#{request.public_id} retry_of_request_id=#{request.retry_of_request_id}"
   end
 
   defp outcome_label(reason) when is_atom(reason), do: Atom.to_string(reason)

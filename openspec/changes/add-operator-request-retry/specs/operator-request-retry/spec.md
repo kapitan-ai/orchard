@@ -41,10 +41,13 @@ Model is currently `active` and that the source Tenant currently holds an
 enabled Model access grant. Orchard SHALL fail closed with
 `retry_source_not_authorized` and create no descendant when the Model is not
 `active`, when the grant is revoked, or when the grant is disabled. Orchard
-SHALL resolve the descendant's routing policy, allowed pools, residency
-preference, and active-request limit from that current grant, and SHALL NOT
-widen a retained queue-wait or cold-start budget beyond the current grant's
-budget. This requirement applies `SPEC.md` §5.2 steps 3 and 7 to the operator
+SHALL resolve the descendant's routing policy, allowed pools, and residency
+preference from that current grant, and SHALL NOT widen a retained queue-wait
+or cold-start budget beyond the current grant's budget, including a grant budget
+of zero. Orchard SHALL preserve the retained request deadline rather than
+re-deriving it under the current residency preference, so a current grant that
+permits cold loading spends queue-wait and cold-start time from that retained
+deadline. This requirement applies `SPEC.md` §5.2 steps 3 and 7 to the operator
 retry path.
 
 #### Scenario: Tenant Model access was revoked after the source Request failed
@@ -70,6 +73,14 @@ retry path.
   preference, and the narrower budgets
 - **AND** it does not record a budget wider than either the retained snapshot or
   the current grant
+- **AND** it records the retained request deadline
+
+#### Scenario: The current grant sets a zero queue-wait or cold-start budget
+
+- **WHEN** an eligible source is retried under a grant whose routing policy sets
+  a zero queue-wait or cold-start budget while permitting cold loading
+- **THEN** the descendant records that zero budget
+- **AND** no default budget replaces it
 
 ### Requirement: Operator Retry Reports an Unrecorded Dispatch Outcome
 

@@ -15,11 +15,27 @@ still be `active`, and the source Tenant must still hold an enabled Model access
 grant. A revoked grant, a disabled grant, or a non-active Model returns
 `retry_source_not_authorized` before a descendant exists, so a retry cannot
 dispatch inference or account usage for a Tenant that is no longer authorized.
-The descendant's resolved policy comes from that current grant rather than the
-retained snapshot, and a retained queue-wait or cold-start budget is narrowed to
-the current grant's budget instead of being widened by it. The retained
-generation budget is preserved and remains subject to the deployment deadline
-ceiling.
+The descendant's routing policy, allowed pools, and residency preference come
+from that current grant rather than the retained snapshot, and a retained
+queue-wait or cold-start budget is narrowed to the current grant's budget
+instead of being widened by it. The resolved policy keeps its retained quota and
+active-request limit, because no grant-side source for either exists in this
+revision.
+
+The retry deliberately preserves the retained deadline instead of re-deriving it
+under the current residency preference. A current grant that newly permits cold
+loading therefore spends queue-wait and cold-start time from that retained
+deadline rather than receiving fresh headroom, which keeps a retry from
+outliving the budget its source was admitted under. The retained deadline still
+passes through the deployment deadline ceiling.
+
+Narrowed budgets and the retained deadline are handed to admission resolution
+explicitly, through `AdmissionPolicy`'s `:effective_timeout_ms`,
+`:queue_wait_ms`, and `:max_cold_start_ms` options. Without that, the
+zero-means-unset fallbacks in admission resolution would replace an explicit
+zero queue-wait or cold-start budget with a default, and supplying the budgets
+without an already-effective deadline would add them to the retained deadline a
+second time.
 
 One request-attrs builder on `Orchard.Inference.RequestOrchestrator` serves both
 the public persistence path and retry, so the pre-persistence admission
@@ -35,11 +51,12 @@ The descendant receives a fresh canonical and public identifier, its `retry_of_r
 After the transaction commits, the retry service hands the already-persisted descendant to the existing request lifecycle and scheduler seam. It does not parse a public request, reserve a new idempotency key, or introduce automatic retry behavior.
 
 A dispatch that reaches a durable terminal outcome is reported as a created
-descendant carrying that state. When the orchestrator cannot write the terminal
-row, the descendant is retained for audit and recovery, a bounded log records
-only the descendant public identifier, its original Request identifier, and an
-outcome label, and the caller receives `retry_dispatch_incomplete` instead of a
-success response.
+descendant carrying that state, and its failure is logged at info because the
+outcome was recorded. When the orchestrator cannot write the terminal row, the
+descendant is retained for audit and recovery, the anomaly is logged at warning,
+and the caller receives `retry_dispatch_incomplete` instead of a success
+response. Both logs record only the descendant public identifier, its original
+Request identifier, and an outcome label.
 
 ## Failure Handling
 

@@ -113,15 +113,18 @@ defmodule Orchard.Inference.RequestOrchestrator do
   Admission is resolved again as a fail-safe, so the deployment deadline
   ceiling, the persistable-deadline check, and canonical serialization stay on
   one path for every Request persistence caller. `:capture_mode` overrides the
-  tenant-resolved capture mode. The resolved canonical request is returned so
-  callers dispatch the values they persisted.
+  tenant-resolved capture mode. `:admission_opts` are forwarded to
+  `Orchard.Inference.AdmissionPolicy.resolve/2` for callers that hold
+  authoritative admission values the zero-means-unset defaults would otherwise
+  replace. The resolved canonical request is returned so callers dispatch the
+  values they persisted.
   """
   @spec persistable_request_attrs(CanonicalRequest.t(), map(), keyword()) ::
           {:ok, map(), CanonicalRequest.t()} | {:error, term()}
   def persistable_request_attrs(%CanonicalRequest{} = canonical, model, opts \\ []) do
     # Internal callers may bypass the public normalizers, so resolve admission
     # again as a fail-safe immediately before serializing and persisting.
-    canonical = AdmissionPolicy.resolve(canonical)
+    canonical = AdmissionPolicy.resolve(canonical, Keyword.get(opts, :admission_opts, []))
 
     with :ok <- validate_persistable_timeout(canonical),
          {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do

@@ -262,6 +262,70 @@ defmodule Orchard.Requests.OperatorRetryTest do
       assert descendant.canonical_request["admission"]["queue_wait_ms"] == 250
     end
 
+    test "preserves the retained deadline and explicit zero budgets under a cold-load grant" do
+      tenant = tenant!(:full)
+
+      {:ok, policy} =
+        Access.create_routing_policy(%{
+          name: "operator-retry-cold-load-#{System.unique_integer([:positive])}",
+          allowed_pool_ids: [],
+          preferred_pool_ids: [],
+          residency_preference: :allow_cold_load,
+          max_cold_start_ms: 0,
+          max_queue_wait_ms: 0,
+          priority: 100
+        })
+
+      model = create_granted_model!(tenant, routing_policy_id: policy.id)
+      source = create_full_legacy_source!(tenant, model, state: :failed)
+      retained_timeout_ms = source.canonical_request["admission"]["timeout_ms"]
+
+      assert {:ok, %{request: descendant, canonical: canonical}} =
+               OperatorRetry.reserve(source.public_id)
+
+      assert canonical.resolved_policy.residency_preference == :allow_cold_load
+      assert canonical.admission.queue_wait_ms == 0
+      assert canonical.admission.max_cold_start_ms == 0
+      assert canonical.admission.timeout_ms == retained_timeout_ms
+
+      assert descendant.canonical_request["admission"] == %{
+               "timeout_ms" => retained_timeout_ms,
+               "queue_wait_ms" => 0,
+               "max_cold_start_ms" => 0
+             }
+    end
+
+    test "does not re-derive the retained deadline for a widened cold-load grant" do
+      tenant = tenant!(:full)
+
+      {:ok, policy} =
+        Access.create_routing_policy(%{
+          name: "operator-retry-headroom-#{System.unique_integer([:positive])}",
+          allowed_pool_ids: [],
+          preferred_pool_ids: [],
+          residency_preference: :allow_cold_load,
+          max_cold_start_ms: 500,
+          max_queue_wait_ms: 500,
+          priority: 100
+        })
+
+      model = create_granted_model!(tenant, routing_policy_id: policy.id)
+      source = create_full_legacy_source!(tenant, model, state: :failed)
+      retained_timeout_ms = source.canonical_request["admission"]["timeout_ms"]
+
+      assert {:ok, %{request: descendant, canonical: canonical}} =
+               OperatorRetry.reserve(source.public_id)
+
+      assert canonical.admission.queue_wait_ms == 500
+      assert canonical.admission.max_cold_start_ms == 500
+      assert canonical.admission.timeout_ms == retained_timeout_ms
+
+      assert descendant.canonical_request["admission"]["timeout_ms"] == retained_timeout_ms
+
+      assert DateTime.diff(descendant.timeout_at, descendant.inserted_at, :millisecond) <=
+               retained_timeout_ms
+    end
+
     test "rejects a retained admission snapshot without a positive timeout" do
       tenant = tenant!(:full)
       model = create_granted_model!(tenant)
