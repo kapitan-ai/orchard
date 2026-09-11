@@ -49,9 +49,15 @@ The dependency still reports version `0.31.3`, so the full Git revision and comm
 Transformers remains constrained to `>=5.7,<5.13` until its broader compatibility matrix is accepted separately.
 
 Orchard rejects model configurations containing `model_file` before upstream loading.
-The production loader also passes `trust_remote_code=False` for model loading and `tokenizer_config_extra={"trust_remote_code": False}` for tokenizer loading.
+Against the pinned commit the production loader passes `trust_remote_code=False` for model loading and `tokenizer_config_extra={"trust_remote_code": False}` for tokenizer loading.
+Both keyword arguments are negotiated against the resolved upstream signature first, because newer MLX-LM loaders reject unknown keyword arguments.
 Resolved-environment tests verify the same explicit settings on MLX-LM's sharded loading surface.
 These controls reduce dynamic-code exposure but do not make model execution a security sandbox.
+
+Residual: signature negotiation drops a distrust keyword argument rather than replacing it with another control.
+Model loading fails closed when signature inspection itself raises, but tokenizer loading falls through to the upstream default in that case, and a loader that no longer accepts the keyword argument silently loses Orchard's explicit setting on both paths.
+`test_default_mlx_deps_narrow_signature_loaders_stay_local_and_strip_trust` pins that fallback, asserting that a caller-supplied `trust_remote_code=True` is never forwarded and that stripped loaders still receive verified-local bundle paths.
+Re-audit remote-code exposure whenever the MLX-LM pin moves.
 
 Residual: MLX-LM's `sharded_load` falls back to `{"trust_remote_code": True}` for the tokenizer whenever `tokenizer_config` is omitted or empty, so its model-side `trust_remote_code=False` does not cover the tokenizer by itself.
 Orchard does not reach that path today; issue #116 sharded loading must pass an explicit `{"trust_remote_code": False}` tokenizer config rather than relying on the upstream default.
