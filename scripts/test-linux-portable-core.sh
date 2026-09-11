@@ -25,6 +25,7 @@ mise exec -- uv run --locked --directory native/orchard_tokenizer pytest --cov
 mise exec -- uv run --locked --directory native/orchard_worker_mlx ruff format --check
 mise exec -- uv run --locked --directory native/orchard_worker_mlx ruff check
 mise exec -- uv run --locked --directory native/orchard_worker_mlx \
-  pytest tests/test_backends.py tests/test_service.py
+  pytest tests/test_backends.py tests/test_service.py tests/test_reasoning.py
 mise exec -- uv run --locked --directory native/orchard_worker_mlx \
-  pytest --cov=orchard_worker_mlx tests/test_backends.py tests/test_service.py
+  pytest --cov=orchard_worker_mlx \
+  tests/test_backends.py tests/test_service.py tests/test_reasoning.py

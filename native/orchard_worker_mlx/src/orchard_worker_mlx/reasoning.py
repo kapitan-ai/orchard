@@ -1,9 +1,11 @@
 """Stateful, content-discarding reasoning framing parser.
 
 This module intentionally has no MLX or provider imports. It accepts decoded
-``str`` chunks, emits only final-answer text, and retains only parser state plus
-a bounded partial marker suffix. Production prompt-opened render mappings are
-empty until a qualified render contract is admitted.
+``str`` chunks, emits only final-answer text, and never retains decoded
+reasoning content. Retained state is parser bookkeeping, a bounded partial
+marker suffix, and pre-open text that only a complete reasoning frame or the
+terminal can classify. Production prompt-opened render mappings are empty until
+a qualified render contract is admitted.
 """
 
 from __future__ import annotations
@@ -36,7 +38,8 @@ _CLOSE_MARKER = "</think>"
 _PRODUCTION_PROMPT_OPENED_RENDER_CONTRACTS: frozenset[tuple[str, str]] = frozenset()
 
 _ALLOWED_POLICIES = frozenset({"model_default", "disabled", "enabled"})
-_CONFORMING_TERMINALS = frozenset({"completed", "stop", "length"})
+_TRUNCATING_TERMINAL = "length"
+_CONFORMING_TERMINALS = frozenset({"completed", "stop", _TRUNCATING_TERMINAL})
 _PREEMPTING_TERMINALS = frozenset({"cancelled", "deadline", "timed_out"})
 
 
@@ -62,10 +65,17 @@ class ParserDelta:
 
 @dataclass(frozen=True, slots=True)
 class ParserTerminal:
-    """Content-free terminal conformance result."""
+    """Terminal conformance result plus any final-answer text held back by framing.
+
+    ``failure_code`` and ``failure_reason`` remain content-free. ``final_text``
+    carries only text the terminal has just classified as final-answer output:
+    pre-open text no reasoning frame ever claimed, and a retained partial marker
+    that a non-truncating terminal proves was ordinary text.
+    """
 
     failure_code: str | None = None
     failure_reason: str | None = None
+    final_text: str = ""
 
     @property
     def ok(self) -> bool:
@@ -81,6 +91,7 @@ class ParserState:
     saw_reasoning_content: bool
     saw_final_text: bool
     pending_marker: str
+    has_unclassified_text: bool
     violation_reason: str | None
 
 
@@ -113,6 +124,7 @@ class StatefulReasoningParser:
         self._saw_reasoning_content = False
         self._saw_final_text = False
         self._pending_marker = ""
+        self._unclassified_text = ""
         self._violation_reason: str | None = None
         self._finished = False
 
@@ -155,7 +167,9 @@ class StatefulReasoningParser:
             self._consume_text(text[cursor:marker_index], emitted)
             self._consume_marker(marker)
             if self._violation_reason is not None:
-                return ParserDelta()
+                self._discard_unclassified_text()
+                self._pending_marker = ""
+                break
             cursor = marker_index + len(marker)
 
         if self._generation_policy == "disabled" and self._saw_reasoning_frame:
@@ -170,21 +184,30 @@ class StatefulReasoningParser:
             raise ValueError("unsupported_parser_terminal")
         self._finished = True
 
+        terminal = self._terminal_result(terminal_kind)
+        self._pending_marker = ""
+        self._discard_unclassified_text()
+        return terminal
+
+    def _terminal_result(self, terminal_kind: str) -> ParserTerminal:
         if terminal_kind in _PREEMPTING_TERMINALS:
-            self._pending_marker = ""
             return ParserTerminal()
 
         if self._violation_reason is not None:
             return self._parser_failure(self._violation_reason)
         if self._pending_marker:
-            return self._parser_failure(PARSER_INCOMPLETE_MARKER)
+            if terminal_kind == _TRUNCATING_TERMINAL:
+                return self._parser_failure(PARSER_INCOMPLETE_MARKER)
+            self._absorb_pending_marker()
         if self._phase == "reasoning":
             return self._parser_failure(PARSER_UNCLOSED_MARKER)
         if self._generation_policy == "disabled" and self._saw_reasoning_frame:
             return self._policy_failure(POLICY_DISABLED_REASONING)
+
+        final_text = self._release_unclassified_text()
         if self._generation_policy == "enabled" and not self._saw_reasoning_content:
-            return self._policy_failure(POLICY_ENABLED_REASONING_MISSING)
-        return ParserTerminal()
+            return self._policy_failure(POLICY_ENABLED_REASONING_MISSING, final_text)
+        return ParserTerminal(final_text=final_text)
 
     def snapshot(self) -> ParserState:
         """Return bounded parser state without decoded reasoning content."""
@@ -194,6 +217,7 @@ class StatefulReasoningParser:
             saw_reasoning_content=self._saw_reasoning_content,
             saw_final_text=self._saw_final_text,
             pending_marker=self._pending_marker,
+            has_unclassified_text=bool(self._unclassified_text),
             violation_reason=self._violation_reason,
         )
 
@@ -225,6 +249,9 @@ class StatefulReasoningParser:
         if self._phase == "reasoning":
             self._saw_reasoning_content = True
             return
+        if self._phase == "initial":
+            self._unclassified_text += text
+            return
         self._saw_final_text = True
         emitted.append(text)
 
@@ -232,7 +259,8 @@ class StatefulReasoningParser:
         if marker == _OPEN_MARKER:
             if self._phase == "reasoning":
                 self._violation_reason = PARSER_NESTED_OPEN_MARKER
-            elif self._phase == "initial" and not self._saw_final_text:
+            elif self._phase == "initial" and not self._unclassified_text.strip():
+                self._discard_unclassified_text()
                 self._phase = "reasoning"
                 self._saw_reasoning_frame = True
             else:
@@ -244,6 +272,23 @@ class StatefulReasoningParser:
             return
         self._phase = "final"
 
+    def _absorb_pending_marker(self) -> None:
+        """Reclassify a retained partial marker a non-truncating terminal ended."""
+        residual, self._pending_marker = self._pending_marker, ""
+        if self._phase == "reasoning":
+            self._saw_reasoning_content = True
+            return
+        self._unclassified_text += residual
+
+    def _discard_unclassified_text(self) -> None:
+        self._unclassified_text = ""
+
+    def _release_unclassified_text(self) -> str:
+        released, self._unclassified_text = self._unclassified_text, ""
+        if released:
+            self._saw_final_text = True
+        return released
+
     @staticmethod
     def _parser_failure(reason: str) -> ParserTerminal:
         return ParserTerminal(
@@ -252,8 +297,9 @@ class StatefulReasoningParser:
         )
 
     @staticmethod
-    def _policy_failure(reason: str) -> ParserTerminal:
+    def _policy_failure(reason: str, final_text: str = "") -> ParserTerminal:
         return ParserTerminal(
             failure_code=REASONING_POLICY_CONFORMANCE_FAILED,
             failure_reason=reason,
+            final_text=final_text,
         )
