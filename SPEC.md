@@ -3751,7 +3751,7 @@ Automatic Attempt Retry SHALL run its second wave fresh rather than reusing atte
 
 The proof is carried by unary `PrepareInference` before negotiated execution. It SHALL return the authoritative complete-tuple and worker-incarnation proof plus an opaque single-use authorization bound to the Request, tuple, loaded binding, and current loaded worker instance. The Controller SHALL redeem the authorization only through the matching execution Request. Expiry, cancellation, duplicate redemption, worker restart, or loaded-instance replacement invalidates the authorization. A failed preparation leaves invocation, content, and usage at zero. Node Agent ownership of `Accepted` remains unchanged; negotiated `Accepted` follows successful preparation redemption.
 
-The additive terminal wire contract SHALL preserve presence-aware exact cumulative totals: a present zero is known zero and absent `Failed.usage` is missing evidence, never zero. Issue #327 owns that wire representation. Durable `output_usage_status` persistence and Controller-synthesized lower-bound usage remain #328 work. Reasoning-token subsets remain Worker-internal.
+The additive terminal wire contract SHALL preserve presence-aware exact cumulative totals: a present zero is known zero and absent `Failed.usage` is missing evidence, never zero. Issue #327 owns that wire representation. Durable `output_usage_status` persistence and Controller-synthesized lower-bound usage remain #329 work. Reasoning-token subsets remain Worker-internal.
 
 Automatic retry SHALL pin all ten tuple fields but not worker incarnation, selected profile, preparation identity, or authorization. Operator retry SHALL reuse `requests.canonical_request["reasoning"]` only when full capture retained a valid value; otherwise it SHALL fail closed with `retry_source_unavailable` and SHALL NOT rerender historical messages, renegotiate, downgrade, or add a persistence column. Production tuple registries SHALL remain empty and no production tuple may be advertised or selected until parser, accounting, and capture guarantees plus model-qualification governance accept the exact tuple.
 
@@ -4368,6 +4368,7 @@ create table requests (
   scheduler_decision jsonb,
   input_tokens integer not null default 0,
   output_tokens integer not null default 0,
+  output_usage_status text check (output_usage_status is null or output_usage_status in ('exact', 'lower_bound')),
   reserved_output_tokens integer not null default 0,
   first_token_at timestamptz,
   completed_at timestamptz,
@@ -4498,6 +4499,9 @@ create table node_admission_decisions (
   inserted_at timestamptz not null default now()
 );
 ```
+
+`requests.output_usage_status` SHALL be a nullable expand-migration column with no default and no backfill.
+A null status SHALL mean the row predates durable usage-status persistence; Orchard MUST NOT infer, backfill, or present `exact` or `lower_bound` for such a row.
 
 `node_admission_candidates` SHALL store first-observed Runtime Endpoint metadata before it is reconciled to a trusted Node.
 Rows MAY also link review state for provisioned placeholders or registered Nodes through `node_id`, but `admission_category` remains derived review state, not a `node_state` lifecycle enum.
