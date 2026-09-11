@@ -7,6 +7,25 @@ Accepted.
 Issue #164 reconciles this decision into `SPEC.md` and the Automatic Attempt Retry OpenSpec package.
 Implementation remains scoped to the blocker-linked tickets under parent objective #121.
 
+### Amendment 2026-09-11
+
+Issue #403 adds one narrow attempt 2 exception to the retry contract. A
+Controller-detected negotiated acceptance-proof failure under `SPEC.md` §7.5.3a
+records `not_retryable` on an unsuccessful attempt 2 that terminalizes as a
+failure with no committed output. Caller cancellation or disconnect still
+records `cancelled`, and an already-proven deadline terminalization still
+records `retry_exhausted`, so cancellation is no longer the sole attempt 2
+exception.
+
+`SPEC.md` §§3.7.1, 5.8, and 7.5.3a now own that rule and override the three
+statements below that make `cancelled` the only attempt 2 exception: the
+capacity-rejection discussion in "Retryability", the attempt 2 sentence in
+"Attempt evidence and metrics", and the breaker-interaction sentence in
+"Circuit breaker interaction". Those sections stay as authored to record the
+state that motivated this decision. Every other part of this decision, including
+the closed `retry_decision` vocabulary and the attempt 1 decline precedence,
+stands unchanged.
+
 ## Context
 
 `SPEC.md` §§5.8-5.9 and §§12.1-12.3 require at most one automatic retry before Output Commitment on a different Node when one exists.
