@@ -221,16 +221,9 @@ budget. An explicit negotiated reasoning request always uses that loaded-only
 formula, whatever its policy says: `SPEC.md` §5.6 restricts it to already loaded
 Tier 0 candidates, so `residency_preference` and `max_cold_start_ms` are
 inapplicable to it and an `allow_cold_load` policy adds neither the queue-wait
-nor the cold-start term to its `requests.timeout_at`. A model with no loaded
-placement, or one whose every reachable loaded placement answered that it does
-not support the tuple, fails closed before dispatch; a placement that is merely
-at capacity, unreachable, or withheld for staleness, §5.5 health, or either
-§5.10 breaker scope leaves support unknown and keeps the ordinary queue-waitable
-busy outcome instead of a permanent refusal. Queue outcome semantics match
-legacy traffic, deadline duration does not, and both queue wait and the at most
-two bounded reasoning waves a request may run come out of that same budget.
-Busy queue re-grants reuse the earlier wave's placement as a hint and re-probe
-nothing, so they cannot multiply that cost.
+nor the cold-start term to its `requests.timeout_at`. Queue wait and the at most
+two bounded reasoning waves such a request may run come out of that same budget;
+`SPEC.md` §7.5.3a owns when those waves run and which outcomes they produce.
 `ORCHARD_MAX_REQUEST_DEADLINE_MS` bounds the complete effective
 deadline, including generation, queue wait, and cold start. Its provisional
 default is 360000 ms pending Apple Silicon cold-load measurements under issue
@@ -257,7 +250,7 @@ The worker `GetStatus` response carries an additive `WorkerCapabilities` envelop
 `Orchard.Node.WorkerCapabilityEvidence` classifies each response at receipt as `absent`, `malformed`, `duplicate_or_conflicting`, `incompatible`, or valid, and evaluates exact-profile queries against the retained snapshot with the precedence `absent`, `stale`, retained invalid verdict, `unknown`, `unsupported`, then a proof naming the profile and incarnation.
 Only the whole profile can prove a capability; no Cartesian combination across profiles is inferred, provider timestamps never establish freshness, and `Orchard.Node.WorkerProcess` discards the snapshot on worker exit, load, unload, or an incarnation change.
 The evaluator is diagnostic-only in this slice: it emits `[:orchard, :node, :worker_capabilities, :classified | :evaluated]` telemetry and is reachable for tests, but nothing from it enters readiness, capacity, `StatusResponse`, or Runtime Endpoint Observations until the separately reviewed cutover described in ADR 0026.
-The loaded-model binding inside the envelope is deferred (field 8 reserved) until the negotiated reasoning contract fixes the canonical incarnation and artifact identity.
+The loaded-model binding inside the envelope is still deferred in source (field 8 reserved); `SPEC.md` §7.5.3a now fixes the canonical incarnation and artifact identity and records the accepted field allocation, which the issue #327 implementation adds.
 
 ### Persistence and coordination
 

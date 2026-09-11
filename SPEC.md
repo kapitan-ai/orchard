@@ -1841,7 +1841,7 @@ The effective Payload Capture Mode SHALL resolve before the first Request write 
 
 ### 5.9 Dispatch rules
 
-A production candidate snapshot is selection evidence, not a dispatch permit. Production scheduling and dispatch SHALL NOT status-probe a Runtime Endpoint anywhere on the request path; the bounded explicitly unmanaged compatibility wave in §5.5 is the sole exception.
+A production candidate snapshot is selection evidence, not a dispatch permit. Production scheduling and dispatch SHALL NOT status-probe a Runtime Endpoint anywhere on the request path outside the bounded waves §5.5 enumerates as its only exceptions.
 
 Dispatch sequence:
 
@@ -2684,7 +2684,7 @@ Reasoning-control failures use this closed mapping:
 | Failure phase | Public status, type, and code | `param` | Durable attempt evidence | Retry behavior |
 |---|---|---|---|---|
 | The exact model artifact and chat-template contract cannot honor an accepted explicit control | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public reasoning-control field; `nil` for the Console | no attempt and no Request write | non-retryable |
-| No eligible endpoint proves the exact negotiated tuple, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists and the proof failure wins the terminal race; caller cancellation/disconnect and already-proven deadline terminalization retain their §3.7.1 decisions | non-retryable |
+| No loaded placement proves the exact negotiated tuple under §7.5.3a's exhaustion rule, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists and the proof failure wins the terminal race; caller cancellation/disconnect and already-proven deadline terminalization retain their §3.7.1 decisions | non-retryable |
 | Parser or generation-policy conformance fails after model invocation | `500 api_error`, `internal_error` | `nil` | `terminal_conformance` plus `internal_error` | non-retryable |
 
 Messages for these mappings SHALL be bounded, content-free, and Controller-owned.
@@ -5735,7 +5735,7 @@ A Controller and Node Agent pair that does not negotiate the complete reasoning 
 When an older Controller communicates with a newer Node Agent through an otherwise supported protocol pairing, the Node Agent MUST NOT infer reasoning mode or emit a new reasoning event.
 A Controller `N` communicating with a Node Agent `N-1` MAY dispatch an omitted public request through the complete legacy pipeline.
 A Controller `N` MUST NOT dispatch an explicit `final_only` or `reasoning_structured` request to a Node Agent `N-1` unless that endpoint affirmatively advertises the exact pinned reasoning contract and compatible event binding as one complete supported tuple.
-If no compatible endpoint exists, Orchard SHALL fail the explicit request before dispatch with the `503 server_error` plus `runtime_incompatible` mapping in §7.2.7.
+If no loaded placement proves that tuple under §7.5.3a's exhaustion rule, Orchard SHALL fail the explicit request before dispatch with the `503 server_error` plus `runtime_incompatible` mapping in §7.2.7.
 An endpoint that advertises the tuple but cannot reproduce it in the authoritative pre-execution acceptance proof SHALL fail under the same mapping before model invocation.
 The Controller MUST NOT send a new request field to an older binding or accept a new event variant from an endpoint that did not advertise it.
 Rolling upgrades SHALL NOT silently downgrade an explicit reasoning mode, change its public projection, or widen capture.
