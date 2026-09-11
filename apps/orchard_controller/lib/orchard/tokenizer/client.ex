@@ -1198,6 +1198,8 @@ defmodule Orchard.Tokenizer.Client do
   end
 
   defp runtime_incompatible_error(message) do
+    # The operator diagnostic stays a fixed bounded string: the public 503 mapping is
+    # content-free, so helper-supplied text must never reach a log line or metric label.
     Logger.warning(
       "[TokenizerClient] tokenizer render did not prove the selected negotiated reasoning contract"
     )
