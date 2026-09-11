@@ -14,13 +14,21 @@ defmodule Orchard.Requests.InferenceAttemptResult do
     retry_decision raw_source_code finish_reason input_tokens output_tokens http_status error_message
   )
   @fields @required_fields ++ @optional_fields
-  @marker_fields MapSet.new(@required_fields ++ ~w(
-    output_commitment_kind node_id target_ref failure_class failure_code runtime_retryable
-    retry_decision raw_source_code
+  @persisted_usage_fields ~w(output_usage_status reasoning_tokens)
+  @persisted_fields @fields ++ @persisted_usage_fields
+
+  # Keep the established marker vocabulary literal: `output_tokens` alone has
+  # never made an otherwise legacy result enriched.
+  @marker_fields MapSet.new(~w(
+    attempt_outcome started_at ended_at accepted output_committed execution_resolution
+    capacity_release_outcome excluded_node_ids output_commitment_kind node_id target_ref
+    failure_class failure_code runtime_retryable retry_decision raw_source_code
+    output_usage_status reasoning_tokens
   ))
 
   @attempt_outcomes ~w(completed failed cancelled timed_out interrupted)
-  @commitment_kinds ~w(text tool_call structured_output)
+  @commitment_kinds ~w(text tool_call structured_output reasoning)
+  @output_usage_statuses ~w(exact lower_bound)
   @execution_resolutions ~w(not_started terminated unresolved)
   @capacity_release_outcomes ~w(released already_released not_applicable unresolved)
   @retry_decisions ~w(
@@ -63,9 +71,31 @@ defmodule Orchard.Requests.InferenceAttemptResult do
   def attempt_one_retry_decisions, do: @attempt_one_decisions
 
   @spec new(String.t(), 1 | 2, map()) :: {:ok, t()} | {:error, String.t()}
-  def new(event_type, attempt, result) when is_map(result) do
+  def new(event_type, attempt, result) when is_map(result),
+    do: validate(event_type, attempt, result, @fields)
+
+  def new(_event_type, _attempt, _result), do: {:error, "inference attempt result must be a map"}
+
+  @doc """
+  Validates terminal attempt evidence read from durable storage.
+
+  Historical rows may omit the usage-status vocabulary. Rows that contain any
+  of that vocabulary must satisfy the complete current usage contract.
+
+  Deploy this compatibility reader to every Controller and background reader
+  before PR #418's new-format writers may merge; pre-bridge binaries reject it.
+  """
+  @spec from_persisted(String.t(), 1 | 2, map()) :: {:ok, t()} | {:error, String.t()}
+  def from_persisted(event_type, attempt, result) when is_map(result),
+    do: validate(event_type, attempt, result, @persisted_fields)
+
+  def from_persisted(_event_type, _attempt, _result),
+    do: {:error, "inference attempt result must be a map"}
+
+  defp validate(event_type, attempt, result, allowed_fields) do
     with :ok <- validate_attempt(attempt),
-         {:ok, normalized} <- normalize_keys(result),
+         {:ok, normalized} <- normalize_keys(result, allowed_fields),
+         :ok <- validate_persisted_usage(normalized),
          :ok <- validate_required_fields(normalized),
          :ok <- validate_enum(normalized, "attempt_outcome", @attempt_outcomes),
          :ok <- validate_event_outcome(event_type, normalized),
@@ -103,17 +133,15 @@ defmodule Orchard.Requests.InferenceAttemptResult do
     end
   end
 
-  def new(_event_type, _attempt, _result), do: {:error, "inference attempt result must be a map"}
-
   defp validate_attempt(attempt) when attempt in [1, 2], do: :ok
   defp validate_attempt(_attempt), do: {:error, "attempt must be 1 or 2"}
 
-  defp normalize_keys(result) do
+  defp normalize_keys(result, allowed_fields) do
     Enum.reduce_while(result, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
       normalized_key = if is_atom(key), do: Atom.to_string(key), else: key
 
       cond do
-        normalized_key not in @fields ->
+        normalized_key not in allowed_fields ->
           {:halt, {:error, "unexpected inference attempt result field #{inspect(key)}"}}
 
         Map.has_key?(acc, normalized_key) ->
@@ -123,6 +151,51 @@ defmodule Orchard.Requests.InferenceAttemptResult do
           {:cont, {:ok, Map.put(acc, normalized_key, value)}}
       end
     end)
+  end
+
+  defp validate_persisted_usage(result) do
+    case Map.fetch(result, "output_usage_status") do
+      {:ok, status} when status in @output_usage_statuses ->
+        with :ok <- require_usage_output_tokens(result) do
+          validate_reasoning_tokens(result)
+        end
+
+      {:ok, _status} ->
+        {:error, "output_usage_status must be one of #{Enum.join(@output_usage_statuses, ", ")}"}
+
+      :error ->
+        if Map.has_key?(result, "reasoning_tokens"),
+          do: {:error, "reasoning_tokens requires output_usage_status"},
+          else: :ok
+    end
+  end
+
+  defp require_usage_output_tokens(%{"output_tokens" => output_tokens})
+       when is_integer(output_tokens) and output_tokens >= 0 and output_tokens <= @maximum_integer,
+       do: :ok
+
+  defp require_usage_output_tokens(_result),
+    do: {:error, "output_usage_status requires a bounded non-negative output_tokens"}
+
+  defp validate_reasoning_tokens(result) do
+    case Map.fetch(result, "reasoning_tokens") do
+      :error ->
+        :ok
+
+      {:ok, reasoning_tokens}
+      when is_integer(reasoning_tokens) and reasoning_tokens >= 0 and
+             reasoning_tokens <= @maximum_integer ->
+        if reasoning_tokens <= result["output_tokens"] do
+          :ok
+        else
+          {:error,
+           "reasoning_tokens must be a bounded non-negative integer no greater than output_tokens"}
+        end
+
+      {:ok, _reasoning_tokens} ->
+        {:error,
+         "reasoning_tokens must be a bounded non-negative integer no greater than output_tokens"}
+    end
   end
 
   defp validate_required_fields(result) do
