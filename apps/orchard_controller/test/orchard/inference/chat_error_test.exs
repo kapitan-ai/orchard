@@ -87,13 +87,6 @@ defmodule Orchard.Inference.ChatErrorTest do
              message: "Runtime is incompatible",
              param: nil
            }
-
-    assert ChatError.terminal_attrs(error) == %{
-             state: :failed,
-             http_status: 503,
-             error_code: "runtime_incompatible",
-             error_message: "Runtime is incompatible"
-           }
   end
 
   test "tokenization internal mapping preserves controller-owned internal_error response" do

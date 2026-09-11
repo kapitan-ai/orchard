@@ -3,6 +3,8 @@ defmodule Orchard.Tokenizer.Client do
   Injectable tokenizer seam for controller-side prompt rendering and token counting.
   """
 
+  require Logger
+
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.ToolingValidation
   alias Orchard.ModelManifest
@@ -932,6 +934,10 @@ defmodule Orchard.Tokenizer.Client do
     if reasoning == expected_reasoning do
       {:ok, %{rendered_prompt: rendered_prompt, input_token_count: input_token_count}}
     else
+      Logger.warning(
+        "[TokenizerClient] negotiated reasoning render metadata did not prove the selected contract"
+      )
+
       {:error,
        {:runtime_incompatible,
         "tokenizer render metadata did not prove the selected negotiated reasoning contract"}}

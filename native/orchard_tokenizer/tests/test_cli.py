@@ -393,6 +393,59 @@ def test_qwen3_8_static_effort_fixture_rejects_missing_mapping(
     )
 
 
+@pytest.mark.parametrize(
+    "effort_argument",
+    [
+        {"key": "thinking_budget"},
+        {"key": "enable_thinking", "value": "xhigh"},
+    ],
+    ids=["missing-provider-value", "collides-with-static-template-argument"],
+)
+def test_qwen3_8_static_effort_fixture_rejects_malformed_effort_registration(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+    effort_argument: dict[str, str],
+) -> None:
+    fixture = qwen3_8_effort_fixture()
+    template_path = tmp_path / "chat_template.jinja"
+    template_path.write_text(
+        "{{ enable_thinking }}|{{ thinking_budget }}|{{ messages[-1]['content'] }}",
+        encoding="utf-8",
+    )
+    registration = qwen3_8_registration(fixture, "high")
+    registration["reasoning_effort_template_argument"] = effort_argument
+
+    monkeypatch.setattr(
+        reasoning_contracts,
+        "REASONING_RENDER_CONTRACTS",
+        {
+            (fixture["model_artifact_digest"], fixture["chat_template_digest"]): {
+                ("enabled", "final_only", "high"): registration
+            }
+        },
+    )
+
+    payload = reasoning_tokenization_payload(
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
+        chat_template_path=template_path,
+        model_artifact_digest=fixture["model_artifact_digest"],
+        chat_template_digest=fixture["chat_template_digest"],
+    )
+    payload["request"]["reasoning"] = qwen3_8_reasoning(fixture, "high")
+
+    assert main(["--request-json", json.dumps(payload)]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "contract_version": 4,
+        "ok": False,
+        "error": {
+            "category": "internal_error",
+            "message": "unexpected tokenizer failure",
+        },
+    }
+
+
 def test_reasoning_render_contract_rejects_unknown_or_contradictory_effort(
     tmp_path: Path, capsys
 ) -> None:

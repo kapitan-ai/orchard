@@ -1,6 +1,8 @@
 defmodule Orchard.Tokenizer.ClientTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.ModelManifest
@@ -372,23 +374,31 @@ defmodule Orchard.Tokenizer.ClientTest do
       File.rm_rf!(fixture_root)
     end)
 
-    with_inference_overrides(
-      [
-        tokenizer_mode: :port,
-        tokenizer_executable: response_executable
-      ],
-      fn ->
-        assert {:error, {:runtime_incompatible, message}} =
-                 Client.tokenize(selected_effort_request(),
-                   manifest: huggingface_manifest(),
-                   bundle_root: fixture_root,
-                   bundle_sha256: trusted_bundle_sha256()
-                 )
+    log =
+      capture_log(fn ->
+        with_inference_overrides(
+          [
+            tokenizer_mode: :port,
+            tokenizer_executable: response_executable
+          ],
+          fn ->
+            assert {:error, {:runtime_incompatible, message}} =
+                     Client.tokenize(selected_effort_request(),
+                       manifest: huggingface_manifest(),
+                       bundle_root: fixture_root,
+                       bundle_sha256: trusted_bundle_sha256()
+                     )
 
-        assert message ==
-                 "tokenizer render metadata did not prove the selected negotiated reasoning contract"
-      end
-    )
+            assert message ==
+                     "tokenizer render metadata did not prove the selected negotiated reasoning contract"
+          end
+        )
+      end)
+
+    assert log =~
+             "[TokenizerClient] negotiated reasoning render metadata did not prove the selected contract"
+
+    refute log =~ "mlx-community/phi-3"
   end
 
   test "negotiated reasoning rejects a mismatched helper identity" do

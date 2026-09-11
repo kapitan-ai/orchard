@@ -473,15 +473,6 @@ defmodule Orchard.Inference.ChatError do
   def terminal_attrs(%__MODULE__{kind: :model_load_failed, model_load_failure: failure}),
     do: ModelLoadFailure.terminal_attrs(failure)
 
-  def terminal_attrs(%__MODULE__{kind: :tokenization_runtime_incompatible}) do
-    %{
-      state: :failed,
-      http_status: 503,
-      error_code: "runtime_incompatible",
-      error_message: "Runtime is incompatible"
-    }
-  end
-
   def terminal_attrs(%__MODULE__{kind: :model_busy} = error) do
     %{
       state: :failed,
