@@ -185,6 +185,18 @@
       "coverage": ["terminal:length"]
     },
     {
+      "id": "prompt-opened-length-applies-enabled-policy-conformance",
+      "generation_policy": "enabled",
+      "chunks": ["</think>answer"],
+      "terminal": "length",
+      "expected": {
+        "final_text": "answer",
+        "failure_code": "reasoning_policy_conformance_failed",
+        "failure_reason": "policy_enabled_reasoning_missing"
+      },
+      "coverage": ["terminal:length", "policy:enabled"]
+    },
+    {
       "id": "prompt-opened-stop-applies-parser-conformance",
       "generation_policy": "enabled",
       "chunks": ["private</think>answer"],
