@@ -225,7 +225,9 @@ nor the cold-start term to its `requests.timeout_at`. A model with no loaded
 placement fails closed before dispatch, while a loaded placement that is merely
 at capacity keeps the ordinary queue-waitable busy outcome — queue outcome
 semantics match legacy traffic, deadline duration does not, and both queue wait
-and each attempt's bounded reasoning wave come out of that same budget.
+and the at most two bounded reasoning waves a request may run come out of that
+same budget. Busy queue re-grants reuse the earlier wave's placement as a hint
+and re-probe nothing, so they cannot multiply that cost.
 `ORCHARD_MAX_REQUEST_DEADLINE_MS` bounds the complete effective
 deadline, including generation, queue wait, and cold start. Its provisional
 default is 360000 ms pending Apple Silicon cold-load measurements under issue

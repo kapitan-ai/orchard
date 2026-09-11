@@ -16,9 +16,10 @@
 ## 3. Dormant implementation handoff
 
 - [ ] 3.1 Implement loaded-binding-scoped live reasoning evidence, remaining-freshness handling, Tier 0-only eligibility, and unary preparation with single-use authorization.
-- [ ] 3.1a Enforce the bounded live wave (at most four probes in flight advancing down the predicate-free ranking order, one 2000 ms wave deadline, no transport retry, one wave per Inference Attempt) with a determinism test proving identical attempts advance through the same order.
-- [ ] 3.1b Cover the outcome split: no loaded placement and ranked-list exhaustion fail closed as incompatible, while a capacity-blocked placement or an elapsed wave deadline keeps the retryable queue-waitable busy path.
-- [ ] 3.1c Prove the advancing window reaches capable candidates ranked below incapable ones, and that both waves plus queue wait consume the single §12.4 loaded-only deadline.
+- [ ] 3.1a Enforce the bounded live wave (full loaded-placement universe, at most four probes in flight advancing down the §5.7 ranking order, one 2000 ms wave deadline, no transport retry) with a determinism test proving identical passes advance through the same order.
+- [ ] 3.1b Cover the outcome split: no loaded placement and an exhausted universe fail closed as incompatible, while a proving-but-undispatchable placement or an elapsed wave deadline keeps the retryable queue-waitable busy path.
+- [ ] 3.1c Prove the advancing window reaches capable placements ranked below incapable ones and that a lower-ranked proof never wins over an unresolved higher-ranked probe.
+- [ ] 3.1d Enforce the per-logical-Request wave budget: a pre-start busy re-grant runs no wave, carries a hint only, revalidates through `PrepareInference`, and terminalizes under the existing queue-wait budget; both waves plus queue wait consume the single §12.4 loaded-only deadline.
 - [ ] 3.2 Implement D1, D2, and D3 with direct failure-path and both-attempt regression coverage.
 - [ ] 3.3 Pin automatic and full-capture operator retry to `canonical_request["reasoning"]`; return `retry_source_unavailable` rather than rerendering or adding a column.
 - [ ] 3.4 Keep production registries empty and prove no production tuple is advertised before #328 plus qualification governance authorize activation.
