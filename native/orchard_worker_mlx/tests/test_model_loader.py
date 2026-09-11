@@ -743,6 +743,8 @@ def test_spec_6_4_loader_uses_verified_local_paths_despite_misleading_bundle_nam
     load_tokenizer.assert_called_once_with(misleading_bundle / "tokenizer.json")
     assert session.manifest.model_id == "test-org/tiny-llm"
     assert session.bundle_path == misleading_bundle
+    assert session.eos_token_ids == ()
+    assert session.tool_calling == {"supported": False, "parser_type": None}
 
 
 def test_load_session_model_load_failure(writable_bundle: Path) -> None:

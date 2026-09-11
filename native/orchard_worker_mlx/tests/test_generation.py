@@ -575,6 +575,10 @@ def test_batch_pre_cancelled_request_does_not_enter_runtime_or_affect_peer() -> 
                 deps=runtime.generation_deps(),
             )
         )
+        assert runtime._next_request_id == 0
+        assert runtime._requests_by_id == {}
+        assert runtime._active_by_uid == {}
+
         peer_events = list(
             generate_events(
                 session,
@@ -583,6 +587,9 @@ def test_batch_pre_cancelled_request_does_not_enter_runtime_or_affect_peer() -> 
                 deps=runtime.generation_deps(),
             )
         )
+        assert runtime._next_request_id == 1
+        assert runtime._requests_by_id == {}
+        assert runtime._active_by_uid == {}
     finally:
         runtime.close()
 
@@ -600,8 +607,6 @@ def test_batch_pre_cancelled_request_does_not_enter_runtime_or_affect_peer() -> 
     ]
     assert [event["kind"] for event in peer_events].count("completed") == 1
     assert peer_events[-1]["usage"]["output_tokens"] == 2
-    assert runtime._requests_by_id == {}
-    assert runtime._active_by_uid == {}
 
 
 def test_batch_generator_runtime_opt_in_off_emits_no_token_delta_events() -> None:
