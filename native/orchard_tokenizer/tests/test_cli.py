@@ -317,33 +317,13 @@ def test_qwen3_8_static_effort_fixture_uses_only_its_exact_closed_mapping(
     canonical_effort: str,
     provider_value: str,
 ) -> None:
-    fixture = qwen3_8_effort_fixture()
-    template_path = tmp_path / "chat_template.jinja"
-    template_path.write_text(
-        "{{ enable_thinking }}|{{ thinking_budget }}|{{ messages[-1]['content'] }}",
-        encoding="utf-8",
+    fixture, payload = qwen3_8_effort_request(tmp_path, canonical_effort)
+    patch_qwen3_8_registry(
+        monkeypatch,
+        fixture,
+        canonical_effort,
+        qwen3_8_registration(fixture, canonical_effort),
     )
-
-    monkeypatch.setattr(
-        reasoning_contracts,
-        "REASONING_RENDER_CONTRACTS",
-        {
-            (fixture["model_artifact_digest"], fixture["chat_template_digest"]): {
-                ("enabled", "final_only", canonical_effort): qwen3_8_registration(
-                    fixture, canonical_effort
-                )
-            }
-        },
-    )
-
-    payload = reasoning_tokenization_payload(
-        tokenizer_path=fixture_root() / "tokenizer.json",
-        tokenizer_config_path=write_tokenizer_config(tmp_path),
-        chat_template_path=template_path,
-        model_artifact_digest=fixture["model_artifact_digest"],
-        chat_template_digest=fixture["chat_template_digest"],
-    )
-    payload["request"]["reasoning"] = qwen3_8_reasoning(fixture, canonical_effort)
 
     assert main(["--request-json", json.dumps(payload)]) == 0
 
@@ -357,31 +337,8 @@ def test_qwen3_8_static_effort_fixture_uses_only_its_exact_closed_mapping(
 def test_qwen3_8_static_effort_fixture_rejects_missing_mapping(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fixture = qwen3_8_effort_fixture()
-    template_path = tmp_path / "chat_template.jinja"
-    template_path.write_text(
-        "{{ enable_thinking }}|{{ thinking_budget }}|{{ messages[-1]['content'] }}",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(
-        reasoning_contracts,
-        "REASONING_RENDER_CONTRACTS",
-        {
-            (fixture["model_artifact_digest"], fixture["chat_template_digest"]): {
-                ("enabled", "final_only", "low"): qwen3_8_registration(fixture, "low")
-            }
-        },
-    )
-
-    payload = reasoning_tokenization_payload(
-        tokenizer_path=fixture_root() / "tokenizer.json",
-        tokenizer_config_path=write_tokenizer_config(tmp_path),
-        chat_template_path=template_path,
-        model_artifact_digest=fixture["model_artifact_digest"],
-        chat_template_digest=fixture["chat_template_digest"],
-    )
-    payload["request"]["reasoning"] = qwen3_8_reasoning(fixture, "high")
+    fixture, payload = qwen3_8_effort_request(tmp_path, "high")
+    patch_qwen3_8_registry(monkeypatch, fixture, "low", qwen3_8_registration(fixture, "low"))
 
     assert main(["--request-json", json.dumps(payload)]) == 2
 
@@ -407,33 +364,10 @@ def test_qwen3_8_static_effort_fixture_rejects_malformed_effort_registration(
     monkeypatch: pytest.MonkeyPatch,
     effort_argument: dict[str, str],
 ) -> None:
-    fixture = qwen3_8_effort_fixture()
-    template_path = tmp_path / "chat_template.jinja"
-    template_path.write_text(
-        "{{ enable_thinking }}|{{ thinking_budget }}|{{ messages[-1]['content'] }}",
-        encoding="utf-8",
-    )
+    fixture, payload = qwen3_8_effort_request(tmp_path, "high")
     registration = qwen3_8_registration(fixture, "high")
     registration["reasoning_effort_template_argument"] = effort_argument
-
-    monkeypatch.setattr(
-        reasoning_contracts,
-        "REASONING_RENDER_CONTRACTS",
-        {
-            (fixture["model_artifact_digest"], fixture["chat_template_digest"]): {
-                ("enabled", "final_only", "high"): registration
-            }
-        },
-    )
-
-    payload = reasoning_tokenization_payload(
-        tokenizer_path=fixture_root() / "tokenizer.json",
-        tokenizer_config_path=write_tokenizer_config(tmp_path),
-        chat_template_path=template_path,
-        model_artifact_digest=fixture["model_artifact_digest"],
-        chat_template_digest=fixture["chat_template_digest"],
-    )
-    payload["request"]["reasoning"] = qwen3_8_reasoning(fixture, "high")
+    patch_qwen3_8_registry(monkeypatch, fixture, "high", registration)
 
     assert main(["--request-json", json.dumps(payload)]) == 1
     assert json.loads(capsys.readouterr().out) == {
@@ -577,6 +511,44 @@ def synthetic_registration(*, template_arguments: dict[str, bool]) -> dict[str, 
 def qwen3_8_effort_fixture() -> dict[str, Any]:
     fixture_path = Path(__file__).parent / "fixtures" / "qwen3_8_reasoning_effort_static.json"
     return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
+def qwen3_8_effort_request(tmp_path: Path, effort: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Write the one template text the fixture digest is bound to and build its request."""
+    fixture = qwen3_8_effort_fixture()
+    template_path = tmp_path / "chat_template.jinja"
+    template_path.write_text(
+        "{{ enable_thinking }}|{{ thinking_budget }}|{{ messages[-1]['content'] }}",
+        encoding="utf-8",
+    )
+
+    payload = reasoning_tokenization_payload(
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
+        chat_template_path=template_path,
+        model_artifact_digest=fixture["model_artifact_digest"],
+        chat_template_digest=fixture["chat_template_digest"],
+    )
+    payload["request"]["reasoning"] = qwen3_8_reasoning(fixture, effort)
+
+    return fixture, payload
+
+
+def patch_qwen3_8_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: dict[str, Any],
+    registered_effort: str,
+    registration: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(
+        reasoning_contracts,
+        "REASONING_RENDER_CONTRACTS",
+        {
+            (fixture["model_artifact_digest"], fixture["chat_template_digest"]): {
+                ("enabled", "final_only", registered_effort): registration
+            }
+        },
+    )
 
 
 def qwen3_8_registration(fixture: dict[str, Any], effort: str) -> dict[str, Any]:

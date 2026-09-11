@@ -396,8 +396,53 @@ defmodule Orchard.Tokenizer.ClientTest do
       end)
 
     assert log =~
-             "[TokenizerClient] negotiated reasoning render metadata did not prove the selected contract"
+             "[TokenizerClient] tokenizer render did not prove the selected negotiated reasoning contract"
 
+    refute log =~ "mlx-community/phi-3"
+  end
+
+  test "negotiated reasoning records a bounded operator log for a helper runtime_incompatible category" do
+    response_executable =
+      write_response_executable!(%{
+        contract_version: 4,
+        ok: false,
+        error: %{
+          category: "runtime_incompatible",
+          message: "helper refused the negotiated reasoning contract"
+        }
+      })
+
+    fixture_root = fixture_root_with_tokenizer_config!()
+
+    on_exit(fn ->
+      File.rm(response_executable)
+      File.rm_rf!(fixture_root)
+    end)
+
+    log =
+      capture_log(fn ->
+        with_inference_overrides(
+          [
+            tokenizer_mode: :port,
+            tokenizer_executable: response_executable
+          ],
+          fn ->
+            assert {:error, {:runtime_incompatible, message}} =
+                     Client.tokenize(selected_effort_request(),
+                       manifest: huggingface_manifest(),
+                       bundle_root: fixture_root,
+                       bundle_sha256: trusted_bundle_sha256()
+                     )
+
+            assert message == "helper refused the negotiated reasoning contract"
+          end
+        )
+      end)
+
+    assert log =~
+             "[TokenizerClient] tokenizer render did not prove the selected negotiated reasoning contract"
+
+    refute log =~ "helper refused the negotiated reasoning contract"
     refute log =~ "mlx-community/phi-3"
   end
 

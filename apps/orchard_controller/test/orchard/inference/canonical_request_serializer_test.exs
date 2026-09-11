@@ -213,6 +213,32 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
     end
   end
 
+  test "serialize/1 rejects a legacy reasoning policy carrying a selected effort" do
+    canonical = %CanonicalRequest{
+      internal_id: Ecto.UUID.generate(),
+      public_id: "chatcmpl-legacy-effort",
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %CanonicalRequest.ModelRef{model_id: "test-model", version: "v1"},
+      sampling: %CanonicalRequest.Sampling{},
+      response_format: %CanonicalRequest.ResponseFormat{},
+      reasoning: %CanonicalRequest.Reasoning{
+        generation_policy: :model_default,
+        projection: :legacy_blended,
+        reasoning_effort: :high,
+        source: :omitted_public,
+        effective_contract: %{mode: :legacy}
+      },
+      tooling: %CanonicalRequest.Tooling{},
+      admission: %CanonicalRequest.Admission{timeout_ms: 10_000},
+      resolved_policy: %CanonicalRequest.ResolvedPolicy{}
+    }
+
+    assert_raise ArgumentError, ~r/reasoning must be a supported legacy or negotiated/, fn ->
+      CanonicalRequestSerializer.serialize(canonical)
+    end
+  end
+
   defp negotiated_contract do
     %{
       mode: :negotiated,

@@ -236,6 +236,20 @@ defmodule Orchard.CanonicalRequestTest do
     end
   end
 
+  test "Reasoning.to_wire/1 rejects an effort outside the canonical nil|low|medium|high contract" do
+    reasoning = %CanonicalRequest.Reasoning{
+      generation_policy: :enabled,
+      projection: :final_only,
+      reasoning_effort: :xhigh,
+      source: :explicit_public,
+      effective_contract: negotiated_contract()
+    }
+
+    assert_raise ArgumentError, ~r/reasoning_effort must be nil, :low, :medium, or :high/, fn ->
+      CanonicalRequest.Reasoning.to_wire(reasoning)
+    end
+  end
+
   defp negotiated_contract do
     %{
       mode: :negotiated,
