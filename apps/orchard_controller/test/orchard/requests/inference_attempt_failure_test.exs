@@ -58,6 +58,28 @@ defmodule Orchard.Requests.InferenceAttemptFailureTest do
     end
   end
 
+  test "SPEC.md §7.5.3a maps only closed reasoning conformance codes to internal_error" do
+    for code <- [
+          :reasoning_parser_conformance_failed,
+          :reasoning_policy_conformance_failed
+        ] do
+      assert InferenceAttemptFailure.normalize(%{
+               category: :terminal_conformance,
+               code: code,
+               message: "<think>untrusted model output</think>"
+             }) == %{
+               "failure_class" => "terminal_conformance",
+               "failure_code" => "internal_error"
+             }
+
+      assert InferenceAttemptFailure.reasoning_conformance_code?(Atom.to_string(code))
+    end
+
+    refute InferenceAttemptFailure.reasoning_conformance_code?(
+             "runtime_endpoint_missing_terminal"
+           )
+  end
+
   test "untrusted pre-acceptance codes do not acquire retryable stable codes" do
     assert InferenceAttemptFailure.normalize(%{
              category: :pre_acceptance,

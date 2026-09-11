@@ -30,6 +30,9 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   )
   @acceptance_proof_failure_class "pre_acceptance_unavailable"
   @acceptance_proof_failure_code "runtime_incompatible"
+  @reasoning_conformance_codes ~w(
+    reasoning_parser_conformance_failed reasoning_policy_conformance_failed
+  )
   @type evidence :: %{required(String.t()) => String.t()}
 
   @spec stable_error_codes() :: [String.t()]
@@ -50,6 +53,10 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   def acceptance_proof_failure?(_failure_class, _failure_code), do: false
 
+  @spec reasoning_conformance_code?(term()) :: boolean()
+  def reasoning_conformance_code?(code) when code in @reasoning_conformance_codes, do: true
+  def reasoning_conformance_code?(_code), do: false
+
   @spec normalize(map()) :: evidence()
   def normalize(source) when is_map(source) do
     category = value(source, :category)
@@ -59,7 +66,7 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
     {failure_class, failure_code} = classify(category, code, phase)
 
     %{"failure_class" => failure_class, "failure_code" => failure_code}
-    |> maybe_put_raw_source_code(code, failure_code)
+    |> maybe_put_raw_source_code(category, code, failure_code)
   end
 
   def normalize(_source),
@@ -81,7 +88,7 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
         {"deadline", deadline_code(code)}
 
       category in [:terminal_conformance, "terminal_conformance"] ->
-        {"terminal_conformance", "orchestration_error"}
+        {"terminal_conformance", terminal_conformance_code(code)}
 
       category in [:capacity, "capacity", :capacity_rejection, "capacity_rejection"] ->
         {capacity_failure_class(code), capacity_code(code)}
@@ -156,6 +163,11 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
 
   defp pre_acceptance_code(_code), do: "internal_error"
 
+  defp terminal_conformance_code(code) when code in @reasoning_conformance_codes,
+    do: "internal_error"
+
+  defp terminal_conformance_code(_code), do: "orchestration_error"
+
   defp capacity_failure_class("dispatch_capacity_caller_down"), do: "cancellation"
 
   defp capacity_failure_class("dispatch_capacity_node_identity_mismatch"),
@@ -182,10 +194,20 @@ defmodule Orchard.Requests.InferenceAttemptFailure do
   defp controller_code(code) when code in ["orchestration_error", "request_interrupted"], do: code
   defp controller_code(_code), do: "internal_error"
 
-  defp maybe_put_raw_source_code(evidence, nil, _stable), do: evidence
-  defp maybe_put_raw_source_code(evidence, stable, stable), do: evidence
+  defp maybe_put_raw_source_code(
+         evidence,
+         category,
+         code,
+         _stable
+       )
+       when category in [:terminal_conformance, "terminal_conformance"] and
+              code in @reasoning_conformance_codes,
+       do: evidence
 
-  defp maybe_put_raw_source_code(evidence, raw_source_code, _stable),
+  defp maybe_put_raw_source_code(evidence, _category, nil, _stable), do: evidence
+  defp maybe_put_raw_source_code(evidence, _category, stable, stable), do: evidence
+
+  defp maybe_put_raw_source_code(evidence, _category, raw_source_code, _stable),
     do: Map.put(evidence, "raw_source_code", raw_source_code)
 
   defp value(source, key), do: Map.get(source, key, Map.get(source, Atom.to_string(key)))

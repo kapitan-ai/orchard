@@ -900,6 +900,45 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
                "Inference failed: model did not emit any required tool calls"
     end
 
+    test "SPEC.md §7.5.3a hides reasoning conformance details in sync Chat errors" do
+      worker_message = "<think>worker marker bytes and model output</think>"
+
+      for code <- [
+            "reasoning_parser_conformance_failed",
+            "reasoning_policy_conformance_failed"
+          ] do
+        canonical = stub_chat_canonical(false)
+
+        stub_chat_orchestrator(
+          prepare: {:ok, canonical, %{}},
+          execute:
+            {:ok, canonical,
+             [
+               InferenceEvent.accepted(1_710_000_123_000),
+               InferenceEvent.failed(code, worker_message, false)
+             ]}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}]
+          })
+
+        assert conn.status == 500
+
+        assert Jason.decode!(conn.resp_body)["error"] == %{
+                 "code" => "internal_error",
+                 "message" => "Internal error",
+                 "param" => nil,
+                 "type" => "api_error"
+               }
+
+        refute conn.resp_body =~ code
+        refute conn.resp_body =~ worker_message
+      end
+    end
+
     test "SPEC 7.5.5 non-stream terminal conformance failure is a generic 500" do
       canonical = stub_chat_canonical(false)
 
@@ -1786,6 +1825,48 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       request = Requests.get_request_by_public_id(request_id)
       assert request.state == :failed
       assert_tool_serializer_failure!(request)
+    end
+
+    test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Chat errors" do
+      worker_message = "<think>worker marker bytes and model output</think>"
+
+      for code <- [
+            "reasoning_parser_conformance_failed",
+            "reasoning_policy_conformance_failed"
+          ] do
+        stub_chat_orchestrator(
+          prepare: {:ok, stub_chat_canonical(), %{}},
+          events: [
+            InferenceEvent.accepted(1_710_000_123_000),
+            InferenceEvent.failed(code, worker_message, false)
+          ],
+          execute: {:ok, stub_chat_canonical(), []}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}],
+            "stream" => true
+          })
+
+        assert conn.status == 200
+        events = parse_sse_body(conn.resp_body)
+
+        assert [{:error, payload}] =
+                 Enum.filter(events, fn {type, _payload} -> type == :error end)
+
+        assert payload["error"] == %{
+                 "code" => "internal_error",
+                 "message" => "Internal error",
+                 "param" => nil,
+                 "type" => "server_error"
+               }
+
+        refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+        refute conn.resp_body =~ code
+        refute conn.resp_body =~ worker_message
+      end
     end
 
     test "SPEC 7.5.5 streaming terminal conformance failure emits one generic SSE error" do

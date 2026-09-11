@@ -4,6 +4,7 @@ defmodule Orchard.Inference.ChatErrorTest do
   alias Orchard.API.InferenceControllerSupport
   alias Orchard.Inference.{ChatError, ModelLoadFailure}
   alias Orchard.InferenceEvent
+  alias Orchard.Requests.CapturePolicy
 
   test "prepare validation mappings preserve OpenAI envelope fields" do
     error = ChatError.from_prepare_reason({:validation, {:missing_required_field, "model"}})
@@ -186,6 +187,54 @@ defmodule Orchard.Inference.ChatErrorTest do
                error_code: code,
                error_message: message
              }
+    end
+  end
+
+  test "SPEC.md §7.5.3a reasoning conformance stays Controller-owned under every capture mode" do
+    worker_message = "<think>marker bytes and model output</think>"
+
+    for code <- [
+          "reasoning_parser_conformance_failed",
+          "reasoning_policy_conformance_failed"
+        ] do
+      error =
+        code
+        |> InferenceEvent.failed(worker_message, false)
+        |> ChatError.from_failed_event()
+
+      assert error.kind == :reasoning_conformance
+
+      assert ChatError.api_mapping(error) == %{
+               status: :internal_server_error,
+               type: "api_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: "internal_error",
+               message: "Internal error",
+               param: nil
+             }
+
+      assert ChatError.terminal_attrs(error) == %{
+               state: :failed,
+               http_status: 500,
+               error_code: "internal_error",
+               error_message: "Internal error"
+             }
+
+      for mode <- [:none, :metadata, :full] do
+        attrs =
+          error |> ChatError.terminal_attrs() |> then(&CapturePolicy.terminal_attrs(mode, &1))
+
+        assert attrs.error_code == "internal_error"
+        assert attrs.error_message in [nil, "Internal error"]
+        refute inspect(attrs) =~ code
+        refute inspect(attrs) =~ worker_message
+      end
     end
   end
 
