@@ -2272,6 +2272,7 @@ def generate_events(
     - ``{"kind": "output_text_delta", "delta": "..."}``
     - ``{"kind": "tool_call_delta", ...}``
     - ``{"kind": "token_delta", "token_ids": [...], "logprobs": [...]}``
+    - ``{"kind": "usage", "usage": {...}}``
     - ``{"kind": "completed", "finish_reason": "...", "usage": {...}}``
     - ``{"kind": "failed", "code": "...", ...}``  (via ``cancelled_event()``)
 
@@ -2282,6 +2283,14 @@ def generate_events(
     buffering once tool generation starts. Orchard-level EOS detection checks
     ``session.eos_token_ids`` per response. Cancel is checked every
     ``session.decode_cancel_stride`` tokens during decode.
+
+    Non-terminal ``usage`` events carry cumulative counters for the attempt,
+    never a per-event delta. They are paced on the same
+    ``session.decode_cancel_stride`` boundary to bound event volume, and a
+    final update is flushed immediately before each terminal event emitted
+    once decode has started, so a cancellation or a Controller-synthesized
+    terminal still leaves the latest lower bound on the stream. Counters never
+    decrease, and the terminal ``completed`` usage remains the exact total.
 
     NOTE(task-5): Prefill cancel is NOT cleanly interruptible. Upstream
     ``generate_step()`` has no cancel hook. Cancellation applies only after
