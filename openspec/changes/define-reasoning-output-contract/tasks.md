@@ -25,7 +25,7 @@
 
 ## 4. Implement parser, projection, commitment, and usage
 
-- [x] 4.1 Add provider-neutral stateful parser conformance fixtures for ordered decoded streams, chunk boundaries, malformed state, tool calls, and caller stops. The parser library and its parameterized corpus runner land unwired; production prompt-opened render-contract mappings stay empty and task 4.2 owns classifying live negotiated streams.
+- [ ] 4.1 Add provider-neutral stateful parser conformance fixtures for ordered decoded streams, chunk boundaries, malformed state, tool calls, and caller stops. The parser library and its parameterized corpus runner land unwired; production prompt-opened render-contract mappings stay empty and task 4.2 owns classifying live negotiated streams.
 - [ ] 4.2 Classify negotiated streams before tool-call parsing and stop matching while preserving the complete omitted legacy pipeline.
 - [ ] 4.3 Fail explicit final-only and structured modes closed without raw fallback or ambiguous-content leakage, including disabled-generation reasoning and enabled-generation absence.
 - [ ] 4.4 Add projection-selected Output Commitment for reasoning, final text, tool calls, and structured output.

@@ -3794,6 +3794,9 @@ Tool argument byte preservation applies after provider normalization under §7.5
 Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
 That failure MUST NOT fall back to raw blended output, expose the ambiguous bytes through an error, reclassify them as final text, or pass them to tool parsing.
+Ambiguity here is a property of the streaming seam rather than of the bytes, so a trailing partial-marker prefix retained at a chunk boundary is ambiguous only while further decoded output can still complete it.
+At the non-truncating `completed` and `stop` terminals only, and only when parser state is otherwise definitively final because no reasoning frame is open, such a retained prefix SHALL resolve as ordinary final-answer text rather than as a framing fragment.
+Genuinely open, incomplete, malformed, ambiguous, or otherwise unsatisfied reasoning state SHALL still fail closed, including an opened and unclosed reasoning frame, a prefix still retained at the truncating `length` terminal, and any state that cannot satisfy the pinned contract or the negotiated generation policy.
 The terminal failure SHALL be deterministic and non-retryable unless the failure occurred before model execution and independently satisfies the closed retry gates in §5.8.
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
