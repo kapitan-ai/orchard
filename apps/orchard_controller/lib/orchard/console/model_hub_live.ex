@@ -157,9 +157,15 @@ defmodule OrchardConsole.ModelHubLive do
     key = held_download_key(socket.assigns.download_jobs, repo, Map.get(params, "revision", ""))
 
     case Map.get(socket.assigns.download_jobs, key) do
-      %{status: :cancelled, key: {repo_id, revision}}
+      %{status: :cancelled, key: {repo_id, revision}} = snapshot
       when is_binary(revision) and revision != "" ->
-        {:noreply, start_download_via_coordinator(socket, repo_id, revision)}
+        {:noreply,
+         start_download_via_coordinator(
+           socket,
+           repo_id,
+           revision,
+           Map.get(snapshot, :catalog_version)
+         )}
 
       _ ->
         {:noreply, socket}
@@ -1308,7 +1314,10 @@ defmodule OrchardConsole.ModelHubLive do
         visible_download_key: {repo_id, revision}
       }
       when is_binary(repo_id) and repo_id != "" ->
-        {:noreply, start_download_via_coordinator(socket, repo_id, revision)}
+        catalog_version =
+          get_in(socket.assigns.download_jobs, [{repo_id, revision}, :catalog_version])
+
+        {:noreply, start_download_via_coordinator(socket, repo_id, revision, catalog_version)}
 
       _ ->
         {:noreply, socket}

@@ -30,6 +30,30 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
       "admission" => serialize_admission(canonical.admission),
       "resolved_policy" => serialize_resolved_policy(canonical.resolved_policy)
     }
+    |> maybe_put_reasoning(canonical.reasoning)
+  end
+
+  defp maybe_put_reasoning(serialized, %CanonicalRequest.Reasoning{
+         generation_policy: generation_policy,
+         projection: projection,
+         source: source,
+         effective_contract: %{mode: :legacy}
+       })
+       when generation_policy == :model_default and projection == :legacy_blended and
+              source == :omitted_public do
+    serialized
+  end
+
+  defp maybe_put_reasoning(
+         serialized,
+         %CanonicalRequest.Reasoning{effective_contract: %{mode: :negotiated}} = reasoning
+       ) do
+    Map.put(serialized, "reasoning", CanonicalRequest.Reasoning.to_wire(reasoning))
+  end
+
+  defp maybe_put_reasoning(_serialized, reasoning) do
+    raise ArgumentError,
+          "canonical request reasoning must be a supported legacy or negotiated contract before serialization, got: #{inspect(reasoning)}"
   end
 
   @spec sampling_params(CanonicalRequest.Sampling.t()) :: map()

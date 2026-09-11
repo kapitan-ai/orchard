@@ -66,6 +66,79 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
     end
   end
 
+  test "SPEC.md §7.2.7 permits typed attempt 2 acceptance-proof failure evidence" do
+    assert {:ok, attempt_2} =
+             InferenceAttemptResult.new(
+               "request_step.failed",
+               2,
+               failed_result(%{
+                 "failure_class" => "pre_acceptance_unavailable",
+                 "failure_code" => "runtime_incompatible",
+                 "node_id" => @node_2,
+                 "excluded_node_ids" => [@node_1],
+                 "retry_decision" => "not_retryable"
+               })
+             )
+
+    assert attempt_2["retry_decision"] == "not_retryable"
+
+    for {failure_class, failure_code} <- [
+          {"pre_acceptance_unavailable", "runtime_unavailable"},
+          {"runtime_failure", "runtime_incompatible"}
+        ] do
+      assert {:error, _reason} =
+               InferenceAttemptResult.new(
+                 "request_step.failed",
+                 2,
+                 failed_result(%{
+                   "failure_class" => failure_class,
+                   "failure_code" => failure_code,
+                   "node_id" => @node_2,
+                   "excluded_node_ids" => [@node_1],
+                   "retry_decision" => "not_retryable"
+                 })
+               )
+    end
+  end
+
+  test "SPEC.md §3.7.1 bounds the attempt 2 acceptance-proof exception to failed uncommitted evidence" do
+    acceptance_proof_evidence = %{
+      "failure_class" => "pre_acceptance_unavailable",
+      "failure_code" => "runtime_incompatible",
+      "node_id" => @node_2,
+      "excluded_node_ids" => [@node_1],
+      "retry_decision" => "not_retryable"
+    }
+
+    assert {:error, _timed_out_reason} =
+             InferenceAttemptResult.new(
+               "request_step.timed_out",
+               2,
+               failed_result(Map.put(acceptance_proof_evidence, "attempt_outcome", "timed_out"))
+             )
+
+    assert {:error, _interrupted_reason} =
+             InferenceAttemptResult.new(
+               "request_step.interrupted",
+               2,
+               failed_result(Map.put(acceptance_proof_evidence, "attempt_outcome", "interrupted"))
+             )
+
+    assert {:error, _committed_reason} =
+             InferenceAttemptResult.new(
+               "request_step.failed",
+               2,
+               failed_result(
+                 Map.merge(acceptance_proof_evidence, %{
+                   "accepted" => true,
+                   "output_committed" => true,
+                   "output_commitment_kind" => "text",
+                   "execution_resolution" => "terminated"
+                 })
+               )
+             )
+  end
+
   test "orphaned enriched fields and contradictory decisions fail closed" do
     assert InferenceAttemptResult.enriched?(%{"failure_class" => "runtime_failure"})
 
