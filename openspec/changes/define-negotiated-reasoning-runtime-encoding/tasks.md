@@ -9,7 +9,7 @@
 
 ## 2. Prerequisites and schema handoff
 
-- [ ] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
+- [x] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
 - [ ] 2.2 After this contract is accepted, re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically.
 - [ ] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage.
 
