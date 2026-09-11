@@ -5,7 +5,7 @@ defmodule Orchard.Models.Importer do
   Import steps per SPEC.md §6.5:
 
   1. Validate source path exists and is a directory
-  2. Parse and validate manifest.json
+  2. Parse and validate manifest.json plus any tool_capability_evidence.json sidecar
   3. Validate identity fields are safe path segments
   4. Check for duplicate (model_id + version)
   5. Copy bundle to a staging temp directory (rejecting symlinks)
@@ -58,6 +58,19 @@ defmodule Orchard.Models.Importer do
   @identity_pattern ~r/\A[a-zA-Z0-9][a-zA-Z0-9._\-\/]*\z/
 
   @doc """
+  Returns whether `value` is safe as a bundle identity path segment.
+
+  Callers that accept an operator-supplied `version` before a
+  bundle exists share this rule so an unsafe identity is rejected up front
+  instead of only after staging.
+  """
+  @spec identity_segment_safe?(term()) :: boolean()
+  def identity_segment_safe?(value) when is_binary(value),
+    do: validate_path_segment(value, "version") == :ok
+
+  def identity_segment_safe?(_value), do: false
+
+  @doc """
   Imports a model bundle from `source_path` into the artifact store and catalog.
 
   ## Options
@@ -86,7 +99,8 @@ defmodule Orchard.Models.Importer do
     result =
       with {:ok, manifest} <- maybe_top_up_resident_memory(staged_path, source_manifest),
            {:ok, manifest} <- ensure_chat_template(staged_path, manifest),
-           {:ok, manifest} <- maybe_run_eager_preflight(staged_path, manifest),
+           {:ok, _manifest} <- maybe_run_eager_preflight(staged_path, manifest),
+           {:ok, manifest} <- ManifestParser.parse_from_bundle(staged_path),
            {:ok, sha256} <- compute_sha256(staged_path),
            {:ok, dest_path} <- finalize_staged(staged_path, manifest, artifacts_root) do
         case insert_catalog_record(manifest, dest_path, sha256, activate?) do
@@ -134,6 +148,9 @@ defmodule Orchard.Models.Importer do
     cond do
       String.contains?(value, "..") ->
         {:error, {:validation, "#{field} contains path traversal sequence: #{inspect(value)}"}}
+
+      field == "version" and String.contains?(value, "/") ->
+        {:error, {:validation, "version must be a single path component"}}
 
       not Regex.match?(@identity_pattern, value) ->
         {:error, {:validation, "#{field} contains unsafe characters: #{inspect(value)}"}}
@@ -879,8 +896,23 @@ defmodule Orchard.Models.Importer do
     dest_path = artifact_destination_path(artifacts_root, model_id, version)
 
     with :ok <- validate_dest_contained(dest_path, artifacts_root, staged_path),
-         :ok <- validate_dest_fresh(dest_path, staged_path) do
+         :ok <- validate_dest_fresh(dest_path, staged_path),
+         :ok <-
+           validate_bundle_ancestors(
+             Path.dirname(Path.expand(dest_path)),
+             Path.expand(artifacts_root)
+           ) do
       move_staged_to_dest(staged_path, dest_path)
+    end
+  end
+
+  defp validate_bundle_ancestors(path, root) when path == root, do: :ok
+
+  defp validate_bundle_ancestors(path, root) do
+    if File.exists?(Path.join(path, "manifest.json")) do
+      {:error, {:destination_exists, "artifact destination is inside an existing bundle"}}
+    else
+      validate_bundle_ancestors(Path.dirname(path), root)
     end
   end
 
@@ -938,6 +970,7 @@ defmodule Orchard.Models.Importer do
       state: state,
       format: manifest.format,
       capabilities: manifest.capabilities,
+      capability_evidence: capability_evidence_to_map(manifest.capability_evidence),
       tokenizer: tokenizer_to_map(manifest.tokenizer),
       artifact_uri: artifact_uri,
       artifact_source_uri: artifact_uri,
@@ -953,6 +986,37 @@ defmodule Orchard.Models.Importer do
 
     Models.create_model(attrs)
   end
+
+  defp capability_evidence_to_map(nil), do: nil
+
+  defp capability_evidence_to_map(%ModelManifest.CapabilityEvidence{
+         tool_calling: %ModelManifest.CapabilityEvidence.ToolCalling{} = tool_calling
+       }) do
+    %{
+      "tool_calling" =>
+        %{
+          "source_repository" => tool_calling.source_repository,
+          "source_revision" => tool_calling.source_revision,
+          "base_model_refs" => tool_calling.base_model_refs,
+          "preflight" => %{
+            "parser_recognized" => tool_calling.preflight.parser_recognized,
+            "definition_rendered" => tool_calling.preflight.definition_rendered,
+            "history_rendered" => tool_calling.preflight.history_rendered
+          },
+          "result" => tool_calling.result,
+          "runtime_qualification" => tool_calling.runtime_qualification
+        }
+        |> maybe_put_evidence_value(
+          "tokenizer_config_sha256",
+          tool_calling.tokenizer_config_sha256
+        )
+        |> maybe_put_evidence_value("chat_template_sha256", tool_calling.chat_template_sha256)
+        |> maybe_put_evidence_value("tool_parser_type", tool_calling.tool_parser_type)
+    }
+  end
+
+  defp maybe_put_evidence_value(map, _key, nil), do: map
+  defp maybe_put_evidence_value(map, key, value), do: Map.put(map, key, value)
 
   defp tokenizer_to_map(%ModelManifest.Tokenizer{kind: kind, path: path}) do
     %{"kind" => kind, "path" => path}

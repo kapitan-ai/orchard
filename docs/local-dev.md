@@ -1131,7 +1131,8 @@ CI, `make test`, or product validation gate. It pins
 `mlx-community/Qwen3-0.6B-4bit` at revision
 `73e3e38d981303bc594367cd910ea6eb48349da8`, copies files with `cp -L` into
 `~/.cache/orchard/mlx-smoke-bundles/qwen3-0.6b-4bit` (outside the repo), and
-writes `manifest.json` through `Orchard.Models.BundleBuilder`.
+writes `manifest.json` plus the `tool_capability_evidence.json` sidecar through
+`Orchard.Models.BundleBuilder`.
 
 ```bash
 mise exec -- ./scripts/prepare-mlx-smoke-bundle.sh

@@ -908,6 +908,11 @@ Result cards group publisher and model name with a neutral model icon, capabilit
 Provider-supplied library, parameter count, and update date are shown when available; model names are not used to infer specifications.
 The setup action is labelled Import this revision to distinguish entering setup from starting the download.
 
+The Catalog step also carries a secondary repair form, shown only when no download job is opened, with a required Repair as new Catalog version text well and an Import repair version submit control.
+Its note states that the action reimports the same exact source revision under a distinct Catalog version and neither alters an existing Catalog record nor establishes runtime qualification.
+The control shares the download action's disabled conditions, and an empty, source-revision-matching, over-long, or path-unsafe entry renders as a field error without starting a transfer.
+`SPEC.md` §6.4 owns the admission and immutability contract behind this action.
+
 Download progress and recovery appear inside the Catalog import card, before provider details, without a separate scroll destination.
 A sticky Downloads summary stays reachable while browsing and reports running and paused counts separately.
 Its expandable list preserves each repository and exact revision, including terminal results, and supports reopening any job.

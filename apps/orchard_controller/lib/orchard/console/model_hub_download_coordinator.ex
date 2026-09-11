@@ -49,6 +49,7 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
 
     * `:activate` — activate model after import (default: `true`)
     * `:revision` — HF revision to download (default: resolved by seam)
+    * `:catalog_version` — distinct Catalog version for an explicit repair import
   """
   def start_download(repo_id, opts \\ []) do
     GenServer.call(__MODULE__, {:start_download, repo_id, opts})
@@ -404,6 +405,11 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     seam_opts =
       if requested_revision,
         do: Keyword.put(seam_opts, :revision, requested_revision),
+        else: seam_opts
+
+    seam_opts =
+      if Keyword.has_key?(opts, :catalog_version),
+        do: Keyword.put(seam_opts, :catalog_version, Keyword.fetch!(opts, :catalog_version)),
         else: seam_opts
 
     case start_download_import(ref, repo_id, seam_opts) do

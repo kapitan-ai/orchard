@@ -27,6 +27,16 @@ Issue #118 and issue #196 retain ownership of pilot model selection, pilot evide
 Issue #190 retains ownership of reasoning controls, parsing, events, API projection, and persistence.
 This policy supplies record and claim vocabulary only.
 
+### Catalog tool-capability admission is not qualification
+
+A Model Hub-generated `tool_capability_evidence.json` sidecar records only the exact source repository and revision, downloaded tokenizer/template artifact digests, parser identity, and bounded definition/history rendering result used to admit `tool_calling` to the Catalog. The importer retains the sidecar in the Artifact Bundle and copies it to the immutable Catalog model record without changing the closed worker manifest schema. It is not a manual qualification record. `runtime_qualification: not_established` remains explicit even when the Catalog capability is declared.
+
+Positive sidecar claims, including offline-authored claims, must match the bundled config/template digests and parser declaration and pass a fresh static preflight during bundle parsing. An unverifiable positive claim rejects the bundle; it does not establish admission or qualification.
+
+A declared Catalog capability permits the existing request-time capability gate; it does not support a claim, qualify a runtime, authorize server-side tool execution, or prove a particular model family. Missing evidence, an unknown tuple, or conflicting evidence remains chat-only. Base-model references are provenance only and cannot substitute for exact tuple evidence.
+
+If a capability repair is needed, use the Console Model Hub repair action to enter a distinct explicit Catalog version for the same immutable source revision. Do not edit a Catalog row or its stored Artifact Bundle. The new Artifact Bundle requires its own qualification analysis; no prior support claim transfers automatically.
+
 ## Vocabulary and outcome model
 
 Qualification results are capability-scoped, not ordered levels.

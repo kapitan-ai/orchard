@@ -383,6 +383,163 @@ defmodule Orchard.Models.BundleBuilderTest do
     end
   end
 
+  # -- Revision-bound tool capability evidence ------------------------------
+
+  describe "tool capability admission" do
+    test "declares tool calling only after a recognized parser and bounded rendering preflight",
+         ctx do
+      template =
+        "{% for tool in tools %}{{ tool.function.name }} {{ tool.function.description }}{% endfor %}" <>
+          "{% for message in messages %}{{ message.content }}{% endfor %}"
+
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: template,
+        tokenizer_config: %{"tool_parser_type" => "glm47"}
+      )
+
+      detail_metadata = %{
+        revision_sha: @revision_sha,
+        metadata_summary: %{base_models: ["zai-org/GLM-4.7-Flash"]}
+      }
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => [],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 0,
+          "wrapper_tool_markers_count" => 0
+        })
+
+      {:ok, manifest} =
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, detail_metadata)
+          ManifestParser.parse_from_bundle(ctx.tmp_dir)
+        end)
+
+      assert manifest.capabilities == ["chat", "tool_calling"]
+
+      refute Map.has_key?(
+               Jason.decode!(File.read!(Path.join(ctx.tmp_dir, "manifest.json"))),
+               "capability_evidence"
+             )
+
+      assert File.exists?(Path.join(ctx.tmp_dir, "tool_capability_evidence.json"))
+
+      evidence = manifest.capability_evidence.tool_calling
+      assert evidence.source_repository == @repo_id
+      assert evidence.source_revision == @revision_sha
+      assert evidence.base_model_refs == ["zai-org/GLM-4.7-Flash"]
+      assert evidence.tool_parser_type == "glm47"
+
+      assert evidence.preflight == %{
+               parser_recognized: true,
+               definition_rendered: true,
+               history_rendered: true
+             }
+
+      assert evidence.result == "declared"
+      assert evidence.runtime_qualification == "not_established"
+      assert is_binary(evidence.tokenizer_config_sha256)
+      assert is_binary(evidence.chat_template_sha256)
+    end
+
+    test "keeps an unknown parser chat-only without inferring capability from metadata", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for message in messages %}{{ message.content }}{% endfor %}",
+        tokenizer_config: %{"tool_parser_type" => "unqualified_parser"}
+      )
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => [],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 0,
+            "wrapper_tool_markers_count" => 0
+          },
+          compatible_preflight_result(),
+          %{
+            "contract_version" => 3,
+            "ok" => true,
+            "result" => %{
+              "parser_recognized" => false,
+              "definition_rendered" => true,
+              "history_rendered" => true
+            }
+          }
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.capabilities == ["chat"]
+      assert manifest.capability_evidence.tool_calling.result == "conflicted"
+      assert manifest.capability_evidence.tool_calling.preflight.parser_recognized == false
+      assert manifest.capability_evidence.tool_calling.runtime_qualification == "not_established"
+    end
+
+    test "logs why a declared parser stayed chat-only when the preflight fails", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for message in messages %}{{ message.content }}{% endfor %}",
+        tokenizer_config: %{"tool_parser_type" => "glm47"}
+      )
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => [],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 0,
+            "wrapper_tool_markers_count" => 0
+          },
+          compatible_preflight_result(),
+          %{
+            "contract_version" => 3,
+            "ok" => false,
+            "error" => %{"category" => "missing_assets", "message" => "helper is unavailable"}
+          }
+        )
+
+      log =
+        capture_log(fn ->
+          with_inference_overrides([tokenizer_executable: helper], fn ->
+            assert {:ok, _} =
+                     BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          end)
+        end)
+
+      assert log =~ "tool capability preflight failed"
+      assert log =~ "helper_error"
+      assert log =~ "missing_assets"
+      assert log =~ "helper is unavailable"
+      refute log =~ "invalid_response"
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.capabilities == ["chat"]
+      assert manifest.capability_evidence.tool_calling.result == "unknown"
+    end
+
+    test "records unknown evidence when the immutable tuple has no parser or template", ctx do
+      write_minimal_bundle(ctx.tmp_dir)
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.capabilities == ["chat"]
+      assert manifest.capability_evidence.tool_calling.result == "unknown"
+
+      assert manifest.capability_evidence.tool_calling.preflight == %{
+               parser_recognized: false,
+               definition_rendered: false,
+               history_rendered: false
+             }
+    end
+  end
+
   # -- Safe tokenization catalog --------------------------------------------
 
   describe "safe tokenization catalog" do
@@ -398,11 +555,12 @@ defmodule Orchard.Models.BundleBuilderTest do
           "wrapper_tool_markers_count" => 2
         })
 
-      with_inference_overrides([tokenizer_executable: helper], fn ->
-        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
-      end)
+      {:ok, manifest} =
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          ManifestParser.parse_from_bundle(ctx.tmp_dir)
+        end)
 
-      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.tokenizer.config_path == "tokenizer_config.json"
 
       assert manifest.safe_tokenization.control_tokens == [
@@ -709,11 +867,12 @@ defmodule Orchard.Models.BundleBuilderTest do
           "wrapper_tool_markers_count" => 2
         })
 
-      with_inference_overrides([tokenizer_executable: helper], fn ->
-        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
-      end)
+      {:ok, manifest} =
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          ManifestParser.parse_from_bundle(ctx.tmp_dir)
+        end)
 
-      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.safe_tokenization.control_tokens == ["</tool_call>", "<tool_call>"]
       assert manifest.safe_tokenization.catalog_source.added_tokens_count == 0
       assert manifest.safe_tokenization.catalog_source.wrapper_tool_markers_count == 2
@@ -1209,7 +1368,12 @@ defmodule Orchard.Models.BundleBuilderTest do
     end)
   end
 
-  defp write_catalog_helper!(dir, result, preflight_result \\ compatible_preflight_result()) do
+  defp write_catalog_helper!(
+         dir,
+         result,
+         preflight_result \\ compatible_preflight_result(),
+         tool_capability_result \\ compatible_tool_capability_result()
+       ) do
     catalog_response =
       Jason.encode!(%{
         "contract_version" => 3,
@@ -1218,11 +1382,17 @@ defmodule Orchard.Models.BundleBuilderTest do
       })
 
     preflight_response = Jason.encode!(preflight_result)
+    tool_capability_response = Jason.encode!(tool_capability_result)
 
     write_executable!(dir, "catalog-helper.sh", """
     #!/bin/sh
     payload=$(cat)
     case "$payload" in
+      *'"command":"preflight_tool_capability"'*)
+        cat <<'JSON'
+    #{tool_capability_response}
+    JSON
+        ;;
       *'"command":"preflight_safe_tokenization"'*)
         cat <<'JSON'
     #{preflight_response}
@@ -1235,6 +1405,18 @@ defmodule Orchard.Models.BundleBuilderTest do
         ;;
     esac
     """)
+  end
+
+  defp compatible_tool_capability_result do
+    %{
+      "contract_version" => 3,
+      "ok" => true,
+      "result" => %{
+        "parser_recognized" => true,
+        "definition_rendered" => true,
+        "history_rendered" => true
+      }
+    }
   end
 
   defp compatible_preflight_result do

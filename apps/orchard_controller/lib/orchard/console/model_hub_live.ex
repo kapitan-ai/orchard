@@ -5,6 +5,7 @@ defmodule OrchardConsole.ModelHubLive do
 
   use OrchardConsole, :live_view
 
+  alias OrchardConsole.ModelHub
   alias OrchardConsole.Redaction
   alias Phoenix.LiveView.AsyncResult
   alias Phoenix.LiveView.JS
@@ -198,6 +199,12 @@ defmodule OrchardConsole.ModelHubLive do
   def handle_event("download_model", _params, socket) do
     handle_download_model(socket)
   end
+
+  def handle_event("repair_model", %{"model_hub_repair" => params}, socket) do
+    handle_repair_model(socket, Map.get(params, "catalog_version"))
+  end
+
+  def handle_event("repair_model", _params, socket), do: {:noreply, socket}
 
   def handle_event("retry_download", _params, socket) do
     handle_retry_download(socket)
@@ -620,6 +627,47 @@ defmodule OrchardConsole.ModelHubLive do
                         This repository is gated on Hugging Face. Console download is unavailable.
                       </p>
                     </div>
+
+                    <.form
+                      :if={@journey_step == :catalog and is_nil(@opened_download_key)}
+                      for={@repair_form}
+                      id="model-hub-repair-form"
+                      phx-submit="repair_model"
+                      class="mt-5 space-y-3 border-t border-slate-200 pt-5 dark:border-slate-700"
+                    >
+                      <.input
+                        field={@repair_form[:catalog_version]}
+                        id="model-hub-repair-catalog-version"
+                        type="text"
+                        label="Repair as new Catalog version"
+                        placeholder="source-revision-tool-admission"
+                        autocomplete="off"
+                        required
+                      />
+                      <div class="flex flex-wrap items-center gap-3">
+                        <.button
+                          id="model-hub-repair-button"
+                          variant={:secondary}
+                          type="submit"
+                          disabled={
+                            @model_detail.gated == true or
+                              not present_text?(@model_detail.revision_sha) or
+                              download_busy_for_selected?(@download_jobs, @selected_repo_id) or
+                              revision_refresh_required_for_selected?(
+                                @download_status,
+                                @download_error,
+                                @visible_download_key,
+                                @model_detail
+                              )
+                          }
+                        >
+                          Import repair version
+                        </.button>
+                        <p id="model-hub-repair-note" class="text-xs text-slate-600 dark:text-slate-300">
+                          Reimports this exact source revision under a distinct Catalog version. It does not alter an existing Catalog record or establish runtime qualification.
+                        </p>
+                      </div>
+                    </.form>
                   </div>
 
                   <p :if={@opened_download_note} id="model-hub-opened-download-note" role="status" class="mt-4 text-sm text-slate-600 dark:text-slate-300">{@opened_download_note}</p>
@@ -1196,6 +1244,57 @@ defmodule OrchardConsole.ModelHubLive do
     end
   end
 
+  defp handle_repair_model(socket, raw_catalog_version) do
+    assigns = socket.assigns
+
+    if download_ready_for_selected?(assigns) do
+      case ModelHub.validate_catalog_version(
+             raw_catalog_version,
+             assigns.model_detail.revision_sha
+           ) do
+        {:ok, catalog_version} ->
+          {:noreply,
+           socket
+           |> assign(repair_form: repair_form())
+           |> start_download_via_coordinator(
+             assigns.model_detail.repo_id,
+             assigns.model_detail.revision_sha,
+             catalog_version
+           )}
+
+        {:error, message} ->
+          {:noreply,
+           assign_repair_form_error(socket, normalize_query(raw_catalog_version), message)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp assign_repair_form_error(socket, catalog_version, message) do
+    assign(socket,
+      repair_form:
+        to_form(%{"catalog_version" => catalog_version},
+          as: :model_hub_repair,
+          errors: [catalog_version: {message, []}]
+        )
+    )
+  end
+
+  defp download_ready_for_selected?(assigns) do
+    assigns.journey_step == :catalog and assigns.detail_status == :ok and
+      not is_nil(assigns.model_detail) and assigns.model_detail.gated != true and
+      present_text?(assigns.model_detail.revision_sha) and
+      not revision_refresh_required_for_selected?(
+        assigns.download_status,
+        assigns.download_error,
+        assigns.visible_download_key,
+        assigns.model_detail
+      ) and not download_busy_for_selected?(assigns)
+  end
+
+  defp repair_form, do: to_form(%{"catalog_version" => ""}, as: :model_hub_repair)
+
   defp handle_retry_download(
          %{assigns: %{download_error: %{code: "hf_revision_changed"}}} = socket
        ),
@@ -1221,6 +1320,7 @@ defmodule OrchardConsole.ModelHubLive do
       journey_step: :discover,
       node_inventory: AsyncResult.loading(),
       form: to_form(@empty_form, as: :model_hub_search),
+      repair_form: repair_form(),
       search_query: "",
       capability_filter: "all",
       search_status: :loading,
@@ -1301,6 +1401,7 @@ defmodule OrchardConsole.ModelHubLive do
         detail_status: :loading,
         model_detail: nil,
         detail_error: nil,
+        repair_form: repair_form(),
         active_detail_ref: ref
       )
 
@@ -1324,6 +1425,7 @@ defmodule OrchardConsole.ModelHubLive do
       detail_status: :idle,
       model_detail: nil,
       detail_error: nil,
+      repair_form: repair_form(),
       active_detail_ref: nil,
       active_detail_pid: nil
     )
@@ -1348,8 +1450,16 @@ defmodule OrchardConsole.ModelHubLive do
     )
   end
 
-  defp start_download_via_coordinator(socket, repo_id, revision) when is_binary(repo_id) do
-    case download_coordinator_impl().start_download(repo_id, activate: false, revision: revision) do
+  defp start_download_via_coordinator(socket, repo_id, revision, catalog_version \\ nil)
+       when is_binary(repo_id) do
+    opts = [activate: false, revision: revision]
+
+    opts =
+      if is_nil(catalog_version),
+        do: opts,
+        else: Keyword.put(opts, :catalog_version, catalog_version)
+
+    case download_coordinator_impl().start_download(repo_id, opts) do
       {:ok, snapshot} ->
         apply_download_snapshot(socket, snapshot)
 

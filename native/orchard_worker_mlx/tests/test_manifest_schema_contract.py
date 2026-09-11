@@ -6,12 +6,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from orchard_worker_mlx.model_loader import (
     _KNOWN_CHAT_TEMPLATE_KEYS,
     _KNOWN_RUNTIME_REQUIREMENTS_KEYS,
     _KNOWN_TOKENIZER_KEYS,
     _KNOWN_TOP_LEVEL_KEYS,
-    BundleManifest,
+    ModelLoaderError,
     parse_manifest_json,
 )
 
@@ -56,10 +58,24 @@ def test_worker_known_keys_match_manifest_schema_contract() -> None:
     assert "safe_tokenization" not in contract["worker_validates_nested_keys"]
 
 
-def test_parse_manifest_json_accepts_top_level_safe_tokenization_without_parsing_it() -> None:
+def test_parse_manifest_json_rejects_top_level_capability_evidence() -> None:
     payload = {
         "artifact_layout": "directory",
         "capabilities": ["chat"],
+        "capability_evidence": {
+            "tool_calling": {
+                "source_repository": "test-org/tiny-llm",
+                "source_revision": "0123456789abcdef",
+                "base_model_refs": [],
+                "preflight": {
+                    "parser_recognized": False,
+                    "definition_rendered": False,
+                    "history_rendered": False,
+                },
+                "result": "unknown",
+                "runtime_qualification": "not_established",
+            }
+        },
         "chat_template": {
             "path": "chat_template.jinja",
             "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -107,9 +123,5 @@ def test_parse_manifest_json_accepts_top_level_safe_tokenization_without_parsing
         "version": "mlx-q4-v1",
     }
 
-    manifest = parse_manifest_json(json.dumps(payload))
-
-    assert isinstance(manifest, BundleManifest)
-    assert manifest.model_id == "test-org/tiny-llm"
-    assert manifest.tokenizer.path == "tokenizer.json"
-    assert not hasattr(manifest, "safe_tokenization")
+    with pytest.raises(ModelLoaderError, match="unknown top-level keys"):
+        parse_manifest_json(json.dumps(payload))

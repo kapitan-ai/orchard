@@ -21,6 +21,7 @@ defmodule Orchard.Models.Model do
     field(:state, Ecto.Enum, values: @states)
     field(:format, :string)
     field(:capabilities, {:array, :string}, default: [])
+    field(:capability_evidence, :map)
     field(:tokenizer, :map, default: %{})
     field(:artifact_uri, :string)
     field(:artifact_source_uri, :string)
@@ -51,6 +52,7 @@ defmodule Orchard.Models.Model do
       :state,
       :format,
       :capabilities,
+      :capability_evidence,
       :tokenizer,
       :artifact_uri,
       :artifact_source_uri,
@@ -84,6 +86,7 @@ defmodule Orchard.Models.Model do
     |> validate_number(:prefill_workspace_bytes_per_token, greater_than_or_equal_to: 0)
     |> validate_optional_positive(:max_context_tokens)
     |> validate_capabilities()
+    |> validate_capability_evidence()
     |> unique_constraint([:model_id, :version])
   end
 
@@ -91,6 +94,14 @@ defmodule Orchard.Models.Model do
     case get_field(changeset, field) do
       nil -> changeset
       _ -> validate_number(changeset, field, greater_than: 0)
+    end
+  end
+
+  defp validate_capability_evidence(%Ecto.Changeset{} = changeset) do
+    case get_field(changeset, :capability_evidence) do
+      nil -> changeset
+      value when is_map(value) -> changeset
+      _other -> add_error(changeset, :capability_evidence, "must be an object when present")
     end
   end
 

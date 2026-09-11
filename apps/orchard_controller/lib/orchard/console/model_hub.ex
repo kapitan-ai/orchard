@@ -40,9 +40,31 @@ defmodule OrchardConsole.ModelHub do
           message: String.t()
         }
 
+  @catalog_version_max_bytes 128
+  @catalog_version_blank_message "Choose a new Catalog version."
+
   # ===========================================================================
   # Public API
   # ===========================================================================
+
+  @doc """
+  Normalizes and validates an operator-entered repair Catalog version.
+
+  Returns `{:ok, catalog_version}` with the trimmed value, or `{:error, message}`
+  with an operator-facing message. The version becomes both the manifest
+  `version` and an artifact path segment, so it is checked against the importer's
+  identity rules here — before any provider or transfer work — and the Console
+  mirrors this call for immediate form feedback.
+  """
+  @spec validate_catalog_version(term(), term()) :: {:ok, String.t()} | {:error, String.t()}
+  def validate_catalog_version(version, source_revision) when is_binary(version) do
+    version
+    |> String.trim()
+    |> validate_trimmed_catalog_version(source_revision)
+  end
+
+  def validate_catalog_version(_version, _source_revision),
+    do: {:error, @catalog_version_blank_message}
 
   @doc """
   Starts an async model search and returns `{:ok, pid}` immediately.
@@ -72,6 +94,8 @@ defmodule OrchardConsole.ModelHub do
     * `:activate` — activate model after import (default: `true`)
     * `:revision` - Selected immutable HF revision (default: detail's `revision_sha`).
       Refreshed provider detail must still match this revision before downloading.
+    * `:catalog_version` - Explicit distinct Catalog version for a normal reimport.
+      The source revision remains the selected immutable HF revision.
   """
   @spec start_download_import(pid(), term(), String.t(), keyword()) :: {:ok, pid()}
   def start_download_import(owner, ref, repo_id, opts \\ []) do
@@ -342,7 +366,14 @@ defmodule OrchardConsole.ModelHub do
       )
     end
 
-    {detail, effective_revision}
+    catalog_version = resolve_catalog_version(opts, effective_revision)
+
+    detail_for_bundle =
+      detail
+      |> Map.put(:revision_sha, catalog_version)
+      |> Map.put(:source_revision_sha, effective_revision)
+
+    {detail_for_bundle, effective_revision}
   end
 
   defp download_model!(downloader, owner, ref, repo_id, revision, temp_dir, opts) do
@@ -545,6 +576,43 @@ defmodule OrchardConsole.ModelHub do
     end
   end
 
+  defp resolve_catalog_version(opts, default_version) do
+    case Keyword.get(opts, :catalog_version) do
+      nil ->
+        default_version
+
+      version ->
+        case validate_catalog_version(version, default_version) do
+          {:ok, catalog_version} ->
+            catalog_version
+
+          {:error, message} ->
+            throw({:pipeline_error, {:error, invalid_catalog_version_error(message)}})
+        end
+    end
+  end
+
+  defp validate_trimmed_catalog_version("", _source_revision),
+    do: {:error, @catalog_version_blank_message}
+
+  defp validate_trimmed_catalog_version(version, version),
+    do: {:error, "Catalog version must differ from the source revision."}
+
+  defp validate_trimmed_catalog_version(version, _source_revision) do
+    cond do
+      byte_size(version) > @catalog_version_max_bytes ->
+        {:error, "Catalog version must be at most #{@catalog_version_max_bytes} characters."}
+
+      not Importer.identity_segment_safe?(version) ->
+        {:error,
+         "Catalog version may use only letters, digits, dots, underscores, and hyphens, " <>
+           "and must start with a letter or digit."}
+
+      true ->
+        {:ok, version}
+    end
+  end
+
   defp resolve_revision_from_detail(detail) do
     case Map.get(detail, :revision_sha) do
       sha when is_binary(sha) and sha != "" -> sha
@@ -593,6 +661,10 @@ defmodule OrchardConsole.ModelHub do
       code: "download_import_failed",
       message: "Model download and import failed."
     }
+  end
+
+  defp invalid_catalog_version_error(message) do
+    %{status: :error, code: "invalid_catalog_version", message: message}
   end
 
   defp revision_unavailable_error do

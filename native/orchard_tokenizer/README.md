@@ -16,8 +16,11 @@ helper before scheduling, as required by `../../SPEC.md` §3.5.
 The package implements the tokenizer helper contract used by the controller,
 including Hugging Face tokenizer JSON, SentencePiece tokenizer models,
 chat-template rendering, tool-aware payload fields, token counting, and
-safe-tokenization catalog/segmentation support. See package tests for the
-validated surface.
+safe-tokenization catalog/segmentation support. It also answers a tokenizer-only
+tool-capability preflight that renders fixed synthetic values against the
+downloaded template and returns bounded booleans for parser recognition and
+definition/history rendering, never prompts or generated content. See package
+tests for the validated surface.
 
 ## Validation
 

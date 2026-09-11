@@ -547,6 +547,7 @@ Explicit structured prior-reasoning input is unsupported in the first reasoning-
 Tooling contract rules:
 
 * request `tools` entries MAY be inline function definitions or registry refs of the form `tool://<name>@<version>`
+* when present, an inline function definition's `parameters` field SHALL be a JSON object; non-object schema values SHALL fail request validation before model lookup, tokenization, scheduling, or dispatch
 * `tooling.requested_tools` SHALL preserve the normalized request `tools` array in original order
 * `tooling.tools` SHALL contain only controller-resolved runtime-ready tool definitions; registry ref placeholders SHALL NOT be forwarded past request preparation
 * `tooling.registry_snapshot.entries` SHALL capture controller-side registry provenance for ref-backed tools only and SHALL be empty when no registry refs were requested
@@ -2010,9 +2011,21 @@ When present, it SHALL be a non-empty string but SHALL NOT supply, override, or 
 BundleBuilder SHALL retain its current legacy emission during this compatibility phase.
 Producer omission MUST be implemented only in a separate accepted change that cites repo-owned minimum-consumer-version evidence proving every supported consumer accepts omission.
 
+A Model Hub-generated Artifact Bundle MAY carry an optional `tool_capability_evidence.json` sidecar without a manifest-version bump. The top-level Model Manifest remains closed so an N-1 Worker Runtime can load it unchanged. The sidecar SHALL be a closed typed object with `tool_calling` containing the source repository and exact immutable source revision, sorted unique base-model references as provenance only, tokenizer-config and chat-template SHA-256 values when present, the exact parser type when present, a closed boolean preflight result (`parser_recognized`, `definition_rendered`, and `history_rendered`), a result of `declared`, `unknown`, or `conflicted`, and `runtime_qualification: "not_established"`.
+
+The Model Hub SHALL derive this sidecar only from the resolved repository/revision and downloaded bundle artifacts. It SHALL NOT infer capability from a model name, family-name substring, publisher tag, base-model reference, arbitrary model card text, generic tag absence, or a successful chat-only render. `declared` requires all three preflight booleans true: an exact known parser type, a bounded tool-definition render, and a bounded structured assistant function-call plus tool-result history render. The history render SHALL use the same contract-v3 safe argument normalization required by §3.5. `declared` is the only result that may place `tool_calling` in `capabilities`; `unknown` and `conflicted` SHALL remain chat-only. A Model Hub declaration is Catalog admission evidence only; it SHALL NOT establish runtime qualification, a support claim, or server-side tool execution.
+
+Manifest `capabilities` alone SHALL NOT admit `tool_calling` for any bundle, including an offline-authored Model Bundle. Manifest parsing SHALL drop a `tool_calling` entry unless the same bundle carries a sidecar whose result is `declared`, and SHALL leave every other manifest capability unchanged. A `declared` sidecar whose manifest omits `tool_calling`, or whose preflight booleans are not all true, SHALL fail manifest validation rather than admit a partial tuple.
+
+For every `declared` sidecar, bundle parsing SHALL verify both recorded digests against the manifest-selected tokenizer config and chat template, verify the parser declaration against that config, and rerun the bounded tokenizer-only tool preflight. Missing assets or digests, mismatches, unsuccessful renders, and unavailable preflight SHALL fail validation; producer-supplied booleans alone are not proof.
+
+The importer SHALL validate and preserve the sidecar in the Artifact Bundle, copy it to the immutable Catalog model record, and reject duplicate `{model_id, version}` identities. It SHALL NOT mutate a Catalog row to repair a capability. The Console Model Hub SHALL offer an operator repair action that uses the normal download/build/import path against the same exact source revision and a distinct explicit Catalog version; the new manifest records the distinct Catalog version as its `version`, while the new sidecar SHALL continue to record the original source revision. Such reimport does not by itself transfer qualification or support evidence between artifacts.
+
+Catalog versions SHALL be single path components without separators. Namespaced model IDs remain permitted, but an import destination SHALL NOT overlap or descend beneath an existing Artifact Bundle.
+
 `models.artifact_sha256` SHALL remain the authoritative lowercase SHA-256 digest of the final stored Artifact Bundle after secure staging and all importer-owned mutations.
 The existing digest algorithm recursively collects regular files, rejects symlinks and unsupported entries, sorts bundle-relative paths, and hashes each relative path followed by the file's exact bytes.
-The digest domain SHALL include the relative path and exact final bytes of `manifest.json`.
+The digest domain SHALL include the relative path and exact final bytes of `manifest.json` and, when present, `tool_capability_evidence.json`.
 The authoritative value SHALL NOT be written into `manifest.json`, because doing so would make the digest depend on its own encoded value.
 This contract change SHALL NOT rehash existing Catalog rows or introduce a new digest algorithm.
 
@@ -4082,6 +4095,7 @@ create table models (
   state model_catalog_state not null default 'registered',
   format text not null check (format in ('mlx', 'gguf')),
   capabilities jsonb not null default '{}'::jsonb,
+  capability_evidence jsonb,
   tokenizer jsonb not null default '{}'::jsonb,
   artifact_uri text,
   artifact_sha256 text not null,

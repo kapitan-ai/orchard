@@ -163,6 +163,18 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
   end
 
   describe "start_download/2" do
+    test "passes an explicit repair catalog version to the Model Hub seam" do
+      assert {:ok, _snapshot} =
+               Coordinator.start_download("owner/model",
+                 revision: "source-revision",
+                 catalog_version: "catalog-repair"
+               )
+
+      assert_receive {:stub_download, _owner, _ref, "owner/model", opts}
+      assert opts[:revision] == "source-revision"
+      assert opts[:catalog_version] == "catalog-repair"
+    end
+
     test "starts download and returns starting snapshot" do
       assert {:ok, snapshot} = Coordinator.start_download("owner/model")
 

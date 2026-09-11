@@ -813,6 +813,27 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert body["error"]["message"] =~ "tool://lookup_weather@2026-04-10"
     end
 
+    test "rejects non-object inline tool parameters before model lookup or dispatch" do
+      conn =
+        post_chat(%{
+          "model" => "not-looked-up@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "tools" => [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "parameters" => "nope"}
+            }
+          ]
+        })
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "invalid_value"
+      assert body["error"]["param"] == "tools"
+      assert body["error"]["message"] =~ "function parameters must be an object"
+    end
+
     @tag :db
     test "tool-calling request against a model without tool_calling capability returns tooling_not_supported",
          %{bundle: bundle} do

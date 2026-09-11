@@ -58,6 +58,23 @@ defmodule Orchard.Models.ManifestParserTest do
 
       assert {:error, {:manifest_not_found, _}} = ManifestParser.parse_from_bundle(dir)
     end
+
+    test "rejects unknown keys in the capability evidence sidecar" do
+      dir = System.tmp_dir!() |> Path.join("invalid_tool_evidence_#{:rand.uniform(100_000)}")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "manifest.json"), valid_manifest_json())
+
+      File.write!(
+        Path.join(dir, "tool_capability_evidence.json"),
+        Jason.encode!(%{"tool_calling" => %{"result" => "unknown", "unexpected" => true}})
+      )
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_from_bundle(dir)
+      assert message =~ "unknown keys in :tool_calling"
+      assert message =~ "unexpected"
+    end
   end
 
   describe "parse_json/1" do
@@ -185,6 +202,30 @@ defmodule Orchard.Models.ManifestParserTest do
 
       assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
       assert message =~ "unknown keys in :safe"
+    end
+
+    test "rejects top-level capability evidence to preserve the N-1 worker manifest schema" do
+      json =
+        valid_manifest_json()
+        |> Jason.decode!()
+        |> Map.put("capability_evidence", %{})
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "unknown manifest keys"
+      assert message =~ "capability_evidence"
+    end
+
+    test "keeps a raw tool capability chat-only without a capability evidence sidecar" do
+      json =
+        valid_manifest_json()
+        |> Jason.decode!()
+        |> Map.put("capabilities", ["chat", "tool_calling"])
+        |> Jason.encode!()
+
+      assert {:ok, manifest} = ManifestParser.parse_json(json)
+      assert manifest.capabilities == ["chat"]
+      assert manifest.capability_evidence == nil
     end
 
     test "returns validation error when safe_tokenization is not an object" do

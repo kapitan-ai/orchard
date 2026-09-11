@@ -74,6 +74,132 @@ defmodule Orchard.Models.ImporterTest do
       assert message =~ "already exists"
     end
 
+    test "keeps an imported tuple immutable and admits a capability repair only at a new version",
+         %{
+           artifacts_root: artifacts_root
+         } do
+      original_bundle =
+        create_bundle(artifacts_root, %{
+          "capability_evidence" => tool_capability_evidence("unknown"),
+          "version" => "mlx-q4-v1"
+        })
+
+      assert {:ok, original} =
+               Importer.import_bundle(original_bundle, artifacts_root: artifacts_root)
+
+      original_manifest = read_imported_manifest!(original)
+
+      duplicate_bundle =
+        create_bundle(artifacts_root, %{
+          "capabilities" => ["chat", "tool_calling"],
+          "capability_evidence" => tool_capability_evidence("declared"),
+          "version" => "mlx-q4-v1"
+        })
+
+      bind_tool_evidence!(duplicate_bundle)
+
+      assert {:error, {:duplicate, _message}} =
+               Importer.import_bundle(duplicate_bundle, artifacts_root: artifacts_root)
+
+      assert read_imported_manifest!(original) == original_manifest
+
+      repaired_bundle =
+        create_bundle(artifacts_root, %{
+          "capabilities" => ["chat", "tool_calling"],
+          "capability_evidence" => tool_capability_evidence("declared"),
+          "version" => "mlx-q4-v1-tool-admission"
+        })
+
+      bind_tool_evidence!(repaired_bundle)
+
+      assert {:ok, repaired} =
+               Importer.import_bundle(repaired_bundle, artifacts_root: artifacts_root)
+
+      assert repaired.version == "mlx-q4-v1-tool-admission"
+      assert repaired.capabilities == ["chat", "tool_calling"]
+
+      refute Map.has_key?(read_imported_manifest!(repaired), "capability_evidence")
+      assert repaired.capability_evidence["tool_calling"]["result"] == "declared"
+
+      assert read_imported_tool_capability_evidence!(repaired)["tool_calling"]["result"] ==
+               "declared"
+    end
+
+    test "SPEC 6.4 rejects forged and stale offline declarations at parser and import boundaries",
+         %{artifacts_root: root} do
+      for corruption <- [
+            :config_digest,
+            :template_digest,
+            :parser,
+            :unproven_render,
+            :missing_digest
+          ] do
+        bundle =
+          create_bundle(root, %{
+            "capabilities" => ["chat", "tool_calling"],
+            "capability_evidence" => tool_capability_evidence("declared")
+          })
+
+        bind_tool_evidence!(bundle)
+        evidence_path = Path.join(bundle, "tool_capability_evidence.json")
+        evidence = evidence_path |> File.read!() |> Jason.decode!()
+
+        evidence =
+          case corruption do
+            :config_digest ->
+              put_in(
+                evidence,
+                ["tool_calling", "tokenizer_config_sha256"],
+                String.duplicate("a", 64)
+              )
+
+            :template_digest ->
+              put_in(
+                evidence,
+                ["tool_calling", "chat_template_sha256"],
+                String.duplicate("b", 64)
+              )
+
+            :parser ->
+              put_in(evidence, ["tool_calling", "tool_parser_type"], "unknown-parser")
+
+            :missing_digest ->
+              update_in(evidence, ["tool_calling"], &Map.delete(&1, "tokenizer_config_sha256"))
+
+            :unproven_render ->
+              File.write!(Path.join(bundle, "chat_template.jinja"), "chat only")
+              put_in(evidence, ["tool_calling", "chat_template_sha256"], hash_string("chat only"))
+          end
+
+        File.write!(evidence_path, Jason.encode!(evidence))
+        assert {:error, {:validation, message}} = ManifestParser.parse_from_bundle(bundle)
+        assert message =~ "does not verify"
+        assert {:error, {:validation, _}} = Importer.import_bundle(bundle, artifacts_root: root)
+        assert Models.get_model_by_identity("test-org/tiny-llm", "mlx-q4-v1") == nil
+      end
+    end
+
+    test "SPEC 6.4 distinct identities cannot nest inside an immutable artifact",
+         %{artifacts_root: root} do
+      assert {:ok, original} = Importer.import_bundle(@fixture_bundle, artifacts_root: root)
+
+      for overrides <- [
+            %{"version" => "mlx-q4-v1/tool-admission"},
+            %{"model_id" => "test-org/tiny-llm/mlx-q4-v1/nested", "version" => "repair"}
+          ] do
+        bundle = create_bundle(root, overrides)
+        assert {:error, _} = Importer.import_bundle(bundle, artifacts_root: root)
+        assert Models.get_model!(original.id) == original
+
+        assert {:ok, digest} =
+                 Orchard.ArtifactBundle.tree_sha256(
+                   String.replace_prefix(original.artifact_uri, "file://", "")
+                 )
+
+        assert digest == original.artifact_sha256
+      end
+    end
+
     test "rejects nonexistent source path", %{artifacts_root: artifacts_root} do
       assert {:error, {:source_not_found, "/nonexistent/path"}} =
                Importer.import_bundle("/nonexistent/path", artifacts_root: artifacts_root)
@@ -1079,6 +1205,79 @@ defmodule Orchard.Models.ImporterTest do
     })
   end
 
+  defp tool_capability_evidence("unknown") do
+    %{
+      "tool_calling" => %{
+        "source_repository" => "mlx-community/test-model",
+        "source_revision" => "0123456789abcdef",
+        "base_model_refs" => [],
+        "preflight" => %{
+          "parser_recognized" => false,
+          "definition_rendered" => false,
+          "history_rendered" => false
+        },
+        "result" => "unknown",
+        "runtime_qualification" => "not_established"
+      }
+    }
+  end
+
+  defp tool_capability_evidence("declared") do
+    %{
+      "tool_calling" => %{
+        "source_repository" => "mlx-community/test-model",
+        "source_revision" => "0123456789abcdef",
+        "base_model_refs" => [],
+        "preflight" => %{
+          "parser_recognized" => true,
+          "definition_rendered" => true,
+          "history_rendered" => true
+        },
+        "result" => "declared",
+        "runtime_qualification" => "not_established"
+      }
+    }
+  end
+
+  defp bind_tool_evidence!(bundle) do
+    config = ~s({"tool_parser_type":"qwen2"})
+
+    template = """
+    {% for tool in tools %}{{ tool.function.name }} {{ tool.function.description }}{% endfor %}
+    {% for message in messages %}{{ message.content }}
+    {% if message.role == 'assistant' %}{% for call in message.tool_calls %}
+    {{ call.function.name }} {{ call.function.arguments.value }}{% endfor %}{% endif %}{% endfor %}
+    """
+
+    File.write!(Path.join(bundle, "tokenizer_config.json"), config)
+    File.write!(Path.join(bundle, "chat_template.jinja"), template)
+    manifest_path = Path.join(bundle, "manifest.json")
+    manifest = manifest_path |> File.read!() |> Jason.decode!()
+
+    manifest =
+      manifest
+      |> put_in(["tokenizer", "config_path"], "tokenizer_config.json")
+      |> Map.put("chat_template", %{
+        "path" => "chat_template.jinja",
+        "sha256" => hash_string(template)
+      })
+
+    File.write!(manifest_path, Jason.encode!(manifest))
+
+    evidence =
+      tool_capability_evidence("declared")
+      |> update_in(
+        ["tool_calling"],
+        &Map.merge(&1, %{
+          "tokenizer_config_sha256" => hash_string(config),
+          "chat_template_sha256" => hash_string(template),
+          "tool_parser_type" => "qwen2"
+        })
+      )
+
+    File.write!(Path.join(bundle, "tool_capability_evidence.json"), Jason.encode!(evidence))
+  end
+
   defp base_manifest_without_resident do
     %{
       "model_id" => "test-org/tiny-llm",
@@ -1105,6 +1304,14 @@ defmodule Orchard.Models.ImporterTest do
     model
     |> artifact_path()
     |> Path.join("manifest.json")
+    |> File.read!()
+    |> Jason.decode!()
+  end
+
+  defp read_imported_tool_capability_evidence!(model) do
+    model
+    |> artifact_path()
+    |> Path.join("tool_capability_evidence.json")
     |> File.read!()
     |> Jason.decode!()
   end
@@ -1362,6 +1569,8 @@ defmodule Orchard.Models.ImporterTest do
   end
 
   defp write_manifest(bundle_dir, overrides) do
+    {capability_evidence, manifest_overrides} = Map.pop(overrides, "capability_evidence")
+
     manifest =
       Map.merge(
         %{
@@ -1380,9 +1589,16 @@ defmodule Orchard.Models.ImporterTest do
           "tokenizer" => %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
           "runtime_requirements" => %{"adapter" => "mlx_lm", "min_agent_capability" => "mlx"}
         },
-        overrides
+        manifest_overrides
       )
 
     File.write!(Path.join(bundle_dir, "manifest.json"), Jason.encode!(manifest))
+
+    if capability_evidence do
+      File.write!(
+        Path.join(bundle_dir, "tool_capability_evidence.json"),
+        Jason.encode!(capability_evidence)
+      )
+    end
   end
 end

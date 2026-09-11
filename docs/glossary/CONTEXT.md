@@ -642,6 +642,11 @@ _Avoid_: Runtime status, hashed artifact contents
 A filesystem copy and hash unit for model contents after Orchard validates and imports a Model Bundle.
 _Avoid_: Model Manifest, Model Catalog record
 
+**Tool Capability Evidence**:
+A closed sidecar record inside a Model Hub-generated bundle that binds a Catalog `tool_calling` admission decision to the exact source revision, artifact digests, parser identity, and bounded static template preflight it came from, and that always states `runtime_qualification: not_established`.
+It is Catalog admission evidence only and creates no runtime, execution, or support authority.
+_Avoid_: Model Qualification, Support Claim, Tested Capability Envelope, runtime readiness
+
 **Model Cache Verification Receipt**:
 Node-local verification fast-path evidence outside an Artifact Bundle that binds the Catalog digest and canonical cache path to an unchanged complete filesystem inventory.
 It is not Model Placement identity, a Cache Residency resource, or a competing integrity digest.

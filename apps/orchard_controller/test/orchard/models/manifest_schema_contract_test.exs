@@ -266,6 +266,40 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
     assert manifest.safe_tokenization.catalog_source.extra_count == 0
   end
 
+  test "SPEC 6.4 keeps capability evidence out of the N-1 worker manifest schema" do
+    json =
+      base_manifest_map()
+      |> Map.put("capability_evidence", tool_capability_evidence("declared"))
+      |> Jason.encode!()
+
+    assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+    assert message =~ "unknown manifest keys"
+  end
+
+  test "SPEC 6.4 a structurally valid declared sidecar cannot replace missing artifacts" do
+    bundle_path =
+      Path.join(System.tmp_dir!(), "manifest-schema-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(bundle_path)
+
+    on_exit(fn -> File.rm_rf!(bundle_path) end)
+
+    File.write!(
+      Path.join(bundle_path, "manifest.json"),
+      base_manifest_map()
+      |> Map.put("capabilities", ["chat", "tool_calling"])
+      |> Jason.encode!()
+    )
+
+    File.write!(
+      Path.join(bundle_path, "tool_capability_evidence.json"),
+      Jason.encode!(tool_capability_evidence("declared"))
+    )
+
+    assert {:error, {:validation, message}} = ManifestParser.parse_from_bundle(bundle_path)
+    assert message =~ "does not verify against bundle artifacts"
+  end
+
   test "SPEC 6.4 parser accepts compatible optional safe-tokenization metadata literal" do
     control_tokens = ["<extra>", "<|im_end|>", "<|im_start|>"]
 
@@ -334,6 +368,26 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
 
     assert manifest.safe_tokenization.incompatibility_reason.sentinel_index == 0
     assert manifest.safe_tokenization.incompatibility_reason.first_diff_offset == 12
+  end
+
+  defp tool_capability_evidence("declared") do
+    %{
+      "tool_calling" => %{
+        "source_repository" => "mlx-community/example",
+        "source_revision" => "0123456789abcdef",
+        "base_model_refs" => ["upstream/example"],
+        "tokenizer_config_sha256" => String.duplicate("a", 64),
+        "chat_template_sha256" => String.duplicate("b", 64),
+        "tool_parser_type" => "glm47",
+        "preflight" => %{
+          "parser_recognized" => true,
+          "definition_rendered" => true,
+          "history_rendered" => true
+        },
+        "result" => "declared",
+        "runtime_qualification" => "not_established"
+      }
+    }
   end
 
   defp parser_contract_key_sets do
