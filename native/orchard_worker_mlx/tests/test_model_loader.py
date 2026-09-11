@@ -2278,19 +2278,16 @@ class TestDefaultMlxDepsSamplerWiring:
             )
 
         monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
-        sys.modules["mlx_lm"] = types.SimpleNamespace()
-        sys.modules.pop("mlx_lm.sample_utils", None)
+        monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace())
+        monkeypatch.delitem(sys.modules, "mlx_lm.sample_utils", raising=False)
         bundle = tmp_path / "bundle"
         weights = bundle / "weights"
         weights.mkdir(parents=True)
         (weights / "config.json").write_text(json.dumps({"model_type": "llama"}))
 
-        try:
-            deps = _default_mlx_deps()
-            deps.load_model(weights, lazy=True, strict=False, trust_remote_code=True)
-            deps.load_tokenizer(bundle / "tokenizer.json")
-        finally:
-            sys.modules.pop("mlx_lm", None)
+        deps = _default_mlx_deps()
+        deps.load_model(weights, lazy=True, strict=False, trust_remote_code=True)
+        deps.load_tokenizer(bundle / "tokenizer.json")
 
         assert model_calls == [(weights, {"lazy": True, "strict": False})]
         assert tokenizer_calls == [bundle]
