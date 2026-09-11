@@ -83,7 +83,36 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  @doc false
+  @doc """
+  Dispatches an already-persisted Request through the normal lifecycle.
+
+  Callers must provide a validated canonical request that corresponds to the
+  persisted row; this function does not create another Request row.
+  """
+  @spec execute_persisted(Request.t(), CanonicalRequest.t(), map(), keyword()) :: execute_result()
+  def execute_persisted(
+        %Request{} = db_request,
+        %CanonicalRequest{} = canonical,
+        model,
+        opts \\ []
+      ) do
+    previous_started_at = Process.put({__MODULE__, :metrics_started_at}, System.monotonic_time())
+
+    try do
+      with :ok <- validate_resolved_tooling(canonical) do
+        dispatch_persisted_request(db_request, canonical, model, opts)
+      end
+    after
+      restore_metrics_started_at(previous_started_at)
+    end
+  end
+
+  @doc """
+  Validates a scheduler selection before dispatch.
+
+  A selection cannot use a Node excluded by an earlier failed attempt and must
+  identify its selected target consistently.
+  """
   @spec validate_scheduler_selection(map(), [Ecto.UUID.t()]) ::
           :ok | {:error, {:dispatch_failed, :identity_unresolved}}
   def validate_scheduler_selection(_schedule, []), do: :ok
@@ -101,10 +130,19 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp do_execute(canonical, model, opts) do
+    idempotency = Keyword.get(opts, :idempotency)
+
+    with :ok <- validate_resolved_tooling(canonical),
+         :ok <- put_request_validated_context(canonical),
+         {:ok, db_request, canonical} <- persist_request(canonical, model, idempotency) do
+      dispatch_persisted_request(db_request, canonical, model, opts)
+    end
+  end
+
+  defp dispatch_persisted_request(db_request, canonical, model, opts) do
     event_handler = Keyword.get(opts, :event_handler)
     caller = Keyword.get(opts, :caller, self())
     success_persistence = Keyword.get(opts, :success_persistence)
-    idempotency = Keyword.get(opts, :idempotency)
 
     step_event_appender =
       Keyword.get(opts, :step_event_appender, &Requests.append_request_step_events/2)
@@ -112,28 +150,24 @@ defmodule Orchard.Inference.RequestOrchestrator do
     terminal_persister =
       Keyword.get(opts, :terminal_persister, &Requests.mark_terminal_with_step_events/3)
 
-    with :ok <- validate_resolved_tooling(canonical),
-         :ok <- put_request_validated_context(canonical),
-         {:ok, db_request, canonical} <- persist_request(canonical, model, idempotency) do
-      put_request_persisted_context(db_request, canonical)
+    put_request_persisted_context(db_request, canonical)
 
-      DomainMetrics.input_accounted(
-        canonical.tenant_id,
-        canonical.model_ref.model_id,
-        canonical.input_token_count
-      )
+    DomainMetrics.input_accounted(
+      canonical.tenant_id,
+      canonical.model_ref.model_id,
+      canonical.input_token_count
+    )
 
-      start_and_dispatch(
-        db_request,
-        canonical,
-        model,
-        caller,
-        event_handler,
-        success_persistence,
-        step_event_appender,
-        terminal_persister
-      )
-    end
+    start_and_dispatch(
+      db_request,
+      canonical,
+      model,
+      caller,
+      event_handler,
+      success_persistence,
+      step_event_appender,
+      terminal_persister
+    )
   end
 
   defp start_and_dispatch(
@@ -2780,7 +2814,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     }
   end
 
-  defp validate_resolved_tooling(%CanonicalRequest{tooling: tooling}) do
+  @doc """
+  Validates that canonical tooling was fully resolved before dispatch.
+  """
+  @spec validate_resolved_tooling(CanonicalRequest.t()) ::
+          :ok | {:error, {:invalid_canonical_tooling, String.t()}}
+  def validate_resolved_tooling(%CanonicalRequest{tooling: tooling}) do
     case unresolved_tooling_reason(tooling) do
       nil -> :ok
       reason -> {:error, {:invalid_canonical_tooling, reason}}
