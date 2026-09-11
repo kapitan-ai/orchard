@@ -1918,6 +1918,22 @@ defmodule OrchardConsole.ModelHubLiveTest do
         repo = hd(results).repo_id
         version = "rev-llama-tool-admission"
 
+        assert {:ok, original} =
+                 Orchard.Models.create_model(%{
+                   model_id: repo,
+                   version: "rev-llama",
+                   state: :registered,
+                   format: "mlx",
+                   artifact_uri: "file:///synthetic-existing-model",
+                   artifact_sha256: String.duplicate("a", 64),
+                   artifact_size_bytes: 0,
+                   resident_memory_bytes: 0,
+                   kv_cache_bytes_per_token: 0,
+                   prefill_workspace_bytes_per_token: 0,
+                   tokenizer: %{},
+                   runtime_requirements: %{}
+                 })
+
         render_submit(view, "repair_model", %{
           "model_hub_repair" => %{"catalog_version" => version}
         })
@@ -1946,7 +1962,12 @@ defmodule OrchardConsole.ModelHubLiveTest do
             view
           end
 
-        render_click(view, @event, %{"repo_id" => repo, "revision" => "rev-llama"})
+        render_click(view, @event, %{
+          "repo_id" => repo,
+          "revision" => "rev-llama",
+          "catalog_version" => "forged-browser-version"
+        })
+
         assert_receive {:stub_download_ref, _new_ref, ^repo, retry_opts}
         assert retry_opts[:revision] == "rev-llama"
 
@@ -1956,8 +1977,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
           retry: retry_opts[:catalog_version]
         }
 
-        IO.inspect(observed, label: "P2 repair #{@terminal} remount=#{@remount}")
         assert observed == %{starting: version, terminal: version, retry: version}
+        assert Orchard.Models.get_model!(original.id) == original
       end
     end
 

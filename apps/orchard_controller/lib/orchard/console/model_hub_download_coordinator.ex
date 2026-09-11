@@ -15,6 +15,7 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
       %{
         key: {repo_id, requested_revision},
         repo_id: String.t(),
+        catalog_version: String.t() | nil,
         status: :starting | :downloading | :preparing | :importing | :completed | :error,
         progress: map() | nil,
         result: map() | nil,
@@ -383,7 +384,10 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     requested_revision = normalize_revision(Keyword.get(opts, :revision))
 
     # Build provisional starting snapshot
-    snapshot = starting_snapshot(repo_id, requested_revision)
+    snapshot =
+      repo_id
+      |> starting_snapshot(requested_revision)
+      |> Map.put(:catalog_version, Keyword.get(opts, :catalog_version))
 
     # Insert provisional job BEFORE calling seam (prevents race with fast task messages)
     job = %{

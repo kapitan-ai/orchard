@@ -8,6 +8,8 @@
 - [x] 2.1 Add tokenizer-only preflight for recognized parser plus synthetic definition and structured-history rendering.
 - [x] 2.2 Generate fail-closed evidence and Catalog capabilities in BundleBuilder without model-name heuristics.
 - [x] 2.3 Preserve sidecar provenance in the Artifact Bundle and Catalog through normal import, keep the worker manifest N-1 compatible, and keep duplicate identities immutable.
+- [x] 2.4 Coordinate concurrent Artifact Bundle publication through Postgres and reject staged identity changes.
+- [x] 2.5 Retain the server-owned repair Catalog version through retry, restart, and remount.
 
 ## 3. Request safety
 
@@ -18,3 +20,4 @@
 
 - [x] 4.1 Run focused Elixir and native tests, strict OpenSpec validation, and the full applicable Orchard quality workflow.
 - [ ] 4.2 Commit, run the no-mistakes AXI pipeline, push, create a PR, and wait for CI checks-passed without merging.
+- [ ] 4.3 Repeat the full applicable Elixir quality workflow for publication coordination and repair-version retention.

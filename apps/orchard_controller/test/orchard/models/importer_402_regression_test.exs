@@ -1,15 +1,17 @@
 defmodule Orchard.Models.Importer402RegressionTest do
   use Orchard.DataCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ArtifactBundle
   alias Orchard.Models
   alias Orchard.Models.Importer
 
   @fixture Path.expand("../../fixtures/bundles/test-model-bundle", __DIR__)
 
-  # Investigation-only copy of the exact production AST. The only inserted code
-  # is a message barrier before staging or after destination validation. All
-  # validation, filesystem operations and catalog calls remain the real code.
+  # Compile a renamed production AST with barriers at otherwise private race
+  # boundaries. No filesystem, parser or database operations are replaced.
+  # The separate public-entrypoint test verifies the actual module's lock too;
+  # this instrumentation is not a cross-BEAM or crash-recovery test.
   setup_all do
     source = Path.expand("../../../lib/orchard/models/importer.ex", __DIR__)
     ast = source |> File.read!() |> Code.string_to_quoted!()
@@ -29,6 +31,12 @@ defmodule Orchard.Models.Importer402RegressionTest do
 
           {:defp, meta, [head, [do: body]]}
 
+        {{:., _, [{:__aliases__, _, [:File]}, :rm_rf]}, _, [{:dest_path, _, _}]} = call ->
+          quote do
+            Orchard.Models.Importer402RegressionTest.barrier(:cleanup_destination)
+            unquote(call)
+          end
+
         other ->
           other
       end)
@@ -37,31 +45,187 @@ defmodule Orchard.Models.Importer402RegressionTest do
     :ok
   end
 
-  setup do
+  setup tags do
     root = Path.join(System.tmp_dir!(), "orchard-402-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf!(root) end)
+
+    if tags[:unboxed], do: Sandbox.checkin(Repo)
+
+    on_exit(fn ->
+      if tags[:unboxed] do
+        Sandbox.unboxed_run(Repo, fn ->
+          Repo.delete_all(
+            from(model in Models.Model,
+              where: like(model.artifact_uri, ^("file://" <> root <> "/%"))
+            )
+          )
+        end)
+      end
+
+      File.rm_rf!(root)
+    end)
+
     %{root: root, artifacts: Path.join(root, "artifacts")}
   end
 
+  @tag :unboxed
   test "SPEC 6.4/6.5 concurrent overlapping imports preserve every catalog digest", ctx do
     outer = bundle(ctx.root, "outer", "owner/model", "v1")
     inner = bundle(ctx.root, "inner", "owner/model/v1/nested", "repair")
-    task = paused_import(inner, ctx.artifacts, :move_staged_to_dest)
+    parent = self()
+
+    task =
+      session_task(fn ->
+        Process.put(:import_barrier, {:move_staged_to_dest, parent})
+
+        apply(Orchard.Models.Importer402Instrumented, :import_bundle, [
+          inner,
+          [artifacts_root: ctx.artifacts]
+        ])
+      end)
+
     assert_receive {:barrier, :move_staged_to_dest, pid}
+    assert_receive {:session, ^pid, inner_backend}
     refute File.exists?(Path.join(ctx.artifacts, "owner/model/v1"))
 
-    assert {:ok, original} = Importer.import_bundle(outer, artifacts_root: ctx.artifacts)
-    assert_digest(original)
+    contender =
+      session_task(fn -> Importer.import_bundle(outer, artifacts_root: ctx.artifacts) end)
+
+    contender_pid = contender.pid
+    assert_receive {:session, ^contender_pid, outer_backend}
+    refute inner_backend == outer_backend
+
+    # The old implementation completes A here; the coordinated implementation
+    # waits on B's database lock. Neither ordering relies on a timed sleep.
+    observed = await_publication_or_lock(contender, outer_backend, 500)
     send(pid, :continue)
     nested_result = Task.await(task)
-    rows = Models.list_models()
-    IO.inspect({nested_result, Enum.map(rows, &{&1.model_id, &1.version})}, label: "P1 outcome")
 
-    # Re-read the surviving rows, not just the return values from import.
+    outer_result =
+      case observed do
+        {:finished, result} -> result
+        :waiting -> Task.await(contender)
+      end
+
+    rows = Sandbox.unboxed_run(Repo, &Models.list_models/0)
+
     Enum.each(rows, &assert_digest/1)
-    assert match?({:error, _}, nested_result)
-    assert Path.wildcard(Path.join(ctx.artifacts, ".staging-*")) == []
+    assert Enum.count([outer_result, nested_result], &match?({:ok, _}, &1)) == 1
+    assert Enum.count([outer_result, nested_result], &match?({:error, _}, &1)) == 1
+    assert Path.wildcard(Path.join(ctx.artifacts, ".staging-*"), match_dot: true) == []
+  end
+
+  @tag :unboxed
+  test "SPEC 6.5 failed catalog publication cleans up before another importer can publish below it",
+       ctx do
+    source = bundle(ctx.root, "source", "owner/model", "v1")
+    parent = self()
+
+    failed =
+      session_task(fn ->
+        Process.put(:import_barrier, {:stage_bundle, parent})
+
+        apply(Orchard.Models.Importer402Instrumented, :import_bundle, [
+          source,
+          [artifacts_root: ctx.artifacts]
+        ])
+      end)
+
+    assert_receive {:barrier, :stage_bundle, failed_pid}
+    assert_receive {:session, ^failed_pid, failed_backend}
+
+    # A concurrent import into another root wins the Catalog identity after the
+    # first importer checked for duplicates, forcing insertion-time rollback.
+    original_root = Path.join(ctx.root, "original-artifacts")
+
+    assert {:ok, original} =
+             Sandbox.unboxed_run(Repo, fn ->
+               Importer.import_bundle(source, artifacts_root: original_root)
+             end)
+
+    send(failed_pid, {:continue, :cleanup_destination})
+    assert_receive {:barrier, :cleanup_destination, ^failed_pid}
+
+    nested = bundle(ctx.root, "nested", "owner/model/v1/nested", "repair")
+
+    contender =
+      session_task(fn -> Importer.import_bundle(nested, artifacts_root: ctx.artifacts) end)
+
+    contender_pid = contender.pid
+    assert_receive {:session, ^contender_pid, contender_backend}
+    refute failed_backend == contender_backend
+    observed = await_publication_or_lock(contender, contender_backend, 500)
+    send(failed_pid, :continue)
+
+    assert {:error, %Ecto.Changeset{}} = Task.await(failed)
+
+    result =
+      case observed do
+        {:finished, result} -> result
+        :waiting -> Task.await(contender)
+      end
+
+    assert {:ok, repaired} = result
+    assert_digest(original)
+    assert_digest(repaired)
+    assert Path.wildcard(Path.join(ctx.artifacts, ".staging-*"), match_dot: true) == []
+  end
+
+  @tag :unboxed
+  test "SPEC 6.5 public imports contend on the same database publication guard", ctx do
+    source = bundle(ctx.root, "source", "owner/model", "v1")
+    nested = bundle(ctx.root, "nested", "owner/model/v1/nested", "repair")
+    parent = self()
+
+    holder =
+      session_task(fn ->
+        Repo.transaction(fn ->
+          Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+            "orchard:models:artifact-publication"
+          ])
+
+          send(parent, :guard_held)
+
+          receive do
+            :release -> :ok
+          after
+            10_000 -> raise "publication guard was not released"
+          end
+        end)
+      end)
+
+    assert_receive :guard_held
+
+    tasks =
+      for bundle <- [source, nested] do
+        task =
+          session_task(fn -> Importer.import_bundle(bundle, artifacts_root: ctx.artifacts) end)
+
+        pid = task.pid
+        assert_receive {:session, ^pid, backend}
+        assert :waiting == await_publication_or_lock(task, backend, 500)
+        task
+      end
+
+    send(holder.pid, :release)
+    assert {:ok, :ok} = Task.await(holder)
+    results = Enum.map(tasks, &Task.await/1)
+    assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+    assert Enum.count(results, &match?({:error, _}, &1)) == 1
+    Sandbox.unboxed_run(Repo, fn -> Enum.each(Models.list_models(), &assert_digest/1) end)
+    assert Path.wildcard(Path.join(ctx.artifacts, ".staging-*"), match_dot: true) == []
+  end
+
+  test "SPEC 6.5 staging uses UUIDs rather than counters local to a controller or CLI VM", ctx do
+    source = bundle(ctx.root, "source", "owner/model", "v1")
+    task = paused_import(source, ctx.artifacts, :move_staged_to_dest)
+    assert_receive {:barrier, :move_staged_to_dest, pid}
+    [staged] = Path.wildcard(Path.join(ctx.artifacts, ".staging-*"), match_dot: true)
+    suffix = staged |> Path.basename() |> String.replace_prefix(".staging-", "")
+    send(pid, :continue)
+    assert {:ok, model} = Task.await(task)
+    assert {:ok, ^suffix} = Ecto.UUID.cast(suffix)
+    assert_digest(model)
   end
 
   for replacement <- ["v2/nested", "v2"] do
@@ -80,10 +244,9 @@ defmodule Orchard.Models.Importer402RegressionTest do
         result: result,
         rows: Enum.map(Models.list_models(), &{&1.model_id, &1.version}),
         stored: Path.wildcard(Path.join(ctx.artifacts, "**/manifest.json")),
-        staging: Path.wildcard(Path.join(ctx.artifacts, ".staging-*"))
+        staging: Path.wildcard(Path.join(ctx.artifacts, ".staging-*"), match_dot: true)
       }
 
-      IO.inspect(observed, label: "P2 staged identity #{@replacement}")
       assert match?({:error, _}, result)
       assert observed.rows == []
       assert observed.stored == []
@@ -112,6 +275,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
 
         receive do
           :continue -> :ok
+          {:continue, next_point} -> Process.put(:import_barrier, {next_point, parent})
         after
           10_000 -> raise "investigation barrier was not released"
         end
@@ -132,6 +296,49 @@ defmodule Orchard.Models.Importer402RegressionTest do
         [artifacts_root: artifacts]
       ])
     end)
+  end
+
+  defp session_task(fun) do
+    parent = self()
+
+    Task.async(fn ->
+      Sandbox.unboxed_run(Repo, fn ->
+        [[backend]] = Repo.query!("SELECT pg_backend_pid()").rows
+        send(parent, {:session, self(), backend})
+        fun.()
+      end)
+    end)
+  end
+
+  defp await_publication_or_lock(_task, _backend, 0),
+    do: flunk("import neither published nor waited for its lock")
+
+  defp await_publication_or_lock(task, backend, attempts) do
+    case Task.yield(task, 0) do
+      {:ok, result} ->
+        {:finished, result}
+
+      nil ->
+        waiting =
+          Sandbox.unboxed_run(Repo, fn ->
+            Repo.query!(
+              """
+              SELECT EXISTS (
+                SELECT 1 FROM pg_locks
+                WHERE pid = $1 AND locktype = 'advisory' AND NOT granted
+              )
+              """,
+              [backend]
+            ).rows
+          end)
+
+        if waiting == [[true]] do
+          :waiting
+        else
+          Process.sleep(10)
+          await_publication_or_lock(task, backend, attempts - 1)
+        end
+    end
   end
 
   defp bundle(root, name, model_id, version) do
