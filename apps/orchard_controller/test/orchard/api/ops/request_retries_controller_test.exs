@@ -22,10 +22,10 @@ defmodule Orchard.API.Ops.RequestRetriesControllerTest do
   alias Orchard.API.Router
   alias Orchard.Governance
   alias Orchard.Governance.RoleBinding
+  alias Orchard.Models.Access
   alias Orchard.Repo
   alias Orchard.Requests
 
-  import Orchard.TestSupport.ModelRequestFixtures
   import Orchard.TestSupport.OperatorRetryFixtures
 
   setup do
@@ -80,7 +80,7 @@ defmodule Orchard.API.Ops.RequestRetriesControllerTest do
 
     test "creates and dispatches a descendant in the source tenant for a cluster-scoped operator" do
       source_tenant = create_tenant!("operator-retry-source", :full)
-      model = create_model!()
+      model = create_granted_model!(source_tenant)
       source = create_full_legacy_source!(source_tenant, model, state: :failed)
       source_id = source.id
       token = operator_token!("operator-retry-cluster-operator")
@@ -107,7 +107,7 @@ defmodule Orchard.API.Ops.RequestRetriesControllerTest do
 
     test "returns retry_source_unavailable without creating a descendant for a retained negotiated snapshot" do
       source_tenant = create_tenant!("operator-retry-negotiated", :full)
-      model = create_model!()
+      model = create_granted_model!(source_tenant)
       source = create_full_legacy_source!(source_tenant, model, state: :failed)
       token = operator_token!("operator-retry-negotiated-operator")
 
@@ -136,9 +136,33 @@ defmodule Orchard.API.Ops.RequestRetriesControllerTest do
       refute_receive {:operator_retry_scheduled, _, _}
     end
 
+    test "returns retry_source_not_authorized without creating a descendant for a revoked grant" do
+      source_tenant = create_tenant!("operator-retry-revoked", :full)
+      model = create_granted_model!(source_tenant)
+      source = create_full_legacy_source!(source_tenant, model, state: :failed)
+      token = operator_token!("operator-retry-revoked-operator")
+
+      assert {:ok, _revocation} = Access.revoke_model_access(source_tenant, model)
+
+      conn = post_retry(token, source.public_id)
+
+      assert conn.status == 409
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => %{
+                 "code" => "retry_source_not_authorized",
+                 "message" =>
+                   "Retry source Tenant is no longer authorized for an active source Model."
+               }
+             }
+
+      assert descendant_count(source.id) == 0
+      refute_receive {:operator_retry_scheduled, _, _}
+    end
+
     test "returns retry_source_not_eligible without creating a descendant for a nonterminal source" do
       source_tenant = create_tenant!("operator-retry-active", :full)
-      model = create_model!()
+      model = create_granted_model!(source_tenant)
       source = create_full_legacy_source!(source_tenant, model, state: :running)
       token = operator_token!("operator-retry-active-operator")
 

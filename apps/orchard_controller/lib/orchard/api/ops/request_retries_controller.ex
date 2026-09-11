@@ -46,6 +46,24 @@ defmodule Orchard.API.Ops.RequestRetriesController do
     )
   end
 
+  defp send_error(conn, :retry_source_not_authorized) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :conflict,
+      "retry_source_not_authorized",
+      "Retry source Tenant is no longer authorized for an active source Model."
+    )
+  end
+
+  defp send_error(conn, :retry_dispatch_incomplete) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :internal_server_error,
+      "retry_dispatch_incomplete",
+      "Retry descendant was created but its dispatch outcome could not be recorded."
+    )
+  end
+
   defp send_error(conn, :operator_retry_limit_reached) do
     AdminErrorHelpers.send_error(
       conn,
@@ -70,6 +88,15 @@ defmodule Orchard.API.Ops.RequestRetriesController do
       :service_unavailable,
       "controller_leadership_unproven",
       "This controller has not proven local leadership."
+    )
+  end
+
+  defp send_error(conn, _reason) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :internal_server_error,
+      "operator_retry_failed",
+      "Operator retry could not be completed."
     )
   end
 end

@@ -3,18 +3,18 @@ defmodule Orchard.Requests.OperatorRetry do
 
   import Ecto.Query
 
+  require Logger
+
   alias Orchard.CanonicalRequest
   alias Orchard.Governance.Tenant
 
   alias Orchard.Inference.{
     ChatResponseSerializer,
-    RequestDeadline,
     RequestOrchestrator,
     ResponsesSerializer
   }
 
-  alias Orchard.Inference.CanonicalRequestSerializer
-  alias Orchard.Models.Model
+  alias Orchard.Models.{Access, Model}
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{CapturePolicy, Request}
@@ -47,7 +47,6 @@ defmodule Orchard.Requests.OperatorRetry do
   @sampling_keys ~w(temperature top_p max_output_tokens stop seed)
   @response_format_keys ~w(type)
   @tooling_keys ~w(tools requested_tools tool_choice registry_snapshot execution_snapshot)
-  @admission_keys ~w(timeout_ms queue_wait_ms max_cold_start_ms)
   @resolved_policy_keys ~w(
     quota_id
     routing_policy_id
@@ -65,13 +64,15 @@ defmodule Orchard.Requests.OperatorRetry do
   @type retry_error ::
           :operator_retry_limit_reached
           | :request_not_found
+          | :retry_dispatch_incomplete
+          | :retry_source_not_authorized
           | :retry_source_not_eligible
           | :retry_source_unavailable
 
-  @spec retry(String.t()) :: {:ok, Request.t()} | {:error, retry_error()}
-  def retry(public_id) do
+  @spec retry(String.t(), keyword()) :: {:ok, Request.t()} | {:error, retry_error()}
+  def retry(public_id, dispatch_opts \\ []) do
     with {:ok, reservation} <- reserve(public_id) do
-      dispatch(reservation)
+      dispatch(reservation, dispatch_opts)
     end
   end
 
@@ -88,12 +89,14 @@ defmodule Orchard.Requests.OperatorRetry do
          :ok <- ensure_retryable(source),
          {:ok, original} <- lock_original(source),
          {:ok, tenant} <- lock_tenant(source.tenant_id),
-         {:ok, model} <- fetch_source_model(source),
-         {:ok, canonical} <- rebuild_legacy_canonical(source, model),
+         {:ok, model} <- fetch_active_source_model(source),
+         {:ok, routing_opts} <- authorize_current_access(source, model),
+         {:ok, canonical} <- rebuild_legacy_canonical(source, model, routing_opts),
          :ok <- ensure_dispatchable_canonical(canonical),
          :ok <- ensure_retry_capacity(original.id),
-         {:ok, request} <- create_descendant(source, original, tenant, model, canonical) do
-      %{request: request, canonical: canonical, model: model}
+         {:ok, request, persisted_canonical} <-
+           create_descendant(source, original, tenant, model, canonical) do
+      %{request: request, canonical: persisted_canonical, model: model}
     else
       {:error, reason} -> Repo.rollback(reason)
     end
@@ -152,24 +155,72 @@ defmodule Orchard.Requests.OperatorRetry do
     end
   end
 
-  defp fetch_source_model(%Request{model_id: model_id}) when is_binary(model_id) do
+  defp fetch_active_source_model(%Request{model_id: model_id}) when is_binary(model_id) do
     case Repo.get(Model, model_id) do
-      %Model{} = model -> {:ok, model}
+      %Model{state: :active} = model -> {:ok, model}
+      %Model{} -> {:error, :retry_source_not_authorized}
       nil -> {:error, :retry_source_unavailable}
     end
   end
 
-  defp fetch_source_model(%Request{}), do: {:error, :retry_source_unavailable}
+  defp fetch_active_source_model(%Request{}), do: {:error, :retry_source_unavailable}
 
-  defp rebuild_legacy_canonical(source, model) do
+  defp authorize_current_access(%Request{tenant_id: tenant_id}, %Model{id: model_id}) do
+    case Access.authorize(tenant_id, model_id) do
+      {:ok, _routing_opts} = authorized -> authorized
+      {:error, :model_not_authorized} -> {:error, :retry_source_not_authorized}
+    end
+  end
+
+  defp rebuild_legacy_canonical(source, model, routing_opts) do
     canonical = source.canonical_request
 
     with :ok <- ensure_omitted_legacy_contract(canonical),
          :ok <- ensure_source_identity(canonical, source, model),
          {:ok, attrs} <- decode_canonical_attrs(canonical, source) do
-      build_canonical(attrs)
+      attrs
+      |> apply_current_access(routing_opts)
+      |> build_canonical()
     end
   end
+
+  defp apply_current_access(attrs, routing_opts) do
+    %{
+      attrs
+      | admission: current_admission(attrs.admission, routing_opts),
+        resolved_policy: current_resolved_policy(attrs.resolved_policy, routing_opts)
+    }
+  end
+
+  defp current_admission(admission, routing_opts) do
+    %{
+      admission
+      | queue_wait_ms: narrower_budget(admission.queue_wait_ms, routing_opts[:queue_wait_ms]),
+        max_cold_start_ms:
+          narrower_budget(admission.max_cold_start_ms, routing_opts[:max_cold_start_ms])
+    }
+  end
+
+  defp current_resolved_policy(resolved_policy, routing_opts) do
+    %{
+      resolved_policy
+      | routing_policy_id: routing_opts[:routing_policy_id],
+        allowed_pool_ids: Keyword.get(routing_opts, :allowed_pool_ids, []),
+        max_active_requests:
+          Keyword.get(routing_opts, :max_active_requests, resolved_policy.max_active_requests),
+        residency_preference:
+          Keyword.get(
+            routing_opts,
+            :residency_preference,
+            resolved_policy.residency_preference
+          )
+    }
+  end
+
+  defp narrower_budget(retained, current) when is_integer(current) and current >= 0,
+    do: min(retained, current)
+
+  defp narrower_budget(retained, _current), do: retained
 
   defp ensure_omitted_legacy_contract(canonical) when is_map(canonical) do
     if Map.has_key?(canonical, "reasoning") do
@@ -224,18 +275,18 @@ defmodule Orchard.Requests.OperatorRetry do
 
   defp decode_canonical_attrs(canonical, source) do
     with true <- required_keys?(canonical, @canonical_keys),
+         true <- required_keys?(canonical["model_ref"], ~w(model_id version)),
+         true <- required_keys?(canonical["sampling"], @sampling_keys),
+         true <- required_keys?(canonical["tooling"], @tooling_keys),
          {:ok, endpoint} <- decode_endpoint(canonical["endpoint"]),
          {:ok, principal_type} <- decode_principal_type(canonical["principal_type"]),
          {:ok, response_format} <- decode_response_format(canonical["response_format"]),
          {:ok, resolved_policy} <- decode_resolved_policy(canonical["resolved_policy"]),
+         {:ok, admission} <- decode_admission(canonical["admission"]),
          {:ok, registry_snapshot} <-
            decode_tool_snapshot(canonical["tooling"]["registry_snapshot"]),
          {:ok, execution_snapshot} <-
-           decode_tool_snapshot(canonical["tooling"]["execution_snapshot"]),
-         true <- required_keys?(canonical["model_ref"], ~w(model_id version)),
-         true <- required_keys?(canonical["sampling"], @sampling_keys),
-         true <- required_keys?(canonical["tooling"], @tooling_keys),
-         true <- required_keys?(canonical["admission"], @admission_keys) do
+           decode_tool_snapshot(canonical["tooling"]["execution_snapshot"]) do
       internal_id = Ecto.UUID.generate()
 
       {:ok,
@@ -274,11 +325,7 @@ defmodule Orchard.Requests.OperatorRetry do
            execution_snapshot: execution_snapshot
          },
          metadata: canonical["metadata"],
-         admission: %{
-           timeout_ms: canonical["admission"]["timeout_ms"],
-           queue_wait_ms: canonical["admission"]["queue_wait_ms"],
-           max_cold_start_ms: canonical["admission"]["max_cold_start_ms"]
-         },
+         admission: admission,
          resolved_policy: resolved_policy
        }}
     else
@@ -323,6 +370,24 @@ defmodule Orchard.Requests.OperatorRetry do
       _invalid -> {:error, :retry_source_unavailable}
     end
   end
+
+  defp decode_admission(%{
+         "timeout_ms" => timeout_ms,
+         "queue_wait_ms" => queue_wait_ms,
+         "max_cold_start_ms" => max_cold_start_ms
+       })
+       when is_integer(timeout_ms) and timeout_ms > 0 and
+              is_integer(queue_wait_ms) and queue_wait_ms >= 0 and
+              is_integer(max_cold_start_ms) and max_cold_start_ms >= 0 do
+    {:ok,
+     %{
+       timeout_ms: timeout_ms,
+       queue_wait_ms: queue_wait_ms,
+       max_cold_start_ms: max_cold_start_ms
+     }}
+  end
+
+  defp decode_admission(_admission), do: {:error, :retry_source_unavailable}
 
   defp decode_residency_preference("required_loaded"), do: {:ok, :required_loaded}
   defp decode_residency_preference("prefer_loaded"), do: {:ok, :prefer_loaded}
@@ -375,49 +440,57 @@ defmodule Orchard.Requests.OperatorRetry do
       |> CapturePolicy.narrower(tenant.request_body_capture_mode)
       |> CapturePolicy.resolve(canonical.store?)
 
-    serialized = CanonicalRequestSerializer.serialize(canonical)
+    case RequestOrchestrator.persistable_request_attrs(canonical, model,
+           capture_mode: capture_mode
+         ) do
+      {:ok, attrs, persisted_canonical} ->
+        insert_descendant(attrs, original, persisted_canonical)
 
-    attrs = %{
-      id: canonical.internal_id,
-      public_id: canonical.public_id,
-      endpoint: canonical.endpoint,
-      tenant_id: canonical.tenant_id,
-      principal_type: canonical.principal_type,
-      api_key_id: canonical.api_key_id,
-      service_account_id: canonical.service_account_id,
-      model_id: model.id,
-      requested_model: "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}",
-      retry_of_request_id: original.id,
-      state: :received,
-      stream: canonical.stream?,
-      body_hash: :crypto.hash(:sha256, Jason.encode!(serialized)),
-      payload_capture_mode: capture_mode,
-      canonical_request: serialized,
-      request_payload: %{"prompt" => canonical.rendered_prompt},
-      sampling_params: CanonicalRequestSerializer.sampling_params(canonical.sampling),
-      response_format: %{"type" => Atom.to_string(canonical.response_format.type)},
-      input_tokens: canonical.input_token_count,
-      reserved_output_tokens: max_output_tokens(canonical),
-      timeout_at: RequestDeadline.timeout_at(canonical.admission.timeout_ms, utc_now())
-    }
-
-    Requests.create_request(attrs)
+      {:error, _reason} ->
+        {:error, :retry_source_unavailable}
+    end
   end
 
-  defp max_output_tokens(%CanonicalRequest{sampling: %{max_output_tokens: value}})
-       when is_integer(value) and value > 0,
-       do: value
+  defp insert_descendant(attrs, original, canonical) do
+    case Requests.create_request(Map.put(attrs, :retry_of_request_id, original.id)) do
+      {:ok, request} -> {:ok, request, canonical}
+      {:error, %Ecto.Changeset{}} -> {:error, :retry_source_unavailable}
+    end
+  end
 
-  defp max_output_tokens(%CanonicalRequest{}), do: 4_096
+  defp dispatch(%{request: request, canonical: canonical, model: model}, dispatch_opts) do
+    opts = Keyword.put(dispatch_opts, :success_persistence, &success_persistence_attrs/2)
 
-  defp dispatch(%{request: request, canonical: canonical, model: model}) do
-    _result =
-      RequestOrchestrator.execute_persisted(request, canonical, model,
-        success_persistence: &success_persistence_attrs/2
-      )
+    request
+    |> RequestOrchestrator.execute_persisted(canonical, model, opts)
+    |> handle_dispatch_result(request)
+  end
 
+  defp handle_dispatch_result({:error, {:terminal_persist_failed, _reason}}, request) do
+    log_incomplete_dispatch(request, "terminal_persist_failed")
+    {:error, :retry_dispatch_incomplete}
+  end
+
+  defp handle_dispatch_result({:error, reason}, request) do
+    log_incomplete_dispatch(request, outcome_label(reason))
     {:ok, Requests.get_request!(request.id)}
   end
+
+  defp handle_dispatch_result(_result, request), do: {:ok, Requests.get_request!(request.id)}
+
+  defp log_incomplete_dispatch(request, outcome) do
+    Logger.warning(
+      "operator retry dispatch did not complete: public_id=#{request.public_id} " <>
+        "retry_of_request_id=#{request.retry_of_request_id} outcome=#{outcome}"
+    )
+  end
+
+  defp outcome_label(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp outcome_label(reason) when is_tuple(reason) and tuple_size(reason) > 0,
+    do: outcome_label(elem(reason, 0))
+
+  defp outcome_label(_reason), do: "unknown"
 
   defp success_persistence_attrs(
          %CanonicalRequest{endpoint: :chat_completions} = canonical,
@@ -427,8 +500,6 @@ defmodule Orchard.Requests.OperatorRetry do
 
   defp success_persistence_attrs(%CanonicalRequest{endpoint: :responses} = canonical, events),
     do: ResponsesSerializer.success_persistence_attrs(canonical, events)
-
-  defp utc_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
   defp unwrap_reservation({:ok, reservation}), do: {:ok, reservation}
   defp unwrap_reservation({:error, reason}), do: {:error, reason}

@@ -108,6 +108,31 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   @doc """
+  Builds the persistable Request attrs for a prepared canonical request.
+
+  Admission is resolved again as a fail-safe, so the deployment deadline
+  ceiling, the persistable-deadline check, and canonical serialization stay on
+  one path for every Request persistence caller. `:capture_mode` overrides the
+  tenant-resolved capture mode. The resolved canonical request is returned so
+  callers dispatch the values they persisted.
+  """
+  @spec persistable_request_attrs(CanonicalRequest.t(), map(), keyword()) ::
+          {:ok, map(), CanonicalRequest.t()} | {:error, term()}
+  def persistable_request_attrs(%CanonicalRequest{} = canonical, model, opts \\ []) do
+    # Internal callers may bypass the public normalizers, so resolve admission
+    # again as a fail-safe immediately before serializing and persisting.
+    canonical = AdmissionPolicy.resolve(canonical)
+
+    with :ok <- validate_persistable_timeout(canonical),
+         {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
+      capture_mode =
+        Keyword.get_lazy(opts, :capture_mode, fn -> effective_capture_mode(canonical) end)
+
+      {:ok, request_attrs(canonical, model, serialized_canonical, capture_mode), canonical}
+    end
+  end
+
+  @doc """
   Validates a scheduler selection before dispatch.
 
   A selection cannot use a Node excluded by an earlier failed attempt and must
@@ -1562,16 +1587,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp persist_request(canonical, model, idempotency) do
-    # Internal callers may bypass the public normalizers, so resolve admission
-    # again as a fail-safe immediately before serializing and persisting.
-    canonical = AdmissionPolicy.resolve(canonical)
-
-    with :ok <- validate_persistable_timeout(canonical),
-         {:ok, serialized_canonical} <- serialize_canonical_request(canonical) do
-      capture_mode = effective_capture_mode(canonical)
-
-      canonical
-      |> request_attrs(model, serialized_canonical, capture_mode)
+    with {:ok, attrs, canonical} <- persistable_request_attrs(canonical, model) do
+      attrs
       |> put_idempotency_attrs(idempotency)
       |> Requests.create_request()
       |> handle_create_request_result(idempotency, canonical)

@@ -4,6 +4,26 @@ defmodule Orchard.TestSupport.OperatorRetryFixtures do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.CanonicalRequestSerializer
   alias Orchard.Requests
+  alias Orchard.TestSupport.ModelRequestFixtures
+
+  @doc """
+  Creates an active Model the Tenant is currently authorized to use.
+
+  Operator retry re-resolves current Model state and Tenant Model access, so a
+  retryable source needs both.
+  """
+  @spec create_granted_model!(struct(), keyword()) :: struct()
+  def create_granted_model!(tenant, opts \\ []) do
+    model = ModelRequestFixtures.create_model!(%{state: :active})
+
+    ModelRequestFixtures.grant_model_access!(
+      tenant,
+      model,
+      Keyword.get(opts, :routing_policy_id)
+    )
+
+    model
+  end
 
   @spec create_full_legacy_source!(struct(), struct(), keyword()) :: struct()
   def create_full_legacy_source!(tenant, model, opts \\ []) do

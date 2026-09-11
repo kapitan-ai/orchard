@@ -13,7 +13,9 @@ Issue #327 is not merged. Its negotiated reasoning runtime identity cannot be re
 - Atomically reserve at most three descendants per original Request, with each descendant pointing to that original Request.
 - Reconstruct legacy canonical data without parser or normalizer re-entry; create a fresh descendant and dispatch it through the existing lifecycle and scheduler.
 - Resolve retry capture to the narrower retained-source and current-tenant policy, including ordinary `store` resolution.
+- Re-resolve current Model state and Tenant Model access inside the reservation transaction, apply the current grant's routing values without widening retained admission budgets, and fail closed with `retry_source_not_authorized` before any descendant exists.
 - Return `retry_source_unavailable` without a row or dispatch for unavailable, malformed, or retained negotiated sources.
+- Retain a created descendant and return a stable server error when its dispatch outcome cannot be recorded.
 
 ## Out Of Scope
 
@@ -23,7 +25,7 @@ Issue #327 is not merged. Its negotiated reasoning runtime identity cannot be re
 
 ## SPEC.md Impact
 
-This implementation applies the existing requirements in `SPEC.md` §§7.3.4 and 10.10. It introduces no unresolved product-policy decision and does not modify `SPEC.md`.
+This implementation applies the existing requirements in `SPEC.md` §§7.3.4 and 10.10, and keeps the operator retry path consistent with the `SPEC.md` §5.2 admission steps that resolve an active Model and authorize Tenant Model access. It introduces no unresolved product-policy decision and does not modify `SPEC.md`.
 
 ## Impact
 
