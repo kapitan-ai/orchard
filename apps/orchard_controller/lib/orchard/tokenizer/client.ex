@@ -51,7 +51,8 @@ defmodule Orchard.Tokenizer.Client do
            | :safe_tokenization_incompatible_tokenizer
            | :safe_tokenization_incompatible_template
            | :safe_tokenization_marker_collision
-           | :safe_tokenization_catalog_hash_mismatch, String.t()}
+           | :safe_tokenization_catalog_hash_mismatch
+           | :runtime_incompatible, String.t()}
           | {:stdout_too_large, pos_integer()}
           | :invalid_response
           | :timeout
@@ -931,7 +932,9 @@ defmodule Orchard.Tokenizer.Client do
     if reasoning == expected_reasoning do
       {:ok, %{rendered_prompt: rendered_prompt, input_token_count: input_token_count}}
     else
-      {:error, :invalid_response}
+      {:error,
+       {:runtime_incompatible,
+        "tokenizer render metadata did not prove the selected negotiated reasoning contract"}}
     end
   end
 
@@ -1184,6 +1187,7 @@ defmodule Orchard.Tokenizer.Client do
 
   defp normalize_error_category("invalid_input"), do: :invalid_input
   defp normalize_error_category("unsupported_reasoning_control"), do: :invalid_input
+  defp normalize_error_category("runtime_incompatible"), do: :runtime_incompatible
   defp normalize_error_category("missing_assets"), do: :missing_assets
   defp normalize_error_category("unsupported_tokenizer"), do: :unsupported_tokenizer
 

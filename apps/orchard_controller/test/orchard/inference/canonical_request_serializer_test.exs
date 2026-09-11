@@ -123,6 +123,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
     assert CanonicalRequestSerializer.serialize(canonical)["reasoning"] == %{
              "generation_policy" => "disabled",
              "projection" => "final_only",
+             "reasoning_effort" => nil,
              "source" => "console_default",
              "effective_contract" => %{
                "mode" => "negotiated",
@@ -136,6 +137,28 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
                "event_binding_version" => "1"
              }
            }
+  end
+
+  test "serialize/1 preserves a selected canonical effort in negotiated data" do
+    canonical =
+      CanonicalRequest.new(%{
+        internal_id: Ecto.UUID.generate(),
+        public_id: "chatcmpl-effort",
+        endpoint: :chat_completions,
+        tenant_id: Ecto.UUID.generate(),
+        model_ref: %{model_id: "test-model", version: "v1"},
+        admission: %{timeout_ms: 10_000},
+        reasoning: %{
+          generation_policy: :enabled,
+          projection: :final_only,
+          reasoning_effort: :high,
+          source: :explicit_public,
+          effective_contract: negotiated_contract()
+        }
+      })
+
+    assert CanonicalRequestSerializer.serialize(canonical)["reasoning"]["reasoning_effort"] ==
+             "high"
   end
 
   test "serialize/1 rejects embedded structs in plain data fields" do

@@ -218,6 +218,7 @@ defmodule Orchard.Tokenizer.ClientTest do
                    "reasoning" => %{
                      "generation_policy" => "disabled",
                      "projection" => "final_only",
+                     "reasoning_effort" => nil,
                      "source" => "console_default",
                      "effective_contract" => %{"mode" => "negotiated"} = effective_contract
                    }
@@ -351,12 +352,52 @@ defmodule Orchard.Tokenizer.ClientTest do
     end
   end
 
+  test "negotiated reasoning maps an unprovable applied effort to runtime_incompatible" do
+    response =
+      negotiated_capture_response(%{
+        "reasoning" => %{
+          "generation_policy" => "enabled",
+          "projection" => "final_only",
+          "reasoning_effort" => nil,
+          "source" => "explicit_public",
+          "effective_contract" => negotiated_effective_contract()
+        }
+      })
+
+    fixture_root = fixture_root_with_tokenizer_config!()
+    response_executable = write_response_executable!(response)
+
+    on_exit(fn ->
+      File.rm(response_executable)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: response_executable
+      ],
+      fn ->
+        assert {:error, {:runtime_incompatible, message}} =
+                 Client.tokenize(selected_effort_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: fixture_root,
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+
+        assert message ==
+                 "tokenizer render metadata did not prove the selected negotiated reasoning contract"
+      end
+    )
+  end
+
   test "negotiated reasoning rejects a mismatched helper identity" do
     response =
       negotiated_capture_response(%{
         "reasoning" => %{
           "generation_policy" => "disabled",
           "projection" => "final_only",
+          "reasoning_effort" => nil,
           "source" => "console_default",
           "effective_contract" => %{
             "mode" => "negotiated",
@@ -386,12 +427,15 @@ defmodule Orchard.Tokenizer.ClientTest do
         tokenizer_executable: response_executable
       ],
       fn ->
-        assert {:error, :invalid_response} =
+        assert {:error, {:runtime_incompatible, message}} =
                  Client.tokenize(negotiated_request(),
                    manifest: huggingface_manifest(),
                    bundle_root: fixture_root,
                    bundle_sha256: trusted_bundle_sha256()
                  )
+
+        assert message ==
+                 "tokenizer render metadata did not prove the selected negotiated reasoning contract"
       end
     )
   end
@@ -2815,25 +2859,41 @@ defmodule Orchard.Tokenizer.ClientTest do
     CanonicalRequest.new(Map.merge(base, Map.new(overrides)))
   end
 
+  defp selected_effort_request do
+    canonical_request(%{
+      reasoning: %{
+        generation_policy: :enabled,
+        projection: :final_only,
+        reasoning_effort: :high,
+        source: :explicit_public,
+        effective_contract: negotiated_effective_contract()
+      }
+    })
+  end
+
   defp negotiated_request do
     canonical_request(%{
       reasoning: %{
         generation_policy: :disabled,
         projection: :final_only,
         source: :console_default,
-        effective_contract: %{
-          mode: :negotiated,
-          model_artifact_digest: trusted_bundle_sha256(),
-          chat_template_digest: String.duplicate("b", 64),
-          render_contract: "synthetic-render-v1",
-          render_contract_version: "1",
-          parser_family: "synthetic-parser",
-          parser_version: "1",
-          runtime_contract_version: "1",
-          event_binding_version: "1"
-        }
+        effective_contract: negotiated_effective_contract()
       }
     })
+  end
+
+  defp negotiated_effective_contract do
+    %{
+      mode: :negotiated,
+      model_artifact_digest: trusted_bundle_sha256(),
+      chat_template_digest: String.duplicate("b", 64),
+      render_contract: "synthetic-render-v1",
+      render_contract_version: "1",
+      parser_family: "synthetic-parser",
+      parser_version: "1",
+      runtime_contract_version: "1",
+      event_binding_version: "1"
+    }
   end
 
   defp huggingface_manifest do
@@ -3213,6 +3273,7 @@ defmodule Orchard.Tokenizer.ClientTest do
           "reasoning" => %{
             "generation_policy" => "disabled",
             "projection" => "final_only",
+            "reasoning_effort" => nil,
             "source" => "console_default",
             "effective_contract" => %{
               "mode" => "negotiated",

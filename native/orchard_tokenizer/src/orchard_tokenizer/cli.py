@@ -441,7 +441,13 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
     reasoning = require_mapping(request, "reasoning")
     _require_exact_keys(
         reasoning,
-        {"generation_policy", "projection", "source", "effective_contract"},
+        {
+            "generation_policy",
+            "projection",
+            "reasoning_effort",
+            "source",
+            "effective_contract",
+        },
         "request.reasoning",
     )
     generation_policy = _require_reasoning_enum(
@@ -454,17 +460,26 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
         "projection",
         {"final_only"},
     )
+    reasoning_effort = _require_optional_reasoning_effort(reasoning)
     source = _require_reasoning_enum(
         reasoning,
         "source",
         {"console_default", "console_explicit", "explicit_public"},
     )
 
+    if reasoning_effort is not None and generation_policy != "enabled":
+        raise TokenizerCliError(
+            "unsupported_reasoning_control",
+            "reasoning effort requires enabled generation policy",
+            2,
+        )
+
     resolved_contract = resolve_reasoning_contract(
         model_artifact_digest,
         chat_template_digest,
         generation_policy,
         projection,
+        reasoning_effort,
     )
 
     if resolved_contract is None:
@@ -502,6 +517,7 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
         "reasoning": {
             "generation_policy": generation_policy,
             "projection": projection,
+            "reasoning_effort": reasoning_effort,
             "source": source,
             "effective_contract": resolved_contract.effective_contract,
         },
@@ -925,6 +941,19 @@ def _verify_chat_template_digest(path: Path, expected_digest: str) -> None:
         )
 
 
+def _require_optional_reasoning_effort(payload: dict[str, Any]) -> str | None:
+    value = payload.get("reasoning_effort")
+
+    if value is None or value in {"low", "medium", "high"}:
+        return value
+
+    raise TokenizerCliError(
+        "unsupported_reasoning_control",
+        "request.reasoning.reasoning_effort is unsupported",
+        2,
+    )
+
+
 def _require_reasoning_enum(payload: dict[str, Any], field_name: str, supported: set[str]) -> str:
     value = payload.get(field_name)
 
@@ -1217,7 +1246,7 @@ def render_prompt(
     tool_choice: Any = None,
     render_time: datetime | None = None,
     marker_pairs: Sequence[MarkerPair] = (),
-    template_arguments: Mapping[str, bool] | None = None,
+    template_arguments: Mapping[str, bool | str] | None = None,
 ) -> str:
     if not chat_template_path.is_file():
         raise TokenizerCliError(

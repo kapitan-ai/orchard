@@ -20,6 +20,7 @@ defmodule Orchard.Inference.ChatError do
           | :context_overflow
           | :tooling_not_supported
           | :tokenization_invalid_request
+          | :tokenization_runtime_incompatible
           | :tokenization_internal
           | :model_load_failed
           | :model_busy
@@ -97,6 +98,9 @@ defmodule Orchard.Inference.ChatError do
   def from_prepare_reason({:tokenization, {category, message}})
       when is_binary(message) and category in [:invalid_input, :unsupported_tokenizer],
       do: build(:tokenization_invalid_request, detail: message)
+
+  def from_prepare_reason({:tokenization, {:runtime_incompatible, _message}}),
+    do: build(:tokenization_runtime_incompatible, [])
 
   def from_prepare_reason({:tokenization, {_category, message}}) when is_binary(message),
     do: build(:tokenization_internal, detail: message)
@@ -240,6 +244,16 @@ defmodule Orchard.Inference.ChatError do
       type: "invalid_request_error",
       code: nil,
       message: message,
+      param: nil
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :tokenization_runtime_incompatible}) do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: "runtime_incompatible",
+      message: "Runtime is incompatible",
       param: nil
     }
   end
@@ -458,6 +472,15 @@ defmodule Orchard.Inference.ChatError do
   @spec terminal_attrs(t()) :: terminal_attrs()
   def terminal_attrs(%__MODULE__{kind: :model_load_failed, model_load_failure: failure}),
     do: ModelLoadFailure.terminal_attrs(failure)
+
+  def terminal_attrs(%__MODULE__{kind: :tokenization_runtime_incompatible}) do
+    %{
+      state: :failed,
+      http_status: 503,
+      error_code: "runtime_incompatible",
+      error_message: "Runtime is incompatible"
+    }
+  end
 
   def terminal_attrs(%__MODULE__{kind: :model_busy} = error) do
     %{
