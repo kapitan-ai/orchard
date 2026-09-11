@@ -10,6 +10,13 @@ Runtime Endpoint implementations SHALL conform to `SPEC.md` sections 6.4, 7.5.3a
 - **THEN** Orchard treats the evidence as insufficient
 - **AND** it does not dispatch the selected-effort Request
 
+#### Scenario: Selected loaded worker prepares the exact tier
+
+- **WHEN** fresh observation and valid render proof permit Orchard to select and dispatch a selected-effort Request to an already loaded placement
+- **THEN** unary `PrepareInference` validates the exact tuple against the current loaded binding and worker incarnation before model invocation
+- **AND** the Controller validates the returned proof and single-use authorization before marking the attempt running or forwarding later events
+- **AND** a missing, malformed, stale, or mismatched proof fails through the existing `503 server_error` and `runtime_incompatible` mapping without model invocation, content, or usage
+
 #### Scenario: Loaded worker proves a different tier
 
 - **WHEN** the loaded-worker acceptance proof differs from the selected tier or any other pinned tuple value

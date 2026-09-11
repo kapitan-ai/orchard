@@ -45,6 +45,8 @@ Effort is optional even for `enabled + final_only`. Absence means no effort tier
 
 The provider-neutral vocabulary is exactly `low`, `medium`, and `high`. A later accepted issue #331 public-input contract will choose concrete field names for both endpoints. It must expose only this vocabulary, normalize it into the canonical axis, and use the existing closed `unsupported_reasoning_control` error mapping. It must not expose provider values or accept effort alone without an explicit enabled generation policy.
 
+The prohibition on provider-specific reasoning-effort pass-through does not prohibit this provider-neutral canonical axis. Its internal name does not choose a public API field name.
+
 That mapping now carries two distinct rows: a contradictory tier/policy combination that is never valid on any model, and an exact-tuple capability failure that another qualified model may honor. Both keep `400 invalid_request_error` and `unsupported_reasoning_control` and stay non-retryable, so the split is remediation guidance rather than a new envelope. #331 must set `param` to the concrete offending accepted public field — the reasoning-control field for a control failure and the effort field for a tier failure — while the Console, which supplies no public field, keeps `param = nil`.
 
 This amendment therefore defines request semantics without preempting the concrete Chat Completions or Responses encoding that #331 owns.
@@ -82,10 +84,10 @@ A Controller and Node Agent that lack the complete selected-effort contract exch
 ### Separate four evidence boundaries
 
 1. **Static render acceptance** proves that the exact renderer can apply one exact mapping to a rendered prompt. It proves neither generation, parser conformance, runtime negotiation, semantic effect, nor support.
-2. **Runtime conformance** proves that the exact selected tuple is advertised and accepted by the loaded worker before invocation. It is necessary for dispatch but does not prove semantic quality or a support claim.
+2. **Runtime conformance** proves fresh complete-tuple observation for selection and dispatch to an already loaded placement, then exact loaded-worker acceptance through `PrepareInference` before invocation. The Controller validates acceptance before marking the attempt running or forwarding later events. Neither phase proves semantic quality or a support claim.
 3. **Semantic tier qualification** evaluates predeclared meaningful assertions and final-only separation for each exact tuple, endpoint mode, and proposed tier envelope. A sample success is insufficient. Because a tier is valid only with `generation_policy = enabled`, this boundary must also prove valid non-empty reasoning content across the claimed envelope, including its shortest prompt classes; a tier that cannot is unsupported for that tuple rather than an offered tier that terminalizes as a conformance failure.
 
-The enabled-conformance rule binds both owners without joining them, and the split follows what each side can actually prove. Provider-neutral conformance fixtures are model-agnostic protocol artifacts (`SPEC.md` §7.5.2a), so runtime advertisement can prove only that an exact tuple has a qualified renderer mapping and that the provider passes protocol conformance; the Controller dispatches on that fresh advertisement plus loaded-worker acceptance proof. A per-artifact semantic claim — that this exact artifact, template, and tier yield meaningful non-empty reasoning — is not something a neutral fixture can establish, so no runtime producer is defined for one.
+The enabled-conformance rule binds both owners without joining them, and the split follows what each side can actually prove. Provider-neutral conformance fixtures are model-agnostic protocol artifacts (`SPEC.md` §7.5.2a), so runtime advertisement can prove only that an exact tuple has a qualified renderer mapping and that the provider passes protocol conformance; the Controller selects and dispatches an already loaded placement on that fresh observation and required render proof, then requires `PrepareInference` to prove the current loaded binding and worker incarnation before invocation. A per-artifact semantic claim — that this exact artifact, template, and tier yield meaningful non-empty reasoning — is not something a neutral fixture can establish, so no runtime producer is defined for one.
 
 Repository-owned qualification is therefore the only place tier semantics are evaluated, and it decides only what may be offered or represented as supported. We deliberately do not add a provider-owned semantic record or a manifest semantic assertion to close the gap: either would recreate the governance-to-runtime coupling `SPEC.md` §6.4 forbids. The residual case — an advertised tier that unexpectedly produces no reasoning — keeps the existing fail-closed `500 api_error` terminal conformance outcome rather than a relaxed rule.
 4. **Approved support claim** is the separate manual-governance decision that may represent only the evidenced envelope. It is not a manifest field, scheduler gate, or execution permit.
@@ -107,6 +109,7 @@ Rejected because it is an exact Qwen3.8 renderer value, not a provider-neutral p
 ### Treat qualification as dispatch proof
 
 Rejected because static and manual evidence cannot replace fresh tuple advertisement and loaded-worker acceptance proof.
+An unqualified tier lacks required technical proof at its respective validation phase: exact mapping, render proof, and fresh observation before dispatch; `PrepareInference` acceptance before invocation. Semantic qualification is not an additional admission, selection, scheduling, preparation, or dispatch gate: a technically proven but semantically unqualified tier may execute and remains subject to enabled-conformance terminal failure. This preserves `SPEC.md` §6.4 and ADR 0028.
 
 ## Sequencing and validation
 

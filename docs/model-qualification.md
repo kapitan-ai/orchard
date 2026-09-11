@@ -145,7 +145,9 @@ Because a selected tier is valid only with `generation_policy = enabled`, semant
 A tier whose renderer can legitimately return no reasoning for a claimed prompt class fails the `SPEC.md` §7.5.3a enabled-conformance rule and is recorded as `unsupported` for that exact tuple rather than being offered and then surfacing as a terminal conformance failure.
 
 That record governs only what may be offered or represented as supported.
-Runtime advertisement proves just the exact renderer mapping and provider-neutral protocol conformance, and dispatch additionally requires exact loaded-worker acceptance proof, so a qualification record never becomes a Runtime Endpoint capability, scheduling fact, or dispatch authority under `SPEC.md` §6.4.
+Runtime advertisement proves just the exact renderer mapping and provider-neutral protocol conformance. Selection and dispatch require fresh complete-tuple observation and render proof for an already loaded placement; unary `PrepareInference` then produces exact loaded-worker acceptance proof and a single-use authorization before invocation, with Controller validation before accepting the attempt as running or forwarding later events.
+A qualification record never becomes a Runtime Endpoint capability, scheduling fact, preparation condition, or dispatch authority under `SPEC.md` §6.4.
+Consistent with ADR 0028, a tier with the required technical proof may execute without semantic qualification or a support claim; a missing or adverse semantic record is not an admission, selection, scheduling, preparation, or dispatch gate.
 
 Because runtime advertisement carries no semantic assertion, this record is the only place a tier's semantics are evaluated.
 If an offered tier nevertheless completes without valid non-empty reasoning, the Request fails closed as a `500 api_error` terminal conformance failure under `SPEC.md` §7.5.3a; keeping an unqualified tier out of a support claim is how Orchard avoids inviting callers into that outcome.

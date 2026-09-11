@@ -6,7 +6,7 @@
 - [x] 1.2 Define the closed `reasoning_effort = nil | low | medium | high` axis and reject supplied effort unless generation policy is `enabled`.
 - [x] 1.3 Keep public field names, renderer implementation, Runtime Endpoint encoding, and product behavior deferred to their established child issues.
 - [x] 1.4 Run targeted strict OpenSpec validation and resolve every structural finding.
-- [ ] 1.5 Run applicable documentation and contract validation and complete independent review before acceptance.
+- [x] 1.5 Run applicable documentation and contract validation and complete independent review before acceptance.
 
 ## 2. Implement canonical normalization and rendering
 
@@ -16,7 +16,7 @@
 
 ## 3. Implement negotiation and projection
 
-- [ ] 3.1 In issue #327, accept a concrete wire encoding for complete selected-effort tuples and loaded-worker acceptance proof before dispatch.
+- [ ] 3.1 In issue #327, extend the accepted live-observation tuple and unary `PrepareInference` proof and authorization encoding with optional selected effort, preserving loaded-only selection and pre-invocation acceptance.
 - [ ] 3.2 In issue #327, add `N` and `N-1` fixtures that keep selected effort and new variants off older or non-advertising bindings.
 - [ ] 3.3 In issue #328, prove provider-neutral parser and final-only conformance for each qualified tier without changing the omitted legacy pipeline.
 - [ ] 3.4 In issues #327 and #328, gate a provider's tier advertisement on the exact renderer mapping plus provider-neutral protocol conformance only, adding no provider-owned semantic record, no manifest semantic assertion, and no read of a repository-owned qualification record.

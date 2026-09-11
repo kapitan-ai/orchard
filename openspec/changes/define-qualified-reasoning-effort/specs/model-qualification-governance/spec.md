@@ -17,6 +17,13 @@ A local-model qualification record or support claim that names a reasoning-effor
 - **AND** the tier is not offered or represented as supported rather than being absorbed as a terminal conformance failure
 - **AND** the record does not become Runtime Endpoint capability, a scheduling fact, or dispatch authority, because runtime advertisement separately proves only renderer mapping and protocol conformance
 
+#### Scenario: Technical proof exists without semantic qualification
+
+- **WHEN** a tier lacks semantic qualification but satisfies the technical proof required at each respective phase: exact mapping, render, and fresh complete-tuple observation before dispatch to an already loaded placement, then `PrepareInference` acceptance before invocation
+- **THEN** semantic qualification does not block admission, selection, scheduling, preparation, or dispatch under `SPEC.md` sections 6.4 and 7.5.3a
+- **AND** execution remains subject to enabled conformance, including terminal `500 api_error` and `internal_error` if valid non-empty reasoning is absent
+- **AND** execution does not create an approved support claim
+
 #### Scenario: Qualified support claim names a tier
 
 - **WHEN** an approved claim represents a reasoning-effort tier

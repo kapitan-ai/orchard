@@ -6,6 +6,8 @@ The accepted reasoning contract deliberately separates generation policy from pu
 
 Issue #398 adds only the contract needed to select a bounded effort tier after the existing negotiated reasoning path is implemented. It preserves every omitted request and leaves concrete public fields, renderer implementation, runtime encoding, parser work, and support claims to their existing follow-on work.
 
+The canonical axis excludes provider-specific pass-through; its internal name does not select #331's public field names. Pre-invocation qualification means exact technical mapping, observation, render, and preparation proof, not semantic qualification. A technically proven tier may execute without semantic qualification, which remains governance-only under `SPEC.md` §6.4 and ADR 0028; enabled-conformance failure still terminalizes afterward.
+
 ## What changes
 
 - Add `reasoning_effort` as a separate optional canonical axis with the provider-neutral closed vocabulary `low | medium | high`.
