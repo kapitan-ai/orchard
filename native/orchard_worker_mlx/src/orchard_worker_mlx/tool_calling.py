@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from orchard_worker_mlx.backends import BackendError
+from orchard_worker_mlx.partial_markers import split_partial_marker
 
 
 @dataclass(slots=True)
@@ -91,7 +92,10 @@ def build_context(session: Any, params: Any) -> ToolCallingContext | None:
 
 
 def consume_response(ctx: ToolCallingContext, response: Any) -> list[dict[str, Any]]:
-    text = getattr(response, "text", "")
+    return consume_text(ctx, getattr(response, "text", ""))
+
+
+def consume_text(ctx: ToolCallingContext, text: str) -> list[dict[str, Any]]:
     if not isinstance(text, str) or text == "":
         return []
 
@@ -163,7 +167,7 @@ def _consume_normal_text(ctx: ToolCallingContext, text: str) -> str:
     start_pos = combined.find(ctx.tool_call_start)
 
     if start_pos == -1:
-        safe_text, suffix = _split_partial_marker(combined, ctx.tool_call_start)
+        safe_text, suffix = split_partial_marker(combined, ctx.tool_call_start)
         if safe_text:
             ctx.pending_events.append({"kind": "output_text_delta", "delta": safe_text})
         ctx.text_buffer = suffix
@@ -186,7 +190,7 @@ def _consume_tool_text(ctx: ToolCallingContext, text: str) -> str:
     end_pos = combined.find(ctx.tool_call_end)
 
     if end_pos == -1:
-        safe_text, suffix = _split_partial_marker(combined, ctx.tool_call_end)
+        safe_text, suffix = split_partial_marker(combined, ctx.tool_call_end)
         ctx.tool_text_parts.append(safe_text)
         ctx.tool_end_buffer = suffix
         return ""
@@ -194,17 +198,6 @@ def _consume_tool_text(ctx: ToolCallingContext, text: str) -> str:
     ctx.tool_text_parts.append(combined[:end_pos])
     _finalize_active_tool_call(ctx)
     return combined[end_pos + len(ctx.tool_call_end) :]
-
-
-def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
-    if marker == "":
-        return text, ""
-
-    max_overlap = min(len(text), len(marker) - 1)
-    for overlap in range(max_overlap, 0, -1):
-        if text.endswith(marker[:overlap]):
-            return text[:-overlap], text[-overlap:]
-    return text, ""
 
 
 def _start_tool_call(ctx: ToolCallingContext) -> None:
