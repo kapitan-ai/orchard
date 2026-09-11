@@ -10,7 +10,7 @@
 ## 2. Prerequisites and schema handoff
 
 - [x] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
-- [ ] 2.2 After owner-approved schema design, re-confirm the `SPEC.md` §7.5.3a field allocations and implement the approved protocol declarations, generated bindings, and reciprocal fixtures atomically; block rather than substitute a conflicting number or shape, and do not infer an enum, presence encoding, service or RPC declaration owner, message layout, or redemption shape from this contract.
+- [ ] 2.2 After the owner-approved schema design is recorded per `design.md` §1 condition 3, re-confirm the `SPEC.md` §7.5.3a field allocations and implement the approved protocol declarations, generated bindings, and reciprocal fixtures atomically; block rather than substitute a conflicting number or shape, and do not infer an enum, presence encoding, service or RPC declaration owner, message layout, or redemption shape from this contract.
 - [ ] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage.
 
 ## 3. Dormant implementation handoff

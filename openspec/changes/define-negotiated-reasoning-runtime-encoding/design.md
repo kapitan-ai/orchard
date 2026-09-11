@@ -8,7 +8,7 @@ Implementation is blocked until all of these conditions hold:
 
 1. PR #401 has merged, so the canonical request owns the exact reasoning identity transported by this contract.
 2. This OpenSpec change and its `SPEC.md` amendment have been accepted.
-3. An owner-approved schema design defines the concrete message declarations that realize the accepted allocation, without substituting an unapproved number or shape.
+3. An owner-approved schema design defines the concrete message declarations that realize the accepted allocation, without substituting an unapproved number or shape. `AGENTS.md` routes protocol and API design of that weight through OpenSpec, so that approval is recorded by a separate accepted OpenSpec change package for the schema itself, plus a `docs/decisions/**` record for any durable decision `SPEC.md` §7.5.3a does not already fix. Neither this package nor its draft PR is that approval, and task 2.2 must not proceed on an implementer's own schema judgment.
 
 This reconciliation selects no enum value, `nil`-presence encoding, protobuf service or RPC declaration owner, evidence/preparation/proof message layout, or execution-redemption shape. It restates the `SPEC.md` §7.5.3a field allocation and the Runtime Endpoint Interface placement of unary `PrepareInference` as traceability rather than choosing either, and it adds no protocol source declaration.
 
