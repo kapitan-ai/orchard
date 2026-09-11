@@ -4,7 +4,7 @@
 
 The generic `WorkerCapabilities` envelope is diagnostic-only by its accepted contract. Negotiated reasoning needs a narrower exception: an explicit negotiated request may select only a loaded placement that proves its exact tuple through fresh live reasoning evidence. This does not promote generic capability evidence into readiness, admission, capacity, retry, or ordinary scheduler authority.
 
-That exception has to be reconciled with the two contracts it touches. `SPEC.md` §5.6 tier selection would otherwise still offer Tier 1 and Tier 2 candidates that no negotiated request can use, and §5.5 would otherwise still forbid every inline request-path observation. Both are amended here, and the live wave is bounded like the existing compatibility status-probe wave instead of fanning out per candidate.
+That exception has to be reconciled with the two contracts it touches. `SPEC.md` §5.6 tier selection would otherwise still offer Tier 1 and Tier 2 candidates that no negotiated request can use, and §5.5 would otherwise still forbid every inline request-path observation. Both reconciliations already stand in `SPEC.md`, which this package traces rather than re-amends, and the live wave is bounded like the existing compatibility status-probe wave instead of fanning out per candidate.
 
 ## What Changes
 
