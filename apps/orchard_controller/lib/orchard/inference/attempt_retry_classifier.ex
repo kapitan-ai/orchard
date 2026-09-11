@@ -4,6 +4,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   """
 
   alias Orchard.Inference.ModelLoadFailure
+  alias Orchard.Requests.InferenceAttemptFailure
 
   @type model_load_category :: Orchard.Inference.ModelLoadFailure.category() | nil
 
@@ -12,6 +13,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
     @enforce_keys [
       :attempt,
+      :attempt_outcome,
       :output_committed,
       :caller_status,
       :deadline_status,
@@ -27,6 +29,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
     @type t :: %__MODULE__{
             attempt: 1 | 2,
+            attempt_outcome: :failed | :cancelled | :timed_out | :interrupted,
             output_committed: boolean(),
             caller_status: :live | :cancelled,
             deadline_status: :remaining | :exhausted,
@@ -81,6 +84,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
   @spec new(%{
           attempt: 1 | 2,
+          attempt_outcome: :failed | :cancelled | :timed_out | :interrupted,
           output_committed: boolean(),
           caller_status: :live | :cancelled,
           deadline_status: :remaining | :exhausted,
@@ -104,7 +108,14 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   def pre_schedule(%Boundary{attempt: 2, caller_status: :cancelled}),
     do: {:declined, :cancelled}
 
-  def pre_schedule(%Boundary{attempt: 2}), do: {:declined, :retry_exhausted}
+  def pre_schedule(%Boundary{attempt: 2, deadline_status: :exhausted}),
+    do: {:declined, :retry_exhausted}
+
+  def pre_schedule(%Boundary{attempt: 2, output_committed: true}),
+    do: {:declined, :retry_exhausted}
+
+  def pre_schedule(%Boundary{attempt: 2} = boundary),
+    do: {:declined, attempt_two_decision(boundary)}
 
   def pre_schedule(%Boundary{attempt: 1} = boundary),
     do: Enum.find_value(@attempt_one_gates, :eligible_for_alternate, &gate_decision(&1, boundary))
@@ -124,6 +135,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
   defp build_boundary(%{
          attempt: attempt,
+         attempt_outcome: attempt_outcome,
          output_committed: output_committed,
          caller_status: caller_status,
          deadline_status: deadline_status,
@@ -134,7 +146,8 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
          identity_resolution: identity_resolution,
          execution_resolution: execution_resolution,
          capacity_release_outcome: capacity_release_outcome
-       }) do
+       })
+       when attempt_outcome in [:failed, :cancelled, :timed_out, :interrupted] do
     :ok = validate_request_facts(attempt, output_committed, caller_status, deadline_status)
 
     :ok =
@@ -150,6 +163,7 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
 
     %Boundary{
       attempt: attempt,
+      attempt_outcome: attempt_outcome,
       output_committed: output_committed,
       caller_status: caller_status,
       deadline_status: deadline_status,
@@ -234,6 +248,18 @@ defmodule Orchard.Inference.AttemptRetryClassifier do
   defp taxonomy_verdict(%Boundary{} = boundary) do
     if retry_eligible?(boundary), do: nil, else: {:declined, :not_retryable}
   end
+
+  defp attempt_two_decision(%Boundary{
+         attempt_outcome: :failed,
+         failure_class: failure_class,
+         failure_code: failure_code
+       }) do
+    if InferenceAttemptFailure.acceptance_proof_failure?(failure_class, failure_code),
+      do: :not_retryable,
+      else: :retry_exhausted
+  end
+
+  defp attempt_two_decision(%Boundary{}), do: :retry_exhausted
 
   defp alternate_decision(:different_node), do: :retried
   defp alternate_decision(:no_candidate), do: :no_alternative_node

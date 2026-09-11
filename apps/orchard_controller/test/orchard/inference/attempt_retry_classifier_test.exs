@@ -1,7 +1,9 @@
 defmodule Orchard.Inference.AttemptRetryClassifierTest do
   use ExUnit.Case, async: true
 
+  alias Orchard.Dispatch.AttemptOutcome
   alias Orchard.Inference.AttemptRetryClassifier
+  alias Orchard.Requests.InferenceAttemptResult
 
   @runtime_codes ~w(
     node_unavailable node_timeout runtime_unavailable resource_exhausted timeout
@@ -218,9 +220,93 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
            }) == {:declined, :identity_unresolved}
   end
 
-  test "SPEC.md §7.2.7 bounds attempt 2 to cancellation or retry exhaustion" do
-    assert classify(%{attempt: 2, caller_status: :cancelled}) == {:declined, :cancelled}
+  test "SPEC.md §§3.7.1, 5.8, and 7.5.3a preserves the typed acceptance-proof exception" do
+    acceptance_proof_failure = %{
+      failure_class: "pre_acceptance_unavailable",
+      failure_code: "runtime_incompatible",
+      runtime_retryable: false
+    }
+
+    assert classify(acceptance_proof_failure) == {:declined, :not_retryable}
+
+    assert classify(Map.put(acceptance_proof_failure, :attempt, 2)) ==
+             {:declined, :not_retryable}
+
+    assert classify(Map.merge(acceptance_proof_failure, %{attempt: 2, caller_status: :cancelled})) ==
+             {:declined, :cancelled}
+
+    assert classify(
+             Map.merge(acceptance_proof_failure, %{attempt: 2, deadline_status: :exhausted})
+           ) == {:declined, :retry_exhausted}
+
+    assert classify(Map.merge(acceptance_proof_failure, %{attempt: 2, output_committed: true})) ==
+             {:declined, :retry_exhausted}
+
+    assert classify(%{
+             attempt: 2,
+             failure_class: "runtime_failure",
+             failure_code: "runtime_incompatible",
+             runtime_retryable: false
+           }) == {:declined, :retry_exhausted}
+
     assert classify(%{attempt: 2, caller_status: :live}) == {:declined, :retry_exhausted}
+  end
+
+  test "SPEC.md §3.7.1 classifies typed attempt 2 proof outcomes into valid durable results" do
+    for {attempt_outcome, expected} <- [
+          {:failed, :not_retryable},
+          {:timed_out, :retry_exhausted},
+          {:interrupted, :retry_exhausted}
+        ] do
+      outcome = proof_outcome(attempt_outcome)
+
+      for deadline_status <- [:remaining, :exhausted] do
+        expected_decision = if deadline_status == :exhausted, do: :retry_exhausted, else: expected
+
+        assert {:declined, decision} =
+                 classify_outcome(outcome, %{deadline_status: deadline_status})
+
+        assert decision == expected_decision
+        assert {:ok, result} = durable_result(outcome, decision)
+        assert result["retry_decision"] == Atom.to_string(expected_decision)
+        assert result["attempt_outcome"] == Atom.to_string(attempt_outcome)
+      end
+    end
+  end
+
+  test "SPEC.md §3.7.1 keeps cancellation ahead of typed proof outcomes and exhausted deadlines" do
+    for attempt_outcome <- [:failed, :timed_out, :interrupted],
+        deadline_status <- [:remaining, :exhausted] do
+      outcome = proof_outcome(attempt_outcome)
+
+      assert classify_outcome(outcome, %{
+               caller_status: :cancelled,
+               deadline_status: deadline_status,
+               output_committed: true
+             }) == {:declined, :cancelled}
+
+      assert {:ok, cancelled} =
+               outcome
+               |> Map.from_struct()
+               |> Map.merge(%{
+                 attempt_outcome: :cancelled,
+                 failure: %{
+                   "failure_class" => "cancellation",
+                   "failure_code" => "request_cancelled"
+                 }
+               })
+               |> AttemptOutcome.new()
+
+      assert {:declined, decision} =
+               classify_outcome(cancelled, %{
+                 caller_status: :cancelled,
+                 deadline_status: deadline_status
+               })
+
+      assert decision == :cancelled
+      assert {:ok, result} = durable_result(cancelled, decision)
+      assert result["retry_decision"] == "cancelled"
+    end
   end
 
   test "constructor requires every exact fact and rejects raw source codes" do
@@ -236,10 +322,21 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
       |> AttemptRetryClassifier.new()
     end
 
-    assert_raise FunctionClauseError, fn ->
-      # Dynamic dispatch avoids a compile-time type warning for this intentional invalid input.
-      # credo:disable-for-next-line Credo.Check.Refactor.Apply
-      apply(AttemptRetryClassifier, :new, [Map.delete(base_facts(), :capacity_release_outcome)])
+    for field <- [:attempt_outcome, :capacity_release_outcome] do
+      assert_raise FunctionClauseError, fn ->
+        # Dynamic dispatch avoids a compile-time type warning for this intentional invalid input.
+        # credo:disable-for-next-line Credo.Check.Refactor.Apply
+        apply(AttemptRetryClassifier, :new, [Map.delete(base_facts(), field)])
+      end
+    end
+
+    for invalid_outcome <- [:completed, "failed", nil] do
+      assert_raise FunctionClauseError, fn ->
+        # credo:disable-for-next-line Credo.Check.Refactor.Apply
+        apply(AttemptRetryClassifier, :new, [
+          Map.put(base_facts(), :attempt_outcome, invalid_outcome)
+        ])
+      end
     end
 
     assert_raise FunctionClauseError, fn ->
@@ -253,9 +350,68 @@ defmodule Orchard.Inference.AttemptRetryClassifierTest do
   defp boundary(overrides),
     do: base_facts() |> Map.merge(overrides) |> AttemptRetryClassifier.new()
 
+  defp proof_outcome(attempt_outcome) do
+    {:ok, outcome} =
+      AttemptOutcome.new(%{
+        attempt_outcome: attempt_outcome,
+        node_id: "00000000-0000-4000-a000-000000000002",
+        accepted: false,
+        events: [],
+        failure: %{
+          "failure_class" => "pre_acceptance_unavailable",
+          "failure_code" => "runtime_incompatible"
+        },
+        execution_resolution: :not_started,
+        capacity_release_outcome: :released,
+        started_at: ~U[2026-08-12 10:00:00.000000Z],
+        ended_at: ~U[2026-08-12 10:00:01.000000Z],
+        first_token_at: nil,
+        output_committed: false,
+        output_commitment_kind: nil,
+        delivery_state: :pending,
+        delivered_event_count: 0,
+        runtime_retryable: false
+      })
+
+    outcome
+  end
+
+  defp classify_outcome(outcome, overrides) do
+    outcome
+    |> Map.from_struct()
+    |> Map.take(Map.keys(base_facts()))
+    |> Map.merge(%{
+      attempt: 2,
+      failure_class: outcome.failure["failure_class"],
+      failure_code: outcome.failure["failure_code"]
+    })
+    |> Map.merge(overrides)
+    |> classify()
+  end
+
+  defp durable_result(outcome, decision) do
+    result = %{
+      attempt_outcome: Atom.to_string(outcome.attempt_outcome),
+      node_id: outcome.node_id,
+      accepted: outcome.accepted,
+      output_committed: outcome.output_committed,
+      execution_resolution: Atom.to_string(outcome.execution_resolution),
+      capacity_release_outcome: Atom.to_string(outcome.capacity_release_outcome),
+      started_at: outcome.started_at,
+      ended_at: outcome.ended_at,
+      excluded_node_ids: ["00000000-0000-4000-a000-000000000001"],
+      failure_class: outcome.failure["failure_class"],
+      failure_code: outcome.failure["failure_code"],
+      retry_decision: Atom.to_string(decision)
+    }
+
+    InferenceAttemptResult.new("request_step.#{outcome.attempt_outcome}", 2, result)
+  end
+
   defp base_facts do
     %{
       attempt: 1,
+      attempt_outcome: :failed,
       output_committed: false,
       caller_status: :live,
       deadline_status: :remaining,

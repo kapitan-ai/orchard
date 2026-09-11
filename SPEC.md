@@ -742,7 +742,9 @@ One logical Request MAY contain at most two Inference Attempts for its first Inf
 Those attempts SHALL use `inference_turn:t1:a1` and `inference_turn:t1:a2`, remain under the same Request row and Request FSM, and SHALL NOT repeat admission, quota reservation, idempotency resolution, queue admission, or Payload Capture Mode resolution.
 Attempt 1 terminal evidence SHALL precede attempt 2 started evidence in request-event sequence order.
 A successful attempt SHALL carry no `retry_decision`.
-An unsuccessful attempt 2 SHALL carry `retry_decision = "retry_exhausted"` unless caller cancellation or disconnect caused its terminal outcome, in which case `cancelled` SHALL take precedence.
+An unsuccessful attempt 2 SHALL carry `retry_decision = "retry_exhausted"` unless caller cancellation or disconnect caused its terminal outcome, in which case `cancelled` SHALL take precedence, or a Controller-detected negotiated acceptance-proof failure under §7.5.3a wins the terminal race before deadline terminalization is proven, in which case it SHALL carry `not_retryable`. An already-proven deadline terminalization retains `retry_exhausted`.
+Deadline terminalization is proven when the Request's absolute deadline is already exhausted at attempt 2's retry boundary, mirroring attempt 1's `budget_exhausted` precedence over `not_retryable`.
+That `not_retryable` exception is available only to an attempt 2 whose `attempt_outcome` is `failed` with `output_committed = false`; a `cancelled`, `timed_out`, or `interrupted` attempt 2, and any attempt 2 that committed output, SHALL retain `cancelled` or `retry_exhausted`.
 Attempt 1 SHALL never carry `retry_exhausted`.
 
 The orchestrator SHALL append exactly one `request_step.started` event for each Inference Attempt.
@@ -1809,7 +1811,7 @@ Unknown classes, unknown codes, deterministic failures, `retryable: false`, term
 Retry-capable failures are limited to resolved pre-acceptance Node or transport unavailability, the closed transient model-load categories, resolved worker or Node loss before acceptance, and an accepted pre-commit transient failure whose drain proves termination.
 
 The attempt 1 decline precedence SHALL be `output_committed`, `cancelled`, `budget_exhausted`, `not_retryable`, `identity_unresolved`, `occupancy_unresolved`, then `no_alternative_node`.
-An unsuccessful attempt 2 SHALL record `retry_exhausted` unless caller cancellation or disconnect caused its terminal outcome, in which case it SHALL record `cancelled`; no attempt 2 outcome SHALL trigger a third attempt.
+An unsuccessful attempt 2 SHALL record `retry_exhausted` unless caller cancellation or disconnect caused its terminal outcome, in which case it SHALL record `cancelled`, or a Controller-detected negotiated acceptance-proof failure under §7.5.3a wins the terminal race before deadline terminalization is proven, in which case it SHALL record `not_retryable`; no attempt 2 outcome SHALL trigger a third attempt. An already-proven deadline terminalization retains `retry_exhausted`, and §3.7.1 owns the evaluable boundary for that exception.
 If no different eligible Node exists, Orchard SHALL start no second attempt, SHALL NOT re-enter the queue or extend a budget, and SHALL preserve attempt 1's stable public failure while recording `no_alternative_node` as internal evidence.
 Attempt 1's stable failure classification SHALL be fixed in its typed outcome, and any breaker-eligible failure effect SHALL be durable before the fresh alternate scheduler decision.
 The alternate scheduler decision is side-effect-free with respect to dispatch.
@@ -2667,7 +2669,7 @@ Reasoning-control failures use this closed mapping:
 | Failure phase | Public status, type, and code | `param` | Durable attempt evidence | Retry behavior |
 |---|---|---|---|---|
 | The exact model artifact and chat-template contract cannot honor an accepted explicit control | `400 invalid_request_error`, `unsupported_reasoning_control` | the accepted public reasoning-control field; `nil` for the Console | no attempt and no Request write | non-retryable |
-| No eligible endpoint proves the exact negotiated tuple, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists | non-retryable |
+| No eligible endpoint proves the exact negotiated tuple, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists and the proof failure wins the terminal race; caller cancellation/disconnect and already-proven deadline terminalization retain their §3.7.1 decisions | non-retryable |
 | Parser or generation-policy conformance fails after model invocation | `500 api_error`, `internal_error` | `nil` | `terminal_conformance` plus `internal_error` | non-retryable |
 
 Messages for these mappings SHALL be bounded, content-free, and Controller-owned.
@@ -3703,7 +3705,7 @@ That proof SHALL echo the complete tuple and identify the loaded worker incarnat
 The Node Agent and Worker Runtime MUST NOT begin model execution, emit content, or emit usage before producing that proof.
 The Controller SHALL validate the proof before accepting the attempt as running or forwarding any later event.
 A missing, malformed, stale, or mismatched proof SHALL fail as `runtime_incompatible` before model invocation and SHALL NOT be repaired by a later status observation.
-That Controller-detected acceptance failure SHALL record `retry_decision = not_retryable` and MUST NOT trigger Automatic Attempt Retry.
+That Controller-detected acceptance failure SHALL record `retry_decision = not_retryable` and MUST NOT trigger Automatic Attempt Retry, unless caller cancellation or disconnect caused the terminal outcome or deadline terminalization was already proven before the proof failure won the terminal race; those outcomes retain `cancelled` and `retry_exhausted`, respectively.
 An arbitrary Worker or Runtime Endpoint `Failed` event with code `runtime_incompatible` SHALL remain insufficient to authorize retry.
 The concrete additive encoding for the tuple, worker incarnation, and acceptance proof remains blocked behind a separately accepted Runtime Endpoint contract.
 
