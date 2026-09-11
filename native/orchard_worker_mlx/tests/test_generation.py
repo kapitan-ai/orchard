@@ -551,6 +551,59 @@ class _LogprobsBatchGenerator(_FakeBatchGenerator):
     response_includes_logprobs = True
 
 
+def test_batch_pre_cancelled_request_does_not_enter_runtime_or_affect_peer() -> None:
+    """Issue #409: pre-cancelled work leaves a batch peer and runtime state isolated."""
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    cancelled = threading.Event()
+    cancelled.set()
+
+    try:
+        cancelled_events = list(
+            generate_events(
+                session,
+                _make_fake_request(input_tokens=3, max_output_tokens=2),
+                cancelled,
+                deps=runtime.generation_deps(),
+            )
+        )
+        peer_events = list(
+            generate_events(
+                session,
+                _make_fake_request(input_tokens=3, max_output_tokens=2),
+                threading.Event(),
+                deps=runtime.generation_deps(),
+            )
+        )
+    finally:
+        runtime.close()
+
+    assert cancelled_events == [
+        {
+            "kind": "failed",
+            "code": "cancelled",
+            "message": "request cancelled",
+            "retryable": False,
+        }
+    ]
+    assert [event["delta"] for event in peer_events if event["kind"] == "output_text_delta"] == [
+        "A",
+        "B",
+    ]
+    assert [event["kind"] for event in peer_events].count("completed") == 1
+    assert peer_events[-1]["usage"]["output_tokens"] == 2
+    assert runtime._requests_by_id == {}
+    assert runtime._active_by_uid == {}
+
+
 def test_batch_generator_runtime_opt_in_off_emits_no_token_delta_events() -> None:
     session = _make_fake_session()
     session.tokenizer = _ToyTokenizer()
@@ -5016,6 +5069,26 @@ def test_orchard_eos_with_stop_buffer_flushes() -> None:
     assert all_text == "hello"  # entire text flushed
 
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+def test_eos_union_flushes_partial_multi_token_stop_sequence() -> None:
+    """Issue #409: every normalized EOS ID stops independently of text stops."""
+    responses = [
+        FakeGenerationResponse(text="answerEN", token=73),
+        FakeGenerationResponse(text="D-after-eos", token=11),
+    ]
+    session = _make_fake_session(eos_token_ids=(41, 73))
+    request = _make_fake_request(stop_sequences=["END"])
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert [event["delta"] for event in events if event["kind"] == "output_text_delta"] == [
+        "answer",
+        "EN",
+    ]
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+    assert events[-1]["usage"]["output_tokens"] == 1
 
 
 def test_empty_eos_token_ids_does_not_trigger() -> None:

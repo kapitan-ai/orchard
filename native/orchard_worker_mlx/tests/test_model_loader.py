@@ -6,6 +6,7 @@ import json
 import shutil
 import sys
 import types
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -717,6 +718,31 @@ def test_load_session_tokenizer_receives_resolved_path(writable_bundle: Path) ->
     )
     assert len(captured_paths) == 1
     assert captured_paths[0].endswith("tokenizer.json")
+
+
+def test_spec_6_4_loader_uses_verified_local_paths_despite_misleading_bundle_name(
+    writable_bundle: Path,
+) -> None:
+    """A bundle name never replaces manifest identity or its local artifact paths."""
+    misleading_bundle = writable_bundle.with_name("remote-tool-model-reasoning-capable")
+    writable_bundle.rename(misleading_bundle)
+
+    base_deps = _make_fake_deps(model_config={"model_type": "misleading-family"})
+    load_model = MagicMock(wraps=base_deps.load_model)
+    load_tokenizer = MagicMock(wraps=base_deps.load_tokenizer)
+    deps = replace(base_deps, load_model=load_model, load_tokenizer=load_tokenizer)
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(misleading_bundle),
+        deps=deps,
+    )
+
+    load_model.assert_called_once_with(misleading_bundle / "weights", lazy=True, strict=False)
+    load_tokenizer.assert_called_once_with(misleading_bundle / "tokenizer.json")
+    assert session.manifest.model_id == "test-org/tiny-llm"
+    assert session.bundle_path == misleading_bundle
 
 
 def test_load_session_model_load_failure(writable_bundle: Path) -> None:
