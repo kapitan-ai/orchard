@@ -25,7 +25,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
         when name in [:stage_bundle, :move_staged_to_dest] ->
           body =
             quote do
-              Orchard.Models.Importer402RegressionTest.barrier(unquote(name))
+              unquote(__MODULE__).barrier(unquote(name))
               unquote(body)
             end
 
@@ -33,7 +33,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
 
         {{:., _, [{:__aliases__, _, [:File]}, :rm_rf]}, _, [{:dest_path, _, _}]} = call ->
           quote do
-            Orchard.Models.Importer402RegressionTest.barrier(:cleanup_destination)
+            unquote(__MODULE__).barrier(:cleanup_destination)
             unquote(call)
           end
 
@@ -41,8 +41,8 @@ defmodule Orchard.Models.Importer402RegressionTest do
           other
       end)
 
-    Code.compile_quoted(ast, source)
-    :ok
+    [{instrumented_importer, _bytecode}] = Code.compile_quoted(ast, source)
+    %{instrumented_importer: instrumented_importer}
   end
 
   setup tags do
@@ -69,7 +69,8 @@ defmodule Orchard.Models.Importer402RegressionTest do
   end
 
   @tag :unboxed
-  test "SPEC 6.4/6.5 concurrent overlapping imports preserve every catalog digest", ctx do
+  test "SPEC 6.4/6.5 concurrent overlapping imports preserve every catalog digest",
+       %{instrumented_importer: importer} = ctx do
     outer = bundle(ctx.root, "outer", "owner/model", "v1")
     inner = bundle(ctx.root, "inner", "owner/model/v1/nested", "repair")
     parent = self()
@@ -78,10 +79,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
       session_task(fn ->
         Process.put(:import_barrier, {:move_staged_to_dest, parent})
 
-        apply(Orchard.Models.Importer402Instrumented, :import_bundle, [
-          inner,
-          [artifacts_root: ctx.artifacts]
-        ])
+        importer.import_bundle(inner, artifacts_root: ctx.artifacts)
       end)
 
     assert_receive {:barrier, :move_staged_to_dest, pid}
@@ -117,7 +115,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
 
   @tag :unboxed
   test "SPEC 6.5 failed catalog publication cleans up before another importer can publish below it",
-       ctx do
+       %{instrumented_importer: importer} = ctx do
     source = bundle(ctx.root, "source", "owner/model", "v1")
     parent = self()
 
@@ -125,10 +123,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
       session_task(fn ->
         Process.put(:import_barrier, {:stage_bundle, parent})
 
-        apply(Orchard.Models.Importer402Instrumented, :import_bundle, [
-          source,
-          [artifacts_root: ctx.artifacts]
-        ])
+        importer.import_bundle(source, artifacts_root: ctx.artifacts)
       end)
 
     assert_receive {:barrier, :stage_bundle, failed_pid}
@@ -218,7 +213,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
 
   test "SPEC 6.5 staging uses UUIDs rather than counters local to a controller or CLI VM", ctx do
     source = bundle(ctx.root, "source", "owner/model", "v1")
-    task = paused_import(source, ctx.artifacts, :move_staged_to_dest)
+    task = paused_import(ctx.instrumented_importer, source, ctx.artifacts, :move_staged_to_dest)
     assert_receive {:barrier, :move_staged_to_dest, pid}
     [staged] = Path.wildcard(Path.join(ctx.artifacts, ".staging-*"), match_dot: true)
     suffix = staged |> Path.basename() |> String.replace_prefix(".staging-", "")
@@ -232,7 +227,7 @@ defmodule Orchard.Models.Importer402RegressionTest do
     @replacement replacement
     test "SPEC 6.4 rejects staged identity replacement with #{@replacement}", ctx do
       source = bundle(ctx.root, "source", "owner/model", "v1")
-      task = paused_import(source, ctx.artifacts, :stage_bundle)
+      task = paused_import(ctx.instrumented_importer, source, ctx.artifacts, :stage_bundle)
       assert_receive {:barrier, :stage_bundle, pid}
       path = Path.join(source, "manifest.json")
       manifest = path |> File.read!() |> Jason.decode!()
@@ -255,14 +250,10 @@ defmodule Orchard.Models.Importer402RegressionTest do
   end
 
   test "barrier-free instrumented import stores a complete synthetic bundle with correct digest",
-       ctx do
+       %{instrumented_importer: importer} = ctx do
     source = bundle(ctx.root, "control", "owner/model", "v1")
 
-    assert {:ok, model} =
-             apply(Orchard.Models.Importer402Instrumented, :import_bundle, [
-               source,
-               [artifacts_root: ctx.artifacts]
-             ])
+    assert {:ok, model} = importer.import_bundle(source, artifacts_root: ctx.artifacts)
 
     assert model.version == "v1"
     assert_digest(model)
@@ -285,16 +276,13 @@ defmodule Orchard.Models.Importer402RegressionTest do
     end
   end
 
-  defp paused_import(source, artifacts, point) do
+  defp paused_import(importer, source, artifacts, point) do
     parent = self()
 
     Task.async(fn ->
       Process.put(:import_barrier, {point, parent})
 
-      apply(Orchard.Models.Importer402Instrumented, :import_bundle, [
-        source,
-        [artifacts_root: artifacts]
-      ])
+      importer.import_bundle(source, artifacts_root: artifacts)
     end)
   end
 
