@@ -32,6 +32,13 @@ defmodule Orchard.Inference.ResponsesRequestNormalizerTest do
     assert request.admission.timeout_ms == Orchard.Inference.request_timeout_ms()
     assert request.sampling.max_output_tokens == 128
     assert request.metadata == %{}
+
+    assert request.reasoning == %CanonicalRequest.Reasoning{
+             generation_policy: :model_default,
+             projection: :legacy_blended,
+             source: :omitted_public,
+             effective_contract: %{mode: :legacy}
+           }
   end
 
   test "prepends instructions as a system message and rewrites input_text parts" do

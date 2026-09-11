@@ -10,10 +10,10 @@
 
 ## 2. Implement canonical policy and rendering
 
-- [ ] 2.1 Add canonical generation policy, projection, provenance, and exact effective-contract types without changing omitted-request behavior.
-- [ ] 2.2 Add closed tokenizer mappings for supported exact model artifact and chat-template contracts.
-- [ ] 2.3 Return and validate exact model artifact, chat-template, render contract, parser, runtime contract, and event-binding metadata before dispatch.
-- [ ] 2.4 Reject arbitrary template keyword arguments and unsupported explicit controls before scheduling or dispatch.
+- [x] 2.1 Add canonical generation policy, projection, provenance, and exact effective-contract types without changing omitted-request behavior.
+- [x] 2.2 Add a closed tokenizer mapping infrastructure for supported exact model artifact and chat-template contracts. The production registry is intentionally empty until an exact qualified tuple is accepted; synthetic exact-identity fixtures cover the fail-closed contract.
+- [x] 2.3 Return and validate exact model artifact, chat-template, render contract, parser, runtime contract, and event-binding metadata before dispatch.
+- [x] 2.4 Reject arbitrary template keyword arguments and unsupported explicit controls before scheduling or dispatch.
 
 ## 3. Implement negotiated runtime contracts
 
