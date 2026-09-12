@@ -3,14 +3,14 @@
 ## 1. Contract acceptance
 
 - [x] 1.1 Record the approved narrow reasoning-only eligibility exception, unary preparation proof, live-probe-only evidence, usage ownership split, canonical retry source, and dormant activation gate.
-- [x] 1.2 Reconcile the complete eleven-field tuple with the accepted effort axis, trace the `SPEC.md` §7.5.3a field 8 and field 9 allocation, `proto/cluster/v1/reasoning.proto` location, and re-confirm-and-block guard, and record the declarations that realize them as blocked pending owner-approved design — including the comment-only field 8 reservation prerequisite in `proto/orchard/worker/v1/worker_runtime.proto`; this package selects no enum, presence encoding, service or RPC declaration owner, message layout, or redemption shape.
+- [x] 1.2 Reconcile the complete eleven-field tuple with the accepted effort axis, trace the `SPEC.md` §7.5.3a field 8 and field 9 allocation, `proto/cluster/v1/reasoning.proto` location, and re-confirm-and-block guard; record the owner-confirmed concrete schema design in `design.md` §2.1 and retain the comment-only field 8 reservation prerequisite in `proto/orchard/worker/v1/worker_runtime.proto`, without adding declarations, generated bindings, or runtime behavior.
 - [x] 1.3 Run change-scoped strict OpenSpec validation.
 - [x] 1.4 Run all-change strict OpenSpec validation and inspect generated main specs for placeholder prose.
 
 ## 2. Prerequisites and schema handoff
 
 - [x] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
-- [ ] 2.2 After the owner-approved schema design is recorded per `design.md` §1 condition 3, re-confirm the `SPEC.md` §7.5.3a field allocations and implement the approved protocol declarations, generated bindings, and reciprocal fixtures atomically; block rather than substitute a conflicting number or shape, and do not infer an enum, presence encoding, service or RPC declaration owner, message layout, or redemption shape from this contract.
+- [ ] 2.2 After the owner-confirmed `design.md` §2.1 record is incorporated unchanged into the separate accepted schema package and durable decision record required by `design.md` §1 condition 3, re-confirm the `SPEC.md` §7.5.3a field allocations and implement the approved protocol declarations, generated bindings, and reciprocal fixtures atomically; block rather than substitute a conflicting number or shape.
 - [ ] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage.
 
 ## 3. Dormant implementation handoff
