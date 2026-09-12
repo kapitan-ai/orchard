@@ -96,7 +96,7 @@ defmodule Orchard.API.ToolSchemaAdmissionTest do
       end
     end
 
-    test "SPEC §3.4 #{@endpoint_kind} stream=#{@stream?} keyed=#{@keyed?} rejects missing invalid or duplicate function names",
+    test "characterizes #{@endpoint_kind} stream=#{@stream?} keyed=#{@keyed?} implementation rejection of missing invalid or duplicate function names",
          context do
       malformed_tools =
         Enum.map([%{}, %{"name" => nil}, %{"name" => ""}, %{"name" => 12}], fn function ->
