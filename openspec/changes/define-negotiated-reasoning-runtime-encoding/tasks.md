@@ -6,11 +6,12 @@
 - [x] 1.2 Review the fresh-base protocol allocation: `WorkerCapabilities` fields 1-7 used, 8 reserved for the deferred loaded binding, and 9 available.
 - [x] 1.3 Run change-scoped strict OpenSpec validation.
 - [x] 1.4 Run all-change strict OpenSpec validation and inspect generated main specs for placeholder prose.
+- [x] 1.5 Record the owner-confirmed schema decision in `design.md` §2.1 as proposed-only declarations. Schema declarations, generated bindings, and runtime implementation remain separate and blocked until this change is accepted.
 
 ## 2. Prerequisites and schema handoff
 
 - [x] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
-- [ ] 2.2 After this contract is accepted, re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically.
+- [ ] 2.2 After this change is accepted, re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically, reproducing `design.md` §2.1 unchanged. Do not begin that work from this documentation PR.
 - [ ] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage.
 
 ## 3. Dormant implementation handoff
