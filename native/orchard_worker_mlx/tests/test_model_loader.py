@@ -720,11 +720,17 @@ def test_load_session_tokenizer_receives_resolved_path(writable_bundle: Path) ->
     assert captured_paths[0].endswith("tokenizer.json")
 
 
-def test_spec_6_4_loader_uses_verified_local_paths_despite_misleading_bundle_name(
+def test_spec_6_4_loader_uses_artifact_evidence_despite_misleading_names(
     writable_bundle: Path,
 ) -> None:
-    """A bundle name never replaces manifest identity or its local artifact paths."""
-    misleading_bundle = writable_bundle.with_name("remote-tool-model-reasoning-capable")
+    """Model and bundle names never replace manifest-bound capability evidence."""
+    misleading_model_id = "remote-tool-model-reasoning-capable"
+    manifest_path = writable_bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["model_id"] = misleading_model_id
+    manifest_path.write_text(json.dumps(manifest))
+
+    misleading_bundle = writable_bundle.with_name("eos-tool-reasoning-model")
     writable_bundle.rename(misleading_bundle)
 
     base_deps = _make_fake_deps(model_config={"model_type": "misleading-family"})
@@ -733,7 +739,7 @@ def test_spec_6_4_loader_uses_verified_local_paths_despite_misleading_bundle_nam
     deps = replace(base_deps, load_model=load_model, load_tokenizer=load_tokenizer)
 
     session = load_session(
-        model_id="test-org/tiny-llm",
+        model_id=misleading_model_id,
         version="mlx-q4-v1",
         model_path=str(misleading_bundle),
         deps=deps,
@@ -741,10 +747,11 @@ def test_spec_6_4_loader_uses_verified_local_paths_despite_misleading_bundle_nam
 
     load_model.assert_called_once_with(misleading_bundle / "weights", lazy=True, strict=False)
     load_tokenizer.assert_called_once_with(misleading_bundle / "tokenizer.json")
-    assert session.manifest.model_id == "test-org/tiny-llm"
+    assert session.manifest.model_id == misleading_model_id
     assert session.bundle_path == misleading_bundle
     assert session.eos_token_ids == ()
     assert session.tool_calling == {"supported": False, "parser_type": None}
+    assert session.manifest.capabilities == ("chat",)
 
 
 def test_load_session_model_load_failure(writable_bundle: Path) -> None:
