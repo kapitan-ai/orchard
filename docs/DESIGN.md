@@ -1036,3 +1036,42 @@ For a guided Node Enrollment change, verify at least these states in light and d
 - Expired, revoked, and output-failed recovery.
 - Narrow viewport wrapping for filenames, identifiers, commands, and evidence.
 - Keyboard focus, live-region announcements, and reduced motion.
+
+## 16. Request Detail Evidence
+
+Request detail leads with the logical Request outcome, model, time to first
+token (TTFT), and total request time. HTTP status remains available in Request
+details. TTFT measures creation to the first recorded
+public-output timestamp, including waiting and earlier attempts; it is not client
+receipt time. Total time ends at the persisted final outcome, not the current clock.
+Missing or inconsistent timing is Not recorded, never zero.
+
+An execution timeline uses one elapsed-time scale for the Request and its persisted
+Inference Attempts. Bars require valid start and end evidence within the Request
+interval; missing timing keeps a labelled row without a fabricated bar. Gaps do not
+imply queue, loading, or cleanup phases. Recorded events remain in sequence order
+with explicit Request or step scope, elapsed time and inspectable timestamps.
+Native disclosures expose event payloads without truncating the only evidence.
+
+Expandable timeline rows show persisted outcome, Node identity, and retry/failure
+evidence separately from the final Request outcome, without a duplicate attempt
+card list. No attempt is inferred from the Request
+row or an operator retry link. Unavailable legacy evidence remains explicit.
+Input and output usage are primary; their total is secondary. Request counts are
+not the sum of discarded attempts. Show accuracy labels only when persisted
+evidence supports them; absent counts are not zero. Do not derive generation rate
+from total output counts when their timing and token populations may differ.
+
+Scheduler, execution metadata, provenance, and retained payloads use progressive
+disclosure. Capture-mode copy belongs at payload boundaries and must not infer
+expiry or redaction history from an absent payload. Copy controls read rendered
+JSON from the DOM, never duplicate payloads in attributes or events. Heroicons
+reinforce timing, input/output, and attempt status without replacing text labels.
+Use the existing neutral surfaces, mono metric values, focus-visible rings, and
+responsive rail. Keep explanatory prose within 65ch, timing metrics adjacent, and
+model identity visible. Secondary metadata uses aligned label/value rows behind
+a disclosure, stacked on narrow screens. Timing definitions remain keyboard
+accessible without repeating inactive-state explanations in completed metrics.
+Group refresh and freshness together and reduce narrow-page gutters before
+reducing text size. Validate recovered, failed, active, missing-evidence, loading,
+and unavailable states, plus light/dark and narrow layouts.

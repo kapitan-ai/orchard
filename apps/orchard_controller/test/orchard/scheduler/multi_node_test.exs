@@ -348,16 +348,21 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   defp start_holding_awaiter(ticket, tag) do
     parent = self()
 
-    spawn(fn ->
-      result = QueueManager.await(ticket)
-      send(parent, {tag, result})
+    awaiter =
+      spawn(fn ->
+        result = QueueManager.await(ticket)
+        send(parent, {tag, result})
 
-      receive do
-        :stop -> :ok
-      after
-        30_000 -> :ok
-      end
-    end)
+        receive do
+          :stop -> :ok
+        after
+          30_000 -> :ok
+        end
+      end)
+
+    # Cross-tenant promotion skips unregistered awaiters regardless of spawn order.
+    assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+    awaiter
   end
 
   defp insert_node!(overrides) do
