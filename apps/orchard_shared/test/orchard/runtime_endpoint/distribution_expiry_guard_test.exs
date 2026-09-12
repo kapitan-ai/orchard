@@ -8,6 +8,10 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
   @node_id "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
   @node_name "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20"
 
+  # Expiry cleanup runs from a zero-delay timer inside the guard, so its callback
+  # messages can land after ExUnit's 100ms default on a loaded parallel runner.
+  @expiry_timeout_ms 1_000
+
   test "SPEC.md §7.5.0 expires an active exact peer and stops Distribution" do
     test_pid = self()
     now = ~U[2026-07-13 08:00:00.000000Z]
@@ -39,11 +43,11 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
              )
 
     peer = String.to_atom(@controller_name)
-    assert_receive {:cookie_invalidated, ^peer, replacement}
+    assert_receive {:cookie_invalidated, ^peer, replacement}, @expiry_timeout_ms
     assert is_atom(replacement)
     refute replacement == peer
-    assert_receive {:peer_disconnected, ^peer}
-    assert_receive :distribution_stopped
+    assert_receive {:peer_disconnected, ^peer}, @expiry_timeout_ms
+    assert_receive :distribution_stopped, @expiry_timeout_ms
     refute_receive :application_stopped
   end
 
@@ -74,9 +78,9 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
                hard_stop: fn -> :ok end
              )
 
-    assert_receive {:peer_disconnected, peer}
+    assert_receive {:peer_disconnected, peer}, @expiry_timeout_ms
     assert Atom.to_string(peer) == @node_name
-    assert_receive :application_stopped
+    assert_receive :application_stopped, @expiry_timeout_ms
   end
 
   test "SPEC.md §7.5.0 hard-stops when graceful expiry shutdown fails" do
@@ -106,7 +110,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
                hard_stop: fn -> send(test_pid, :hard_stopped) end
              )
 
-    assert_receive :hard_stopped
+    assert_receive :hard_stopped, @expiry_timeout_ms
     GenServer.stop(pid)
   end
 
@@ -137,9 +141,9 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
                hard_stop: fn -> send(test_pid, :independent_hard_stop) end
              )
 
-    assert_receive :application_stopped, 500
+    assert_receive :application_stopped, @expiry_timeout_ms
     GenServer.stop(pid)
-    assert_receive :independent_hard_stop, 500
+    assert_receive :independent_hard_stop, @expiry_timeout_ms
   end
 
   test "SPEC.md §7.5.0 repeated expired restarts reuse one bounded cleanup cookie" do
@@ -172,7 +176,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuardTest do
                    fail_closed: fn -> :ok end
                  )
 
-        assert_receive {:replacement_cookie, replacement}
+        assert_receive {:replacement_cookie, replacement}, @expiry_timeout_ms
         GenServer.stop(pid)
         replacement
       end
