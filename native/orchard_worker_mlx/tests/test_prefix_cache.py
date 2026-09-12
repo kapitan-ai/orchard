@@ -128,6 +128,28 @@ class TestPromptCacheLength:
         cache = [BoolEntry()]
         assert prompt_cache_length(cache) == 0
 
+    def test_composite_cache_ignores_untouched_slots(self) -> None:
+        """Partially populated hybrid caches report only populated entry lengths."""
+        cache = [FakeOffsetEntry(10), None, FakeSizeEntry(12)]
+
+        assert prompt_cache_length(cache) == 12
+
+
+@pytest.mark.parametrize("cache_factory", [KVPrefixCache, TriePrefixCache])
+def test_hybrid_cache_lookup_preserves_untouched_slots(cache_factory: Any) -> None:
+    """Issue #409: cache lookup must preserve partial hybrid cache slots."""
+    cache = cache_factory(max_entries=2)
+    original = [FakeOffsetEntry(3), None, FakeSizeEntry(3)]
+    cache.store([11, 12, 13], original)
+
+    hit = cache.lookup([11, 12], trim_fn=fake_trim)
+
+    assert hit is not None
+    assert hit.remaining_ids == [12]
+    assert hit.prompt_cache[1] is None
+    assert prompt_cache_length(hit.prompt_cache) == 1
+    assert prompt_cache_length(original) == 3
+
 
 # ---------------------------------------------------------------------------
 # Tests: KVPrefixCache basic operations

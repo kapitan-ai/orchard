@@ -2272,6 +2272,7 @@ def generate_events(
     - ``{"kind": "output_text_delta", "delta": "..."}``
     - ``{"kind": "tool_call_delta", ...}``
     - ``{"kind": "token_delta", "token_ids": [...], "logprobs": [...]}``
+    - ``{"kind": "usage", "usage": {...}}``
     - ``{"kind": "completed", "finish_reason": "...", "usage": {...}}``
     - ``{"kind": "failed", "code": "...", ...}``  (via ``cancelled_event()``)
 
@@ -2282,6 +2283,14 @@ def generate_events(
     buffering once tool generation starts. Orchard-level EOS detection checks
     ``session.eos_token_ids`` per response. Cancel is checked every
     ``session.decode_cancel_stride`` tokens during decode.
+
+    Non-terminal ``usage`` events carry cumulative counters for the attempt,
+    never a per-event delta. They are paced on the same
+    ``session.decode_cancel_stride`` boundary to bound event volume, and a
+    final update is flushed immediately before each terminal event emitted
+    once decode has started, so a cancellation or a Controller-synthesized
+    terminal still leaves the latest lower bound on the stream. Counters never
+    decrease, and the terminal ``completed`` usage remains the exact total.
 
     NOTE(task-5): Prefill cancel is NOT cleanly interruptible. Upstream
     ``generate_step()`` has no cancel hook. Cancellation applies only after
@@ -2395,8 +2404,20 @@ def generate_events(
                 prefill_probe_finalized = True
 
             output_tokens = 0
+            reported_output_tokens = 0
             generated_token_ids: list[int] = []
             can_store = True
+
+            def emit_cumulative_usage(*, final: bool = False) -> Iterator[dict[str, Any]]:
+                nonlocal reported_output_tokens
+
+                if output_tokens == reported_output_tokens:
+                    return
+                if not final and output_tokens % stride != 0:
+                    return
+
+                reported_output_tokens = output_tokens
+                yield _usage_event(input_tokens, output_tokens)
 
             for response in stream:
                 drained_prefill = bool(progress_queue)
@@ -2406,6 +2427,7 @@ def generate_events(
                 )
                 finalize_prefill_probe_if_needed(drained_prefill)
                 output_tokens += 1
+                yield from emit_cumulative_usage()
 
                 if output_tokens % stride == 0 and cancel_event.is_set():
                     if tool_context is None or not tool_context.stop_buffer_disabled:
@@ -2419,6 +2441,7 @@ def generate_events(
                             if event["kind"] == "tool_call_delta":
                                 tool_calls_emitted = True
                             yield event
+                    yield from emit_cumulative_usage(final=True)
                     yield cancelled_event()
                     return
 
@@ -2490,6 +2513,7 @@ def generate_events(
                                 cache_affinity_fingerprint=cache_affinity_fingerprint,
                                 cache_finalized=_cache_finalized_for_store(stream),
                             )
+                        yield from emit_cumulative_usage(final=True)
                         yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                         return
                     if safe_text:
@@ -2497,6 +2521,7 @@ def generate_events(
 
                 if tool_context is not None and tool_context.pending_error is not None:
                     _close_stream(stream, cancelled=True)
+                    yield from emit_cumulative_usage(final=True)
                     yield {
                         "kind": "failed",
                         "code": tool_context.pending_error.code,
@@ -2526,6 +2551,7 @@ def generate_events(
                             yield event
                         if final_error is not None:
                             _close_stream(stream, cancelled=True)
+                            yield from emit_cumulative_usage(final=True)
                             yield {
                                 "kind": "failed",
                                 "code": final_error.code,
@@ -2544,15 +2570,13 @@ def generate_events(
                             cache_affinity_fingerprint=cache_affinity_fingerprint,
                         )
                     if tool_calls_emitted:
-                        yield _completed_event(
-                            "FINISH_REASON_TOOL_CALLS",
-                            input_tokens,
-                            output_tokens,
-                        )
+                        finish = "FINISH_REASON_TOOL_CALLS"
                     elif orchard_eos or finish_reason == "stop":
-                        yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+                        finish = "FINISH_REASON_STOP"
                     else:
-                        yield _completed_event("FINISH_REASON_LENGTH", input_tokens, output_tokens)
+                        finish = "FINISH_REASON_LENGTH"
+                    yield from emit_cumulative_usage(final=True)
+                    yield _completed_event(finish, input_tokens, output_tokens)
                     return
 
             drained_prefill = bool(progress_queue)
@@ -2572,6 +2596,7 @@ def generate_events(
                         if event["kind"] == "tool_call_delta":
                             tool_calls_emitted = True
                         yield event
+                yield from emit_cumulative_usage(final=True)
                 yield cancelled_event()
             else:
                 if tool_context is not None:
@@ -2581,6 +2606,7 @@ def generate_events(
                             tool_calls_emitted = True
                         yield event
                     if final_error is not None:
+                        yield from emit_cumulative_usage(final=True)
                         yield {
                             "kind": "failed",
                             "code": final_error.code,
@@ -2599,6 +2625,7 @@ def generate_events(
                         cache_affinity_fingerprint=cache_affinity_fingerprint,
                     )
                 finish = "FINISH_REASON_TOOL_CALLS" if tool_calls_emitted else "FINISH_REASON_STOP"
+                yield from emit_cumulative_usage(final=True)
                 yield _completed_event(finish, input_tokens, output_tokens)
             return
 
@@ -2699,6 +2726,18 @@ def _completed_event(finish_reason: str, input_tokens: int, output_tokens: int) 
     return {
         "kind": "completed",
         "finish_reason": finish_reason,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }
+
+
+def _usage_event(input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    """Build a non-terminal cumulative usage event dict."""
+    return {
+        "kind": "usage",
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,

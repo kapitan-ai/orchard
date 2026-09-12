@@ -134,6 +134,7 @@ Passing cells remain visible in the evidence ladder and tested capability envelo
 - `<untested, insufficiently tested, or blocked capability>`
 
 Reasoning remains unknown unless evaluated under an accepted reasoning contract owned by issue #190.
+A record that names a canonical reasoning-effort tier follows the reasoning-effort evidence rules in [the standing policy](../model-qualification.md).
 
 ## Resource and reliability observations
 

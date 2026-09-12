@@ -1654,6 +1654,50 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   end
 
   describe "POST /v1/chat/completions (streaming tool calls)" do
+    test "SPEC 5.3 does not serialize a cumulative lower bound as exact usage" do
+      canonical = stub_chat_canonical(true, %{stream_include_usage: true})
+
+      stub_chat_orchestrator(
+        prepare: {:ok, canonical, %{}},
+        events: [
+          InferenceEvent.usage_update(%InferenceEvent.Usage{
+            input_tokens: 3,
+            output_tokens: 5,
+            total_tokens: 8
+          }),
+          InferenceEvent.completed(:finish_reason_stop, nil)
+        ],
+        execute: {:ok, canonical, []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true,
+          "stream_options" => %{"include_usage" => true}
+        })
+
+      assert conn.status == 200
+
+      usage_chunk =
+        conn.resp_body
+        |> parse_sse_body()
+        |> Enum.find(fn
+          {:data, %{"choices" => [], "usage" => _usage}} -> true
+          _event -> false
+        end)
+
+      assert {:data,
+              %{
+                "usage" => %{
+                  "prompt_tokens" => 0,
+                  "completion_tokens" => 0,
+                  "total_tokens" => 0
+                }
+              }} = usage_chunk
+    end
+
     test "stream=true emits tool-call delta chunks, terminal tool_calls finish reason, and [DONE]" do
       stub_chat_orchestrator(
         prepare: {:ok, stub_chat_canonical(), %{}},

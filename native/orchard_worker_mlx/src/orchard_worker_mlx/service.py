@@ -823,6 +823,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         generation_started = False
         terminal_emitted = False
         backend_iterator: Iterator[dict[str, Any]] | None = None
+        latest_usage: common_pb2.TokenUsage | None = None
         try:
             self._backend.start_generation()
             generation_started = True
@@ -857,6 +858,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
                     self._maybe_enforce_memory_pressure()
                     try:
                         proto_event = build_inference_event(backend_event)
+                        latest_usage = _validate_cumulative_usage(proto_event, latest_usage)
                     except BackendError as conv_exc:
                         # Invalid backend event -> synthesize terminal failure.
                         if not terminal_emitted:
@@ -1185,6 +1187,33 @@ _VALID_FINISH_REASONS = frozenset(
 
 def _is_terminal_proto_event(event: events_pb2.InferenceEvent) -> bool:
     return event.WhichOneof("event") in _TERMINAL_ONEOFS
+
+
+def _validate_cumulative_usage(
+    event: events_pb2.InferenceEvent,
+    latest_usage: common_pb2.TokenUsage | None,
+) -> common_pb2.TokenUsage | None:
+    """Reject usage updates that regress a stream's cumulative counters."""
+    event_kind = event.WhichOneof("event")
+
+    if event_kind == "usage":
+        usage = event.usage.usage
+    elif event_kind == "completed" and event.completed.HasField("usage"):
+        usage = event.completed.usage
+    else:
+        return latest_usage
+
+    if latest_usage is not None and any(
+        getattr(usage, field) < getattr(latest_usage, field)
+        for field in ("input_tokens", "output_tokens", "total_tokens")
+    ):
+        raise BackendError(
+            "backend_invalid_event",
+            "cumulative usage counters must not decrease within a stream",
+            False,
+        )
+
+    return usage
 
 
 def build_inference_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:

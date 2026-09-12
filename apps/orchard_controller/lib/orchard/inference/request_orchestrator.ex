@@ -22,6 +22,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     CacheAffinity,
     CanonicalRequestSerializer,
     ChatError,
+    EventUsage,
     ModelLoadFailure,
     QueueManager,
     RequestDeadline,
@@ -2690,20 +2691,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp maybe_put_first_token_at(attrs, %DateTime{} = ts), do: Map.put(attrs, :first_token_at, ts)
 
   defp extract_usage(events) do
-    usage_event = Enum.find(events, &(InferenceEvent.kind(&1) == :usage))
-    completed_event = Enum.find(events, &(InferenceEvent.kind(&1) == :completed))
-
-    cond do
-      usage_event != nil ->
-        usage = usage_event.event.usage
-        %{input_tokens: usage.input_tokens, output_tokens: usage.output_tokens}
-
-      completed_event != nil && completed_event.event.usage != nil ->
-        usage = completed_event.event.usage
-        %{input_tokens: usage.input_tokens, output_tokens: usage.output_tokens}
-
-      true ->
+    case EventUsage.find(events) do
+      nil ->
         %{input_tokens: 0, output_tokens: 0}
+
+      usage ->
+        %{input_tokens: usage.input_tokens, output_tokens: usage.output_tokens}
     end
   end
 
