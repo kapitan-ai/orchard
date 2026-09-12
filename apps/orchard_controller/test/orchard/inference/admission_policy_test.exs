@@ -172,6 +172,39 @@ defmodule Orchard.Inference.AdmissionPolicyTest do
     assert upgraded.admission.max_cold_start_ms == 15_000
   end
 
+  test "an already-effective deadline keeps explicit zero budgets without adding headroom" do
+    request =
+      base_request(
+        admission: %Admission{timeout_ms: 30_000, queue_wait_ms: 1_000, max_cold_start_ms: 1_000},
+        resolved_policy: %ResolvedPolicy{residency_preference: :allow_cold_load}
+      )
+
+    resolved =
+      AdmissionPolicy.resolve(request,
+        effective_timeout_ms: 30_000,
+        queue_wait_ms: 0,
+        max_cold_start_ms: 0
+      )
+
+    assert resolved.admission.timeout_ms == 30_000
+    assert resolved.admission.queue_wait_ms == 0
+    assert resolved.admission.max_cold_start_ms == 0
+    assert resolved.resolved_policy.residency_preference == :allow_cold_load
+  end
+
+  test "an already-effective deadline is still capped at the deployment ceiling" do
+    with_inference_config([max_request_deadline_ms: 360_000], fn ->
+      log =
+        capture_log(fn ->
+          resolved = AdmissionPolicy.resolve(base_request(), effective_timeout_ms: 400_000)
+
+          assert resolved.admission.timeout_ms == 360_000
+        end)
+
+      assert log =~ "capped at 360000 ms"
+    end)
+  end
+
   test "default_attrs mirrors resolve defaults" do
     attrs = AdmissionPolicy.default_attrs()
 

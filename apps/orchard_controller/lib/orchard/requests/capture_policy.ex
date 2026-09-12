@@ -136,6 +136,12 @@ defmodule Orchard.Requests.CapturePolicy do
   @spec strictest_mode() :: mode()
   def strictest_mode, do: :none
 
+  @doc "Returns the narrower of two valid capture modes."
+  @spec narrower(mode(), mode()) :: mode()
+  def narrower(left, right) when left in @capture_modes and right in @capture_modes do
+    if capture_rank(left) <= capture_rank(right), do: left, else: right
+  end
+
   @spec normalize_mode(term()) :: {:ok, mode()} | :error
   def normalize_mode(mode) when mode in @capture_modes, do: {:ok, mode}
 
@@ -147,6 +153,10 @@ defmodule Orchard.Requests.CapturePolicy do
   end
 
   def normalize_mode(_mode), do: :error
+
+  defp capture_rank(:none), do: 0
+  defp capture_rank(:metadata), do: 1
+  defp capture_rank(:full), do: 2
 
   @spec create_attrs(mode(), map()) :: map()
   def create_attrs(:full, attrs), do: put_key(attrs, :request_shape, request_shape(:full, attrs))
