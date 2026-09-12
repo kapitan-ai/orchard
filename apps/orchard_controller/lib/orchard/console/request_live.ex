@@ -7,6 +7,8 @@ defmodule OrchardConsole.RequestLive do
 
   use OrchardConsole, :live_view
 
+  require Logger
+
   alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, Tenant}
@@ -972,7 +974,11 @@ defmodule OrchardConsole.RequestLive do
         |> assign_scheduler_explanation(request)
     end
   rescue
-    _error ->
+    error ->
+      Logger.error(
+        "Request console load failed (operation=load_request, category=#{exception_name(error)})"
+      )
+
       assign(socket,
         request_status: :error,
         request: nil,
@@ -985,6 +991,8 @@ defmodule OrchardConsole.RequestLive do
         refresh_mode: :static
       )
   end
+
+  defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
   defp assign_scheduler_explanation(socket, request) do
     case SchedulerExplanationPresenter.show(request) do
@@ -1238,9 +1246,13 @@ defmodule OrchardConsole.RequestLive do
     do:
       "Full capture was selected. Only retained payloads are shown; absence does not prove expiry or redaction."
 
-  defp capture_description(mode) when mode in [:none, :metadata],
+  defp capture_description(:none),
     do:
-      "#{mode} capture was selected. Request and response content is not retained under this policy."
+      "None capture was selected. Request and response content is not retained under this policy."
+
+  defp capture_description(:metadata),
+    do:
+      "Metadata capture was selected. Full request and response payloads are omitted; a bounded assistant-text preview may remain."
 
   defp capture_description(_),
     do: "Capture policy was not recorded. Only retained evidence is shown."

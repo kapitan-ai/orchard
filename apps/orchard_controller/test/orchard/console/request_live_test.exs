@@ -3,6 +3,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
   import Phoenix.LiveViewTest
   import Ecto.Query
+  import ExUnit.CaptureLog
   alias Ecto.Adapters.SQL.Sandbox
   import Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.Governance.ApiKey
@@ -776,6 +777,54 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   # ===========================================================================
+  # Metadata capture disclosure
+  # ===========================================================================
+
+  describe "metadata capture disclosure" do
+    test "SPEC.md §10.10 metadata retains a bounded assistant-text preview and omits full payloads",
+         %{conn: conn} do
+      long_response = String.duplicate("x", 513)
+
+      request =
+        create_request!(%{
+          state: :completed,
+          payload_capture_mode: :metadata,
+          response_payload: %{"output_text" => long_response},
+          response_preview: long_response,
+          response_preview_source: :assistant_text
+        })
+
+      # CapturePolicy bounds the persisted preview; capture_policy_test.exs covers
+      # the 512/513 and grapheme boundaries, so this locks the rendered behavior.
+      assert String.length(request.response_preview) == 512
+      assert String.ends_with?(request.response_preview, "…")
+      refute request.response_preview == long_response
+      assert request.response_payload == nil
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # The bounded preview is retained, and the full payload is not.
+      preview_html = element(view, "#request-response-preview") |> render()
+      assert preview_html =~ "…"
+      refute preview_html =~ long_response
+
+      refute has_element?(view, "#request-response-payload")
+      assert has_element?(view, "#request-response-payload-fallback")
+      refute has_element?(view, "#request-canonical-request")
+      assert has_element?(view, "#request-canonical-fallback")
+
+      # Both disclosures state the accurate metadata-preview semantics.
+      for card_id <- ["#request-response-debug-card", "#request-canonical-card"] do
+        card_html = element(view, card_id) |> render()
+        assert card_html =~ "Metadata capture was selected"
+        assert card_html =~ "Full request and response payloads are omitted"
+        assert card_html =~ "a bounded assistant-text preview may remain"
+        refute card_html =~ "Request and response content is not retained"
+      end
+    end
+  end
+
+  # ===========================================================================
   # Provenance
   # ===========================================================================
 
@@ -1174,6 +1223,69 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "nonexistent-id-999"
       refute html =~ "request-summary-card"
       refute html =~ "request-timeline-card"
+    end
+  end
+
+  # ===========================================================================
+  # Exception diagnostics
+  # ===========================================================================
+
+  describe "exception diagnostics" do
+    test "lookup exceptions log a sanitized diagnostic without leaking request details" do
+      sentinel = "sk-ORCHARD-SECRET-SENTINEL-1234"
+
+      socket = %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          public_id: %{secret: sentinel},
+          refresh_timer: nil
+        }
+      }
+
+      {result, log} =
+        with_log(fn ->
+          OrchardConsole.RequestLive.handle_event("refresh_request", %{}, socket)
+        end)
+
+      assert {:noreply, socket} = result
+
+      # Browser-facing copy stays generic.
+      assert socket.assigns.request_status == :error
+      assert socket.assigns.load_error == "Request details could not be loaded. Try Refresh now."
+      refute socket.assigns.load_error =~ sentinel
+
+      # Server diagnostic is safe (no secret or parameter leakage) and useful
+      # (a fixed operation plus the exception class).
+      assert log =~ "operation=load_request"
+      assert log =~ "category=Elixir.Ecto.Query.CastError"
+      refute log =~ sentinel
+      refute log =~ "secret"
+    end
+
+    test "non-exceptional not-found and presenter-invalid paths emit no error diagnostic", %{
+      conn: conn
+    } do
+      not_found_log =
+        capture_log(fn ->
+          {:ok, _view, _html} = live(conn, "/console/requests/nonexistent-id-999")
+        end)
+
+      refute not_found_log =~ "operation=load_request"
+
+      request =
+        create_request!(%{
+          state: :completed,
+          payload_capture_mode: :full,
+          scheduler_decision: %{"scored_candidates" => "not-a-list"}
+        })
+
+      presenter_log =
+        capture_log(fn ->
+          {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+          assert has_element?(view, "#scheduler-explanation-invalid")
+        end)
+
+      refute presenter_log =~ "operation=load_request"
     end
   end
 
