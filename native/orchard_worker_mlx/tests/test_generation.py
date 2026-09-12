@@ -1906,6 +1906,7 @@ def test_batch_partial_prefill_cancel_preserves_peer_events_until_batch_cleanup(
         def __init__(self, _model: Any, **_kwargs: Any) -> None:
             self._next_uid = 0
             self._active: list[int] = []
+            self._step = 0
             self.prefill_started = threading.Event()
             self.release_responses = threading.Event()
             self.__class__.instances.append(self)
@@ -1926,17 +1927,25 @@ def test_batch_partial_prefill_cancel_preserves_peer_events_until_batch_cleanup(
             return uids
 
         def next(self) -> tuple[list[Any], list[Any]]:
-            if not self.prefill_started.is_set():
+            active = list(self._active)
+            if self._step == 0:
+                self._step += 1
+                return (
+                    [
+                        _prompt_response(active[0], 10, 100),
+                        _prompt_response(active[1], 20, 100),
+                    ],
+                    [],
+                )
+
+            if self._step == 1:
+                self._step += 1
                 self.prefill_started.set()
                 self.release_responses.wait(timeout=5.0)
 
-            active = list(self._active)
             self._active.clear()
             return (
-                [
-                    _prompt_response(active[0], 10, 100),
-                    _prompt_response(active[1], 20, 100),
-                ],
+                [],
                 [
                     _batch_response(active[0], token=11, finish_reason="stop"),
                     _batch_response(active[1], token=21, finish_reason="stop"),
@@ -1999,6 +2008,15 @@ def test_batch_partial_prefill_cancel_preserves_peer_events_until_batch_cleanup(
 
         generator = _PartialPrefillBatchGenerator.instances[0]
         assert generator.prefill_started.wait(timeout=2.0)
+        assert _wait_until(
+            lambda: (
+                runtime._active_by_uid[0].last_prefill_progress == (10, 100)
+                and runtime._active_by_uid[1].last_prefill_progress == (20, 100)
+            )
+        )
+        with runtime._cv:
+            assert runtime._active_by_uid[0].last_prefill_progress == (10, 100)
+            assert runtime._active_by_uid[1].last_prefill_progress == (20, 100)
         cancelled.set()
         assert _wait_until(
             lambda: len([event for event in cancelled_events if event["kind"] == "failed"]) == 1
