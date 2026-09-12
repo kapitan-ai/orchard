@@ -265,6 +265,7 @@ defmodule Orchard.Requests.CapturePolicy do
         :model_id,
         :node_id,
         :output_tokens,
+        :output_usage_status,
         :payload_capture_mode,
         :principal_type,
         :public_id,

@@ -43,6 +43,92 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
     assert attempt_2["excluded_node_ids"] == [@node_1]
   end
 
+  test "SPEC.md §§3.7.1 and 8.2 preserve unclassified usage, including stored zero" do
+    for output_tokens <- [0, 7] do
+      unclassified =
+        failed_result(%{"output_tokens" => output_tokens, "retry_decision" => "not_retryable"})
+
+      assert {:ok, persisted} =
+               InferenceAttemptResult.from_persisted("request_step.failed", 1, unclassified)
+
+      assert persisted["output_tokens"] == output_tokens
+      refute Map.has_key?(persisted, "output_usage_status")
+      refute Map.has_key?(persisted, "reasoning_tokens")
+      refute InferenceAttemptResult.enriched?(%{"output_tokens" => output_tokens})
+    end
+  end
+
+  test "SPEC.md §§3.7.1 and 5.3 read next-format usage evidence without enabling writers" do
+    next_format =
+      failed_result(%{
+        "output_tokens" => 7,
+        "output_usage_status" => "lower_bound",
+        "reasoning_tokens" => 4,
+        "retry_decision" => "not_retryable"
+      })
+
+    assert {:ok, persisted} =
+             InferenceAttemptResult.from_persisted("request_step.failed", 1, next_format)
+
+    assert persisted["output_usage_status"] == "lower_bound"
+    assert persisted["reasoning_tokens"] == 4
+    assert InferenceAttemptResult.enriched?(%{"output_usage_status" => "lower_bound"})
+    assert InferenceAttemptResult.enriched?(%{"reasoning_tokens" => 0})
+
+    assert {:error, "unexpected inference attempt result field \"output_usage_status\""} =
+             InferenceAttemptResult.new("request_step.failed", 1, next_format)
+  end
+
+  test "SPEC.md §3.7.1 rejects malformed, incomplete, and unknown persisted usage evidence" do
+    result = failed_result(%{"output_tokens" => 7, "retry_decision" => "not_retryable"})
+
+    invalid_results = [
+      Map.put(result, "output_usage_status", nil),
+      Map.put(result, "output_usage_status", "estimated"),
+      Map.put(result, "reasoning_tokens", 1),
+      result
+      |> Map.put("output_usage_status", "exact")
+      |> Map.delete("output_tokens"),
+      result
+      |> Map.put("output_usage_status", "exact")
+      |> Map.put("reasoning_tokens", 8),
+      Map.put(result, "unexpected_usage_field", true)
+    ]
+
+    for invalid <- invalid_results do
+      assert {:error, _reason} =
+               InferenceAttemptResult.from_persisted("request_step.failed", 1, invalid)
+    end
+  end
+
+  test "SPEC.md §5.8 reads reasoning commitment evidence without widening new writes" do
+    committed =
+      failed_result(%{
+        "accepted" => true,
+        "output_committed" => true,
+        "output_commitment_kind" => "reasoning",
+        "execution_resolution" => "terminated",
+        "retry_decision" => "output_committed"
+      })
+
+    assert {:ok, result} =
+             InferenceAttemptResult.from_persisted("request_step.failed", 1, committed)
+
+    assert result["output_commitment_kind"] == "reasoning"
+
+    assert {:error, "output_commitment_kind must be one of text, tool_call, structured_output"} =
+             InferenceAttemptResult.new("request_step.failed", 1, committed)
+
+    for kind <- ~w(text tool_call structured_output) do
+      assert {:ok, %{"output_commitment_kind" => ^kind}} =
+               InferenceAttemptResult.new(
+                 "request_step.failed",
+                 1,
+                 Map.put(committed, "output_commitment_kind", kind)
+               )
+    end
+  end
+
   test "closed retry decisions reject impossible attempt states" do
     assert {:error, _reason} =
              InferenceAttemptResult.new(
