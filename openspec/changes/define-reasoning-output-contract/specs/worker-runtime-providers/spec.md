@@ -11,7 +11,9 @@ When the subset cannot be proved, the provider MUST preserve unknown rather than
 
 - **WHEN** a negotiated parser marker is split across decoded chunks
 - **THEN** every conforming provider produces the same channel classification under the pinned parser contract
-- **AND** no framing fragment enters selected output or tool-call parsing
+- **AND** no framing fragment enters selected output or tool-call parsing while further decoded output can still complete the marker
+- **AND** a trailing prefix still retained at the non-truncating `completed` or `stop` terminal, with the parser otherwise definitively in FINAL because no reasoning frame is open, is ordinary final-answer text rather than a framing fragment
+- **AND** an actually open or incomplete reasoning frame still fails closed, whether an opened and unclosed frame or a prefix retained at the truncating `length` terminal
 
 #### Scenario: A provider cannot prove the reasoning-token subset
 

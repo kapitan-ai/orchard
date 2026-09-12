@@ -3794,10 +3794,15 @@ Tool argument byte preservation applies after provider normalization under §7.5
 Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
 That failure MUST NOT fall back to raw blended output, expose the ambiguous bytes through an error, reclassify them as final text, or pass them to tool parsing.
+Ambiguity here is a property of the streaming seam rather than of the bytes, so a trailing partial-marker prefix retained at a chunk boundary is ambiguous only while further decoded output can still complete it.
+At the non-truncating `completed` and `stop` terminals only, and only when parser state is otherwise definitively final because no reasoning frame is open, such a retained prefix SHALL resolve as ordinary final-answer text rather than as a framing fragment.
+Genuinely open, incomplete, malformed, ambiguous, or otherwise unsatisfied reasoning state SHALL still fail closed, including an opened and unclosed reasoning frame, a prefix still retained at the truncating `length` terminal, and any state that cannot satisfy the pinned contract or the negotiated generation policy.
 The terminal failure SHALL be deterministic and non-retryable unless the failure occurred before model execution and independently satisfies the closed retry gates in §5.8.
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
+Whitespace-only decoded reasoning is framing rather than valid reasoning content and SHALL NOT satisfy that rule.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+That no-selected-output guarantee binds the parser terminal itself rather than only a later projection or API boundary, so a negotiated `enabled` stream SHALL withhold final-answer output until valid reasoning content is observed and SHALL emit no final-answer delta when the stream never observes it.
 The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
 Runtime advertisement of a non-`nil` tier proves only that the exact tuple has a qualified renderer mapping and that the provider passes the provider-neutral protocol conformance in §7.5.2a.
 Those fixtures are model-agnostic protocol artifacts, so advertisement SHALL NOT be read as asserting any per-artifact semantic property of a tier, and this specification defines no runtime producer for such an assertion.
