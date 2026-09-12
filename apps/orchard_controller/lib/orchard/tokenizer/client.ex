@@ -3,6 +3,8 @@ defmodule Orchard.Tokenizer.Client do
   Injectable tokenizer seam for controller-side prompt rendering and token counting.
   """
 
+  require Logger
+
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.ToolingValidation
   alias Orchard.ModelManifest
@@ -51,7 +53,8 @@ defmodule Orchard.Tokenizer.Client do
            | :safe_tokenization_incompatible_tokenizer
            | :safe_tokenization_incompatible_template
            | :safe_tokenization_marker_collision
-           | :safe_tokenization_catalog_hash_mismatch, String.t()}
+           | :safe_tokenization_catalog_hash_mismatch
+           | :runtime_incompatible, String.t()}
           | {:stdout_too_large, pos_integer()}
           | :invalid_response
           | :timeout
@@ -910,7 +913,7 @@ defmodule Orchard.Tokenizer.Client do
          %{mode: :legacy}
        )
        when is_binary(category) and is_binary(message) do
-    {:error, {normalize_error_category(category), message}}
+    normalized_error(category, message)
   end
 
   defp normalize_response(
@@ -931,7 +934,9 @@ defmodule Orchard.Tokenizer.Client do
     if reasoning == expected_reasoning do
       {:ok, %{rendered_prompt: rendered_prompt, input_token_count: input_token_count}}
     else
-      {:error, :invalid_response}
+      runtime_incompatible_error(
+        "tokenizer render metadata did not prove the selected negotiated reasoning contract"
+      )
     end
   end
 
@@ -945,7 +950,7 @@ defmodule Orchard.Tokenizer.Client do
          %{mode: :negotiated}
        )
        when is_binary(category) and is_binary(message) do
-    {:error, {normalize_error_category(category), message}}
+    normalized_error(category, message)
   end
 
   defp normalize_response(
@@ -972,7 +977,7 @@ defmodule Orchard.Tokenizer.Client do
        )
        when is_binary(category) and is_binary(message) do
     maybe_cache_segmented_incompatibility(cache_key, category, error)
-    {:error, {normalize_error_category(category), message}}
+    normalized_error(category, message)
   end
 
   defp normalize_response(_response, _exit_status, _plan), do: {:error, :invalid_response}
@@ -1182,8 +1187,29 @@ defmodule Orchard.Tokenizer.Client do
   defp normalize_reason_category_from_category(category),
     do: normalize_error_category(category)
 
+  defp normalized_error(category, message) do
+    case normalize_error_category(category) do
+      :runtime_incompatible ->
+        runtime_incompatible_error(message)
+
+      normalized ->
+        {:error, {normalized, message}}
+    end
+  end
+
+  defp runtime_incompatible_error(message) do
+    # The operator diagnostic stays a fixed bounded string: the public 503 mapping is
+    # content-free, so helper-supplied text must never reach a log line or metric label.
+    Logger.warning(
+      "[TokenizerClient] tokenizer render did not prove the selected negotiated reasoning contract"
+    )
+
+    {:error, {:runtime_incompatible, message}}
+  end
+
   defp normalize_error_category("invalid_input"), do: :invalid_input
   defp normalize_error_category("unsupported_reasoning_control"), do: :invalid_input
+  defp normalize_error_category("runtime_incompatible"), do: :runtime_incompatible
   defp normalize_error_category("missing_assets"), do: :missing_assets
   defp normalize_error_category("unsupported_tokenizer"), do: :unsupported_tokenizer
 

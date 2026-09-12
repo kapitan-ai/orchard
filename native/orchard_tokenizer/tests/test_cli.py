@@ -272,7 +272,7 @@ def test_reasoning_render_contract_uses_only_synthetic_registered_template_argum
         "REASONING_RENDER_CONTRACTS",
         {
             (model_digest, template_digest): {
-                ("disabled", "final_only"): synthetic_registration(
+                ("disabled", "final_only", None): synthetic_registration(
                     template_arguments={"enable_thinking": False}
                 )
             }
@@ -306,6 +306,107 @@ def test_reasoning_render_contract_uses_only_synthetic_registered_template_argum
     }
 
 
+@pytest.mark.parametrize(
+    ("canonical_effort", "provider_value"),
+    [("low", "low"), ("medium", "medium"), ("high", "xhigh")],
+)
+def test_qwen3_8_static_effort_fixture_uses_only_its_exact_closed_mapping(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical_effort: str,
+    provider_value: str,
+) -> None:
+    fixture, payload = qwen3_8_effort_request(tmp_path, canonical_effort)
+    patch_qwen3_8_registry(
+        monkeypatch,
+        fixture,
+        canonical_effort,
+        qwen3_8_registration(fixture, canonical_effort),
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert fixture["fixture_only"] is True
+    assert fixture["model_id"] == "mlx-community/Qwen3.8-27B-4bit"
+    assert response["result"]["rendered_prompt"] == f"True|{provider_value}|hello orchard"
+    assert response["result"]["reasoning"]["reasoning_effort"] == canonical_effort
+
+
+def test_qwen3_8_static_effort_fixture_rejects_missing_mapping(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, payload = qwen3_8_effort_request(tmp_path, "high")
+    patch_qwen3_8_registry(monkeypatch, fixture, "low", qwen3_8_registration(fixture, "low"))
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["error"]["category"] == "unsupported_reasoning_control"
+    assert (
+        response["error"]["message"]
+        == "no exact tokenizer reasoning contract supports this request"
+    )
+
+
+@pytest.mark.parametrize(
+    "effort_argument",
+    [
+        {"key": "thinking_budget"},
+        {"key": "enable_thinking", "value": "xhigh"},
+    ],
+    ids=["missing-provider-value", "collides-with-static-template-argument"],
+)
+def test_qwen3_8_static_effort_fixture_rejects_malformed_effort_registration(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+    effort_argument: dict[str, str],
+) -> None:
+    fixture, payload = qwen3_8_effort_request(tmp_path, "high")
+    registration = qwen3_8_registration(fixture, "high")
+    registration["reasoning_effort_template_argument"] = effort_argument
+    patch_qwen3_8_registry(monkeypatch, fixture, "high", registration)
+
+    assert main(["--request-json", json.dumps(payload)]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "contract_version": 4,
+        "ok": False,
+        "error": {
+            "category": "internal_error",
+            "message": "unexpected tokenizer failure",
+        },
+    }
+
+
+def test_reasoning_render_contract_rejects_unknown_or_contradictory_effort(
+    tmp_path: Path, capsys
+) -> None:
+    payload = reasoning_tokenization_payload(
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
+        chat_template_path=fixture_root() / "chat_template.jinja",
+    )
+    payload["request"]["reasoning"]["reasoning_effort"] = "xhigh"
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["error"] == {
+        "category": "unsupported_reasoning_control",
+        "message": "request.reasoning.reasoning_effort is unsupported",
+    }
+
+    payload["request"]["reasoning"]["reasoning_effort"] = "low"
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["error"] == {
+        "category": "unsupported_reasoning_control",
+        "message": "reasoning effort requires enabled generation policy",
+    }
+
+
 def test_reasoning_render_contract_rejects_request_template_kwargs(tmp_path: Path, capsys) -> None:
     payload = reasoning_tokenization_payload(
         tokenizer_path=fixture_root() / "tokenizer.json",
@@ -336,7 +437,7 @@ def test_reasoning_render_contract_reads_the_declared_tokenizer_config_path(
         "REASONING_RENDER_CONTRACTS",
         {
             (model_digest, template_digest): {
-                ("disabled", "final_only"): synthetic_registration(template_arguments={})
+                ("disabled", "final_only", None): synthetic_registration(template_arguments={})
             }
         },
     )
@@ -407,6 +508,77 @@ def synthetic_registration(*, template_arguments: dict[str, bool]) -> dict[str, 
     }
 
 
+def qwen3_8_effort_fixture() -> dict[str, Any]:
+    fixture_path = Path(__file__).parent / "fixtures" / "qwen3_8_reasoning_effort_static.json"
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
+def qwen3_8_effort_request(tmp_path: Path, effort: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Write the one template text the fixture digest is bound to and build its request."""
+    fixture = qwen3_8_effort_fixture()
+    template_path = tmp_path / "chat_template.jinja"
+    template_path.write_text(
+        "{{ enable_thinking }}|{{ thinking_budget }}|{{ messages[-1]['content'] }}",
+        encoding="utf-8",
+    )
+
+    payload = reasoning_tokenization_payload(
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
+        chat_template_path=template_path,
+        model_artifact_digest=fixture["model_artifact_digest"],
+        chat_template_digest=fixture["chat_template_digest"],
+    )
+    payload["request"]["reasoning"] = qwen3_8_reasoning(fixture, effort)
+
+    return fixture, payload
+
+
+def patch_qwen3_8_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: dict[str, Any],
+    registered_effort: str,
+    registration: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(
+        reasoning_contracts,
+        "REASONING_RENDER_CONTRACTS",
+        {
+            (fixture["model_artifact_digest"], fixture["chat_template_digest"]): {
+                ("enabled", "final_only", registered_effort): registration
+            }
+        },
+    )
+
+
+def qwen3_8_registration(fixture: dict[str, Any], effort: str) -> dict[str, Any]:
+    effort_mapping = fixture["reasoning_effort_template_argument"]
+
+    return {
+        **fixture["registration_identity"],
+        "template_arguments": fixture["template_arguments"],
+        "reasoning_effort_template_argument": {
+            "key": effort_mapping["key"],
+            "value": effort_mapping["mappings"][effort],
+        },
+    }
+
+
+def qwen3_8_reasoning(fixture: dict[str, Any], effort: str) -> dict[str, Any]:
+    return {
+        "generation_policy": "enabled",
+        "projection": "final_only",
+        "reasoning_effort": effort,
+        "source": "explicit_public",
+        "effective_contract": {
+            "mode": "negotiated",
+            "model_artifact_digest": fixture["model_artifact_digest"],
+            "chat_template_digest": fixture["chat_template_digest"],
+            **fixture["registration_identity"],
+        },
+    }
+
+
 def write_tokenizer_config(
     directory: Path, contents: dict[str, Any] | None = None, name: str = "tokenizer_config.json"
 ) -> Path:
@@ -448,6 +620,7 @@ def reasoning_tokenization_payload(
             "reasoning": {
                 "generation_policy": "disabled",
                 "projection": "final_only",
+                "reasoning_effort": None,
                 "source": "console_default",
                 "effective_contract": {
                     "mode": "negotiated",

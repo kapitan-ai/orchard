@@ -123,6 +123,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
     assert CanonicalRequestSerializer.serialize(canonical)["reasoning"] == %{
              "generation_policy" => "disabled",
              "projection" => "final_only",
+             "reasoning_effort" => nil,
              "source" => "console_default",
              "effective_contract" => %{
                "mode" => "negotiated",
@@ -136,6 +137,28 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
                "event_binding_version" => "1"
              }
            }
+  end
+
+  test "serialize/1 preserves a selected canonical effort in negotiated data" do
+    canonical =
+      CanonicalRequest.new(%{
+        internal_id: Ecto.UUID.generate(),
+        public_id: "chatcmpl-effort",
+        endpoint: :chat_completions,
+        tenant_id: Ecto.UUID.generate(),
+        model_ref: %{model_id: "test-model", version: "v1"},
+        admission: %{timeout_ms: 10_000},
+        reasoning: %{
+          generation_policy: :enabled,
+          projection: :final_only,
+          reasoning_effort: :high,
+          source: :explicit_public,
+          effective_contract: negotiated_contract()
+        }
+      })
+
+    assert CanonicalRequestSerializer.serialize(canonical)["reasoning"]["reasoning_effort"] ==
+             "high"
   end
 
   test "serialize/1 rejects embedded structs in plain data fields" do
@@ -180,6 +203,32 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
       model_ref: %CanonicalRequest.ModelRef{model_id: "test-model", version: "v1"},
       sampling: %CanonicalRequest.Sampling{},
       response_format: %CanonicalRequest.ResponseFormat{},
+      tooling: %CanonicalRequest.Tooling{},
+      admission: %CanonicalRequest.Admission{timeout_ms: 10_000},
+      resolved_policy: %CanonicalRequest.ResolvedPolicy{}
+    }
+
+    assert_raise ArgumentError, ~r/reasoning must be a supported legacy or negotiated/, fn ->
+      CanonicalRequestSerializer.serialize(canonical)
+    end
+  end
+
+  test "serialize/1 rejects a legacy reasoning policy carrying a selected effort" do
+    canonical = %CanonicalRequest{
+      internal_id: Ecto.UUID.generate(),
+      public_id: "chatcmpl-legacy-effort",
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %CanonicalRequest.ModelRef{model_id: "test-model", version: "v1"},
+      sampling: %CanonicalRequest.Sampling{},
+      response_format: %CanonicalRequest.ResponseFormat{},
+      reasoning: %CanonicalRequest.Reasoning{
+        generation_policy: :model_default,
+        projection: :legacy_blended,
+        reasoning_effort: :high,
+        source: :omitted_public,
+        effective_contract: %{mode: :legacy}
+      },
       tooling: %CanonicalRequest.Tooling{},
       admission: %CanonicalRequest.Admission{timeout_ms: 10_000},
       resolved_policy: %CanonicalRequest.ResolvedPolicy{}
