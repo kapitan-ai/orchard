@@ -512,10 +512,13 @@ Consequence acknowledgement controls default to unacknowledged and name the cons
 The execute control stays disabled until every confirmation requirement is satisfied, and satisfying requirements never bypasses blockers.
 When one page offers several previewable actions, show one open preview panel at a time so review context stays unambiguous.
 
-Nodes uses Inventory, Admission, Runtime, and Diagnostics as page-local sections.
+Nodes uses Inventory, Admission Review, Runtime, and Diagnostics as page-local sections.
 Node detail uses Overview, Evidence, and Actions with shared identity and refresh context.
 Section links update a whitelisted URL parameter and replace the visible section rather than scrolling to another card.
 Inactive sections are hidden from both keyboard navigation and the accessibility tree; the selected navigation link exposes `aria-current`.
+Inventory uses the **Node Inventory** card and **Inventory entries** count; Runtime uses **Effective targets** for its resolved diagnostic target count.
+When Inventory is empty, it states that configured Runtime Endpoint targets may still be reachable or serving, and its Admission Review and Runtime links reuse the existing query-backed section navigation and already-loaded page data without initiating another read or Runtime Endpoint probe.
+Runtime separates zero resolved effective targets from an unreadable Node inventory, reporting the failed inventory read as an error state instead of a confirmed empty target set.
 
 Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, warnings, and observe-only memory telemetry in labeled groups instead of flattening them into a generic table.
 Node detail provides an explicit read-only refresh action.
