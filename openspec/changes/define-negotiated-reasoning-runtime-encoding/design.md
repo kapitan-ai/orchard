@@ -2,42 +2,320 @@
 
 ## 1. Status, scope, and sequencing
 
-This is an acceptance-only contract for issue #327. It is based on `origin/main` at `b50fb80c118ced9ee489384d576c12c0bfb870a6`; field availability was reviewed at that revision. It does not modify protocol source, generated outputs, runtime code, persistence, or qualification data.
+This is a documentation-only contract for issue #327. It records the
+owner-confirmed schema decisions in §2.1. It does not amend `SPEC.md`, and it
+adds no protocol declaration, generated binding, runtime code, persistence,
+qualification data, public control, usage writer, production registry, or live
+qualification. Its only protocol-source edit is a comment-only field 8
+reservation trace in `proto/orchard/worker/v1/worker_runtime.proto`.
 
-Implementation is blocked until both conditions hold:
+The `SPEC.md` §7.5.3a, §5.6, and §5.5 language this package traces already
+landed on `main`, including the indivisible eleven-field tuple. PR #401 has
+merged, so the canonical request owns the exact reasoning identity this
+contract will later transport. Field availability was re-confirmed at
+`a1421755830811dc5daef77341ae47df2d0b0d71`.
 
-1. PR #401 has merged, so the canonical request owns the exact reasoning identity transported by this contract.
-2. This OpenSpec change and its `SPEC.md` amendment have been accepted.
-
-The implementation must re-confirm source field availability when it begins. A conflicting upstream allocation blocks implementation rather than permitting a substitute number or shape.
+Schema declarations, generated bindings, and runtime implementation remain
+separate and blocked until this change is accepted. After acceptance, a
+separate implementing change must re-confirm source field availability and add
+declarations, generated bindings, reciprocal N/N-1 fixtures, and runtime
+behavior atomically. A conflicting upstream allocation blocks implementation
+rather than permitting a substitute number or shape. Task 2.2 must not proceed
+on an implementer's own schema judgment; it must reproduce §2.1 unchanged.
 
 ## 2. Canonical tuple and loaded binding
 
-The advertised and proven reasoning tuple has exactly these ten equality fields:
+The advertised and proven reasoning tuple has exactly these eleven equality
+fields:
 
 1. generation policy;
 2. projection;
-3. model artifact digest;
-4. chat-template digest;
-5. render contract;
-6. render contract version;
-7. parser family;
-8. parser version;
-9. runtime contract version; and
-10. event-binding version.
+3. reasoning effort;
+4. model artifact digest;
+5. chat-template digest;
+6. render contract;
+7. render contract version;
+8. parser family;
+9. parser version;
+10. runtime contract version; and
+11. event-binding version.
 
-Every comparison is byte-exact after the validated canonical representation is formed. `source` is provenance and is not tuple identity. Independent value lists are invalid because they could fabricate a supported combination.
+Every comparison is byte-exact after the validated canonical representation is
+formed. `source` is provenance and is not tuple identity. Independent value
+lists are invalid because they could fabricate a supported combination.
 
-At the reviewed base, `WorkerCapabilities` uses fields 1 through 7, reserves field 8 explicitly for the deferred `WorkerLoadedBinding`, and has no field 9. The accepted future schema allocation is therefore:
+At the reviewed base, `WorkerCapabilities` uses fields 1 through 7, reserves
+field 8 explicitly for the deferred `WorkerLoadedBinding`, and has no field 9.
+The accepted future schema allocation is therefore:
 
-- lift the reservation and use `WorkerCapabilities.loaded_binding = 8` with the previously recorded shape (`model_id`, `model_version`, `artifact_digest`, `selected_profile_id`); and
-- add the sibling placement-scoped reasoning envelope at `WorkerCapabilities` field 9.
+- lift the reservation and use `WorkerCapabilities.loaded_binding = 8` with the
+  four-member shape sourced from D7 of
+  `define-worker-runtime-capability-negotiation` (`model_id`, `model_version`,
+  `artifact_digest`, `selected_profile_id`); and
+- add the sibling placement-scoped reasoning envelope at `WorkerCapabilities`
+  field 9.
 
-The future schema also introduces `proto/cluster/v1/reasoning.proto` for the shared tuple, evidence, preparation, and proof definitions. It prevents either the Worker package or Controller transport package from owning cross-boundary reasoning types. This contract assigns no source declaration in the present PR.
+D7 records that four-member shape provisionally and assigns no tag numbers. The
+owner-confirmed §2.1 record supplies the member tags, `string` types, presence,
+artifact/profile linkage, and the outer-incarnation association. This package
+does not lift the field 8 reservation or declare those fields.
 
-That placement follows the existing precedent in `proto/orchard/worker/v1/worker_runtime.proto`, which already imports `cluster/v1` files, but it does add one more `cluster.v1` dependency of the provider-neutral Worker Runtime boundary. `deprecate-node-runtime-grpc-compatibility` already records Worker Runtime imports as the reason runtime messages cannot be deleted early, and reasoning types join that same set. Relocating or removing the shared file is therefore explicitly owned by the later `cluster.v1` deprecation sequencing, not by this contract or its #327 implementation; that deprecation must sequence the reasoning definitions alongside the existing Worker Runtime imports rather than treating them as an unplanned blocker.
+The future schema also introduces `proto/cluster/v1/reasoning.proto` for the
+shared tuple, evidence, preparation, and proof definitions. It prevents either
+the Worker package or Controller transport package from owning cross-boundary
+reasoning types. This contract assigns no source declaration in the present PR.
 
-A reasoning envelope is meaningful only with one valid loaded binding and that envelope's `service_incarnation`. Each advertised tuple's artifact digest equals that loaded binding's artifact digest, and its selected profile resolves exactly once in the same `WorkerCapabilities` envelope. A present but incomplete envelope, duplicate or conflicting tuple, unknown enum or version, missing required member, or invalid binding proves no support; it is not legacy omission. Loading, unloading, replacement, failed destructive unload, or worker teardown invalidates the affected evidence and any preparation associated with it.
+That placement follows the existing precedent in
+`proto/orchard/worker/v1/worker_runtime.proto`, which already imports
+`cluster/v1` files, but it does add one more `cluster.v1` dependency of the
+provider-neutral Worker Runtime boundary. `deprecate-node-runtime-grpc-compatibility`
+already records Worker Runtime imports as the reason runtime messages cannot be
+deleted early, and reasoning types join that same set. Relocating or removing
+the shared file is therefore explicitly owned by the later `cluster.v1`
+deprecation sequencing, not by this contract or its #327 implementation; that
+deprecation must sequence the reasoning definitions alongside the existing
+Worker Runtime imports rather than treating them as an unplanned blocker.
+
+A reasoning envelope is meaningful only with one valid loaded binding and that
+Worker Runtime's `service_incarnation`. Each advertised tuple's artifact digest
+equals that loaded binding's artifact digest, and its selected profile resolves
+exactly once in the same `WorkerCapabilities` envelope. A present but incomplete
+envelope, duplicate or conflicting tuple, unknown enum or version, missing
+required member, or invalid binding proves no support; it is not legacy
+omission. Loading, unloading, replacement, failed destructive unload, or worker
+teardown invalidates the affected evidence and any preparation associated with
+it.
+
+## 2.1 Owner-confirmed schema decision record
+
+The owner confirmed the following complete decision record. It is the sole
+schema-decision source for this package. It is reproduced here as proposed
+declarations only and does not add or alter a `.proto` file. Schema
+declarations, generated bindings, and runtime implementation remain separate
+and blocked until this change is accepted.
+
+All cross-boundary types below, including `WorkerLoadedBinding`, are declared
+once in `proto/cluster/v1/reasoning.proto` (`package cluster.v1`) and import
+only `cluster/v1/common.proto`. `worker_runtime.proto` and `runtime.proto`
+import `reasoning.proto`; this creates no import cycle.
+
+### Shared types, loaded binding, tuple, and live observation
+
+```proto
+enum ReasoningEffort {
+  REASONING_EFFORT_UNSPECIFIED = 0;
+  REASONING_EFFORT_LOW = 1;
+  REASONING_EFFORT_MEDIUM = 2;
+  REASONING_EFFORT_HIGH = 3;
+}
+
+message ReasoningEffortSelection {
+  ReasoningEffort effort = 1;
+}
+
+message WorkerLoadedBinding {
+  string model_id = 1;
+  string model_version = 2;
+  string artifact_digest = 3;
+  string selected_profile_id = 4;
+}
+
+message NegotiatedReasoningTuple {
+  string generation_policy = 1;
+  string projection = 2;
+  ReasoningEffortSelection reasoning_effort = 3;
+  string model_artifact_digest = 4;
+  string chat_template_digest = 5;
+  string render_contract = 6;
+  string render_contract_version = 7;
+  string parser_family = 8;
+  string parser_version = 9;
+  string runtime_contract_version = 10;
+  string event_binding_version = 11;
+}
+
+message ReasoningEvidenceEnvelope {
+  repeated NegotiatedReasoningTuple tuples = 1;
+  bytes loaded_instance_id = 2;
+}
+
+message ReasoningObservationRequest {}
+
+message ReasoningEvidence {
+  WorkerLoadedBinding loaded_binding = 1;
+  ReasoningEvidenceEnvelope envelope = 2;
+  string service_incarnation = 3;
+  uint64 remaining_freshness_ms = 4;
+}
+
+message ReasoningNonAdvertising {}
+message ReasoningUnknown {}
+
+message ReasoningLiveObservation {
+  oneof result {
+    ReasoningEvidence evidence = 1;
+    ReasoningNonAdvertising non_advertising = 2;
+    ReasoningUnknown unknown = 3;
+  }
+}
+```
+
+`WorkerCapabilities` lifts its reservation into these singular, presence-aware
+fields:
+
+```proto
+cluster.v1.WorkerLoadedBinding loaded_binding = 8;
+cluster.v1.ReasoningEvidenceEnvelope reasoning_evidence = 9;
+```
+
+`WorkerStatusRequest` and `StatusRequest` each gain the singular presence
+marker:
+
+```proto
+cluster.v1.ReasoningObservationRequest reasoning_observation = 1;
+```
+
+`StatusResponse` gains:
+
+```proto
+cluster.v1.ReasoningLiveObservation reasoning_observation = 14;
+```
+
+Rules:
+
+- A missing `ReasoningEffortSelection` means the negotiated `nil` effort. A
+  present wrapper with `UNSPECIFIED` is invalid; only `LOW`, `MEDIUM`, and
+  `HIGH` are selected tiers. A selected tier is valid only for
+  `generation_policy = enabled` and `projection = final_only`.
+- All `WorkerLoadedBinding` strings are required and non-empty when the binding
+  is present. Omission of field 8 means a non-advertising binding.
+  `artifact_digest` equals each advertised or proven tuple's
+  `model_artifact_digest`; `selected_profile_id` resolves exactly once to a
+  profile in the same `WorkerCapabilities.profiles`.
+- `service_incarnation` remains the existing outer
+  `WorkerCapabilities.service_incarnation = 6`; it is not duplicated inside the
+  binding or envelope. `ReasoningEvidence.service_incarnation` is an
+  equality-checked live-observation echo of that outer value.
+- `reasoning_evidence.tuples` is cardinality `0..16`; every included tuple is
+  complete, unique, and non-conflicting. A valid empty list means confirmed
+  non-support. `loaded_instance_id` is required and exactly 16 raw bytes.
+- A present `ReasoningEvidence` requires all four members. Its binding,
+  envelope, and incarnation must equal Worker fields 8, 9, and 6 respectively;
+  its freshness must be positive to prove selection. Malformed, partial, stale,
+  duplicate, conflicting, or mismatched evidence is `unknown`, never legacy or
+  support.
+- The request marker is emitted only for an explicit negotiated request.
+  Without it, legacy status and execution projections remain unchanged.
+  `non_advertising` is the complete negative result for an N-1 or
+  non-advertising binding; no typed reasoning execution event is sent to that
+  binding.
+
+### Preparation and redemption
+
+```proto
+message FrozenExecutionInput {
+  string request_id = 1;
+  string controller_session_id = 2;
+  string model_id = 3;
+  string version = 4;
+  bytes rendered_prompt_utf8 = 5;
+  uint32 input_tokens = 6;
+  GenerationParams params = 7;
+  uint64 deadline_unix_ms = 8;
+  bytes metadata_json = 9;
+  string cache_affinity_fingerprint = 10;
+  repeated uint32 prompt_token_ids = 11;
+  bool return_token_ids = 12;
+  bool return_logprobs = 13;
+}
+
+message PrepareInferenceRequest {
+  FrozenExecutionInput input = 1;
+  NegotiatedReasoningTuple tuple = 2;
+  WorkerLoadedBinding expected_binding = 3;
+  string expected_service_incarnation = 4;
+  bytes expected_loaded_instance_id = 5;
+}
+
+message PrepareInferenceProof {
+  string request_id = 1;
+  string controller_session_id = 2;
+  NegotiatedReasoningTuple tuple = 3;
+  WorkerLoadedBinding actual_binding = 4;
+  string service_incarnation = 5;
+  bytes loaded_instance_id = 6;
+}
+
+message PreparationRedemption {
+  bytes authorization = 1;
+}
+
+message PrepareInferenceResponse {
+  PrepareInferenceProof proof = 1;
+  bytes authorization = 2;
+  uint64 authorization_ttl_ms = 3;
+}
+```
+
+Only `orchard.worker.v1.WorkerRuntimeService` owns the protobuf RPC:
+
+```proto
+rpc PrepareInference(cluster.v1.PrepareInferenceRequest)
+    returns (cluster.v1.PrepareInferenceResponse);
+```
+
+`NodeRuntimeService` gains no `PrepareInference` RPC. That sentence records
+protobuf service ownership only. `ExecuteInferenceRequest` gains only:
+
+```proto
+cluster.v1.PreparationRedemption preparation_redemption = 14;
+```
+
+Rules:
+
+- Every request and proof message member is required semantically; required
+  strings are non-empty. `expected_loaded_instance_id` and proof
+  `loaded_instance_id` are exactly 16 raw bytes.
+- `FrozenExecutionInput` is the frozen snapshot of `ExecuteInferenceRequest`
+  fields 1–13. Redemption is valid only when those execution fields exactly
+  match the prepared snapshot, plus the exact tuple, binding, service
+  incarnation, and loaded-instance ID.
+- Authorization is exactly 32 random bytes, worker-owned, memory-only, never
+  logged or persisted, and has a positive Worker-monotonic TTL. It binds the
+  complete frozen input, tuple, binding, request ID, controller session ID,
+  service incarnation, and loaded-instance ID.
+- Redemption is atomic before model invocation. Expiry, cancellation, worker
+  restart, unload or replacement, mismatch, duplicate redemption, or any
+  already-consumed authorization fails pre-acceptance as `runtime_incompatible`,
+  with no invocation, content, or usage.
+- A successful new load generates exactly one 16-byte raw CSPRNG
+  `loaded_instance_id`. A load replacement, load start, unload start, failed
+  destructive unload, or worker teardown invalidates the prior identity,
+  evidence, and authorization. An already-loaded idempotent acknowledgement
+  does not create a new instance identity.
+- An unconsumed duplicate `PrepareInference` whose complete request is
+  byte-identical to the original returns the same proof and authorization, with
+  the then-remaining TTL and no TTL extension. A changed, expired, invalidated,
+  or consumed preparation fails closed.
+
+### Terminal usage and typed event
+
+```proto
+message Failed {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  TokenUsage usage = 4;
+}
+```
+
+`Failed.usage` is singular message presence: absent means missing
+terminal-usage evidence; present `{0,0,0}` is known zero. Legacy workers may
+omit it. Negotiated terminal conformance requires exact usage rather than
+treating absence as zero.
+
+No typed reasoning `InferenceEvent` is added or reserved now. `InferenceEvent`
+remains tags 1–8 unchanged.
 
 ## 3. Live discovery and the narrow eligibility exception
 
@@ -94,6 +372,11 @@ The future implementation must reject, never truncate, evidence above these boun
 - an authoritative proof echoing the complete tuple and the executing worker incarnation; and
 - an opaque single-use authorization bound to that request, tuple, loaded binding, and current loaded worker instance.
 
+The owner-confirmed protobuf RPC owner is recorded in §2.1: only
+`orchard.worker.v1.WorkerRuntimeService` declares `PrepareInference`.
+`NodeRuntimeService` gains no `PrepareInference` RPC. That sentence records
+protobuf service ownership only.
+
 The Controller validates the proof before it accepts the attempt as running and before it forwards execution. Only the matching execution request can redeem the authorization. Expiry, cancellation, duplicate redemption, worker restart, or loaded-instance replacement invalidates it. A proof or authorization failure must leave backend invocation, content emission, and usage emission at zero and fails through the existing pre-acceptance `runtime_incompatible` contract with `retry_decision = not_retryable`.
 
 This closes the stream-event time-of-check/time-of-use gap while retaining Node Agent ownership of `Accepted`: negotiated `Accepted` is emitted only after preparation has been promoted and its authorization is redeemed. The authorization, preparation identifier, selected profile, and worker incarnation are attempt-local and are not retry identity.
@@ -104,7 +387,7 @@ Issue #327 owns the presence-aware wire representation of exact cumulative total
 
 Issue #328 owns durable `output_usage_status` persistence and Controller lower-bound synthesis. This change does not add either behavior or change terminal conformance mapping.
 
-Automatic retry pins all ten tuple fields and must use a different endpoint with a fresh proof for that same tuple; it never rerenders, renegotiates, or downgrades. An operator retry reuses `requests.canonical_request["reasoning"]` as its only frozen reasoning source when full capture made that value available. If it is absent or malformed, the retry fails closed with `retry_source_unavailable`; it must not reconstruct the contract from historical messages or add a database column.
+Automatic retry pins all eleven tuple fields and must use a different endpoint with a fresh proof for that same tuple; it never rerenders, renegotiates, or downgrades. An operator retry reuses `requests.canonical_request["reasoning"]` as its only frozen reasoning source when full capture made that value available. If it is absent or malformed, the retry fails closed with `retry_source_unavailable`; it must not reconstruct the contract from historical messages or add a database column.
 
 ## 6. Dormant activation and verified handoffs
 
