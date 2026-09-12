@@ -250,7 +250,7 @@ The worker `GetStatus` response carries an additive `WorkerCapabilities` envelop
 `Orchard.Node.WorkerCapabilityEvidence` classifies each response at receipt as `absent`, `malformed`, `duplicate_or_conflicting`, `incompatible`, or valid, and evaluates exact-profile queries against the retained snapshot with the precedence `absent`, `stale`, retained invalid verdict, `unknown`, `unsupported`, then a proof naming the profile and incarnation.
 Only the whole profile can prove a capability; no Cartesian combination across profiles is inferred, provider timestamps never establish freshness, and `Orchard.Node.WorkerProcess` discards the snapshot on worker exit, load, unload, or an incarnation change.
 The evaluator is diagnostic-only in this slice: it emits `[:orchard, :node, :worker_capabilities, :classified | :evaluated]` telemetry and is reachable for tests, but nothing from it enters readiness, capacity, `StatusResponse`, or Runtime Endpoint Observations until the separately reviewed cutover described in ADR 0026.
-The loaded-model binding inside the envelope is still deferred in source (field 8 reserved); `SPEC.md` §7.5.3a now fixes the canonical incarnation and artifact identity and records the accepted field allocation, which the issue #327 implementation adds.
+The loaded-model binding inside the envelope is still deferred in source (field 8 reserved); `SPEC.md` §7.5.3a now fixes the canonical incarnation and artifact identity and records the accepted field allocation, which the issue #327 implementation adds. The field 8 reservation comment in `proto/orchard/worker/v1/worker_runtime.proto` owns the conditions that must be accepted before that reservation is lifted.
 
 ### Persistence and coordination
 

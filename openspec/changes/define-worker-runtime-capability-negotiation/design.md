@@ -201,7 +201,7 @@ Decisions accepted:
 2. Confirm D3: provider identity is diagnostic only; only protocol major gates compatibility.
 3. Confirm D4 dual identity rule (unique `profile_id` and unique canonical tuple).
 4. Confirm D5 precedence, in particular `stale` before the retained validity verdict.
-5. Confirm D7: defer the loaded binding, or lift the deferral if #327 has been accepted by then.
+5. Confirm D7: defer the loaded binding, and lift the deferral only under the conditions D7 records.
 6. Confirm the default `freshness_window_ms = 15_000` and its placement as `worker_capabilities_freshness_window_ms` under the existing `:runtime` config list.
 7. Confirm D8 module name, query shape, and telemetry event names.
 8. Confirm D9 fixture set and that `SPEC.md` §4.10 gains one sentence naming the envelope as non-gating until cutover.
