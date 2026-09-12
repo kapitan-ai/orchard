@@ -751,6 +751,7 @@ def test_spec_6_4_loader_uses_artifact_evidence_despite_misleading_names(
     assert session.bundle_path == misleading_bundle
     assert session.eos_token_ids == ()
     assert session.tool_calling == {"supported": False, "parser_type": None}
+    assert session.manifest.capabilities == ("chat",)
 
 
 def test_load_session_model_load_failure(writable_bundle: Path) -> None:
