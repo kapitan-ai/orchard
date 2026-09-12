@@ -43,16 +43,19 @@ defmodule Orchard.Requests.InferenceAttemptResultTest do
     assert attempt_2["excluded_node_ids"] == [@node_1]
   end
 
-  test "SPEC.md §§3.7.1 and 5.3 preserve historical null usage-status evidence" do
-    historical = failed_result(%{"output_tokens" => 7, "retry_decision" => "not_retryable"})
+  test "SPEC.md §§3.7.1 and 8.2 preserve unclassified usage, including stored zero" do
+    for output_tokens <- [0, 7] do
+      unclassified =
+        failed_result(%{"output_tokens" => output_tokens, "retry_decision" => "not_retryable"})
 
-    assert {:ok, persisted} =
-             InferenceAttemptResult.from_persisted("request_step.failed", 1, historical)
+      assert {:ok, persisted} =
+               InferenceAttemptResult.from_persisted("request_step.failed", 1, unclassified)
 
-    assert persisted["output_tokens"] == 7
-    refute Map.has_key?(persisted, "output_usage_status")
-    refute Map.has_key?(persisted, "reasoning_tokens")
-    refute InferenceAttemptResult.enriched?(%{"output_tokens" => 7})
+      assert persisted["output_tokens"] == output_tokens
+      refute Map.has_key?(persisted, "output_usage_status")
+      refute Map.has_key?(persisted, "reasoning_tokens")
+      refute InferenceAttemptResult.enriched?(%{"output_tokens" => output_tokens})
+    end
   end
 
   test "SPEC.md §§3.7.1 and 5.3 read next-format usage evidence without enabling writers" do

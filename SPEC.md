@@ -4539,7 +4539,8 @@ create table node_admission_decisions (
 ```
 
 `requests.output_usage_status` SHALL be a nullable expand-migration column with no default and no backfill.
-A null status SHALL mean the row predates durable usage-status persistence; Orchard MUST NOT infer, backfill, or present `exact` or `lower_bound` for such a row.
+A null status SHALL mean output-usage classification is not recorded (unclassified), not that the row predates persistence or a deployment cutover.
+Orchard MUST NOT infer row age or cutover from a null status, or infer, backfill, or present `exact` or `lower_bound` for such a row from its counts, lifecycle state, timestamps, or deployment version.
 
 `node_admission_candidates` SHALL store first-observed Runtime Endpoint metadata before it is reconciled to a trusted Node.
 Rows MAY also link review state for provisioned placeholders or registered Nodes through `node_id`, but `admission_category` remains derived review state, not a `node_state` lifecycle enum.

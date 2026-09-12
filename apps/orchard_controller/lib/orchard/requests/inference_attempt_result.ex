@@ -93,15 +93,15 @@ defmodule Orchard.Requests.InferenceAttemptResult do
   @doc """
   Validates terminal attempt evidence read from durable storage.
 
-  Historical rows may omit the usage-status vocabulary. Rows that contain any
+  Unclassified rows may omit the usage-status vocabulary. Rows that contain any
   of that vocabulary must satisfy the complete current usage contract. The
   `SPEC.md` §3.7.1 `reasoning` commitment kind is readable only here, while
   `new/3` holds every current writer to the pre-reasoning vocabulary.
 
   Deploy this compatibility reader to every Controller and background reader
-  before PR #418's new-format writers may merge; pre-bridge binaries reject it.
-  PR #418 stays blocked until those paired status writers are active, not
-  merely until the nullable column exists.
+  before future #329 classified writers activate; pre-bridge binaries reject
+  their evidence. Merged #418 supplies Worker usage updates but deliberately
+  retains Completed-only accounting. The nullable column does not activate writers.
   """
   @spec from_persisted(String.t(), 1 | 2, map()) :: {:ok, t()} | {:error, String.t()}
   def from_persisted(event_type, attempt, result) when is_map(result),
