@@ -1895,6 +1895,174 @@ def test_batch_prefill_attribution_detaches_closed_member_before_finalize(
     assert runtime._prefill_attribution_by_insert_set_id == {}
 
 
+def test_batch_partial_prefill_cancel_preserves_peer_events_until_batch_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #409: cancelling one prefill peer does not terminalize the other peer."""
+
+    class _PartialPrefillBatchGenerator:
+        instances: list[_PartialPrefillBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_uid = 0
+            self._active: list[int] = []
+            self._step = 0
+            self.prefill_started = threading.Event()
+            self.release_responses = threading.Event()
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+            self._next_uid += len(prompts)
+            self._active.extend(uids)
+            return uids
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            active = list(self._active)
+            if self._step == 0:
+                self._step += 1
+                return (
+                    [
+                        _prompt_response(active[0], 10, 100),
+                        _prompt_response(active[1], 20, 100),
+                    ],
+                    [],
+                )
+
+            if self._step == 1:
+                self._step += 1
+                self.prefill_started.set()
+                self.release_responses.wait(timeout=5.0)
+
+            self._active.clear()
+            return (
+                [],
+                [
+                    _batch_response(active[0], token=11, finish_reason="stop"),
+                    _batch_response(active[1], token=21, finish_reason="stop"),
+                ],
+            )
+
+        def close(self) -> None:
+            self.release_responses.set()
+
+    delayed_pumps: list[threading.Thread] = []
+    original_start = threading.Thread.start
+
+    def delay_pump_start(thread: threading.Thread) -> None:
+        if thread.name == "mlx-batch-generator":
+            delayed_pumps.append(thread)
+            return
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", delay_pump_start)
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_PartialPrefillBatchGenerator),
+    )
+    cancelled = threading.Event()
+    cancelled_events: list[dict[str, Any]] = []
+    peer_events: list[dict[str, Any]] = []
+
+    def run(events: list[dict[str, Any]], request: Any, cancel_event: threading.Event) -> None:
+        events.extend(
+            generate_events(session, request, cancel_event, deps=runtime.generation_deps())
+        )
+
+    cancelled_thread = threading.Thread(
+        target=run,
+        args=(cancelled_events, _make_fake_request(input_tokens=3, max_output_tokens=2), cancelled),
+    )
+    peer_thread = threading.Thread(
+        target=run,
+        args=(
+            peer_events,
+            _make_fake_request(input_tokens=3, max_output_tokens=2),
+            threading.Event(),
+        ),
+    )
+
+    try:
+        cancelled_thread.start()
+        assert _wait_until(lambda: len(runtime._requests_by_id) == 1)
+        peer_thread.start()
+        assert _wait_until(lambda: len(runtime._requests_by_id) == 2)
+        assert delayed_pumps
+        original_start(delayed_pumps[0])
+
+        generator = _PartialPrefillBatchGenerator.instances[0]
+        assert generator.prefill_started.wait(timeout=2.0)
+        assert _wait_until(
+            lambda: (
+                runtime._active_by_uid[0].last_prefill_progress == (10, 100)
+                and runtime._active_by_uid[1].last_prefill_progress == (20, 100)
+            )
+        )
+        with runtime._cv:
+            assert runtime._active_by_uid[0].last_prefill_progress == (10, 100)
+            assert runtime._active_by_uid[1].last_prefill_progress == (20, 100)
+        cancelled.set()
+        assert _wait_until(
+            lambda: len([event for event in cancelled_events if event["kind"] == "failed"]) == 1
+        )
+
+        with runtime._cv:
+            assert len(runtime._active_by_uid) == 2
+            assert len(runtime._active_detokenizer_ids) == 1
+
+        generator.release_responses.set()
+        cancelled_thread.join(timeout=2.0)
+        peer_thread.join(timeout=2.0)
+
+        assert cancelled_thread.is_alive() is False
+        assert peer_thread.is_alive() is False
+        assert [
+            event["kind"] for event in cancelled_events if event["kind"] in {"failed", "completed"}
+        ] == ["failed"]
+        assert cancelled_events[-1]["code"] == "cancelled"
+        assert [
+            event["delta"] for event in peer_events if event["kind"] == "output_text_delta"
+        ] == ["X"]
+        assert [
+            event["kind"] for event in peer_events if event["kind"] in {"failed", "completed"}
+        ] == ["completed"]
+        assert peer_events[-1]["usage"] == {
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "total_tokens": 4,
+        }
+        assert _wait_until(
+            lambda: (
+                runtime._active_by_uid == {}
+                and runtime._requests_by_id == {}
+                and runtime._active_detokenizer_ids == set()
+            )
+        )
+        assert runtime._active_by_uid == {}
+        assert runtime._requests_by_id == {}
+        assert runtime._active_detokenizer_ids == set()
+    finally:
+        runtime.close()
+        cancelled_thread.join(timeout=2.0)
+        peer_thread.join(timeout=2.0)
+
+
 def test_batch_generator_runtime_rejects_shared_detokenizer_instances() -> None:
     session = _make_fake_session()
     session.tokenizer = _SharedDetokenizerTokenizer()
