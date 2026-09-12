@@ -179,14 +179,14 @@ message PrepareInferenceResponse {
 }
 ```
 
-The only new RPC is owned by `orchard.worker.v1.WorkerRuntimeService`:
+The only new protobuf RPC declaration is owned by `orchard.worker.v1.WorkerRuntimeService`:
 
 ```proto
 rpc PrepareInference(cluster.v1.PrepareInferenceRequest)
     returns (cluster.v1.PrepareInferenceResponse);
 ```
 
-`cluster.v1.NodeRuntimeService` receives no `PrepareInference` RPC. The only execution-request addition is the singular, presence-aware field:
+That ownership statement is scoped to protobuf service declarations. `cluster.v1.NodeRuntimeService` receives no `PrepareInference` RPC because it is the deprecated Controller-to-Node gRPC compatibility adapter, not because the Controller-facing boundary is foreclosed. §4's unary `PrepareInference` is the transport-independent Runtime Endpoint Interface operation that the first-party BEAM Runtime Endpoint carries, and it is how the Controller receives the proof, the 32-byte authorization, and its remaining TTL so it can discharge the `SPEC.md` §7.5.3a validation and redemption duties. The Node Agent is the intermediary: it satisfies that operation through the Worker RPC above and returns the proof, authorization, and remaining TTL unchanged. That Controller-facing operation carries the same members as the recorded `PrepareInferenceRequest`, `PrepareInferenceProof`, and `PrepareInferenceResponse` layouts, but it is a transport-independent domain operation rather than a protobuf declaration, so the required separate accepted schema package declares it alongside these messages instead of an implementer inferring it. The only execution-request addition is the singular, presence-aware field:
 
 ```proto
 // cluster.v1.ExecuteInferenceRequest
@@ -266,7 +266,7 @@ The future implementation must reject, never truncate, evidence above these boun
 
 ## 4. Preparation proof before execution
 
-`PrepareInference` is a unary Runtime Endpoint operation. It validates the exact frozen tuple against the current loaded binding before model invocation and returns:
+`PrepareInference` is a unary Runtime Endpoint Interface operation on the Controller-facing boundary, distinct from the §2.1 `orchard.worker.v1.WorkerRuntimeService` protobuf RPC the Node Agent uses to satisfy it. It validates the exact frozen tuple against the current loaded binding before model invocation and returns:
 
 - an authoritative proof echoing the complete tuple and the executing worker incarnation; and
 - an opaque single-use authorization bound to that request, tuple, loaded binding, and current loaded worker instance.
@@ -285,7 +285,7 @@ Automatic retry pins all eleven tuple fields and must use a different endpoint w
 
 ## 6. Dormant activation and verified handoffs
 
-The production reasoning tuple registry remains empty. No production tuple may be advertised or selected until #328 has landed parser, accounting, and capture guarantees and model-qualification governance accepts the exact tuple. For a selected-effort tuple, `SPEC.md` §7.5.3a fixes what that prerequisite means: the governance contract can classify the exact tuple, and it MUST NOT be read as requiring an approved semantic qualification record or support claim for technical advertisement, selection, preparation, or dispatch. The tuple includes the accepted `reasoning_effort = nil | low | medium | high` axis only as exact identity; this contract creates no Qwen- or effort-tier-specific policy and does not choose its wire representation.
+The production reasoning tuple registry remains empty. No production tuple may be advertised or selected until #328 has landed parser, accounting, and capture guarantees and model-qualification governance accepts the exact tuple. For a selected-effort tuple, `SPEC.md` §7.5.3a fixes what that prerequisite means: the governance contract can classify the exact tuple, and it MUST NOT be read as requiring an approved semantic qualification record or support claim for technical advertisement, selection, preparation, or dispatch. The tuple includes the accepted `reasoning_effort = nil | low | medium | high` axis only as exact identity; this contract creates no Qwen- or effort-tier-specific policy, and §2.1's recorded wire representation for that axis stays documentation only until the required separate accepted schema package declares it.
 
 The following verified defects are handoffs only in this PR:
 

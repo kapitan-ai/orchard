@@ -129,7 +129,7 @@ Invalidation (snapshot discarded, evaluation returns `absent`) occurs on: `Worke
 
 Because #327's incarnation and artifact-identity encoding is not accepted at design time, field 8 (`loaded_binding`) is reserved in the proto comment and not added.
 The message shape recorded for the later additive change is `WorkerLoadedBinding { string model_id; string model_version; string artifact_digest; string selected_profile_id; }`, where `artifact_digest` must be whichever exact identity #327 accepts.
-If #327's contract is accepted before implementation of this change begins, the owner may lift the deferral and the implementer adds field 8 under the same design with the D5 rule already written.
+#327 acceptance alone does not lift the deferral. `define-negotiated-reasoning-runtime-encoding` is documentation-only, and its §1 condition 3 additionally requires a separate accepted OpenSpec schema package and durable `docs/decisions/**` record. Once those are accepted before implementation of this change begins, the owner may lift the deferral and the implementer adds field 8 under that recorded design with the D5 rule already written.
 
 ### D8. Local proof surface
 

@@ -107,12 +107,11 @@ message WorkerCapabilities {
   string service_incarnation = 6;
   // At most 64 profiles. Empty is valid and proves nothing.
   repeated WorkerCapabilityProfile profiles = 7;
-  // field 8 reserved for a future loaded_binding (WorkerLoadedBinding).
-  // The owner-confirmed documentation-only schema record is in
-  // openspec/changes/define-negotiated-reasoning-runtime-encoding/design.md §2.1.
-  // Keep this reservation until the separate accepted schema package and durable
-  // decision record required by that design are accepted; do not substitute a tag
-  // or shape before then.
+  // field 8 reserved for a future loaded_binding (WorkerLoadedBinding),
+  // allocated by SPEC.md §7.5.3a.
+  // Keep this reservation until the separate accepted OpenSpec schema package
+  // and durable docs/decisions/** record required for issue #327 are accepted;
+  // do not substitute a tag or shape before then.
   reserved 8;
 }
 
