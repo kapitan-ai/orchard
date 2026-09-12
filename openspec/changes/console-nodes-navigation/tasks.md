@@ -6,6 +6,7 @@
 - [x] 1.4 Cover navigation, refresh recovery, and action confirmation with regression tests.
 - [x] 1.5 Distinguish durable Node Inventory entries from effective Runtime diagnostic targets and add empty-Inventory section links.
 - [x] 1.6 Replace whole-document discovery assertions with visible-section and pre-join provisioned-inventory regressions.
+- [x] 1.7 Separate an unreadable Node inventory from a confirmed empty effective target set in Runtime, and state in empty Inventory that configured targets may still be reachable or serving.
 
 ## 2. Validation
 

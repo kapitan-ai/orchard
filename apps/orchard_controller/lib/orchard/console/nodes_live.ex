@@ -225,7 +225,7 @@ defmodule OrchardConsole.NodesLive do
                   kind={:empty}
                   layout={:panel}
                   title="No Node inventory entries yet."
-                  body="Creating a Node Enrollment adds a provisioned entry; a successful join registers it. Observing an unregistered Runtime Endpoint creates an Admission Review candidate, not a Node inventory entry."
+                  body="Creating a Node Enrollment adds a provisioned entry; a successful join registers it. Observing an unregistered Runtime Endpoint creates an Admission Review candidate, not a Node inventory entry. Configured Runtime Endpoint targets may still be reachable or serving while this inventory is empty."
                 >
                   <:action>
                     <div class="flex flex-wrap gap-2">
@@ -286,13 +286,21 @@ defmodule OrchardConsole.NodesLive do
           <div id="nodes-live-cluster-card" hidden={@section != :runtime}>
           <.card variant={:rail} padding={:sm}>
             <:title>Live Cluster</:title>
-            <:subtitle><%= cluster_subtitle(@cluster) %></:subtitle>
+            <:subtitle><%= cluster_subtitle(@cluster, @inventory) %></:subtitle>
 
             <%= cond do %>
               <% @cluster.status == :loading -> %>
                 <.state_message id="nodes-cluster-loading" kind={:loading} layout={:compact} title="Loading cluster status." />
               <% @cluster.status == :error -> %>
                 <.state_message id="nodes-cluster-error" kind={:error} layout={:compact} title="Cluster status unavailable." body={@cluster.message} />
+              <% @cluster.targets == [] and @inventory.status == :error -> %>
+                <.state_message
+                  id="nodes-cluster-inventory-unavailable"
+                  kind={:error}
+                  layout={:compact}
+                  title="Effective Runtime Endpoint targets unresolved."
+                  body="Node inventory could not be read, so trusted admitted or active targets were never resolved. Treat this as a failed inventory read, not a confirmed empty target set."
+                />
               <% @cluster.targets == [] -> %>
                 <.state_message
                   id="nodes-cluster-empty"
@@ -1030,14 +1038,16 @@ defmodule OrchardConsole.NodesLive do
   # Cluster display helpers
   # ===========================================================================
 
-  defp cluster_subtitle(%{status: :loading}), do: "Loading..."
-  defp cluster_subtitle(%{status: :error}), do: "Error"
+  defp cluster_subtitle(%{status: :loading}, _inventory), do: "Loading..."
+  defp cluster_subtitle(%{status: :error}, _inventory), do: "Error"
 
-  defp cluster_subtitle(%{summary: s}) do
+  defp cluster_subtitle(%{targets: []}, %{status: :error}), do: "Effective targets unresolved"
+
+  defp cluster_subtitle(%{summary: s}, _inventory) do
     "#{s.configured} effective target(s), #{s.reachable} reachable"
   end
 
-  defp cluster_subtitle(_), do: ""
+  defp cluster_subtitle(_cluster, _inventory), do: ""
 
   defp prompt_token_capable_summary(%{prompt_token_capable: capable, reachable: reachable})
        when is_integer(capable) and is_integer(reachable) and reachable >= 0,

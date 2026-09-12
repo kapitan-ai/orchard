@@ -601,6 +601,7 @@ defmodule OrchardConsole.NodesLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Orchard.TestSupport.RepoHelpers, only: [with_repo_unregistered: 1]
 
   alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
@@ -999,6 +1000,9 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~
                "Observing an unregistered Runtime Endpoint creates an Admission Review candidate, not a Node inventory entry."
 
+      assert html =~
+               "Configured Runtime Endpoint targets may still be reachable or serving while this inventory is empty."
+
       assert has_element?(
                view,
                "#nodes-empty-admissions[href='/console/nodes?section=admissions']",
@@ -1030,7 +1034,46 @@ defmodule OrchardConsole.NodesLiveTest do
       assert cluster_empty =~
                "Targets are resolved from trusted admitted or active Node inventory, with static compatibility fallback only when enabled and that inventory is empty."
 
+      assert element(view, "#nodes-live-cluster-card") |> render() =~ "0 effective target(s)"
+
       refute has_element?(view, "#nodes-cluster-error")
+      refute has_element?(view, "#nodes-cluster-inventory-unavailable")
+    end
+
+    test "separates an unreadable Node inventory from a resolved empty target set", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeEmptyStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes?section=runtime")
+
+      assert has_element?(view, "#nodes-cluster-empty")
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        with_repo_unregistered(fn ->
+          view |> element("#nodes-refresh-now") |> render_click()
+        end)
+      end)
+
+      assert :sys.get_state(view.pid).socket.assigns.inventory.status == :error
+
+      assert has_element?(
+               view,
+               "#nodes-cluster-inventory-unavailable",
+               "Effective Runtime Endpoint targets unresolved."
+             )
+
+      cluster_unavailable = element(view, "#nodes-cluster-inventory-unavailable") |> render()
+
+      assert cluster_unavailable =~
+               "Node inventory could not be read, so trusted admitted or active targets were never resolved."
+
+      assert cluster_unavailable =~
+               "Treat this as a failed inventory read, not a confirmed empty target set."
+
+      refute has_element?(view, "#nodes-cluster-empty")
+
+      cluster_card = element(view, "#nodes-live-cluster-card") |> render()
+      assert cluster_card =~ "Effective targets unresolved"
+      refute cluster_card =~ "0 effective target(s)"
     end
   end
 

@@ -28,6 +28,8 @@ Inactive sections SHALL not remain reachable through keyboard navigation or the 
 The Inventory section SHALL label durable Node rows as **Node Inventory** and its count as **Inventory entries**.
 The Runtime section SHALL label its resolved diagnostic target count as **Effective targets**.
 Empty Inventory guidance SHALL distinguish enrollment-created provisioned entries, successful registration on join, and unregistered Runtime Endpoint admission candidates without changing their lifecycle authority.
+Empty Inventory guidance SHALL state that configured Runtime Endpoint targets may still be reachable or serving.
+When no effective targets resolve, the Runtime section SHALL distinguish an unreadable Node inventory from a confirmed empty effective target set.
 
 #### Scenario: Follow empty Inventory guidance
 - **WHEN** the operator follows Admission Review or Runtime from an empty Node Inventory
@@ -42,6 +44,11 @@ Empty Inventory guidance SHALL distinguish enrollment-created provisioned entrie
 #### Scenario: Create enrollment before join
 - **WHEN** Node Enrollment creates a provisioned Node before any successful join
 - **THEN** Node Inventory counts and displays that provisioned entry
+
+#### Scenario: Resolve no effective targets while Node inventory is unreadable
+- **GIVEN** the Runtime section resolved no effective targets
+- **WHEN** the same refresh could not read durable Node inventory
+- **THEN** Runtime reports unresolved effective targets caused by the failed inventory read rather than a confirmed empty effective target set
 
 #### Scenario: Inspect evidence and return
 - **WHEN** an operator switches from Node Overview to Evidence and reloads the URL
