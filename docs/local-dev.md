@@ -854,7 +854,7 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
 3. `GET /v1/models` should return `200` and list the Models granted to the calling Tenant.
 4. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request, after the Model is granted to the calling Tenant (`legacy` for the Console Playground).
-5. Cluster summary should show the configured target count for the selected transport.
+5. Cluster summary should show the Effective targets count for the selected transport.
 6. Playground inference should attribute requests to specific nodes when the scheduler has multiple eligible targets.
 7. Killing the remote node-agent should transition its health to degraded or unreachable.
 
