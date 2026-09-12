@@ -122,7 +122,7 @@ defmodule OrchardConsole.NodesLive do
         <:subtitle>Persisted node inventory with periodic runtime refresh.</:subtitle>
 
         <div id="nodes-summary" class="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
-          <.summary_tile id="nodes-summary-total" label="Total" value={format_count(@inventory.summary.total)} tone={:neutral} />
+          <.summary_tile id="nodes-summary-total" label="Inventory entries" value={format_count(@inventory.summary.total)} tone={:neutral} />
           <.summary_tile id="nodes-summary-healthy" label="Healthy" value={format_count(@inventory.summary.by_health[:healthy])} tone={:success} />
           <.summary_tile id="nodes-summary-degraded" label="Degraded" value={format_count(@inventory.summary.by_health[:degraded])} tone={:warning} />
           <.summary_tile id="nodes-summary-unhealthy" label="Unhealthy" value={format_count(@inventory.summary.by_health[:unhealthy])} tone={:error} />
@@ -213,7 +213,7 @@ defmodule OrchardConsole.NodesLive do
           <%!-- Persisted Inventory Table --%>
           <div id="nodes-inventory-card" hidden={@section != :inventory}>
           <.card>
-            <:title>Registered Nodes</:title>
+            <:title>Node Inventory</:title>
             <:subtitle>Lifecycle and health are separate. Inspect a Node for admission, observation freshness, and scheduling evidence.</:subtitle>
 
             <%= cond do %>
@@ -224,9 +224,28 @@ defmodule OrchardConsole.NodesLive do
                   id="nodes-empty-state"
                   kind={:empty}
                   layout={:panel}
-                  title="No nodes registered yet."
-                  body="Registered nodes appear after Node Enrollment and a successful node join. A runtime status read only creates an admission candidate for review."
-                />
+                  title="No Node inventory entries yet."
+                  body="Creating a Node Enrollment adds a provisioned entry; a successful join registers it. Observing an unregistered Runtime Endpoint creates an Admission Review candidate, not a Node inventory entry."
+                >
+                  <:action>
+                    <div class="flex flex-wrap gap-2">
+                      <.link
+                        id="nodes-empty-admissions"
+                        patch={~p"/console/nodes?#{[section: :admissions]}"}
+                        class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:border-slate-600 dark:text-sky-300 dark:hover:bg-slate-800 dark:focus-visible:ring-sky-400 dark:focus-visible:ring-offset-slate-800"
+                      >
+                        Admission Review
+                      </.link>
+                      <.link
+                        id="nodes-empty-runtime"
+                        patch={~p"/console/nodes?#{[section: :runtime]}"}
+                        class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:border-slate-600 dark:text-sky-300 dark:hover:bg-slate-800 dark:focus-visible:ring-sky-400 dark:focus-visible:ring-offset-slate-800"
+                      >
+                        Runtime
+                      </.link>
+                    </div>
+                  </:action>
+                </.state_message>
               <% @inventory.status == :ok -> %>
                 <.table id="nodes-table" rows={@inventory.rows} row_id={fn node -> "node-#{node.id}" end}>
                   <:col :let={node} label="Display Name">
@@ -275,10 +294,16 @@ defmodule OrchardConsole.NodesLive do
               <% @cluster.status == :error -> %>
                 <.state_message id="nodes-cluster-error" kind={:error} layout={:compact} title="Cluster status unavailable." body={@cluster.message} />
               <% @cluster.targets == [] -> %>
-                <.state_message id="nodes-cluster-empty" kind={:empty} layout={:compact} title="No runtime targets configured." />
+                <.state_message
+                  id="nodes-cluster-empty"
+                  kind={:empty}
+                  layout={:compact}
+                  title="No effective Runtime Endpoint targets resolved."
+                  body="Targets are resolved from trusted admitted or active Node inventory, with static compatibility fallback only when enabled and that inventory is empty."
+                />
               <% true -> %>
                 <div id="nodes-cluster-summary" class="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-2">
-                  <.summary_tile id="cluster-configured" label="Configured" value={format_count(@cluster.summary.configured)} tone={:neutral} />
+                  <.summary_tile id="cluster-configured" label="Effective targets" value={format_count(@cluster.summary.configured)} tone={:neutral} />
                   <.summary_tile id="cluster-reachable" label="Reachable" value={format_count(@cluster.summary.reachable)} tone={:success} />
                   <.summary_tile id="cluster-prompt-token-capable" label="Prompt-ID Capable" value={prompt_token_capable_summary(@cluster.summary)} tone={prompt_token_capable_summary_tone(@cluster.summary)} />
                   <.summary_tile id="cluster-degraded" label="Degraded" value={format_count(@cluster.summary.degraded)} tone={:warning} />
@@ -1009,7 +1034,7 @@ defmodule OrchardConsole.NodesLive do
   defp cluster_subtitle(%{status: :error}), do: "Error"
 
   defp cluster_subtitle(%{summary: s}) do
-    "#{s.configured} target(s) configured, #{s.reachable} reachable"
+    "#{s.configured} effective target(s), #{s.reachable} reachable"
   end
 
   defp cluster_subtitle(_), do: ""

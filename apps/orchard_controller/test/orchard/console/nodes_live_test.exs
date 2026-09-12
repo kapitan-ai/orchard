@@ -525,6 +525,12 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeClusterRaiseStub do
   end
 end
 
+defmodule OrchardConsole.NodesLiveTest.RuntimeEmptyStub do
+  @moduledoc false
+
+  def cluster_snapshot(_opts \\ []), do: []
+end
+
 defmodule OrchardConsole.NodesLiveTest.TelemetryCountersZeroStub do
   @moduledoc false
 
@@ -599,8 +605,10 @@ defmodule OrchardConsole.NodesLiveTest do
   alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.NodeEnrollments
   alias Orchard.Nodes
-  alias Orchard.Nodes.AdmissionCandidate
+  alias Orchard.Nodes.{AdmissionCandidate, Node}
+  alias Orchard.NodeTrust
   alias Orchard.Repo
   alias OrchardConsole.NodesPageData
 
@@ -719,13 +727,13 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "Add Node"
       assert html =~ "/console/nodes/new"
       assert html =~ "Inventory Summary"
-      assert html =~ "Registered Nodes"
+      assert html =~ "Node Inventory"
       assert html =~ "Lifecycle and health are separate"
       assert html =~ "Live Cluster"
       assert html =~ "Control Plane"
     end
 
-    test "opts into workspace shell while keeping registered nodes primary", %{conn: conn} do
+    test "opts into workspace shell while keeping Node inventory primary", %{conn: conn} do
       {:ok, view, html} = live(conn, "/console/nodes")
 
       assert html =~ ~s(class="text-xl font-semibold text-slate-900 dark:text-slate-100")
@@ -903,9 +911,9 @@ defmodule OrchardConsole.NodesLiveTest do
 
   describe "summary strip" do
     test "shows zero-filled counts when no nodes exist", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console/nodes")
+      {:ok, view, html} = live(conn, "/console/nodes")
 
-      assert html =~ ~s(id="nodes-summary-total")
+      assert counter_text(render(view), "nodes-summary-total") == "Inventory entries 0"
       assert html =~ ~s(id="nodes-summary-healthy")
       assert html =~ ~s(id="nodes-summary-degraded")
       assert html =~ ~s(id="nodes-summary-unhealthy")
@@ -981,14 +989,48 @@ defmodule OrchardConsole.NodesLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "empty state" do
-    test "shows empty message when no nodes registered", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console/nodes")
+    test "explains inventory lifecycle and links to related sections", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/console/nodes")
 
-      assert html =~ "No nodes registered yet."
-      assert html =~ "nodes-empty-state"
-      assert html =~ "Registered nodes appear after Node Enrollment and a successful node join."
-      assert html =~ "A runtime status read only creates an admission candidate for review."
-      refute html =~ "after a successful status read"
+      assert html =~ "No Node inventory entries yet."
+      assert html =~ "Creating a Node Enrollment adds a provisioned entry;"
+      assert html =~ "a successful join registers it."
+
+      assert html =~
+               "Observing an unregistered Runtime Endpoint creates an Admission Review candidate, not a Node inventory entry."
+
+      assert has_element?(
+               view,
+               "#nodes-empty-admissions[href='/console/nodes?section=admissions']",
+               "Admission Review"
+             )
+
+      assert has_element?(
+               view,
+               "#nodes-empty-runtime[href='/console/nodes?section=runtime']",
+               "Runtime"
+             )
+    end
+
+    test "describes an empty effective Runtime target result", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeEmptyStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes?section=runtime")
+
+      assert has_element?(view, "#nodes-live-cluster-card:not([hidden])")
+
+      assert has_element?(
+               view,
+               "#nodes-cluster-empty",
+               "No effective Runtime Endpoint targets resolved."
+             )
+
+      cluster_empty = element(view, "#nodes-cluster-empty") |> render()
+
+      assert cluster_empty =~
+               "Targets are resolved from trusted admitted or active Node inventory, with static compatibility fallback only when enabled and that inventory is empty."
+
+      refute has_element?(view, "#nodes-cluster-error")
     end
   end
 
@@ -1123,8 +1165,9 @@ defmodule OrchardConsole.NodesLiveTest do
       summary = element(view, "#nodes-live-cluster-card") |> render()
       capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
 
-      assert summary =~ "1 target(s) configured"
+      assert summary =~ "1 effective target(s)"
       assert summary =~ "1 reachable"
+      assert counter_text(summary, "cluster-configured") == "Effective targets 1"
       assert capable_tile =~ "Prompt-ID Capable"
       assert capable_tile =~ "1/1"
       assert capable_tile =~ "bg-forest-50/50"
@@ -1150,7 +1193,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "orchard_node_agent@127.0.0.1"
 
       summary = element(view, "#nodes-live-cluster-card") |> render()
-      assert summary =~ "1 target(s) configured"
+      assert summary =~ "1 effective target(s)"
       assert summary =~ "1 reachable"
     end
 
@@ -1325,7 +1368,7 @@ defmodule OrchardConsole.NodesLiveTest do
       capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
 
       assert card =~ "0 events · 0 tokens"
-      assert cluster =~ "1 target(s) configured"
+      assert cluster =~ "1 effective target(s)"
       assert cluster =~ "1 reachable"
       assert capable_tile =~ "1/1"
       assert capable_tile =~ "bg-forest-50/50"
@@ -1353,7 +1396,7 @@ defmodule OrchardConsole.NodesLiveTest do
       cluster = element(view, "#nodes-live-cluster-card") |> render()
       capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
 
-      assert cluster =~ "2 target(s) configured"
+      assert cluster =~ "2 effective target(s)"
       assert cluster =~ "2 reachable"
       assert capable_tile =~ "1/2"
       assert capable_tile =~ "bg-slate-50"
@@ -1391,7 +1434,7 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, view, _html} = live(conn, "/console/nodes")
 
       summary = element(view, "#nodes-live-cluster-card") |> render()
-      assert summary =~ "2 target(s) configured"
+      assert summary =~ "2 effective target(s)"
       assert summary =~ "1 reachable"
     end
 
@@ -1464,7 +1507,7 @@ defmodule OrchardConsole.NodesLiveTest do
       cluster = element(view, "#nodes-live-cluster-card") |> render()
       unhealthy = element(view, "#cluster-unhealthy") |> render()
 
-      assert cluster =~ "3 target(s) configured"
+      assert cluster =~ "3 effective target(s)"
       assert cluster =~ "3 reachable"
       assert unhealthy =~ "0"
 
@@ -1548,7 +1591,7 @@ defmodule OrchardConsole.NodesLiveTest do
 
       summary = element(view, "#nodes-live-cluster-card") |> render()
       # Both targets are reachable (status: :ok), even the legacy one
-      assert summary =~ "2 target(s) configured"
+      assert summary =~ "2 effective target(s)"
       assert summary =~ "2 reachable"
     end
 
@@ -1560,7 +1603,7 @@ defmodule OrchardConsole.NodesLiveTest do
       summary = element(view, "#nodes-live-cluster-card") |> render()
       capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
 
-      assert summary =~ "2 target(s) configured"
+      assert summary =~ "2 effective target(s)"
       assert summary =~ "2 reachable"
       assert capable_tile =~ "Prompt-ID Capable"
       assert capable_tile =~ "1/2"
@@ -1597,7 +1640,7 @@ defmodule OrchardConsole.NodesLiveTest do
     test "clicking refresh_now updates DOM after inserting a node", %{conn: conn} do
       {:ok, view, html} = live(conn, "/console/nodes")
 
-      assert html =~ "No nodes registered yet."
+      assert html =~ "No Node inventory entries yet."
 
       insert_node!(display_name: "new-node", health: :healthy)
 
@@ -1642,34 +1685,119 @@ defmodule OrchardConsole.NodesLiveTest do
   end
 
   # ---------------------------------------------------------------------------
-  # Same-cycle discovery integration
+  # Inventory lifecycle boundaries
   # ---------------------------------------------------------------------------
 
-  describe "same-cycle discovery" do
-    test "runtime-first load order surfaces newly discovered node on first render", %{conn: conn} do
-      # Use real OrchardConsole.Runtime + real Orchard.Nodes with a stub gRPC client.
-      # DB starts empty — the node should be discovered via Runtime.snapshot -> observe_status
-      # and visible in the inventory table on the same render cycle.
+  describe "inventory lifecycle boundaries" do
+    test "unregistered observation stays outside inventory and appears in related sections", %{
+      conn: conn
+    } do
       Application.put_env(
         :orchard_controller,
         :console,
         Application.get_env(:orchard_controller, :console, [])
         |> Keyword.put(:runtime_impl, OrchardConsole.Runtime)
         |> Keyword.put(:runtime_client_impl, OrchardConsole.NodesLiveTest.DiscoveryRuntimeClient)
+        |> Keyword.delete(:runtime_endpoint_client_impl)
         |> Keyword.delete(:nodes_impl)
       )
 
-      # Confirm DB is empty
-      assert Orchard.Nodes.list_nodes() == []
+      assert Repo.aggregate(Node, :count) == 0
+      assert Nodes.list_admission_candidates() == []
 
-      {:ok, _view, html} = live(conn, "/console/nodes")
+      {:ok, view, _html} = live(conn, "/console/nodes")
 
-      # The discovered node should appear in the inventory table
-      assert html =~ "discovered-via-mount"
-      # Inventory summary should show 1 node
-      assert html =~ "1"
-      # Runtime section should show the live data
-      assert html =~ "mlx-community/phi-3"
+      assert Repo.aggregate(Node, :count) == 0
+      assert [candidate] = Nodes.list_admission_candidates(admission_category: :pending_observed)
+      assert candidate.source == :runtime_endpoint_observation
+      assert candidate.admission_category == :pending_observed
+      assert candidate.node_id == nil
+      assert candidate.observed_identity["display_name"] == "discovered-via-mount"
+
+      assert has_element?(view, "#nodes-section-inventory[aria-current='page']")
+      assert has_element?(view, "#nodes-inventory-card:not([hidden])")
+      assert has_element?(view, "#nodes-empty-state")
+      refute has_element?(view, "[hidden] #nodes-empty-state")
+      refute has_element?(view, "[hidden] #nodes-summary-total")
+      refute has_element?(view, "#nodes-table")
+      assert counter_text(render(view), "nodes-summary-total") == "Inventory entries 0"
+
+      assert repo_query_count(fn ->
+               view |> element("#nodes-empty-admissions") |> render_click()
+             end) == 0
+
+      assert_patch(view, "/console/nodes?section=admissions")
+      assert has_element?(view, "#nodes-section-admissions[aria-current='page']")
+      assert has_element?(view, "#nodes-pending-admissions-card:not([hidden])")
+      assert has_element?(view, "#nodes-inventory-card[hidden]")
+
+      refute has_element?(view, "[hidden] #pending-admission-candidate-#{candidate.id}")
+      admission_row = element(view, "#pending-admission-candidate-#{candidate.id}") |> render()
+      assert admission_row =~ "discovered-via-mount"
+      assert admission_row =~ "Pending observed"
+
+      view |> element("#nodes-section-inventory") |> render_click()
+      assert_patch(view, "/console/nodes?section=inventory")
+      assert has_element?(view, "#nodes-inventory-card:not([hidden])")
+
+      assert repo_query_count(fn ->
+               view |> element("#nodes-empty-runtime") |> render_click()
+             end) == 0
+
+      assert_patch(view, "/console/nodes?section=runtime")
+      assert has_element?(view, "#nodes-section-runtime[aria-current='page']")
+      assert has_element?(view, "#nodes-live-cluster-card:not([hidden])")
+      assert has_element?(view, "#nodes-runtime-targets:not([hidden])")
+      refute has_element?(view, "[hidden] #nodes-runtime-targets")
+      assert has_element?(view, "#nodes-inventory-card[hidden]")
+
+      runtime = element(view, "#nodes-runtime-targets") |> render()
+      assert runtime =~ "discovered-via-mount"
+      assert runtime =~ "mlx-community/phi-3"
+    end
+
+    test "enrollment-created provisioned Node counts in inventory before join", %{conn: conn} do
+      trust = establish_local_controller_identity!()
+      now = DateTime.utc_now()
+
+      assert {:ok, result} =
+               NodeEnrollments.create(
+                 %{
+                   cluster_id: trust.cluster_id,
+                   expected_controller_id: trust.controller_id,
+                   trust_authority_id: trust.trust_authority_id,
+                   creator_type: "operator",
+                   expires_at: DateTime.add(now, 3_600, :second),
+                   node: %{display_name: "enrollment-before-join"}
+                 },
+                 now: now
+               )
+
+      node = Repo.get!(Node, result.enrollment.node_id)
+      assert Repo.aggregate(Node, :count) == 1
+      assert node.state == :provisioned
+      assert node.health == :unreachable
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      assert has_element?(view, "#nodes-inventory-card:not([hidden])")
+      assert has_element?(view, "#nodes-table")
+      refute has_element?(view, "[hidden] #nodes-table")
+      refute has_element?(view, "[hidden] #nodes-summary-total")
+      refute has_element?(view, "#nodes-empty-state")
+      assert counter_text(render(view), "nodes-summary-total") == "Inventory entries 1"
+
+      inventory_row = element(view, "#node-#{node.id}") |> render()
+      assert inventory_row =~ "enrollment-before-join"
+      assert inventory_row =~ "provisioned"
+      assert Repo.get!(Node, node.id).state == :provisioned
+
+      view |> element("#nodes-section-admissions") |> render_click()
+      assert has_element?(view, "#nodes-pending-admissions-card:not([hidden])")
+
+      admission_row = element(view, "#pending-admission-node-#{node.id}") |> render()
+      assert admission_row =~ "enrollment-before-join"
+      assert admission_row =~ "Pending provisioned"
     end
   end
 
@@ -1754,8 +1882,8 @@ defmodule OrchardConsole.NodesLiveTest do
   end
 
   defp counter_text(html, id) do
-    # The summary_tile currently renders each counter as a flat tile; this helper
-    # intentionally scopes assertions to that tile's HTML for the HTTP dead mount.
+    # The summary_tile renders each value as a flat tile; this helper scopes
+    # assertions to one tile's HTML.
     escaped_id = Regex.escape(id)
     pattern = ~r/<div id="#{escaped_id}"[^>]*>(?<content>.*?)<\/div>/s
 
@@ -1804,6 +1932,34 @@ defmodule OrchardConsole.NodesLiveTest do
     after
       0 -> count
     end
+  end
+
+  defp establish_local_controller_identity! do
+    previous_trust = Application.get_env(:orchard_controller, :node_trust)
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-console-node-inventory-trust-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    trust_root = Path.join(root, "node-trust")
+    Application.put_env(:orchard_controller, :node_trust, root: trust_root)
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+
+      if previous_trust do
+        Application.put_env(:orchard_controller, :node_trust, previous_trust)
+      else
+        Application.delete_env(:orchard_controller, :node_trust)
+      end
+    end)
+
+    {:ok, trust} = NodeTrust.initialize(root: trust_root)
+    trust
   end
 
   defp insert_node!(attrs) do

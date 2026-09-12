@@ -21,10 +21,27 @@ Changing targets SHALL clear the retained evidence.
 
 ### Requirement: Task-focused Node sections
 
-The Nodes page SHALL separate Inventory, Admission, Runtime, and Diagnostics through page-local navigation.
+The Nodes page SHALL separate Inventory, Admission Review, Runtime, and Diagnostics through page-local navigation.
 Node detail SHALL separate Overview, Evidence, and Actions while retaining shared target identity and refresh state.
 Sections SHALL use whitelisted URL parameters and replace visible content instead of acting as scroll anchors.
 Inactive sections SHALL not remain reachable through keyboard navigation or the accessibility tree.
+The Inventory section SHALL label durable Node rows as **Node Inventory** and its count as **Inventory entries**.
+The Runtime section SHALL label its resolved diagnostic target count as **Effective targets**.
+Empty Inventory guidance SHALL distinguish enrollment-created provisioned entries, successful registration on join, and unregistered Runtime Endpoint admission candidates without changing their lifecycle authority.
+
+#### Scenario: Follow empty Inventory guidance
+- **WHEN** the operator follows Admission Review or Runtime from an empty Node Inventory
+- **THEN** the selected query-backed section replaces Inventory with the destination's already-loaded content
+- **AND** navigation initiates no additional read or Runtime Endpoint probe
+
+#### Scenario: Observe an unregistered Runtime Endpoint
+- **GIVEN** durable Node inventory is initially empty
+- **WHEN** a Runtime Endpoint observation creates a `pending_observed` admission candidate without a durable Node row
+- **THEN** Inventory shows exactly zero entries and no Node table while Admission Review and Runtime expose their respective candidate and diagnostic content when selected
+
+#### Scenario: Create enrollment before join
+- **WHEN** Node Enrollment creates a provisioned Node before any successful join
+- **THEN** Node Inventory counts and displays that provisioned entry
 
 #### Scenario: Inspect evidence and return
 - **WHEN** an operator switches from Node Overview to Evidence and reloads the URL
