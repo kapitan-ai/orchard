@@ -66,6 +66,57 @@ ADR 0028 qualification evidence.
 Runtime-local registry cleanup does not prove Controller dispatch-capacity
 release.
 
+### Opt-in real partial-prefill cancellation harness
+
+`tests/test_mlx_lifecycle.py` exercises the real worker backend in a disposable
+subprocess with a 120-second watchdog. It requires the locked `mlx` extra,
+Apple Silicon/Metal, and an **existing** Qwen3-0.6B-4bit bundle at revision
+`73e3e38d981303bc594367cd910ea6eb48349da8`. It fails before loading if the bundle's
+SPEC §6.4 tree digest differs from
+`d30ebd70f4a436c152939ec8f4c798c8a2096fb210445781833e4bf4e60f5dd4`.
+This is a measured local artifact identity, not independent checkpoint provenance
+or a comparison with a Catalog row. The test never prepares or downloads a bundle.
+
+From the repository root, with `<existing-bundle>` replaced by its local path:
+
+```bash
+ORCHARD_MLX_LIFECYCLE_BUNDLE="<existing-bundle>" \
+  mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
+  pytest tests/test_mlx_lifecycle.py -v -s
+```
+
+The child sets Hugging Face and Transformers offline flags; these are not an OS
+network sandbox. Its runtime pin checks deliberately restrict the evidence to
+MLX 0.32.2, Transformers 5.12.1, and the MLX-LM revision below.
+It rejects Python optimization (`-O`, `-OO`, or inherited `PYTHONOPTIMIZE`)
+before importing MLX, so qualification assertions cannot silently disappear.
+With the opt-in variable absent, ordinary native validation does not load a model.
+
+The harness uses original MLX calls and responses, with test-local scheduling
+barriers: it pauses before the first real batch step until the peer is pending,
+then pauses after applying real partial-prefill progress until the cancelled
+consumer returns its terminal event. It records two live request UIDs and the
+upstream batch's actual UID membership. This is **instrumented overlap**, not
+proof of naturally occurring overlap or uninstrumented timing fidelity.
+The default 0.5-second cancellation-drain timeout remains unchanged.
+
+Before measured generation, the test records synthetic prompt IDs and declares
+the peer/recovery semantic assertion: output must begin with `Paris` for
+`The capital of France is`. It checks exactly one cancelled terminal, exactly one
+peer completion, eight real peer token responses and matching usage, the same
+generator without reset, and empty request/pending/detokenizer/prefill registries
+before close. It then checks recovery and unload. Input counts describe supplied
+IDs, not Controller/tokenizer parity. Row-state observations retain UID, sampler,
+processor-value, and processor-identity evidence without suppressing warnings or
+changing the production realignment path.
+
+These checks do not qualify genuine drain-timeout reset, Controller capacity
+release, public APIs, Catalog/import verification, cold public serving, or
+production performance. Timeout reset still intentionally gives active peers
+retryable collateral failures; its existing synthetic test is not real-runtime
+qualification. Raw output is local evidence, not an ADR 0028 approval or support
+claim, and must not be committed.
+
 ## MLX-LM security baseline
 
 The `mlx` extra pins MLX-LM commit `ab1806e8f5d6aa035973af194a1b9198ab4754dc`.

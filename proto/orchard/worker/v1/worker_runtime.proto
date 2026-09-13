@@ -108,7 +108,10 @@ message WorkerCapabilities {
   // At most 64 profiles. Empty is valid and proves nothing.
   repeated WorkerCapabilityProfile profiles = 7;
   // field 8 reserved for a future loaded_binding (WorkerLoadedBinding),
-  // deferred pending issue #327 acceptance
+  // allocated by SPEC.md §7.5.3a. Keep this reservation until the owner-
+  // confirmed #327 schema decision is accepted and a separate implementing
+  // change is authorized to declare the field. Do not substitute a tag or
+  // shape before then.
   reserved 8;
 }
 
