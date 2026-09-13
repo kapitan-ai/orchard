@@ -6,12 +6,15 @@
 - [x] 1.2 Review the fresh-base protocol allocation: `WorkerCapabilities` fields 1-7 used, 8 reserved for the deferred loaded binding, and 9 available.
 - [x] 1.3 Run change-scoped strict OpenSpec validation.
 - [x] 1.4 Run all-change strict OpenSpec validation and inspect generated main specs for placeholder prose.
+- [x] 1.5 Record the owner-confirmed schema decision in `design.md` §2.1 as proposed-only declarations. Schema declarations, generated bindings, and runtime implementation remain separate and blocked until this change is accepted.
 
 ## 2. Prerequisites and schema handoff
 
 - [x] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
-- [ ] 2.2 After this contract is accepted, re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically.
+- [ ] 2.2 After this change is accepted, re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically, reproducing `design.md` §2.1 unchanged. Do not begin that work from this documentation PR.
 - [ ] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage.
+- [ ] 2.4 Cover exact `ModelRef` selection on a multi-model Node and request/selected-worker association through both adapters. Wrong version, missing worker, malformed field 9 without field 8, and unattributable results must remain unknown; only complete attributable negatives count toward exhaustion. Preserve legacy N-1 projections and live-only freshness without extra fanout.
+- [ ] 2.5 Cover optional/default frozen inputs, nil versus invalid effort, nested parameters, and future execution-affecting additive/nested fields: bind and compare them or reject without silent decoding/mapping loss. Validate field 14 independently outside frozen input and retain negotiated token/logprob rejection.
 
 ## 3. Dormant implementation handoff
 
@@ -24,7 +27,7 @@
 - [ ] 3.1d Enforce the per-logical-Request wave budget: a pre-start busy re-grant runs no wave, carries a hint only, revalidates through `PrepareInference`, and terminalizes under the existing queue-wait budget; both waves plus queue wait consume the single §12.4 loaded-only deadline.
 - [ ] 3.2 Implement D1, D2, and D3 with direct failure-path and both-attempt regression coverage.
 - [ ] 3.3 Pin automatic and full-capture operator retry to `canonical_request["reasoning"]`; return `retry_source_unavailable` rather than rerendering or adding a column.
-- [ ] 3.4 Keep production registries empty and prove no production tuple is advertised before #328 plus qualification governance authorize activation.
+- [ ] 3.4 Keep production registries empty and prove no production tuple is advertised before #328 plus qualification governance authorize activation. For selected-effort tuples, prove exact-tuple classification readiness does not impose semantic approval or support claims on technical advertisement, admission, selection, scheduling, preparation, or dispatch; retain all technical proofs and terminal enabled-conformance failure.
 - [x] 3.5 Record D4 (`terminal_conformance + internal_error`) as a #328 handoff without implementing it here.
 
 ## 4. Future validation
