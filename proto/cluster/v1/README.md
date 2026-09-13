@@ -16,6 +16,30 @@ active generated inputs.
 `membership.proto` is present for the future cluster-join lifecycle slice but is
 excluded from the current generation aliases until that contract is implemented.
 
+`fixtures/` holds shared cross-language event fixtures described below.
+
+## Cross-language event fixtures
+
+`fixtures/generated_tool_argument_events.json` records the serialized
+`InferenceEvent` stream a worker produces for generated tool-argument boundaries:
+ordered multi-call success, an unrequested function name, non-object arguments,
+and malformed or truncated blocks. Each scenario holds `events_base64`, the
+deterministic serialized bytes of each event, and `arguments`, the exact argument
+strings the worker publishes.
+
+The MLX worker test
+`test_spec_7_5_2_worker_events_match_shared_generated_argument_fixture` in
+`native/orchard_worker_mlx/tests/test_generation.py` produces the recorded bytes:
+it runs the same scenarios through `build_inference_event` and byte-compares the
+result with this file. Elixir tests decode those bytes through
+`Orchard.TestSupport.GeneratedToolArgumentFixture` in `apps/orchard_shared`, so
+node-agent and controller tests assert against worker-produced events instead of
+a second hand-written expectation.
+
+Do not hand-edit one side of that contract. When `events.proto` or the worker's
+event encoding changes deliberately, re-record `events_base64` from the producing
+test and commit the fixture with the change that caused it.
+
 ## Elixir toolchain
 
 Orchard standardizes on:
