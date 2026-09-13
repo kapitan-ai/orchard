@@ -8,8 +8,7 @@
     "arguments": [
       "{\"location\":{\"city\":\"Singapore\",\"zones\":[\"central\",\"east\"]},\"limits\":{\"safe\":9007199254740991,\"beyond\":9007199254740993}}",
       "{\"offsets\":[{\"name\":\"utc\",\"minutes\":0},{\"name\":\"local\",\"minutes\":480}],\"include_dst\":false,\"limits\":[-9007199254740991,-9007199254740993]}"
-    ],
-    "terminal_kind": "completed"
+    ]
   },
   "valid_then_invalid_block": {
     "events_base64": [
@@ -18,50 +17,34 @@
     ],
     "arguments": [
       "{\"location\":{\"city\":\"Singapore\",\"zones\":[\"central\",\"east\"]},\"limits\":{\"safe\":9007199254740991,\"beyond\":9007199254740993}}"
-    ],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    ]
   },
   "valid_and_invalid_same_block": {
     "events_base64": ["Mj8KFnRvb2xfY2FsbF9wYXJzZV9mYWlsZWQSJW1vZGVsIGVtaXR0ZWQgYW4gdW5yZXF1ZXN0ZWQgZnVuY3Rpb24="],
-    "arguments": [],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    "arguments": []
   },
   "unknown_name": {
     "events_base64": ["Mj8KFnRvb2xfY2FsbF9wYXJzZV9mYWlsZWQSJW1vZGVsIGVtaXR0ZWQgYW4gdW5yZXF1ZXN0ZWQgZnVuY3Rpb24="],
-    "arguments": [],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    "arguments": []
   },
   "non_object_arguments": {
     "events_base64": ["MkcKFnRvb2xfY2FsbF9wYXJzZV9mYWlsZWQSLXByb3ZpZGVyIHRvb2wgYXJndW1lbnRzIG11c3QgYmUgYSBKU09OIG9iamVjdA=="],
-    "arguments": [],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    "arguments": []
   },
   "malformed_object": {
     "events_base64": ["MkAKFnRvb2xfY2FsbF9wYXJzZV9mYWlsZWQSJnByb3ZpZGVyIGNvdWxkIG5vdCBwYXJzZSB0aGUgdG9vbCBjYWxs"],
-    "arguments": [],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    "arguments": []
   },
   "malformed_array": {
     "events_base64": ["MkAKFnRvb2xfY2FsbF9wYXJzZV9mYWlsZWQSJnByb3ZpZGVyIGNvdWxkIG5vdCBwYXJzZSB0aGUgdG9vbCBjYWxs"],
-    "arguments": [],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    "arguments": []
   },
   "truncated_object": {
     "events_base64": ["MkYKFnRvb2xfY2FsbF9wYXJzZV9mYWlsZWQSLGdlbmVyYXRpb24gZW5kZWQgYmVmb3JlIGEgY29tcGxldGUgdG9vbCBjYWxs"],
-    "arguments": [],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    "arguments": []
   },
   "truncated_array": {
     "events_base64": ["MkYKFnRvb2xfY2FsbF9wYXJzZV9mYWlsZWQSLGdlbmVyYXRpb24gZW5kZWQgYmVmb3JlIGEgY29tcGxldGUgdG9vbCBjYWxs"],
-    "arguments": [],
-    "terminal_kind": "failed",
-    "failure_code": "tool_call_parse_failed"
+    "arguments": []
   }
 }

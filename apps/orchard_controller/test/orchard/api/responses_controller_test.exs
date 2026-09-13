@@ -437,9 +437,6 @@ defmodule Orchard.API.ResponsesControllerTest do
   test "SPEC 7.5.2 non-stream withholds an earlier valid block after a later invalid block" do
     fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
 
-    [weather_arguments] =
-      GeneratedToolArgumentFixture.arguments!("valid_then_invalid_block")
-
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(false), %{}},
       execute:
@@ -454,8 +451,15 @@ defmodule Orchard.API.ResponsesControllerTest do
       })
 
     assert conn.status == 500
-    refute conn.resp_body =~ weather_arguments
-    refute Map.has_key?(Jason.decode!(conn.resp_body), "output")
+
+    assert Jason.decode!(conn.resp_body) == %{
+             "error" => %{
+               "message" => "Inference failed: model emitted an unrequested function",
+               "type" => "server_error",
+               "param" => nil,
+               "code" => "internal_error"
+             }
+           }
   end
 
   test "valid ref-backed request succeeds without API shape changes" do

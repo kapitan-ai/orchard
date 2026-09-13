@@ -749,9 +749,6 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     test "SPEC 7.5.2 non-stream withholds an earlier valid block after a later invalid block" do
       fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
 
-      [weather_arguments] =
-        GeneratedToolArgumentFixture.arguments!("valid_then_invalid_block")
-
       stub_chat_orchestrator(
         prepare: {:ok, stub_chat_canonical(false), %{}},
         execute:
@@ -766,8 +763,15 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         })
 
       assert conn.status == 500
-      refute conn.resp_body =~ weather_arguments
-      refute Map.has_key?(Jason.decode!(conn.resp_body), "choices")
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => %{
+                 "message" => "Inference failed: model emitted an unrequested function",
+                 "type" => "server_error",
+                 "param" => nil,
+                 "code" => "internal_error"
+               }
+             }
     end
 
     test "returns mixed text and tool-call non-stream payload when both are emitted" do
