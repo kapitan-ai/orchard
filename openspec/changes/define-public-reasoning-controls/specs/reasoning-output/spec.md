@@ -44,7 +44,7 @@ Orchard MUST apply the public-input and exact artifact, template, and renderer c
 
 #### Scenario: Effort contradicts disabled generation
 
-- **WHEN** a recognized non-`null` effort is supplied with `reasoning.enabled = false`
+- **WHEN** a recognized non-`null` effort is supplied with `reasoning.enabled = false` and the `reasoning` object carries no unrecognized member
 - **THEN** Orchard returns `400 invalid_request_error` with code `unsupported_reasoning_control` and `param = reasoning.effort`
 - **AND** it creates neither a Request nor attempt evidence
 
