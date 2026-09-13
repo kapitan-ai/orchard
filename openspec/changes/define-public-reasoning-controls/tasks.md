@@ -12,7 +12,7 @@
 - [x] 2.1 Run strict validation for `define-public-reasoning-controls`.
 - [x] 2.2 Run strict validation for every OpenSpec change and review the package for placeholder prose.
 - [x] 2.3 Run applicable documentation and specification checks and independent contract review.
-- [ ] 2.4 After dependency-ordered archive or sync, rerun strict all-spec validation and review generated main specs for placeholder prose.
+- [ ] 2.4 After dependency-ordered archive or sync, rerun strict all-spec validation and review generated main specs for placeholder prose and for deferral prose this change has now satisfied, including `define-qualified-reasoning-effort`'s deferred-public-field-name sentence and the `define-reasoning-output-contract` 6.1 and `define-qualified-reasoning-effort` 4.2 tracking items; reconcile each in its owning package rather than here.
 
 ## 3. Implement and activate in owned follow-on work
 
