@@ -12,9 +12,9 @@ Orchard SHALL accept the provider-neutral `reasoning` object defined in `SPEC.md
 
 #### Scenario: Explicit final-only control is valid
 
-- **WHEN** either endpoint receives `reasoning.enabled = true` with an omitted, `null`, or canonical effort
+- **WHEN** either endpoint receives a `reasoning` object with no unrecognized member, `enabled = true`, and an omitted, `null`, or canonical effort
 - **THEN** Orchard normalizes the Request to `enabled + final_only + explicit_public` with the selected effort or canonical `nil`
-- **AND** `reasoning.enabled = false` similarly normalizes only to `disabled + final_only + explicit_public` with canonical `nil`
+- **AND** the same recognized-member-only object with `enabled = false` and an omitted or `null` effort similarly normalizes only to `disabled + final_only + explicit_public` with canonical `nil`
 
 ### Requirement: Public reasoning validation distinguishes invalid and unsupported controls
 
