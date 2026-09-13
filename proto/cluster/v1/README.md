@@ -36,9 +36,19 @@ result with this file. Elixir tests decode those bytes through
 node-agent and controller tests assert against worker-produced events instead of
 a second hand-written expectation.
 
-Do not hand-edit one side of that contract. When `events.proto` or the worker's
-event encoding changes deliberately, re-record `events_base64` from the producing
-test and commit the fixture with the change that caused it.
+That test reads `tool_call_start`, `tool_call_end`, and `parse_tool_call` from
+the pinned MLX-LM `json_tools` parser, so it skips when the locked `mlx` extra is
+absent. Run it with the extra installed before you trust the recorded bytes:
+
+```bash
+mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
+  pytest tests/test_generation.py -k generated_argument_fixture
+```
+
+Do not hand-edit one side of that contract. When `events.proto`, the worker's
+event encoding, or the pinned parser changes deliberately, re-record
+`events_base64` from the producing test and commit the fixture with the change
+that caused it.
 
 ## Elixir toolchain
 
