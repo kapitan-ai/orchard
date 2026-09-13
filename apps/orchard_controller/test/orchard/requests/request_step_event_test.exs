@@ -426,6 +426,29 @@ defmodule Orchard.Requests.RequestStepEventTest do
              })
   end
 
+  test "SPEC.md §§3.7.1 and 5.3 reads next-format persisted attempt usage evidence" do
+    attrs =
+      inference_terminal_attrs(1, %{
+        "excluded_node_ids" => [],
+        "retry_decision" => "not_retryable",
+        "output_tokens" => 7,
+        "output_usage_status" => "lower_bound"
+      })
+
+    request_event = %RequestEvent{
+      request_id: Ecto.UUID.generate(),
+      seq: 1,
+      event_type: attrs.event_type,
+      state: nil,
+      occurred_at: ~U[2026-04-11 09:15:00.000000Z],
+      payload: Map.drop(attrs, [:event_type])
+    }
+
+    assert {:ok, step_event} = RequestStepEvent.from_request_event(request_event)
+    assert step_event.result["output_tokens"] == 7
+    assert step_event.result["output_usage_status"] == "lower_bound"
+  end
+
   test "from_request_event/1 preserves historical inference identities rejected for new writes" do
     request_event = %RequestEvent{
       request_id: Ecto.UUID.generate(),
