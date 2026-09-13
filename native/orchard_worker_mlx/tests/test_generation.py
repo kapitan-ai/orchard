@@ -5630,11 +5630,12 @@ def _generated_tool_argument_scenarios() -> list[tuple[str, str, str]]:
 
 
 def _generated_tool_argument_events(model_text: str, finish_reason: str) -> list[dict[str, Any]]:
+    parser = pytest.importorskip("mlx_lm.tool_parsers.json_tools")
     session = _make_fake_session(
         tool_calling={"supported": True, "parser_type": "json_tools"},
-        tool_parser=lambda text, tools: json.loads(text),
-        tool_call_start="<tool_call>",
-        tool_call_end="</tool_call>",
+        tool_parser=parser.parse_tool_call,
+        tool_call_start=parser.tool_call_start,
+        tool_call_end=parser.tool_call_end,
     )
     request = _make_fake_request(tools_json=_generated_tool_argument_tools_json())
     events = _collect_events(
