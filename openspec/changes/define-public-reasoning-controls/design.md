@@ -39,7 +39,7 @@ The shape exposes no provider values or renderer parameters. `xhigh` remains out
 
 ### 2. Validation precedes persistence and capability decisions
 
-The Controller validates the accepted public shape before the first Request write, scheduling, or dispatch:
+The Controller validates the accepted public shape before the first Request write, scheduling, or dispatch. The following order is normative: the first failing condition determines the public error and `param` before any later condition is considered.
 
 1. omission preserves the legacy path;
 2. the present value must be a non-null object;

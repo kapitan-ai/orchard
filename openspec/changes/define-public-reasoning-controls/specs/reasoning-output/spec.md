@@ -18,19 +18,29 @@ Orchard SHALL accept the provider-neutral `reasoning` object defined in `SPEC.md
 
 ### Requirement: Public reasoning validation distinguishes invalid and unsupported controls
 
-Orchard MUST apply the public-input and exact artifact, template, and renderer capability-validation rows of `SPEC.md` §7.2.7 before Request persistence, scheduling, or dispatch, using the envelope in §7.2.6. Invalid accepted-field types, invalid effort values, and unrecognized `reasoning` members MUST use `invalid_value`; contradictory or artifact-, template-, or renderer-incompatible controls MUST use `unsupported_reasoning_control`.
+Orchard MUST apply the public-input and exact artifact, template, and renderer capability-validation rows of `SPEC.md` §7.2.7 before Request persistence, scheduling, or dispatch, using the envelope in §7.2.6. Invalid accepted-field types, invalid effort values, and unrecognized `reasoning` members MUST use `invalid_value`; contradictory or artifact-, template-, or renderer-incompatible controls MUST use `unsupported_reasoning_control`. Public input validation MUST use §7.2.7's fixed precedence, and the first applicable failure MUST determine the error and `param` when failures coexist.
 
-#### Scenario: Accepted reasoning field has an invalid value
+#### Scenario: Reasoning value is not an object
 
-- **WHEN** `reasoning` is `null` or not an object, `enabled` is absent or not boolean, or a non-`null` effort is not `low | medium | high`
-- **THEN** Orchard returns `400 invalid_request_error` with code `invalid_value`
-- **AND** `param` identifies `reasoning`, `reasoning.enabled`, or `reasoning.effort`, respectively
+- **WHEN** `reasoning` is `null` or not an object
+- **THEN** Orchard returns `400 invalid_request_error` with code `invalid_value` and `param = reasoning`
+
+#### Scenario: Required enabled member is invalid
+
+- **WHEN** `reasoning` is an object whose `enabled` member is absent or not boolean
+- **THEN** Orchard returns `400 invalid_request_error` with code `invalid_value` and `param = reasoning.enabled`
+- **AND** this failure wins even when the object also carries an unrecognized member or invalid `effort`
 
 #### Scenario: Reasoning object carries an unrecognized member
 
-- **WHEN** `reasoning` carries any member other than `enabled` and `effort`
+- **WHEN** `reasoning` is an object with boolean `enabled` and carries any member other than `enabled` and `effort`
 - **THEN** Orchard returns `400 invalid_request_error` with code `invalid_value` and `param = reasoning`
-- **AND** it neither ignores the member nor passes it through to a provider, template, or canonical field
+- **AND** this failure wins before `effort` validation and Orchard neither ignores nor passes the member through to a provider, template, or canonical field
+
+#### Scenario: Effort has an invalid value
+
+- **WHEN** `reasoning` is an object with boolean `enabled`, no unrecognized member, and a non-`null` effort outside `low | medium | high`
+- **THEN** Orchard returns `400 invalid_request_error` with code `invalid_value` and `param = reasoning.effort`
 
 #### Scenario: Effort contradicts disabled generation
 

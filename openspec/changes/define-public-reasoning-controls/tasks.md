@@ -16,7 +16,7 @@
 
 ## 3. Implement and activate in owned follow-on work
 
-- [ ] 3.1 Complete and merge issue #326 canonical normalization and exact rendering without changing omitted-request behavior.
+- [ ] 3.1 Complete and merge issue #326 canonical normalization and exact rendering without changing omitted-request behavior; narrow `validate_reasoning_combination!/4` so `explicit_public + model_default` is rejected, and add shared canonical-request regression coverage for that combination.
 - [ ] 3.2 Complete and merge issue #327 negotiated runtime encoding and exact loaded-proof implementation.
 - [ ] 3.3 Complete and merge issue #328 parser and final-only projection implementation.
 - [ ] 3.4 Complete and merge issue #329 usage, retry, capture, and replay implementation; before its classified writers activate, explicitly attest that PR #421's compatible readers are deployed to every Controller and background reader.
