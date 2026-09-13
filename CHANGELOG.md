@@ -7,7 +7,7 @@ date the change landed on `main`.
 
 ### Breaking changes
 
-- The Support Bundle feature is retired before beta; **required action:** stop relying on support-bundle commands and workflows, and use the remaining diagnostics and runbook paths instead. ([#390](https://github.com/kapitan-ai/orchard/pull/390))
+- The Support Bundle feature is retired before beta: the `orchardctl support bundle create` command and the planned API, Console, tray, audit, and metrics surfaces are removed, while generic diagnostics and existing archives remain intact. **Required action:** remove automation that invokes `orchardctl support` — the retired namespace now follows the unknown-command path, exits nonzero, and creates no archive. ([#390](https://github.com/kapitan-ai/orchard/pull/390))
 
 ### Features
 
@@ -16,18 +16,19 @@ date the change landed on `main`.
 - Workspace Access now shows exact model grants and guides operators through scoped colleague handoff to the Developer Portal without implying invitation delivery or request success. ([#362](https://github.com/kapitan-ai/orchard/pull/362))
 - MLX tool calling now completes tool calls and preserves safe tool history for qualified model configurations. ([#369](https://github.com/kapitan-ai/orchard/pull/369))
 - Model artifacts can now admit `tool_calling` from immutable, validated sidecar evidence rather than model names or manifest claims alone. ([#402](https://github.com/kapitan-ai/orchard/pull/402))
-- MLX workers now emit bounded cumulative usage updates during generation, allowing cancellation and terminal failures to retain an informative usage lower bound without changing the legacy public usage shape. ([#418](https://github.com/kapitan-ai/orchard/pull/418))
+- MLX workers now emit bounded cumulative usage updates during generation while preserving exact completed usage and the legacy public usage shape; durable lower-bound accounting remains deferred. ([#418](https://github.com/kapitan-ai/orchard/pull/418))
 
 ### Bug fixes
 
 - macOS payload builds now always include the required `support/openssl` directory, including when no OpenSSL libraries need remediation. ([#364](https://github.com/kapitan-ai/orchard/pull/364))
 - HTTPS Developer Portal requests now preserve valid loopback client forwarding when every address in the forwarded chain is trusted. ([#365](https://github.com/kapitan-ai/orchard/pull/365))
 - macOS packaging now removes release `.dSYM` companions from the runtime payload while retaining source debug symbols, and the Workspace handoff now states its cluster-administration and credential scope boundary. ([#366](https://github.com/kapitan-ai/orchard/pull/366))
-- Legacy BEAM smoke tests now isolate their membership identity from other packaged or source-dev nodes. ([#367](https://github.com/kapitan-ai/orchard/pull/367))
 - Node Agent worker-readiness polling now honors its deadline instead of waiting beyond the bounded startup budget. ([#368](https://github.com/kapitan-ai/orchard/pull/368))
+- Worker socket paths that exceed the macOS or Linux platform limit are now rejected before cleanup or launch with actionable `worker_socket_path_too_long` guidance. ([#382](https://github.com/kapitan-ai/orchard/pull/382))
 - Pre-acceptance `model_busy` and `cluster_busy` refusals now retain their original capacity error and cleanly terminate without inventing runtime acceptance or triggering retry and breaker attribution. ([#392](https://github.com/kapitan-ai/orchard/pull/392))
+- Negotiated acceptance-proof failures now preserve the closed `pre_acceptance_unavailable` and `runtime_incompatible` evidence pair; an uncommitted failed attempt 2 records `not_retryable`, while cancellation and a proven deadline retain `cancelled` and `retry_exhausted`. ([#405](https://github.com/kapitan-ai/orchard/pull/405))
 - Artifact Bundle publication now serializes its short Catalog commit phase, rejects unsafe staged identities, and preserves explicit repair versions across retries and remounts. ([#419](https://github.com/kapitan-ai/orchard/pull/419))
-- Requests now distinguish unreadable Node inventory from an empty effective Runtime Endpoint set in the Console, with clearer inventory terminology and navigation links. ([#433](https://github.com/kapitan-ai/orchard/pull/433))
+- The Console now distinguishes unreadable Node inventory from an empty effective Runtime Endpoint set, with clearer inventory terminology and navigation links. ([#433](https://github.com/kapitan-ai/orchard/pull/433))
 
 ### Improvements
 
@@ -40,7 +41,7 @@ date the change landed on `main`.
 - The internal Basecamp mapping is now excluded from the source tree without changing product behavior or erasing accepted historical context. ([#378](https://github.com/kapitan-ai/orchard/pull/378))
 - CI bootstrap and lifecycle validation are more deterministic through a pinned mise release, semantic expiry ordering, and PID-bound custody synchronization. ([#380](https://github.com/kapitan-ai/orchard/pull/380))
 - README guidance now makes Orchard's product scope, supported workflows, examples, setup, and current limitations easier to evaluate. ([#381](https://github.com/kapitan-ai/orchard/pull/381))
-- Worker socket paths that exceed the platform limit are now rejected before launch with bounded validation errors. ([#382](https://github.com/kapitan-ai/orchard/pull/382))
+- Legacy BEAM smoke tests now isolate their membership identity from other packaged or source-development Nodes. ([#367](https://github.com/kapitan-ai/orchard/pull/367))
 - Model availability documentation now reconciles Catalog, activation, grants, qualification, and runtime support boundaries. ([#383](https://github.com/kapitan-ai/orchard/pull/383))
 - Audited Node Enrollment recovery is now defined with explicit evidence, custody, rollback, and operator-boundary requirements. ([#384](https://github.com/kapitan-ai/orchard/pull/384))
 - The dedicated macOS Node distribution contract is now documented with its packaging, installation, upgrade, and qualification boundaries. ([#385](https://github.com/kapitan-ai/orchard/pull/385))
@@ -51,7 +52,6 @@ date the change landed on `main`.
 - Amp orb setup now uses a compatible precompiled Erlang build and installs the ACL utilities needed by Linux custody tests. ([#397](https://github.com/kapitan-ai/orchard/pull/397))
 - Canonical reasoning requests now have a provider-neutral, fail-closed policy and exact render-identity foundation while preserving legacy request serialization and rejecting unsupported public controls. ([#401](https://github.com/kapitan-ai/orchard/pull/401))
 - The canonical reasoning-effort tier contract is now defined for future implementation without changing runtime behavior. ([#404](https://github.com/kapitan-ai/orchard/pull/404))
-- Negotiated acceptance-proof evidence is now preserved through inference attempt classification and terminal outcome handling. ([#405](https://github.com/kapitan-ai/orchard/pull/405))
 - The repository now has a pull request template for consistent change descriptions and validation evidence. ([#407](https://github.com/kapitan-ai/orchard/pull/407))
 - Worker MLX parsing now shares partial-marker scanning and exposes text-first tool consumption for provider-neutral tests and integration paths. ([#410](https://github.com/kapitan-ai/orchard/pull/410))
 - The negotiated reasoning runtime encoding contract now records the provider-neutral schema, field ownership, and compatibility boundaries. ([#416](https://github.com/kapitan-ai/orchard/pull/416))
