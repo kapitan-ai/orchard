@@ -1234,6 +1234,119 @@ def test_generate_closes_backend_iterator_after_terminal_break() -> None:
     assert backend.iterator.closed is True
 
 
+def test_generate_terminal_yield_precedes_iterator_cleanup() -> None:
+    backend = TerminalBreakCloseBackend()
+    backend._loaded = True
+    servicer = _make_servicer(backend)
+    request_id = "req-delayed-terminal-cleanup"
+    stream = servicer.Generate(_make_request(request_id), MagicMock())
+
+    try:
+        events = [next(stream), next(stream)]
+
+        assert [event.WhichOneof("event") for event in events] == [
+            "output_text_delta",
+            "completed",
+        ]
+        assert sum(event.WhichOneof("event") == "completed" for event in events) == 1
+        assert (
+            servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None).active_request_count
+            == 1
+        )
+        assert servicer._cancel_entries[request_id].phase == "active"
+        assert backend.iterator.closed is False
+    finally:
+        stream.close()
+
+    assert backend.iterator.closed is True
+    assert (
+        servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None).active_request_count == 0
+    )
+    assert request_id not in servicer._cancel_entries
+
+
+def test_generate_stalled_terminal_cleanup_does_not_block_peer_release() -> None:
+    backend = ConcurrentGenerateBackend()
+    servicer = _make_servicer(backend)
+    a_terminal_seen = threading.Event()
+    release_a_cleanup = threading.Event()
+    b_delta_seen = threading.Event()
+    release_b_progress = threading.Event()
+    b_finished = threading.Event()
+    results: dict[str, list[Any]] = {}
+
+    def run_a() -> None:
+        stream = servicer.Generate(_make_request("req-a"), MagicMock())
+        try:
+            results["req-a"] = [next(stream), next(stream)]
+            a_terminal_seen.set()
+            release_a_cleanup.wait(timeout=5.0)
+        finally:
+            stream.close()
+
+    def run_b() -> None:
+        stream = servicer.Generate(_make_request("req-b"), MagicMock())
+        try:
+            results["req-b"] = [next(stream)]
+            b_delta_seen.set()
+            release_b_progress.wait()
+            results["req-b"].extend(list(stream))
+            b_finished.set()
+        finally:
+            stream.close()
+
+    a_thread = threading.Thread(target=run_a)
+    b_thread = threading.Thread(target=run_b)
+    a_thread.start()
+    b_thread.start()
+
+    try:
+        assert backend._entered.wait(timeout=2.0)
+        assert (
+            servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None).active_request_count
+            == 2
+        )
+        backend._release.set()
+
+        assert a_terminal_seen.wait(timeout=2.0)
+        assert b_delta_seen.wait(timeout=2.0)
+        release_b_progress.set()
+        assert b_finished.wait(timeout=2.0)
+        b_thread.join(timeout=2.0)
+
+        assert b_thread.is_alive() is False
+        assert [event.WhichOneof("event") for event in results["req-a"]] == [
+            "output_text_delta",
+            "completed",
+        ]
+        assert [event.WhichOneof("event") for event in results["req-b"]] == [
+            "output_text_delta",
+            "completed",
+        ]
+        assert sum(event.WhichOneof("event") == "completed" for event in results["req-a"]) == 1
+        assert sum(event.WhichOneof("event") == "completed" for event in results["req-b"]) == 1
+        assert (
+            servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None).active_request_count
+            == 1
+        )
+        assert servicer._cancel_entries["req-a"].phase == "active"
+        assert "req-b" not in servicer._cancel_entries
+    finally:
+        backend._release.set()
+        release_a_cleanup.set()
+        release_b_progress.set()
+        a_thread.join(timeout=2.0)
+        b_thread.join(timeout=2.0)
+
+    assert a_thread.is_alive() is False
+    assert b_thread.is_alive() is False
+    assert (
+        servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None).active_request_count == 0
+    )
+    assert "req-a" not in servicer._cancel_entries
+    assert "req-b" not in servicer._cancel_entries
+
+
 # ---------------------------------------------------------------------------
 # Test: post-failed events suppressed at service level (Task 4)
 # ---------------------------------------------------------------------------
