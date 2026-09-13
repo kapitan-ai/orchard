@@ -139,7 +139,9 @@ message ReasoningEvidenceEnvelope {
   bytes loaded_instance_id = 2;
 }
 
-message ReasoningObservationRequest {}
+message ReasoningObservationRequest {
+  ModelRef model_ref = 1;
+}
 
 message ReasoningEvidence {
   WorkerLoadedBinding loaded_binding = 1;
@@ -168,8 +170,8 @@ cluster.v1.WorkerLoadedBinding loaded_binding = 8;
 cluster.v1.ReasoningEvidenceEnvelope reasoning_evidence = 9;
 ```
 
-`WorkerStatusRequest` and `StatusRequest` each gain the singular presence
-marker:
+`WorkerStatusRequest` and `StatusRequest` each gain the singular opt-in
+selector:
 
 ```proto
 cluster.v1.ReasoningObservationRequest reasoning_observation = 1;
@@ -188,7 +190,8 @@ Rules:
   `HIGH` are selected tiers. A selected tier is valid only for
   `generation_policy = enabled` and `projection = final_only`.
 - All `WorkerLoadedBinding` strings are required and non-empty when the binding
-  is present. Omission of field 8 means a non-advertising binding.
+  is present. Omission of fields 8 and 9 means a non-advertising binding;
+  field 9 present without field 8 is malformed and yields `unknown`.
   `artifact_digest` equals each advertised or proven tuple's
   `model_artifact_digest`; `selected_profile_id` resolves exactly once to a
   profile in the same `WorkerCapabilities.profiles`.
@@ -204,11 +207,29 @@ Rules:
   its freshness must be positive to prove selection. Malformed, partial, stale,
   duplicate, conflicting, or mismatched evidence is `unknown`, never legacy or
   support.
-- The request marker is emitted only for an explicit negotiated request.
-  Without it, legacy status and execution projections remain unchanged.
-  `non_advertising` is the complete negative result for an N-1 or
-  non-advertising binding; no typed reasoning execution event is sent to that
-  binding.
+- `ReasoningObservationRequest.model_ref` is required and uses the existing
+  `ModelRef` from `common.proto`, with non-empty `model_id` and `version`.
+  It selects exactly one live worker for that model/version, not an arbitrary
+  first worker or a fanout to all workers. A positive binding's `model_id` and
+  `model_version` must match the selector, in addition to the artifact, tuple,
+  incarnation, and loaded-instance checks above.
+- Both Runtime Endpoint adapters must preserve the exact unary request and
+  selected-worker association through the singular result. The empty
+  `non_advertising` and `unknown` variants rely on that association, not on
+  duplicated identity fields. A wrong worker/version, missing worker,
+  malformed or partial result, or transport failure is `unknown`, never an
+  exhaustive negative. A non-advertising or N-1 response establishes confirmed
+  non-support only when completed and attributable to the selected placement;
+  valid evidence with an absent or mismatched tuple retains §3's confirmed
+  non-support classification.
+- The selector is emitted only for an explicit negotiated request to a
+  compatible binding. Older or non-advertising bindings retain the legacy
+  projection without the new marker or typed reasoning events; their complete,
+  attributable compatibility response maps to `non_advertising`. Without
+  opt-in, legacy status and execution projections remain unchanged.
+- Observation must not reuse diagnostic cached capability evaluation or its
+  freshness. The selector does not change §3's wave, ranking, normalized-target
+  deduplication, or retry budgets; forwarding never refreshes live evidence.
 
 ### Preparation and redemption
 
@@ -273,13 +294,30 @@ cluster.v1.PreparationRedemption preparation_redemption = 14;
 
 Rules:
 
-- Every request and proof message member is required semantically; required
-  strings are non-empty. `expected_loaded_instance_id` and proof
-  `loaded_instance_id` are exactly 16 raw bytes.
+- Every outer `PrepareInferenceRequest` and `PrepareInferenceProof` member is
+  required semantically; their string members are non-empty.
+  `expected_loaded_instance_id` and proof `loaded_instance_id` are exactly
+  16 raw bytes. This does not recursively require non-empty or non-zero
+  execution values inside `FrozenExecutionInput`.
+- Frozen execution values, including nested `GenerationParams`, retain their
+  existing optional/default semantics. Absent params retain the existing
+  normalization to an empty parameter map; no new params-presence gate is
+  introduced. Empty cache-affinity fingerprints and prompt token IDs and
+  default-false flags remain valid where the execution contract permits them.
+  Negotiated execution still rejects true `return_token_ids` or
+  `return_logprobs` under `SPEC.md` §7.5.3. An absent reasoning-effort wrapper
+  remains `nil`, distinct from a present invalid `UNSPECIFIED` wrapper.
 - `FrozenExecutionInput` is the frozen snapshot of `ExecuteInferenceRequest`
   fields 1–13. Redemption is valid only when those execution fields exactly
   match the prepared snapshot, plus the exact tuple, binding, service
   incarnation, and loaded-instance ID.
+- Every future execution-affecting additive or transitively nested input must
+  also be frozen and compared at redemption, or rejected before preparation
+  or invocation. Decoding and adapter mapping must never silently drop unknown
+  or unbound execution-affecting values. Byte-valued inputs remain exact; this
+  adds no normalization policy. Field 14, `preparation_redemption`, is excluded
+  from the frozen input and remains independently mandatory and validated for
+  negotiated execution, rather than recursively binding its authorization.
 - Authorization is exactly 32 random bytes, worker-owned, memory-only, never
   logged or persisted, and has a positive Worker-monotonic TTL. It binds the
   complete frozen input, tuple, binding, request ID, controller session ID,
@@ -391,7 +429,7 @@ Automatic retry pins all eleven tuple fields and must use a different endpoint w
 
 ## 6. Dormant activation and verified handoffs
 
-The production reasoning tuple registry remains empty. No production tuple may be advertised or selected until #328 has landed parser, accounting, and capture guarantees and a model-qualification-governance record accepts the exact supported tuple. This contract creates no Qwen- or effort-tier-specific policy; issue #398 remains separate.
+The production reasoning tuple registry remains empty. No production tuple may be advertised or selected until #328 has landed parser, accounting, and capture guarantees and model-qualification governance accepts the exact tuple under `SPEC.md` §7.5.3a. For selected-effort tuples, that governance prerequisite means readiness to classify the exact tuple, not an approved semantic qualification record or support claim for technical advertisement, admission, selection, scheduling, preparation, or dispatch. Exact renderer mapping, protocol conformance, render proof, fresh live evidence, and loaded-worker preparation remain required; terminal enabled-conformance failure remains unchanged. Semantic governance separately controls offerings and support claims, not runtime authority. This contract creates no Qwen- or effort-tier-specific policy; issue #398 remains separate.
 
 The following verified defects are handoffs only in this PR:
 
