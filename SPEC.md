@@ -2381,12 +2381,12 @@ The Public Inference API SHALL prioritize wire compatibility with OpenAI for:
 Reasoning control is an Orchard extension whose canonical semantics are defined in §3.4.
 Chat Completions and Responses SHALL accept the same provider-neutral top-level `reasoning` object with this closed shape: `{enabled: boolean, effort?: null | low | medium | high}`.
 The top-level value MUST be an object and MUST NOT be `null`; `enabled` is required and MUST be a JSON boolean without coercion; and `effort`, when present, MUST be `null` or one of the exact, case-sensitive strings `low`, `medium`, and `high`.
-No other `reasoning` member or top-level alias is accepted.
+No other `reasoning` member or top-level alias is accepted, and an unrecognized member SHALL be rejected rather than ignored.
 
 Presence of the object SHALL select `projection = final_only` and `source = explicit_public`.
 `enabled = false` SHALL select `generation_policy = disabled`; `enabled = true` SHALL select `generation_policy = enabled`.
 An omitted or `null` effort SHALL normalize to `reasoning_effort = nil` with no inferred tier, while a non-`null` effort SHALL normalize to the matching canonical tier and is valid only when `enabled = true`.
-Invalid types and effort values SHALL use the `invalid_value` mapping in §7.2.7; a recognized non-`null` effort with `enabled = false` SHALL use `unsupported_reasoning_control`.
+Invalid types, invalid effort values, and unrecognized `reasoning` members SHALL use the `invalid_value` mapping in §7.2.7; a recognized non-`null` effort with `enabled = false` SHALL use `unsupported_reasoning_control`.
 All such rejections occur before the first Request write, scheduling, or dispatch.
 
 The public contract MUST NOT expose provider-specific renderer values, public `xhigh`, arbitrary template keyword arguments, or model-family conditionals.
@@ -2718,13 +2718,13 @@ Reasoning-control failures use this closed mapping:
 
 | Failure phase | Public status, type, and code | `param` | Durable attempt evidence | Retry behavior |
 |---|---|---|---|---|
-| `reasoning` is `null` or is not an object; required `enabled` is absent or is not a boolean; or non-`null` `effort` has the wrong type or is outside `low`, `medium`, or `high` | `400 invalid_request_error`, `invalid_value` | `reasoning`, `reasoning.enabled`, or `reasoning.effort`, respectively | no attempt and no Request write | non-retryable |
+| `reasoning` is `null` or is not an object; required `enabled` is absent or is not a boolean; non-`null` `effort` has the wrong type or is outside `low`, `medium`, or `high`; or `reasoning` carries any member other than `enabled` and `effort` | `400 invalid_request_error`, `invalid_value` | `reasoning`, `reasoning.enabled`, or `reasoning.effort` for the respective malformed value, and `reasoning` for any unrecognized member | no attempt and no Request write | non-retryable |
 | An explicit control supplies a reasoning-effort tier with `generation_policy = model_default` or `disabled` | `400 invalid_request_error`, `unsupported_reasoning_control` | `reasoning.effort`; `nil` for the Console | no attempt and no Request write | non-retryable |
 | The exact model artifact, chat-template, and renderer contract cannot honor an accepted explicit control or a selected effort tier | `400 invalid_request_error`, `unsupported_reasoning_control` | `reasoning` for the base control or `reasoning.effort` for the selected tier; `nil` for the Console | no attempt and no Request write | non-retryable |
 | No loaded placement proves the exact negotiated tuple under §7.5.3a's exhaustion rule, returned render metadata cannot prove that the applied reasoning effort is exactly the selected tier, or execution acceptance reports a different loaded-worker tuple before model invocation | `503 server_error`, `runtime_incompatible` | `nil` | `pre_acceptance_unavailable` plus `runtime_incompatible` and `retry_decision = not_retryable` when an attempt exists and the proof failure wins the terminal race; caller cancellation/disconnect and already-proven deadline terminalization retain their §3.7.1 decisions | non-retryable |
 | Parser or generation-policy conformance fails after model invocation | `500 api_error`, `internal_error` | `nil` | `terminal_conformance` plus `internal_error` | non-retryable |
 
-The first row rejects malformed accepted-field values without treating them as a capability decision.
+The first row rejects malformed accepted-field values and unrecognized `reasoning` members without treating either as a capability decision.
 The second row is a caller-input contradiction that is never valid on any model; the third row is an exact-tuple capability failure that another qualified model, artifact, or template MAY be able to honor.
 The second and third rows remain `400 invalid_request_error` with `unsupported_reasoning_control` and remain non-retryable; the distinction is remediation guidance, not a different status, code, or retry decision.
 A render-metadata mismatch on an accepted and qualified caller input is a renderer or metadata defect rather than a caller error, so it uses the `runtime_incompatible` row's existing `503 server_error` mapping and introduces no additional code.
@@ -2733,6 +2733,7 @@ That row therefore covers every pre-invocation failure to prove the exact negoti
 Messages for these mappings SHALL be bounded, content-free, and Controller-owned.
 Neither parser fragments nor model output may enter the public message, durable error detail outside `full`, or metric labels.
 Additional members inside `reasoning` and top-level aliases such as `reasoning_effort` are not accepted and MUST NOT become provider pass-through or expand the canonical vocabulary.
+An unrecognized member SHALL NOT be silently dropped, and its `param` SHALL be the bounded `reasoning` path rather than the caller-supplied member name, so a request carrying one or several unrecognized members rejects deterministically without echoing caller-authored content.
 The Public Inference API SHALL preserve the concrete `reasoning`, `reasoning.enabled`, and `reasoning.effort` parameter paths above.
 The Console SHALL keep `param = nil` for every reasoning-control row because it supplies no public request field.
 

@@ -10,7 +10,7 @@ This change accepts only that public contract. It preserves the complete omitted
 
 - Accept one top-level `reasoning` object on both public inference endpoints with required boolean `enabled` and optional `effort = null | low | medium | high`.
 - Make object presence select `final_only`, map the boolean to `disabled | enabled`, and map omitted or `null` effort to canonical `nil` without a default tier.
-- Reject invalid types and effort values as `400 invalid_request_error` with `invalid_value`, and reject a non-`nil` effort with `enabled = false` as `400 invalid_request_error` with `unsupported_reasoning_control`, before Request persistence, scheduling, or dispatch.
+- Reject invalid types, invalid effort values, and unrecognized `reasoning` members as `400 invalid_request_error` with `invalid_value`, and reject a non-`nil` effort with `enabled = false` as `400 invalid_request_error` with `unsupported_reasoning_control`, before Request persistence, scheduling, or dispatch.
 - Preserve the existing `unsupported_reasoning_control`, `runtime_incompatible`, and content-free `internal_error` boundaries with concrete `reasoning` and `reasoning.effort` parameter paths.
 - Preserve exact omitted request bytes, serialization, `body_hash`, idempotency, and legacy behavior. Include every accepted explicit control in the normalized public-body hash.
 - Keep structured reasoning input, items, and events disabled in the first release.

@@ -44,12 +44,13 @@ The Controller validates the accepted public shape before the first Request writ
 1. omission preserves the legacy path;
 2. the present value must be a non-null object;
 3. `enabled` must be present and boolean;
-4. a present non-null `effort` must be one of the three canonical strings;
-5. a recognized non-null effort with `enabled = false` is rejected as a contradictory explicit control.
+4. no member other than `enabled` and `effort` may be present;
+5. a present non-null `effort` must be one of the three canonical strings;
+6. a recognized non-null effort with `enabled = false` is rejected as a contradictory explicit control.
 
-Invalid types and effort values use `400 invalid_request_error`, code `invalid_value`, with `param` set to `reasoning`, `reasoning.enabled`, or `reasoning.effort`. The contradiction uses `unsupported_reasoning_control` and `reasoning.effort`.
+Invalid types and effort values use `400 invalid_request_error`, code `invalid_value`, with `param` set to `reasoning`, `reasoning.enabled`, or `reasoning.effort`. An unrecognized member uses the same status and code with the bounded `param = reasoning`, so several unrecognized members still reject deterministically and no caller-supplied key name reaches the envelope. The contradiction uses `unsupported_reasoning_control` and `reasoning.effort`.
 
-Additional members and top-level aliases are not part of the accepted object and cannot become provider pass-through.
+Additional members and top-level aliases are not part of the accepted object and cannot become provider pass-through. Ignoring an unrecognized member would let the two endpoints diverge and answer a control the caller did not get, so it is rejected instead.
 
 After shape validation, inability of the exact artifact, template, or renderer to honor the base control uses `unsupported_reasoning_control` with `reasoning`; inability to honor the selected tier uses the same code with `reasoning.effort`. No exact loaded proof retains `503 server_error` with `runtime_incompatible`. Post-invocation parser or generation-policy conformance retains content-free `500 api_error` with `internal_error`. Runtime and terminal failures keep `param = nil`.
 
