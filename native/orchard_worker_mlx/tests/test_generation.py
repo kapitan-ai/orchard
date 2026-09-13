@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import gc
 import json
 import logging
@@ -12,6 +13,7 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -28,6 +30,12 @@ from orchard_worker_mlx.generation import (
     _make_prefill_progress_callback,
     _update_session_prefill_workspace_bytes_per_token_high_water,
     generate_events,
+)
+from orchard_worker_mlx.service import build_inference_event
+
+_REPO_ROOT = Path(__file__).parents[3]
+_GENERATED_TOOL_ARGUMENT_FIXTURE = (
+    _REPO_ROOT / "proto/cluster/v1/fixtures/generated_tool_argument_events.json"
 )
 
 # ---------------------------------------------------------------------------
@@ -5539,6 +5547,139 @@ def test_stop_sequence_never_leaked_end_to_end() -> None:
 
 def _tool_call_tools_json() -> bytes:
     return b'[{"type":"function","function":{"name":"lookup_weather","parameters":{}}}]'
+
+
+def _generated_tool_argument_tools_json() -> bytes:
+    return (
+        b"["
+        b'{"type":"function","function":{"name":"lookup_weather","parameters":{}}},'
+        b'{"type":"function","function":{"name":"lookup_time","parameters":{}}}'
+        b"]"
+    )
+
+
+def _generated_tool_argument_scenarios() -> list[tuple[str, str, str]]:
+    first_call = {
+        "name": "lookup_weather",
+        "arguments": {
+            "location": {"city": "Singapore", "zones": ["central", "east"]},
+            "limits": {"safe": 9_007_199_254_740_991, "beyond": 9_007_199_254_740_993},
+        },
+    }
+    second_call = {
+        "name": "lookup_time",
+        "arguments": {
+            "offsets": [
+                {"name": "utc", "minutes": 0},
+                {"name": "local", "minutes": 480},
+            ],
+            "include_dst": False,
+            "limits": [-9_007_199_254_740_991, -9_007_199_254_740_993],
+        },
+    }
+    valid_block = f"<tool_call>{json.dumps(first_call)}</tool_call>"
+    invalid_call = {"name": "unrequested", "arguments": {}}
+
+    return [
+        (
+            "successful_ordered_calls",
+            f"<tool_call>{json.dumps([first_call, second_call])}</tool_call>",
+            "stop",
+        ),
+        (
+            "valid_then_invalid_block",
+            valid_block + '<tool_call>{"name":"unrequested","arguments":{}}</tool_call>',
+            "stop",
+        ),
+        (
+            "valid_and_invalid_same_block",
+            f"<tool_call>{json.dumps([first_call, invalid_call])}</tool_call>",
+            "stop",
+        ),
+        (
+            "unknown_name",
+            '<tool_call>{"name":"unrequested","arguments":{}}</tool_call>',
+            "stop",
+        ),
+        (
+            "non_object_arguments",
+            '<tool_call>{"name":"lookup_weather","arguments":[]}</tool_call>',
+            "stop",
+        ),
+        (
+            "malformed_object",
+            '<tool_call>{"name":"lookup_weather","arguments":{"city":"Singapore"}</tool_call>',
+            "stop",
+        ),
+        (
+            "malformed_array",
+            '<tool_call>{"name":"lookup_weather","arguments":[1,2}</tool_call>',
+            "stop",
+        ),
+        (
+            "truncated_object",
+            '<tool_call>{"name":"lookup_weather","arguments":{"city":"Singapore"}',
+            "length",
+        ),
+        (
+            "truncated_array",
+            '<tool_call>{"name":"lookup_weather","arguments":[1,2',
+            "length",
+        ),
+    ]
+
+
+def _generated_tool_argument_events(model_text: str, finish_reason: str) -> list[dict[str, Any]]:
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=lambda text, tools: json.loads(text),
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_generated_tool_argument_tools_json())
+    events = _collect_events(
+        session,
+        request,
+        _make_deps(
+            [FakeGenerationResponse(text=model_text, token=10, finish_reason=finish_reason)]
+        ),
+    )
+    assert all(event["kind"] != "output_text_delta" for event in events)
+    return [
+        event for event in events if event["kind"] in {"tool_call_delta", "completed", "failed"}
+    ]
+
+
+def _serialized_generated_tool_argument_events(events: list[dict[str, Any]]) -> list[str]:
+    return [
+        base64.b64encode(
+            build_inference_event(event).SerializeToString(deterministic=True)
+        ).decode()
+        for event in events
+    ]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "model_text", "finish_reason"),
+    _generated_tool_argument_scenarios(),
+)
+def test_spec_7_5_2_worker_events_match_shared_generated_argument_fixture(
+    scenario: str,
+    model_text: str,
+    finish_reason: str,
+) -> None:
+    fixture = json.loads(_GENERATED_TOOL_ARGUMENT_FIXTURE.read_text())[scenario]
+    events = _generated_tool_argument_events(model_text, finish_reason)
+
+    assert _serialized_generated_tool_argument_events(events) == fixture["events_base64"]
+    assert [
+        event["delta"]["function"]["arguments_delta"]
+        for event in events
+        if event["kind"] == "tool_call_delta"
+    ] == fixture["arguments"]
+    assert events[-1]["kind"] == fixture["terminal_kind"]
+    if events[-1]["kind"] == "failed":
+        assert events[-1]["code"] == fixture["failure_code"]
 
 
 def test_tool_choice_auto_emits_parsed_tool_call_and_tool_calls_finish_reason() -> None:
