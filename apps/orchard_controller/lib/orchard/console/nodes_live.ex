@@ -286,14 +286,14 @@ defmodule OrchardConsole.NodesLive do
           <div id="nodes-live-cluster-card" hidden={@section != :runtime}>
           <.card variant={:rail} padding={:sm}>
             <:title>Live Cluster</:title>
-            <:subtitle><%= cluster_subtitle(@cluster, @inventory) %></:subtitle>
+            <:subtitle><%= cluster_subtitle(@cluster) %></:subtitle>
 
             <%= cond do %>
               <% @cluster.status == :loading -> %>
                 <.state_message id="nodes-cluster-loading" kind={:loading} layout={:compact} title="Loading cluster status." />
               <% @cluster.status == :error -> %>
                 <.state_message id="nodes-cluster-error" kind={:error} layout={:compact} title="Cluster status unavailable." body={@cluster.message} />
-              <% @cluster.targets == [] and @inventory.status == :error -> %>
+              <% @cluster.status == :inventory_unavailable -> %>
                 <.state_message
                   id="nodes-cluster-inventory-unavailable"
                   kind={:error}
@@ -623,15 +623,20 @@ defmodule OrchardConsole.NodesLive do
   end
 
   defp fetch_runtime_cluster(observed_at) do
-    raw_entries = runtime_impl().cluster_snapshot(observed_at: observed_at)
-    targets = Enum.map(raw_entries, &normalize_runtime_target/1)
+    case runtime_impl().cluster_snapshot(observed_at: observed_at) do
+      {:error, :node_inventory_unavailable} ->
+        %{cluster_error_state() | status: :inventory_unavailable}
 
-    %{
-      status: :ok,
-      targets: targets,
-      summary: build_cluster_summary(targets),
-      message: nil
-    }
+      raw_entries ->
+        targets = Enum.map(raw_entries, &normalize_runtime_target/1)
+
+        %{
+          status: :ok,
+          targets: targets,
+          summary: build_cluster_summary(targets),
+          message: nil
+        }
+    end
   rescue
     error ->
       Logger.warning("Nodes cluster fetch failed: #{inspect(error)}")
@@ -1038,16 +1043,16 @@ defmodule OrchardConsole.NodesLive do
   # Cluster display helpers
   # ===========================================================================
 
-  defp cluster_subtitle(%{status: :loading}, _inventory), do: "Loading..."
-  defp cluster_subtitle(%{status: :error}, _inventory), do: "Error"
+  defp cluster_subtitle(%{status: :loading}), do: "Loading..."
+  defp cluster_subtitle(%{status: :error}), do: "Error"
 
-  defp cluster_subtitle(%{targets: []}, %{status: :error}), do: "Effective targets unresolved"
+  defp cluster_subtitle(%{status: :inventory_unavailable}), do: "Effective targets unresolved"
 
-  defp cluster_subtitle(%{summary: s}, _inventory) do
+  defp cluster_subtitle(%{summary: s}) do
     "#{s.configured} effective target(s), #{s.reachable} reachable"
   end
 
-  defp cluster_subtitle(_cluster, _inventory), do: ""
+  defp cluster_subtitle(_cluster), do: ""
 
   defp prompt_token_capable_summary(%{prompt_token_capable: capable, reachable: reachable})
        when is_integer(capable) and is_integer(reachable) and reachable >= 0,

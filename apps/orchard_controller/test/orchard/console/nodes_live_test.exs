@@ -531,6 +531,18 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeEmptyStub do
   def cluster_snapshot(_opts \\ []), do: []
 end
 
+defmodule OrchardConsole.NodesLiveTest.RuntimeTransientInventoryFailureStub do
+  @moduledoc false
+
+  alias Orchard.TestSupport.RepoHelpers
+
+  def cluster_snapshot(opts) do
+    RepoHelpers.with_repo_unregistered(fn ->
+      OrchardConsole.Runtime.cluster_snapshot(opts)
+    end)
+  end
+end
+
 defmodule OrchardConsole.NodesLiveTest.TelemetryCountersZeroStub do
   @moduledoc false
 
@@ -1046,6 +1058,7 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, view, _html} = live(conn, "/console/nodes?section=runtime")
 
       assert has_element?(view, "#nodes-cluster-empty")
+      put_runtime_stub(OrchardConsole.Runtime)
 
       ExUnit.CaptureLog.capture_log(fn ->
         with_repo_unregistered(fn ->
@@ -1074,6 +1087,35 @@ defmodule OrchardConsole.NodesLiveTest do
       cluster_card = element(view, "#nodes-live-cluster-card") |> render()
       assert cluster_card =~ "Effective targets unresolved"
       refute cluster_card =~ "0 effective target(s)"
+    end
+
+    test "resolver inventory failure remains unresolved after the page inventory read recovers",
+         %{
+           conn: conn
+         } do
+      # Console node navigation: a failed resolution is not a confirmed empty target set.
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeTransientInventoryFailureStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes?section=runtime")
+
+      assert has_element?(view, "#nodes-empty-state", "No Node inventory entries yet.")
+      refute has_element?(view, "#nodes-inventory-error")
+
+      assert has_element?(
+               view,
+               "#nodes-cluster-inventory-unavailable",
+               "Effective Runtime Endpoint targets unresolved."
+             )
+
+      refute has_element?(view, "#nodes-cluster-empty")
+      refute element(view, "#nodes-live-cluster-card") |> render() =~ "0 effective target(s)"
+
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeEmptyStub)
+      view |> element("#nodes-refresh-now") |> render_click()
+
+      assert has_element?(view, "#nodes-cluster-empty")
+      refute has_element?(view, "#nodes-cluster-inventory-unavailable")
+      assert element(view, "#nodes-live-cluster-card") |> render() =~ "0 effective target(s)"
     end
   end
 

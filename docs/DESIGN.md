@@ -519,6 +519,7 @@ Inactive sections are hidden from both keyboard navigation and the accessibility
 Inventory uses the **Node Inventory** card and **Inventory entries** count; Runtime uses **Effective targets** for its resolved diagnostic target count.
 When Inventory is empty, it states that configured Runtime Endpoint targets may still be reachable or serving, and its Admission Review and Runtime links reuse the existing query-backed section navigation and already-loaded page data without initiating another read or Runtime Endpoint probe.
 Runtime separates zero resolved effective targets from an unreadable Node inventory, reporting the failed inventory read as an error state instead of a confirmed empty target set.
+Runtime uses the target resolver's own inventory-read outcome; a later successful Inventory read in the same refresh does not clear a resolution failure.
 
 Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, warnings, and observe-only memory telemetry in labeled groups instead of flattening them into a generic table.
 Node detail provides an explicit read-only refresh action.

@@ -46,8 +46,8 @@ When no effective targets resolve, the Runtime section SHALL distinguish an unre
 - **THEN** Node Inventory counts and displays that provisioned entry
 
 #### Scenario: Resolve no effective targets while Node inventory is unreadable
-- **GIVEN** the Runtime section resolved no effective targets
-- **WHEN** the same refresh could not read durable Node inventory
+- **GIVEN** Runtime target resolution could not read durable Node inventory
+- **WHEN** the later Inventory read in the same refresh succeeds or fails
 - **THEN** Runtime reports unresolved effective targets caused by the failed inventory read rather than a confirmed empty effective target set
 
 #### Scenario: Inspect evidence and return

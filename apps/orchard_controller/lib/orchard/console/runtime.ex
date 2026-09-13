@@ -122,7 +122,8 @@ defmodule OrchardConsole.Runtime do
   Successful probes trigger best-effort `observe_status/3` via the existing
   `snapshot/1` path, including queue capacity refresh.
   Per-target failures are isolated - one failed target never aborts the cluster
-  result.
+  result. Inventory-read failures return `{:error, :node_inventory_unavailable}`
+  rather than an empty snapshot list.
 
   Options:
   - `:targets` - explicit ordered target list (default: `Inference.runtime_endpoint_targets/0`)
@@ -130,12 +131,25 @@ defmodule OrchardConsole.Runtime do
   - `:timeout` - per-target `snapshot/1` timeout; also bounds the concurrent probe
     wait. When absent, probes wait for the client default with no extra bound.
   """
-  @spec cluster_snapshot() :: [cluster_target_snapshot()]
+  @spec cluster_snapshot() ::
+          [cluster_target_snapshot()] | {:error, :node_inventory_unavailable}
   def cluster_snapshot, do: cluster_snapshot([])
 
-  @spec cluster_snapshot(keyword()) :: [cluster_target_snapshot()]
+  @spec cluster_snapshot(keyword()) ::
+          [cluster_target_snapshot()] | {:error, :node_inventory_unavailable}
   def cluster_snapshot(opts) do
-    targets = Keyword.get_lazy(opts, :targets, &Inference.runtime_endpoint_targets/0)
+    resolution =
+      case Keyword.fetch(opts, :targets) do
+        {:ok, targets} -> {:ok, targets}
+        :error -> Inference.resolve_runtime_endpoint_targets()
+      end
+
+    with {:ok, targets} <- resolution do
+      probe_cluster(targets, opts)
+    end
+  end
+
+  defp probe_cluster(targets, opts) do
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     timeout = opts[:timeout]
 
