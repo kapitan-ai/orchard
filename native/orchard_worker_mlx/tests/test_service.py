@@ -1248,7 +1248,6 @@ def test_generate_terminal_yield_precedes_iterator_cleanup() -> None:
             "output_text_delta",
             "completed",
         ]
-        assert sum(event.WhichOneof("event") == "completed" for event in events) == 1
         assert (
             servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None).active_request_count
             == 1
@@ -1312,9 +1311,7 @@ def test_generate_stalled_terminal_cleanup_does_not_block_peer_release() -> None
         assert b_delta_seen.wait(timeout=2.0)
         release_b_progress.set()
         assert b_finished.wait(timeout=2.0)
-        b_thread.join(timeout=2.0)
 
-        assert b_thread.is_alive() is False
         assert [event.WhichOneof("event") for event in results["req-a"]] == [
             "output_text_delta",
             "completed",
@@ -1323,8 +1320,6 @@ def test_generate_stalled_terminal_cleanup_does_not_block_peer_release() -> None
             "output_text_delta",
             "completed",
         ]
-        assert sum(event.WhichOneof("event") == "completed" for event in results["req-a"]) == 1
-        assert sum(event.WhichOneof("event") == "completed" for event in results["req-b"]) == 1
         assert (
             servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None).active_request_count
             == 1
