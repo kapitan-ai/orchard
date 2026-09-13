@@ -11,6 +11,10 @@ Restore focus after manually opening or closing a preview; automatic polling mus
 Enrollment handoff opens the registered Node's Actions section and preserves Admission as its return destination.
 An explicit successful Prepare action focuses the enrollment heading for the next step.
 Registration remains distinct from admission and runtime readiness.
+Label durable Node rows as Node Inventory entries and resolved Runtime diagnostic targets as Effective targets.
+Empty Inventory links patch to Admission Review and Runtime through the existing section navigation, reuse the loaded page data, and initiate no additional read or Runtime Endpoint probe.
+Empty Inventory says configured Runtime Endpoint targets may still be reachable or serving.
+Runtime reuses the same refresh's inventory read outcome to report an unreadable Node inventory as an error rather than as zero resolved effective targets.
 
 ## Risks and validation
 
