@@ -6,6 +6,7 @@ import json
 import shutil
 import sys
 import types
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -717,6 +718,33 @@ def test_load_session_tokenizer_receives_resolved_path(writable_bundle: Path) ->
     )
     assert len(captured_paths) == 1
     assert captured_paths[0].endswith("tokenizer.json")
+
+
+def test_spec_6_4_loader_uses_verified_local_paths_despite_misleading_bundle_name(
+    writable_bundle: Path,
+) -> None:
+    """A bundle name never replaces manifest identity or its local artifact paths."""
+    misleading_bundle = writable_bundle.with_name("remote-tool-model-reasoning-capable")
+    writable_bundle.rename(misleading_bundle)
+
+    base_deps = _make_fake_deps(model_config={"model_type": "misleading-family"})
+    load_model = MagicMock(wraps=base_deps.load_model)
+    load_tokenizer = MagicMock(wraps=base_deps.load_tokenizer)
+    deps = replace(base_deps, load_model=load_model, load_tokenizer=load_tokenizer)
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(misleading_bundle),
+        deps=deps,
+    )
+
+    load_model.assert_called_once_with(misleading_bundle / "weights", lazy=True, strict=False)
+    load_tokenizer.assert_called_once_with(misleading_bundle / "tokenizer.json")
+    assert session.manifest.model_id == "test-org/tiny-llm"
+    assert session.bundle_path == misleading_bundle
+    assert session.eos_token_ids == ()
+    assert session.tool_calling == {"supported": False, "parser_type": None}
 
 
 def test_load_session_model_load_failure(writable_bundle: Path) -> None:
@@ -2216,6 +2244,53 @@ class TestDefaultMlxDepsSamplerWiring:
             strict=False,
             trust_remote_code=False,
         )
+
+    def test_default_mlx_deps_narrow_signature_loaders_stay_local_and_strip_trust(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """Issue #409: loaders without the trust kwargs still receive local paths only."""
+        import orchard_worker_mlx.model_loader as ml
+
+        model_calls: list[tuple[Any, dict[str, Any]]] = []
+        tokenizer_calls: list[Any] = []
+
+        def narrow_load_model(model_path, lazy=False, strict=True):
+            model_calls.append((model_path, {"lazy": lazy, "strict": strict}))
+            return (MagicMock(name="model"), {"model_type": "llama"})
+
+        def narrow_load_tokenizer(tokenizer_dir):
+            tokenizer_calls.append(tokenizer_dir)
+            return MagicMock(name="tokenizer")
+
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+
+        def _fake_import_required():
+            return (
+                fake_mx,
+                MagicMock(name="stream_generate"),
+                narrow_load_model,
+                narrow_load_tokenizer,
+            )
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+        monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace())
+        monkeypatch.delitem(sys.modules, "mlx_lm.sample_utils", raising=False)
+        bundle = tmp_path / "bundle"
+        weights = bundle / "weights"
+        weights.mkdir(parents=True)
+        (weights / "config.json").write_text(json.dumps({"model_type": "llama"}))
+
+        deps = _default_mlx_deps()
+        deps.load_model(weights, lazy=True, strict=False, trust_remote_code=True)
+        deps.load_tokenizer(bundle / "tokenizer.json")
+
+        assert model_calls == [(weights, {"lazy": True, "strict": False})]
+        assert tokenizer_calls == [bundle]
 
     def test_default_mlx_deps_rejects_model_file_config_before_upstream_load_model(
         self,
