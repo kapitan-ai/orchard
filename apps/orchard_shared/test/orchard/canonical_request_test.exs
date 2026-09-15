@@ -95,6 +95,53 @@ defmodule Orchard.CanonicalRequestTest do
     assert request.reasoning.effective_contract == negotiated_contract()
   end
 
+  test "new/1 accepts canonical effort only for enabled final-only negotiated requests" do
+    request =
+      CanonicalRequest.new(%{
+        internal_id: "internal-effort",
+        public_id: "public-effort",
+        endpoint: :chat_completions,
+        tenant_id: "tenant-1",
+        model_ref: %{model_id: "model", version: "v1"},
+        reasoning: %{
+          generation_policy: :enabled,
+          projection: :final_only,
+          reasoning_effort: :high,
+          source: :explicit_public,
+          effective_contract: negotiated_contract()
+        }
+      })
+
+    assert request.reasoning.reasoning_effort == :high
+  end
+
+  test "new/1 rejects effort outside the enabled final-only negotiated contract" do
+    for {generation_policy, projection, reasoning_effort, source} <- [
+          {:model_default, :final_only, :low, :explicit_public},
+          {:disabled, :final_only, :medium, :console_explicit},
+          {:enabled, :legacy_blended, :high, :explicit_public},
+          {:enabled, :final_only, :low, :console_default},
+          {:enabled, :final_only, :unknown, :explicit_public}
+        ] do
+      assert_raise ArgumentError, ~r/reasoning/, fn ->
+        CanonicalRequest.new(%{
+          internal_id: "internal-invalid-effort",
+          public_id: "public-invalid-effort",
+          endpoint: :chat_completions,
+          tenant_id: "tenant-1",
+          model_ref: %{model_id: "model", version: "v1"},
+          reasoning: %{
+            generation_policy: generation_policy,
+            projection: projection,
+            reasoning_effort: reasoning_effort,
+            source: source,
+            effective_contract: negotiated_contract()
+          }
+        })
+      end
+    end
+  end
+
   test "new/1 rejects a contradictory console default reasoning policy" do
     assert_raise ArgumentError, ~r/unsupported reasoning combination/, fn ->
       CanonicalRequest.new(%{
@@ -151,6 +198,7 @@ defmodule Orchard.CanonicalRequestTest do
     assert CanonicalRequest.Reasoning.to_wire(base_request().reasoning) == %{
              "generation_policy" => "model_default",
              "projection" => "legacy_blended",
+             "reasoning_effort" => nil,
              "source" => "omitted_public",
              "effective_contract" => %{"mode" => "legacy"}
            }
@@ -158,9 +206,12 @@ defmodule Orchard.CanonicalRequestTest do
     negotiated = %CanonicalRequest.Reasoning{
       generation_policy: :disabled,
       projection: :final_only,
+      reasoning_effort: nil,
       source: :console_default,
       effective_contract: negotiated_contract()
     }
+
+    assert CanonicalRequest.Reasoning.to_wire(negotiated)["reasoning_effort"] == nil
 
     assert CanonicalRequest.Reasoning.to_wire(negotiated)["effective_contract"] == %{
              "mode" => "negotiated",
@@ -181,6 +232,20 @@ defmodule Orchard.CanonicalRequestTest do
     }
 
     assert_raise ArgumentError, ~r/must be atoms or binaries/, fn ->
+      CanonicalRequest.Reasoning.to_wire(reasoning)
+    end
+  end
+
+  test "Reasoning.to_wire/1 rejects an effort outside the canonical nil|low|medium|high contract" do
+    reasoning = %CanonicalRequest.Reasoning{
+      generation_policy: :enabled,
+      projection: :final_only,
+      reasoning_effort: :xhigh,
+      source: :explicit_public,
+      effective_contract: negotiated_contract()
+    }
+
+    assert_raise ArgumentError, ~r/reasoning_effort must be nil, :low, :medium, or :high/, fn ->
       CanonicalRequest.Reasoning.to_wire(reasoning)
     end
   end

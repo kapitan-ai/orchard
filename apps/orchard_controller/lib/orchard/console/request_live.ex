@@ -7,11 +7,14 @@ defmodule OrchardConsole.RequestLive do
 
   use OrchardConsole, :live_view
 
+  require Logger
+
   alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, Tenant}
   alias Orchard.Requests
-  alias Orchard.Requests.Request
+  alias Orchard.Requests.{Request, RequestStepEvent}
+  alias OrchardConsole.RequestEvidence
   alias OrchardConsole.TimeHelpers
 
   @default_refresh_interval_ms 5_000
@@ -40,13 +43,7 @@ defmodule OrchardConsole.RequestLive do
 
     socket =
       if connected?(socket) do
-        socket = load_request(socket)
-
-        if should_poll?(socket.assigns) do
-          schedule_refresh(refresh_interval_ms())
-        end
-
-        socket
+        refresh_request(socket)
       else
         socket
       end
@@ -56,13 +53,12 @@ defmodule OrchardConsole.RequestLive do
 
   @impl true
   def handle_info(:refresh_request, socket) do
-    socket = load_request(socket)
+    {:noreply, refresh_request(socket)}
+  end
 
-    if should_poll?(socket.assigns) do
-      schedule_refresh(refresh_interval_ms())
-    end
-
-    {:noreply, socket}
+  @impl true
+  def handle_event("refresh_request", _params, socket) do
+    {:noreply, refresh_request(socket)}
   end
 
   # ===========================================================================
@@ -71,8 +67,10 @@ defmodule OrchardConsole.RequestLive do
 
   @impl true
   def render(assigns) do
+    assigns = assign(assigns, :attempts, RequestEvidence.attempts(assigns.events))
+
     ~H"""
-    <div class="space-y-6">
+    <div id="request-detail" class="min-w-0 space-y-6">
       <.request_tools_row last_checked_at={@last_checked_at} refresh_mode={@refresh_mode} />
 
       <%= case @request_status do %>
@@ -104,17 +102,21 @@ defmodule OrchardConsole.RequestLive do
           />
 
         <% :ok -> %>
-          <.request_summary request={@request} />
-          <.request_usage request={@request} />
-          <.request_timeline events={@events} />
-          <.request_execution_metadata request={@request} />
-          <.request_scheduler_explanation
-            status={@scheduler_explanation_status}
-            explanation={@scheduler_explanation}
-            error_reason={@scheduler_explanation_error}
-          />
+          <.request_summary request={@request} attempts={@attempts} />
           <.request_errors request={@request} />
-          <.request_provenance request={@request} />
+          <.request_timeline request={@request} events={@events} attempts={@attempts} />
+          <.request_usage request={@request} />
+          <.disclosure_section id="request-more-evidence" title="More evidence">
+            <div class="space-y-6">
+              <.request_execution_metadata request={@request} />
+              <.request_scheduler_explanation
+                status={@scheduler_explanation_status}
+                explanation={@scheduler_explanation}
+                error_reason={@scheduler_explanation_error}
+              />
+              <.request_provenance request={@request} />
+            </div>
+          </.disclosure_section>
           <.request_response_debug request={@request} />
           <.request_canonical request={@request} />
       <% end %>
@@ -141,7 +143,12 @@ defmodule OrchardConsole.RequestLive do
         Back to Requests
       </.link>
 
-      <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400 font-mono">
+      <div class="flex flex-wrap items-center gap-3">
+      <button type="button" phx-click="refresh_request" phx-disable-with="Checking…"
+        class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+        <.icon name="hero-arrow-path" class="h-4 w-4" />Refresh
+      </button>
+      <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400">
         <%= cond do %>
           <% @last_checked_at == nil and @refresh_mode == :polling -> %>
             Waiting for first live check · Auto-refreshing every {request_refresh_interval_label()}
@@ -150,9 +157,10 @@ defmodule OrchardConsole.RequestLive do
           <% @refresh_mode == :polling -> %>
             Last checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refreshing every {request_refresh_interval_label()}
           <% true -> %>
-            Last checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refresh stopped
+            Checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refresh stopped
         <% end %>
       </span>
+      </div>
     </div>
     """
   end
@@ -162,32 +170,53 @@ defmodule OrchardConsole.RequestLive do
   # ===========================================================================
 
   attr(:request, :map, required: true)
+  attr(:attempts, :list, required: true)
 
   defp request_summary(assigns) do
     ~H"""
     <div id="request-summary-card">
       <.card>
         <:title>
-          <span class="flex items-center gap-3">
-            Request Summary
+          <span class="flex flex-wrap items-center gap-3">
+            {if @request.state in Request.terminal_states(), do: "Final outcome", else: "Current state"}
             <.badge tone={state_tone(@request.state)}>
               {format_state(@request.state)}
             </.badge>
           </span>
         </:title>
 
-        <.detail_grid class="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+        <p class="mb-5 text-sm text-slate-500 dark:text-slate-400">
+          {outcome_description(@request, @attempts)}
+        </p>
+        <dl class="mb-5">
+          <.detail_field id="request-requested-model" label="Model" mono>
+            <.model_identity id="request-requested-model-value" value={format_text(@request.requested_model)} />
+          </.detail_field>
+        </dl>
+        <dl class="mb-3 grid max-w-xl grid-cols-2 gap-5">
+          <.request_metric id="request-ttft" icon="hero-clock" label="Time to first token (TTFT)"
+            value={RequestEvidence.duration(RequestEvidence.ttft_ms(@request))}
+            note="Until first public output" />
+          <.request_metric id="request-total-latency" icon="hero-clock" label="Total request time"
+            value={RequestEvidence.duration(TimeHelpers.elapsed_ms(@request.inserted_at, @request.completed_at))}
+            note={if @request.state in Request.terminal_states(), do: "Until final outcome", else: "Available when request ends"} />
+        </dl>
+        <details id="request-timing-help" class="mb-5">
+          <summary class="request-evidence-summary">About these timings</summary>
+          <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            Timings start at Request creation and include waiting and retries.
+            TTFT ends at the first recorded public output, not client receipt.
+            Total time ends at the final outcome; active requests have no final duration.
+          </p>
+        </details>
+        <details id="request-metadata">
+          <summary class="request-evidence-summary">Request details</summary>
+        <.detail_grid class="mt-4 request-metadata-grid grid-cols-1 sm:grid-cols-2">
           <.detail_field id="request-public-id" label="Public ID" mono>
             {@request.public_id}
           </.detail_field>
           <.detail_field id="request-endpoint" label="Endpoint">
             {format_atom(@request.endpoint)}
-          </.detail_field>
-          <.detail_field id="request-requested-model" label="Model" mono>
-            <.model_identity
-              id="request-requested-model-value"
-              value={format_text(@request.requested_model)}
-            />
           </.detail_field>
           <.detail_field id="request-stream" label="Stream">
             {format_bool(@request.stream)}
@@ -201,10 +230,8 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-completed-at" label="Completed" mono>
             <.local_time value={@request.completed_at} format={:datetime_second} />
           </.detail_field>
-          <.detail_field id="request-state" label="State">
-            {format_state(@request.state)}
-          </.detail_field>
         </.detail_grid>
+        </details>
       </.card>
     </div>
     """
@@ -461,68 +488,52 @@ defmodule OrchardConsole.RequestLive do
   attr(:request, :map, required: true)
 
   defp request_usage(assigns) do
-    assigns =
-      assigns
-      |> assign(
-        :ttft_ms,
-        TimeHelpers.elapsed_ms(assigns.request.inserted_at, assigns.request.first_token_at)
-      )
-      |> assign(
-        :generation_ms,
-        TimeHelpers.elapsed_ms(assigns.request.first_token_at, assigns.request.completed_at)
-      )
-      |> assign(
-        :total_latency_ms,
-        TimeHelpers.elapsed_ms(assigns.request.inserted_at, assigns.request.completed_at)
-      )
-      |> assign(:tokens_per_second, request_tokens_per_second(assigns.request))
-
     ~H"""
     <div id="request-usage-card">
       <.card>
-        <:title>Token Usage & Performance</:title>
-
-        <.metric_grid
-          gap_class="gap-4"
-          class="grid-cols-2 sm:grid-cols-3 xl:grid-cols-4"
-        >
-          <.metric_tile
-            id="request-input-tokens"
-            label="Input Tokens"
-            value={format_integer(@request.input_tokens)}
-          />
-          <.metric_tile
-            id="request-output-tokens"
-            label="Output Tokens"
-            value={format_integer(@request.output_tokens)}
-          />
-          <.metric_tile
-            id="request-total-tokens"
-            label="Total"
-            value={format_token_total(@request.input_tokens, @request.output_tokens)}
-          />
-          <.metric_tile
-            id="request-ttft"
-            label="TTFT"
-            value={TimeHelpers.format_duration(@ttft_ms)}
-          />
-          <.metric_tile
-            id="request-generation-time"
-            label="Generation"
-            value={TimeHelpers.format_duration(@generation_ms)}
-          />
-          <.metric_tile
-            id="request-total-latency"
-            label="Total Latency"
-            value={TimeHelpers.format_duration(@total_latency_ms)}
-          />
-          <.metric_tile
-            id="request-tokens-per-second"
-            label="Tok/s"
-            value={format_rate(@tokens_per_second)}
-          />
-        </.metric_grid>
+        <:title>Logical Request usage</:title>
+        <dl class="grid gap-5 sm:grid-cols-2">
+          <.request_metric id="request-input-tokens" icon="hero-document-text" label="Input tokens"
+            value={stored_count(@request.input_tokens)} note="Prompt and context" />
+          <.request_metric id="request-output-tokens" icon="hero-chat-bubble-left-right" label="Output tokens"
+            value={stored_count(@request.output_tokens)} note="Model-generated output" />
+        </dl>
+        <p id="request-total-tokens" class="mt-5 text-sm text-slate-500 dark:text-slate-400">
+          Total: <span class="font-mono">{format_token_total(@request.input_tokens, @request.output_tokens)}</span> tokens
+        </p>
+        <p class="mt-3 text-sm text-slate-500 dark:text-slate-400">
+          Stored counts · measurement accuracy not recorded.
+          <span :if={@request.input_tokens == 0 or @request.output_tokens == 0}>
+            A stored zero may be a legacy placeholder, not measured zero.
+          </span>
+        </p>
+        <details class="mt-4">
+          <summary class="request-evidence-summary">What these counts mean</summary>
+          <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            These are the logical Request's stored counts, not a sum of all attempts.
+            Discarded retry output is not added to public usage. This record does not
+            establish an exact total or a lower bound. Missing values are not zero.
+          </p>
+        </details>
       </.card>
+    </div>
+    """
+  end
+
+  attr(:id, :string, required: true)
+  attr(:icon, :string, required: true)
+  attr(:label, :string, required: true)
+  attr(:value, :string, required: true)
+  attr(:note, :string, required: true)
+
+  defp request_metric(assigns) do
+    ~H"""
+    <div id={@id} class="min-w-0">
+      <dt class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+        <.icon name={@icon} class="h-4 w-4 shrink-0" />{@label}
+      </dt>
+      <dd class={["mt-1 font-mono text-slate-900 dark:text-slate-100", if(@value == "Not recorded", do: "text-sm", else: "text-2xl")]}>{@value}</dd>
+      <dd class="mt-1 max-w-sm text-xs text-slate-500 dark:text-slate-400">{@note}</dd>
     </div>
     """
   end
@@ -565,6 +576,7 @@ defmodule OrchardConsole.RequestLive do
       title="Response & Debug"
       default_open={@default_open}
     >
+      <:summary>{capture_description(@request.payload_capture_mode)}</:summary>
       <div class="space-y-6">
         <div>
           <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
@@ -578,7 +590,7 @@ defmodule OrchardConsole.RequestLive do
             id="request-response-preview-fallback"
             class="text-sm text-slate-400 dark:text-slate-500"
           >
-            Not captured for this request.
+            No retained content available for this request.
           </p>
         </div>
 
@@ -590,7 +602,7 @@ defmodule OrchardConsole.RequestLive do
             data={@request.response_payload}
             content_id="request-response-payload"
             fallback_id="request-response-payload-fallback"
-            fallback_text="Not captured for this request."
+            fallback_text="No retained content available for this request."
           />
         </div>
 
@@ -619,11 +631,12 @@ defmodule OrchardConsole.RequestLive do
       title="Canonical Request"
       default_open={false}
     >
+      <:summary>{capture_description(@request.payload_capture_mode)}</:summary>
       <.json_block
         data={@request.canonical_request}
         content_id="request-canonical-request"
         fallback_id="request-canonical-fallback"
-        fallback_text="Not captured for this request."
+        fallback_text="No retained content available for this request."
       />
     </.disclosure_section>
     """
@@ -727,30 +740,146 @@ defmodule OrchardConsole.RequestLive do
   end
 
   attr(:events, :list, required: true)
+  attr(:request, :map, required: true)
+  attr(:attempts, :list, required: true)
 
   defp request_timeline(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :total_ms,
+        TimeHelpers.elapsed_ms(assigns.request.inserted_at, assigns.request.completed_at)
+      )
+
     ~H"""
     <div id="request-timeline-card">
       <.card>
-        <:title>Timeline</:title>
-
-        <.table id="request-timeline" rows={@events} row_id={&"request-event-#{&1.seq}"}>
-          <:col :let={event} label="Seq" mono>{event.seq}</:col>
-            <:col :let={event} label="Occurred At" mono><.local_time value={event.occurred_at} format={:datetime_second} /></:col>
-          <:col :let={event} label="Event">{event.event_type}</:col>
-          <:col :let={event} label="State">
-            <%= if event.state do %>
-              <.badge tone={state_tone(event.state)}>{format_state(event.state)}</.badge>
-            <% else %>
-              <span class="text-slate-400 dark:text-slate-500">—</span>
-            <% end %>
-          </:col>
-          <:col :let={event} label="Payload" class="max-w-xs truncate">
-            {format_payload(event.payload)}
-          </:col>
-          <:empty>No lifecycle events recorded yet.</:empty>
-        </.table>
+        <:title>Execution Timeline · {length(@attempts)} recorded attempts</:title>
+        <p class="mb-4 text-sm text-slate-500 dark:text-slate-400">
+          Elapsed from Request creation. Expand an attempt to inspect its evidence.
+        </p>
+        <div :if={@total_ms && @total_ms > 0} class="mb-3 grid gap-2 lg:grid-cols-[14rem_minmax(0,1fr)_7rem]">
+          <span class="text-xs text-slate-500 dark:text-slate-400">Elapsed from creation</span>
+          <div class="flex justify-between font-mono text-xs text-slate-500 dark:text-slate-400">
+            <span>0 s</span><span>{RequestEvidence.duration(div(@total_ms, 2))}</span><span>{RequestEvidence.duration(@total_ms)}</span>
+          </div>
+        </div>
+        <div class="space-y-4">
+          <.duration_bar request={@request} started_at={@request.inserted_at}
+            ended_at={@request.completed_at} label="Logical Request" outcome={format_state(@request.state)} />
+          <.request_attempts request={@request} attempts={@attempts} />
+        </div>
+        <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">
+          Gaps do not identify queue, loading, or cleanup phases.
+        </p>
+        <details id="request-recorded-events" class="mt-6">
+          <summary class="request-evidence-summary">View {length(@events)} recorded events</summary>
+          <p class="my-3 text-xs text-slate-500 dark:text-slate-400">
+            Sequence order · elapsed from Request creation. Expand an event for its timestamp and retained payload.
+          </p>
+          <ol id="request-timeline" class="divide-y divide-slate-200 dark:divide-slate-700">
+            <li :for={event <- @events} id={"request-event-#{event.seq}"} class="py-3">
+              <details>
+                <summary class="request-evidence-summary">
+                  <span class="font-mono">#{event.seq}</span>
+                  <span>{event_scope(event)} · {event.event_type}</span>
+                  <span :if={event.state} class="font-mono">{format_state(event.state)}</span>
+                  <span class="block pl-4 font-mono text-xs text-slate-500 dark:text-slate-400">
+                    {RequestEvidence.duration(TimeHelpers.elapsed_ms(@request.inserted_at, event.occurred_at))}
+                  </span>
+                </summary>
+                <div class="mt-3 space-y-3">
+                  <p class="text-xs text-slate-500 dark:text-slate-400">
+                    Recorded at: <.local_time value={event.occurred_at} format={:datetime_second} />
+                  </p>
+                  <.json_block data={event.payload} content_id={"request-event-payload-#{event.seq}"}
+                    fallback_id={"request-event-empty-#{event.seq}"} fallback_text="No retained payload." />
+                </div>
+              </details>
+            </li>
+          </ol>
+          <p :if={@events == []} class="text-sm text-slate-500 dark:text-slate-400">No lifecycle events recorded yet.</p>
+        </details>
       </.card>
+    </div>
+    """
+  end
+
+  attr(:request, :map, required: true)
+  attr(:started_at, :any, required: true)
+  attr(:ended_at, :any, required: true)
+  attr(:label, :string, required: true)
+  attr(:outcome, :string, required: true)
+
+  defp duration_bar(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :bar,
+        RequestEvidence.bar(
+          assigns.request.inserted_at,
+          assigns.request.completed_at,
+          assigns.started_at,
+          assigns.ended_at
+        )
+      )
+
+    ~H"""
+    <span class="grid min-w-0 gap-2 lg:grid-cols-[14rem_minmax(0,1fr)_7rem] lg:items-center">
+      <span class="text-sm">
+        <.icon name={attempt_icon(@outcome)} class="mr-1 inline-block h-4 w-4" />
+        <span>{@label}</span>
+        <span class="block text-xs text-slate-500 dark:text-slate-400">{@outcome}</span>
+      </span>
+      <span :if={@bar} class="relative block h-3 rounded bg-slate-100 dark:bg-slate-900" aria-hidden="true">
+        <span class={["absolute block h-3 rounded", attempt_bar_class(@outcome)]}
+          style={"left: #{@bar.left}%; width: #{@bar.width}%;"} />
+      </span>
+      <span :if={!@bar} class="text-xs text-slate-500 dark:text-slate-400">No bounded timing interval</span>
+      <span class="font-mono text-xs lg:text-right">
+        {RequestEvidence.duration(TimeHelpers.elapsed_ms(@started_at, @ended_at))}
+      </span>
+    </span>
+    """
+  end
+
+  attr(:attempts, :list, required: true)
+  attr(:request, :map, required: true)
+
+  defp request_attempts(assigns) do
+    ~H"""
+    <div id="request-attempts-card" class="min-w-0">
+        <p :if={@attempts == []} class="text-sm text-slate-500 dark:text-slate-400">
+          No readable Inference Attempt evidence recorded. Request state does not prove an attempt count.
+        </p>
+        <ol class="divide-y divide-slate-200 dark:divide-slate-700">
+          <li :for={attempt <- @attempts} id={"request-attempt-#{attempt.turn}-#{attempt.number}"}
+            class="py-3">
+            <details>
+              <summary class="request-evidence-summary request-attempt-summary">
+                <.duration_bar request={@request} started_at={attempt.started_at} ended_at={attempt.ended_at}
+                  label={"Turn #{attempt.turn} · Attempt #{attempt.number}"} outcome={attempt.outcome} />
+                <span class="mt-1 block text-xs text-navy dark:text-sky-400">Inspect attempt</span>
+              </summary>
+            <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              Node: <span class="break-all font-mono">{attempt.result["node_id"] || "Not recorded"}</span>
+            </p>
+            <dl class="mt-3 space-y-2 text-sm">
+              <div :for={{key, label} <- [{"failure_code", "Failure"}, {"retry_decision", "Retry decision"}]}
+                :if={attempt.result[key]}>
+                <dt class="text-xs text-slate-500 dark:text-slate-400">{label}</dt>
+                <dd class="break-words font-mono">{attempt.result[key]}</dd>
+              </div>
+            </dl>
+            <details class="mt-3">
+              <summary class="request-evidence-summary">Attempt evidence</summary>
+              <p class="my-2 break-all font-mono text-xs">{attempt.step_id}</p>
+              <.json_block data={attempt.result} content_id={"attempt-result-#{attempt.turn}-#{attempt.number}"}
+                fallback_id={"attempt-empty-#{attempt.turn}-#{attempt.number}"} fallback_text="No terminal result recorded." />
+            </details>
+            </details>
+          </li>
+        </ol>
     </div>
     """
   end
@@ -762,14 +891,20 @@ defmodule OrchardConsole.RequestLive do
   attr(:data, :map, default: nil)
   attr(:content_id, :string, required: true)
   attr(:fallback_id, :string, required: true)
-  attr(:fallback_text, :string, default: "Not captured for this request.")
+  attr(:fallback_text, :string, default: "No retained content available for this request.")
 
   defp json_block(assigns) do
     assigns = assign(assigns, :json_render, json_render(assigns.data))
 
     ~H"""
-    <div :if={present_map?(@data)} id={@content_id}>
-      <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code><%= case @json_render do %><% {:highlighted, tokens} -> %><span
+    <div :if={present_map?(@data)} id={@content_id} class="min-w-0" phx-hook="RequestPayload">
+      <div class="mb-2 flex flex-wrap items-center gap-3">
+        <button type="button" data-copy-json class="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-700 dark:border-slate-700 dark:text-slate-200">
+          Copy JSON
+        </button>
+        <span data-copy-status role="status" class="text-xs text-slate-500 dark:text-slate-400"></span>
+      </div>
+      <pre tabindex="0" aria-label="Retained JSON" class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code><%= case @json_render do %><% {:highlighted, tokens} -> %><span
           :for={{class, token} <- tokens}
           class={class}
         >{token}</span><% {:plain, json} -> %>{json}<% end %></code></pre>
@@ -798,6 +933,7 @@ defmodule OrchardConsole.RequestLive do
       scheduler_explanation_error: nil,
       load_error: nil,
       last_checked_at: nil,
+      refresh_timer: nil,
       refresh_mode: :static
     )
   end
@@ -838,7 +974,11 @@ defmodule OrchardConsole.RequestLive do
         |> assign_scheduler_explanation(request)
     end
   rescue
-    e ->
+    error ->
+      Logger.error(
+        "Request console load failed (operation=load_request, category=#{exception_name(error)})"
+      )
+
       assign(socket,
         request_status: :error,
         request: nil,
@@ -846,11 +986,13 @@ defmodule OrchardConsole.RequestLive do
         scheduler_explanation_status: :error,
         scheduler_explanation: nil,
         scheduler_explanation_error: nil,
-        load_error: "Request details unavailable: #{Exception.message(e)}",
+        load_error: "Request details could not be loaded. Try Refresh now.",
         last_checked_at: DateTime.utc_now() |> DateTime.truncate(:second),
         refresh_mode: :static
       )
   end
+
+  defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
   defp assign_scheduler_explanation(socket, request) do
     case SchedulerExplanationPresenter.show(request) do
@@ -887,8 +1029,15 @@ defmodule OrchardConsole.RequestLive do
 
   defp should_poll?(_assigns), do: false
 
-  defp schedule_refresh(interval_ms) do
-    Process.send_after(self(), :refresh_request, interval_ms)
+  defp refresh_request(socket) do
+    if socket.assigns.refresh_timer, do: Process.cancel_timer(socket.assigns.refresh_timer)
+    socket = load_request(socket)
+
+    timer =
+      if should_poll?(socket.assigns),
+        do: Process.send_after(self(), :refresh_request, refresh_interval_ms())
+
+    assign(socket, :refresh_timer, timer)
   end
 
   defp refresh_interval_ms do
@@ -1088,27 +1237,52 @@ defmodule OrchardConsole.RequestLive do
   defp format_token_total(input, output) when is_integer(input) and is_integer(output),
     do: to_string(input + output)
 
-  defp format_token_total(_, _), do: "—"
+  defp format_token_total(_, _), do: "Not recorded"
 
-  # ---------------------------------------------------------------------------
-  # Performance metric helpers
-  # ---------------------------------------------------------------------------
+  defp stored_count(nil), do: "Not recorded"
+  defp stored_count(count), do: to_string(count)
 
-  defp format_rate(nil), do: "—"
+  defp capture_description(:full),
+    do:
+      "Full capture was selected. Only retained payloads are shown; absence does not prove expiry or redaction."
 
-  defp format_rate(rate) do
-    :erlang.float_to_binary(rate / 1.0, decimals: 1)
+  defp capture_description(:none),
+    do:
+      "None capture was selected. Request and response content is not retained under this policy."
+
+  defp capture_description(:metadata),
+    do:
+      "Metadata capture was selected. Full request and response payloads are omitted; a bounded assistant-text preview may remain."
+
+  defp capture_description(_),
+    do: "Capture policy was not recorded. Only retained evidence is shown."
+
+  defp outcome_description(%{state: :completed}, attempts) do
+    if Enum.any?(attempts, &(&1.result["retry_decision"] == "retried")) do
+      "Completed after retry."
+    else
+      "Request completed."
+    end
   end
 
-  defp request_tokens_per_second(request) do
-    generation_ms = TimeHelpers.elapsed_ms(request.first_token_at, request.completed_at)
+  defp outcome_description(%{state: state}, _attempts) do
+    if state in Request.terminal_states(),
+      do: "Request ended. Inspect the failure and attempt evidence below.",
+      else: "Request in progress. Final outcome and total time are not yet recorded."
+  end
 
-    cond do
-      is_nil(generation_ms) -> nil
-      generation_ms <= 0 -> nil
-      not is_integer(request.output_tokens) -> nil
-      request.output_tokens <= 0 -> nil
-      true -> request.output_tokens / (generation_ms / 1000.0)
+  defp attempt_bar_class("completed"), do: "bg-forest dark:bg-emerald-400"
+  defp attempt_bar_class("failed"), do: "bg-red-600 dark:bg-red-400"
+  defp attempt_bar_class(_), do: "bg-slate-500 dark:bg-slate-400"
+
+  defp attempt_icon("completed"), do: "hero-check-circle"
+  defp attempt_icon("failed"), do: "hero-exclamation-triangle"
+  defp attempt_icon(_), do: "hero-clock"
+
+  defp event_scope(event) do
+    case RequestStepEvent.from_request_event(event) do
+      {:ok, step} -> "#{step.step_type} · Turn #{step.turn_index} · Attempt #{step.attempt}"
+      _ -> if(event.state, do: "Request", else: "Unclassified event")
     end
   end
 
@@ -1220,16 +1394,6 @@ defmodule OrchardConsole.RequestLive do
     case Jason.encode(map, pretty: true) do
       {:ok, json} -> json
       {:error, _} -> inspect(map, pretty: true)
-    end
-  end
-
-  defp format_payload(nil), do: "—"
-  defp format_payload(map) when is_map(map) and map_size(map) == 0, do: "—"
-
-  defp format_payload(map) when is_map(map) do
-    case Jason.encode(map) do
-      {:ok, json} -> json
-      {:error, _} -> inspect(map)
     end
   end
 end
