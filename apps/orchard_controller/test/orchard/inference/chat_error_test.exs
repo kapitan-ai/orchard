@@ -72,6 +72,23 @@ defmodule Orchard.Inference.ChatErrorTest do
     assert mapping.message == "Model does not support tool calling: stub-tool-model@v1"
   end
 
+  test "SPEC.md §7.2.7 maps unprovable render metadata to runtime_incompatible" do
+    error =
+      ChatError.from_prepare_reason(
+        {:tokenization,
+         {:runtime_incompatible,
+          "tokenizer render metadata did not prove the selected negotiated reasoning contract"}}
+      )
+
+    assert ChatError.api_mapping(error) == %{
+             status: :service_unavailable,
+             type: "server_error",
+             code: "runtime_incompatible",
+             message: "Runtime is incompatible",
+             param: nil
+           }
+  end
+
   test "tokenization internal mapping preserves controller-owned internal_error response" do
     mapping =
       {:tokenization, {:boom, "tokenizer crashed"}}
