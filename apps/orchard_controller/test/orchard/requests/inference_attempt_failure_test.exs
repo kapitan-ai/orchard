@@ -1,7 +1,8 @@
 defmodule Orchard.Requests.InferenceAttemptFailureTest do
   use ExUnit.Case, async: true
 
-  alias Orchard.Inference.ModelLoadFailure
+  alias Orchard.Inference.{ChatError, ModelLoadFailure}
+  alias Orchard.InferenceEvent
   alias Orchard.Requests.InferenceAttemptFailure
 
   test "normalizes structured source categories without inspecting messages" do
@@ -56,6 +57,60 @@ defmodule Orchard.Requests.InferenceAttemptFailureTest do
     for {source, expected} <- cases do
       assert normalized(source.category, source.code) == expected
     end
+  end
+
+  test "SPEC.md §7.5.3a maps only closed reasoning conformance codes to internal_error" do
+    codes = [
+      "reasoning_parser_conformance_failed",
+      "reasoning_policy_conformance_failed"
+    ]
+
+    assert InferenceAttemptFailure.reasoning_conformance_codes() == codes
+
+    for code <- codes do
+      assert InferenceAttemptFailure.normalize(%{
+               category: :terminal_conformance,
+               code: code,
+               message: "<think>untrusted model output</think>"
+             }) == %{
+               "failure_class" => "terminal_conformance",
+               "failure_code" => "internal_error"
+             }
+    end
+  end
+
+  test "SPEC.md §7.5.3a reasoning-like near-miss keeps the unknown-code fallback" do
+    code = "reasoning_parser_conformance_failure"
+    worker_message = "near-miss worker detail"
+
+    refute code in InferenceAttemptFailure.reasoning_conformance_codes()
+
+    assert InferenceAttemptFailure.normalize(%{
+             category: :runtime,
+             code: code,
+             message: worker_message
+           }) == %{
+             "failure_class" => "runtime_failure",
+             "failure_code" => "internal_error",
+             "raw_source_code" => code
+           }
+
+    error =
+      code
+      |> InferenceEvent.failed(worker_message, false)
+      |> ChatError.from_failed_event()
+
+    assert error.kind == :request_failed
+    assert error.source_code == code
+    assert error.source_message == worker_message
+
+    assert ChatError.api_mapping(error) == %{
+             status: :internal_server_error,
+             type: "server_error",
+             code: "internal_error",
+             message: "Inference failed: #{worker_message}",
+             param: nil
+           }
   end
 
   test "untrusted pre-acceptance codes do not acquire retryable stable codes" do

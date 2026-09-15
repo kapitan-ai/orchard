@@ -534,6 +534,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp failure_source(code)
        when code in [
+              "reasoning_parser_conformance_failed",
+              "reasoning_policy_conformance_failed"
+            ],
+       do: %{category: :terminal_conformance, code: code}
+
+  defp failure_source(code)
+       when code in [
               "runtime_endpoint_missing_terminal",
               "runtime_endpoint_duplicate_terminal",
               "runtime_endpoint_post_terminal_event"
