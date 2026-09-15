@@ -14,7 +14,7 @@ date the change landed on `main`.
 - Models now unifies Catalog, Discover, and Downloads with revision-bound pause, resume, cancel, retry, removal, and explicit activation controls. ([#360](https://github.com/kapitan-ai/orchard/pull/360))
 - The Console now separates Node inventory, admission, runtime evidence, diagnostics, and lifecycle actions into task-focused sections with freshness-aware action safety. ([#361](https://github.com/kapitan-ai/orchard/pull/361))
 - Workspace Access now shows exact model grants and guides operators through scoped colleague handoff to the Developer Portal without implying invitation delivery or request success. ([#362](https://github.com/kapitan-ai/orchard/pull/362))
-- MLX tool calling now completes tool calls and preserves safe tool history for qualified model configurations. ([#369](https://github.com/kapitan-ai/orchard/pull/369))
+- MLX tool calling now validates whole tool-call blocks before publication and preserves safe tool history; the bounded OpenCode round-trip evidence is not an approved general model support claim, and cancellation and Responses API qualification remain unverified. ([#369](https://github.com/kapitan-ai/orchard/pull/369))
 - Model artifacts can now admit `tool_calling` from immutable, validated sidecar evidence rather than model names or manifest claims alone. ([#402](https://github.com/kapitan-ai/orchard/pull/402))
 - MLX workers now emit bounded cumulative usage updates during generation while preserving exact completed usage and the legacy public usage shape; durable lower-bound accounting remains deferred. ([#418](https://github.com/kapitan-ai/orchard/pull/418))
 
