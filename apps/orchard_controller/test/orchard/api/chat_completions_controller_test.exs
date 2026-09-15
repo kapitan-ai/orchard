@@ -56,6 +56,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{Idempotency, Request}
+  alias Orchard.TestSupport.WorkerRecoveryCheckpointClient
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
@@ -119,6 +121,25 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
+    previous_worker_recovery_inspector =
+      Application.get_env(:orchard_controller, :worker_recovery_inspector)
+
+    Application.put_env(
+      :orchard_controller,
+      :worker_recovery_inspector,
+      &WorkerRecoveryFixtures.inspect_manager/2
+    )
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(
+        previous_runtime,
+        :worker_recovery_checkpoint_client,
+        WorkerRecoveryCheckpointClient
+      )
+    )
+
     previous_runtime_owner =
       Application.get_env(:orchard_controller, :queue_admission_api_runtime_owner)
 
@@ -130,6 +151,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     on_exit(fn ->
       restore_env(:api_chat_orchestrator_impl, previous_orchestrator)
       restore_env(:queue_admission_api_runtime_owner, previous_runtime_owner)
+      restore_env(:worker_recovery_inspector, previous_worker_recovery_inspector)
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
       QueueManager.reset()

@@ -5694,6 +5694,146 @@ Recovery:
 * operator can clear breaker
 * forced reload or model unload/reload
 
+#### 12.2.1 Crash identity and recovery timing
+
+The §12.2 placement breaker is the Node-owned crash breaker, distinct from the
+Controller-owned §5.10 placement-level breaker.
+The Node Agent SHALL own this policy per `(stable node_id, model_id, version)`;
+worker/process incarnations, transport addresses, and Controller §5.10 breaker
+keys SHALL NOT replace that identity. Different versions and Nodes are isolated.
+A qualifying crash is an unexpected loss of an admitted managed worker while
+loading or loaded, including loss of its current runtime process or current
+runtime channel that makes that worker unusable. Each worker incarnation SHALL
+count at most once, even when exit, channel, and load-completion reports overlap.
+Intentional unload, eviction, replacement, cancellation/timeout cleanup, and
+agent shutdown SHALL NOT count. Artifact, validation, capacity, spawn-before-worker,
+and ordinary load errors without unexpected worker loss are not crashes.
+
+The Node SHALL timestamp accepted crash observations with its monotonic clock.
+At time `t`, the rolling window is `(t - 600 seconds, t]`. The fifth qualifying
+crash in that window SHALL open the breaker before any new restart is admitted.
+The restart delay for successive crashes since the last recovery reset SHALL be
+1, 2, 4, 8, 16, then 30 seconds, remaining capped at 30 seconds. The delay starts
+at crash observation; elapsed window time alone SHALL NOT reset its index.
+Ten continuous minutes loaded without a crash SHALL reset history and the delay
+index; loading time and backoff SHALL NOT count as stable operation. The Node
+SHALL apply this reset before processing a crash at the stability boundary.
+An open breaker SHALL NOT expire or probe automatically.
+
+Automatic recovery restores model residency only, never an inference Request.
+It SHALL retain an explicit recovery residency owner, use the ordinary authorized
+load pipeline, and reserve one model residency slot while waiting or restarting
+without double-counting an in-flight load. Opening the breaker or stopping
+recovery SHALL release that slot only after worker/load cleanup resolves.
+A non-crash automatic restart failure SHALL stop automation with
+`placement_recovery_required`, retain crash history and delay index, and require
+explicit recovery; it SHALL NOT manufacture a crash or busy-loop. An actual
+worker loss during that attempt SHALL instead use the qualifying-crash rule.
+An unacknowledged pre-effect checkpoint SHALL instead defer automatic restart,
+retaining its due time and single reserved slot; it is neither a crash nor a
+non-crash restart failure. Resume only after confirming the same current fenced
+checkpoint, never by blindly repeating an effect. A stability reset not yet
+checkpointed SHALL be included atomically with the next crash transition.
+
+#### 12.2.2 Explicit recovery and state loss
+
+Recovery state SHALL survive ordinary load/ensure/reconciliation activity and
+ordinary internal reset SHALL NOT clear it. Reset SHALL fence pending work and
+leave interrupted recovery placements requiring explicit recovery, retaining known open
+breakers and crash history. ModelManager or Node Agent state loss SHALL NOT be
+implicit recovery. A bounded per-placement recovery checkpoint SHALL persist in
+Postgres through the authenticated Active Controller; the Node remains the local
+policy/admission authority and SHALL NOT use a local file journal or direct
+database credentials. Only the Node SHALL originate checkpoint mutations;
+the Controller SHALL execute its authenticated compare-and-set requests.
+Operator API handlers SHALL validate/forward commands without pre-claiming or
+mutating the checkpoint. Before admitting a worker or recovery effect, the Node
+SHALL durably mark that exact placement's in-progress ownership and revision;
+failed checkpoint acknowledgement SHALL prevent that effect. Clean stop and
+stable-operation reset SHALL checkpoint their resolved state before discarding
+prior recovery evidence.
+
+After state loss, checkpointed open and recovery-required states SHALL remain
+such regardless of crash history. Backoff, restarting, interrupted work,
+nonempty crash history, a nonzero backoff index, or uncertain completion SHALL require explicit recovery
+for that affected placement; monotonic timestamps from an old epoch SHALL NOT
+be rebased or interpreted as elapsed healthy time. A proven clean checkpoint
+means armed state with empty history/index and checkpointed resolved worker,
+load, and recovery-operation ownership; committed loaded ownership alone is not
+a clean stop. A proven clean checkpoint or
+an authoritatively absent checkpoint SHALL allow normal load admission after
+normal identity/resource checks. New installations and unrelated healthy keys
+SHALL NOT require startup re-arm. If checkpoint hydration is unavailable, the
+Node SHALL defer new admissions until authoritative state is available rather
+than assume missing local memory is clean. Existing Request/occupancy and
+Postgres-unavailable rules remain in force. Lagging observation snapshots SHALL
+NOT replace this checkpoint authority.
+
+Prior-epoch ownership SHALL be resolved during explicit recovery using the
+existing runtime custody/cleanup boundary: no current worker/load for the key
+and affirmative termination/nonexistence proof for the recorded prior runtime
+incarnation, or proof that its host boot ended. Empty current memory or a reused
+PID alone is not proof. Unknown cleanup SHALL return unavailable and require
+operator cleanup through existing host/runtime controls before recovery can be
+retried; it SHALL NOT falsely mark prior ownership resolved.
+
+Operator recovery SHALL route through the authenticated Active Controller
+Operator API to the identity-bound Runtime Endpoint, targeting the exact key
+and current recovery epoch/revision. Clear/reset acknowledgement and fresh load
+admission SHALL follow the corresponding durable checkpoint; a lost command
+acknowledgement SHALL NOT authorize automatic repetition of destructive work.
+The operation SHALL support clear,
+non-forced unload, and forced reload. Clear cancels pending automatic work and
+re-arms an absent/failed placement without loading it; a loaded or caller-loading
+placement SHALL reject clear as a conflict rather than silently interrupt it.
+Successful recovery-operation unload, including an already absent placement, SHALL clear
+history and backoff so a subsequent normal load is allowed. Non-forced unload
+SHALL refuse while active executions exist, without clearing state. Forced reload
+SHALL resolve forced-unload cleanup, clear, and admit one fresh load as one
+serialized recovery operation; success means loaded, not merely clear accepted.
+Cleanup uncertainty SHALL remain fail-closed. A failed fresh load SHALL leave
+explicit recovery required unless a qualifying crash has already established
+backoff or an open breaker. Neither recovery nor its failure SHALL replay an
+inference Request or change its terminalization/retry rules.
+
+Apart from the §12.2.1 stable-operation reset, only this operator-authorized
+recovery intent may clear state. An operator-issued ordinary unload remains an
+ordinary unload, not a recovery command. A normal ensure,
+preload, reconciliation unload/load pair, internal reset, or `force` flag on an
+ordinary load/unload request SHALL NOT confer recovery authority. Recovery
+commands and all asynchronous effects SHALL be fenced by epoch, revision, and
+worker/load identity as applicable; duplicates and stale work SHALL NOT clear,
+count, load, or terminate a newer incarnation. Clearing §12.2 SHALL NOT clear
+§5.10, or vice versa.
+
+#### 12.2.3 Eligibility, evidence, and accounting
+
+Backoff, restarting, open, and recovery-required placements SHALL refuse ordinary
+load and execution admission, even through a loaded fast path. The Node SHALL
+retain and report these states without a live worker; the Controller SHALL
+preserve their identity/freshness and reject affected candidates before ranking,
+capacity acquisition, and final dispatch acceptance. Missing, stale, conflicting,
+or old-epoch recovery evidence SHALL NOT establish eligibility. Node-side checks
+remain authoritative if Controller observations lag. A targeted read-only recovery
+status query SHALL hydrate and report clean exact-key evidence for new/cold
+placements without requiring a prior load or operator re-arm; omission from a
+loaded-model list is not positive recovery evidence. Other placements and Node
+health SHALL NOT be suppressed solely by this placement's recovery state.
+
+Structured admission refusals SHALL distinguish `worker_restart_backoff`,
+`worker_restart_in_progress`, `placement_crash_breaker_open`, and
+`placement_recovery_required` from an actually attempted model-load failure.
+Before an attempt starts, they are eligibility rejection, not an attempt. After
+an attempt starts, a proven pre-execution refusal SHALL normalize to existing
+`capacity_rejection` with stable `model_busy`, no model-load category, and normal
+execution-resolution/capacity-release evidence. This uses the existing closed
+retry gates and contributes to neither §5.10 breaker. Unresolved occupancy or
+identity SHALL retain their existing failure classification instead. An actual
+failed load or worker-loss attempt SHALL retain its existing §5.10 attribution;
+automatic residency recovery without a Request attempt SHALL NOT create an
+attempt or a Controller breaker event. §5.10 thresholds, attribution, and Request
+retry policy are unchanged.
+
 ### 12.3 Model load failure
 
 Behavior:

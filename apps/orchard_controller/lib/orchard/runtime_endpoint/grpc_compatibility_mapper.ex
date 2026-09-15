@@ -22,7 +22,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
     Operation,
     Placement,
     PlacementCapacity,
-    Target
+    Target,
+    WorkerRecoveryEvidence
   }
 
   @spec observation_from_status(Target.t() | keyword() | nil, StatusResponse.t() | map()) ::
@@ -47,6 +48,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
       runtime_memory_budgets: list_value(response, :runtime_memory_budgets),
       runtime_prefix_cache_statuses: list_value(response, :runtime_prefix_cache_statuses),
       worker_crash_counters: list_value(response, :worker_crash_counters),
+      worker_recovery_epoch: empty_to_nil(value(response, :worker_recovery_epoch)),
       supports_prompt_token_ids: value(response, :supports_prompt_token_ids) == true
     })
   end
@@ -233,6 +235,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
           []
       end
     end)
+    |> WorkerRecoveryEvidence.attach(placements)
   end
 
   defp placement_capacity(%ModelRef{} = model_ref, placements) do

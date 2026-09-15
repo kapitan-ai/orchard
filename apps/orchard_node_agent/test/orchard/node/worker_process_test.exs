@@ -16,6 +16,32 @@ defmodule Orchard.Node.WorkerProcessTest do
   alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
   alias Orchard.Node.WorkerProcess
 
+  test "SPEC §12.2 stale generation-unavailable reports cannot kill the current worker" do
+    state = %{requests: %{"active" => %{generation_ref: make_ref(), subscriber: self()}}}
+
+    assert {:noreply, ^state} =
+             WorkerProcess.handle_info(
+               {:runtime_adapter_done, make_ref(), :worker_unavailable},
+               state
+             )
+  end
+
+  test "SPEC §12.2 channel loss is fenced by the current connection identity" do
+    current = self()
+    old = spawn(fn -> :ok end)
+
+    state = %{
+      adapter_state: %{channel: %{adapter_payload: %{conn_pid: current}}},
+      capability_snapshot: %{service_incarnation: "current"}
+    }
+
+    assert {:noreply, ^state} =
+             WorkerProcess.handle_info({:gun_down, old, :http2, :closed, []}, state)
+
+    assert {:stop, :runtime_worker_exited, %{capability_snapshot: nil}} =
+             WorkerProcess.handle_info({:gun_down, current, :http2, :closed, []}, state)
+  end
+
   defmodule ConcurrentRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 

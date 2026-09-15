@@ -80,7 +80,9 @@ defmodule Orchard.Node.BeamPeerGrantClient do
     end
   end
 
-  defp client_credential(identity) do
+  @doc "Builds the identity-pinned credential for reverse Controller control operations."
+  @spec client_credential(map()) :: {:ok, Orchard.GRPCTypes.credential()} | {:error, atom()}
+  def client_credential(identity) do
     with certfile when is_binary(certfile) <- value(identity, :certfile),
          keyfile when is_binary(keyfile) <- value(identity, :keyfile),
          cacertfile when is_binary(cacertfile) <- value(identity, :cacertfile),

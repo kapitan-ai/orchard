@@ -60,6 +60,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   }
 
   alias Orchard.Requests.InferenceAttemptFailure
+  alias Orchard.Scheduler.WorkerRecoveryEligibility
   alias Orchard.SentryContext
   alias Orchard.Tokenizer.Telemetry
 
@@ -542,6 +543,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp failure_source(reason)
        when reason in [
+              :model_busy,
               :dispatch_capacity_unavailable,
               :dispatch_capacity_facts_unavailable,
               :dispatch_capacity_request_already_claimed,
@@ -1016,6 +1018,23 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
+  defp handle_ensure_result({:error, {:worker_recovery_refused, _reason}}, context, _ensure_start) do
+    cond do
+      deadline_expired?(context) ->
+        dispatch_timeout_result(context)
+
+      caller_disconnected?(context.caller_ref) ->
+        handle_dispatch_result(
+          {:error, {:dispatch_failed, :caller_disconnect}},
+          context.metrics,
+          context.target
+        )
+
+      true ->
+        handle_dispatch_result(recovery_refusal_result(), context.metrics, context.target)
+    end
+  end
+
   defp handle_ensure_result({:error, reason}, context, ensure_start) do
     ensure_end = System.monotonic_time(:millisecond)
 
@@ -1382,8 +1401,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         end
 
       {:error, reason} ->
-        mark_transport_failure(target, reason)
-        {:error, ModelLoadFailure.from_transport_reason(reason)}
+        if WorkerRecoveryEligibility.refusal?(reason) do
+          {:error, reason}
+        else
+          mark_transport_failure(target, reason)
+          {:error, ModelLoadFailure.from_transport_reason(reason)}
+        end
     end
   end
 
@@ -1535,7 +1558,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             end
 
           {:error, reason} ->
-            {:error, {:dispatch_failed, reason}}
+            if WorkerRecoveryEligibility.refusal?(reason),
+              do: recovery_refusal_result(caller_ref, timer_ref),
+              else: {:error, {:dispatch_failed, reason}}
 
           _invalid ->
             {:error, {:dispatch_failed, :runtime_endpoint_protocol_error}}
@@ -1543,6 +1568,21 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       end
     after
       cleanup_timer(timer_ref)
+    end
+  end
+
+  defp recovery_refusal_result,
+    do: {:error, {:dispatch_failed, :model_busy}}
+
+  defp recovery_refusal_result(caller_ref, timer_ref) do
+    if caller_disconnected?(caller_ref) do
+      {:error, {:dispatch_failed, :caller_disconnect}}
+    else
+      receive do
+        {:dispatch_timeout, ^timer_ref} -> {:error, {:dispatch_failed, :dispatch_timeout}}
+      after
+        0 -> recovery_refusal_result()
+      end
     end
   end
 
@@ -1573,7 +1613,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         stream_done_result(loop_ctx, events, metrics)
 
       {:runtime_endpoint_done, ^task_ref, {:error, reason}} ->
-        mark_transport_failure(target, reason)
+        unless WorkerRecoveryEligibility.refusal?(reason),
+          do: mark_transport_failure(target, reason)
+
         stream_error_result(loop_ctx, events, metrics, reason)
 
       {:dispatch_timeout, ^timer_ref} ->
@@ -1696,6 +1738,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     loop_ctx = record_delivery(loop_ctx, failed_event)
     metrics = update_metrics_for_terminal(metrics, failed_event, :stream)
     stream_terminal_result(loop_ctx, [failed_event | events], metrics)
+  end
+
+  defp stream_error_result(
+         %{
+           accepted?: false,
+           terminal_event: nil,
+           conformance_defect: :none,
+           cancellation_started_before_acceptance?: false
+         } = loop_ctx,
+         [],
+         _metrics,
+         reason
+       ) do
+    if WorkerRecoveryEligibility.refusal?(reason),
+      do: recovery_refusal_result(loop_ctx.caller_ref, loop_ctx.timer_ref),
+      else: {:error, {:dispatch_failed, reason}}
   end
 
   defp stream_error_result(_loop_ctx, _events, _metrics, reason),

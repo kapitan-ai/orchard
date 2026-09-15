@@ -36,6 +36,10 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Node.ToolCapabilityCatalog
   alias Orchard.Node.WorkerCapabilityEvidence
   alias Orchard.Node.WorkerProcess
+  alias Orchard.Node.WorkerRecoveryCheckpointClient
+  alias Orchard.Node.WorkerRecoveryCommand, as: RecoveryCommand
+  alias Orchard.Node.WorkerRecoveryCustody
+  alias Orchard.Node.WorkerRecoveryState, as: Recovery
   alias Orchard.Node.WorkerSupervisor
 
   @type worker_entry :: %{
@@ -134,8 +138,26 @@ defmodule Orchard.Node.ModelManager do
   @spec current() :: StatusResponse.t()
   def current, do: GenServer.call(__MODULE__, :current)
 
-  @spec reset() :: :ok
-  def reset, do: GenServer.call(__MODULE__, :reset)
+  @spec reset() :: :ok | {:error, :unavailable}
+  def reset, do: GenServer.call(__MODULE__, :reset, 15_000)
+
+  @spec prepare_shutdown() :: :ok | {:error, :unavailable}
+  def prepare_shutdown, do: GenServer.call(__MODULE__, :prepare_shutdown, 12_000)
+
+  @spec inspect_worker_recovery(String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
+  def inspect_worker_recovery(model_id, version) do
+    GenServer.call(__MODULE__, {:inspect_worker_recovery, {model_id, version}}, 10_000)
+  end
+
+  @doc "Executes a command already authenticated by the dedicated control boundary."
+  @spec recover_worker_placement(map()) :: {:ok, map()} | {:error, atom()}
+  def recover_worker_placement(command) do
+    GenServer.call(
+      __MODULE__,
+      {:recover_worker_placement, command},
+      Node.worker_load_timeout_ms() + 15_000
+    )
+  end
 
   @spec ensure_model_loaded(EnsureModelLoadedRequest.t()) :: EnsureModelLoadedResponse.t()
   def ensure_model_loaded(%EnsureModelLoadedRequest{} = request) do
@@ -241,51 +263,84 @@ defmodule Orchard.Node.ModelManager do
     {:reply, response, next_state}
   end
 
-  def handle_call(:reset, _from, state) do
-    # Cancel all inflight acquisition tasks and reply waiters
-    state = cancel_all_inflight_loads(state, :reset)
+  def handle_call(:prepare_shutdown, from, state) do
+    handle_call(:reset, from, %{state | stopping?: true})
+  end
 
-    # Terminate all loaded workers
-    Enum.each(state.workers, fn {_key, entry} ->
-      _ = DynamicSupervisor.terminate_child(WorkerSupervisor, entry.pid)
+  def handle_call(:reset, _from, %{resetting?: true} = state),
+    do: {:reply, {:error, :unavailable}, state}
+
+  def handle_call(:reset, from, state) do
+    Enum.each(state.eviction_continuations, fn {_ref, continuation} ->
+      GenServer.reply(continuation.from, ModelLoadFailure.to_response(:load_cancelled))
     end)
 
-    next_state =
-      initial_state(state.worker_crash_counter_version, state.worker_crashes)
+    state = %{state | resetting?: true, eviction_continuations: %{}}
 
-    {:reply, :ok, next_state}
+    state =
+      Enum.reduce(Map.keys(state.recovery), state, fn key, acc ->
+        stop_recovery_intent(acc, key, [:await_cleanup]) |> pump_recovery(key)
+      end)
+
+    state = cancel_all_inflight_loads(state, :reset)
+    state = Enum.reduce(Map.keys(state.workers), state, &cleanup_worker_placement(&2, &1))
+
+    Enum.each(state.recovery_hydrations, fn {_key, hydration} ->
+      Enum.each(hydration.waiters, &reply_recovery_unavailable/1)
+    end)
+
+    state = %{state | recovery_hydrations: %{}}
+
+    send(
+      self(),
+      {:recovery_reset_complete, state.recovery_epoch, from,
+       System.monotonic_time(:millisecond) + 10_000}
+    )
+
+    {:noreply, state}
+  end
+
+  def handle_call({:inspect_worker_recovery, key}, from, state) do
+    case Map.get(state.recovery, key) do
+      nil -> {:noreply, hydrate_recovery(state, key, {:inspect, from})}
+      _entry -> {:reply, {:ok, recovery_projection(state, key)}, state}
+    end
+  end
+
+  def handle_call({:recover_worker_placement, command}, from, state) do
+    if state.stopping? or state.resetting? do
+      {:reply, {:error, :unavailable}, state}
+    else
+      handle_recovery_command(command, from, state)
+    end
+  end
+
+  def handle_call({:recovery_claim_worker, key}, {task_pid, _tag} = from, state) do
+    case Map.get(state.inflight_loads, key) do
+      %{task_pid: ^task_pid, worker_pid: nil, request: request} = inflight ->
+        handle_recovery_claim(state, key, inflight, request, task_pid, from)
+
+      _stale ->
+        {:reply, {:error, :worker_unavailable}, state}
+    end
   end
 
   def handle_call({:ensure_model_loaded, %EnsureModelLoadedRequest{} = request}, from, state) do
     key = model_key(request.model_id, request.version)
 
     cond do
+      state.stopping? or state.resetting? ->
+        {:reply, recovery_refusal_response(:placement_recovery_required), state}
+
+      not Map.has_key?(state.recovery, key) ->
+        {:noreply, hydrate_recovery(state, key, {:ensure, request, from})}
+
+      reason = Recovery.refusal(state.recovery[key]) ->
+        {:reply, recovery_refusal_response(reason), state}
+
       # Already loaded — fast path
       match?(%{placement_state: :PLACEMENT_STATE_LOADED}, Map.get(state.workers, key)) ->
-        entry = Map.fetch!(state.workers, key)
-        deadline_ms = effective_deadline_ms(request, System.system_time(:millisecond))
-
-        case probe_worker_prompt_token_ids_support_status(entry, deadline_ms) do
-          {{:ok, supports_prompt_token_ids?}, status_result} ->
-            request_limit = cacheable_request_limit_from_status_result(status_result)
-
-            response =
-              loaded_response(
-                true,
-                supports_prompt_token_ids?,
-                placement_capacity(state, key, entry, request_limit)
-              )
-
-            next_state =
-              state
-              |> put_cached_worker_request_limit(key, request_limit)
-              |> touch_worker_last_used(key)
-
-            {:reply, response, next_state}
-
-          {{:error, :deadline_exceeded}, _status_result} ->
-            {:reply, ModelLoadFailure.to_response(:deadline_exceeded), state}
-        end
+        reply_loaded_worker(state, key, request)
 
       # Inflight load exists — join or reject
       Map.has_key?(state.inflight_loads, key) ->
@@ -293,40 +348,35 @@ defmodule Orchard.Node.ModelManager do
 
       # No worker, no inflight — evict if needed, then start new acquisition task
       true ->
-        case maybe_evict_before_load(state, key) do
-          {:ok, state} ->
-            start_load_task(key, request, from, state)
-
-          {:error, reason, state} ->
-            {:reply, ModelLoadFailure.to_response(reason), state}
-        end
+        begin_load(state, key, request, from)
     end
   end
 
-  def handle_call({:unload_model, %UnloadModelRequest{} = request}, _from, state) do
+  def handle_call({:unload_model, %UnloadModelRequest{} = request}, from, state) do
     key = model_key(request.model_id, request.version)
 
     cond do
-      # Cancel inflight load if one exists for this key
-      Map.has_key?(state.inflight_loads, key) ->
-        next_state = cancel_inflight_load(state, key, :unload_request)
-        {:reply, %Ack{ok: true, message: "unload accepted"}, next_state}
+      active_request_count_for_model(state.active_requests, key) > 0 and not request.force ->
+        {:reply, %Ack{ok: false, message: "model has active requests"}, state}
 
-      # Loaded worker exists — unload it
-      Map.has_key?(state.workers, key) ->
-        %{pid: pid, monitor_ref: monitor_ref} = Map.fetch!(state.workers, key)
-        active_request_count = active_request_count_for_model(state.active_requests, key)
+      not Map.has_key?(state.recovery, key) ->
+        {:noreply, hydrate_recovery(state, key, {:unload, request, from})}
 
-        if active_request_count > 0 and not request.force do
-          {:reply, %Ack{ok: false, message: "model has active requests"}, state}
-        else
-          {reply, next_state} = perform_unload(pid, key, monitor_ref, request, state)
-          {:reply, reply, next_state}
-        end
+      not state.recovery[key].hydrated? or state.recovery[key].prior? ->
+        {:reply, %Ack{ok: false, message: "recovery ownership unresolved"}, state}
 
-      # Nothing to unload
       true ->
-        {:reply, %Ack{ok: true, message: "model already absent"}, state}
+        state = stop_recovery_intent(state, key, [{:ordinary_unload, request}])
+        entry = state.recovery[key]
+
+        entry = %{
+          entry
+          | stop_waiters: [
+              {from, %Ack{ok: true, message: "unload accepted"}} | entry.stop_waiters
+            ]
+        }
+
+        {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
     end
   end
 
@@ -344,7 +394,13 @@ defmodule Orchard.Node.ModelManager do
         {:reply, {:error, :request_not_prepared}, state}
 
       {:ok, %{pid: pid, subscriber: subscriber} = active_request} ->
-        case safe_start_request(pid, request.request_id, request, subscriber) do
+        result =
+          case Recovery.refusal(state.recovery[active_request.model_key]) do
+            nil -> safe_start_request(pid, request.request_id, request, subscriber)
+            reason -> {:error, {:worker_recovery_refused, reason}}
+          end
+
+        case result do
           :ok ->
             next_state = put_request_phase(state, request.request_id, :running)
             {:reply, :ok, next_state}
@@ -398,13 +454,128 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
+  defp handle_recovery_command(command, from, state) do
+    case RecoveryCommand.validate(command, Node.node_id()) do
+      {:ok, command} ->
+        key = {command.key.model_id, command.key.version}
+
+        case state.recovery[key] do
+          nil -> {:reply, {:error, :unavailable}, state}
+          entry -> begin_operator_recovery(state, key, entry, command, from)
+        end
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  defp handle_recovery_claim(state, key, inflight, request, task_pid, from) do
+    entry = Map.fetch!(state.recovery, key)
+
+    cond do
+      state.stopping? or state.resetting? ->
+        {:reply, {:error, :worker_unavailable}, state}
+
+      recovery_claim_retry?(entry, inflight) ->
+        Process.send_after(
+          self(),
+          {:recovery_claim_retry, state.recovery_epoch, key, from},
+          50
+        )
+
+        {:noreply, state}
+
+      not recovery_claim_allowed?(entry, inflight) ->
+        {:reply, {:error, :worker_unavailable}, state}
+
+      true ->
+        admit_recovery_claim(state, key, entry, inflight, request, task_pid, from)
+    end
+  end
+
+  defp recovery_claim_retry?(entry, inflight) do
+    not recovery_claim_allowed?(entry, inflight) and inflight[:recovery_wait?] == true and
+      entry.hydrated? and not entry.prior? and entry.policy.state == :armed
+  end
+
+  defp admit_recovery_claim(state, key, entry, inflight, request, task_pid, from) do
+    incarnation = new_worker_crash_counter_version()
+
+    entry = %{
+      entry
+      | request: %{request | deadline_unix_ms: 0},
+        ownership: %{
+          "phase" => "loading",
+          "incarnation" => incarnation,
+          "custody" => WorkerRecoveryCustody.boot_identity()
+        }
+    }
+
+    entry =
+      Recovery.transition(entry, {:admit, incarnation}, recovery_now(), [
+        {:spawn_worker, task_pid, from}
+      ])
+
+    state =
+      put_in(
+        state,
+        [:inflight_loads, key],
+        Map.put(inflight, :recovery_incarnation, incarnation)
+      )
+
+    {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+  end
+
+  defp reply_loaded_worker(state, key, request) do
+    entry = Map.fetch!(state.workers, key)
+    deadline_ms = effective_deadline_ms(request, System.system_time(:millisecond))
+
+    case probe_worker_prompt_token_ids_support_status(entry, deadline_ms) do
+      {{:ok, supports_prompt_token_ids?}, status_result} ->
+        request_limit = cacheable_request_limit_from_status_result(status_result)
+
+        response =
+          loaded_response(
+            true,
+            supports_prompt_token_ids?,
+            placement_capacity(state, key, entry, request_limit)
+          )
+
+        next_state =
+          state
+          |> put_cached_worker_request_limit(key, request_limit)
+          |> touch_worker_last_used(key)
+
+        {:reply, response, next_state}
+
+      {{:error, :deadline_exceeded}, _status_result} ->
+        {:reply, ModelLoadFailure.to_response(:deadline_exceeded), state}
+    end
+  end
+
+  defp begin_load(state, key, request, from) do
+    case maybe_evict_before_load(state, key, request, from) do
+      {:ok, state} -> start_load_task(key, request, from, state)
+      {:deferred, state} -> {:noreply, state}
+      {:error, reason, state} -> {:reply, ModelLoadFailure.to_response(reason), state}
+    end
+  end
+
   defp handle_prepare_request(%ExecuteInferenceRequest{} = request, subscriber, state) do
     key = model_key(request.model_id, request.version)
 
-    if Map.has_key?(state.active_requests, request.request_id) do
-      {:reply, {:error, :request_already_active}, state}
-    else
-      prepare_request_for_worker(request, subscriber, key, state)
+    cond do
+      state.stopping? or state.resetting? ->
+        {:reply, {:error, {:worker_recovery_refused, :placement_recovery_required}}, state}
+
+      Map.has_key?(state.active_requests, request.request_id) ->
+        {:reply, {:error, :request_already_active}, state}
+
+      reason = Recovery.refusal(Map.get(state.recovery, key)) ->
+        {:reply, {:error, {:worker_recovery_refused, reason}}, state}
+
+      true ->
+        prepare_request_for_worker(request, subscriber, key, state)
     end
   end
 
@@ -457,28 +628,182 @@ defmodule Orchard.Node.ModelManager do
   # -- handle_info -----------------------------------------------------------
 
   @impl true
-  def handle_info({:model_load_worker_started, key, task_pid, worker_pid}, state) do
-    case Map.get(state.inflight_loads, key) do
-      %{task_pid: ^task_pid} = inflight ->
-        # Track the worker so we can clean it up on cancel/failure
-        model_ref = %ModelRef{model_id: elem(key, 0), version: elem(key, 1)}
-        monitor_ref = Process.monitor(worker_pid)
-        state = put_worker(state, key, model_ref, worker_pid, monitor_ref)
-        inflight = %{inflight | worker_pid: worker_pid}
-        {:noreply, %{state | inflight_loads: Map.put(state.inflight_loads, key, inflight)}}
+  def handle_info({:recovery_hydrated, epoch, key, ref, result}, state) do
+    case Map.get(state.recovery_hydrations, key) do
+      %{ref: ^ref, waiters: waiters} when epoch == state.recovery_epoch ->
+        state = %{state | recovery_hydrations: Map.delete(state.recovery_hydrations, key)}
+        handle_recovery_hydration_result(result, state, epoch, key, waiters)
 
-      _stale_or_missing ->
-        # Inflight was cancelled; terminate the orphaned worker
-        _ = DynamicSupervisor.terminate_child(WorkerSupervisor, worker_pid)
+      _stale ->
         {:noreply, state}
     end
   end
 
+  def handle_info({:recovery_hydration_ready, epoch, _key, {:ensure, request, from}}, state)
+      when epoch == state.recovery_epoch do
+    case handle_call({:ensure_model_loaded, request}, from, state) do
+      {:reply, response, state} ->
+        GenServer.reply(from, response)
+        {:noreply, state}
+
+      {:noreply, state} ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:recovery_hydration_ready, epoch, _key, {:unload, request, from}}, state)
+      when epoch == state.recovery_epoch do
+    case handle_call({:unload_model, request}, from, state) do
+      {:reply, response, state} ->
+        GenServer.reply(from, response)
+        {:noreply, state}
+
+      {:noreply, state} ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:recovery_hydration_ready, epoch, key, {:inspect, from}}, state)
+      when epoch == state.recovery_epoch do
+    GenServer.reply(from, {:ok, recovery_projection(state, key)})
+    {:noreply, state}
+  end
+
+  def handle_info({:recovery_checkpoint_result, epoch, key, id, result}, state)
+      when epoch == state.recovery_epoch do
+    case state.recovery[key] do
+      %{pending: %{id: ^id}} = entry ->
+        handle_recovery_checkpoint_result(result, state, epoch, key, id, entry)
+
+      _stale ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:recovery_checkpoint_retry, epoch, key}, state)
+      when epoch == state.recovery_epoch do
+    case Recovery.retry(state.recovery[key], recovery_now()) do
+      {:write, entry, pending} ->
+        {:noreply, put_recovery(state, key, entry) |> send_recovery_checkpoint(key, pending)}
+
+      {:wait, _entry} ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:recovery_timer, epoch, key, fence}, state)
+      when epoch == state.recovery_epoch do
+    case Map.get(state.recovery, key) do
+      %{policy: %{state: :backoff, fence: ^fence}, desired: nil, pending: nil} = entry ->
+        cond do
+          recovery_now() < entry.policy.due_ms ->
+            {:noreply, apply_recovery_effect(state, key, {:schedule, fence, entry.policy.due_ms})}
+
+          Map.has_key?(state.inflight_loads, key) or not recovery_cleanup_resolved?(state, key) ->
+            Process.send_after(self(), {:recovery_timer, epoch, key, fence}, 1_000)
+            {:noreply, state}
+
+          true ->
+            entry = %{entry | ownership: Map.put(entry.ownership, "phase", "resolved")}
+            entry = Recovery.transition(entry, {:timer, fence, true}, recovery_now())
+            {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+        end
+
+      _stale ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:recovery_claim_retry, epoch, key, from}, state)
+      when epoch == state.recovery_epoch do
+    case handle_call({:recovery_claim_worker, key}, from, state) do
+      {:reply, reply, next} ->
+        GenServer.reply(from, reply)
+        {:noreply, next}
+
+      {:noreply, next} ->
+        {:noreply, next}
+    end
+  end
+
+  def handle_info({:recovery_reset_complete, epoch, from, deadline}, state)
+      when epoch == state.recovery_epoch do
+    resolved? =
+      Enum.all?(state.recovery, fn {_key, entry} ->
+        is_nil(entry.pending) and is_nil(entry.desired) and
+          entry.ownership["phase"] in ["resolved", "operator_terminated"]
+      end)
+
+    cond do
+      resolved? ->
+        GenServer.reply(from, :ok)
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        GenServer.reply(from, {:error, :unavailable})
+
+      true ->
+        Process.send_after(self(), {:recovery_reset_complete, epoch, from, deadline}, 50)
+    end
+
+    done? = resolved? or System.monotonic_time(:millisecond) >= deadline
+    {:noreply, %{state | resetting?: not done?}}
+  end
+
+  def handle_info({:operator_cleanup_ready, epoch, key, id}, state)
+      when epoch == state.recovery_epoch do
+    case state.recovery[key] do
+      %{command: %{"id" => ^id, "phase" => "claimed"}, desired: nil, pending: nil} = entry ->
+        handle_operator_cleanup_ready(state, epoch, key, id, entry)
+
+      _stale ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:recovery_stable, epoch, key, incarnation}, state)
+      when epoch == state.recovery_epoch do
+    case state.recovery[key] do
+      %{prior?: false, policy: %{incarnation: ^incarnation, state: :armed}} = entry ->
+        entry = Recovery.transition(entry, :tick, recovery_now())
+        {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:recovery_cleanup, epoch, key}, state) when epoch == state.recovery_epoch do
+    case Map.get(state.recovery, key) do
+      %{ownership: %{"phase" => "cleanup"}} = entry ->
+        if recovery_cleanup_resolved?(state, key) do
+          entry = %{entry | ownership: Map.put(entry.ownership, "phase", "resolved")}
+
+          effects =
+            case entry.policy do
+              %{state: :backoff, fence: fence, due_ms: due} -> [{:schedule, fence, due}]
+              _other -> [:reply_stopped, :reply_operator]
+            end
+
+          entry = Recovery.checkpoint(entry, effects)
+          {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+        else
+          {:noreply, apply_recovery_effect(state, key, :await_cleanup)}
+        end
+
+      _stale ->
+        {:noreply, state}
+    end
+  end
+
+  # Worker creation is now synchronous with the durable manager claim. Legacy
+  # notifications cannot establish ownership or terminate an unrelated process.
+  def handle_info({:model_load_worker_started, _key, _task_pid, _worker_pid}, state),
+    do: {:noreply, state}
+
   def handle_info({:model_load_finished, key, task_pid, result}, state) do
     case Map.get(state.inflight_loads, key) do
       %{task_pid: ^task_pid} = inflight ->
-        next_state = complete_inflight_load(state, key, inflight, result)
-        {:noreply, next_state}
+        handle_model_load_result(result, state, key, task_pid, inflight)
 
       _stale_or_missing ->
         # Late message after cancel — ignore
@@ -511,9 +836,24 @@ defmodule Orchard.Node.ModelManager do
   # Task.Supervisor.async_nolink sends {ref, return_value} on task completion.
   # We handle results via the explicit :model_load_finished message sent from
   # within the task, so this just acknowledges and flushes the monitor.
-  def handle_info({ref, _result}, state) when is_reference(ref) do
+  def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
-    {:noreply, state}
+
+    if Map.has_key?(state.eviction_continuations, ref) do
+      {continuation, continuations} = Map.pop(state.eviction_continuations, ref)
+      finish_eviction(%{state | eviction_continuations: continuations}, continuation, result)
+    else
+      case Map.pop(state.recovery_io_refs, ref) do
+        {nil, _} ->
+          {:noreply, state}
+
+        {callback, refs} ->
+          handle_info(Tuple.insert_at(callback, tuple_size(callback), result), %{
+            state
+            | recovery_io_refs: refs
+          })
+      end
+    end
   end
 
   def handle_info({:inflight_waiter_timeout, key, task_ref, _waiter_id}, state) do
@@ -535,6 +875,7 @@ defmodule Orchard.Node.ModelManager do
 
         case Map.get(state.inflight_loads, key) do
           %{task_pid: ^pid} = inflight ->
+            state = recovery_load_failed(state, key, inflight)
             next_state = complete_inflight_load(state, key, inflight, {:error, :task_crashed})
             {:noreply, next_state}
 
@@ -543,6 +884,14 @@ defmodule Orchard.Node.ModelManager do
             {:noreply, %{state | load_refs: Map.delete(state.load_refs, monitor_ref)}}
         end
 
+      Map.has_key?(state.recovery_io_refs, monitor_ref) ->
+        {callback, refs} = Map.pop(state.recovery_io_refs, monitor_ref)
+
+        handle_info(Tuple.insert_at(callback, tuple_size(callback), {:error, :unavailable}), %{
+          state
+          | recovery_io_refs: refs
+        })
+
       # Worker process died
       Map.has_key?(state.worker_refs, monitor_ref) ->
         key = Map.fetch!(state.worker_refs, monitor_ref)
@@ -550,9 +899,11 @@ defmodule Orchard.Node.ModelManager do
 
         next_state =
           state
+          |> accept_recovery_crash(key, pid)
           |> drop_worker(key, monitor_ref)
           |> increment_worker_crash(key)
           |> cleanup_worker_unavailable(key, cleanup_reason)
+          |> fail_inflight_worker(key, pid)
 
         {:noreply, next_state}
 
@@ -568,6 +919,779 @@ defmodule Orchard.Node.ModelManager do
       true ->
         {:noreply, state}
     end
+  end
+
+  def handle_info(message, state)
+      when is_tuple(message) and
+             elem(message, 0) in [
+               :recovery_hydrated,
+               :recovery_hydration_ready,
+               :recovery_checkpoint_result,
+               :recovery_checkpoint_retry,
+               :recovery_timer,
+               :recovery_cleanup,
+               :operator_cleanup_ready,
+               :recovery_stable,
+               :recovery_reset_complete,
+               :recovery_claim_retry
+             ] do
+    {:noreply, state}
+  end
+
+  defp handle_recovery_hydration_result({:ok, checkpoint}, state, epoch, key, waiters) do
+    entry = Recovery.new(epoch) |> Recovery.hydrate(checkpoint)
+
+    if stale_clean_checkpoint?(entry, epoch) do
+      entry = Recovery.checkpoint(%{entry | command: nil}, [{:hydration_complete, waiters}])
+      {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+    else
+      state = put_recovery(state, key, entry)
+      Enum.each(waiters, &send(self(), {:recovery_hydration_ready, epoch, key, &1}))
+      {:noreply, state}
+    end
+  end
+
+  defp handle_recovery_hydration_result({:error, _reason}, state, _epoch, key, waiters) do
+    Enum.each(waiters, &reply_recovery_unavailable/1)
+    {:noreply, put_in(state, [:recovery_read_retry_at, key], recovery_now() + 1_000)}
+  end
+
+  defp stale_clean_checkpoint?(entry, epoch),
+    do: not entry.prior? and not is_nil(entry.owner_epoch) and entry.owner_epoch != epoch
+
+  defp handle_recovery_checkpoint_result({:ok, checkpoint}, state, epoch, key, id, entry) do
+    {entry, effects} = Recovery.acknowledge(entry, id, checkpoint)
+
+    if is_nil(entry.pending) do
+      state = put_recovery(state, key, entry)
+      state = Enum.reduce(effects, state, &apply_recovery_effect(&2, key, &1))
+      {:noreply, pump_recovery(state, key)}
+    else
+      handle_recovery_checkpoint_result(
+        {:error, :unavailable},
+        state,
+        epoch,
+        key,
+        id,
+        state.recovery[key]
+      )
+    end
+  end
+
+  defp handle_recovery_checkpoint_result(
+         {:error, :stale_checkpoint},
+         state,
+         _epoch,
+         key,
+         _id,
+         entry
+       ) do
+    entry = Recovery.transition(entry, :interrupt, recovery_now())
+    {:noreply, put_recovery(state, key, %{entry | hydrated?: false})}
+  end
+
+  defp handle_recovery_checkpoint_result({:error, _reason}, state, epoch, key, id, entry) do
+    entry = Recovery.unavailable(entry, id, recovery_now())
+    Process.send_after(self(), {:recovery_checkpoint_retry, epoch, key}, 1_000)
+    {:noreply, put_recovery(state, key, entry)}
+  end
+
+  defp handle_operator_cleanup_ready(state, epoch, key, id, entry) do
+    cond do
+      recovery_cleanup_resolved?(state, key) ->
+        complete_operator_cleanup(state, key, id, entry)
+
+      recovery_now() >= entry.operator_deadline ->
+        {:noreply, fail_operator_recovery(state, key)}
+
+      true ->
+        Process.send_after(self(), {:operator_cleanup_ready, epoch, key, id}, 1_000)
+        {:noreply, state}
+    end
+  end
+
+  defp complete_operator_cleanup(state, key, id, entry) do
+    phase = if entry.ownership["incarnation"], do: "operator_terminated", else: "resolved"
+    ownership = Map.put(entry.ownership, "phase", phase)
+
+    entry = %{
+      entry
+      | ownership: ownership,
+        prior?: false,
+        command: Map.put(entry.command, "phase", "cleanup")
+    }
+
+    entry = Recovery.checkpoint(entry, [{:operator_reset, id}])
+    {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+  end
+
+  defp handle_model_load_result({:ok, worker_pid} = result, state, key, task_pid, inflight) do
+    entry = state.recovery[key]
+
+    cond do
+      Process.alive?(worker_pid) and current_load_completion?(entry, inflight, worker_pid) ->
+        entry = %{entry | ownership: Map.put(entry.ownership, "phase", "loaded")}
+        {entry, operator_effects} = complete_operator_load(entry)
+
+        entry =
+          Recovery.transition(
+            entry,
+            {:loaded, entry.policy.incarnation},
+            recovery_now(),
+            [{:publish_load, task_pid, result} | operator_effects]
+          )
+
+        {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+
+      Process.alive?(worker_pid) ->
+        {:noreply, state}
+
+      true ->
+        state = accept_recovery_crash(state, key, worker_pid)
+        {:noreply, complete_inflight_load(state, key, inflight, {:error, :worker_unavailable})}
+    end
+  end
+
+  defp handle_model_load_result({:error, reason} = result, state, key, _task_pid, inflight) do
+    state = recovery_load_failed(state, key, inflight, reason)
+    {:noreply, complete_inflight_load(state, key, inflight, result)}
+  end
+
+  defp recovery_claim_allowed?(entry, inflight) do
+    entry.hydrated? and not entry.prior? and is_nil(entry.desired) and is_nil(entry.pending) and
+      is_nil(entry.policy.incarnation) and
+      entry.ownership["phase"] in ["resolved", "operator_terminated"] and
+      (entry.policy.state == :armed or
+         (entry.policy.state == :restarting and inflight.recovery_owner))
+  end
+
+  defp begin_operator_recovery(state, key, entry, command, from) do
+    case operator_recovery_admission(state, key, entry, command) do
+      :begin -> start_operator_recovery(state, key, command, from)
+      {:reply, reply} -> {:reply, reply, state}
+    end
+  end
+
+  defp operator_recovery_admission(state, key, entry, command) do
+    cond do
+      command.expected_epoch != state.recovery_epoch ->
+        {:reply, {:error, :conflict}}
+
+      duplicate_operator_command?(entry, command) ->
+        {:reply, duplicate_operator_result(state, key, entry.command, command)}
+
+      operator_revision_conflict?(entry, command) ->
+        {:reply, {:error, :conflict}}
+
+      recovery_checkpoint_busy?(entry) ->
+        {:reply, {:error, :unavailable}}
+
+      operator_conflict?(state, key, command.action) ->
+        {:reply, {:error, :conflict}}
+
+      entry.prior? and not recovery_cleanup_resolved?(state, key) ->
+        {:reply, {:error, :unavailable}}
+
+      true ->
+        :begin
+    end
+  end
+
+  defp duplicate_operator_command?(entry, command) do
+    not is_nil(entry.command) and entry.command["id"] == command.command_id and
+      entry.owner_epoch == entry.epoch
+  end
+
+  defp duplicate_operator_result(state, key, prior, command) do
+    if prior["fingerprint"] == command.fingerprint,
+      do: operator_result(state, key),
+      else: {:error, :conflict}
+  end
+
+  defp operator_revision_conflict?(entry, command) do
+    command.expected_revision != entry.revision or
+      (RecoveryCommand.active?(entry.command) and entry.owner_epoch == entry.epoch)
+  end
+
+  defp recovery_checkpoint_busy?(entry),
+    do: not entry.hydrated? or not is_nil(entry.pending) or not is_nil(entry.desired)
+
+  defp start_operator_recovery(state, key, command, from) do
+    state = observe_dead_recovery_worker(state, key)
+    entry = state.recovery[key]
+    ownership = operator_recovery_ownership(state, key, entry)
+
+    entry = %{
+      entry
+      | ownership: ownership,
+        command: %{
+          "id" => command.command_id,
+          "fingerprint" => command.fingerprint,
+          "action" => command.action,
+          "phase" => "claimed",
+          "outcome" => nil
+        },
+        request: Map.get(command, :load_request) || entry.request,
+        operator_waiters: [from],
+        operator_deadline: recovery_now() + Node.worker_load_timeout_ms() + 5_000
+    }
+
+    entry =
+      Recovery.transition(entry, :interrupt, recovery_now(), [
+        {:operator_cleanup, command.command_id}
+      ])
+
+    {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+  end
+
+  defp operator_recovery_ownership(state, key, entry) do
+    phase =
+      if recovery_cleanup_resolved?(state, key), do: "operator_terminated", else: "cleanup"
+
+    ownership = Map.put(entry.ownership, "phase", phase)
+
+    if is_nil(ownership["incarnation"]),
+      do: Map.put(ownership, "phase", "resolved"),
+      else: ownership
+  end
+
+  defp operator_conflict?(state, key, "clear") do
+    match?(%{placement_state: :PLACEMENT_STATE_LOADED}, state.workers[key]) or
+      match?(%{recovery_owner: false}, state.inflight_loads[key])
+  end
+
+  defp operator_conflict?(state, key, "unload"),
+    do: active_request_count_for_model(state.active_requests, key) > 0
+
+  defp operator_conflict?(_state, _key, "reload"), do: false
+
+  defp operator_result(state, key) do
+    case state.recovery[key] do
+      %{command: %{"phase" => "completed", "outcome" => "ok"}, pending: nil, desired: nil} ->
+        {:ok, recovery_projection(state, key)}
+
+      _ ->
+        {:error, :unavailable}
+    end
+  end
+
+  defp observe_dead_recovery_worker(state, key) do
+    case state.workers[key] do
+      %{pid: pid} ->
+        if Process.alive?(pid), do: state, else: accept_recovery_crash(state, key, pid)
+
+      _ ->
+        state
+    end
+  end
+
+  defp hydrate_recovery(state, key, waiter) do
+    case Map.get(state.recovery_hydrations, key) do
+      nil -> start_recovery_hydration(state, key, waiter)
+      hydration -> append_recovery_hydration_waiter(state, key, hydration, waiter)
+    end
+  end
+
+  defp start_recovery_hydration(state, key, waiter) do
+    if recovery_now() < Map.get(state.recovery_read_retry_at, key, recovery_now()) do
+      reply_recovery_unavailable(waiter)
+      state
+    else
+      launch_recovery_hydration(state, key, waiter)
+    end
+  end
+
+  defp launch_recovery_hydration(state, key, waiter) do
+    ref = make_ref()
+    epoch = state.recovery_epoch
+    client = recovery_client()
+    checkpoint_key = recovery_key(key)
+    task = Task.Supervisor.async_nolink(@task_supervisor, fn -> client.read(checkpoint_key) end)
+
+    %{
+      state
+      | recovery_hydrations:
+          Map.put(state.recovery_hydrations, key, %{ref: ref, waiters: [waiter]}),
+        recovery_io_refs:
+          Map.put(state.recovery_io_refs, task.ref, {:recovery_hydrated, epoch, key, ref})
+    }
+  end
+
+  defp append_recovery_hydration_waiter(state, key, hydration, waiter) do
+    put_in(state, [:recovery_hydrations, key], %{
+      hydration
+      | waiters: [waiter | hydration.waiters]
+    })
+  end
+
+  defp reply_recovery_unavailable({:unload, _request, from}),
+    do: GenServer.reply(from, %Ack{ok: false, message: "recovery checkpoint unavailable"})
+
+  defp reply_recovery_unavailable({:inspect, from}),
+    do: GenServer.reply(from, {:error, :unavailable})
+
+  defp reply_recovery_unavailable({:ensure, _request, from}),
+    do: GenServer.reply(from, recovery_refusal_response(:placement_recovery_required))
+
+  defp recovery_refusal_response(reason),
+    do: %EnsureModelLoadedResponse{
+      placement_state: :PLACEMENT_STATE_FAILED,
+      recovery_refusal: Atom.to_string(reason)
+    }
+
+  defp recovery_projection(state, key) do
+    entry = Map.get(state.recovery, key, Recovery.new(state.recovery_epoch))
+    Map.put(Recovery.projection(entry), :key, recovery_key(key))
+  end
+
+  defp recovery_now do
+    clock =
+      Node.runtime_config()[:worker_recovery_clock] ||
+        fn -> System.monotonic_time(:millisecond) end
+
+    clock.()
+  end
+
+  defp recovery_key({model_id, version}),
+    do: %{node_id: Node.node_id(), model_id: model_id, version: version}
+
+  defp recovery_client,
+    do:
+      Node.runtime_config()[:worker_recovery_checkpoint_client] || WorkerRecoveryCheckpointClient
+
+  defp put_recovery(state, key, entry), do: put_in(state, [:recovery, key], entry)
+
+  defp pump_recovery(state, key) do
+    case Recovery.begin_write(state.recovery[key], recovery_now()) do
+      {:write, entry, pending} ->
+        put_recovery(state, key, entry) |> send_recovery_checkpoint(key, pending)
+
+      {:wait, _entry} ->
+        state
+    end
+  end
+
+  defp send_recovery_checkpoint(state, key, pending) do
+    client = recovery_client()
+    checkpoint_key = recovery_key(key)
+
+    task =
+      Task.Supervisor.async_nolink(@task_supervisor, fn ->
+        client.commit(checkpoint_key, pending.epoch, pending.revision, pending.id, pending.record)
+      end)
+
+    put_in(
+      state,
+      [:recovery_io_refs, task.ref],
+      {:recovery_checkpoint_result, state.recovery_epoch, key, pending.id}
+    )
+  end
+
+  defp stop_recovery_intent(state, key, effects) do
+    state = observe_dead_recovery_worker(state, key)
+    entry = state.recovery[key]
+    was_operator? = RecoveryCommand.active?(entry.command)
+    entry = Recovery.transition(entry, :interrupt, recovery_now(), effects)
+    phase = if entry.ownership["incarnation"], do: "cleanup", else: "resolved"
+    entry = %{entry | ownership: Map.put(entry.ownership, "phase", phase)}
+
+    entry =
+      if was_operator? do
+        entry = %{
+          entry
+          | command:
+              Map.merge(entry.command, %{"phase" => "completed", "outcome" => "unavailable"})
+        }
+
+        if entry.policy.state == :open,
+          do: entry,
+          else: put_in(entry.policy.state, :recovery_required)
+      else
+        entry
+      end
+
+    put_recovery(state, key, entry)
+  end
+
+  defp apply_recovery_effect(state, key, {:hydration_complete, waiters}) do
+    Enum.each(waiters, &send(self(), {:recovery_hydration_ready, state.recovery_epoch, key, &1}))
+    state
+  end
+
+  defp apply_recovery_effect(state, key, {:ordinary_unload, request}) do
+    state = cancel_inflight_load(state, key, :unload_request)
+
+    state =
+      case state.workers[key] do
+        %{pid: pid, monitor_ref: monitor} ->
+          {response, next} = perform_unload(pid, key, monitor, request, state)
+          entry = next.recovery[key]
+          waiters = Enum.map(entry.stop_waiters, fn {from, _} -> {from, response} end)
+          put_recovery(next, key, %{entry | stop_waiters: waiters})
+
+        _ ->
+          state
+      end
+
+    if recovery_cleanup_resolved?(state, key) do
+      entry = state.recovery[key]
+      entry = %{entry | ownership: Map.put(entry.ownership, "phase", "resolved")}
+
+      put_recovery(state, key, Recovery.checkpoint(entry, [:reply_stopped, :reply_operator]))
+      |> pump_recovery(key)
+    else
+      apply_recovery_effect(state, key, :await_cleanup)
+    end
+  end
+
+  defp apply_recovery_effect(state, key, {:operator_cleanup, id}) do
+    state =
+      state |> cancel_inflight_load(key, :operator_recovery) |> cleanup_worker_placement(key)
+
+    state = maybe_cleanup_unloaded_requests(state, key, true)
+    send(self(), {:operator_cleanup_ready, state.recovery_epoch, key, id})
+    state
+  end
+
+  defp apply_recovery_effect(state, key, {:operator_reset, id}) do
+    case state.recovery[key] do
+      %{command: %{"id" => ^id, "phase" => "cleanup"}} = entry ->
+        action =
+          case entry.command["action"] do
+            "clear" -> :clear
+            "unload" -> :unload
+            "reload" -> :reload
+          end
+
+        command =
+          Map.merge(entry.command, %{
+            "phase" => if(action == :reload, do: "loading", else: "completed"),
+            "outcome" => if(action == :reload, do: nil, else: "ok")
+          })
+
+        entry = %{
+          entry
+          | command: command,
+            ownership: %{"phase" => "resolved", "incarnation" => nil, "custody" => nil},
+            last_worker_pid: nil
+        }
+
+        effects = if action == :reload, do: [], else: [:reply_operator]
+
+        entry =
+          Recovery.transition(entry, {:authorized_recovery, action}, recovery_now(), effects)
+
+        put_recovery(state, key, entry) |> pump_recovery(key)
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_recovery_effect(state, key, :reply_operator) do
+    entry = state.recovery[key]
+
+    if is_nil(entry.pending) and is_nil(entry.desired) do
+      Enum.each(entry.operator_waiters, &GenServer.reply(&1, operator_result(state, key)))
+      put_recovery(state, key, %{entry | operator_waiters: [], operator_deadline: nil})
+    else
+      state
+    end
+  end
+
+  defp apply_recovery_effect(state, key, :reply_stopped) do
+    entry = state.recovery[key]
+    Enum.each(entry.stop_waiters, fn {from, response} -> GenServer.reply(from, response) end)
+    put_recovery(state, key, %{entry | stop_waiters: []})
+  end
+
+  defp apply_recovery_effect(state, key, {:spawn_worker, task_pid, from}) do
+    case Map.get(state.inflight_loads, key) do
+      %{task_pid: ^task_pid, worker_pid: nil} = inflight ->
+        model_ref = %ModelRef{model_id: elem(key, 0), version: elem(key, 1)}
+
+        case WorkerSupervisor.start_worker(model_ref, manager: self()) do
+          {:ok, pid} ->
+            monitor = Process.monitor(pid)
+            state = put_worker(state, key, model_ref, pid, monitor)
+            state = put_in(state, [:recovery, key, :last_worker_pid], pid)
+            state = put_in(state, [:inflight_loads, key], %{inflight | worker_pid: pid})
+            GenServer.reply(from, {:ok, pid})
+            state
+
+          {:error, reason} ->
+            GenServer.reply(from, {:error, reason})
+            state
+        end
+
+      _stale ->
+        GenServer.reply(from, {:error, :worker_unavailable})
+        state
+    end
+  end
+
+  defp apply_recovery_effect(state, key, {:publish_load, task_pid, result}) do
+    case Map.get(state.inflight_loads, key) do
+      %{task_pid: ^task_pid} = inflight ->
+        incarnation = state.recovery[key].policy.incarnation
+
+        Process.send_after(
+          self(),
+          {:recovery_stable, state.recovery_epoch, key, incarnation},
+          600_000
+        )
+
+        if Process.alive?(inflight.worker_pid) do
+          complete_inflight_load(state, key, inflight, result)
+        else
+          state = accept_recovery_crash(state, key, inflight.worker_pid)
+          complete_inflight_load(state, key, inflight, {:error, :worker_unavailable})
+        end
+
+      _stale ->
+        state
+    end
+  end
+
+  defp apply_recovery_effect(state, key, {:schedule, fence, due}) do
+    Process.send_after(
+      self(),
+      {:recovery_timer, state.recovery_epoch, key, fence},
+      max(due - recovery_now(), 0)
+    )
+
+    state
+  end
+
+  defp apply_recovery_effect(state, key, {:load, _fence}) do
+    entry = state.recovery[key]
+    limit = Node.max_loaded_models()
+
+    if (not state.stopping? and not state.resetting? and entry.request) &&
+         (is_nil(limit) or count_capacity_reserved(state) <= limit) do
+      request = %{
+        entry.request
+        | deadline_unix_ms: System.system_time(:millisecond) + Node.worker_load_timeout_ms()
+      }
+
+      {:noreply, state} = start_recovery_load(key, request, state)
+      state
+    else
+      entry = Recovery.transition(entry, {:restart_failed, entry.policy.fence}, recovery_now())
+      state = put_recovery(state, key, entry)
+
+      if RecoveryCommand.active?(entry.command),
+        do: fail_operator_recovery(state, key),
+        else: pump_recovery(state, key)
+    end
+  end
+
+  defp apply_recovery_effect(state, key, :await_cleanup) do
+    if state.recovery[key].ownership["phase"] in ["resolved", "operator_terminated"] do
+      state
+      |> apply_recovery_effect(key, :reply_stopped)
+      |> apply_recovery_effect(key, :reply_operator)
+    else
+      Process.send_after(self(), {:recovery_cleanup, state.recovery_epoch, key}, 1_000)
+      state
+    end
+  end
+
+  defp apply_recovery_effect(state, _key, :checkpoint), do: state
+  defp apply_recovery_effect(state, _key, {:cancel, _fence}), do: state
+  defp apply_recovery_effect(state, _key, {:refuse, _reason}), do: state
+
+  defp accept_recovery_crash(state, key, pid) do
+    case Map.get(state.recovery, key) do
+      %{last_worker_pid: ^pid, policy: %{incarnation: incarnation}} = entry
+      when not is_nil(incarnation) ->
+        entry = %{
+          entry
+          | last_worker_pid: pid,
+            ownership: Map.put(entry.ownership, "phase", "cleanup")
+        }
+
+        {entry, effects} =
+          if entry.operator_waiters != [] do
+            {%{
+               entry
+               | command:
+                   Map.merge(entry.command, %{"phase" => "completed", "outcome" => "unavailable"})
+             }, [:reply_operator, :await_cleanup]}
+          else
+            {entry, [:await_cleanup]}
+          end
+
+        entry = Recovery.transition(entry, {:crash, incarnation}, recovery_now(), effects)
+
+        put_recovery(state, key, entry) |> pump_recovery(key)
+
+      _already_counted ->
+        state
+    end
+  end
+
+  defp current_load_completion?(entry, inflight, worker_pid) do
+    incarnation = inflight[:recovery_incarnation]
+
+    not is_nil(incarnation) and entry.policy.incarnation == incarnation and
+      entry.last_worker_pid == worker_pid and entry.ownership["phase"] == "loading" and
+      is_nil(entry.pending) and is_nil(entry.desired)
+  end
+
+  defp complete_operator_load(entry) do
+    if match?(%{"phase" => "loading"}, entry.command) do
+      {%{entry | command: Map.merge(entry.command, %{"phase" => "completed", "outcome" => "ok"})},
+       [:reply_operator]}
+    else
+      {entry, []}
+    end
+  end
+
+  defp fail_operator_recovery(state, key) do
+    entry = state.recovery[key]
+
+    if RecoveryCommand.active?(entry.command) do
+      command = Map.merge(entry.command, %{"phase" => "completed", "outcome" => "unavailable"})
+      entry = %{entry | command: command}
+
+      entry =
+        Recovery.transition(entry, :interrupt, recovery_now(), [:reply_operator, :await_cleanup])
+
+      entry =
+        if entry.policy.state == :open,
+          do: entry,
+          else: put_in(entry.policy.state, :recovery_required)
+
+      put_recovery(state, key, entry) |> pump_recovery(key)
+    else
+      state
+    end
+  end
+
+  defp recovery_load_failed(state, key, inflight, reason \\ nil) do
+    cond do
+      is_pid(inflight.worker_pid) and match?({:worker_exited, _}, reason) ->
+        accept_recovery_crash(state, key, inflight.worker_pid)
+
+      is_pid(inflight.worker_pid) and not Process.alive?(inflight.worker_pid) ->
+        accept_recovery_crash(state, key, inflight.worker_pid)
+
+      true ->
+        state = record_recovery_stop(state, key)
+
+        state =
+          if inflight.recovery_owner do
+            entry = state.recovery[key]
+
+            entry =
+              Recovery.transition(entry, {:restart_failed, entry.policy.fence}, recovery_now())
+
+            put_recovery(state, key, entry) |> pump_recovery(key)
+          else
+            state
+          end
+
+        fail_operator_recovery(state, key)
+    end
+  end
+
+  defp fail_inflight_worker(state, key, pid) do
+    case state.inflight_loads[key] do
+      %{worker_pid: ^pid} = inflight ->
+        Task.Supervisor.terminate_child(@task_supervisor, inflight.task_pid)
+        complete_inflight_load(state, key, inflight, {:error, :worker_unavailable})
+
+      _ ->
+        state
+    end
+  end
+
+  defp record_recovery_stop(state, key) do
+    case Map.get(state.recovery, key) do
+      %{policy: %{incarnation: incarnation}} = entry when not is_nil(incarnation) ->
+        record_recovery_worker_stop(state, key, entry, state.workers[key])
+
+      _no_worker ->
+        state
+    end
+  end
+
+  defp record_recovery_worker_stop(state, key, entry, %{pid: pid}) do
+    if Process.alive?(pid),
+      do: interrupt_recovery(state, key, entry),
+      else: accept_recovery_crash(state, key, pid)
+  end
+
+  defp record_recovery_worker_stop(state, key, entry, nil),
+    do: interrupt_recovery(state, key, entry)
+
+  defp interrupt_recovery(state, key, entry) do
+    entry = %{entry | ownership: Map.put(entry.ownership, "phase", "cleanup")}
+    entry = Recovery.transition(entry, :interrupt, recovery_now(), [:await_cleanup])
+    put_recovery(state, key, entry) |> pump_recovery(key)
+  end
+
+  defp recovery_cleanup_resolved?(state, key) do
+    entry = state.recovery[key]
+    custody = Node.runtime_config()[:worker_recovery_custody] || WorkerRecoveryCustody
+
+    cond do
+      Map.has_key?(state.workers, key) or
+          recovery_inflight_owns_worker?(Map.get(state.inflight_loads, key)) ->
+        false
+
+      entry.prior? ->
+        custody.resolve_prior_worker_ownership(key, entry.ownership["custody"]) == :resolved
+
+      is_nil(entry.last_worker_pid) ->
+        true
+
+      true ->
+        custody.resolve_current(entry.last_worker_pid) == :resolved
+    end
+  end
+
+  defp recovery_inflight_owns_worker?(nil), do: false
+
+  defp recovery_inflight_owns_worker?(%{worker_pid: nil, recovery_wait?: true}), do: false
+
+  defp recovery_inflight_owns_worker?(_inflight), do: true
+
+  defp start_recovery_load(key, request, state) do
+    manager = self()
+    models_root = Node.models_root()
+
+    task =
+      Task.Supervisor.async_nolink(@task_supervisor, fn ->
+        run_load_pipeline(key, request, models_root, manager)
+      end)
+
+    inflight = %{
+      request: request,
+      request_fingerprint: request_fingerprint(request),
+      leader_waiter_id: nil,
+      started_monotonic_ms: recovery_now(),
+      source_scheme: extract_source_scheme(request.artifact_source_uri),
+      preload: false,
+      backend: Node.worker_backend(),
+      task_pid: task.pid,
+      task_ref: task.ref,
+      waiters: [],
+      total_waiter_count: 0,
+      replied_waiter_count: 0,
+      worker_pid: nil,
+      recovery_owner: true
+    }
+
+    emit_load_start(key, inflight)
+
+    {:noreply,
+     %{
+       state
+       | inflight_loads: Map.put(state.inflight_loads, key, inflight),
+         load_refs: Map.put(state.load_refs, task.ref, key)
+     }}
   end
 
   # -- Async load pipeline ---------------------------------------------------
@@ -636,7 +1760,8 @@ defmodule Orchard.Node.ModelManager do
           waiters: [waiter],
           total_waiter_count: 1,
           replied_waiter_count: 0,
-          worker_pid: nil
+          worker_pid: nil,
+          recovery_owner: false
         }
 
         emit_load_start(key, inflight)
@@ -677,21 +1802,24 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  defp start_and_load_worker(key, request, remaining_ms, manager) do
-    model_ref = %ModelRef{model_id: elem(key, 0), version: elem(key, 1)}
+  defp start_and_load_worker(key, request, _remaining_ms, manager) do
+    case GenServer.call(manager, {:recovery_claim_worker, key}, :infinity) do
+      {:ok, worker_pid} -> load_claimed_worker(worker_pid, request)
+      {:error, _} = err -> err
+    end
+  end
 
-    case WorkerSupervisor.start_worker(model_ref, manager: manager) do
-      {:ok, worker_pid} ->
-        send(manager, {:model_load_worker_started, key, self(), worker_pid})
+  defp load_claimed_worker(worker_pid, request) do
+    with {:ok, remaining_ms} <- remaining_load_budget(request) do
+      ensure_claimed_worker_loaded(worker_pid, request, remaining_ms)
+    end
+  end
 
-        case safe_ensure_loaded(worker_pid, request, remaining_ms) do
-          :loaded -> {:ok, worker_pid}
-          :already_loaded -> {:ok, worker_pid}
-          {:error, _} = err -> err
-        end
-
-      {:error, _} = err ->
-        err
+  defp ensure_claimed_worker_loaded(worker_pid, request, remaining_ms) do
+    case safe_ensure_loaded(worker_pid, request, remaining_ms) do
+      :loaded -> {:ok, worker_pid}
+      :already_loaded -> {:ok, worker_pid}
+      {:error, _} = err -> err
     end
   end
 
@@ -767,7 +1895,7 @@ defmodule Orchard.Node.ModelManager do
   # the load has already been abandoned by the controller. Do not mark the worker
   # loaded for a stale completion; clean it up.
   defp finalize_successful_load(state, key, inflight, expired, [])
-       when not inflight.preload do
+       when not inflight.preload and not inflight.recovery_owner do
     state = remove_inflight(state, key, inflight)
     state = cleanup_worker_placement(state, key)
 
@@ -911,16 +2039,15 @@ defmodule Orchard.Node.ModelManager do
     Task.Supervisor.terminate_child(@task_supervisor, inflight.task_pid)
     Process.demonitor(inflight.task_ref, [:flush])
 
-    # Drain any pending worker-started message
-    {state, worker_drained?} = drain_pending_worker_started(state, key, inflight.task_pid)
-
     emit_load_stop(key, inflight, %{
       outcome: :cancelled,
       waiter_count: inflight.total_waiter_count,
       replied_waiter_count: inflight.replied_waiter_count,
-      worker_started: inflight.worker_pid != nil or worker_drained?,
+      worker_started: inflight.worker_pid != nil,
       cancel_reason: cancel_reason
     })
+
+    state = record_recovery_stop(state, key)
 
     # Remove inflight tracking
     state = %{
@@ -978,7 +2105,9 @@ defmodule Orchard.Node.ModelManager do
         waiters: rescheduled_waiters,
         total_waiter_count: length(rescheduled_waiters),
         replied_waiter_count: 0,
-        worker_pid: nil
+        worker_pid: nil,
+        recovery_owner: false,
+        recovery_wait?: true
       }
 
       emit_load_start(key, inflight)
@@ -1006,17 +2135,13 @@ defmodule Orchard.Node.ModelManager do
         Task.Supervisor.terminate_child(@task_supervisor, inflight.task_pid)
         Process.demonitor(inflight.task_ref, [:flush])
 
-        # Drain any pending worker-started message the task may have sent
-        # before being killed — prevents orphaned workers under WorkerSupervisor.
-        {state, worker_drained?} = drain_pending_worker_started(state, key, inflight.task_pid)
-
         all_replied = inflight.replied_waiter_count + length(inflight.waiters)
 
         emit_load_stop(key, inflight, %{
           outcome: :cancelled,
           waiter_count: inflight.total_waiter_count,
           replied_waiter_count: all_replied,
-          worker_started: inflight.worker_pid != nil or worker_drained?,
+          worker_started: inflight.worker_pid != nil,
           cancel_reason: cancel_reason
         })
 
@@ -1031,20 +2156,6 @@ defmodule Orchard.Node.ModelManager do
         }
 
         cleanup_worker_placement(state, key)
-    end
-  end
-
-  defp drain_pending_worker_started(state, key, task_pid) do
-    receive do
-      {:model_load_worker_started, ^key, ^task_pid, worker_pid} ->
-        # Worker was spawned but task was killed before manager processed the
-        # notification. Register and immediately clean up to avoid orphaning.
-        model_ref = %ModelRef{model_id: elem(key, 0), version: elem(key, 1)}
-        monitor_ref = Process.monitor(worker_pid)
-        state = put_worker(state, key, model_ref, worker_pid, monitor_ref)
-        {state, true}
-    after
-      0 -> {state, false}
     end
   end
 
@@ -1111,6 +2222,8 @@ defmodule Orchard.Node.ModelManager do
   # valid waiters — runtime residency requires an active owner, so we free the
   # in-memory worker rather than keeping a model loaded for an abandoned request.
   defp cleanup_worker_placement(state, key) do
+    state = record_recovery_stop(state, key)
+
     case Map.get(state.workers, key) do
       nil ->
         state
@@ -1450,6 +2563,7 @@ defmodule Orchard.Node.ModelManager do
       runtime_memory_budgets: runtime_memory_budgets,
       runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
       worker_crash_counters: worker_crash_counters(state),
+      worker_recovery_epoch: state.recovery_epoch,
       supports_prompt_token_ids: supports_prompt_token_ids,
       runtime_model_placements: runtime_model_placements(state, worker_request_limits)
     }
@@ -1524,11 +2638,20 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp runtime_model_placements(state, worker_request_limits) do
-    Enum.map(loaded_workers(state), fn {key, entry} ->
+    keys = (Map.keys(state.workers) ++ Map.keys(state.recovery)) |> Enum.uniq() |> Enum.sort()
+
+    Enum.map(keys, fn {model_id, version} = key ->
+      loaded? = match?(%{placement_state: :PLACEMENT_STATE_LOADED}, state.workers[key])
+
       %RuntimeModelPlacement{
-        model_ref: entry.model_ref,
+        model_ref: %ModelRef{model_id: model_id, version: version},
         active_request_count: active_request_count_for_model(state.active_requests, key),
-        max_concurrency: Map.get(worker_request_limits, key, fallback_worker_request_limit())
+        max_concurrency:
+          if(loaded?,
+            do: Map.get(worker_request_limits, key, fallback_worker_request_limit()),
+            else: 0
+          ),
+        worker_recovery_json: Jason.encode!(recovery_projection(state, key))
       }
     end)
   end
@@ -2149,7 +3272,7 @@ defmodule Orchard.Node.ModelManager do
 
   defp call_timeout_for(_request), do: Node.worker_load_timeout_ms() + 10_000
 
-  defp initial_state(counter_version \\ new_worker_crash_counter_version(), worker_crashes \\ %{}) do
+  defp initial_state do
     %{
       workers: %{},
       worker_refs: %{},
@@ -2157,8 +3280,16 @@ defmodule Orchard.Node.ModelManager do
       subscriber_refs: %{},
       inflight_loads: %{},
       load_refs: %{},
-      worker_crash_counter_version: counter_version,
-      worker_crashes: worker_crashes
+      worker_crash_counter_version: new_worker_crash_counter_version(),
+      worker_crashes: %{},
+      recovery_epoch: new_worker_crash_counter_version(),
+      recovery: %{},
+      recovery_hydrations: %{},
+      recovery_io_refs: %{},
+      recovery_read_retry_at: %{},
+      eviction_continuations: %{},
+      stopping?: false,
+      resetting?: false
     }
   end
 
@@ -2189,7 +3320,7 @@ defmodule Orchard.Node.ModelManager do
   # This is intentional: deferring eviction until after acquisition would
   # require cross-process coordination between the async load task and the
   # GenServer's capacity state.
-  defp maybe_evict_before_load(state, target_key) do
+  defp maybe_evict_before_load(state, target_key, request, from) do
     case Node.max_loaded_models() do
       nil ->
         {:ok, state}
@@ -2200,12 +3331,12 @@ defmodule Orchard.Node.ModelManager do
         if reserved_count < limit do
           {:ok, state}
         else
-          do_evict(state, target_key, limit, reserved_count)
+          do_evict(state, target_key, limit, reserved_count, request, from)
         end
     end
   end
 
-  defp do_evict(state, target_key, limit, reserved_count) do
+  defp do_evict(state, target_key, limit, reserved_count, request, from) do
     start_time = System.monotonic_time(:millisecond)
     {incoming_model_id, incoming_version} = target_key
 
@@ -2223,7 +3354,7 @@ defmodule Orchard.Node.ModelManager do
     emit_eviction_start(base_meta)
 
     case select_eviction_candidate(state, target_key) do
-      {:ok, victim_key, victim_entry} ->
+      {:ok, victim_key, _victim_entry} ->
         {victim_model_id, victim_version} = victim_key
 
         eviction_meta =
@@ -2239,16 +3370,16 @@ defmodule Orchard.Node.ModelManager do
           evict: true
         }
 
-        case unload_worker_entry(state, victim_key, victim_entry, evict_request) do
-          {:ok, next_state} ->
-            duration_ms = System.monotonic_time(:millisecond) - start_time
-            emit_eviction_stop(eviction_meta, duration_ms)
-            {:ok, next_state}
+        ref = make_ref()
+        continuation = %{request: request, from: from, meta: eviction_meta, started: start_time}
 
-          {:error, reason, next_state} ->
-            duration_ms = System.monotonic_time(:millisecond) - start_time
-            emit_eviction_exception(eviction_meta, duration_ms, reason)
-            {:error, reason, next_state}
+        case handle_call({:unload_model, evict_request}, {self(), ref}, state) do
+          {:noreply, next_state} ->
+            {:deferred, put_in(next_state, [:eviction_continuations, ref], continuation)}
+
+          {:reply, response, next_state} ->
+            send(self(), {ref, response})
+            {:deferred, put_in(next_state, [:eviction_continuations, ref], continuation)}
         end
 
       :none ->
@@ -2270,6 +3401,7 @@ defmodule Orchard.Node.ModelManager do
       |> Enum.filter(fn {key, entry} ->
         key != target_key and
           entry.placement_state == :PLACEMENT_STATE_LOADED and
+          is_nil(Recovery.refusal(state.recovery[key])) and
           active_request_count_for_model(state.active_requests, key) == 0
       end)
       |> Enum.sort_by(fn {key, entry} ->
@@ -2282,28 +3414,31 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  # Unlike perform_unload/5 (the explicit unload path), this does NOT call
-  # maybe_cleanup_unloaded_requests — select_eviction_candidate/2 guarantees
-  # the victim has zero active requests, so cleanup would be a no-op.
-  defp unload_worker_entry(state, key, entry, request) do
-    case safe_unload(entry.pid, force: request.force, evict: request.evict) do
-      :ok ->
-        next_state = finalize_worker_removal(state, key, entry.pid, entry.monitor_ref)
-        {:ok, next_state}
+  defp finish_eviction(state, continuation, %Ack{ok: true}) do
+    emit_eviction_stop(
+      continuation.meta,
+      System.monotonic_time(:millisecond) - continuation.started
+    )
 
-      {:error, :worker_unavailable} ->
-        # Worker already gone — slot is freed, treat as success
-        next_state =
-          state
-          |> finalize_worker_removal(key, entry.pid, entry.monitor_ref)
-          |> cleanup_worker_unavailable(key, :worker_unavailable)
+    case handle_call({:ensure_model_loaded, continuation.request}, continuation.from, state) do
+      {:reply, response, next} ->
+        GenServer.reply(continuation.from, response)
+        {:noreply, next}
 
-        {:ok, next_state}
-
-      {:error, reason} ->
-        next_state = finalize_worker_removal(state, key, entry.pid, entry.monitor_ref)
-        {:error, reason, next_state}
+      {:noreply, next} ->
+        {:noreply, next}
     end
+  end
+
+  defp finish_eviction(state, continuation, _failure) do
+    emit_eviction_exception(
+      continuation.meta,
+      System.monotonic_time(:millisecond) - continuation.started,
+      :model_capacity_exhausted
+    )
+
+    GenServer.reply(continuation.from, ModelLoadFailure.to_response(:model_capacity_exhausted))
+    {:noreply, state}
   end
 
   # Counts unique model slots reserved by inflight loads OR workers in
@@ -2322,7 +3457,16 @@ defmodule Orchard.Node.ModelManager do
       |> Enum.map(fn {key, _entry} -> key end)
       |> MapSet.new()
 
-    MapSet.union(inflight_keys, worker_keys) |> MapSet.size()
+    recovery_keys =
+      state.recovery
+      |> Enum.filter(fn {_key, entry} ->
+        entry.policy.state in [:backoff, :restarting] or
+          entry.ownership["phase"] not in ["resolved", "operator_terminated"]
+      end)
+      |> Enum.map(&elem(&1, 0))
+      |> MapSet.new()
+
+    inflight_keys |> MapSet.union(worker_keys) |> MapSet.union(recovery_keys) |> MapSet.size()
   end
 
   # -- Telemetry helpers -----------------------------------------------------

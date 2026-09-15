@@ -40,6 +40,8 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
   alias Orchard.Node.ModelManager
   alias Orchard.Requests
   alias Orchard.TestSupport.ModelRequestFixtures
+  alias Orchard.TestSupport.WorkerRecoveryCheckpointClient
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   @moduletag :db
   @moduletag :safe_tokenization_smoke
@@ -116,6 +118,16 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
   setup do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_orchestrator = Application.get_env(:orchard_controller, :api_chat_orchestrator_impl)
+
+    previous_worker_recovery_inspector =
+      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
+
+    Application.put_env(
+      :orchard_controller,
+      :worker_recovery_inspector,
+      &WorkerRecoveryFixtures.inspect_lifecycle/2
+    )
+
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
     Application.delete_env(:orchard_controller, :api_chat_orchestrator_impl)
@@ -124,7 +136,10 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
     Application.put_env(
       :orchard_node_agent,
       :runtime,
-      Keyword.merge(previous_runtime, runtime_adapter_impl: __MODULE__.RuntimeAdapter)
+      Keyword.merge(previous_runtime,
+        runtime_adapter_impl: __MODULE__.RuntimeAdapter,
+        worker_recovery_checkpoint_client: WorkerRecoveryCheckpointClient
+      )
     )
 
     ModelManager.reset()
@@ -132,6 +147,15 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
 
     on_exit(fn ->
       restore_orchestrator(previous_orchestrator)
+
+      case previous_worker_recovery_inspector do
+        {:ok, inspector} ->
+          Application.put_env(:orchard_controller, :worker_recovery_inspector, inspector)
+
+        :error ->
+          Application.delete_env(:orchard_controller, :worker_recovery_inspector)
+      end
+
       Application.delete_env(:orchard_controller, :safe_tokenization_lifecycle_capture_pid)
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)

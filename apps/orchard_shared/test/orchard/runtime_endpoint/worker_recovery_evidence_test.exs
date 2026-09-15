@@ -1,0 +1,63 @@
+defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidenceTest do
+  use ExUnit.Case, async: true
+
+  alias Orchard.RuntimeEndpoint.{Placement, WorkerRecoveryEvidence}
+
+  test "SPEC §12.2 retained recovery projects failed and loading placement lifecycle states" do
+    for {recovery_state, placement_state} <- [
+          {"backoff", :failed},
+          {"open", :failed},
+          {"recovery_required", :failed},
+          {"restarting", :loading},
+          {"armed", :unknown}
+        ] do
+      record = %{
+        model_ref: %{model_id: "recovery/model", version: "v1"},
+        worker_recovery_json: Jason.encode!(projection(recovery_state))
+      }
+
+      assert [%Placement{state: ^placement_state}] = WorkerRecoveryEvidence.attach([], [record])
+    end
+  end
+
+  test "SPEC §12.2 conflicting atom and string recovery evidence fails closed" do
+    evidence = projection("armed") |> Map.put(:state, "open")
+    assert nil == WorkerRecoveryEvidence.normalize(evidence)
+
+    conflicting_key =
+      projection("armed")
+      |> Map.put(:key, %{
+        "node_id" => "00000000-0000-4000-a000-000000000002",
+        node_id: "00000000-0000-4000-a000-000000000001",
+        model_id: "recovery/model",
+        version: "v1"
+      })
+
+    assert nil == WorkerRecoveryEvidence.normalize(conflicting_key)
+  end
+
+  defp projection(state) do
+    eligible = state == "armed"
+
+    %{
+      "key" => %{
+        "node_id" => "00000000-0000-4000-a000-000000000001",
+        "model_id" => "recovery/model",
+        "version" => "v1"
+      },
+      "epoch" => "epoch-1",
+      "owner_epoch" => "epoch-1",
+      "revision" => 3,
+      "state" => state,
+      "hydrated" => true,
+      "eligible" => eligible,
+      "reason" => reason(state)
+    }
+  end
+
+  defp reason("backoff"), do: "worker_restart_backoff"
+  defp reason("restarting"), do: "worker_restart_in_progress"
+  defp reason("open"), do: "placement_crash_breaker_open"
+  defp reason("recovery_required"), do: "placement_recovery_required"
+  defp reason("armed"), do: nil
+end

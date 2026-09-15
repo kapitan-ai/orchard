@@ -85,6 +85,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
   def watch(_, _, _), do: {:error, :invalid_lease}
 
+  @doc "Records a BEAM-only stub owner, which cannot create an OS subprocess."
+  @spec watch_beam_only(pid(), term()) :: :ok
+  def watch_beam_only(owner, key), do: GenServer.call(__MODULE__, {:watch_beam_only, owner, key})
+
   @spec release(lease_ref()) :: :ok
   def release(ref) do
     GenServer.cast(__MODULE__, {:release, ref})
@@ -93,6 +97,14 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   @spec reap(lease_ref(), term()) :: :ok
   def reap(ref, reason) do
     GenServer.cast(__MODULE__, {:reap, ref, reason})
+  end
+
+  @doc "Reports affirmative cleanup of this runtime owner in the current reaper lifetime."
+  @spec ownership_resolved?(pid()) :: boolean()
+  def ownership_resolved?(owner_pid) do
+    GenServer.call(__MODULE__, {:ownership_resolved, owner_pid})
+  catch
+    :exit, _reason -> false
   end
 
   @impl true
@@ -104,11 +116,34 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     {:ok,
      %{
        leases: %{},
-       owner_monitors: %{}
+       owner_monitors: %{},
+       resolved_owners: %{},
+       beam_owners: %{}
      }}
   end
 
   @impl true
+  def handle_call({:ownership_resolved, owner_pid}, _from, state) do
+    resolved? =
+      Enum.any?(state.resolved_owners, fn {_key, owner} -> owner == owner_pid end) and
+        not Enum.any?(state.leases, fn {_ref, lease} -> lease.owner_pid == owner_pid end) and
+        not Enum.any?(state.beam_owners, fn {_ref, {owner, _key}} -> owner == owner_pid end)
+
+    {:reply, resolved?, state}
+  end
+
+  def handle_call({:watch_beam_only, owner, key}, {owner, _tag}, state) do
+    monitor = Process.monitor(owner)
+
+    state = %{
+      state
+      | beam_owners: Map.put(state.beam_owners, monitor, {owner, key}),
+        resolved_owners: Map.delete(state.resolved_owners, key)
+    }
+
+    {:reply, :ok, state}
+  end
+
   def handle_call({:watch, owner_pid, os_pid, meta}, _from, state) do
     ref = make_ref()
     monitor_ref = Process.monitor(owner_pid)
@@ -130,6 +165,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
       state
       |> put_in([Access.key(:leases), ref], lease)
       |> put_in([Access.key(:owner_monitors), monitor_ref], ref)
+      |> Map.update!(:resolved_owners, &Map.delete(&1, lease.model_ref))
 
     {:reply, {:ok, ref}, state}
   end
@@ -144,6 +180,14 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   @impl true
+  def handle_info({:DOWN, ref, :process, owner, _reason}, %{beam_owners: owners} = state)
+      when is_map_key(owners, ref) do
+    {{^owner, key}, owners} = Map.pop(owners, ref)
+
+    {:noreply,
+     %{state | beam_owners: owners, resolved_owners: Map.put(state.resolved_owners, key, owner)}}
+  end
+
   def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
     {ref, owner_monitors} = Map.pop(state.owner_monitors, monitor_ref)
 
@@ -288,7 +332,20 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           Process.cancel_timer(lease.timer_ref, info: false)
         end
 
-        %{state | leases: leases, owner_monitors: owner_monitors}
+        resolved_owners =
+          if is_binary(lease.os_identity) and
+               not WorkerProcessLifecycle.os_process_alive?(lease.os_pid) do
+            Map.put(state.resolved_owners, lease.model_ref, lease.owner_pid)
+          else
+            Map.delete(state.resolved_owners, lease.model_ref)
+          end
+
+        %{
+          state
+          | leases: leases,
+            owner_monitors: owner_monitors,
+            resolved_owners: resolved_owners
+        }
     end
   end
 

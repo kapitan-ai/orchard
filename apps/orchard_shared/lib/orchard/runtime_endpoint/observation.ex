@@ -25,6 +25,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
             runtime_memory_budgets: [],
             runtime_prefix_cache_statuses: [],
             worker_crash_counters: [],
+            worker_recovery_epoch: nil,
             supports_prompt_token_ids: false
 
   @type availability :: :unknown | :available | :unavailable | :degraded | atom()
@@ -49,6 +50,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
           runtime_memory_budgets: [term()],
           runtime_prefix_cache_statuses: [term()],
           worker_crash_counters: [term()],
+          worker_recovery_epoch: String.t() | nil,
           supports_prompt_token_ids: boolean()
         }
 
@@ -73,6 +75,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       runtime_memory_budgets: list_value(attrs, :runtime_memory_budgets),
       runtime_prefix_cache_statuses: list_value(attrs, :runtime_prefix_cache_statuses),
       worker_crash_counters: list_value(attrs, :worker_crash_counters),
+      worker_recovery_epoch: value(attrs, :worker_recovery_epoch),
       supports_prompt_token_ids: value(attrs, :supports_prompt_token_ids) == true
     }
   end

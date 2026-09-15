@@ -111,6 +111,7 @@ defmodule Orchard.NodeHeartbeatsTest do
                target
                validity
                worker_crash_counters
+               worker_recovery_epoch
                worker_state
              )
 

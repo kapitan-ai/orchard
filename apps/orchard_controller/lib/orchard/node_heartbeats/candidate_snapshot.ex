@@ -11,7 +11,14 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
 
   alias Orchard.Nodes.{Node, NodeHeartbeat}
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
-  alias Orchard.RuntimeEndpoint.{ModelRef, Placement, PlacementCapacity, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    ModelRef,
+    Placement,
+    PlacementCapacity,
+    Target,
+    WorkerRecoveryEvidence
+  }
 
   @candidate_source "monitor_snapshot"
   @eligible_health [:healthy, :degraded]
@@ -40,7 +47,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
       :supports_prompt_token_ids,
       :candidate_source
     ]
-    defstruct @enforce_keys
+    defstruct @enforce_keys ++ [worker_recovery_epoch: nil]
 
     @type t :: %__MODULE__{
             target: Target.t(),
@@ -59,6 +66,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
             placements: [Placement.t()],
             runtime_memory_budgets: [MemoryBudget.t()],
             runtime_prefix_cache_statuses: [PrefixCacheStatus.t()],
+            worker_recovery_epoch: String.t() | nil,
             supports_prompt_token_ids: boolean(),
             candidate_source: String.t()
           }
@@ -429,6 +437,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
          runtime_prefix_cache_statuses:
            normalize_prefix_cache_statuses(payload["runtime_prefix_cache_statuses"]),
          supports_prompt_token_ids: payload["supports_prompt_token_ids"] == true,
+         worker_recovery_epoch: payload["worker_recovery_epoch"],
          candidate_source: @candidate_source
        }}
     else
@@ -574,6 +583,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
             state: placement_state(placement["state"]),
             capacity: capacity,
             last_used_at: placement["last_used_at"],
+            worker_recovery: WorkerRecoveryEvidence.normalize(placement["worker_recovery"]),
             diagnostics: %{}
           }
         ]

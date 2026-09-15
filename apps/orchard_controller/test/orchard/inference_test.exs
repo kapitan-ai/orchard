@@ -52,6 +52,11 @@ defmodule Orchard.InferenceTest do
 
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
+    previous_worker_recovery_inspector =
+      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
+
+    Application.delete_env(:orchard_controller, :worker_recovery_inspector)
+
     env_snapshot =
       System.get_env()
       |> Enum.filter(fn {key, _value} -> config_env_key?(key) end)
@@ -59,6 +64,15 @@ defmodule Orchard.InferenceTest do
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
+
+      case previous_worker_recovery_inspector do
+        {:ok, inspector} ->
+          Application.put_env(:orchard_controller, :worker_recovery_inspector, inspector)
+
+        :error ->
+          Application.delete_env(:orchard_controller, :worker_recovery_inspector)
+      end
+
       restore_env(env_snapshot)
     end)
 
@@ -76,16 +90,20 @@ defmodule Orchard.InferenceTest do
   end
 
   @tag :db
-  test "default scheduler and runtime seam use configured runtime target" do
+  test "SPEC.md §12.2 default scheduler fails closed without recovery evidence" do
     request = canonical_request()
 
-    assert {:ok, schedule} = SingleNode.schedule(request)
-    assert schedule.strategy == :single_node
-    assert schedule.request_id == request.public_id
-    assert schedule.runtime_client_target == test_runtime_client_target()
-    assert schedule.request_timeout_ms == 5_000
-    assert schedule.model_load_timeout_ms == 5_000
+    assert {:error, :model_busy,
+            %{
+              rejected_candidates: [
+                %{
+                  reason_codes: ["worker_recovery_evidence_unavailable"],
+                  target_ref: "127.0.0.1:15071"
+                }
+              ]
+            }} = SingleNode.schedule(request)
 
+    assert Inference.runtime_client_target() == test_runtime_client_target()
     assert Client.mode() == :fake
 
     assert String.ends_with?(

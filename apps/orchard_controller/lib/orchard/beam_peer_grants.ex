@@ -709,7 +709,10 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
-  defp authenticated_peer_from_certificate(certificate_der) do
+  @doc "Resolves a completed mTLS exchange's certificate to its consumed Node enrollment."
+  @spec authenticated_peer_from_certificate(binary()) ::
+          {:ok, AuthenticatedPeer.t()} | {:error, atom()}
+  def authenticated_peer_from_certificate(certificate_der) do
     with {:ok, certificate} <- CertificateIdentity.from_der(certificate_der),
          [node_uri_san] <- certificate.uri_sans,
          {:ok, cluster_id, node_id} <- parse_node_uri_san(node_uri_san),

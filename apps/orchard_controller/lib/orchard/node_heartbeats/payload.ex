@@ -4,7 +4,15 @@ defmodule Orchard.NodeHeartbeats.Payload do
   """
 
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
-  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    ModelRef,
+    Observation,
+    Placement,
+    PlacementCapacity,
+    Target,
+    WorkerRecoveryEvidence
+  }
 
   @schema_version 1
   @default_max_bytes 262_144
@@ -101,6 +109,8 @@ defmodule Orchard.NodeHeartbeats.Payload do
         "aggregate_max_concurrency" => aggregate_max_concurrency(observation),
         "aggregate_capacity_evidence" => aggregate_capacity_evidence(observation),
         "placements" => placements,
+        "worker_recovery_epoch" =>
+          bounded_recovery_epoch(value(observation, :worker_recovery_epoch)),
         "runtime_memory_budgets" =>
           normalize_entries(
             value(observation, :runtime_memory_budgets),
@@ -288,6 +298,11 @@ defmodule Orchard.NodeHeartbeats.Payload do
   defp capacity_validity(_active, nil), do: "missing"
   defp capacity_validity(_active, _limit), do: "valid"
 
+  defp bounded_recovery_epoch(epoch) when is_binary(epoch) and byte_size(epoch) in 1..128,
+    do: epoch
+
+  defp bounded_recovery_epoch(_epoch), do: nil
+
   defp normalize_placements(placements) when is_list(placements) do
     with :ok <- ensure_unique_placement_model_refs(placements),
          :ok <- ensure_placement_limit(placements) do
@@ -345,7 +360,9 @@ defmodule Orchard.NodeHeartbeats.Payload do
             "model_ref" => model_ref,
             "state" => normalize_placement_state(value(placement, :state)),
             "capacity" => normalize_placement_capacity(value(placement, :capacity)),
-            "last_used_at" => normalize_last_used_at(value(placement, :last_used_at))
+            "last_used_at" => normalize_last_used_at(value(placement, :last_used_at)),
+            "worker_recovery" =>
+              WorkerRecoveryEvidence.normalize(value(placement, :worker_recovery))
           }
         ]
 

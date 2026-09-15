@@ -127,6 +127,15 @@ defmodule Orchard.Node.RuntimeServer do
     :ok
   end
 
+  defp normalize_failure_reason({:worker_recovery_refused, reason})
+       when reason in [
+              :worker_restart_backoff,
+              :worker_restart_in_progress,
+              :placement_crash_breaker_open,
+              :placement_recovery_required
+            ],
+       do: {"model_busy", "placement recovery prevents execution"}
+
   defp normalize_failure_reason(:model_busy),
     do: {"model_busy", "model already has an active request"}
 
@@ -147,6 +156,15 @@ defmodule Orchard.Node.RuntimeServer do
 
   @doc false
   @spec safe_failure_reason_code(term()) :: String.t()
+  def safe_failure_reason_code({:worker_recovery_refused, reason})
+      when reason in [
+             :worker_restart_backoff,
+             :worker_restart_in_progress,
+             :placement_crash_breaker_open,
+             :placement_recovery_required
+           ],
+      do: "model_busy"
+
   def safe_failure_reason_code(reason) when is_atom(reason) do
     if MapSet.member?(@known_failure_reasons, reason) do
       Atom.to_string(reason)

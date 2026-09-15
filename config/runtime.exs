@@ -1381,9 +1381,10 @@ if config_env() == :prod do
         runtime_endpoint_transport.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT", :beam)
 
       grpc_security =
-        if node_runtime_endpoint_transport == :grpc,
-          do: :mutual_tls,
-          else: :plaintext_compatibility
+        if node_runtime_endpoint_transport == :grpc or
+             env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false),
+           do: :mutual_tls,
+           else: :plaintext_compatibility
 
       node_agent_listen_host = System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
 
@@ -1695,4 +1696,30 @@ if config_env() == :dev do
       scope: membership_scope,
       source_dev_address_policy: source_dev_address_policy
   end
+end
+
+# SPEC §12.2 uses registered identities, never Node database credentials.
+if env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false) do
+  endpoint =
+    env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
+      raise "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for worker recovery control"
+
+  config :orchard_node_agent, :runtime,
+    worker_recovery_control_enabled: true,
+    worker_recovery_control_endpoint: endpoint,
+    grpc_security: :mutual_tls,
+    runtime_grpc_listener_enabled: System.get_env("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT") == "grpc"
+end
+
+if endpoint = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") do
+  config :orchard_node_agent, :runtime, worker_recovery_control_endpoint: endpoint
+end
+
+if host = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") do
+  port =
+    env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") ||
+      raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
+
+  config :orchard_controller, :worker_recovery,
+    control_listener: [host: host, port: env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)]
 end

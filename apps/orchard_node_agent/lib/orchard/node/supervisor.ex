@@ -11,6 +11,8 @@ defmodule Orchard.Node.Supervisor do
 
   alias Orchard.Node.{Endpoint, ModelManager, RuntimeProcessReaper, RuntimeTLS, WorkerSupervisor}
 
+  alias Orchard.Node.{WorkerRecoveryControlEndpoint, WorkerRecoveryControlListener}
+
   @grpc_server_id Orchard.Node.GRPCServer
 
   def start_link(init_arg \\ []) do
@@ -28,6 +30,7 @@ defmodule Orchard.Node.Supervisor do
         {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor}
       ]
       |> maybe_add_runtime_grpc_listener()
+      |> Kernel.++([Orchard.Node.WorkerRecoveryShutdown])
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
@@ -38,7 +41,7 @@ defmodule Orchard.Node.Supervisor do
     listen_address = Orchard.Node.listen_address()
 
     [
-      endpoint: Endpoint,
+      endpoint: grpc_endpoint(),
       port: listen_address[:port] || raise("missing orchard_node_agent listen port"),
       start_server: true,
       adapter_opts: grpc_adapter_opts(listen_address)
@@ -46,7 +49,7 @@ defmodule Orchard.Node.Supervisor do
   end
 
   defp maybe_add_runtime_grpc_listener(children) do
-    if Orchard.Node.runtime_grpc_listener_enabled?() do
+    if Orchard.Node.runtime_grpc_listener_enabled?() or WorkerRecoveryControlListener.enabled?() do
       children ++
         [Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)]
     else
@@ -57,10 +60,22 @@ defmodule Orchard.Node.Supervisor do
   defp grpc_adapter_opts(listen_address) do
     opts = [ip: listen_ip(listen_address[:host])]
 
-    case RuntimeTLS.server_credential() do
+    case grpc_credential() do
       :plaintext_compatibility -> opts
       {:ok, credential} -> Keyword.put(opts, :cred, credential)
     end
+  end
+
+  defp grpc_endpoint do
+    if Orchard.Node.runtime_grpc_listener_enabled?(),
+      do: Endpoint,
+      else: WorkerRecoveryControlEndpoint
+  end
+
+  defp grpc_credential do
+    if WorkerRecoveryControlListener.enabled?(),
+      do: {:ok, WorkerRecoveryControlListener.credential!()},
+      else: RuntimeTLS.server_credential()
   end
 
   defp listen_ip({_, _, _, _} = ip), do: ip

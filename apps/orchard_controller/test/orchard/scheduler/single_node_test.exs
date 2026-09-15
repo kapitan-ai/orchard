@@ -7,6 +7,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.SingleNode
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   defmodule RuntimeEndpointStubClient do
     @moduledoc false
@@ -27,8 +28,16 @@ defmodule Orchard.Scheduler.SingleNodeTest do
 
     def status(_target, _opts) do
       case Process.get(:single_node_status) do
-        nil -> {:error, :unavailable}
-        response -> {:ok, response}
+        nil ->
+          {:error, :unavailable}
+
+        response ->
+          response =
+            Map.put_new(response, :node_metadata, %{
+              node_id: WorkerRecoveryFixtures.node_id()
+            })
+
+          {:ok, WorkerRecoveryFixtures.status(response)}
       end
     end
 
@@ -45,7 +54,13 @@ defmodule Orchard.Scheduler.SingleNodeTest do
 
     def status(channel, _opts) do
       send(Process.get({__MODULE__, :owner}), {:single_node_status, channel})
-      {:ok, %{active_request_count: 0, max_concurrency: 1}}
+
+      {:ok,
+       WorkerRecoveryFixtures.status(%{
+         active_request_count: 0,
+         max_concurrency: 1,
+         node_metadata: %{node_id: WorkerRecoveryFixtures.node_id()}
+       })}
     end
 
     def disconnect(_channel), do: :ok
@@ -58,6 +73,20 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   end
 
   setup do
+    previous = Application.get_env(:orchard_controller, :worker_recovery_inspector)
+
+    Application.put_env(
+      :orchard_controller,
+      :worker_recovery_inspector,
+      &WorkerRecoveryFixtures.inspect/2
+    )
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:orchard_controller, :worker_recovery_inspector, previous),
+        else: Application.delete_env(:orchard_controller, :worker_recovery_inspector)
+    end)
+
     Process.delete(:single_node_status)
     Process.put({CountingClient, :owner}, self())
     :ok
@@ -442,15 +471,18 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert loaded_schedule.selected_tier == "loaded"
   end
 
-  test "SPEC.md §9.1 an unreachable single-node probe reports the cold tier" do
-    assert {:ok, schedule} =
+  test "SPEC.md §12.2 refuses an unreachable single-node probe without recovery evidence" do
+    assert {:error, :model_busy, decision} =
              SingleNode.default_schedule(
                canonical_request("single-unreachable-tier-model"),
                SingleNode.target(),
                status_client: StubClient
              )
 
-    assert schedule.selected_tier == "cold"
+    assert decision.selected_node_id == nil
+    assert decision.scored_candidates == []
+    assert [rejected] = decision.rejected_candidates
+    assert rejected.reason_codes == ["worker_recovery_evidence_unavailable"]
   end
 
   test "uses one conservative unmanaged slot when aggregate capacity is missing" do

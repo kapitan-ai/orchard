@@ -19,7 +19,8 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
     Operation,
     Placement,
     PlacementCapacity,
-    Target
+    Target,
+    WorkerRecoveryEvidence
   }
 
   @spec observation_from_status(Target.t() | nil, StatusResponse.t()) :: Observation.t()
@@ -42,6 +43,7 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
       runtime_memory_budgets: response.runtime_memory_budgets,
       runtime_prefix_cache_statuses: response.runtime_prefix_cache_statuses,
       worker_crash_counters: response.worker_crash_counters,
+      worker_recovery_epoch: empty_to_nil(response.worker_recovery_epoch),
       supports_prompt_token_ids: response.supports_prompt_token_ids
     })
   end
@@ -138,21 +140,27 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
   defp health_from_response(nil), do: %{}
 
   defp placements_from_status(%StatusResponse{} = response) do
-    Enum.flat_map(response.loaded_models, fn proto_ref ->
-      case model_ref_from_proto(proto_ref) do
-        %ModelRef{} = model_ref ->
-          [
-            Placement.new(%{
-              model_ref: model_ref,
-              state: :loaded,
-              capacity: placement_capacity(model_ref, response.runtime_model_placements)
-            })
-          ]
+    loaded =
+      Enum.flat_map(response.loaded_models, fn proto_ref ->
+        case model_ref_from_proto(proto_ref) do
+          %ModelRef{} = model_ref ->
+            [
+              Placement.new(%{
+                model_ref: model_ref,
+                state: :loaded,
+                capacity: placement_capacity(model_ref, response.runtime_model_placements)
+              })
+            ]
 
-        nil ->
-          []
-      end
-    end)
+          nil ->
+            []
+        end
+      end)
+
+    WorkerRecoveryEvidence.attach(
+      loaded,
+      response.runtime_model_placements
+    )
   end
 
   defp placement_capacity(%ModelRef{} = model_ref, placements) do

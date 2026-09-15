@@ -747,6 +747,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CompatibilitySingl
 
   alias Orchard.DispatchCapacity.RequestDispatcherClaimTest.GateClient
   alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   def configure(test_pid, response, load_result) do
     :persistent_term.put({__MODULE__, :test_pid}, test_pid)
@@ -765,7 +766,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest.CompatibilitySingl
 
   def status(_channel, _opts) do
     send(:persistent_term.get({__MODULE__, :test_pid}), :compatibility_status_called)
-    {:ok, :persistent_term.get({__MODULE__, :response})}
+
+    {:ok, WorkerRecoveryFixtures.status(:persistent_term.get({__MODULE__, :response}))}
   end
 
   def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts) do
@@ -832,6 +834,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
   alias Orchard.RuntimeEndpoint.{Operation, Placement, PlacementCapacity, Target}
   alias Orchard.Scheduler.{MultiNode, SingleNode}
   alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   alias __MODULE__.{
     CancellableStreamClient,
@@ -881,6 +884,16 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     insert_canonical_model!()
 
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    previous_worker_recovery_inspector =
+      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
+
+    Application.put_env(
+      :orchard_controller,
+      :worker_recovery_inspector,
+      &WorkerRecoveryFixtures.inspect/2
+    )
+
     @client.configure(self())
     @gate_client.configure(self())
     @cancellable_stream_client.configure(self())
@@ -891,6 +904,15 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
+
+      case previous_worker_recovery_inspector do
+        {:ok, inspector} ->
+          Application.put_env(:orchard_controller, :worker_recovery_inspector, inspector)
+
+        :error ->
+          Application.delete_env(:orchard_controller, :worker_recovery_inspector)
+      end
+
       @client.clear()
       @compatibility_single_wave_client.clear()
       @gate_client.clear()
@@ -2219,6 +2241,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
           max_concurrency: 2
         }
       ])
+      |> WorkerRecoveryFixtures.status()
 
     @production_fresh_status_client.configure(self(), loaded_status, loaded_status)
     loaded_input = schedule.dispatch_capacity_acquisition_input_provider.()
@@ -2875,31 +2898,26 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node.id) == 0
   end
 
-  test "SPEC 5.9 an unprobed unmanaged schedule stays dispatchable end to end" do
+  test "SPEC 12.2 unprobed unmanaged scheduling fails closed without recovery evidence" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    request_id = "request-unprobed-unmanaged"
+    node_id = claim_node_id()
+    configured_target = Inference.runtime_client_target()
 
-    assert {:ok, schedule} =
+    target =
+      Target.grpc_compat(
+        host: Keyword.fetch!(configured_target, :host),
+        port: Keyword.fetch!(configured_target, :port),
+        node_id: node_id
+      )
+
+    assert {:error, :model_busy,
+            %{rejected_candidates: [%{reason_codes: ["worker_recovery_evidence_unavailable"]}]}} =
              SingleNode.default_schedule(
                canonical_request(),
-               Inference.runtime_client_target(),
+               target,
                probe_status?: false,
                dispatch_capacity_authority: authority
              )
-
-    assert is_nil(schedule.node_id)
-    assert %Input{} = schedule.dispatch_capacity_input
-    assert %Evaluator.Result{eligible?: true} = schedule.dispatch_capacity_evaluation
-
-    _events =
-      assert_dispatch_success(
-        dispatch_with_deadline(
-          Map.put(schedule, :request_id, request_id),
-          execute_request(request_id),
-          model_load_request("unmanaged"),
-          client_impl: @gate_client
-        )
-      )
   end
 
   test "SPEC 5.9 a held acceptance gate fails dispatch bounded instead of blocking" do
@@ -3461,9 +3479,10 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
         runtime_concurrency_limit: max_concurrency,
         validity: :valid
       },
-      placements: Keyword.get(opts, :placements, []),
+      placements: WorkerRecoveryFixtures.placements(Keyword.get(opts, :placements, []), node.id),
       runtime_memory_budgets: [],
       runtime_prefix_cache_statuses: [],
+      worker_recovery_epoch: WorkerRecoveryFixtures.epoch(),
       supports_prompt_token_ids: true,
       candidate_source: "monitor_snapshot"
     }
@@ -3643,7 +3662,8 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       loaded_models: loaded_models,
       active_request_count: 0,
       max_concurrency: 2,
-      runtime_model_placements: []
+      runtime_model_placements: [],
+      worker_recovery_epoch: WorkerRecoveryFixtures.epoch()
     }
   end
 

@@ -1147,6 +1147,7 @@ defmodule OrchardNodeAgentTest do
 
     :ok = NodeStatus.reset()
     wait_until(fn -> worker_count() == 0 end)
+    restart_model_manager!()
 
     # Create a real test bundle at both the cache path and a source path.
     # The async ModelManager pipeline runs acquisition which checks cache hash.
@@ -1378,7 +1379,8 @@ defmodule OrchardNodeAgentTest do
              Orchard.Node.ModelLoadTaskSupervisor,
              Orchard.Node.RuntimeProcessReaper,
              WorkerSupervisor,
-             Orchard.Node.RuntimeEndpointTaskSupervisor
+             Orchard.Node.RuntimeEndpointTaskSupervisor,
+             Orchard.Node.WorkerRecoveryShutdown
            ]
 
     refute NodeSupervisor.grpc_server_id() in child_ids
@@ -1794,6 +1796,7 @@ defmodule OrchardNodeAgentTest do
 
   test "worker_status_error never supplies or caches placement capacity", %{bundle: bundle} do
     with_runtime_adapter(WorkerStatusErrorRuntimeAdapter, fn ->
+      restart_model_manager!()
       request = ensure_model_loaded_request(bundle)
 
       first = Task.async(fn -> NodeStatus.ensure_model_loaded(request) end)
@@ -1966,8 +1969,12 @@ defmodule OrchardNodeAgentTest do
 
       assert absent.ensure == malformed.ensure
       assert absent.ensure == valid.ensure
-      assert absent.status == malformed.status
-      assert absent.status == valid.status
+
+      assert without_worker_recovery_revision(absent.status) ==
+               without_worker_recovery_revision(malformed.status)
+
+      assert without_worker_recovery_revision(absent.status) ==
+               without_worker_recovery_revision(valid.status)
 
       assert %StatusResponse{
                runtime_health: %{ready: true, health_code: ""},
@@ -2565,11 +2572,12 @@ defmodule OrchardNodeAgentTest do
         assert placement.active_request_count == 1
         assert placement.max_concurrency == 1
 
-        refute Enum.any?(
-                 response.runtime_model_placements,
-                 &(&1.model_ref.model_id == blocked_bundle.model_id and
-                     &1.model_ref.version == blocked_bundle.version)
-               )
+        blocked_placement =
+          runtime_model_placement!(response, blocked_bundle.model_id, blocked_bundle.version)
+
+        assert blocked_placement.active_request_count == 0
+        assert blocked_placement.max_concurrency == 0
+        assert blocked_placement.worker_recovery_json != ""
 
         send(blocking_pid, :finish_load)
 
@@ -5766,6 +5774,16 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  defp without_worker_recovery_revision(%StatusResponse{} = status) do
+    placements =
+      Enum.map(status.runtime_model_placements, fn placement ->
+        evidence = Jason.decode!(placement.worker_recovery_json) |> Map.delete("revision")
+        %{placement | worker_recovery_json: Jason.encode!(evidence)}
+      end)
+
+    %{status | runtime_model_placements: placements}
+  end
+
   defp worker_capabilities(overrides \\ []) do
     struct!(
       %WorkerCapabilities{
@@ -5790,6 +5808,12 @@ defmodule OrchardNodeAgentTest do
       },
       overrides
     )
+  end
+
+  defp restart_model_manager! do
+    :ok = Supervisor.terminate_child(NodeSupervisor, ModelManager)
+    {:ok, _pid} = Supervisor.restart_child(NodeSupervisor, ModelManager)
+    :ok
   end
 
   defp with_real_worker_runtime(fun) when is_function(fun, 0) do

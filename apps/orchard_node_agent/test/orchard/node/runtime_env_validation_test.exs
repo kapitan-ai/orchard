@@ -130,6 +130,34 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:runtime_grpc_listener_enabled]
   end
 
+  test "SPEC §12.2 BEAM recovery control selects registered mTLS identity without enabling gRPC inference" do
+    for env <- [:dev, :prod] do
+      runtime =
+        read_runtime_config!(
+          %{
+            "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT" => "10.0.0.10:50072",
+            "ORCHARD_NODE_AGENT_LISTEN_HOST" => "10.0.0.20"
+          },
+          env
+        )
+        |> Keyword.fetch!(:orchard_node_agent)
+        |> Keyword.fetch!(:runtime)
+
+      assert runtime[:grpc_security] == :mutual_tls
+      assert runtime[:worker_recovery_control_enabled]
+      refute runtime[:runtime_grpc_listener_enabled]
+      assert runtime[:worker_recovery_control_endpoint] == "10.0.0.10:50072"
+    end
+  end
+
+  test "SPEC §12.2 recovery setup refuses a missing checkpoint endpoint" do
+    assert_raise RuntimeError, ~r/CONTROL_ENDPOINT is required/, fn ->
+      read_runtime_config!(%{"ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true"})
+    end
+  end
+
   test "runtime.exs rejects plaintext gRPC bound to a non-loopback listen host" do
     assert_raise RuntimeError, ~r/exposes an unauthenticated plaintext gRPC/, fn ->
       read_runtime_config!(%{"ORCHARD_NODE_AGENT_LISTEN_HOST" => "0.0.0.0"})

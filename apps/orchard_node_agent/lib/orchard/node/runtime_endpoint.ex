@@ -12,6 +12,15 @@ defmodule Orchard.Node.RuntimeEndpoint do
   alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Target}
 
   @task_supervisor Orchard.Node.RuntimeEndpointTaskSupervisor
+  @recovery_reasons ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)a
+
+  @doc "Recovery control requires the certificate-authenticated control listener, not raw RPC."
+  @spec inspect_worker_recovery(term(), keyword()) :: {:error, :permission_denied}
+  def inspect_worker_recovery(_request, _opts \\ []), do: {:error, :permission_denied}
+
+  @doc "Caller flags on the BEAM facade cannot confer recovery authority."
+  @spec recover_worker_placement(term(), keyword()) :: {:error, :permission_denied}
+  def recover_worker_placement(_request, _opts \\ []), do: {:error, :permission_denied}
 
   @spec status(Target.t() | nil, keyword()) :: {:ok, Orchard.RuntimeEndpoint.Observation.t()}
   def status(target \\ nil, _opts \\ []) do
@@ -19,14 +28,17 @@ defmodule Orchard.Node.RuntimeEndpoint do
   end
 
   @spec ensure_model_loaded(Operation.EnsureModelLoadedRequest.t(), keyword()) ::
-          {:ok, Operation.EnsureModelLoadedResult.t()}
+          {:ok, Operation.EnsureModelLoadedResult.t()} | {:error, term()}
   def ensure_model_loaded(%Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     response =
       request
       |> GrpcMapping.ensure_model_loaded_request_to_proto()
       |> Status.ensure_model_loaded()
 
-    {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
+    case response.recovery_refusal do
+      "" -> {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
+      refusal -> recovery_refusal(refusal)
+    end
   end
 
   @spec unload_model(Operation.UnloadModelRequest.t(), keyword()) :: {:ok, Operation.Ack.t()}
@@ -67,6 +79,13 @@ defmodule Orchard.Node.RuntimeEndpoint do
       |> Status.score_prefix_cache()
 
     {:ok, RuntimeEndpointMapper.prefix_cache_score_result_from_response(response)}
+  end
+
+  defp recovery_refusal(refusal) do
+    case Enum.find(@recovery_reasons, &(Atom.to_string(&1) == refusal)) do
+      nil -> {:error, :invalid_worker_recovery_refusal}
+      reason -> {:error, {:worker_recovery_refused, reason}}
+    end
   end
 
   defp execute_stream(request, owner, stream_ref) do

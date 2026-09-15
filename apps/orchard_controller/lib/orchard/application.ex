@@ -138,7 +138,10 @@ defmodule Orchard.Application do
       |> maybe_add_controller_expiry_guard(config)
       |> Kernel.++([{ControlListener, listener_opts}])
     else
-      children
+      case Application.get_env(:orchard_controller, :worker_recovery, [])[:control_listener] do
+        opts when is_list(opts) and opts != [] -> children ++ [{ControlListener, opts}]
+        _ -> children
+      end
     end
   end
 

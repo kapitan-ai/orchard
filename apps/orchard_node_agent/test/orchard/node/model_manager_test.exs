@@ -1,8 +1,7 @@
 defmodule Orchard.Node.ModelManagerTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.Node.ModelManager
-  alias Orchard.Node.WorkerSupervisor
+  alias Orchard.Node.{ModelManager, WorkerRecoveryState, WorkerSupervisor}
 
   test "issue #222 successful late completion removes an ownerless worker placement" do
     reply_ref = make_ref()
@@ -24,9 +23,10 @@ defmodule Orchard.Node.ModelManagerTest do
 
     assert_receive {^reply_ref, %{failure_code: "deadline_exceeded"}}, 1_000
 
-    assert_receive {:DOWN, worker_monitor, :process, worker_pid, _reason}, 1_000
-    assert worker_monitor == fixture.worker_test_monitor
-    assert worker_pid == fixture.worker_pid
+    worker_monitor = fixture.worker_test_monitor
+    worker_pid = fixture.worker_pid
+
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker_pid, _reason}, 1_000
   end
 
   test "issue #222 explicit preload remains a valid residency owner" do
@@ -68,6 +68,23 @@ defmodule Orchard.Node.ModelManagerTest do
       end
     end)
 
+    recovery_epoch = "model-manager-test-epoch"
+    recovery_incarnation = "model-manager-test-worker"
+
+    recovery =
+      recovery_epoch
+      |> WorkerRecoveryState.new()
+      |> WorkerRecoveryState.hydrate(:absent)
+      |> Map.put(:owner_epoch, recovery_epoch)
+      |> Map.put(:revision, 1)
+      |> Map.put(:last_worker_pid, worker_pid)
+      |> put_in([:policy, :incarnation], recovery_incarnation)
+      |> put_in([:ownership], %{
+        "phase" => "loading",
+        "incarnation" => recovery_incarnation,
+        "custody" => "test-custody"
+      })
+
     inflight = %{
       request: %{},
       request_fingerprint: {"fingerprint", nil},
@@ -81,13 +98,18 @@ defmodule Orchard.Node.ModelManagerTest do
       leader_waiter_id: waiters |> List.first() |> waiter_id(),
       started_monotonic_ms: System.monotonic_time(:millisecond),
       source_scheme: nil,
-      backend: "test"
+      backend: "test",
+      recovery_owner: false,
+      recovery_incarnation: recovery_incarnation
     }
 
     state = %{
       active_requests: %{},
       inflight_loads: %{key => inflight},
       load_refs: %{task_ref => key},
+      recovery: %{key => recovery},
+      recovery_epoch: recovery_epoch,
+      recovery_io_refs: %{},
       subscriber_refs: %{},
       worker_crash_counter_version: "",
       worker_crashes: %{},
@@ -115,10 +137,26 @@ defmodule Orchard.Node.ModelManagerTest do
   end
 
   defp complete_load(fixture) do
-    assert {:noreply, next_state} =
+    assert {:noreply, pending_state} =
              ModelManager.handle_info(
                {:model_load_finished, fixture.key, fixture.task_pid, {:ok, fixture.worker_pid}},
                fixture.state
+             )
+
+    pending = pending_state.recovery[fixture.key].pending
+
+    checkpoint = %{
+      epoch: pending.record["epoch"],
+      revision: pending.revision + 1,
+      transition_id: pending.id,
+      record: pending.record
+    }
+
+    assert {:noreply, next_state} =
+             ModelManager.handle_info(
+               {:recovery_checkpoint_result, fixture.state.recovery_epoch, fixture.key,
+                pending.id, {:ok, checkpoint}},
+               pending_state
              )
 
     next_state

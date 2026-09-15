@@ -30,6 +30,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   alias Orchard.Scheduler.MultiNode
   alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   defmodule SnapshotBreakerEvaluator do
     @moduledoc false
@@ -84,7 +85,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
          },
          health: %{ready: true, health_code: "", health_message: ""},
          placements: [placement]
-       })}
+       })
+       |> WorkerRecoveryFixtures.status()}
     end
   end
 
@@ -107,7 +109,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       response =
         Agent.get_and_update(state(), fn stub ->
-          response = Map.get(stub.status_results, key)
+          response = Map.get(stub.status_results, key, Map.get(stub.recovery_status_results, key))
           {response, %{stub | status_calls: [{key, opts} | stub.status_calls]}}
         end)
 
@@ -124,12 +126,17 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         response ->
           DispatchCapacityFixtures.record_authenticated_probe_evidence(response)
 
-          {:ok, response}
+          {:ok, WorkerRecoveryFixtures.status(response)}
       end
     end
 
     def put_status(key, response) do
       Agent.update(state(), &put_in(&1.status_results[key], response))
+    end
+
+    def put_recovery_status(target, response) do
+      key = target_key(target)
+      Agent.update(state(), &put_in(&1.recovery_status_results[key], response))
     end
 
     def put_connect_result(key, result) do
@@ -180,7 +187,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     def status(_target, _opts) do
       send(Process.get({__MODULE__, :owner}), {:process_local_compatibility_probe, self()})
-      {:ok, Process.get({__MODULE__, :response})}
+
+      {:ok, WorkerRecoveryFixtures.status(Process.get({__MODULE__, :response}))}
     end
 
     def disconnect(_channel), do: :ok
@@ -197,13 +205,21 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     def status(target, opts) do
       config = config()
-      :atomics.add_get(config[:counters], 2, 1)
-      send(config[:coordinator], {:compatibility_status, self(), target_key(target), opts})
+      call_number = :atomics.add_get(config[:counters], 2, 1)
 
-      receive do
-        {:compatibility_status_result, result} -> result
-      after
-        5_000 -> {:error, :test_probe_timeout}
+      if call_number <= config[:expected_count] do
+        send(config[:coordinator], {:compatibility_status, self(), target_key(target), opts})
+
+        receive do
+          {:compatibility_status_result, result} -> result
+        after
+          5_000 -> {:error, :test_probe_timeout}
+        end
+      else
+        case Map.fetch!(config[:responses], target_key(target)) do
+          {:error, _reason} = error -> error
+          status -> {:ok, WorkerRecoveryFixtures.status(status)}
+        end
       end
     end
 
@@ -427,6 +443,22 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     active_request_count = Keyword.get(opts, :active_request_count, 0)
     max_concurrency = Keyword.get(opts, :max_concurrency, 4)
 
+    StubClient.put_recovery_status(
+      target,
+      Observation.new(%{
+        target: target,
+        endpoint_id: target.id,
+        observed_at: DateTime.utc_now(),
+        metadata: %{node_id: node.id},
+        availability: :available,
+        worker_state: :idle,
+        aggregate_active_request_count: active_request_count,
+        aggregate_max_concurrency: max_concurrency,
+        placements: Keyword.get(opts, :placements, [])
+      })
+      |> WorkerRecoveryFixtures.status()
+    )
+
     %Candidate{
       target: target,
       node: %{node | last_heartbeat_at: observed_at},
@@ -441,7 +473,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         runtime_concurrency_limit: max_concurrency,
         validity: :valid
       },
-      placements: Keyword.get(opts, :placements, []),
+      worker_recovery_epoch: WorkerRecoveryFixtures.epoch(),
+      placements:
+        WorkerRecoveryFixtures.placements(
+          Keyword.get(opts, :placements, []),
+          node.id
+        ),
       runtime_memory_budgets: Keyword.get(opts, :runtime_memory_budgets, []),
       runtime_prefix_cache_statuses: Keyword.get(opts, :runtime_prefix_cache_statuses, []),
       supports_prompt_token_ids: Keyword.get(opts, :supports_prompt_token_ids, false),
@@ -534,6 +571,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       runtime_model_placements: model_placements,
       supports_prompt_token_ids: supports_prompt_token_ids
     }
+    |> WorkerRecoveryFixtures.status()
   end
 
   defp model_placement(model_id, version, active_request_count, max_concurrency) do
@@ -583,7 +621,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     Application.put_env(:orchard_controller, CompatibilityProbeClient,
       coordinator: coordinator,
-      counters: counters
+      counters: counters,
+      responses: responses,
+      expected_count: expected_count
     )
 
     on_exit(fn ->
@@ -613,7 +653,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp reply_to_compatibility_probe({caller, key, _opts}, responses) do
     response = Map.fetch!(responses, key)
-    result = if match?({:error, _reason}, response), do: response, else: {:ok, response}
+
+    result =
+      if match?({:error, _reason}, response),
+        do: response,
+        else: {:ok, WorkerRecoveryFixtures.status(response)}
+
     send(caller, {:compatibility_status_result, result})
   end
 
@@ -847,6 +892,19 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     do: Application.delete_env(:orchard_controller, key)
 
   setup do
+    previous_recovery_inspector =
+      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
+
+    Application.put_env(
+      :orchard_controller,
+      :worker_recovery_inspector,
+      &WorkerRecoveryFixtures.inspect/2
+    )
+
+    on_exit(fn ->
+      restore_application_env(:worker_recovery_inspector, previous_recovery_inspector)
+    end)
+
     Process.put({SnapshotBreakerEvaluator, :owner}, self())
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_stub_client = Application.fetch_env(:orchard_controller, StubClient)
@@ -861,11 +919,17 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       start_supervised!(
         {Agent,
          fn ->
-           %{connect_results: %{}, status_results: %{}, status_calls: []}
+           %{
+             connect_results: %{},
+             status_results: %{},
+             recovery_status_results: %{},
+             status_calls: []
+           }
          end}
       )
 
     Application.put_env(:orchard_controller, StubClient, state: stub_state)
+    put_inference(runtime_endpoint_client_impl: StubClient)
 
     Application.put_env(
       :orchard_controller,
@@ -2238,6 +2302,63 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert status_calls() == []
     end
 
+    test "SPEC §12.2 refreshed recovery blocks acquisition and final acceptance without inline status" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
+      observed_at = node.last_heartbeat_at
+
+      placement =
+        Placement.new(%{
+          model_ref: %{model_id: "test-model", version: "v1"},
+          state: :loaded,
+          capacity: %{active_request_count: 0, max_concurrency: 4, status: :available}
+        })
+
+      candidate = production_snapshot_candidate(node, target, placements: [placement])
+      initial = production_snapshot([candidate], observed_at)
+      Process.put(:worker_recovery_snapshot, initial)
+
+      snapshot_provider = fn _effective, _active, _opts ->
+        snapshot = Process.get(:worker_recovery_snapshot)
+        persist_snapshot_capacity_evidence!(snapshot)
+        {:ok, snapshot}
+      end
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 active_runtime_endpoint_targets_provider: fn -> {:ok, [target]} end,
+                 production_candidate_snapshot_provider: snapshot_provider
+               )
+
+      assert schedule.selected_tier == "loaded"
+      assert status_calls() == []
+
+      [armed] = candidate.placements
+
+      open = %{
+        armed
+        | worker_recovery: %{
+            armed.worker_recovery
+            | state: "open",
+              eligible: false,
+              reason: :placement_crash_breaker_open
+          }
+      }
+
+      refreshed_candidates = [
+        %{candidate | placements: [open]},
+        %{candidate | worker_recovery_epoch: "replacement-epoch"}
+      ]
+
+      for refreshed <- refreshed_candidates do
+        Process.put(:worker_recovery_snapshot, production_snapshot([refreshed], observed_at))
+        assert schedule.dispatch_capacity_acquisition_input_provider.() == nil
+        assert schedule.dispatch_capacity_input_provider.() == nil
+        assert status_calls() == []
+      end
+    end
+
     test "ADR 0013 snapshot refresh failures fail closed for acquisition and revalidation" do
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       target = Target.grpc_compat(host: "10.0.0.1", port: 50_061, node_id: node.id)
@@ -2992,6 +3113,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         Observation.new(%{
           endpoint_id: endpoint_target.id,
           target: endpoint_target,
+          observed_at: DateTime.utc_now(),
           availability: :available,
           aggregate_active_request_count: 0,
           aggregate_max_concurrency: 2,
@@ -3047,6 +3169,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         Observation.new(%{
           endpoint_id: endpoint_target.id,
           target: endpoint_target,
+          observed_at: DateTime.utc_now(),
           availability: :available,
           aggregate_active_request_count: 0,
           aggregate_max_concurrency: 2,
@@ -3129,6 +3252,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         Observation.new(%{
           endpoint_id: endpoint_target.id,
           target: endpoint_target,
+          observed_at: DateTime.utc_now(),
           availability: :available,
           aggregate_active_request_count: 0,
           aggregate_max_concurrency: 2,
@@ -3194,6 +3318,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         Observation.new(%{
           endpoint_id: endpoint_target.id,
           target: endpoint_target,
+          observed_at: DateTime.utc_now(),
           availability: :available,
           aggregate_active_request_count: 0,
           aggregate_max_concurrency: 2,
