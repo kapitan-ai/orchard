@@ -5,7 +5,8 @@ Operators need explicit navigation and recovery that preserves the authority of 
 
 ## What Changes
 
-- Separate Nodes into Inventory, Admission, Runtime, and Diagnostics sections and Node detail into Overview, Evidence, and Actions.
+- Separate Nodes into Inventory, Admission Review, Runtime, and Diagnostics sections and Node detail into Overview, Evidence, and Actions.
+- Name durable Node rows Node Inventory and resolved Runtime diagnostic targets Effective targets, explain how empty Inventory relates to enrollment, join, and admission candidates, and link empty Inventory to Admission Review and Runtime without initiating another read or probe.
 - Preserve labeled last-successful evidence after refresh failure while blocking actions until recovery.
 - Preserve admission return context, focus action previews, and focus the next enrollment step after an explicit Prepare action.
 

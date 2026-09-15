@@ -198,7 +198,8 @@ defmodule Orchard.Requests.RequestStepEvent do
              identity_mode
            ),
          :ok <- validate_parent_step_id(step_type, parent_step_id),
-         {:ok, result} <- normalize_step_payload(step_type, event_type, attempt, result) do
+         {:ok, result} <-
+           normalize_step_payload(step_type, event_type, attempt, result, identity_mode) do
       {:ok,
        %__MODULE__{
          request_id: request_id,
@@ -419,7 +420,8 @@ defmodule Orchard.Requests.RequestStepEvent do
          "inference_turn",
          event_type,
          attempt,
-         result
+         result,
+         identity_mode
        )
        when event_type in [
               "request_step.completed",
@@ -429,13 +431,19 @@ defmodule Orchard.Requests.RequestStepEvent do
               "request_step.interrupted"
             ] do
     if InferenceAttemptResult.enriched?(result) do
-      InferenceAttemptResult.new(event_type, attempt, result)
+      inference_attempt_result(identity_mode, event_type, attempt, result)
     else
       {:ok, result}
     end
   end
 
-  defp normalize_step_payload("tool_execution", "request_step.started", _attempt, result) do
+  defp normalize_step_payload(
+         "tool_execution",
+         "request_step.started",
+         _attempt,
+         result,
+         _identity_mode
+       ) do
     if result == %{} do
       {:ok, result}
     else
@@ -443,7 +451,7 @@ defmodule Orchard.Requests.RequestStepEvent do
     end
   end
 
-  defp normalize_step_payload("tool_execution", event_type, _attempt, result)
+  defp normalize_step_payload("tool_execution", event_type, _attempt, result, _identity_mode)
        when event_type in [
               "request_step.completed",
               "request_step.failed",
@@ -457,12 +465,19 @@ defmodule Orchard.Requests.RequestStepEvent do
     end
   end
 
-  defp normalize_step_payload("tool_execution", event_type, _attempt, _result) do
+  defp normalize_step_payload("tool_execution", event_type, _attempt, _result, _identity_mode) do
     {:error,
      "tool_execution steps only support request_step.started, request_step.completed, request_step.failed, request_step.cancelled, request_step.timed_out, or request_step.indeterminate; got: #{inspect(event_type)}"}
   end
 
-  defp normalize_step_payload(_step_type, _event_type, _attempt, result), do: {:ok, result}
+  defp normalize_step_payload(_step_type, _event_type, _attempt, result, _identity_mode),
+    do: {:ok, result}
+
+  defp inference_attempt_result(:new_write, event_type, attempt, result),
+    do: InferenceAttemptResult.new(event_type, attempt, result)
+
+  defp inference_attempt_result(:historical_read, event_type, attempt, result),
+    do: InferenceAttemptResult.from_persisted(event_type, attempt, result)
 
   defp normalize_top_level_attrs(attrs) do
     Enum.reduce_while(attrs, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
