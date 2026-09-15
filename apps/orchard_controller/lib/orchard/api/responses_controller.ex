@@ -192,7 +192,7 @@ defmodule Orchard.API.ResponsesController do
         )
 
       :usage ->
-        %{state | usage: event.event.usage}
+        state
 
       :tool_call_delta ->
         apply_tool_call_delta(state, event, canonical, created)

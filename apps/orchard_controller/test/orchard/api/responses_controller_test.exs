@@ -1740,6 +1740,40 @@ defmodule Orchard.API.ResponsesControllerTest do
     refute String.contains?(collect_chunked_body(conn), "[DONE]")
   end
 
+  test "SPEC 5.3 response.failed does not serialize a cumulative lower bound as exact usage" do
+    canonical = stub_responses_canonical(true)
+
+    stub_responses_orchestrator(
+      prepare: {:ok, canonical, %{}},
+      events: [
+        InferenceEvent.usage_update(%InferenceEvent.Usage{
+          input_tokens: 3,
+          output_tokens: 5,
+          total_tokens: 8
+        }),
+        InferenceEvent.failed("cancelled", "request cancelled", false)
+      ],
+      execute: {:ok, canonical, []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    terminal = conn |> parse_typed_sse_events() |> List.last()
+    assert terminal.type == "response.failed"
+
+    assert terminal.data["response"]["usage"] == %{
+             "input_tokens" => 0,
+             "output_tokens" => 0,
+             "total_tokens" => 0
+           }
+  end
+
   test "post-start failure emits response.created then response.failed with no [DONE]" do
     %{tenant: tenant, token: token} = create_api_key_with_token!("responses-stream-fail")
 

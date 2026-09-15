@@ -41,6 +41,82 @@ The worker `GetStatus` path reports overlapping `Generate` calls and effective w
 The node-agent publishes aggregate capacity through cluster `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`, plus loaded-placement capacity through `StatusResponse.runtime_model_placements`.
 Aggregate capacity is the conservative limit the node agent enforces across loaded workers, while each loaded placement keeps its own reported capacity.
 
+## Model-free regression evidence
+
+Issue #409 keeps compatibility and lifecycle regression evidence separate from
+model qualification. The native suite covers normalized EOS IDs independently
+of text stop sequences, manifest identity and bundle-relative paths despite
+misleading names, and empty, partial, and hybrid prefix-cache snapshots.
+
+`test_batch_partial_prefill_cancel_preserves_peer_events_until_batch_cleanup`
+holds two synthetic requests in one batch after partial prefill, cancels one,
+and proves the other retains its output, exact usage, and one completion while
+the shared runtime retains both active entries until the batch returns terminal
+responses. It then proves the request and detokenizer registries are empty.
+`test_batch_generator_runtime_cancel_resets_after_bounded_drain_timeout` covers
+the distinct reset policy: an undrained cancellation resets the shared batch
+and gives other active requests a retryable collateral failure. It is not a
+peer-preservation path.
+
+These tests use fake generation dependencies and do not establish MLX-LM cache
+reachability, real Metal behavior, model compatibility, Apple Silicon hardware
+qualification, or a support claim. Those cases require an exact artifact,
+pinned runtime, Apple Silicon host, verified-local/offline load, and scoped
+ADR 0028 qualification evidence.
+Runtime-local registry cleanup does not prove Controller dispatch-capacity
+release.
+
+### Opt-in real partial-prefill cancellation harness
+
+`tests/test_mlx_lifecycle.py` exercises the real worker backend in a disposable
+subprocess with a 120-second watchdog. It requires the locked `mlx` extra,
+Apple Silicon/Metal, and an **existing** Qwen3-0.6B-4bit bundle at revision
+`73e3e38d981303bc594367cd910ea6eb48349da8`. It fails before loading if the bundle's
+SPEC §6.4 tree digest differs from
+`d30ebd70f4a436c152939ec8f4c798c8a2096fb210445781833e4bf4e60f5dd4`.
+This is a measured local artifact identity, not independent checkpoint provenance
+or a comparison with a Catalog row. The test never prepares or downloads a bundle.
+
+From the repository root, with `<existing-bundle>` replaced by its local path:
+
+```bash
+ORCHARD_MLX_LIFECYCLE_BUNDLE="<existing-bundle>" \
+  mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx \
+  pytest tests/test_mlx_lifecycle.py -v -s
+```
+
+The child sets Hugging Face and Transformers offline flags; these are not an OS
+network sandbox. Its runtime pin checks deliberately restrict the evidence to
+MLX 0.32.2, Transformers 5.12.1, and the MLX-LM revision below.
+It rejects Python optimization (`-O`, `-OO`, or inherited `PYTHONOPTIMIZE`)
+before importing MLX, so qualification assertions cannot silently disappear.
+With the opt-in variable absent, ordinary native validation does not load a model.
+
+The harness uses original MLX calls and responses, with test-local scheduling
+barriers: it pauses before the first real batch step until the peer is pending,
+then pauses after applying real partial-prefill progress until the cancelled
+consumer returns its terminal event. It records two live request UIDs and the
+upstream batch's actual UID membership. This is **instrumented overlap**, not
+proof of naturally occurring overlap or uninstrumented timing fidelity.
+The default 0.5-second cancellation-drain timeout remains unchanged.
+
+Before measured generation, the test records synthetic prompt IDs and declares
+the peer/recovery semantic assertion: output must begin with `Paris` for
+`The capital of France is`. It checks exactly one cancelled terminal, exactly one
+peer completion, eight real peer token responses and matching usage, the same
+generator without reset, and empty request/pending/detokenizer/prefill registries
+before close. It then checks recovery and unload. Input counts describe supplied
+IDs, not Controller/tokenizer parity. Row-state observations retain UID, sampler,
+processor-value, and processor-identity evidence without suppressing warnings or
+changing the production realignment path.
+
+These checks do not qualify genuine drain-timeout reset, Controller capacity
+release, public APIs, Catalog/import verification, cold public serving, or
+production performance. Timeout reset still intentionally gives active peers
+retryable collateral failures; its existing synthetic test is not real-runtime
+qualification. Raw output is local evidence, not an ADR 0028 approval or support
+claim, and must not be committed.
+
 ## MLX-LM security baseline
 
 The `mlx` extra pins MLX-LM commit `ab1806e8f5d6aa035973af194a1b9198ab4754dc`.
@@ -49,9 +125,16 @@ The dependency still reports version `0.31.3`, so the full Git revision and comm
 Transformers remains constrained to `>=5.7,<5.13` until its broader compatibility matrix is accepted separately.
 
 Orchard rejects model configurations containing `model_file` before upstream loading.
-The production loader also passes `trust_remote_code=False` for model loading and `tokenizer_config_extra={"trust_remote_code": False}` for tokenizer loading.
+Against the pinned commit the production loader passes `trust_remote_code=False` for model loading and `tokenizer_config_extra={"trust_remote_code": False}` for tokenizer loading.
+Both keyword arguments are negotiated against the resolved upstream signature first, because newer MLX-LM loaders reject unknown keyword arguments.
 Resolved-environment tests verify the same explicit settings on MLX-LM's sharded loading surface.
 These controls reduce dynamic-code exposure but do not make model execution a security sandbox.
+
+Residual: signature negotiation drops a distrust keyword argument rather than replacing it with another control.
+Model loading fails closed when signature inspection itself raises, but tokenizer loading falls through to the upstream default in that case, and a loader that no longer accepts the keyword argument silently loses Orchard's explicit setting on both paths.
+`test_default_mlx_deps_narrow_signature_loaders_stay_local_and_strip_trust` pins that fallback, asserting that a caller-supplied `trust_remote_code=True` is never forwarded and that stripped loaders still receive local bundle filesystem paths — the caller-supplied weights directory as given and the bundle directory holding the tokenizer assets — rather than a rewritten repo id or remote reference.
+Bundle-relative path verification is a separate control asserted through `load_session` and its `bundle_path_escape` tests.
+Re-audit remote-code exposure whenever the MLX-LM pin moves.
 
 Residual: MLX-LM's `sharded_load` falls back to `{"trust_remote_code": True}` for the tokenizer whenever `tokenizer_config` is omitted or empty, so its model-side `trust_remote_code=False` does not cover the tokenizer by itself.
 Orchard does not reach that path today; issue #116 sharded loading must pass an explicit `{"trust_remote_code": False}` tokenizer config rather than relying on the upstream default.

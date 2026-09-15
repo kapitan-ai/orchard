@@ -6,7 +6,13 @@ from unittest.mock import Mock
 
 import pytest
 
-from orchard_worker_mlx.tool_calling import ToolCallingContext, consume_response, finalize
+from orchard_worker_mlx.partial_markers import split_partial_marker
+from orchard_worker_mlx.tool_calling import (
+    ToolCallingContext,
+    consume_response,
+    consume_text,
+    finalize,
+)
 
 
 def make_context(**overrides) -> ToolCallingContext:
@@ -174,3 +180,73 @@ def test_valid_call_remains_visible_when_a_later_block_fails() -> None:
     assert finalize(context) is not None
     assert context.take_pending_events() == []
     assert events[0]["tool_call_id"] == "call_0"
+
+
+@pytest.mark.parametrize(
+    ("text", "marker", "expected"),
+    [
+        ("ordinary text", "<tool_call>", ("ordinary text", "")),
+        ("before<tool_", "<tool_call>", ("before", "<tool_")),
+        ("before</tool_cal", "</tool_call>", ("before", "</tool_cal")),
+        ("ordinary text", "", ("ordinary text", "")),
+    ],
+)
+def test_split_partial_marker_preserves_only_marker_prefix_at_chunk_boundary(
+    text: str,
+    marker: str,
+    expected: tuple[str, str],
+) -> None:
+    assert split_partial_marker(text, marker) == expected
+
+
+def test_consume_response_wraps_text_first_consumption_with_identical_tool_events() -> None:
+    chunks = [
+        "Before <tool_",
+        'call>{"name":"read","arguments":{"path":"fixture.txt"}}</tool_',
+        "call> after",
+    ]
+
+    def consume_chunks(consumer):
+        parser_inputs: list[str] = []
+        context = make_context(
+            tool_parser=lambda text, tools: parser_inputs.append(text) or json.loads(text),
+        )
+        events: list[dict] = []
+        for chunk in chunks:
+            events.extend(consumer(context, chunk))
+        assert finalize(context) is None
+        events.extend(context.take_pending_events())
+        return events, parser_inputs
+
+    response_events, response_inputs = consume_chunks(
+        lambda context, text: consume_response(context, SimpleNamespace(text=text)),
+    )
+    text_events, text_inputs = consume_chunks(consume_text)
+
+    assert (
+        response_events
+        == text_events
+        == [
+            {"kind": "output_text_delta", "delta": "Before "},
+            {
+                "kind": "tool_call_delta",
+                "tool_call_id": "call_0",
+                "delta": {
+                    "index": 0,
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments_delta": '{"path":"fixture.txt"}',
+                    },
+                },
+            },
+            {"kind": "output_text_delta", "delta": " after"},
+        ]
+    )
+    assert (
+        response_inputs
+        == text_inputs
+        == [
+            '{"name":"read","arguments":{"path":"fixture.txt"}}',
+        ]
+    )
