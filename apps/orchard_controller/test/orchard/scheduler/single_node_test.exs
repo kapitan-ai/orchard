@@ -4,6 +4,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.CircuitBreakers
+  alias Orchard.ClusterManagement.ReasonCodes
   alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.SingleNode
@@ -471,7 +472,7 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert loaded_schedule.selected_tier == "loaded"
   end
 
-  test "SPEC.md §12.2 refuses an unreachable single-node probe without recovery evidence" do
+  test "SPEC.md §12.2 refuses an unreachable single-node probe without labelling it recovery" do
     assert {:error, :model_busy, decision} =
              SingleNode.default_schedule(
                canonical_request("single-unreachable-tier-model"),
@@ -482,7 +483,13 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert decision.selected_node_id == nil
     assert decision.scored_candidates == []
     assert [rejected] = decision.rejected_candidates
-    assert rejected.reason_codes == ["worker_recovery_evidence_unavailable"]
+    assert rejected.reason_codes == ["transport_unreachable"]
+    assert rejected.diagnostics.fact == "status_probe_unavailable"
+
+    assert Enum.all?(
+             rejected.reason_codes,
+             &(&1 in ReasonCodes.scheduler_rejection_codes())
+           )
   end
 
   test "uses one conservative unmanaged slot when aggregate capacity is missing" do

@@ -8,6 +8,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   alias Orchard.Node.{
     ModelManager,
     RuntimeAdapter,
+    RuntimeEndpointMapper,
     WorkerRecoveryCustody,
     WorkerRecoveryState,
     WorkerSupervisor
@@ -50,14 +51,18 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
          %{
            state
            | rows: rows,
+             mode: next_mode(state.mode),
              calls: [{id, record, System.monotonic_time(:millisecond)} | state.calls]
          }}
       end)
     end
 
+    defp next_mode(:stale_once), do: :ok
+    defp next_mode(mode), do: mode
+
     defp commit_result(mode, current, epoch, revision, id, record) do
       cond do
-        mode == :stale_write ->
+        mode in [:stale_write, :stale_once] ->
           {:error, :stale_checkpoint}
 
         unavailable_write?(mode, record) ->
@@ -469,6 +474,69 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     end)
 
     assert length(ModelManager.current().runtime_model_placements) == 40
+  end
+
+  test "SPEC §12.2 retained recovery entries cannot displace a loaded placement from the payload",
+       ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    :sys.replace_state(ModelManager, fn state ->
+      retained =
+        Map.new(1..41, fn index ->
+          entry =
+            state.recovery_epoch
+            |> WorkerRecoveryState.new()
+            |> WorkerRecoveryState.hydrate(:absent)
+            |> put_in([:policy, :state], :open)
+
+          {{"cold/#{index}", "v1"}, entry}
+        end)
+
+      %{state | recovery: Map.merge(state.recovery, retained)}
+    end)
+
+    status = ModelManager.current()
+    assert length(status.runtime_model_placements) == 40
+
+    observation = RuntimeEndpointMapper.observation_from_status(nil, status)
+    assert length(observation.placements) == 40
+
+    assert [loaded] =
+             Enum.filter(
+               observation.placements,
+               &(&1.model_ref.model_id == ctx.request.model_id)
+             )
+
+    assert loaded.state == :loaded
+    assert loaded.worker_recovery["eligible"] == true
+    assert loaded.capacity.max_concurrency > 0
+  end
+
+  test "SPEC §12.2 a rejected stale hydration checkpoint replies to its waiter before rehydrating",
+       ctx do
+    exact = %{
+      node_id: ctx.request.node_id,
+      model_id: ctx.request.model_id,
+      version: ctx.request.version
+    }
+
+    Checkpoints.seed(exact, %{
+      epoch: "old-epoch",
+      revision: 4,
+      record: WorkerRecoveryState.record(WorkerRecoveryState.new("old-epoch")),
+      transition_id: "stale-clean-hydration"
+    })
+
+    Checkpoints.mode(:stale_once)
+
+    assert %{ok: false, message: "recovery checkpoint unavailable"} =
+             ModelManager.unload_model(%UnloadModelRequest{
+               model_id: ctx.request.model_id,
+               version: ctx.request.version
+             })
+
+    eventually(fn -> match?({:ok, %{state: "armed", eligible: true}}, inspect_key(ctx)) end)
   end
 
   test "SPEC §12.2 stale checkpoint replies unavailable, rehydrates, and permits a fresh recovery command",

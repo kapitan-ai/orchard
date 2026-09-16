@@ -1040,6 +1040,7 @@ defmodule Orchard.Node.ModelManager do
   defp reply_stale_checkpoint_effect_waiters(entry) do
     Enum.each(entry.effects, fn
       {:spawn_worker, _task_pid, from} -> GenServer.reply(from, {:error, :worker_unavailable})
+      {:hydration_complete, waiters} -> Enum.each(waiters, &reply_recovery_unavailable/1)
       _effect -> :ok
     end)
   end
@@ -2726,13 +2727,7 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp runtime_model_placements(state, worker_request_limits) do
-    keys =
-      (Map.keys(state.workers) ++ Map.keys(state.recovery))
-      |> Enum.uniq()
-      |> Enum.sort()
-      |> Enum.take(@runtime_model_placement_limit)
-
-    Enum.map(keys, fn {model_id, version} = key ->
+    Enum.map(runtime_model_placement_keys(state), fn {model_id, version} = key ->
       loaded? = match?(%{placement_state: :PLACEMENT_STATE_LOADED}, state.workers[key])
 
       %RuntimeModelPlacement{
@@ -2746,6 +2741,22 @@ defmodule Orchard.Node.ModelManager do
         worker_recovery_json: Jason.encode!(recovery_projection(state, key))
       }
     end)
+  end
+
+  defp runtime_model_placement_keys(state) do
+    {loaded, other_workers} =
+      state.workers
+      |> Map.keys()
+      |> Enum.sort()
+      |> Enum.split_with(&match?(%{placement_state: :PLACEMENT_STATE_LOADED}, state.workers[&1]))
+
+    recovery_only =
+      state.recovery
+      |> Map.keys()
+      |> Enum.reject(&Map.has_key?(state.workers, &1))
+      |> Enum.sort()
+
+    Enum.take(loaded ++ other_workers ++ recovery_only, @runtime_model_placement_limit)
   end
 
   defp runtime_memory_budget(%ModelRef{} = model_ref, budget) do

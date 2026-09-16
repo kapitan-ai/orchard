@@ -2898,7 +2898,7 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node.id) == 0
   end
 
-  test "SPEC 12.2 unprobed unmanaged scheduling fails closed without recovery evidence" do
+  test "SPEC 12.2 unprobed unmanaged scheduling fails closed without recovery labelling" do
     authority = start_supervised!({AllocationAuthority, name: nil})
     node_id = claim_node_id()
     configured_target = Inference.runtime_client_target()
@@ -2911,7 +2911,14 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
       )
 
     assert {:error, :model_busy,
-            %{rejected_candidates: [%{reason_codes: ["worker_recovery_evidence_unavailable"]}]}} =
+            %{
+              rejected_candidates: [
+                %{
+                  reason_codes: ["transport_unreachable"],
+                  diagnostics: %{fact: "status_probe_unavailable"}
+                }
+              ]
+            }} =
              SingleNode.default_schedule(
                canonical_request(),
                target,

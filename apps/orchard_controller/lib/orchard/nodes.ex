@@ -276,7 +276,6 @@ defmodule Orchard.Nodes do
 
   defp recovery_control_matches(_, _), do: {:error, :permission_denied}
 
-  defp recovery_node_matches?(%Target{node_id: nil}, _node_id), do: true
   defp recovery_node_matches?(%Target{node_id: id}, node_id), do: id == node_id
   defp recovery_node_matches?(id, node_id), do: id == node_id
 

@@ -6,15 +6,12 @@ defmodule Orchard.Scheduler.SingleNode do
   capacity to advertise `:queue_lane_capacity` or return `{:error, :model_busy}`
   only for proven requested-model path saturation.
 
-  Managed targets fail closed with stable reason-coded explanations when the
-  target resolves to a known Node and no live authorized capacity input can be
-  built — probe failure, skipped probing, missing Controller-owned facts, or
-  authorization denial. Explicitly classified unmanaged targets stay
-  dispatchable: they carry an unmanaged capacity input, its evaluation, and
-  refresh providers so the dispatcher authorizes them through the same shared
-  contract.
+  Targets fail closed with stable reason-coded explanations when no live
+  authorized capacity input can be built — probe failure, skipped probing,
+  missing Controller-owned facts, or authorization denial. An unavailable
+  target reports `transport_unreachable`, whether or not it resolves to a known
+  Node; that is not evidence of a worker-recovery failure.
 
-  `model_busy` is reserved for proven requested-model capacity exhaustion.
   Configured-target non-saturation failures return `cluster_busy` with a
   scheduler explanation so operators are not left with a bare 503.
   """
@@ -571,7 +568,7 @@ defmodule Orchard.Scheduler.SingleNode do
   defp normalize_observation(target, response),
     do: GrpcCompatibilityMapper.observation_from_status(Target.normalize(target), response)
 
-  defp unavailable_schedule(schedule, target, node, opts) when not is_nil(node) do
+  defp unavailable_schedule(schedule, target, node, opts) do
     request = Keyword.get(opts, :canonical_request) || synthetic_request(schedule)
 
     schedule_failure(
@@ -581,19 +578,6 @@ defmodule Orchard.Scheduler.SingleNode do
       :model_busy,
       ["transport_unreachable"],
       %{fact: "status_probe_unavailable", selected_tier: Map.get(schedule, :selected_tier)}
-    )
-  end
-
-  defp unavailable_schedule(schedule, target, nil, opts) do
-    request = Keyword.get(opts, :canonical_request) || synthetic_request(schedule)
-
-    schedule_failure(
-      request,
-      target,
-      nil,
-      :model_busy,
-      ["worker_recovery_evidence_unavailable"],
-      %{fact: "worker_recovery_ineligible"}
     )
   end
 

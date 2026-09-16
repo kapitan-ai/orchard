@@ -98,6 +98,7 @@ defmodule Orchard.InferenceTest do
               rejected_candidates: [
                 %{
                   reason_codes: ["worker_recovery_evidence_unavailable"],
+                  diagnostics: %{fact: "worker_recovery_ineligible"},
                   target_ref: "127.0.0.1:15071"
                 }
               ]
