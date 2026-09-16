@@ -541,9 +541,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             ],
        do: %{category: :terminal_conformance, code: code}
 
+  defp failure_source(:worker_recovery_refused),
+    do: %{category: :capacity, code: :model_busy}
+
   defp failure_source(reason)
        when reason in [
-              :model_busy,
               :dispatch_capacity_unavailable,
               :dispatch_capacity_facts_unavailable,
               :dispatch_capacity_request_already_claimed,
@@ -1572,7 +1574,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp recovery_refusal_result,
-    do: {:error, {:dispatch_failed, :model_busy}}
+    do: {:error, {:dispatch_failed, :worker_recovery_refused}}
 
   defp recovery_refusal_result(caller_ref, timer_ref) do
     if caller_disconnected?(caller_ref) do

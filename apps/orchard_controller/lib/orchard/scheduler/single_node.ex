@@ -431,7 +431,13 @@ defmodule Orchard.Scheduler.SingleNode do
          opts
        ) do
     fn ->
-      with :ok <- configured_recovery_check(target, response, request.model_ref, opts),
+      with :ok <-
+             WorkerRecoveryEligibility.check(
+               target,
+               normalize_observation(target, response),
+               request.model_ref,
+               opts
+             ),
            {:ok, input} <- capacity_input(node, target, response, placement_capacity, opts),
            {:ok, input, _reason_codes} <-
              CircuitBreakerEligibility.apply(
@@ -445,19 +451,6 @@ defmodule Orchard.Scheduler.SingleNode do
       else
         {:error, _reason} -> nil
       end
-    end
-  end
-
-  defp configured_recovery_check(target, response, model_ref, opts) do
-    if Keyword.has_key?(opts, :worker_recovery_observation_provider) do
-      WorkerRecoveryEligibility.revalidate(target, model_ref, opts)
-    else
-      WorkerRecoveryEligibility.check(
-        target,
-        normalize_observation(target, response),
-        model_ref,
-        opts
-      )
     end
   end
 

@@ -14,14 +14,6 @@ defmodule Orchard.Node.RuntimeEndpoint do
   @task_supervisor Orchard.Node.RuntimeEndpointTaskSupervisor
   @recovery_reasons ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)a
 
-  @doc "Recovery control requires the certificate-authenticated control listener, not raw RPC."
-  @spec inspect_worker_recovery(term(), keyword()) :: {:error, :permission_denied}
-  def inspect_worker_recovery(_request, _opts \\ []), do: {:error, :permission_denied}
-
-  @doc "Caller flags on the BEAM facade cannot confer recovery authority."
-  @spec recover_worker_placement(term(), keyword()) :: {:error, :permission_denied}
-  def recover_worker_placement(_request, _opts \\ []), do: {:error, :permission_denied}
-
   @spec status(Target.t() | nil, keyword()) :: {:ok, Orchard.RuntimeEndpoint.Observation.t()}
   def status(target \\ nil, _opts \\ []) do
     {:ok, RuntimeEndpointMapper.observation_from_status(target, Status.current())}

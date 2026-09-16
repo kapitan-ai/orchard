@@ -163,20 +163,6 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
              )
   end
 
-  test "SPEC §12.2 fresh status must retain authenticated Node identity" do
-    Process.put(:recovery_observation, %{
-      observation(clean())
-      | metadata: %{node_id: Ecto.UUID.generate()}
-    })
-
-    assert {:error, _} =
-             WorkerRecoveryEligibility.revalidate(target(), @model,
-               worker_recovery_observation_provider: fn ->
-                 {:ok, Process.get(:recovery_observation)}
-               end
-             )
-  end
-
   test "SPEC §12.2 single-node loaded gate rejects before capacity evaluation" do
     Process.put(
       :recovery_observation,
@@ -199,38 +185,6 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
              decision.rejected_candidates,
              &("placement_crash_breaker_open" in &1.reason_codes)
            )
-  end
-
-  test "SPEC §12.2 selected single-node schedule cannot bypass recovery at acquisition or acceptance" do
-    Process.put(:recovery_observation, observation(clean()))
-
-    assert {:ok, schedule} =
-             SingleNode.default_schedule(request(), target(),
-               node_resolver: fn _ -> nil end,
-               status_client: Client,
-               worker_recovery_observation_provider: fn ->
-                 {:ok, Process.get(:recovery_observation)}
-               end,
-               dispatch_capacity_input_provider: fn ->
-                 DispatchCapacityFixtures.unmanaged_input()
-               end
-             )
-
-    assert is_map(schedule.dispatch_capacity_acquisition_input_provider.())
-    assert is_map(schedule.dispatch_capacity_input_provider.())
-
-    Process.put(
-      :recovery_observation,
-      observation(%{
-        clean()
-        | state: :open,
-          eligible: false,
-          reason: :placement_crash_breaker_open
-      })
-    )
-
-    assert schedule.dispatch_capacity_acquisition_input_provider.() == nil
-    assert schedule.dispatch_capacity_input_provider.() == nil
   end
 
   test "SPEC §12.2 production scheduler rejects recovery before ranking or an attempt" do

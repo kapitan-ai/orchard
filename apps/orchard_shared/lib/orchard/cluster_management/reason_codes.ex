@@ -31,6 +31,11 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     trust_not_established
     unknown_capacity
     dispatch_capacity_facts_unavailable
+    worker_recovery_evidence_unavailable
+    worker_restart_backoff
+    worker_restart_in_progress
+    placement_crash_breaker_open
+    placement_recovery_required
   )
 
   @scheduler_skip_codes ~w(

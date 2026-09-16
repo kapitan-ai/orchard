@@ -174,6 +174,27 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     end
   end
 
+  test "SPEC §12.2 source-dev recovery control wires the Controller listener" do
+    config =
+      read_runtime_config!(
+        %{
+          "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "10.0.0.10",
+          "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+        },
+        :dev
+      )
+
+    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
+             control_listener: [host: "10.0.0.10", port: 50_072]
+           ]
+  end
+
+  test "SPEC §12.2 source-dev recovery control requires a listener port with its host" do
+    assert_raise RuntimeError, ~r/CONTROL_PORT is required/, fn ->
+      read_runtime_config!(%{"ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "10.0.0.10"}, :dev)
+    end
+  end
+
   test "SPEC §12.2 recovery setup refuses a missing checkpoint endpoint" do
     assert_raise RuntimeError, ~r/CONTROL_ENDPOINT is required/, fn ->
       read_runtime_config!(%{"ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true"})
@@ -322,18 +343,6 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       |> Keyword.fetch!(:runtime)
 
     assert runtime[:force_full_model_verification]
-  end
-
-  test "dev.exs wires the configured recovery-control listener" do
-    config =
-      read_dev_config!(%{
-        "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "127.0.0.1",
-        "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
-      })
-
-    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
-             control_listener: [host: "127.0.0.1", port: 50_072]
-           ]
   end
 
   test "dev.exs keeps worker sockets under a short worktree-specific root" do

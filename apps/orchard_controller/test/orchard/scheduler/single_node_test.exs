@@ -602,6 +602,53 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert :runtime_concurrency_limit_exhausted in result.reason_codes
   end
 
+  test "SPEC.md §12.2 acquisition and post-load providers refuse freshly ineligible recovery" do
+    model_id = "single-fresh-recovery-model"
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request(model_id),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    assert is_map(schedule.dispatch_capacity_acquisition_input_provider.())
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: [
+        placement(model_id, "v1", active_request_count: 0, max_concurrency: 1)
+        |> Map.put(
+          :worker_recovery_json,
+          Jason.encode!(%{
+            key: %{
+              node_id: WorkerRecoveryFixtures.node_id(),
+              model_id: model_id,
+              version: "v1"
+            },
+            epoch: WorkerRecoveryFixtures.epoch(),
+            owner_epoch: WorkerRecoveryFixtures.epoch(),
+            revision: 3,
+            state: "open",
+            hydrated: true,
+            eligible: false,
+            reason: "placement_crash_breaker_open"
+          })
+        )
+      ]
+    })
+
+    assert schedule.dispatch_capacity_acquisition_input_provider.() == nil
+    assert schedule.dispatch_capacity_input_provider.() == nil
+  end
+
   test "SPEC.md §5.9 post-load provider rejects missing matching Placement Capacity" do
     model_id = "single-post-load-missing-placement-model"
 

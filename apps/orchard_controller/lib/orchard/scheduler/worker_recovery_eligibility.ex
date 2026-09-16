@@ -11,15 +11,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   require Logger
 
   alias Orchard.Inference
-  alias Orchard.RuntimeEndpoint.BeamIdentity
-
-  alias Orchard.RuntimeEndpoint.{
-    GrpcCompatibilityMapper,
-    ModelRef,
-    Observation,
-    Placement,
-    Target
-  }
+  alias Orchard.RuntimeEndpoint.{ModelRef, Placement, Target}
 
   @unknown :worker_recovery_evidence_unavailable
   @reasons [
@@ -67,24 +59,6 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
       end
     else
       _invalid -> {:error, @unknown}
-    end
-  catch
-    :exit, _reason -> {:error, @unknown}
-  end
-
-  @doc "Revalidates an existing authenticated observation source without initiating a status probe."
-  @spec revalidate(term(), map(), keyword()) :: :ok | {:error, atom()}
-  def revalidate(target, model_ref, opts \\ []) do
-    provider = Keyword.get(opts, :worker_recovery_observation_provider)
-
-    with true <- is_function(provider, 0),
-         {:ok, status} <- provider.(),
-         observation = normalize_observation(target, status),
-         {:ok, _node_id} <-
-           BeamIdentity.resolve_candidate_node_id(Target.normalize(target), observation) do
-      check(target, observation, model_ref, opts)
-    else
-      _unavailable -> {:error, @unknown}
     end
   catch
     :exit, _reason -> {:error, @unknown}
@@ -207,11 +181,6 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
       Logger.warning("Recovery inspection disconnect did not complete")
       :ok
   end
-
-  defp normalize_observation(_target, %Observation{} = observation), do: observation
-
-  defp normalize_observation(target, status),
-    do: GrpcCompatibilityMapper.observation_from_status(Target.normalize(target), status)
 
   defp fresh?(observation) do
     now = DateTime.utc_now()

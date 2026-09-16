@@ -15,7 +15,6 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
   alias Orchard.Dispatch.GrpcNodeRuntimeClient
 
   alias Orchard.Node.{
-    RuntimeEndpoint,
     RuntimeServer,
     RuntimeTLS,
     WorkerRecoveryControlEndpoint,
@@ -271,15 +270,6 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
 
   test "SPEC §12.2 raw BEAM and plaintext gRPC cannot inspect or clear with caller flags" do
     ref = %ModelRef{model_id: "runtime-model", version: "v1"}
-
-    assert {:error, :permission_denied} =
-             RuntimeEndpoint.inspect_worker_recovery(ref, operator: true)
-
-    assert {:error, :permission_denied} =
-             RuntimeEndpoint.recover_worker_placement(Map.from_struct(command()),
-               operator: true,
-               force: true
-             )
 
     connection = %GrpcCompatibilityClient{security: :plaintext_compatibility, target: target()}
 
