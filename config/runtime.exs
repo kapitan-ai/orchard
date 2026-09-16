@@ -1357,6 +1357,18 @@ if config_env() == :prod do
                  cors_origins: cors_origins
                ] ++ check_origin_config ++ ca_endpoint_config
 
+      if host = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") do
+        port =
+          env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") ||
+            raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
+
+        config :orchard_controller, :worker_recovery,
+          control_listener: [
+            host: host,
+            port: env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)
+          ]
+      end
+
     "orchard_cli" ->
       database_url = System.get_env("DATABASE_URL")
 
@@ -1380,11 +1392,28 @@ if config_env() == :prod do
       node_runtime_endpoint_transport =
         runtime_endpoint_transport.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT", :beam)
 
+      worker_recovery_control_enabled? =
+        env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false)
+
       grpc_security =
-        if node_runtime_endpoint_transport == :grpc or
-             env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false),
-           do: :mutual_tls,
-           else: :plaintext_compatibility
+        if node_runtime_endpoint_transport == :grpc or worker_recovery_control_enabled?,
+          do: :mutual_tls,
+          else: :plaintext_compatibility
+
+      worker_recovery_control_runtime =
+        if worker_recovery_control_enabled? do
+          endpoint =
+            env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
+              raise "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for worker recovery control"
+
+          [
+            worker_recovery_control_enabled: true,
+            worker_recovery_control_endpoint: endpoint,
+            runtime_grpc_listener_enabled: node_runtime_endpoint_transport == :grpc
+          ]
+        else
+          []
+        end
 
       node_agent_listen_host = System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
 
@@ -1604,6 +1633,7 @@ if config_env() == :prod do
                 )
               )
           )
+          |> Keyword.merge(worker_recovery_control_runtime)
 
     _other_release ->
       :ok
@@ -1696,30 +1726,31 @@ if config_env() == :dev do
       scope: membership_scope,
       source_dev_address_policy: source_dev_address_policy
   end
-end
 
-# SPEC §12.2 uses registered identities, never Node database credentials.
-if env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false) do
-  endpoint =
-    env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
-      raise "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for worker recovery control"
+  # SPEC §12.2 uses registered identities, never Node database credentials.
+  # Reuse the already parsed transport value so whitespace and defaults retain
+  # their configured meaning when selecting the recovery-only listener.
+  if env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false) do
+    endpoint =
+      env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
+        raise "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for worker recovery control"
 
-  config :orchard_node_agent, :runtime,
-    worker_recovery_control_enabled: true,
-    worker_recovery_control_endpoint: endpoint,
-    grpc_security: :mutual_tls,
-    runtime_grpc_listener_enabled: System.get_env("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT") == "grpc"
-end
+    config :orchard_node_agent, :runtime,
+      worker_recovery_control_enabled: true,
+      worker_recovery_control_endpoint: endpoint,
+      grpc_security: :mutual_tls,
+      runtime_grpc_listener_enabled: runtime_endpoint_transport == :grpc
+  end
 
-if endpoint = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") do
-  config :orchard_node_agent, :runtime, worker_recovery_control_endpoint: endpoint
-end
+  if host = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") do
+    port =
+      env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") ||
+        raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
 
-if host = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") do
-  port =
-    env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") ||
-      raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
-
-  config :orchard_controller, :worker_recovery,
-    control_listener: [host: host, port: env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)]
+    config :orchard_controller, :worker_recovery,
+      control_listener: [
+        host: host,
+        port: env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)
+      ]
+  end
 end

@@ -101,6 +101,7 @@ defmodule Orchard.Node.ModelManager do
   @score_prefix_cache_local_timeout_grace_ms 50
   @prompt_token_ids_support_probe_max_timeout_ms 1_000
   @worker_crash_model_limit 4
+  @runtime_model_placement_limit 40
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -335,16 +336,15 @@ defmodule Orchard.Node.ModelManager do
       not Map.has_key?(state.recovery, key) ->
         {:noreply, hydrate_recovery(state, key, {:ensure, request, from})}
 
+      Map.has_key?(state.inflight_loads, key) ->
+        handle_recovery_inflight_load(state, key, request, from)
+
       reason = Recovery.refusal(state.recovery[key]) ->
         {:reply, recovery_refusal_response(reason), state}
 
       # Already loaded — fast path
       match?(%{placement_state: :PLACEMENT_STATE_LOADED}, Map.get(state.workers, key)) ->
         reply_loaded_worker(state, key, request)
-
-      # Inflight load exists — join or reject
-      Map.has_key?(state.inflight_loads, key) ->
-        handle_inflight_join(key, request, from, state)
 
       # No worker, no inflight — evict if needed, then start new acquisition task
       true ->
@@ -460,7 +460,7 @@ defmodule Orchard.Node.ModelManager do
         key = {command.key.model_id, command.key.version}
 
         case state.recovery[key] do
-          nil -> {:reply, {:error, :unavailable}, state}
+          nil -> {:noreply, hydrate_recovery(state, key, {:recover, command, from})}
           entry -> begin_operator_recovery(state, key, entry, command, from)
         end
 
@@ -496,6 +496,30 @@ defmodule Orchard.Node.ModelManager do
   defp recovery_claim_retry?(entry, inflight) do
     not recovery_claim_allowed?(entry, inflight) and inflight[:recovery_wait?] == true and
       entry.hydrated? and not entry.prior? and entry.policy.state == :armed
+  end
+
+  defp handle_recovery_inflight_load(state, key, request, from) do
+    entry = state.recovery[key]
+
+    cond do
+      recovery_admission_joinable?(entry) ->
+        # A matching caller may join only the ordinary load already claimed by the
+        # pending write-ahead admission checkpoint. The worker effect remains
+        # unavailable until that checkpoint acknowledgement publishes it.
+        handle_inflight_join(key, request, from, state)
+
+      reason = Recovery.refusal(entry) ->
+        {:reply, recovery_refusal_response(reason), state}
+
+      true ->
+        handle_inflight_join(key, request, from, state)
+    end
+  end
+
+  defp recovery_admission_joinable?(entry) do
+    entry.hydrated? and not entry.prior? and entry.policy.state == :armed and
+      not is_nil(entry.policy.incarnation) and entry.ownership["phase"] == "loading" and
+      match?(%{record: %{"ownership" => %{"phase" => "loading"}}}, entry.pending)
   end
 
   defp admit_recovery_claim(state, key, entry, inflight, request, task_pid, from) do
@@ -665,8 +689,21 @@ defmodule Orchard.Node.ModelManager do
 
   def handle_info({:recovery_hydration_ready, epoch, key, {:inspect, from}}, state)
       when epoch == state.recovery_epoch do
-    GenServer.reply(from, {:ok, recovery_projection(state, key)})
-    {:noreply, state}
+    projection = recovery_projection(state, key)
+    GenServer.reply(from, {:ok, projection})
+    {:noreply, discard_cold_recovery_entry(state, key)}
+  end
+
+  def handle_info({:recovery_hydration_ready, epoch, _key, {:recover, command, from}}, state)
+      when epoch == state.recovery_epoch do
+    case handle_recovery_command(command, from, state) do
+      {:reply, response, state} ->
+        GenServer.reply(from, response)
+        {:noreply, state}
+
+      {:noreply, state} ->
+        {:noreply, state}
+    end
   end
 
   def handle_info({:recovery_checkpoint_result, epoch, key, id, result}, state)
@@ -986,14 +1023,43 @@ defmodule Orchard.Node.ModelManager do
          _id,
          entry
        ) do
-    entry = Recovery.transition(entry, :interrupt, recovery_now())
-    {:noreply, put_recovery(state, key, %{entry | hydrated?: false})}
+    reply_stale_checkpoint_effect_waiters(entry)
+    reply_stale_checkpoint_operator_waiters(entry)
+
+    state = %{state | recovery: Map.delete(state.recovery, key)}
+    state = abandon_stale_checkpoint_load(state, key)
+    {:noreply, hydrate_recovery(state, key, :rehydrate)}
   end
 
   defp handle_recovery_checkpoint_result({:error, _reason}, state, epoch, key, id, entry) do
     entry = Recovery.unavailable(entry, id, recovery_now())
     Process.send_after(self(), {:recovery_checkpoint_retry, epoch, key}, 1_000)
     {:noreply, put_recovery(state, key, entry)}
+  end
+
+  defp reply_stale_checkpoint_effect_waiters(entry) do
+    Enum.each(entry.effects, fn
+      {:spawn_worker, _task_pid, from} -> GenServer.reply(from, {:error, :worker_unavailable})
+      _effect -> :ok
+    end)
+  end
+
+  defp reply_stale_checkpoint_operator_waiters(entry) do
+    Enum.each(entry.operator_waiters, &GenServer.reply(&1, {:error, :unavailable}))
+
+    Enum.each(entry.stop_waiters, fn {from, _response} ->
+      GenServer.reply(from, %Ack{ok: false, message: "recovery checkpoint unavailable"})
+    end)
+  end
+
+  defp abandon_stale_checkpoint_load(state, key) do
+    case state.inflight_loads[key] do
+      nil ->
+        state
+
+      inflight ->
+        complete_inflight_load(state, key, inflight, {:error, :worker_unavailable})
+    end
   end
 
   defp handle_operator_cleanup_ready(state, epoch, key, id, entry) do
@@ -1193,7 +1259,9 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp start_recovery_hydration(state, key, waiter) do
-    if recovery_now() < Map.get(state.recovery_read_retry_at, key, recovery_now()) do
+    now = recovery_now()
+
+    if now < Map.get(state.recovery_read_retry_at, key, now) do
       reply_recovery_unavailable(waiter)
       state
     else
@@ -1230,6 +1298,11 @@ defmodule Orchard.Node.ModelManager do
   defp reply_recovery_unavailable({:inspect, from}),
     do: GenServer.reply(from, {:error, :unavailable})
 
+  defp reply_recovery_unavailable({:recover, _command, from}),
+    do: GenServer.reply(from, {:error, :unavailable})
+
+  defp reply_recovery_unavailable(:rehydrate), do: :ok
+
   defp reply_recovery_unavailable({:ensure, _request, from}),
     do: GenServer.reply(from, recovery_refusal_response(:placement_recovery_required))
 
@@ -1260,6 +1333,22 @@ defmodule Orchard.Node.ModelManager do
       Node.runtime_config()[:worker_recovery_checkpoint_client] || WorkerRecoveryCheckpointClient
 
   defp put_recovery(state, key, entry), do: put_in(state, [:recovery, key], entry)
+
+  defp discard_cold_recovery_entry(state, key) do
+    case state.recovery[key] do
+      %{hydrated?: true, prior?: false, desired: nil, pending: nil, command: nil} = entry ->
+        if entry.policy.state == :armed and entry.policy.history == [] and
+             entry.policy.delay_index == 0 and is_nil(entry.policy.incarnation) and
+             entry.ownership["phase"] == "resolved" do
+          %{state | recovery: Map.delete(state.recovery, key)}
+        else
+          state
+        end
+
+      _retained ->
+        state
+    end
+  end
 
   defp pump_recovery(state, key) do
     case Recovery.begin_write(state.recovery[key], recovery_now()) do
@@ -1499,7 +1588,6 @@ defmodule Orchard.Node.ModelManager do
 
   defp apply_recovery_effect(state, _key, :checkpoint), do: state
   defp apply_recovery_effect(state, _key, {:cancel, _fence}), do: state
-  defp apply_recovery_effect(state, _key, {:refuse, _reason}), do: state
 
   defp accept_recovery_crash(state, key, pid) do
     case Map.get(state.recovery, key) do
@@ -2638,7 +2726,11 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp runtime_model_placements(state, worker_request_limits) do
-    keys = (Map.keys(state.workers) ++ Map.keys(state.recovery)) |> Enum.uniq() |> Enum.sort()
+    keys =
+      (Map.keys(state.workers) ++ Map.keys(state.recovery))
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.take(@runtime_model_placement_limit)
 
     Enum.map(keys, fn {model_id, version} = key ->
       loaded? = match?(%{placement_state: :PLACEMENT_STATE_LOADED}, state.workers[key])

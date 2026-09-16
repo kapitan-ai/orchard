@@ -120,7 +120,7 @@ These are semantic interfaces, not a new general coordination service:
 
 | Interface | Caller → authority | Minimum input and result |
 |---|---|---|
-| `WorkerCrashPolicy.transition(record, event, now_ms)` | ModelManager → pure policy | Returns next policy record plus declarative effects (`checkpoint`, `schedule`, `load`, `refuse`); reads no clock, database, or process state |
+| `WorkerCrashPolicy.transition(record, event, now_ms)` | ModelManager → pure policy | Returns next policy record plus declarative effects (`checkpoint`, `schedule`, `load`, `cancel`); reads no clock, database, or process state |
 | `ReadWorkerRecoveryCheckpoint(key)` | Node → authenticated Active Controller | Returns `absent`, full bounded checkpoint/revision, or `unavailable`; only a successful authoritative read can establish absence |
 | `CommitWorkerRecoveryCheckpoint(key, expected_epoch, expected_revision, transition_id, next_record)` | Node → authenticated Active Controller/Postgres | Atomic insert-if-absent or CAS; returns committed revision/record, matching already-committed result, stale conflict, or unavailable; transition ID/fingerprint distinguishes lost-ack replay from a second mutation |
 | `InspectWorkerRecoveryPlacement(key)` | Active Controller → Node | Hydrates the exact key if needed and returns current-epoch recovery eligibility/revision without loading or clearing; permits clean new cold keys to obtain positive evidence before ranking |

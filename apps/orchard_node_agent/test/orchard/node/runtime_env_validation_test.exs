@@ -1,6 +1,10 @@
 defmodule Orchard.Node.RuntimeEnvValidationTest do
   use ExUnit.Case, async: false
 
+  unless Code.ensure_loaded?(Orchard.Config.SourceDevBeam) do
+    Code.require_file(Path.expand("../../../../../config/source_dev_beam.exs", __DIR__))
+  end
+
   @config_env_vars [
     "DATABASE_URL",
     "ECTO_IPV6",
@@ -152,6 +156,24 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     end
   end
 
+  test "SPEC §12.2 recovery control reuses parsed whitespace-padded gRPC transport" do
+    for env <- [:dev, :prod] do
+      runtime =
+        read_runtime_config!(
+          %{
+            "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => " grpc ",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT" => "10.0.0.10:50072"
+          },
+          env
+        )
+        |> Keyword.fetch!(:orchard_node_agent)
+        |> Keyword.fetch!(:runtime)
+
+      assert runtime[:runtime_grpc_listener_enabled]
+    end
+  end
+
   test "SPEC §12.2 recovery setup refuses a missing checkpoint endpoint" do
     assert_raise RuntimeError, ~r/CONTROL_ENDPOINT is required/, fn ->
       read_runtime_config!(%{"ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true"})
@@ -300,6 +322,18 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       |> Keyword.fetch!(:runtime)
 
     assert runtime[:force_full_model_verification]
+  end
+
+  test "dev.exs wires the configured recovery-control listener" do
+    config =
+      read_dev_config!(%{
+        "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "127.0.0.1",
+        "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+      })
+
+    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
+             control_listener: [host: "127.0.0.1", port: 50_072]
+           ]
   end
 
   test "dev.exs keeps worker sockets under a short worktree-specific root" do

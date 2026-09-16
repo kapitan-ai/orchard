@@ -55,7 +55,6 @@ defmodule Orchard.Node.WorkerCrashPolicy do
           :checkpoint
           | {:schedule, non_neg_integer(), integer()}
           | {:load | :cancel, non_neg_integer()}
-          | {:refuse, atom()}
 
   @doc "Returns a clean absent placement record for the current epoch."
   @spec new() :: policy_record()
@@ -150,18 +149,6 @@ defmodule Orchard.Node.WorkerCrashPolicy do
     else
       {next, effects}
     end
-  end
-
-  defp apply_event(record, {:admit, _id}, _now) do
-    reason =
-      case record.state do
-        :backoff -> :worker_restart_backoff
-        :open -> :placement_crash_breaker_open
-        :recovery_required -> :placement_recovery_required
-        _ -> :worker_restart_in_progress
-      end
-
-    {record, [{:refuse, reason}]}
   end
 
   defp apply_event(record, _event, _now), do: {record, []}

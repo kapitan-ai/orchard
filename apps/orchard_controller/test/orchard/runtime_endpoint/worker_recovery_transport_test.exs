@@ -665,7 +665,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
       )
 
       start_supervised!({GRPC.Server.Supervisor, NodeSupervisor.grpc_server_opts()})
-      target = recovery_beam_target(mode)
+      target = recovery_beam_target(mode, node_id)
       assert target.transport == :beam
       assert {:ok, control_target} = Orchard.Nodes.worker_recovery_control_target(target)
       assert control_target.transport == :grpc_compat
@@ -699,16 +699,17 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     end
   end
 
-  defp recovery_beam_target(:peer_grant) do
+  defp recovery_beam_target(:peer_grant, _node_id) do
     assert {:ok, [target]} = Orchard.Nodes.activation_probe_runtime_endpoint_targets()
     target
   end
 
-  defp recovery_beam_target(:shared_cookie) do
+  defp recovery_beam_target(:shared_cookie, node_id) do
     target =
       Target.normalize(%{
         transport: :beam,
         address: :"orchard_node_agent@127.0.0.1",
+        node_id: node_id,
         metadata: %{source_dev: true}
       })
 
@@ -723,7 +724,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
       |> Keyword.put(:runtime_endpoint_targets, [target])
     )
 
-    assert target.node_id == nil
+    assert target.node_id == node_id
     assert Repo.aggregate(Orchard.BeamPeerGrants.Grant, :count) == 0
     target
   end
@@ -741,14 +742,14 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     assert {:error, :permission_denied} =
              WorkerRecoveryClient.control_target(%{target | node_id: Ecto.UUID.generate()})
 
-    assert {:error, :permission_denied} =
+    assert {:ok, ^expected} =
              WorkerRecoveryClient.control_target(%{
                target
                | address: :"orchard_node_agent@127.0.0.2",
                  node_id: node_id
              })
 
-    assert {:error, :permission_denied} =
+    assert {:ok, ^expected} =
              WorkerRecoveryClient.control_target(%{
                target
                | address: :"orchard_node_agent@127.0.0.2"
@@ -785,10 +786,10 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
       certificate_identifier: "serial:999"
     })
 
-    # Even a conflicting malformed certificate row must not be discarded to select the other Node.
-    assert {:error, :permission_denied} = WorkerRecoveryClient.control_target(target)
+    # A separate malformed row cannot redirect an identity-bound recovery target.
+    assert {:ok, ^expected} = WorkerRecoveryClient.control_target(target)
 
-    assert {:error, :permission_denied} =
+    assert {:ok, ^expected} =
              WorkerRecoveryClient.control_target(%{target | node_id: node_id})
 
     refute_received {:inspect, _, _}

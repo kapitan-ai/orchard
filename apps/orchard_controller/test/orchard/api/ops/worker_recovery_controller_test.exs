@@ -102,10 +102,10 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
       epoch: "epoch-1",
       owner_epoch: "epoch-1",
       revision: 4,
-      state: :open,
+      state: "open",
       hydrated: true,
       eligible: false,
-      reason: :placement_crash_breaker_open
+      reason: "placement_crash_breaker_open"
     }
 
     Process.put(:recovery_result, {:ok, evidence})
@@ -152,6 +152,16 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 503
     assert request(:post, ctx.path, ctx.token, body()).status == 503
     assert audit_actions() == ["worker_recovery.accepted", "worker_recovery.failed"]
+  end
+
+  test "Operator API accepts recovery state and reason only as JSON strings", ctx do
+    for patch <- [
+          %{state: :open},
+          %{reason: :placement_crash_breaker_open}
+        ] do
+      Process.put(:recovery_result, {:ok, Map.merge(ctx.evidence, patch)})
+      assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 503
+    end
   end
 
   test "an unconfigured exact Node endpoint is unavailable without forwarding", ctx do

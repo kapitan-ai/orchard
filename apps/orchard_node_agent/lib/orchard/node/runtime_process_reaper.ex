@@ -73,10 +73,12 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   def watch(owner_pid, os_pid, meta)
       when is_pid(owner_pid) and is_integer(os_pid) and os_pid > 0 do
     if Process.whereis(__MODULE__) do
-      try do
-        GenServer.call(__MODULE__, {:watch, owner_pid, os_pid, meta})
-      catch
-        :exit, _reason -> {:error, :reaper_unavailable}
+      with :ok <- prewatch_custody_proof(os_pid) do
+        try do
+          GenServer.call(__MODULE__, {:watch, owner_pid, os_pid, meta})
+        catch
+          :exit, _reason -> {:error, :reaper_unavailable}
+        end
       end
     else
       {:error, :reaper_unavailable}
@@ -362,6 +364,12 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   defp log_orphan_reap(_lease, _reason), do: :ok
+
+  defp prewatch_custody_proof(os_pid) do
+    if WorkerProcessLifecycle.os_process_alive?(os_pid),
+      do: :ok,
+      else: {:error, :process_not_alive}
+  end
 
   defp lease_identity(meta) do
     case Map.get(meta, :os_identity) do

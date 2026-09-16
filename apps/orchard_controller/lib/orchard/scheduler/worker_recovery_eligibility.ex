@@ -90,20 +90,6 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
     :exit, _reason -> {:error, @unknown}
   end
 
-  @doc "Wraps a capacity provider without changing its acquisition or revalidation arity."
-  @spec guard_provider(function(), term(), map(), keyword()) :: function()
-  def guard_provider(provider, target, model_ref, opts) when is_function(provider, 1) do
-    fn result ->
-      if revalidate(target, model_ref, opts) == :ok, do: provider.(result)
-    end
-  end
-
-  def guard_provider(provider, target, model_ref, opts) when is_function(provider, 0) do
-    fn ->
-      if revalidate(target, model_ref, opts) == :ok, do: provider.()
-    end
-  end
-
   @doc "Recognizes only the structured no-execution refusal vocabulary."
   @spec refusal?(term()) :: boolean()
   def refusal?({:worker_recovery_refused, reason}) when reason in @reasons, do: true

@@ -34,9 +34,6 @@ defmodule Orchard.Node.WorkerCrashPolicyTest do
         event <- [:tick, {:timer, record.fence, true}, {:loaded, 4}, {:crash, 4}] do
       assert Policy.transition(record, event, now) == {record, []}
     end
-
-    assert {^record, [{:refuse, :placement_crash_breaker_open}]} =
-             Policy.transition(record, {:admit, :bypass}, 60_000_000)
   end
 
   test "rolling window excludes exactly ten minutes and includes one millisecond newer" do
@@ -176,19 +173,6 @@ defmodule Orchard.Node.WorkerCrashPolicyTest do
                if(action == :reload, do: expected ++ [{:load, next.fence}], else: expected)
 
       assert Policy.transition(next, {:timer, record.fence, true}, 60_000) == {next, []}
-    end
-  end
-
-  test "ordinary admission cannot bypass backoff or required recovery" do
-    backoff = first_crash()
-    {required, _} = Policy.transition(backoff, :interrupt, 1)
-
-    for {record, reason} <- [
-          {backoff, :worker_restart_backoff},
-          {required, :placement_recovery_required}
-        ] do
-      assert Policy.transition(record, {:admit, :ordinary}, 2) ==
-               {record, [{:refuse, reason}]}
     end
   end
 

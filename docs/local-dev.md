@@ -385,6 +385,21 @@ For a default BEAM controller launch, `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is effe
 | `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` for controller, `52172` for node-agent | Upper bound for the BEAM distribution listener port range. Set both min and max together when overriding. |
 | `ORCHARD_BEAM_EPMD_PORT` | `4369` | EPMD port for source-dev node discovery. |
 
+#### Worker recovery control
+
+SPEC §12.2 recovery control is an explicit, identity-bound mTLS path in both supported source-dev and packaged profiles. It is disabled unless configured; enabling it does not start a model, alter a live worker, or make an unmanaged target recoverable.
+
+| Variable | Required when | Description |
+|----------|---------------|-------------|
+| `ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED=true` | Node Agent recovery control is enabled | Requires a registered Node identity and forces the dedicated listener to use mTLS. In BEAM mode it exposes only recovery control, not the gRPC inference facade. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT` | `..._ENABLED=true` on the Node Agent | Exact Controller recovery-control `host:port` used only for authenticated checkpoint hydration/CAS. Missing or unreachable control authority keeps the affected placement fail-closed. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | Controller hosts the recovery-control listener | Bind host for the authenticated Controller checkpoint listener. Requires the port variable. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_PORT` | `..._HOST` is set | TCP port for the authenticated Controller checkpoint listener. |
+
+The Operator API exposes `GET /ops/v1/worker-recovery/nodes/:node_id/models/:model_id?version=<exact-version>` for bounded state inspection and `POST` to the same path for `clear`, non-forced `unload`, or forced `reload`. `POST` requires JSON-string `version`, `action`, `expected_epoch`, `command_id`, and `reason`, plus non-negative JSON-number `expected_revision`. It returns only the exact key, epoch/revision, state, hydration/eligibility flags, optional owner epoch, and reason.
+
+The allowlisted recovery reason codes are `worker_restart_backoff`, `worker_restart_in_progress`, `placement_crash_breaker_open`, and `placement_recovery_required`. An unmanaged, unprobed, stale, ambiguous, malformed, or identity-mismatched target is unavailable and fail-closed; it is not evidence of a recovery failure and does not authorize a clear, load, or fallback host lookup. Operators must inspect a newly returned exact epoch/revision before retrying a command after `409` or `503`.
+
 The split-role scripts print non-secret startup diagnostics for the BEAM node name, cookie file path, EPMD port, and distribution port range.
 They never print cookie contents.
 Explicit cookie files must exist, be regular files, be non-empty, and be owner-only before Mix starts.
@@ -567,6 +582,8 @@ Worker Unix domain sockets default to `/tmp/od-<hash>/ws`, outside the repo tree
 | GET | `/health/live` | Liveness probe |
 | GET | `/health/ready` | Status-only readiness probe (`{"status":"ok"}` or `{"status":"error"}`) |
 | GET | `/ops/v1/health` | Detailed readiness and observations; cluster Operator/admin Bearer token required |
+| GET | `/ops/v1/worker-recovery/nodes/:node_id/models/:model_id?version=<exact-version>` | Exact bounded worker-recovery status; cluster Operator/admin Bearer token required |
+| POST | `/ops/v1/worker-recovery/nodes/:node_id/models/:model_id` | Exact `clear`, non-forced `unload`, or forced `reload` recovery command; cluster Operator/admin Bearer token required |
 | GET | `/metrics` | Prometheus exposition on the same listener; cluster Operator/admin Bearer token required; `503` when valid exposition cannot be produced |
 | GET | `/v1/models` | List active models granted to the calling Tenant; Bearer token required |
 | POST | `/v1/chat/completions` | Chat completion; stream + non-stream; Bearer token required |

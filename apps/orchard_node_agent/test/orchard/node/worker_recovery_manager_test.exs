@@ -57,6 +57,9 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     defp commit_result(mode, current, epoch, revision, id, record) do
       cond do
+        mode == :stale_write ->
+          {:error, :stale_checkpoint}
+
         unavailable_write?(mode, record) ->
           {:error, :unavailable}
 
@@ -275,6 +278,28 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert elem(second, 2) - elem(first, 2) >= 1_000
   end
 
+  test "SPEC §12.2 a matching ensure joins the pending admission checkpoint without spawning early",
+       ctx do
+    Checkpoints.mode(:write_unavailable)
+    leader = Task.async(fn -> ModelManager.ensure_model_loaded(ctx.request) end)
+
+    eventually(fn ->
+      match?(
+        %{pending: %{record: %{"ownership" => %{"phase" => "loading"}}}},
+        :sys.get_state(ModelManager).recovery[ctx.key]
+      )
+    end)
+
+    follower = Task.async(fn -> ModelManager.ensure_model_loaded(ctx.request) end)
+    Process.sleep(50)
+    assert :error = worker_pid(ctx)
+    assert length(Checkpoints.calls()) == 1
+
+    Checkpoints.mode(:ok)
+    assert Task.await(leader, 5_000).placement_state == :PLACEMENT_STATE_LOADED
+    assert Task.await(follower, 5_000).placement_state == :PLACEMENT_STATE_LOADED
+  end
+
   test "SPEC §12.2 crashed residency restarts without request waiters and retains one slot",
        ctx do
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
@@ -417,6 +442,59 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     assert {:ok, %{state: "armed", eligible: true}} =
              ModelManager.recover_worker_placement(command(ctx, evidence, "clear"))
+  end
+
+  test "SPEC §12.2 cold inspection releases clean recovery retention and bounds status placements" do
+    for index <- 1..41 do
+      assert {:ok, %{eligible: true}} =
+               ModelManager.inspect_worker_recovery("cold/#{index}", "v1")
+    end
+
+    assert :sys.get_state(ModelManager).recovery == %{}
+    assert ModelManager.current().runtime_model_placements == []
+
+    :sys.replace_state(ModelManager, fn state ->
+      recovery =
+        Map.new(1..41, fn index ->
+          entry =
+            state.recovery_epoch
+            |> WorkerRecoveryState.new()
+            |> WorkerRecoveryState.hydrate(:absent)
+            |> put_in([:policy, :state], :open)
+
+          {{"retained/#{index}", "v1"}, entry}
+        end)
+
+      %{state | recovery: recovery}
+    end)
+
+    assert length(ModelManager.current().runtime_model_placements) == 40
+  end
+
+  test "SPEC §12.2 stale checkpoint replies unavailable, rehydrates, and permits a fresh recovery command",
+       ctx do
+    assert {:ok, evidence} = inspect_key(ctx)
+    Checkpoints.mode(:stale_write)
+
+    assert {:error, :unavailable} =
+             ModelManager.recover_worker_placement(command(ctx, evidence, "clear"))
+
+    eventually(fn ->
+      :sys.get_state(ModelManager).recovery_hydrations == %{} and
+        match?(
+          %{hydrated?: true, pending: nil, desired: nil},
+          :sys.get_state(ModelManager).recovery[ctx.key]
+        )
+    end)
+
+    Checkpoints.mode(:ok)
+    assert {:ok, current} = inspect_key(ctx)
+
+    assert {:ok, %{eligible: true}} =
+             ModelManager.recover_worker_placement(
+               command(ctx, current, "clear")
+               |> Map.put(:command_id, "command-clear-retry")
+             )
   end
 
   test "SPEC §12.2 reset waits for durable cleanup and shutdown refuses new loads", ctx do

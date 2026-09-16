@@ -177,31 +177,6 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
              )
   end
 
-  test "SPEC §12.2 acquisition and final providers refresh observation epoch without status RPCs" do
-    Process.put(:recovery_observation, observation(clean()))
-
-    opts = [
-      worker_recovery_observation_provider: fn -> {:ok, Process.get(:recovery_observation)} end
-    ]
-
-    acquire =
-      WorkerRecoveryEligibility.guard_provider(fn -> :acquired end, target(), @model, opts)
-
-    final =
-      WorkerRecoveryEligibility.guard_provider(fn result -> result end, target(), @model, opts)
-
-    assert acquire.() == :acquired
-    assert final.(:accepted) == :accepted
-
-    Process.put(
-      :recovery_observation,
-      Map.put(observation(clean()), :worker_recovery_epoch, "new")
-    )
-
-    assert acquire.() == nil
-    assert final.(:accepted) == nil
-  end
-
   test "SPEC §12.2 single-node loaded gate rejects before capacity evaluation" do
     Process.put(
       :recovery_observation,

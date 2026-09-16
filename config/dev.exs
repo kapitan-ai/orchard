@@ -159,6 +159,37 @@ source_postgres_port =
 runtime_endpoint_transport =
   Orchard.Config.SourceDevBeam.transport!(System.get_env("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT"))
 
+worker_recovery_control_enabled? =
+  env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", false)
+
+worker_recovery_control_runtime =
+  if worker_recovery_control_enabled? do
+    endpoint =
+      env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
+        raise "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for worker recovery control"
+
+    [
+      worker_recovery_control_enabled: true,
+      worker_recovery_control_endpoint: endpoint,
+      grpc_security: :mutual_tls,
+      runtime_grpc_listener_enabled: runtime_endpoint_transport == :grpc
+    ]
+  else
+    []
+  end
+
+if host = env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") do
+  port =
+    env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") ||
+      raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
+
+  config :orchard_controller, :worker_recovery,
+    control_listener: [
+      host: host,
+      port: parse_port.(port, "ORCHARD_WORKER_RECOVERY_CONTROL_PORT")
+    ]
+end
+
 beam_peer_grants_enabled? =
   env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
 
@@ -587,6 +618,7 @@ config :orchard_node_agent,
       worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,
       worker_auto_max_concurrent_requests_per_model: worker_auto_max_concurrent_requests_per_model
     )
+    |> Keyword.merge(worker_recovery_control_runtime)
 
 # Console: enabled with no auth for frictionless local development.
 config :orchard_controller, :console,

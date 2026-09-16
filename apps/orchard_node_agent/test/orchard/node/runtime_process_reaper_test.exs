@@ -93,6 +93,18 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
+  test "SPEC §12.2 pre-watch non-existence proof refuses an absent runtime without a lease" do
+    assert {:error, :process_not_alive} =
+             RuntimeProcessReaper.watch(self(), 2_147_483_647, %{
+               shutdown_timeout_ms: @short_timeout_ms,
+               model_ref: nil,
+               os_identity: nil,
+               phase: :loading
+             })
+
+    assert :sys.get_state(RuntimeProcessReaper).leases == %{}
+  end
+
   test "watch returns an error when the reaper name is unavailable" do
     reaper_pid = Process.whereis(RuntimeProcessReaper)
     assert is_pid(reaper_pid)

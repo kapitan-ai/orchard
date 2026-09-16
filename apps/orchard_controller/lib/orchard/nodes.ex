@@ -266,36 +266,15 @@ defmodule Orchard.Nodes do
        do: recovery_control_matches(node_id, rows)
 
   defp recovery_control_matches(%Target{transport: :beam} = target, rows) do
-    if BeamPeerGrants.production_enabled?() do
-      if target in trusted_beam_runtime_endpoint_targets([:admitted, :active]),
-        do: recovery_control_matches(target.node_id, rows),
-        else: {:error, :permission_denied}
+    if BeamPeerGrants.production_enabled?() and
+         target not in trusted_beam_runtime_endpoint_targets([:admitted, :active]) do
+      {:error, :permission_denied}
     else
-      configured_recovery_control_matches(target, rows)
+      recovery_control_matches(target.node_id, rows)
     end
   end
 
   defp recovery_control_matches(_, _), do: {:error, :permission_denied}
-
-  defp configured_recovery_control_matches(%Target{address: address} = target, rows)
-       when is_atom(address) or is_binary(address) do
-    with true <- Orchard.Inference.static_runtime_target?(target),
-         ["orchard_node_agent", host] <- String.split(to_string(target.address), "@"),
-         {:ok, _ip} <- :inet.parse_ipv4strict_address(String.to_charlist(host)) do
-      {:ok, Enum.filter(rows, fn {node, _} -> recovery_control_host?(node, host) end)}
-    else
-      _ -> {:error, :permission_denied}
-    end
-  end
-
-  defp configured_recovery_control_matches(_, _), do: {:error, :permission_denied}
-
-  defp recovery_control_host?(node, host) do
-    case trusted_connection_address(node) do
-      {:ok, address} -> address[:host] == host
-      _ -> false
-    end
-  end
 
   defp recovery_node_matches?(%Target{node_id: nil}, _node_id), do: true
   defp recovery_node_matches?(%Target{node_id: id}, node_id), do: id == node_id

@@ -162,17 +162,13 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
   defp valid_owner_epoch?(owner_epoch), do: bounded?(owner_epoch, 128)
 
   defp valid_evidence_state?(state),
-    do:
-      state in (~w(armed backoff restarting open recovery_required)a ++
-                  ~w(armed backoff restarting open recovery_required))
+    do: state in ~w(armed backoff restarting open recovery_required)
+
+  defp valid_evidence_reason?(nil), do: true
 
   defp valid_evidence_reason?(reason),
     do:
-      reason in [
-        nil
-        | ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)a
-      ] or
-        reason in ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)
+      reason in ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)
 
   defp audit(conn, command, phase) do
     case Governance.insert_cluster_audit_log(%{

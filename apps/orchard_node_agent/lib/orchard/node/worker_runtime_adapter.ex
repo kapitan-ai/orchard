@@ -576,6 +576,19 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
             {:error, reason}
         end
 
+      {:error, :process_not_alive} ->
+        cleanup_failed_runtime(%{
+          channel: nil,
+          os_identity: params.os_identity,
+          os_pid: params.os_pid,
+          port: params.port,
+          reaper_ref: nil,
+          shutdown_timeout_ms: params.shutdown_timeout_ms,
+          socket_path: params.socket_path
+        })
+
+        {:error, launch_identity_failure_reason(params.port)}
+
       {:error, reason} ->
         cleanup_failed_runtime(%{
           channel: nil,
