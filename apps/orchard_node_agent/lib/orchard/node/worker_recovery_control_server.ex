@@ -20,7 +20,7 @@ defmodule Orchard.Node.WorkerRecoveryControlServer do
         manager().inspect_worker_recovery(key.model_id, key.version)
       end
 
-    Wire.result(result)
+    Wire.evidence_result(result)
   end
 
   @doc "Forwards a dedicated recovery command without changing its epoch or revision."
@@ -34,7 +34,7 @@ defmodule Orchard.Node.WorkerRecoveryControlServer do
         manager().recover_worker_placement(command)
       end
 
-    Wire.result(result)
+    Wire.evidence_result(result)
   end
 
   defp command(request, key, node_id) do

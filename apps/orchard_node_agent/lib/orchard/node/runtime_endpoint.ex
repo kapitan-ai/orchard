@@ -9,10 +9,9 @@ defmodule Orchard.Node.RuntimeEndpoint do
 
   alias Orchard.InferenceEvent
   alias Orchard.Node.{RuntimeEndpointMapper, RuntimeServer, Status}
-  alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Target}
+  alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Target, WorkerRecoveryEvidence}
 
   @task_supervisor Orchard.Node.RuntimeEndpointTaskSupervisor
-  @recovery_reasons ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)a
 
   @spec status(Target.t() | nil, keyword()) :: {:ok, Orchard.RuntimeEndpoint.Observation.t()}
   def status(target \\ nil, _opts \\ []) do
@@ -74,9 +73,9 @@ defmodule Orchard.Node.RuntimeEndpoint do
   end
 
   defp recovery_refusal(refusal) do
-    case Enum.find(@recovery_reasons, &(Atom.to_string(&1) == refusal)) do
-      nil -> {:error, :invalid_worker_recovery_refusal}
-      reason -> {:error, {:worker_recovery_refused, reason}}
+    case WorkerRecoveryEvidence.refusal_reason(refusal) do
+      {:ok, reason} -> {:error, {:worker_recovery_refused, reason}}
+      :error -> {:error, :invalid_worker_recovery_refusal}
     end
   end
 

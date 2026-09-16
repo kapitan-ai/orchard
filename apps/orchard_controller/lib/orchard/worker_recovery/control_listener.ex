@@ -9,7 +9,6 @@ defmodule Orchard.WorkerRecovery.ControlListener do
   """
 
   alias Orchard.NodeTrust
-  alias Orchard.TransportTLS.CertificateIdentity
   alias Orchard.WorkerRecovery.ControlEndpoint
 
   @invalid {:error, :worker_recovery_control_configuration_invalid}
@@ -66,28 +65,22 @@ defmodule Orchard.WorkerRecovery.ControlListener do
   defp port(_port), do: @invalid
 
   defp credential do
-    with {:ok, identity} <- NodeTrust.runtime_client_generation_paths(),
-         {:ok, certificate_pem} <- File.read(identity.certfile),
-         {:ok, certificate} <- CertificateIdentity.from_pem(certificate_pem),
-         true <- mutual_listener_certificate?(certificate) do
-      {:ok,
-       GRPC.Credential.new(
-         ssl: [
-           certfile: identity.certfile,
-           keyfile: identity.keyfile,
-           cacertfile: identity.cacertfile,
-           verify: :verify_peer,
-           fail_if_no_peer_cert: true,
-           versions: [:"tlsv1.3"]
-         ]
-       )}
-    else
-      _unavailable -> {:error, :worker_recovery_control_identity_unavailable}
-    end
-  end
+    case NodeTrust.peer_grant_runtime_generation_paths() do
+      {:ok, identity} ->
+        {:ok,
+         GRPC.Credential.new(
+           ssl: [
+             certfile: identity.certfile,
+             keyfile: identity.keyfile,
+             cacertfile: identity.cacertfile,
+             verify: :verify_peer,
+             fail_if_no_peer_cert: true,
+             versions: [:"tlsv1.3"]
+           ]
+         )}
 
-  defp mutual_listener_certificate?(certificate) do
-    :server_auth in certificate.extended_key_usages and
-      :client_auth in certificate.extended_key_usages
+      _unavailable ->
+        {:error, :worker_recovery_control_identity_unavailable}
+    end
   end
 end

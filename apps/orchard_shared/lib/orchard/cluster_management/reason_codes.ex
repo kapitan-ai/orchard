@@ -3,6 +3,19 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
   Fixed cluster-management reason-code vocabularies.
   """
 
+  @worker_recovery_reason_codes ~w(
+    worker_restart_backoff
+    worker_restart_in_progress
+    placement_crash_breaker_open
+    placement_recovery_required
+  )
+  @worker_recovery_reason_atoms [
+    :worker_restart_backoff,
+    :worker_restart_in_progress,
+    :placement_crash_breaker_open,
+    :placement_recovery_required
+  ]
+
   @scheduler_rejection_codes ~w(
     inventory_missing
     node_not_admitted
@@ -32,11 +45,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     unknown_capacity
     dispatch_capacity_facts_unavailable
     worker_recovery_evidence_unavailable
-    worker_restart_backoff
-    worker_restart_in_progress
-    placement_crash_breaker_open
-    placement_recovery_required
-  )
+  ) ++ @worker_recovery_reason_codes
 
   @scheduler_skip_codes ~w(
     lower_tier_not_considered
@@ -144,6 +153,28 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
 
   @spec scheduler_rejection_codes() :: [String.t()]
   def scheduler_rejection_codes, do: @scheduler_rejection_codes_with_capacity
+
+  @spec worker_recovery_reason_codes() :: [String.t()]
+  def worker_recovery_reason_codes, do: @worker_recovery_reason_codes
+
+  @spec worker_recovery_reason_atoms() :: [atom()]
+  def worker_recovery_reason_atoms, do: @worker_recovery_reason_atoms
+
+  @spec worker_recovery_reason_for_state(String.t() | atom()) :: String.t() | nil
+  def worker_recovery_reason_for_state(state) do
+    case normalize_code(state) do
+      "backoff" -> "worker_restart_backoff"
+      "restarting" -> "worker_restart_in_progress"
+      "open" -> "placement_crash_breaker_open"
+      "recovery_required" -> "placement_recovery_required"
+      _other -> nil
+    end
+  end
+
+  @spec worker_recovery_reason?(term()) :: boolean()
+  def worker_recovery_reason?(reason) do
+    normalize_code(reason) in @worker_recovery_reason_codes
+  end
 
   @spec scheduler_skip_codes() :: [String.t()]
   def scheduler_skip_codes, do: @scheduler_skip_codes

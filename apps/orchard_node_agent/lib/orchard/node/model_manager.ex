@@ -1014,11 +1014,9 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp reply_stale_checkpoint_effect_waiters(entry) do
-    Enum.each(entry.effects, fn
-      {:spawn_worker, _task_pid, from} -> GenServer.reply(from, {:error, :worker_unavailable})
-      {:hydration_complete, waiters} -> Enum.each(waiters, &reply_recovery_unavailable/1)
-      _effect -> :ok
-    end)
+    entry.effects
+    |> Kernel.++(Map.get(entry, :superseded_effects, []))
+    |> Enum.each(&reply_superseded_checkpoint_effect_waiter/1)
   end
 
   defp reply_stale_checkpoint_operator_waiters(entry) do
@@ -1309,7 +1307,67 @@ defmodule Orchard.Node.ModelManager do
     do:
       Node.runtime_config()[:worker_recovery_checkpoint_client] || WorkerRecoveryCheckpointClient
 
-  defp put_recovery(state, key, entry), do: put_in(state, [:recovery, key], entry)
+  defp put_recovery(state, key, entry) do
+    {entry, superseded_effects} = Recovery.take_superseded_effects(entry)
+    entry = reply_superseded_checkpoint_effect_waiters(entry, superseded_effects)
+    put_in(state, [:recovery, key], entry)
+  end
+
+  defp reply_superseded_checkpoint_effect_waiters(entry, effects) do
+    Enum.each(effects, &reply_superseded_checkpoint_effect_waiter/1)
+
+    entry
+    |> reply_superseded_stop_waiters(effects)
+    |> reply_superseded_operator_waiters(effects)
+  end
+
+  defp reply_superseded_checkpoint_effect_waiter({:spawn_worker, _task_pid, from}),
+    do: GenServer.reply(from, {:error, :worker_unavailable})
+
+  defp reply_superseded_checkpoint_effect_waiter({:hydration_complete, waiters}) do
+    Enum.each(waiters, &reply_recovery_unavailable/1)
+  end
+
+  defp reply_superseded_checkpoint_effect_waiter(_effect), do: :ok
+
+  defp reply_superseded_stop_waiters(entry, effects) do
+    if entry.stop_waiters != [] and Enum.any?(effects, &stop_waiter_effect?/1) do
+      reply_stopped_waiters(entry.stop_waiters, effects)
+      %{entry | stop_waiters: []}
+    else
+      entry
+    end
+  end
+
+  defp reply_stopped_waiters(waiters, effects) do
+    if :reply_stopped in effects do
+      Enum.each(waiters, fn {from, response} -> GenServer.reply(from, response) end)
+    else
+      Enum.each(waiters, fn {from, _response} ->
+        GenServer.reply(from, %Ack{ok: false, message: "recovery checkpoint superseded"})
+      end)
+    end
+  end
+
+  defp stop_waiter_effect?({:ordinary_unload, _request}), do: true
+  defp stop_waiter_effect?(:await_cleanup), do: true
+  defp stop_waiter_effect?(:reply_stopped), do: true
+  defp stop_waiter_effect?(_effect), do: false
+
+  defp reply_superseded_operator_waiters(entry, effects) do
+    if entry.operator_waiters != [] and Enum.any?(effects, &operator_waiter_effect?/1) do
+      Enum.each(entry.operator_waiters, &GenServer.reply(&1, {:error, :unavailable}))
+      %{entry | operator_waiters: [], operator_deadline: nil}
+    else
+      entry
+    end
+  end
+
+  defp operator_waiter_effect?({:operator_cleanup, _command_id}), do: true
+  defp operator_waiter_effect?({:operator_reset, _command_id}), do: true
+  defp operator_waiter_effect?(:await_cleanup), do: true
+  defp operator_waiter_effect?(:reply_operator), do: true
+  defp operator_waiter_effect?(_effect), do: false
 
   defp discard_cold_recovery_entry(state, key) do
     case state.recovery[key] do

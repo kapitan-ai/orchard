@@ -885,15 +885,6 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
-    previous_worker_recovery_inspector =
-      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
-
-    Application.put_env(
-      :orchard_controller,
-      :worker_recovery_inspector,
-      &WorkerRecoveryFixtures.inspect/2
-    )
-
     @client.configure(self())
     @gate_client.configure(self())
     @cancellable_stream_client.configure(self())
@@ -904,14 +895,6 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
-
-      case previous_worker_recovery_inspector do
-        {:ok, inspector} ->
-          Application.put_env(:orchard_controller, :worker_recovery_inspector, inspector)
-
-        :error ->
-          Application.delete_env(:orchard_controller, :worker_recovery_inspector)
-      end
 
       @client.clear()
       @compatibility_single_wave_client.clear()

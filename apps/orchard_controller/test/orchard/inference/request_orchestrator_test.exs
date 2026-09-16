@@ -1171,8 +1171,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Requests.RequestServer
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.TestSupport.TerminalCardinality
-  alias Orchard.TestSupport.WorkerRecoveryCheckpointClient
-  alias Orchard.TestSupport.WorkerRecoveryFixtures
+
+  alias Orchard.TestSupport.{
+    WorkerRecoveryCheckpointClient,
+    WorkerRecoveryFixtures,
+    WorkerRecoveryRequestOrchestratorFixtureScheduler
+  }
 
   setup :setup_sentry_context
 
@@ -1183,13 +1187,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
-    previous_worker_recovery_inspector =
-      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
-
     Application.put_env(
       :orchard_controller,
-      :worker_recovery_inspector,
-      &WorkerRecoveryFixtures.inspect_request_orchestrator/2
+      :inference,
+      Keyword.put(
+        previous_inference,
+        :scheduler_impl,
+        WorkerRecoveryRequestOrchestratorFixtureScheduler
+      )
     )
 
     Application.put_env(
@@ -1235,14 +1240,6 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
-
-      case previous_worker_recovery_inspector do
-        {:ok, inspector} ->
-          Application.put_env(:orchard_controller, :worker_recovery_inspector, inspector)
-
-        :error ->
-          Application.delete_env(:orchard_controller, :worker_recovery_inspector)
-      end
 
       restore_runtime_events(previous_runtime_events)
       restore_pre_await_queue_result(previous_pre_await_queue_result)

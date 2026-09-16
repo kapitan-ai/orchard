@@ -58,6 +58,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     alias Orchard.RuntimeEndpoint.{Observation, Placement}
 
+    def inspect_worker_recovery(target, ref, _opts),
+      do: WorkerRecoveryFixtures.inspect(target, ref)
+
     def status(target, _opts) do
       placement =
         Placement.new(%{
@@ -130,6 +133,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       end
     end
 
+    def inspect_worker_recovery(target, ref, _opts),
+      do: WorkerRecoveryFixtures.inspect(target, ref)
+
     def put_status(key, response) do
       Agent.update(state(), &put_in(&1.status_results[key], response))
     end
@@ -191,6 +197,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       {:ok, WorkerRecoveryFixtures.status(Process.get({__MODULE__, :response}))}
     end
 
+    def inspect_worker_recovery(target, ref, _opts),
+      do: WorkerRecoveryFixtures.inspect(target, ref)
+
     def disconnect(_channel), do: :ok
   end
 
@@ -223,6 +232,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       end
     end
 
+    def inspect_worker_recovery(target, ref, _opts),
+      do: WorkerRecoveryFixtures.inspect(target, ref)
+
     def disconnect(_channel) do
       config = config()
       :atomics.add_get(config[:counters], 3, 1)
@@ -243,6 +255,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     def connect(target), do: StubClient.connect(target)
     def status(target, opts), do: StubClient.status(target, opts)
+
+    def inspect_worker_recovery(target, ref, opts),
+      do: StubClient.inspect_worker_recovery(target, ref, opts)
+
     def disconnect(channel), do: StubClient.disconnect(channel)
   end
 
@@ -251,6 +267,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     def connect(target), do: StubClient.connect(target)
     def status(target, opts), do: StubClient.status(target, opts)
+
+    def inspect_worker_recovery(target, ref, opts),
+      do: StubClient.inspect_worker_recovery(target, ref, opts)
 
     def disconnect(_channel) do
       raise FunctionClauseError, module: __MODULE__, function: :disconnect, arity: 1
@@ -265,6 +284,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     def connect(target), do: StubClient.connect(target)
     def status(target, opts), do: StubClient.status(target, opts)
+
+    def inspect_worker_recovery(target, ref, opts),
+      do: StubClient.inspect_worker_recovery(target, ref, opts)
+
     def disconnect(channel), do: StubClient.disconnect(channel)
 
     def score_prefix_cache(_target, _request, _opts) do
@@ -277,6 +300,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
     def connect(target), do: StubClient.connect(target)
     def status(target, opts), do: StubClient.status(target, opts)
+
+    def inspect_worker_recovery(target, ref, opts),
+      do: StubClient.inspect_worker_recovery(target, ref, opts)
+
     def disconnect(channel), do: StubClient.disconnect(channel)
 
     def score_prefix_cache(_target, _request, _opts) do
@@ -885,26 +912,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     Application.put_env(:orchard_controller, :inference, Keyword.merge(config, overrides))
   end
 
-  defp restore_application_env(key, {:ok, value}),
-    do: Application.put_env(:orchard_controller, key, value)
-
-  defp restore_application_env(key, :error),
-    do: Application.delete_env(:orchard_controller, key)
-
   setup do
-    previous_recovery_inspector =
-      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
-
-    Application.put_env(
-      :orchard_controller,
-      :worker_recovery_inspector,
-      &WorkerRecoveryFixtures.inspect/2
-    )
-
-    on_exit(fn ->
-      restore_application_env(:worker_recovery_inspector, previous_recovery_inspector)
-    end)
-
     Process.put({SnapshotBreakerEvaluator, :owner}, self())
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_stub_client = Application.fetch_env(:orchard_controller, StubClient)
@@ -1747,7 +1755,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       refute :runtime_capacity_observation_stale in reason_codes
     end
 
-    test "ADR 0017 bounds, deduplicates, filters, and concurrently probes static targets once" do
+    test "ADR 0017 bounds status probes and performs separate recovery inspections" do
       configured_targets =
         Enum.map(1..5, fn index -> [host: "10.0.0.#{index}", port: 50_060 + index] end)
 
@@ -1799,9 +1807,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert MapSet.new(Enum.map(calls, fn {_caller, key, _opts} -> key end)) == expected_keys
 
       assert Enum.all?(calls, fn {_caller, _key, opts} -> opts == [timeout: 2_000] end)
-      assert :atomics.get(counters, 1) == 4
+      assert :atomics.get(counters, 1) == 8
       assert :atomics.get(counters, 2) == 4
-      assert :atomics.get(counters, 3) == 4
+      assert :atomics.get(counters, 3) == 8
       assert schedule.candidate_count == 4
 
       assert schedule.dispatch_capacity_input.management_classification ==
@@ -1817,9 +1825,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       _revalidation =
         schedule.dispatch_capacity_input_provider.(%{placement_state: :loaded})
 
-      assert :atomics.get(counters, 1) == 4
+      assert :atomics.get(counters, 1) == 10
       assert :atomics.get(counters, 2) == 4
-      assert :atomics.get(counters, 3) == 4
+      assert :atomics.get(counters, 3) == 10
 
       assert {:bounded_compatibility_probe, %Observation{}} =
                schedule.dispatch_identity_source
@@ -2178,9 +2186,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert Repo.get!(Node, node.id) == original_node
       assert DispatchCapacity.get_capacity_evidence(node.id) == original_evidence
       assert :sys.get_state(QueueManager).capacity_source_limits == original_queue_source_limits
-      assert :atomics.get(counters, 1) == 1
+      assert :atomics.get(counters, 1) == 2
       assert :atomics.get(counters, 2) == 1
-      assert :atomics.get(counters, 3) == 1
+      assert :atomics.get(counters, 3) == 2
     end
 
     test "ADR 0013 acquisition refresh reads a newer production snapshot without status probing" do
@@ -6547,6 +6555,15 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   defp wait_until(fun, attempts \\ 50)
   defp wait_until(_fun, 0), do: false
 
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(20)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
   describe "issue #128 admission policy and actionable reasons" do
     test "default controller artifact path admits cold candidate when local dir exists" do
       # Real default_artifact_acquirable?/1 path: provider seam unset.
@@ -6819,14 +6836,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     end
   end
 
-  defp wait_until(fun, attempts) do
-    if fun.() do
-      true
-    else
-      Process.sleep(20)
-      wait_until(fun, attempts - 1)
-    end
-  end
+  defp restore_application_env(key, {:ok, value}),
+    do: Application.put_env(:orchard_controller, key, value)
+
+  defp restore_application_env(key, :error), do: Application.delete_env(:orchard_controller, key)
 
   defp insert_breaker_model!(state \\ :active) do
     unique = System.unique_integer([:positive])

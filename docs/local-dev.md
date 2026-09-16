@@ -387,20 +387,22 @@ For a default BEAM controller launch, `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is effe
 
 #### Worker recovery control
 
-SPEC §12.2 recovery control is an explicit, identity-bound mTLS path in both supported source-dev and packaged profiles. It is disabled unless configured; enabling it does not start a model, alter a live worker, or make an unmanaged target recoverable.
+SPEC §12.2 recovery control is an identity-bound mTLS path. The supported all-in-one source-dev and packaged profiles default the Controller listener and Node Agent endpoint to `127.0.0.1:50073`; `50071` remains source-dev gRPC compatibility and `50072` remains Peer Grant control, so the recovery-only listener does not collide with either. Split roles have no cross-host default authority: set the endpoint on the Node Agent and the listener host and port on the Controller explicitly.
 
-The Controller serves recovery control on its own listener and endpoint. It starts whenever the host and port variables below are set, independently of BEAM peer grants, and it exposes checkpoint read/commit only — never grant control.
+The Controller serves recovery control on its own listener and endpoint. It exposes checkpoint read/commit only — never grant control. The default still requires a registered trust identity; missing identity material or unreachable configured authority is fail-closed. Configuration does not start a model, alter a live worker, or make an unmanaged target recoverable.
 
 | Variable | Required when | Description |
 |----------|---------------|-------------|
-| `ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED=true` | Node Agent recovery control is enabled | Requires a registered Node identity and forces the dedicated listener to use mTLS. In BEAM mode it exposes only recovery control, not the gRPC inference facade. |
-| `ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT` | `..._ENABLED=true` on the Node Agent | Exact Controller recovery-control `host:port` used only for authenticated checkpoint hydration/CAS. Missing or unreachable control authority keeps the affected placement fail-closed. |
-| `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | Controller hosts the recovery-control listener | Bind host for the authenticated Controller checkpoint listener. Must be a loopback or private IPv4 literal; a wildcard or publicly routable address is refused at configuration time. Requires the port variable. |
-| `ORCHARD_WORKER_RECOVERY_CONTROL_PORT` | `..._HOST` is set | TCP port for the authenticated Controller checkpoint listener. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED=true` | Split-role Node Agent recovery control is enabled | Defaults to `true` for supported all-in-one source-dev and packaged profiles. Requires a registered Node identity and forces the dedicated listener to use mTLS. In BEAM mode it exposes only recovery control, not the gRPC inference facade. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT` | Split-role Node Agent recovery control is enabled | Defaults to `127.0.0.1:50073` for supported all-in-one source-dev and packaged profiles. Exact Controller recovery-control `host:port` used only for authenticated checkpoint hydration/CAS. Missing or unreachable control authority keeps the affected placement fail-closed. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | Split-role Controller hosts the recovery-control listener | Defaults to `127.0.0.1` for supported all-in-one source-dev and packaged profiles. Bind host for the authenticated Controller checkpoint listener. Must be a loopback or private IPv4 literal; a wildcard or publicly routable address is refused at configuration time. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_PORT` | Split-role Controller sets the listener host | Defaults to `50073` with the supported profile defaults. TCP port for the authenticated Controller checkpoint listener. |
 
 The Operator API exposes `GET /ops/v1/worker-recovery/nodes/:node_id/models/:model_id?version=<exact-version>` for bounded state inspection and `POST` to the same path for `clear`, non-forced `unload`, or forced `reload`. `POST` requires JSON-string `version`, `action`, `expected_epoch`, `command_id`, and `reason`, plus non-negative JSON-number `expected_revision`. It returns only the exact key, epoch/revision, state, hydration/eligibility flags, optional owner epoch, and reason.
 
 The allowlisted recovery reason codes are `worker_restart_backoff`, `worker_restart_in_progress`, `placement_crash_breaker_open`, and `placement_recovery_required`. An unmanaged, unprobed, stale, ambiguous, malformed, or identity-mismatched target is unavailable and fail-closed; it is not evidence of a recovery failure and does not authorize a clear, load, or fallback host lookup. Operators must inspect a newly returned exact epoch/revision before retrying a command after `409` or `503`.
+
+Hot-path recovery inspection caching, batching, and ranking redesign remains deferred as a Draft activation blocker. Mixed-version clusters where an older Node Agent omits recovery evidence lose that candidate until a coordinated rollout restores exact evidence. The default mTLS wiring is configuration and test coverage only: live source-dev and packaged mTLS activation and the two-host crash proof remain pending evidence, not support claims.
 
 The split-role scripts print non-secret startup diagnostics for the BEAM node name, cookie file path, EPMD port, and distribution port range.
 They never print cookie contents.

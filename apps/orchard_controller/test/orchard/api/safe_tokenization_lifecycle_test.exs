@@ -40,8 +40,11 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
   alias Orchard.Node.ModelManager
   alias Orchard.Requests
   alias Orchard.TestSupport.ModelRequestFixtures
-  alias Orchard.TestSupport.WorkerRecoveryCheckpointClient
-  alias Orchard.TestSupport.WorkerRecoveryFixtures
+
+  alias Orchard.TestSupport.{
+    WorkerRecoveryCheckpointClient,
+    WorkerRecoveryLifecycleFixtureScheduler
+  }
 
   @moduletag :db
   @moduletag :safe_tokenization_smoke
@@ -119,19 +122,16 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_orchestrator = Application.get_env(:orchard_controller, :api_chat_orchestrator_impl)
 
-    previous_worker_recovery_inspector =
-      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
-
-    Application.put_env(
-      :orchard_controller,
-      :worker_recovery_inspector,
-      &WorkerRecoveryFixtures.inspect_lifecycle/2
-    )
-
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
     Application.delete_env(:orchard_controller, :api_chat_orchestrator_impl)
     Application.put_env(:orchard_controller, :safe_tokenization_lifecycle_capture_pid, self())
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(previous_inference, :scheduler_impl, WorkerRecoveryLifecycleFixtureScheduler)
+    )
 
     Application.put_env(
       :orchard_node_agent,
@@ -147,14 +147,6 @@ defmodule Orchard.API.SafeTokenizationLifecycleTest do
 
     on_exit(fn ->
       restore_orchestrator(previous_orchestrator)
-
-      case previous_worker_recovery_inspector do
-        {:ok, inspector} ->
-          Application.put_env(:orchard_controller, :worker_recovery_inspector, inspector)
-
-        :error ->
-          Application.delete_env(:orchard_controller, :worker_recovery_inspector)
-      end
 
       Application.delete_env(:orchard_controller, :safe_tokenization_lifecycle_capture_pid)
       Application.put_env(:orchard_controller, :inference, previous_inference)

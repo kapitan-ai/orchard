@@ -632,6 +632,19 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
       )
     end)
 
+    assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
+             "placement_recovery_required"
+
+    assert {:error, {:worker_recovery_refused, :placement_recovery_required}} =
+             ModelManager.prepare_request(
+               %ExecuteInferenceRequest{
+                 request_id: "pending-intentional-unload",
+                 model_id: ctx.request.model_id,
+                 version: ctx.request.version
+               },
+               self()
+             )
+
     send(adapter_pid, :finish_recovery_load)
     Process.sleep(50)
 
@@ -643,6 +656,43 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert %{ok: true} = Task.await(unload_task, 5_000)
     refute Task.await(load_task, 5_000).placement_state == :PLACEMENT_STATE_LOADED
     assert :error = worker_pid(ctx)
+  end
+
+  test "SPEC §12.2 a superseded unload checkpoint replies rather than leaving its caller waiting",
+       ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    Checkpoints.mode(:interrupt_unavailable)
+
+    first_unload =
+      Task.async(fn ->
+        ModelManager.unload_model(%UnloadModelRequest{
+          model_id: ctx.request.model_id,
+          version: ctx.request.version
+        })
+      end)
+
+    eventually(fn ->
+      match?(
+        %{pending: %{record: %{"ownership" => %{"phase" => "cleanup"}}}},
+        :sys.get_state(ModelManager).recovery[ctx.key]
+      )
+    end)
+
+    second_unload =
+      Task.async(fn ->
+        ModelManager.unload_model(%UnloadModelRequest{
+          model_id: ctx.request.model_id,
+          version: ctx.request.version
+        })
+      end)
+
+    assert %{ok: false, message: "recovery checkpoint superseded"} =
+             Task.await(first_unload, 5_000)
+
+    Checkpoints.mode(:ok)
+    assert %{ok: true} = Task.await(second_unload, 5_000)
   end
 
   test "SPEC §12.2 duplicate recovery waits for its durable completion checkpoint", ctx do

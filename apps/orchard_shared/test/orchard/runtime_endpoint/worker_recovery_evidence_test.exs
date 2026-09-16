@@ -20,6 +20,29 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidenceTest do
     end
   end
 
+  test "SPEC §12.2 recovery evidence has one valid state eligibility reason triple" do
+    assert {:ok, decoded} =
+             projection("armed")
+             |> WorkerRecoveryEvidence.encode()
+             |> then(fn {:ok, json} -> WorkerRecoveryEvidence.decode(json) end)
+
+    assert decoded.state == "armed"
+    assert decoded.eligible
+    assert decoded.reason == nil
+
+    for evidence <- [
+          %{projection("armed") | "eligible" => false},
+          %{projection("backoff") | "eligible" => true},
+          %{projection("open") | "reason" => "worker_restart_backoff"}
+        ] do
+      assert {:error, :invalid_worker_recovery_evidence} =
+               WorkerRecoveryEvidence.validate(evidence)
+    end
+
+    assert {:error, :invalid_worker_recovery_evidence} =
+             WorkerRecoveryEvidence.decode(%{"state" => "armed"})
+  end
+
   test "SPEC §12.2 conflicting atom and string recovery evidence fails closed" do
     evidence = projection("armed") |> Map.put(:state, "open")
     assert nil == WorkerRecoveryEvidence.normalize(evidence)

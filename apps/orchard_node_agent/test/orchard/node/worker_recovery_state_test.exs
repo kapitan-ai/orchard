@@ -39,6 +39,18 @@ defmodule Orchard.Node.WorkerRecoveryStateTest do
     assert {:write, _, ^pending} = State.retry(entry, 1_000)
   end
 
+  test "SPEC §12.2 superseded checkpoint effects remain available exactly once" do
+    entry =
+      State.new("epoch")
+      |> State.checkpoint([{:spawn_worker, self(), {self(), make_ref()}}])
+      |> State.checkpoint([{:hydration_complete, [{self(), make_ref()}]}])
+
+    {entry, superseded} = State.take_superseded_effects(entry)
+
+    assert [{:spawn_worker, _task_pid, {_caller_pid, _tag}}] = superseded
+    assert {^entry, []} = State.take_superseded_effects(entry)
+  end
+
   test "SPEC §12.2 fresh epochs retain nonclean checkpoints without rebasing clocks" do
     entry =
       State.new("old") |> State.hydrate(:absent) |> State.transition({:admit, "worker"}, -9_000)

@@ -42,6 +42,9 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       end
     end
 
+    def inspect_worker_recovery(target, ref, _opts),
+      do: WorkerRecoveryFixtures.inspect(target, ref)
+
     def disconnect(_channel), do: :ok
   end
 
@@ -74,20 +77,6 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   end
 
   setup do
-    previous = Application.get_env(:orchard_controller, :worker_recovery_inspector)
-
-    Application.put_env(
-      :orchard_controller,
-      :worker_recovery_inspector,
-      &WorkerRecoveryFixtures.inspect/2
-    )
-
-    on_exit(fn ->
-      if previous,
-        do: Application.put_env(:orchard_controller, :worker_recovery_inspector, previous),
-        else: Application.delete_env(:orchard_controller, :worker_recovery_inspector)
-    end)
-
     Process.delete(:single_node_status)
     Process.put({CountingClient, :owner}, self())
     :ok

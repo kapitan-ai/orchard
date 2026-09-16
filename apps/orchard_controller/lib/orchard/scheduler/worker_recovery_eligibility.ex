@@ -11,27 +11,17 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   require Logger
 
   alias Orchard.Inference
-  alias Orchard.RuntimeEndpoint.{ModelRef, Placement, Target}
+  alias Orchard.RuntimeEndpoint.{ModelRef, Placement, Target, WorkerRecoveryEvidence}
 
   @unknown :worker_recovery_evidence_unavailable
-  @reasons [
-    :worker_restart_backoff,
-    :worker_restart_in_progress,
-    :placement_crash_breaker_open,
-    :placement_recovery_required
-  ]
 
   @doc "Validates a recovery projection against its current authenticated endpoint epoch."
   @spec evidence(term(), term()) :: :ok | {:error, atom()}
   def evidence(epoch, projection) when is_binary(epoch) and epoch != "" and is_map(projection) do
-    with ^epoch <- value(projection, :epoch),
-         revision when is_integer(revision) and revision >= 0 <- value(projection, :revision),
-         true <- value(projection, :hydrated) do
-      policy_evidence(
-        value(projection, :state),
-        value(projection, :eligible),
-        value(projection, :reason)
-      )
+    with {:ok, evidence} <- WorkerRecoveryEvidence.validate(projection),
+         ^epoch <- evidence.epoch,
+         true <- evidence.hydrated do
+      WorkerRecoveryEvidence.eligibility(evidence)
     else
       _invalid -> {:error, @unknown}
     end
@@ -66,36 +56,11 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
 
   @doc "Recognizes only the structured no-execution refusal vocabulary."
   @spec refusal?(term()) :: boolean()
-  def refusal?({:worker_recovery_refused, reason}) when reason in @reasons, do: true
-  def refusal?(_reason), do: false
-
-  defp policy_evidence(state, true, nil) when state in [:armed, "armed"], do: :ok
-
-  defp policy_evidence(state, false, reason) do
-    expected =
-      case state do
-        state when state in [:backoff, "backoff"] ->
-          :worker_restart_backoff
-
-        state when state in [:restarting, "restarting"] ->
-          :worker_restart_in_progress
-
-        state when state in [:open, "open"] ->
-          :placement_crash_breaker_open
-
-        state when state in [:recovery_required, "recovery_required"] ->
-          :placement_recovery_required
-
-        _invalid ->
-          @unknown
-      end
-
-    if expected in @reasons and reason in [expected, Atom.to_string(expected)],
-      do: {:error, expected},
-      else: {:error, @unknown}
+  def refusal?({:worker_recovery_refused, reason}) do
+    match?({:ok, _reason}, WorkerRecoveryEvidence.refusal_reason(reason))
   end
 
-  defp policy_evidence(_state, _eligible, _reason), do: {:error, @unknown}
+  def refusal?(_reason), do: false
 
   defp matching_placements(observation, model_ref) do
     case value(observation, :placements) do
@@ -120,9 +85,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   end
 
   defp inspect_evidence(target, model_ref, epoch, opts) when is_binary(epoch) and epoch != "" do
-    inspector =
-      Keyword.get(opts, :worker_recovery_inspector) ||
-        Application.get_env(:orchard_controller, :worker_recovery_inspector)
+    inspector = Keyword.get(opts, :worker_recovery_inspector)
 
     result =
       if is_function(inspector, 2),

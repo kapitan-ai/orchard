@@ -6,7 +6,7 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
   alias Orchard.{ControlPlane, Governance, Inference, Repo}
   alias Orchard.Models.Model
   alias Orchard.Nodes.Node
-  alias Orchard.RuntimeEndpoint.{ModelRef, Operation}
+  alias Orchard.RuntimeEndpoint.{ModelRef, Operation, WorkerRecoveryEvidence}
 
   @fields ~w(version action expected_epoch expected_revision command_id reason)
   @evidence_fields ~w(key epoch owner_epoch revision state hydrated eligible reason)a
@@ -140,35 +140,17 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
   end
 
   defp validate_evidence({:ok, evidence}, _node_id, %{key: key}) when is_map(evidence) do
-    if evidence[:key] == key and valid_evidence?(evidence) do
+    with true <- WorkerRecoveryEvidence.json_string_values?(evidence),
+         {:ok, evidence} <- WorkerRecoveryEvidence.validate(evidence),
+         ^key <- evidence.key do
       {:ok, Map.take(evidence, @evidence_fields)}
     else
-      {:error, :unavailable}
+      _invalid -> {:error, :unavailable}
     end
   end
 
   defp validate_evidence({:error, _reason} = error, _node_id, _input), do: error
   defp validate_evidence(_result, _node_id, _input), do: {:error, :unavailable}
-
-  defp valid_evidence?(evidence) do
-    bounded?(evidence[:epoch], 128) and valid_revision?(evidence[:revision]) and
-      evidence[:hydrated] == true and is_boolean(evidence[:eligible]) and
-      valid_evidence_state?(evidence[:state]) and valid_evidence_reason?(evidence[:reason]) and
-      valid_owner_epoch?(evidence[:owner_epoch])
-  end
-
-  defp valid_revision?(revision), do: is_integer(revision) and revision >= 0
-  defp valid_owner_epoch?(nil), do: true
-  defp valid_owner_epoch?(owner_epoch), do: bounded?(owner_epoch, 128)
-
-  defp valid_evidence_state?(state),
-    do: state in ~w(armed backoff restarting open recovery_required)
-
-  defp valid_evidence_reason?(nil), do: true
-
-  defp valid_evidence_reason?(reason),
-    do:
-      reason in ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)
 
   defp audit(conn, command, phase) do
     case Governance.insert_cluster_audit_log(%{

@@ -17,11 +17,9 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryClient do
     ModelRef,
     Operation,
     Target,
+    WorkerRecoveryEvidence,
     WorkerRecoveryWire
   }
-
-  @reasons ~w(worker_restart_backoff worker_restart_in_progress placement_crash_breaker_open placement_recovery_required)a
-  @fields ~w(epoch owner_epoch revision state hydrated eligible reason)a
 
   @doc "Uses the registered Node control address, never the BEAM caller's asserted identity."
   @spec control_target(Target.t() | Ecto.UUID.t()) :: {:ok, Target.t()} | {:error, atom()}
@@ -102,13 +100,11 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryClient do
   @doc "Rejects malformed or cross-key evidence rather than granting legacy eligibility."
   @spec decode_result(WorkerRecoveryResult.t(), map()) :: {:ok, map()} | {:error, atom()}
   def decode_result(%WorkerRecoveryResult{status: 200, record_json: json}, key) do
-    with {:ok, record} <- WorkerRecoveryWire.decode_record(json),
-         true <- record["key"] == Map.new(key, fn {k, v} -> {Atom.to_string(k), v} end),
-         true <- valid_evidence?(record) do
-      evidence = Map.new(@fields, &{&1, record[Atom.to_string(&1)]})
-      {:ok, Map.put(evidence, :key, key)}
+    with {:ok, evidence} <- WorkerRecoveryEvidence.decode(json),
+         true <- evidence.key == key do
+      {:ok, evidence}
     else
-      _ -> {:error, :unavailable}
+      _invalid -> {:error, :unavailable}
     end
   end
 
@@ -124,9 +120,9 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryClient do
     do: {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
 
   def ensure_result(%{recovery_refusal: refusal}) do
-    case Enum.find(@reasons, &(Atom.to_string(&1) == refusal)) do
-      nil -> {:error, :invalid_worker_recovery_refusal}
-      reason -> {:error, {:worker_recovery_refused, reason}}
+    case WorkerRecoveryEvidence.refusal_reason(refusal) do
+      {:ok, reason} -> {:error, {:worker_recovery_refused, reason}}
+      :error -> {:error, :invalid_worker_recovery_refusal}
     end
   end
 
@@ -163,27 +159,6 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryClient do
   end
 
   defp proto_key(_), do: {:error, :invalid_command}
-
-  defp valid_evidence?(record) do
-    valid_revision?(record) and valid_state?(record) and valid_eligibility?(record)
-  end
-
-  defp valid_revision?(record) do
-    bounded?(record["epoch"], 128) and
-      (is_nil(record["owner_epoch"]) or bounded?(record["owner_epoch"], 128)) and
-      is_integer(record["revision"]) and record["revision"] >= 0
-  end
-
-  defp valid_state?(record) do
-    is_boolean(record["hydrated"]) and is_boolean(record["eligible"]) and
-      record["state"] in ~w(armed backoff restarting open recovery_required) and
-      record["reason"] in [nil | Enum.map(@reasons, &Atom.to_string/1)]
-  end
-
-  defp valid_eligibility?(record) do
-    record["eligible"] == false or
-      (record["hydrated"] == true and record["state"] == "armed" and is_nil(record["reason"]))
-  end
 
   defp bounded?(value, max),
     do: is_binary(value) and byte_size(value) in 1..max and String.trim(value) != ""

@@ -52,11 +52,6 @@ defmodule Orchard.InferenceTest do
 
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
-    previous_worker_recovery_inspector =
-      Application.fetch_env(:orchard_controller, :worker_recovery_inspector)
-
-    Application.delete_env(:orchard_controller, :worker_recovery_inspector)
-
     env_snapshot =
       System.get_env()
       |> Enum.filter(fn {key, _value} -> config_env_key?(key) end)
@@ -64,15 +59,6 @@ defmodule Orchard.InferenceTest do
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
-
-      case previous_worker_recovery_inspector do
-        {:ok, inspector} ->
-          Application.put_env(:orchard_controller, :worker_recovery_inspector, inspector)
-
-        :error ->
-          Application.delete_env(:orchard_controller, :worker_recovery_inspector)
-      end
-
       restore_env(env_snapshot)
     end)
 

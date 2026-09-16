@@ -23,8 +23,11 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
-  alias Orchard.TestSupport.WorkerRecoveryCheckpointClient
-  alias Orchard.TestSupport.WorkerRecoveryFixtures
+
+  alias Orchard.TestSupport.{
+    WorkerRecoveryCheckpointClient,
+    WorkerRecoveryManagerFixtureScheduler
+  }
 
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
@@ -63,13 +66,10 @@ defmodule Orchard.API.ResponsesControllerTest do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
-    previous_worker_recovery_inspector =
-      Application.get_env(:orchard_controller, :worker_recovery_inspector)
-
     Application.put_env(
       :orchard_controller,
-      :worker_recovery_inspector,
-      &WorkerRecoveryFixtures.inspect_manager/2
+      :inference,
+      Keyword.put(previous_inference, :scheduler_impl, WorkerRecoveryManagerFixtureScheduler)
     )
 
     Application.put_env(
@@ -91,7 +91,6 @@ defmodule Orchard.API.ResponsesControllerTest do
     on_exit(fn ->
       restore_env(:api_responses_orchestrator_impl, previous_orchestrator)
       restore_env(:queue_admission_api_runtime_owner, previous_runtime_owner)
-      restore_env(:worker_recovery_inspector, previous_worker_recovery_inspector)
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
       QueueManager.reset()

@@ -140,6 +140,58 @@ defmodule Orchard.TestSupport.WorkerRecoveryFixtures do
   defp metadata_node_id(_metadata), do: nil
 end
 
+defmodule Orchard.TestSupport.WorkerRecoveryFixtureScheduler do
+  @moduledoc false
+
+  alias Orchard.Scheduler.MultiNode
+
+  def schedule(request, opts, inspector) do
+    MultiNode.schedule(request, Keyword.put(opts, :worker_recovery_inspector, inspector))
+  end
+end
+
+defmodule Orchard.TestSupport.WorkerRecoveryManagerFixtureScheduler do
+  @moduledoc false
+
+  alias Orchard.TestSupport.{WorkerRecoveryFixtures, WorkerRecoveryFixtureScheduler}
+
+  def schedule(request, opts) do
+    WorkerRecoveryFixtureScheduler.schedule(
+      request,
+      opts,
+      &WorkerRecoveryFixtures.inspect_manager/2
+    )
+  end
+end
+
+defmodule Orchard.TestSupport.WorkerRecoveryLifecycleFixtureScheduler do
+  @moduledoc false
+
+  alias Orchard.TestSupport.{WorkerRecoveryFixtures, WorkerRecoveryFixtureScheduler}
+
+  def schedule(request, opts) do
+    WorkerRecoveryFixtureScheduler.schedule(
+      request,
+      opts,
+      &WorkerRecoveryFixtures.inspect_lifecycle/2
+    )
+  end
+end
+
+defmodule Orchard.TestSupport.WorkerRecoveryRequestOrchestratorFixtureScheduler do
+  @moduledoc false
+
+  alias Orchard.TestSupport.{WorkerRecoveryFixtures, WorkerRecoveryFixtureScheduler}
+
+  def schedule(request, opts) do
+    WorkerRecoveryFixtureScheduler.schedule(
+      request,
+      opts,
+      &WorkerRecoveryFixtures.inspect_request_orchestrator/2
+    )
+  end
+end
+
 defmodule Orchard.TestSupport.WorkerRecoveryCheckpointClient do
   @moduledoc false
 

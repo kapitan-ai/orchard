@@ -7,6 +7,7 @@ defmodule Orchard.Node.WorkerRecoveryState do
   Only effects attached to the current desired transition may be published.
   """
 
+  alias Orchard.ClusterManagement.ReasonCodes
   alias Orchard.Node.WorkerCrashPolicy, as: Policy
   alias Orchard.RuntimeEndpoint.WorkerRecoveryCheckpoint, as: Record
 
@@ -26,6 +27,7 @@ defmodule Orchard.Node.WorkerRecoveryState do
       pending: nil,
       sequence: 0,
       effects: [],
+      superseded_effects: [],
       retry_at: nil,
       request: nil,
       prior?: false,
@@ -76,8 +78,28 @@ defmodule Orchard.Node.WorkerRecoveryState do
   @spec checkpoint(t(), [term()]) :: t()
   def checkpoint(entry, effects) do
     sequence = entry.sequence + 1
-    %{entry | sequence: sequence, desired: "#{entry.epoch}:#{sequence}", effects: effects}
+
+    superseded_effects =
+      if is_nil(entry.desired),
+        do: entry.superseded_effects,
+        else: entry.superseded_effects ++ entry.effects
+
+    %{
+      entry
+      | sequence: sequence,
+        desired: "#{entry.epoch}:#{sequence}",
+        effects: effects,
+        superseded_effects: superseded_effects
+    }
   end
+
+  @doc "Returns effect waiters displaced by a newer checkpoint transition exactly once."
+  @spec take_superseded_effects(t()) :: {t(), [term()]}
+  def take_superseded_effects(%{superseded_effects: effects} = entry) do
+    {%{entry | superseded_effects: []}, effects}
+  end
+
+  def take_superseded_effects(entry), do: {entry, []}
 
   @spec record(t()) :: Record.t()
   def record(entry) do
@@ -152,24 +174,58 @@ defmodule Orchard.Node.WorkerRecoveryState do
 
   @spec refusal(t() | nil) :: atom() | nil
   def refusal(nil), do: :placement_recovery_required
-  def refusal(%{hydrated?: false}), do: :placement_recovery_required
-  def refusal(%{policy: %{state: :backoff}}), do: :worker_restart_backoff
-  def refusal(%{policy: %{state: :restarting}}), do: :worker_restart_in_progress
-  def refusal(%{policy: %{state: :open}}), do: :placement_crash_breaker_open
-  def refusal(%{policy: %{state: :recovery_required}}), do: :placement_recovery_required
-  def refusal(%{prior?: true}), do: :placement_recovery_required
-  def refusal(_entry), do: nil
+
+  def refusal(entry) do
+    cond do
+      intentional_effect_pending?(Map.get(entry, :effects, [])) ->
+        :placement_recovery_required
+
+      entry.hydrated? == false ->
+        :placement_recovery_required
+
+      entry.policy.state == :backoff ->
+        :worker_restart_backoff
+
+      entry.policy.state == :restarting ->
+        :worker_restart_in_progress
+
+      entry.policy.state == :open ->
+        :placement_crash_breaker_open
+
+      entry.policy.state == :recovery_required or entry.prior? ->
+        :placement_recovery_required
+
+      true ->
+        nil
+    end
+  end
+
+  defp intentional_effect_pending?(effects) do
+    Enum.any?(effects, fn
+      {:ordinary_unload, _request} -> true
+      {:operator_cleanup, _command_id} -> true
+      {:operator_reset, _command_id} -> true
+      _effect -> false
+    end)
+  end
 
   @spec projection(t()) :: map()
   def projection(entry) do
+    state = projection_state(entry.policy.state, refusal(entry))
+    state = Atom.to_string(state)
+    reason = ReasonCodes.worker_recovery_reason_for_state(state)
+
     %{
       epoch: entry.epoch,
       owner_epoch: entry.owner_epoch,
       revision: entry.revision,
-      state: Atom.to_string(entry.policy.state),
+      state: state,
       hydrated: entry.hydrated?,
-      reason: refusal(entry),
-      eligible: is_nil(refusal(entry))
+      reason: reason,
+      eligible: is_nil(reason)
     }
   end
+
+  defp projection_state(:armed, :placement_recovery_required), do: :recovery_required
+  defp projection_state(state, _reason), do: state
 end

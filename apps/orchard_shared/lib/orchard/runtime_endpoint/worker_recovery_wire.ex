@@ -1,6 +1,7 @@
 defmodule Orchard.RuntimeEndpoint.WorkerRecoveryWire do
   @moduledoc "Bounded encoding for the dedicated SPEC §12.2 control operations."
   alias Orchard.Cluster.V1.{WorkerRecoveryKey, WorkerRecoveryResult}
+  alias Orchard.RuntimeEndpoint.WorkerRecoveryEvidence
 
   @spec key(term()) :: {:ok, map()} | {:error, :invalid_key}
   def key(%WorkerRecoveryKey{node_id: node_id, model_id: model_id, version: version}) do
@@ -33,6 +34,17 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryWire do
     {status, code} = error(reason)
     %WorkerRecoveryResult{status: status, reason: code}
   end
+
+  @doc "Encodes Node recovery evidence only after the shared exact-key validator accepts it."
+  @spec evidence_result({:ok, map()} | {:error, term()}) :: WorkerRecoveryResult.t()
+  def evidence_result({:ok, evidence}) do
+    case WorkerRecoveryEvidence.encode(evidence) do
+      {:ok, json} -> %WorkerRecoveryResult{status: 200, record_json: json}
+      {:error, :invalid_worker_recovery_evidence} -> result({:error, :unavailable})
+    end
+  end
+
+  def evidence_result({:error, reason}), do: result({:error, reason})
 
   defp error(reason) when reason in [:unauthorized_checkpoint, :permission_denied],
     do: {403, "permission_denied"}
