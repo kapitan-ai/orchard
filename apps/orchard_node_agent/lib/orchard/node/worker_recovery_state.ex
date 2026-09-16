@@ -157,7 +157,6 @@ defmodule Orchard.Node.WorkerRecoveryState do
   def refusal(%{policy: %{state: :restarting}}), do: :worker_restart_in_progress
   def refusal(%{policy: %{state: :open}}), do: :placement_crash_breaker_open
   def refusal(%{policy: %{state: :recovery_required}}), do: :placement_recovery_required
-  def refusal(%{desired: desired}) when not is_nil(desired), do: :worker_restart_in_progress
   def refusal(%{prior?: true}), do: :placement_recovery_required
   def refusal(_entry), do: nil
 

@@ -4,5 +4,4 @@ defmodule Orchard.BeamPeerGrants.ControlEndpoint do
   use GRPC.Endpoint
 
   run(Orchard.BeamPeerGrants.ControlServer)
-  run(Orchard.WorkerRecovery.ControlServer)
 end

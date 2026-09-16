@@ -57,6 +57,8 @@ defmodule OrchardApplicationTest do
 
   alias Orchard.Inference.QueueManager
   alias Orchard.Metrics.CardinalityLedger
+  alias Orchard.WorkerRecovery.ControlEndpoint, as: WorkerRecoveryControlEndpoint
+  alias Orchard.WorkerRecovery.ControlListener, as: WorkerRecoveryControlListener
 
   @sentry_dsn "https://public@example.invalid/1"
 
@@ -66,6 +68,7 @@ defmodule OrchardApplicationTest do
       start_endpoint: Application.get_env(:orchard_controller, :start_endpoint, true),
       enable_db_checks: Application.get_env(:orchard_controller, :enable_db_checks, true),
       beam_peer_grants: Application.get_env(:orchard_controller, :beam_peer_grants),
+      worker_recovery: Application.get_env(:orchard_controller, :worker_recovery),
       controller_membership: Application.get_env(:orchard_controller, :controller_membership),
       start_metrics: Application.get_env(:orchard_controller, :start_metrics),
       metrics: Application.get_env(:orchard_controller, :metrics),
@@ -81,9 +84,11 @@ defmodule OrchardApplicationTest do
     Application.put_env(:orchard_controller, :start_endpoint, false)
     Application.put_env(:orchard_controller, :enable_db_checks, false)
     Application.put_env(:orchard_controller, :beam_peer_grants, enabled: false)
+    Application.delete_env(:orchard_controller, :worker_recovery)
 
     on_exit(fn ->
       stop_controller_app()
+      restore_app_env(:orchard_controller, :worker_recovery, previous_env.worker_recovery)
 
       Application.put_env(:orchard_controller, :start_repo, previous_env.start_repo)
       Application.put_env(:orchard_controller, :start_endpoint, previous_env.start_endpoint)
@@ -578,6 +583,54 @@ defmodule OrchardApplicationTest do
     assert membership_owner_specs(Orchard.Application.child_specs()) == []
   end
 
+  test "SPEC.md §12.2 recovery control starts its own listener independently of peer grants" do
+    Application.put_env(:orchard_controller, :worker_recovery,
+      control_listener: [host: "127.0.0.1", port: 50_072]
+    )
+
+    for grants <- [
+          [enabled: false],
+          [enabled: true, control_listener: [host: "10.0.0.10", port: 50_073]]
+        ] do
+      Application.put_env(:orchard_controller, :beam_peer_grants, grants)
+
+      assert [{WorkerRecoveryControlListener, opts}] =
+               recovery_listener_specs(Orchard.Application.child_specs())
+
+      assert opts == [host: "127.0.0.1", port: 50_072]
+    end
+
+    Application.delete_env(:orchard_controller, :worker_recovery)
+    assert recovery_listener_specs(Orchard.Application.child_specs()) == []
+  end
+
+  test "SPEC.md §12.2 the recovery listener serves checkpoint control without grant control" do
+    assert WorkerRecoveryControlEndpoint.__meta__(:servers) == [
+             Orchard.WorkerRecovery.ControlServer
+           ]
+
+    refute Orchard.WorkerRecovery.ControlServer in Orchard.BeamPeerGrants.ControlEndpoint.__meta__(
+             :servers
+           )
+  end
+
+  test "SPEC.md §12.2 the recovery listener binds only loopback or private IPv4" do
+    for host <- ["127.0.0.1", "10.0.0.10", "172.16.4.9", "192.168.1.7"] do
+      assert {:error, :worker_recovery_control_identity_unavailable} =
+               WorkerRecoveryControlListener.server_options(host: host, port: 50_072)
+    end
+
+    for host <- ["0.0.0.0", "8.8.8.8", "203.0.113.7", "localhost", "::1", nil] do
+      assert {:error, :worker_recovery_control_configuration_invalid} =
+               WorkerRecoveryControlListener.server_options(host: host, port: 50_072)
+    end
+
+    for port <- [0, 70_000, nil, "50072"] do
+      assert {:error, :worker_recovery_control_configuration_invalid} =
+               WorkerRecoveryControlListener.server_options(host: "127.0.0.1", port: port)
+    end
+  end
+
   test "SPEC.md §7.5.0 controller startup fails closed when its grant listener is invalid" do
     Application.put_env(:orchard_controller, :beam_peer_grants,
       enabled: true,
@@ -721,6 +774,10 @@ defmodule OrchardApplicationTest do
 
   defp membership_owner_specs(child_specs) do
     Enum.filter(child_specs, &match?({Orchard.ControllerInstances.MembershipOwner, _opts}, &1))
+  end
+
+  defp recovery_listener_specs(child_specs) do
+    Enum.filter(child_specs, &match?({WorkerRecoveryControlListener, _opts}, &1))
   end
 
   defp remove_sentry_handler do

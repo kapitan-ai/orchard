@@ -73,7 +73,7 @@ defmodule Orchard.Node.Supervisor do
   end
 
   defp grpc_credential do
-    if WorkerRecoveryControlListener.enabled?(),
+    if grpc_endpoint() == WorkerRecoveryControlEndpoint,
       do: {:ok, WorkerRecoveryControlListener.credential!()},
       else: RuntimeTLS.server_credential()
   end

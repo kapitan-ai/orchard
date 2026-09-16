@@ -389,11 +389,13 @@ For a default BEAM controller launch, `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is effe
 
 SPEC §12.2 recovery control is an explicit, identity-bound mTLS path in both supported source-dev and packaged profiles. It is disabled unless configured; enabling it does not start a model, alter a live worker, or make an unmanaged target recoverable.
 
+The Controller serves recovery control on its own listener and endpoint. It starts whenever the host and port variables below are set, independently of BEAM peer grants, and it exposes checkpoint read/commit only — never grant control.
+
 | Variable | Required when | Description |
 |----------|---------------|-------------|
 | `ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED=true` | Node Agent recovery control is enabled | Requires a registered Node identity and forces the dedicated listener to use mTLS. In BEAM mode it exposes only recovery control, not the gRPC inference facade. |
 | `ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT` | `..._ENABLED=true` on the Node Agent | Exact Controller recovery-control `host:port` used only for authenticated checkpoint hydration/CAS. Missing or unreachable control authority keeps the affected placement fail-closed. |
-| `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | Controller hosts the recovery-control listener | Bind host for the authenticated Controller checkpoint listener. Requires the port variable. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | Controller hosts the recovery-control listener | Bind host for the authenticated Controller checkpoint listener. Must be a loopback or private IPv4 literal; a wildcard or publicly routable address is refused at configuration time. Requires the port variable. |
 | `ORCHARD_WORKER_RECOVERY_CONTROL_PORT` | `..._HOST` is set | TCP port for the authenticated Controller checkpoint listener. |
 
 The Operator API exposes `GET /ops/v1/worker-recovery/nodes/:node_id/models/:model_id?version=<exact-version>` for bounded state inspection and `POST` to the same path for `clear`, non-forced `unload`, or forced `reload`. `POST` requires JSON-string `version`, `action`, `expected_epoch`, `command_id`, and `reason`, plus non-negative JSON-number `expected_revision`. It returns only the exact key, epoch/revision, state, hydration/eligibility flags, optional owner epoch, and reason.

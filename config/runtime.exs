@@ -146,6 +146,26 @@ loopback_listen_host? = fn host ->
   end
 end
 
+recovery_control_host! = fn host ->
+  ip =
+    case :inet.parse_ipv4strict_address(String.to_charlist(host)) do
+      {:ok, {0, 0, 0, 0}} ->
+        raise "ORCHARD_WORKER_RECOVERY_CONTROL_HOST must not be a wildcard address, got: #{inspect(host)}"
+
+      {:ok, ip} ->
+        ip
+
+      {:error, _reason} ->
+        raise "ORCHARD_WORKER_RECOVERY_CONTROL_HOST requires an IPv4 literal, got: #{inspect(host)}"
+    end
+
+  if loopback_ip?.(ip) or private_ipv4?.(ip) do
+    host
+  else
+    raise "ORCHARD_WORKER_RECOVERY_CONTROL_HOST must be a loopback or private IPv4 address, got: #{inspect(host)}"
+  end
+end
+
 parse_trusted_proxy_cidr! = fn cidr ->
   with [ip_string, prefix_string] <- String.split(cidr, "/", parts: 2),
        {:ok, ip_tuple} <- :inet.parse_address(String.to_charlist(ip_string)),
@@ -1364,7 +1384,7 @@ if config_env() == :prod do
 
         config :orchard_controller, :worker_recovery,
           control_listener: [
-            host: host,
+            host: recovery_control_host!.(host),
             port: env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)
           ]
       end
@@ -1749,7 +1769,7 @@ if config_env() == :dev do
 
     config :orchard_controller, :worker_recovery,
       control_listener: [
-        host: host,
+        host: recovery_control_host!.(host),
         port: env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)
       ]
   end

@@ -23,6 +23,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     WorkerRecoveryShutdown
   }
 
+  alias Orchard.Node.Endpoint, as: NodeEndpoint
   alias Orchard.Node.GRPCServer, as: NodeGRPCServer
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.Nodes.Node
@@ -377,6 +378,32 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
 
     assert RuntimeServer.safe_failure_reason_code({:worker_recovery_refused, :unknown}) ==
              "runtime_error"
+  end
+
+  test "SPEC §12.2 combined gRPC mode keeps the ordinary inference listener credential", %{
+    material: material
+  } do
+    {identity_root, _credential} = registered_identity!(material)
+    {:ok, identity} = RuntimeTLS.load_registered_identity(identity_root)
+    runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      runtime
+      |> Keyword.put(:runtime_grpc_listener_enabled, true)
+      |> Keyword.put(:grpc_security, :mutual_tls)
+      |> Keyword.put(:runtime_tls_identity, identity)
+      |> Keyword.put(:worker_recovery_control_enabled, true)
+      |> Keyword.put(:node_identity_root, nil)
+      |> Keyword.put(:listen_address, host: "127.0.0.1", port: free_port!())
+    )
+
+    assert WorkerRecoveryControlListener.enabled?()
+
+    opts = NodeSupervisor.grpc_server_opts()
+    assert opts[:endpoint] == NodeEndpoint
+    assert opts[:adapter_opts][:cred]
   end
 
   test "SPEC §12.2 BEAM mode starts a recovery-only pinned TLS listener", %{material: material} do

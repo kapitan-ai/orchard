@@ -195,6 +195,41 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     end
   end
 
+  test "SPEC §12.2 recovery control accepts a loopback listener host in source dev" do
+    config =
+      read_runtime_config!(
+        %{
+          "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "127.0.0.1",
+          "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+        },
+        :dev
+      )
+
+    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
+             control_listener: [host: "127.0.0.1", port: 50_072]
+           ]
+  end
+
+  test "SPEC §12.2 recovery control refuses a wildcard or publicly routable listener host" do
+    for {host, message} <- [
+          {"0.0.0.0", ~r/must not be a wildcard address/},
+          {"8.8.8.8", ~r/must be a loopback or private IPv4 address/},
+          {"203.0.113.7", ~r/must be a loopback or private IPv4 address/},
+          {"::1", ~r/requires an IPv4 literal/},
+          {"localhost", ~r/requires an IPv4 literal/}
+        ] do
+      assert_raise RuntimeError, message, fn ->
+        read_runtime_config!(
+          %{
+            "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => host,
+            "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+          },
+          :dev
+        )
+      end
+    end
+  end
+
   test "SPEC §12.2 recovery setup refuses a missing checkpoint endpoint" do
     assert_raise RuntimeError, ~r/CONTROL_ENDPOINT is required/, fn ->
       read_runtime_config!(%{"ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true"})

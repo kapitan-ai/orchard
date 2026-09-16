@@ -15,6 +15,7 @@ defmodule Orchard.Application do
 
   alias Orchard.ControllerInstances.MembershipOwner
   alias Orchard.RuntimeEndpoint.DistributionExpiryGuard
+  alias Orchard.WorkerRecovery.ControlListener, as: WorkerRecoveryControlListener
 
   @impl true
   def start(_type, _args) do
@@ -61,6 +62,7 @@ defmodule Orchard.Application do
     |> maybe_add_repo()
     |> maybe_add_portal_workers()
     |> maybe_add_peer_grant_stack()
+    |> maybe_add_worker_recovery_control_listener()
     |> maybe_add_membership_owner()
     |> maybe_add_activation_probe()
     |> maybe_add_inference_stack()
@@ -138,10 +140,17 @@ defmodule Orchard.Application do
       |> maybe_add_controller_expiry_guard(config)
       |> Kernel.++([{ControlListener, listener_opts}])
     else
-      case Application.get_env(:orchard_controller, :worker_recovery, [])[:control_listener] do
-        opts when is_list(opts) and opts != [] -> children ++ [{ControlListener, opts}]
-        _ -> children
-      end
+      children
+    end
+  end
+
+  defp maybe_add_worker_recovery_control_listener(children) do
+    case Application.get_env(:orchard_controller, :worker_recovery, [])[:control_listener] do
+      opts when is_list(opts) and opts != [] ->
+        children ++ [{WorkerRecoveryControlListener, opts}]
+
+      _unconfigured ->
+        children
     end
   end
 

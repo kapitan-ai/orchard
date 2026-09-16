@@ -336,11 +336,11 @@ defmodule Orchard.Node.ModelManager do
       not Map.has_key?(state.recovery, key) ->
         {:noreply, hydrate_recovery(state, key, {:ensure, request, from})}
 
-      Map.has_key?(state.inflight_loads, key) ->
-        handle_recovery_inflight_load(state, key, request, from)
-
       reason = Recovery.refusal(state.recovery[key]) ->
         {:reply, recovery_refusal_response(reason), state}
+
+      Map.has_key?(state.inflight_loads, key) ->
+        handle_inflight_join(key, request, from, state)
 
       # Already loaded — fast path
       match?(%{placement_state: :PLACEMENT_STATE_LOADED}, Map.get(state.workers, key)) ->
@@ -496,30 +496,6 @@ defmodule Orchard.Node.ModelManager do
   defp recovery_claim_retry?(entry, inflight) do
     not recovery_claim_allowed?(entry, inflight) and inflight[:recovery_wait?] == true and
       entry.hydrated? and not entry.prior? and entry.policy.state == :armed
-  end
-
-  defp handle_recovery_inflight_load(state, key, request, from) do
-    entry = state.recovery[key]
-
-    cond do
-      recovery_admission_joinable?(entry) ->
-        # A matching caller may join only the ordinary load already claimed by the
-        # pending write-ahead admission checkpoint. The worker effect remains
-        # unavailable until that checkpoint acknowledgement publishes it.
-        handle_inflight_join(key, request, from, state)
-
-      reason = Recovery.refusal(entry) ->
-        {:reply, recovery_refusal_response(reason), state}
-
-      true ->
-        handle_inflight_join(key, request, from, state)
-    end
-  end
-
-  defp recovery_admission_joinable?(entry) do
-    entry.hydrated? and not entry.prior? and entry.policy.state == :armed and
-      not is_nil(entry.policy.incarnation) and entry.ownership["phase"] == "loading" and
-      match?(%{record: %{"ownership" => %{"phase" => "loading"}}}, entry.pending)
   end
 
   defp admit_recovery_claim(state, key, entry, inflight, request, task_pid, from) do

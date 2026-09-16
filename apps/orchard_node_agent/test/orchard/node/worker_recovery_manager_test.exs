@@ -273,7 +273,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     task = Task.async(fn -> ModelManager.ensure_model_loaded(ctx.request) end)
     eventually(fn -> length(Checkpoints.calls()) == 1 end)
     assert :error = worker_pid(ctx)
-    assert {:ok, %{eligible: false}} = inspect_key(ctx)
+    assert {:ok, %{state: "armed", eligible: true}} = inspect_key(ctx)
     Process.sleep(150)
     assert length(Checkpoints.calls()) == 1
     Checkpoints.mode(:ok)
@@ -696,6 +696,72 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert :error = worker_pid(ctx)
   end
 
+  test "SPEC §12.2 an outstanding stability-reset checkpoint still admits execution", ctx do
+    runtime = Node.runtime_config()
+    Checkpoints.time(0)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(runtime, :worker_recovery_clock, &Checkpoints.now/0)
+    )
+
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    {:ok, crashed} = worker_pid(ctx)
+    Process.exit(crashed, :kill)
+    eventually(fn -> match?(%{state: :backoff}, recovery_policy(ctx)) end)
+    Checkpoints.time(recovery_policy(ctx).due_ms)
+
+    send(
+      Process.whereis(ModelManager),
+      {:recovery_timer, :sys.get_state(ModelManager).recovery[ctx.key].epoch, ctx.key,
+       recovery_policy(ctx).fence}
+    )
+
+    eventually(fn -> match?({:ok, _}, worker_pid(ctx)) end)
+    eventually(fn -> is_nil(:sys.get_state(ModelManager).recovery[ctx.key].pending) end)
+
+    policy = recovery_policy(ctx)
+    assert policy.state == :armed
+    assert policy.history != []
+    assert policy.delay_index > 0
+
+    Checkpoints.mode(:write_unavailable)
+    Checkpoints.time(policy.loaded_since + 600_001)
+
+    send(
+      Process.whereis(ModelManager),
+      {:recovery_stable, :sys.get_state(ModelManager).recovery[ctx.key].epoch, ctx.key,
+       policy.incarnation}
+    )
+
+    eventually(fn ->
+      match?(
+        %{desired: desired} when not is_nil(desired),
+        :sys.get_state(ModelManager).recovery[
+          ctx.key
+        ]
+      )
+    end)
+
+    assert {:ok, %{state: "armed", eligible: true, reason: nil}} = inspect_key(ctx)
+
+    execute = %ExecuteInferenceRequest{
+      request_id: "stability-reset-pending",
+      model_id: ctx.request.model_id,
+      version: ctx.request.version
+    }
+
+    assert :ok = ModelManager.prepare_request(execute, self())
+
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    Checkpoints.mode(:ok)
+  end
+
   test "SPEC §12.2 fifth actual crash opens before any fifth replacement; stale timer cannot bypass",
        ctx do
     runtime = Node.runtime_config()
@@ -895,6 +961,8 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
   defp inspect_key(ctx),
     do: ModelManager.inspect_worker_recovery(elem(ctx.key, 0), elem(ctx.key, 1))
+
+  defp recovery_policy(ctx), do: :sys.get_state(ModelManager).recovery[ctx.key].policy
 
   defp command(ctx, evidence, action),
     do: %{

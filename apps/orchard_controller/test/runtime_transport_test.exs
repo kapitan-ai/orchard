@@ -80,6 +80,25 @@ defmodule Orchard.RuntimeTransportTest do
     assert config[:runtime_endpoint][:beam][:cookie_file] == nil
   end
 
+  test "SPEC.md §12.2 packaged recovery control validates its listener host", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "10.0.0.10",
+        "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+      })
+
+    assert config[:worker_recovery] == [control_listener: [host: "10.0.0.10", port: 50_072]]
+
+    assert_raise RuntimeError, ~r/must be a loopback or private IPv4 address/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "203.0.113.7",
+        "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+      })
+    end
+  end
+
   test "SPEC.md §7.5.0 production grants require an explicit launch mode", %{
     support_root: support_root
   } do
