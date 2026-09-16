@@ -149,7 +149,12 @@ defmodule Orchard.Node.BeamPeerGrantClient.GRPCTransport do
 
     connect_options = [
       cred: credential,
-      adapter_opts: [transport_opts: [timeout: connect_timeout_ms]]
+      connect_timeout: connect_timeout_ms,
+      adapter_opts: [
+        connect_timeout: connect_timeout_ms,
+        tls_handshake_timeout: connect_timeout_ms,
+        await_timeout: connect_timeout_ms
+      ]
     ]
 
     case connector.connect(target, connect_options) do

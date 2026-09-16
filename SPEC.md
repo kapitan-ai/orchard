@@ -1031,6 +1031,26 @@ Re-admission after rejection SHALL require current trusted registration state pl
 
 Health is orthogonal to lifecycle state.
 
+For Console local-machine display, installation configuration MAY explicitly select
+the existing registered Node identity store through `ORCHARD_LOCAL_NODE_IDENTITY_ROOT`.
+All-in-one environment generation SHALL select the local store; Controller-only
+generation SHALL leave this association unset. Existing environment files SHALL
+not be silently rewritten. The Controller SHALL read only the current registered
+generation's non-secret identity metadata, never create another Node identity or
+read Node private keys for this display. Host administrators own this co-location
+assertion; hostname, loopback addresses, browser location and inventory size SHALL
+NOT establish it. The association SHALL confer no trust, admission or dispatch authority.
+
+The Console local summary SHALL match the installed Node, enrollment and certificate
+identities against trusted inventory targets and match current Runtime metadata to
+that Node. Missing, insecure, unregistered or conflicting identity SHALL fail closed.
+“This machine’s Node is connected and healthy.” SHALL require a successful matching
+current observation, fresh persisted heartbeat and healthy Node/runtime evidence.
+Stale or unavailable evidence SHALL not retain a positive headline. Last successful
+observation and refresh-attempt time SHALL remain distinct; unavailable current model
+state SHALL not be replaced by historical loaded models. Node health SHALL remain
+separate from model-serving readiness and SHALL use the existing rules below.
+
 Valid health values:
 
 * `healthy`
