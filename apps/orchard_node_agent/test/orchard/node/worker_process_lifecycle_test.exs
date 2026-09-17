@@ -99,6 +99,7 @@ defmodule Orchard.Node.WorkerProcessLifecycleTest do
     assert log =~ "worker custody identity unavailable"
     assert log =~ "os_pid=#{os_pid}"
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+    assert :not_alive = WorkerProcessLifecycle.os_process_status(@missing_pid)
     assert {:error, :identity_unavailable} = WorkerProcessLifecycle.process_identity(@missing_pid)
   end
 

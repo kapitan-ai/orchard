@@ -1,6 +1,8 @@
 defmodule OrchardNodeAgentTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef, as: CanonicalModelRef
@@ -1414,6 +1416,38 @@ defmodule OrchardNodeAgentTest do
 
     assert {:error, :worker_recovery_control_identity_unavailable} =
              WorkerRecoveryControlListener.server_options()
+  end
+
+  test "node recovery listener logs permanent configuration invalidity once without retrying" do
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime,
+        worker_recovery_control_enabled: true,
+        runtime_grpc_listener_enabled: false,
+        listen_address: [host: "0.0.0.0", port: 50_071],
+        node_identity_root: nil
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+    end)
+
+    log =
+      capture_log(fn ->
+        listener = start_supervised!({WorkerRecoveryControlListener, []})
+        send(listener, :start_listener)
+        state = :sys.get_state(listener)
+
+        assert state.configuration_invalid_logged?
+        assert DynamicSupervisor.which_children(state.server_supervisor) == []
+      end)
+
+    assert length(String.split(log, "worker recovery control listener configuration invalid")) ==
+             2
   end
 
   test "node agent application supervisor is running" do

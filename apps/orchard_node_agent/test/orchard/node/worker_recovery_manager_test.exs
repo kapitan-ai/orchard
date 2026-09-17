@@ -315,7 +315,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     eventually(fn -> match?({:ok, %{state: "backoff"}}, inspect_key(ctx)) end)
 
     assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
-             "worker_restart_backoff"
+             "placement_recovery_required"
 
     other = %{ctx.request | model_id: "recovery/other"}
     assert ModelManager.ensure_model_loaded(other).failure_code == "model_capacity_exhausted"
@@ -695,6 +695,42 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert %{ok: true} = Task.await(second_unload, 5_000)
   end
 
+  test "SPEC §12.2 ordinary unload returns one bounded negative acknowledgement when cleanup stays unavailable",
+       ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    Checkpoints.mode(:interrupt_unavailable)
+
+    unload =
+      Task.async(fn ->
+        ModelManager.unload_model(%UnloadModelRequest{
+          model_id: ctx.request.model_id,
+          version: ctx.request.version
+        })
+      end)
+
+    {epoch, waiter_id} =
+      eventually_value(fn ->
+        case :sys.get_state(ModelManager).recovery[ctx.key] do
+          %{ownership: %{"phase" => "cleanup"}, stop_waiters: [{waiter_id, _from, _ack, _timer}]} =
+              entry ->
+            {entry.epoch, waiter_id}
+
+          _other ->
+            nil
+        end
+      end)
+
+    send(ModelManager, {:ordinary_unload_deadline, epoch, ctx.key, waiter_id})
+
+    assert %{ok: false, message: "recovery checkpoint unavailable"} = Task.await(unload, 5_000)
+
+    eventually(fn -> :sys.get_state(ModelManager).recovery[ctx.key].stop_waiters == [] end)
+    send(ModelManager, {:ordinary_unload_deadline, epoch, ctx.key, waiter_id})
+    assert Process.alive?(Process.whereis(ModelManager))
+  end
+
   test "SPEC §12.2 duplicate recovery waits for its durable completion checkpoint", ctx do
     assert {:ok, evidence} = inspect_key(ctx)
     command = command(ctx, evidence, "clear")
@@ -861,7 +897,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert :error = worker_pid(ctx)
 
     assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
-             "placement_crash_breaker_open"
+             "placement_recovery_required"
 
     assert {:ok, %{state: "open"}} = inspect_key(ctx)
     status = ModelManager.current()
@@ -1027,6 +1063,20 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
       action: action,
       reason: "operator diagnosis"
     }
+
+  defp eventually_value(fun, attempts \\ 120)
+  defp eventually_value(_fun, 0), do: flunk("expected a recovery value")
+
+  defp eventually_value(fun, attempts) do
+    case fun.() do
+      nil ->
+        Process.sleep(25)
+        eventually_value(fun, attempts - 1)
+
+      value ->
+        value
+    end
+  end
 
   defp eventually(fun, attempts \\ 120)
   defp eventually(fun, 0), do: assert(fun.())

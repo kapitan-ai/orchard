@@ -79,6 +79,7 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
 
     %{
       key: %{node_id: node.id, model_id: model.model_id, version: model.version},
+      node: node,
       model: model,
       certificate: certificate,
       enrollment: enrollment,
@@ -136,6 +137,15 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
     assert {:ok, _checkpoint} = commit(ctx, nil, 0, "transition-1", record("loading"))
 
     Repo.delete!(ctx.model)
+
+    assert [] = Repo.all(Checkpoint)
+  end
+
+  test "SPEC §12.2 deletes checkpoints when the referenced node is deleted", ctx do
+    assert {:ok, _checkpoint} = commit(ctx, nil, 0, "transition-1", record("loading"))
+
+    Repo.delete!(ctx.enrollment)
+    Repo.delete!(ctx.node)
 
     assert [] = Repo.all(Checkpoint)
   end

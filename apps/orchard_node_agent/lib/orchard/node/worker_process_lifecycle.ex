@@ -27,16 +27,25 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   @type custody_refusal :: :identity_mismatch | :identity_unavailable
   @type owned_signal_result :: signal_result() | {:error, custody_refusal()}
   @type custody_identity :: String.t()
+  @type os_process_status :: :alive | :not_alive | :unknown
 
   @spec os_process_alive?(non_neg_integer()) :: boolean()
-  def os_process_alive?(os_pid) when is_integer(os_pid) and os_pid > 0 do
+  def os_process_alive?(os_pid), do: os_process_status(os_pid) == :alive
+
+  @doc "Distinguishes proven nonexistence from a liveness probe that cannot establish custody."
+  @spec os_process_status(non_neg_integer()) :: os_process_status()
+  def os_process_status(os_pid) when is_integer(os_pid) and os_pid > 0 do
     case System.cmd("kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true) do
-      {_, 0} -> true
-      {_, _} -> false
+      {_output, 0} -> :alive
+      {output, _status} when is_binary(output) -> nonzero_process_status(output)
     end
   end
 
-  def os_process_alive?(_), do: false
+  def os_process_status(_), do: :unknown
+
+  defp nonzero_process_status(output) do
+    if String.contains?(output, "No such process"), do: :not_alive, else: :unknown
+  end
 
   @spec send_signal(non_neg_integer(), String.t()) :: signal_result()
   def send_signal(os_pid, signal) when is_integer(os_pid) and os_pid > 0 do

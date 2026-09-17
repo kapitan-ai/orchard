@@ -102,6 +102,8 @@ defmodule Orchard.Node.ModelManager do
   @prompt_token_ids_support_probe_max_timeout_ms 1_000
   @worker_crash_model_limit 4
   @runtime_model_placement_limit 40
+  @ordinary_unload_stop_deadline_ms 10_000
+  @ordinary_unload_call_timeout_ms @ordinary_unload_stop_deadline_ms + 1_000
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -167,7 +169,7 @@ defmodule Orchard.Node.ModelManager do
 
   @spec unload_model(UnloadModelRequest.t()) :: Ack.t()
   def unload_model(%UnloadModelRequest{} = request) do
-    GenServer.call(__MODULE__, {:unload_model, request})
+    GenServer.call(__MODULE__, {:unload_model, request}, @ordinary_unload_call_timeout_ms)
   end
 
   @spec prepare_request(ExecuteInferenceRequest.t(), pid()) :: :ok | {:error, term()}
@@ -372,7 +374,8 @@ defmodule Orchard.Node.ModelManager do
         entry = %{
           entry
           | stop_waiters: [
-              {from, %Ack{ok: true, message: "unload accepted"}} | entry.stop_waiters
+              new_stop_waiter(state, key, from, %Ack{ok: true, message: "unload accepted"})
+              | entry.stop_waiters
             ]
         }
 
@@ -785,6 +788,21 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
+  def handle_info({:ordinary_unload_deadline, epoch, key, waiter_id}, state)
+      when epoch == state.recovery_epoch do
+    case Map.get(state.recovery, key) do
+      %{stop_waiters: waiters} = entry ->
+        {expired, retained} =
+          Enum.split_with(waiters, fn {id, _from, _response, _timer_ref} -> id == waiter_id end)
+
+        Enum.each(expired, &reply_stop_waiter(&1, recovery_unavailable_ack()))
+        {:noreply, put_in(state, [:recovery, key], %{entry | stop_waiters: retained})}
+
+      _stale ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:recovery_cleanup, epoch, key}, state) when epoch == state.recovery_epoch do
     case Map.get(state.recovery, key) do
       %{ownership: %{"phase" => "cleanup"}} = entry ->
@@ -941,6 +959,7 @@ defmodule Orchard.Node.ModelManager do
                :recovery_hydration_ready,
                :recovery_checkpoint_result,
                :recovery_checkpoint_retry,
+               :ordinary_unload_deadline,
                :recovery_timer,
                :recovery_cleanup,
                :operator_cleanup_ready,
@@ -1008,8 +1027,9 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp handle_recovery_checkpoint_result({:error, _reason}, state, epoch, key, id, entry) do
-    entry = Recovery.unavailable(entry, id, recovery_now())
-    Process.send_after(self(), {:recovery_checkpoint_retry, epoch, key}, 1_000)
+    now = recovery_now()
+    entry = Recovery.unavailable(entry, id, now)
+    Process.send_after(self(), {:recovery_checkpoint_retry, epoch, key}, entry.retry_at - now)
     {:noreply, put_recovery(state, key, entry)}
   end
 
@@ -1022,9 +1042,7 @@ defmodule Orchard.Node.ModelManager do
   defp reply_stale_checkpoint_operator_waiters(entry) do
     Enum.each(entry.operator_waiters, &GenServer.reply(&1, {:error, :unavailable}))
 
-    Enum.each(entry.stop_waiters, fn {from, _response} ->
-      GenServer.reply(from, %Ack{ok: false, message: "recovery checkpoint unavailable"})
-    end)
+    Enum.each(entry.stop_waiters, &reply_stop_waiter(&1, recovery_unavailable_ack()))
   end
 
   defp abandon_stale_checkpoint_load(state, key) do
@@ -1340,14 +1358,38 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp reply_stopped_waiters(waiters, effects) do
-    if :reply_stopped in effects do
-      Enum.each(waiters, fn {from, response} -> GenServer.reply(from, response) end)
-    else
-      Enum.each(waiters, fn {from, _response} ->
-        GenServer.reply(from, %Ack{ok: false, message: "recovery checkpoint superseded"})
-      end)
-    end
+    response =
+      if :reply_stopped in effects,
+        do: nil,
+        else: %Ack{ok: false, message: "recovery checkpoint superseded"}
+
+    Enum.each(waiters, fn waiter ->
+      reply_stop_waiter(waiter, response || stop_waiter_response(waiter))
+    end)
   end
+
+  defp new_stop_waiter(state, key, from, response) do
+    id = make_ref()
+
+    timer_ref =
+      Process.send_after(
+        self(),
+        {:ordinary_unload_deadline, state.recovery_epoch, key, id},
+        @ordinary_unload_stop_deadline_ms
+      )
+
+    {id, from, response, timer_ref}
+  end
+
+  defp reply_stop_waiter({_id, from, _response, timer_ref}, response) do
+    _ = Process.cancel_timer(timer_ref, async: false, info: false)
+    GenServer.reply(from, response)
+  end
+
+  defp stop_waiter_response({_id, _from, response, _timer_ref}), do: response
+
+  defp recovery_unavailable_ack,
+    do: %Ack{ok: false, message: "recovery checkpoint unavailable"}
 
   defp stop_waiter_effect?({:ordinary_unload, _request}), do: true
   defp stop_waiter_effect?(:await_cleanup), do: true
@@ -1450,7 +1492,12 @@ defmodule Orchard.Node.ModelManager do
         %{pid: pid, monitor_ref: monitor} ->
           {response, next} = perform_unload(pid, key, monitor, request, state)
           entry = next.recovery[key]
-          waiters = Enum.map(entry.stop_waiters, fn {from, _} -> {from, response} end)
+
+          waiters =
+            Enum.map(entry.stop_waiters, fn {id, from, _response, timer_ref} ->
+              {id, from, response, timer_ref}
+            end)
+
           put_recovery(next, key, %{entry | stop_waiters: waiters})
 
         _ ->
@@ -1525,7 +1572,7 @@ defmodule Orchard.Node.ModelManager do
 
   defp apply_recovery_effect(state, key, :reply_stopped) do
     entry = state.recovery[key]
-    Enum.each(entry.stop_waiters, fn {from, response} -> GenServer.reply(from, response) end)
+    Enum.each(entry.stop_waiters, &reply_stop_waiter(&1, stop_waiter_response(&1)))
     put_recovery(state, key, %{entry | stop_waiters: []})
   end
 

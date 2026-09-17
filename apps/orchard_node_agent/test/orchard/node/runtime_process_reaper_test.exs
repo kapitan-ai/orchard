@@ -93,15 +93,27 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
-  test "SPEC §12.2 pre-watch non-existence proof refuses an absent runtime without a lease" do
+  test "SPEC §12.2 pre-watch non-existence proof records resolved production reaper custody" do
+    owner =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(owner), do: Process.exit(owner, :kill)
+    end)
+
     assert {:error, :process_not_alive} =
-             RuntimeProcessReaper.watch(self(), 2_147_483_647, %{
+             RuntimeProcessReaper.watch(owner, 2_147_483_647, %{
                shutdown_timeout_ms: @short_timeout_ms,
-               model_ref: nil,
+               model_ref: "prewatch-nonexistence",
                os_identity: nil,
                phase: :loading
              })
 
+    assert RuntimeProcessReaper.ownership_resolved?(owner)
     assert :sys.get_state(RuntimeProcessReaper).leases == %{}
   end
 

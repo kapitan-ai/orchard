@@ -29,6 +29,7 @@ defmodule Orchard.Node.WorkerRecoveryState do
       effects: [],
       superseded_effects: [],
       retry_at: nil,
+      retry_streak: 0,
       request: nil,
       prior?: false,
       last_worker_pid: nil,
@@ -144,7 +145,8 @@ defmodule Orchard.Node.WorkerRecoveryState do
         | owner_epoch: checkpoint.epoch,
           revision: checkpoint.revision,
           pending: nil,
-          retry_at: nil
+          retry_at: nil,
+          retry_streak: 0
       }
 
       if entry.desired == id do
@@ -159,9 +161,16 @@ defmodule Orchard.Node.WorkerRecoveryState do
 
   def acknowledge(entry, _id, _checkpoint), do: {entry, []}
 
+  @doc "Returns the deterministic checkpoint retry interval for a failure streak."
+  @spec checkpoint_retry_interval(non_neg_integer()) :: pos_integer()
+  def checkpoint_retry_interval(streak) when is_integer(streak) and streak >= 0 do
+    Enum.at([1_000, 2_000, 4_000, 8_000, 16_000, 30_000], min(streak, 5))
+  end
+
   @spec unavailable(t(), String.t(), integer()) :: t()
-  def unavailable(%{pending: %{id: id}} = entry, id, now),
-    do: %{entry | retry_at: now + 1_000}
+  def unavailable(%{pending: %{id: id}, retry_streak: streak} = entry, id, now) do
+    %{entry | retry_at: now + checkpoint_retry_interval(streak), retry_streak: streak + 1}
+  end
 
   def unavailable(entry, _id, _now), do: entry
 
@@ -177,27 +186,19 @@ defmodule Orchard.Node.WorkerRecoveryState do
 
   def refusal(entry) do
     cond do
-      intentional_effect_pending?(Map.get(entry, :effects, [])) ->
-        :placement_recovery_required
-
-      entry.hydrated? == false ->
-        :placement_recovery_required
-
-      entry.policy.state == :backoff ->
-        :worker_restart_backoff
-
-      entry.policy.state == :restarting ->
-        :worker_restart_in_progress
-
-      entry.policy.state == :open ->
-        :placement_crash_breaker_open
-
-      entry.policy.state == :recovery_required or entry.prior? ->
-        :placement_recovery_required
-
-      true ->
-        nil
+      recovery_required?(entry) -> :placement_recovery_required
+      entry.policy.state == :backoff -> :worker_restart_backoff
+      entry.policy.state == :restarting -> :worker_restart_in_progress
+      entry.policy.state == :open -> :placement_crash_breaker_open
+      true -> nil
     end
+  end
+
+  defp recovery_required?(entry) do
+    entry.ownership["phase"] == "cleanup" or
+      intentional_effect_pending?(Map.get(entry, :effects, [])) or
+      entry.hydrated? == false or
+      entry.policy.state == :recovery_required or entry.prior?
   end
 
   defp intentional_effect_pending?(effects) do

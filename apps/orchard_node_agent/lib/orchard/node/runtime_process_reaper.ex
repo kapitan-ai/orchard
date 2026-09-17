@@ -72,17 +72,9 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   @spec watch(pid(), pos_integer(), lease_meta()) :: {:ok, lease_ref()} | {:error, atom()}
   def watch(owner_pid, os_pid, meta)
       when is_pid(owner_pid) and is_integer(os_pid) and os_pid > 0 do
-    if Process.whereis(__MODULE__) do
-      with :ok <- prewatch_custody_proof(os_pid) do
-        try do
-          GenServer.call(__MODULE__, {:watch, owner_pid, os_pid, meta})
-        catch
-          :exit, _reason -> {:error, :reaper_unavailable}
-        end
-      end
-    else
-      {:error, :reaper_unavailable}
-    end
+    if Process.whereis(__MODULE__),
+      do: watch_after_reaper_check(owner_pid, os_pid, meta),
+      else: {:error, :reaper_unavailable}
   end
 
   def watch(_, _, _), do: {:error, :invalid_lease}
@@ -132,6 +124,11 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         not Enum.any?(state.beam_owners, fn {_ref, {owner, _key}} -> owner == owner_pid end)
 
     {:reply, resolved?, state}
+  end
+
+  def handle_call({:record_prewatch_nonexistence, owner_pid, model_ref}, _from, state) do
+    {:reply, :ok,
+     %{state | resolved_owners: Map.put(state.resolved_owners, model_ref, owner_pid)}}
   end
 
   def handle_call({:watch_beam_only, owner, key}, {owner, _tag}, state) do
@@ -365,10 +362,38 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
   defp log_orphan_reap(_lease, _reason), do: :ok
 
+  defp watch_after_reaper_check(owner_pid, os_pid, meta) do
+    case prewatch_custody_proof(os_pid) do
+      :ok ->
+        call_reaper({:watch, owner_pid, os_pid, meta})
+
+      {:error, :process_not_alive} ->
+        record_prewatch_nonexistence(owner_pid, meta)
+
+      {:error, :process_status_unavailable} = error ->
+        error
+    end
+  end
+
+  defp record_prewatch_nonexistence(owner_pid, meta) do
+    case call_reaper({:record_prewatch_nonexistence, owner_pid, Map.get(meta, :model_ref)}) do
+      :ok -> {:error, :process_not_alive}
+      {:error, :reaper_unavailable} = error -> error
+    end
+  end
+
+  defp call_reaper(request) do
+    GenServer.call(__MODULE__, request)
+  catch
+    :exit, _reason -> {:error, :reaper_unavailable}
+  end
+
   defp prewatch_custody_proof(os_pid) do
-    if WorkerProcessLifecycle.os_process_alive?(os_pid),
-      do: :ok,
-      else: {:error, :process_not_alive}
+    case WorkerProcessLifecycle.os_process_status(os_pid) do
+      :alive -> :ok
+      :not_alive -> {:error, :process_not_alive}
+      :unknown -> {:error, :process_status_unavailable}
+    end
   end
 
   defp lease_identity(meta) do

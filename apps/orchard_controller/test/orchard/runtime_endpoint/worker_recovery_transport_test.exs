@@ -421,14 +421,18 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
       |> Keyword.put(:listen_address, host: "127.0.0.1", port: free_port!())
     )
 
-    opts = NodeSupervisor.grpc_server_opts()
+    assert {:ok, opts} = WorkerRecoveryControlListener.server_options()
     assert opts[:endpoint] == WorkerRecoveryControlEndpoint
     assert opts[:adapter_opts][:cred]
     assert WorkerRecoveryControlListener.enabled?()
     assert {:ok, {_flags, children}} = NodeSupervisor.init([])
     assert Enum.any?(children, &(&1.id == WorkerRecoveryControlListener))
     assert List.last(children).id == WorkerRecoveryShutdown
-    start_supervised!({GRPC.Server.Supervisor, opts})
+    listener = start_supervised!({WorkerRecoveryControlListener, []})
+
+    assert [_server] =
+             DynamicSupervisor.which_children(:sys.get_state(listener).server_supervisor)
+
     {:ok, channel} = GRPC.Stub.connect("127.0.0.1:#{opts[:port]}", cred: credential)
     on_exit(fn -> GRPC.Stub.disconnect(channel) end)
     target = Target.grpc_compat(host: "127.0.0.1", port: opts[:port], node_id: @node_id)
@@ -509,9 +513,8 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
       |> Keyword.put(:node_identity_root, nil)
     )
 
-    assert_raise RuntimeError, ~r/requires registered mTLS identity/, fn ->
-      NodeSupervisor.grpc_server_opts()
-    end
+    assert {:error, :worker_recovery_control_identity_unavailable} =
+             WorkerRecoveryControlListener.server_options()
   end
 
   for mode <- [:peer_grant, :shared_cookie] do
@@ -680,7 +683,13 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
         |> Keyword.put(:listen_address, host: "127.0.0.1", port: port)
       )
 
-      start_supervised!({GRPC.Server.Supervisor, NodeSupervisor.grpc_server_opts()})
+      assert {:ok, listener_opts} = WorkerRecoveryControlListener.server_options()
+      assert listener_opts[:endpoint] == WorkerRecoveryControlEndpoint
+      listener = start_supervised!({WorkerRecoveryControlListener, []})
+
+      assert [_server] =
+               DynamicSupervisor.which_children(:sys.get_state(listener).server_supervisor)
+
       target = recovery_beam_target(mode, node_id)
       assert target.transport == :beam
       assert {:ok, control_target} = Orchard.Nodes.worker_recovery_control_target(target)

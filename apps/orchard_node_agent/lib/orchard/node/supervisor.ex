@@ -10,7 +10,6 @@ defmodule Orchard.Node.Supervisor do
   use Supervisor
 
   alias Orchard.Node.{Endpoint, ModelManager, RuntimeProcessReaper, RuntimeTLS, WorkerSupervisor}
-
   alias Orchard.Node.WorkerRecoveryControlListener
 
   @grpc_server_id Orchard.Node.GRPCServer
@@ -38,13 +37,7 @@ defmodule Orchard.Node.Supervisor do
 
   def grpc_server_id, do: @grpc_server_id
 
-  def grpc_server_opts do
-    if Orchard.Node.runtime_grpc_listener_enabled?() do
-      runtime_grpc_server_opts()
-    else
-      recovery_grpc_server_opts()
-    end
-  end
+  def grpc_server_opts, do: runtime_grpc_server_opts()
 
   defp runtime_grpc_server_opts do
     listen_address = Orchard.Node.listen_address()
@@ -55,19 +48,6 @@ defmodule Orchard.Node.Supervisor do
       start_server: true,
       adapter_opts: grpc_adapter_opts(listen_address)
     ]
-  end
-
-  defp recovery_grpc_server_opts do
-    case WorkerRecoveryControlListener.server_options() do
-      {:ok, opts} ->
-        opts
-
-      {:error, :worker_recovery_control_identity_unavailable} ->
-        raise "worker recovery control requires registered mTLS identity"
-
-      {:error, :worker_recovery_control_configuration_invalid} ->
-        raise "worker recovery control configuration is invalid"
-    end
   end
 
   defp maybe_add_runtime_grpc_listener(children) do

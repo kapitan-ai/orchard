@@ -48,6 +48,8 @@ end
 defmodule OrchardApplicationTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.DispatchCapacity.{
     AllocationAuthority,
     ConformanceFixture,
@@ -619,6 +621,23 @@ defmodule OrchardApplicationTest do
              end)
 
     assert is_pid(pid)
+  end
+
+  test "SPEC.md §12.2 recovery listener logs permanent configuration invalidity once without retrying" do
+    log =
+      capture_log(fn ->
+        listener =
+          start_supervised!({WorkerRecoveryControlListener, [host: "0.0.0.0", port: 50_072]})
+
+        send(listener, :start_listener)
+        state = :sys.get_state(listener)
+
+        assert state.configuration_invalid_logged?
+        assert DynamicSupervisor.which_children(state.server_supervisor) == []
+      end)
+
+    assert length(String.split(log, "worker recovery control listener configuration invalid")) ==
+             2
   end
 
   test "SPEC.md §12.2 the recovery listener serves checkpoint control without grant control" do

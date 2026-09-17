@@ -25,7 +25,7 @@ defmodule Orchard.Node.WorkerRecoveryStateTest do
     refute :publish_reset in effects
   end
 
-  test "SPEC §12.2 retries preserve the exact mutation and reject invented acknowledgement" do
+  test "SPEC §12.2 checkpoint retries preserve the exact mutation on the bounded schedule" do
     entry =
       State.new("epoch") |> State.hydrate(:absent) |> State.transition({:admit, "worker"}, 0)
 
@@ -34,9 +34,23 @@ defmodule Orchard.Node.WorkerRecoveryStateTest do
     assert {^entry, []} =
              State.acknowledge(entry, pending.id, %{response(pending) | revision: 99})
 
-    entry = State.unavailable(entry, pending.id, 0)
-    assert {:wait, ^entry} = State.retry(entry, 999)
-    assert {:write, _, ^pending} = State.retry(entry, 1_000)
+    {entry, now} =
+      Enum.reduce([1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000], {entry, 0}, fn
+        delay, {entry, now} ->
+          entry = State.unavailable(entry, pending.id, now)
+          assert entry.retry_at == now + delay
+          assert {:wait, ^entry} = State.retry(entry, now + delay - 1)
+          assert {:write, entry, ^pending} = State.retry(entry, now + delay)
+          {entry, now + delay}
+      end)
+
+    {entry, _effects} = State.acknowledge(entry, pending.id, response(pending))
+    assert entry.retry_streak == 0
+    assert entry.retry_at == nil
+    assert now == 91_000
+    assert State.checkpoint_retry_interval(0) == 1_000
+    assert State.checkpoint_retry_interval(5) == 30_000
+    assert State.checkpoint_retry_interval(100) == 30_000
   end
 
   test "SPEC §12.2 superseded checkpoint effects remain available exactly once" do
@@ -51,8 +65,15 @@ defmodule Orchard.Node.WorkerRecoveryStateTest do
     assert {^entry, []} = State.take_superseded_effects(entry)
   end
 
-  test "SPEC §12.2 bare await cleanup blocks admission with a deterministic recovery reason" do
-    entry = State.new("epoch") |> State.hydrate(:absent) |> State.checkpoint([:await_cleanup])
+  test "SPEC §12.2 cleanup ownership blocks admission after its checkpoint is acknowledged" do
+    entry =
+      State.new("epoch")
+      |> State.hydrate(:absent)
+      |> put_in([:ownership, "phase"], "cleanup")
+      |> State.checkpoint([])
+
+    {:write, entry, pending} = State.begin_write(entry, 0)
+    {entry, []} = State.acknowledge(entry, pending.id, response(pending))
 
     assert State.refusal(entry) == :placement_recovery_required
 
