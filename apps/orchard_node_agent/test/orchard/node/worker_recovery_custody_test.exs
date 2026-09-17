@@ -28,7 +28,7 @@ defmodule Orchard.Node.WorkerRecoveryCustodyTest do
     on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
 
     owner = retained_custody_owner!(os_pid, "prior-runtime-incarnation")
-    custody = WorkerRecoveryCustody.runtime_custody(owner)
+    custody = WorkerRecoveryCustody.record_runtime_custody(nil, owner)
 
     assert WorkerRecoveryCustody.resolve_prior_worker_ownership(@key, custody) == :unresolved
 
@@ -46,15 +46,37 @@ defmodule Orchard.Node.WorkerRecoveryCustodyTest do
     CustodyTestHelpers.stop_child(port, os_pid)
     assert WorkerRecoveryCustody.resolve_current(owner) == :resolved
 
-    custody = WorkerRecoveryCustody.runtime_custody(owner)
+    custody = WorkerRecoveryCustody.record_runtime_custody(nil, owner)
     assert WorkerRecoveryCustody.resolve_prior_worker_ownership(@key, custody) == :resolved
+  end
+
+  test "SPEC §12.2.2 a recorded runtime incarnation is never downgraded to boot evidence" do
+    {port, os_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+
+    owner = retained_custody_owner!(os_pid, "no-downgrade")
+    recorded = WorkerRecoveryCustody.record_runtime_custody(nil, owner)
+
+    refute recorded == WorkerRecoveryCustody.boot_identity()
+
+    for unknown_owner <- [nil, self()] do
+      assert WorkerRecoveryCustody.record_runtime_custody(recorded, unknown_owner) == recorded
+    end
+
+    CustodyTestHelpers.stop_child(port, os_pid)
+    proven = WorkerRecoveryCustody.record_runtime_custody(recorded, owner)
+
+    assert WorkerRecoveryCustody.record_runtime_custody(proven, nil) == proven
+    assert WorkerRecoveryCustody.resolve_prior_worker_ownership(@key, proven) == :resolved
   end
 
   test "SPEC §12.2.2 custody without a recorded runtime incarnation stays unresolved" do
     owner = spawn(fn -> Process.sleep(:infinity) end)
     on_exit(fn -> Process.exit(owner, :kill) end)
 
-    assert WorkerRecoveryCustody.runtime_custody(owner) == WorkerRecoveryCustody.boot_identity()
+    assert WorkerRecoveryCustody.record_runtime_custody(nil, owner) ==
+             WorkerRecoveryCustody.boot_identity()
 
     for custody <- [nil, "not-a-boot-identity", WorkerRecoveryCustody.boot_identity()] do
       assert WorkerRecoveryCustody.resolve_prior_worker_ownership(@key, custody) == :unresolved

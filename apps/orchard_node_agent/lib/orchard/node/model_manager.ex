@@ -1076,7 +1076,12 @@ defmodule Orchard.Node.ModelManager do
 
     cond do
       Process.alive?(worker_pid) and current_load_completion?(entry, inflight, worker_pid) ->
-        entry = %{entry | ownership: Map.put(entry.ownership, "phase", "loaded")}
+        ownership =
+          entry.ownership
+          |> Map.put("phase", "loaded")
+          |> put_runtime_custody(worker_pid)
+
+        entry = %{entry | ownership: ownership}
         {entry, operator_effects} = complete_operator_load(entry)
 
         entry =
@@ -1212,8 +1217,16 @@ defmodule Orchard.Node.ModelManager do
   defp cleanup_ownership(entry, owner_pid) do
     entry.ownership
     |> Map.put("phase", "cleanup")
-    |> Map.put("custody", WorkerRecoveryCustody.runtime_custody(owner_pid))
+    |> put_runtime_custody(owner_pid)
   end
+
+  defp put_runtime_custody(ownership, owner_pid) do
+    custody = recovery_custody_module().record_runtime_custody(ownership["custody"], owner_pid)
+    Map.put(ownership, "custody", custody)
+  end
+
+  defp recovery_custody_module,
+    do: Node.runtime_config()[:worker_recovery_custody] || WorkerRecoveryCustody
 
   defp operator_conflict?(state, key, "clear") do
     match?(%{placement_state: :PLACEMENT_STATE_LOADED}, state.workers[key]) or
@@ -1833,7 +1846,7 @@ defmodule Orchard.Node.ModelManager do
 
   defp recovery_cleanup_resolved?(state, key) do
     entry = state.recovery[key]
-    custody = Node.runtime_config()[:worker_recovery_custody] || WorkerRecoveryCustody
+    custody = recovery_custody_module()
 
     cond do
       Map.has_key?(state.workers, key) or

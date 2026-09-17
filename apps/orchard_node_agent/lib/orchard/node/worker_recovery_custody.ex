@@ -2,12 +2,16 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
   @moduledoc """
   Affirmative host-boot and runtime cleanup proofs for SPEC §12.2.
 
-  `runtime_custody/1` records the evidence a later epoch needs to resolve prior
-  ownership: the host boot identity, plus either affirmative exit proof or the
-  runtime process whose exit is not proven yet. `resolve_prior_worker_ownership/2`
-  replays that record, so a runtime process that outlives a Node Agent restart
-  resolves once it exits — including when an operator kills it through host
-  controls — instead of waiting for the host to reboot.
+  `record_runtime_custody/2` records the evidence a later epoch needs to resolve
+  prior ownership: the host boot identity, plus either affirmative exit proof or
+  the runtime process whose exit is not proven yet. It never replaces a recorded
+  runtime process or exit proof with bare boot evidence, so every ownership write
+  keeps the strongest proof this Node Agent lifetime has observed.
+
+  `resolve_prior_worker_ownership/2` replays that record, so a runtime process
+  that outlives a Node Agent restart resolves once it exits — including when an
+  operator kills it through host controls — instead of waiting for the host to
+  reboot.
   """
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.WorkerProcessLifecycle
@@ -37,12 +41,31 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
     end
   end
 
-  @doc "Records durable custody evidence for the runtime incarnation owned by `owner_pid`."
-  @spec runtime_custody(pid() | nil) :: String.t() | nil
-  def runtime_custody(owner_pid) when is_pid(owner_pid),
+  @doc """
+  Records durable custody evidence for the runtime incarnation owned by `owner_pid`.
+
+  `previous_custody` is retained when this reaper can no longer name a runtime
+  process or prove its exit, because bare boot evidence cannot resolve prior
+  ownership on an unchanged host boot.
+  """
+  @spec record_runtime_custody(String.t() | nil, pid() | nil) :: String.t() | nil
+  def record_runtime_custody(previous_custody, owner_pid) do
+    recorded = runtime_custody(owner_pid)
+
+    if provable?(recorded) or not provable?(previous_custody),
+      do: recorded,
+      else: previous_custody
+  end
+
+  defp runtime_custody(owner_pid) when is_pid(owner_pid),
     do: encode(boot_identity(), RuntimeProcessReaper.owner_custody(owner_pid))
 
-  def runtime_custody(_owner_pid), do: boot_identity()
+  defp runtime_custody(_owner_pid), do: boot_identity()
+
+  defp provable?(custody) do
+    custody = decode(custody)
+    custody.exited? or not is_nil(custody.os_pid)
+  end
 
   @spec resolve_prior_worker_ownership(term(), String.t() | nil) :: :resolved | :unresolved
   def resolve_prior_worker_ownership(_key, previous_custody) do

@@ -119,6 +119,8 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   defmodule Custody do
     def resolve_current(pid), do: if(Process.alive?(pid), do: :unresolved, else: :resolved)
     def resolve_prior_worker_ownership(_, _), do: :unresolved
+
+    def record_runtime_custody(_previous, owner_pid), do: "runtime-custody:#{inspect(owner_pid)}"
   end
 
   defmodule LoadingExitAdapter do
@@ -215,6 +217,18 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     end)
 
     %{request: request, key: {request.model_id, request.version}}
+  end
+
+  test "SPEC §12.2.2 the loaded checkpoint records runtime custody for the admitted worker",
+       ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    {:ok, worker} = worker_pid(ctx)
+
+    assert {:ok, %{record: record}} = Checkpoints.read(checkpoint_key(ctx))
+    assert record["ownership"]["phase"] == "loaded"
+    assert record["ownership"]["custody"] == Custody.record_runtime_custody(nil, worker)
   end
 
   test "SPEC §12.2 manager restart retains prior ownership and cannot treat its empty worker map as cleanup",
@@ -1123,6 +1137,13 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   end
 
   defp worker_pid(ctx), do: GenServer.call(ModelManager, {:loaded_worker_pid, ctx.key})
+
+  defp checkpoint_key(ctx),
+    do: %{
+      node_id: ctx.request.node_id,
+      model_id: ctx.request.model_id,
+      version: ctx.request.version
+    }
 
   defp inspect_key(ctx),
     do: ModelManager.inspect_worker_recovery(elem(ctx.key, 0), elem(ctx.key, 1))
