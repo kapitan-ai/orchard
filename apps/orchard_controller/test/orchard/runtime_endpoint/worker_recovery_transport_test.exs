@@ -1,6 +1,8 @@
 defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
   use Orchard.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     EnsureModelLoadedResponse,
@@ -516,7 +518,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
              WorkerRecoveryControlListener.server_options()
   end
 
-  test "SPEC §12.2 a busy recovery listener address retries on capped backoff", %{
+  test "SPEC §12.2 a busy recovery listener address retries on the lazy interval", %{
     material: material
   } do
     {identity_root, _credential} = registered_identity!(material)
@@ -541,22 +543,26 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
 
     assert {:ok, _opts} = WorkerRecoveryControlListener.server_options()
 
-    listener = start_supervised!({WorkerRecoveryControlListener, []})
+    log =
+      capture_log(fn ->
+        listener = start_supervised!({WorkerRecoveryControlListener, []})
 
-    blocked = :sys.get_state(listener)
-    assert blocked.start_failure_streak == 1
-    refute blocked.configuration_invalid_logged?
-    assert DynamicSupervisor.which_children(blocked.server_supervisor) == []
+        blocked = :sys.get_state(listener)
+        assert MapSet.member?(blocked.logged_outcomes, :start_failed)
+        refute MapSet.member?(blocked.logged_outcomes, :configuration_invalid)
+        assert DynamicSupervisor.which_children(blocked.server_supervisor) == []
 
-    send(listener, :start_listener)
-    assert :sys.get_state(listener).start_failure_streak == 2
+        send(listener, :start_listener)
+        assert MapSet.member?(:sys.get_state(listener).logged_outcomes, :start_failed)
 
-    assert :ok = :gen_tcp.close(occupied)
-    send(listener, :start_listener)
+        assert :ok = :gen_tcp.close(occupied)
+        send(listener, :start_listener)
 
-    started = :sys.get_state(listener)
-    assert started.start_failure_streak == 0
-    assert [_server] = DynamicSupervisor.which_children(started.server_supervisor)
+        started = :sys.get_state(listener)
+        assert [_server] = DynamicSupervisor.which_children(started.server_supervisor)
+      end)
+
+    assert length(String.split(log, "worker recovery control listener start failed")) == 2
   end
 
   for mode <- [:peer_grant, :shared_cookie] do

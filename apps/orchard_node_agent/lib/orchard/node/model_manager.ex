@@ -473,8 +473,19 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp recovery_claim_retry?(entry, inflight) do
-    not recovery_claim_allowed?(entry, inflight) and inflight[:recovery_wait?] == true and
-      entry.hydrated? and not entry.prior? and entry.policy.state == :armed
+    not recovery_claim_allowed?(entry, inflight) and entry.hydrated? and not entry.prior? and
+      entry.policy.state == :armed and
+      (inflight[:recovery_wait?] == true or claim_blocked_by_pending_effect?(entry))
+  end
+
+  # An unacknowledged pre-effect checkpoint leaves desired/pending set with
+  # ownership already resolved. SPEC.md §12.2.1 treats that as neither a crash
+  # nor a restart failure, so the claim waits for the effect to settle instead of
+  # reporting worker_unavailable, which §5.10 would count as worker_or_node_loss.
+  defp claim_blocked_by_pending_effect?(entry) do
+    is_nil(entry.policy.incarnation) and
+      entry.ownership["phase"] in ["resolved", "operator_terminated"] and
+      not (is_nil(entry.desired) and is_nil(entry.pending))
   end
 
   defp admit_recovery_claim(state, key, entry, inflight, request, task_pid, from) do

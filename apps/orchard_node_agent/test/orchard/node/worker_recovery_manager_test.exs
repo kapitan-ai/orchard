@@ -584,6 +584,41 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert :sys.get_state(ModelManager).recovery[ctx.key].pending
   end
 
+  # SPEC.md §12.2.1: an unacknowledged pre-effect checkpoint is neither a crash
+  # nor a non-crash restart failure, so a claim blocked behind it must defer
+  # rather than report worker_unavailable — which §5.10 would otherwise classify
+  # as worker_or_node_loss and count toward the Controller placement breaker.
+  test "SPEC §12.2 a claim blocked by an unacknowledged epoch claim defers instead of failing",
+       ctx do
+    exact = %{
+      node_id: ctx.request.node_id,
+      model_id: ctx.request.model_id,
+      version: ctx.request.version
+    }
+
+    Checkpoints.seed(exact, %{
+      epoch: "old-epoch",
+      revision: 4,
+      record: WorkerRecoveryState.record(WorkerRecoveryState.new("old-epoch")),
+      transition_id: "stale-clean-hydration"
+    })
+
+    Checkpoints.mode(:write_unavailable)
+
+    assert %{ok: false, message: "recovery checkpoint unavailable"} =
+             ModelManager.unload_model(%UnloadModelRequest{
+               model_id: ctx.request.model_id,
+               version: ctx.request.version
+             })
+
+    assert :sys.get_state(ModelManager).recovery[ctx.key].pending
+
+    Checkpoints.mode(:ok)
+
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+  end
+
   test "SPEC §12.2 the application stop hook checkpoints the intentional stop", ctx do
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
              :PLACEMENT_STATE_LOADED

@@ -1475,7 +1475,7 @@ defmodule OrchardNodeAgentTest do
         send(listener, :start_listener)
         state = :sys.get_state(listener)
 
-        assert state.configuration_invalid_logged?
+        assert MapSet.member?(state.logged_outcomes, :configuration_invalid)
         assert DynamicSupervisor.which_children(state.server_supervisor) == []
       end)
 
