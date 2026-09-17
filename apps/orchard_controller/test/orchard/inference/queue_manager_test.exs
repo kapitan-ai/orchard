@@ -737,6 +737,170 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.5 stale scheduler tick does not promote a deferred resolved grant" do
+    source_node_id = Ecto.UUID.generate()
+    probed_node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 3_000, poll_interval_ms: 5_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-stale-tick-a",
+                   model_id: "stale-tick-a"
+                 )
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_stale_tick_result)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, source_node_id},
+                   {:node, source_node_id, :placement},
+                   {:node, source_node_id, :cold}
+                 ],
+                 placement_source: {:node, source_node_id, :placement},
+                 cold_source: {:node, source_node_id, :cold},
+                 node_id: source_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      assert_receive {:first_stale_tick_result, {:ok, first_grant}}, 2_000
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-stale-tick-b",
+                   model_id: "stale-tick-b"
+                 )
+               )
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, probed_node_id},
+                   {:node, probed_node_id, :placement},
+                   {:node, probed_node_id, :cold}
+                 ],
+                 placement_source: {:node, probed_node_id, :placement},
+                 cold_source: {:node, probed_node_id, :cold},
+                 node_id: probed_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      refute Task.yield(second_awaiter, 100)
+      assert :ok = QueueManager.mark_grant_node(first_grant, source_node_id, promote?: false)
+
+      assert is_pid(GenServer.whereis(QueueManager))
+      send(QueueManager, {:queue_tick, make_ref()})
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.refresh_capacity("stale-tick-trigger", "v1", 0)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "stale-tick-b@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(first_grant)
+      send(first_awaiter, :stop)
+    end)
+  end
+
+  test "SPEC.md §5.5 reset discards a pending scheduler tick" do
+    source_node_id = Ecto.UUID.generate()
+    probed_node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 3_000, poll_interval_ms: 150)
+
+    with_queue_admission_config(config, fn ->
+      assert {:queued, pending_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-reset-tick-pending",
+                   model_id: "reset-tick-pending"
+                 )
+               )
+
+      pending_awaiter = Task.async(fn -> QueueManager.await(pending_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(pending_ticket) end)
+
+      queue_admission_env =
+        Application.fetch_env!(:orchard_controller, :inference)
+        |> Keyword.put(:queue_admission, Keyword.put(config, :poll_interval_ms, 5_000))
+
+      Application.put_env(:orchard_controller, :inference, queue_admission_env)
+
+      Task.shutdown(pending_awaiter)
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-reset-tick-a",
+                   model_id: "reset-tick-a"
+                 )
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_reset_tick_result)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, source_node_id},
+                   {:node, source_node_id, :placement},
+                   {:node, source_node_id, :cold}
+                 ],
+                 placement_source: {:node, source_node_id, :placement},
+                 cold_source: {:node, source_node_id, :cold},
+                 node_id: source_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      assert_receive {:first_reset_tick_result, {:ok, first_grant}}, 2_000
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-reset-tick-b",
+                   model_id: "reset-tick-b"
+                 )
+               )
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, probed_node_id},
+                   {:node, probed_node_id, :placement},
+                   {:node, probed_node_id, :cold}
+                 ],
+                 placement_source: {:node, probed_node_id, :placement},
+                 cold_source: {:node, probed_node_id, :cold},
+                 node_id: probed_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      refute Task.yield(second_awaiter, 100)
+      assert :ok = QueueManager.mark_grant_node(first_grant, source_node_id, promote?: false)
+      refute Task.yield(second_awaiter, 300)
+
+      assert :ok = QueueManager.refresh_capacity("reset-tick-trigger", "v1", 0)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "reset-tick-b@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(first_grant)
+      send(first_awaiter, :stop)
+    end)
+  end
+
   test "SPEC.md §5.4 node source refresh retains capacity before await attaches" do
     node_id = Ecto.UUID.generate()
 
