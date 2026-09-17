@@ -18,10 +18,6 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidence do
           reason: String.t() | nil
         }
 
-  @doc "Returns the fixed no-execution refusal vocabulary."
-  @spec reason_codes() :: [String.t()]
-  def reason_codes, do: ReasonCodes.worker_recovery_reason_codes()
-
   @doc "Recognizes a recovery refusal without accepting arbitrary reason atoms."
   @spec refusal_reason(term()) :: {:ok, atom()} | :error
   def refusal_reason(reason) do

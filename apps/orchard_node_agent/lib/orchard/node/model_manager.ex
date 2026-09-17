@@ -1007,9 +1007,17 @@ defmodule Orchard.Node.ModelManager do
 
   defp handle_recovery_checkpoint_result({:error, _reason}, state, epoch, key, id, entry) do
     now = recovery_now()
-    entry = Recovery.unavailable(entry, id, now)
+    entry = entry |> release_deferred_hydration_waiters() |> Recovery.unavailable(id, now)
     Process.send_after(self(), {:recovery_checkpoint_retry, epoch, key}, entry.retry_at - now)
     {:noreply, put_recovery(state, key, entry)}
+  end
+
+  defp release_deferred_hydration_waiters(entry) do
+    {deferred, retained} =
+      Enum.split_with(entry.effects, &match?({:hydration_complete, _waiters}, &1))
+
+    Enum.each(deferred, &reply_superseded_checkpoint_effect_waiter/1)
+    %{entry | effects: retained}
   end
 
   defp reply_stale_checkpoint_effect_waiters(entry) do

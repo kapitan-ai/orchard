@@ -545,6 +545,43 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     eventually(fn -> match?({:ok, %{state: "armed", eligible: true}}, inspect_key(ctx)) end)
   end
 
+  test "SPEC §12.2 an unavailable epoch-claim checkpoint answers its parked unload waiter", ctx do
+    exact = %{
+      node_id: ctx.request.node_id,
+      model_id: ctx.request.model_id,
+      version: ctx.request.version
+    }
+
+    Checkpoints.seed(exact, %{
+      epoch: "old-epoch",
+      revision: 4,
+      record: WorkerRecoveryState.record(WorkerRecoveryState.new("old-epoch")),
+      transition_id: "stale-clean-hydration"
+    })
+
+    Checkpoints.mode(:write_unavailable)
+
+    assert %{ok: false, message: "recovery checkpoint unavailable"} =
+             ModelManager.unload_model(%UnloadModelRequest{
+               model_id: ctx.request.model_id,
+               version: ctx.request.version
+             })
+
+    assert :sys.get_state(ModelManager).recovery[ctx.key].pending
+  end
+
+  test "SPEC §12.2 the application stop hook checkpoints the intentional stop", ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    assert Orchard.NodeAgent.Application.prep_stop(:stopping) == :stopping
+
+    assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
+             "placement_recovery_required"
+
+    assert :error = worker_pid(ctx)
+  end
+
   test "SPEC §12.2 stale checkpoint replies unavailable, rehydrates, and permits a fresh recovery command",
        ctx do
     assert {:ok, evidence} = inspect_key(ctx)

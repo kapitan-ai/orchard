@@ -171,11 +171,6 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     end
   end
 
-  @spec worker_recovery_reason?(term()) :: boolean()
-  def worker_recovery_reason?(reason) do
-    normalize_code(reason) in @worker_recovery_reason_codes
-  end
-
   @spec scheduler_skip_codes() :: [String.t()]
   def scheduler_skip_codes, do: @scheduler_skip_codes
 

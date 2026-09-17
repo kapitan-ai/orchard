@@ -30,7 +30,6 @@ defmodule Orchard.Node.Supervisor do
       ]
       |> maybe_add_runtime_grpc_listener()
       |> maybe_add_worker_recovery_control_listener()
-      |> Kernel.++([Orchard.Node.WorkerRecoveryShutdown])
 
     Supervisor.init(children, strategy: :rest_for_one)
   end

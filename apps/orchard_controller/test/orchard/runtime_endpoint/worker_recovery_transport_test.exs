@@ -19,8 +19,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     RuntimeTLS,
     WorkerRecoveryControlEndpoint,
     WorkerRecoveryControlListener,
-    WorkerRecoveryControlServer,
-    WorkerRecoveryShutdown
+    WorkerRecoveryControlServer
   }
 
   alias Orchard.Node.Endpoint, as: NodeEndpoint
@@ -427,7 +426,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     assert WorkerRecoveryControlListener.enabled?()
     assert {:ok, {_flags, children}} = NodeSupervisor.init([])
     assert Enum.any?(children, &(&1.id == WorkerRecoveryControlListener))
-    assert List.last(children).id == WorkerRecoveryShutdown
+    assert List.last(children).id == WorkerRecoveryControlListener
     listener = start_supervised!({WorkerRecoveryControlListener, []})
 
     assert [_server] =

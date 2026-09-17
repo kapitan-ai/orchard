@@ -1462,8 +1462,7 @@ if config_env() == :prod do
         raise "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR requires BEAM Runtime Endpoint transport"
       end
 
-      if grpc_security == :plaintext_compatibility and
-           (not worker_recovery_control_enabled? or node_runtime_endpoint_transport == :grpc) and
+      if grpc_security == :plaintext_compatibility and not worker_recovery_control_enabled? and
            not loopback_listen_host?.(node_agent_listen_host) do
         raise "ORCHARD_NODE_AGENT_LISTEN_HOST=#{node_agent_listen_host} exposes an unauthenticated plaintext gRPC runtime endpoint on a non-loopback interface; set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc for mutual TLS or bind the node agent to a loopback host"
       end

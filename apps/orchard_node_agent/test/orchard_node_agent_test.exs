@@ -1382,11 +1382,44 @@ defmodule OrchardNodeAgentTest do
              Orchard.Node.ModelLoadTaskSupervisor,
              Orchard.Node.RuntimeProcessReaper,
              WorkerSupervisor,
-             Orchard.Node.RuntimeEndpointTaskSupervisor,
-             Orchard.Node.WorkerRecoveryShutdown
+             Orchard.Node.RuntimeEndpointTaskSupervisor
            ]
 
     refute NodeSupervisor.grpc_server_id() in child_ids
+  end
+
+  test "SPEC §12.2 a supervised sibling crash leaves model loading enabled" do
+    refute :sys.get_state(ModelManager).stopping?
+
+    {_id, crashed, _type, _modules} =
+      NodeSupervisor
+      |> Supervisor.which_children()
+      |> Enum.find(fn {id, _pid, _type, _modules} -> id == NodeSupervisor.grpc_server_id() end)
+
+    monitor = Process.monitor(crashed)
+    Process.exit(crashed, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^crashed, :killed}, 2_000
+
+    wait_until(fn ->
+      Enum.any?(Supervisor.which_children(NodeSupervisor), fn {id, pid, _type, _modules} ->
+        id == NodeSupervisor.grpc_server_id() and is_pid(pid) and pid != crashed
+      end)
+    end)
+
+    request = %EnsureModelLoadedRequest{
+      node_id: "node-local",
+      model_id: "sibling-crash-#{System.unique_integer([:positive])}",
+      version: "v1",
+      artifact_sha256: String.duplicate("a", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      artifact_source_uri: ""
+    }
+
+    result = NodeStatus.ensure_model_loaded(request)
+
+    assert result.recovery_refusal == ""
+    assert result.failure_code == "missing_artifact_source_uri"
+    assert ModelManager.current().worker_state == :WORKER_STATE_IDLE
   end
 
   test "node supervisor lazily adds recovery control without replacing the ordinary listener" do

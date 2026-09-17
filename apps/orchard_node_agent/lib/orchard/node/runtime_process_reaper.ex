@@ -57,6 +57,10 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   # cut short by a brutal kill from the supervisor.
   @sweep_budget_ms 4_000
 
+  # Cleanup records custody resolution only from a settled process, so the
+  # escalation spends a bounded wait confirming the kill it just requested.
+  @escalation_exit_budget_ms 1_000
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -207,9 +211,15 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         {:noreply, state}
 
       %{os_pid: os_pid, os_identity: os_identity} = _lease ->
-        if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-          _ = WorkerProcessLifecycle.kill_owned_process_tree(os_pid, os_identity)
-        end
+        now = System.monotonic_time(:millisecond)
+
+        _ =
+          WorkerProcessLifecycle.escalate_owned_exit(
+            os_pid,
+            os_identity,
+            now,
+            now + @escalation_exit_budget_ms
+          )
 
         {:noreply, cleanup_lease(state, ref)}
     end

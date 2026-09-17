@@ -254,6 +254,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
+    assert RuntimeProcessReaper.ownership_resolved?(self())
   end
 
   test "release cancels a pending resistant-process escalation and clears monitors" do
