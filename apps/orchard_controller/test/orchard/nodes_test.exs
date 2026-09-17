@@ -1816,7 +1816,8 @@ defmodule Orchard.NodesTest do
       assert QueueManager.active_capacity_source_lanes({:node, node_a.id, :cold}) == []
       refute_receive {^tag, {:ok, _grant}}, 100
 
-      send(QueueManager, :queue_tick)
+      tick_ref = :sys.get_state(QueueManager).scheduler_tick_ref
+      send(QueueManager, {:queue_tick, tick_ref})
       assert_receive {^tag, {:ok, grant}}, 2_000
       assert grant.queue_result == :queued
 
