@@ -1774,6 +1774,40 @@ defmodule OrchardConsole.NodesLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "inventory lifecycle boundaries" do
+    test "standby renders live runtime status without persisting generic observations on mount or refresh",
+         %{conn: conn} do
+      Application.put_env(
+        :orchard_controller,
+        :console,
+        Application.get_env(:orchard_controller, :console, [])
+        |> Keyword.put(:runtime_impl, OrchardConsole.Runtime)
+        |> Keyword.put(:runtime_client_impl, OrchardConsole.NodesLiveTest.DiscoveryRuntimeClient)
+        |> Keyword.delete(:runtime_endpoint_client_impl)
+        |> Keyword.delete(:nodes_impl)
+      )
+
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :standby,
+        this_controller_identity: "controller-a"
+      )
+
+      assert Repo.aggregate(Node, :count) == 0
+      assert Nodes.list_admission_candidates() == []
+
+      {:ok, view, html} = live(conn, "/console/nodes?section=runtime")
+
+      assert html =~ "discovered-via-mount"
+      assert Repo.aggregate(Node, :count) == 0
+      assert Nodes.list_admission_candidates() == []
+
+      view |> element("#nodes-refresh-now") |> render_click()
+      send(view.pid, :refresh_nodes)
+      assert render(view) =~ "discovered-via-mount"
+
+      assert Repo.aggregate(Node, :count) == 0
+      assert Nodes.list_admission_candidates() == []
+    end
+
     test "unregistered observation stays outside inventory and appears in related sections", %{
       conn: conn
     } do
