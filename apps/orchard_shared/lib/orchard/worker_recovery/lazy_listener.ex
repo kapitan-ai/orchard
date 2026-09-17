@@ -32,7 +32,7 @@ defmodule Orchard.WorkerRecovery.LazyListener do
          %{
            opts: opts,
            server_supervisor: server_supervisor,
-           logged_outcomes: MapSet.new()
+           logged_outcomes: %{}
          }}
       end
 
@@ -89,16 +89,23 @@ defmodule Orchard.WorkerRecovery.LazyListener do
   @spec schedule_retry() :: reference()
   def schedule_retry, do: Process.send_after(self(), :start_listener, @retry_interval_ms)
 
-  @doc "Logs each distinct listener outcome once so fail-closed refusal stays diagnosable."
+  @doc """
+  Logs a listener outcome once, and again when a start failure carries a new reason.
+
+  SPEC.md §12.2 refuses every placement while the recovery listener is down, so
+  the operator must read the current cause rather than the first one. The
+  throttle holds one entry per outcome kind, so an unbounded start failure
+  reason cannot grow it.
+  """
   @spec log_outcome_once(map(), outcome()) :: map()
   def log_outcome_once(state, outcome) do
     key = outcome_key(outcome)
 
-    if MapSet.member?(state.logged_outcomes, key) do
+    if Map.get(state.logged_outcomes, key) == outcome do
       state
     else
       Logger.error(outcome_message(outcome))
-      %{state | logged_outcomes: MapSet.put(state.logged_outcomes, key)}
+      %{state | logged_outcomes: Map.put(state.logged_outcomes, key, outcome)}
     end
   end
 

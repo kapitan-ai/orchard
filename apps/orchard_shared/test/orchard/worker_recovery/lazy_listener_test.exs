@@ -7,7 +7,7 @@ defmodule Orchard.WorkerRecovery.LazyListenerTest do
 
   @retry_interval_ms 1_000
 
-  defp initial_state, do: %{opts: [], server_supervisor: self(), logged_outcomes: MapSet.new()}
+  defp initial_state, do: %{opts: [], server_supervisor: self(), logged_outcomes: %{}}
 
   defp assert_retry_at_lazy_interval do
     refute_receive :start_listener, div(@retry_interval_ms * 7, 10)
@@ -33,14 +33,27 @@ defmodule Orchard.WorkerRecovery.LazyListenerTest do
     assert_retry_at_lazy_interval()
   end
 
-  test "a failed listener start logs the discarded start_child reason once per outcome" do
+  # SPEC.md §12.2 refuses every placement while the recovery listener is down, so
+  # a start failure whose reason changes must reach the operator instead of
+  # leaving the first cause on screen for as long as the retries continue.
+  test "a failed listener start logs the discarded start_child reason and each new reason" do
     {log, state} = log_once(initial_state(), {:start_failed, :eaddrinuse})
 
     assert log =~ "eaddrinuse"
 
-    {repeat, _state} = log_once(state, {:start_failed, :eaddrinuse})
+    {repeat, state} = log_once(state, {:start_failed, :eaddrinuse})
 
     assert repeat == ""
+
+    {changed, state} = log_once(state, {:start_failed, {:shutdown, :failed_to_start_child}})
+
+    assert changed =~ "failed_to_start_child"
+
+    {changed_repeat, state} =
+      log_once(state, {:start_failed, {:shutdown, :failed_to_start_child}})
+
+    assert changed_repeat == ""
+    assert Map.keys(state.logged_outcomes) == [:start_failed]
   end
 
   test "missing identity and invalid configuration log under separate throttles" do

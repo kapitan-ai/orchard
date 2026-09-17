@@ -548,12 +548,12 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
         listener = start_supervised!({WorkerRecoveryControlListener, []})
 
         blocked = :sys.get_state(listener)
-        assert MapSet.member?(blocked.logged_outcomes, :start_failed)
-        refute MapSet.member?(blocked.logged_outcomes, :configuration_invalid)
+        assert Map.has_key?(blocked.logged_outcomes, :start_failed)
+        refute Map.has_key?(blocked.logged_outcomes, :configuration_invalid)
         assert DynamicSupervisor.which_children(blocked.server_supervisor) == []
 
         send(listener, :start_listener)
-        assert MapSet.member?(:sys.get_state(listener).logged_outcomes, :start_failed)
+        assert Map.has_key?(:sys.get_state(listener).logged_outcomes, :start_failed)
 
         assert :ok = :gen_tcp.close(occupied)
         send(listener, :start_listener)

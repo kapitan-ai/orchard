@@ -632,7 +632,7 @@ defmodule OrchardApplicationTest do
         send(listener, :start_listener)
         state = :sys.get_state(listener)
 
-        assert MapSet.member?(state.logged_outcomes, :configuration_invalid)
+        assert Map.has_key?(state.logged_outcomes, :configuration_invalid)
         assert DynamicSupervisor.which_children(state.server_supervisor) == []
       end)
 
