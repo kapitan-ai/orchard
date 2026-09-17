@@ -557,55 +557,6 @@ cond do
     :ok
 end
 
-default_recovery_profile? = source_dev_role == :all_in_one
-
-source_dev_recovery_runtime =
-  if source_dev_role in [:all_in_one, :node_agent] and
-       env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", default_recovery_profile?) do
-    endpoint =
-      env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
-        if(default_recovery_profile?,
-          do: "127.0.0.1:50073",
-          else:
-            raise(
-              "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for split-role worker recovery control"
-            )
-        )
-
-    [
-      worker_recovery_control_enabled: true,
-      worker_recovery_control_endpoint: endpoint,
-      grpc_security: :mutual_tls,
-      runtime_grpc_listener_enabled: runtime_endpoint_transport == :grpc
-    ]
-  else
-    []
-  end
-
-source_dev_recovery_listener_host =
-  env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") ||
-    if(default_recovery_profile?, do: "127.0.0.1")
-
-if source_dev_recovery_listener_host do
-  source_dev_recovery_listener_port =
-    case env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") do
-      nil when default_recovery_profile? ->
-        50_073
-
-      nil ->
-        raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
-
-      port ->
-        parse_port.(port, "ORCHARD_WORKER_RECOVERY_CONTROL_PORT")
-    end
-
-  config :orchard_controller, :worker_recovery,
-    control_listener: [
-      host: source_dev_recovery_listener_host,
-      port: source_dev_recovery_listener_port
-    ]
-end
-
 config :orchard_node_agent,
   beam_peer_grants:
     if(node_peer_grant_enabled?,
@@ -636,7 +587,6 @@ config :orchard_node_agent,
       worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,
       worker_auto_max_concurrent_requests_per_model: worker_auto_max_concurrent_requests_per_model
     )
-    |> Keyword.merge(source_dev_recovery_runtime)
 
 # Console: enabled with no auth for frictionless local development.
 config :orchard_controller, :console,

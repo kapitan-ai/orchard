@@ -10,7 +10,7 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
   alias Orchard.NodeTrust.PKI, as: NodeTrustPKI
   alias Orchard.RuntimeEndpoint.WorkerRecoveryCheckpoint
   alias Orchard.TransportTLS.CertificateIdentity
-  alias Orchard.WorkerRecovery.Checkpoints
+  alias Orchard.WorkerRecovery.{Checkpoint, Checkpoints}
 
   setup do
     now = DateTime.utc_now()
@@ -79,6 +79,7 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
 
     %{
       key: %{node_id: node.id, model_id: model.model_id, version: model.version},
+      model: model,
       certificate: certificate,
       enrollment: enrollment,
       ca: ca,
@@ -129,6 +130,14 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
     |> Repo.update!()
 
     assert {:error, :unauthorized_checkpoint} = commit(ctx, nil, 0, "late", record("loading"))
+  end
+
+  test "SPEC §12.2 deletes checkpoints when the referenced model is deleted", ctx do
+    assert {:ok, _checkpoint} = commit(ctx, nil, 0, "transition-1", record("loading"))
+
+    Repo.delete!(ctx.model)
+
+    assert [] = Repo.all(Checkpoint)
   end
 
   test "SPEC §12.2 checkpoint rejects unbounded or content-bearing fields", ctx do

@@ -11,7 +11,7 @@ defmodule Orchard.Node.Supervisor do
 
   alias Orchard.Node.{Endpoint, ModelManager, RuntimeProcessReaper, RuntimeTLS, WorkerSupervisor}
 
-  alias Orchard.Node.{WorkerRecoveryControlEndpoint, WorkerRecoveryControlListener}
+  alias Orchard.Node.WorkerRecoveryControlListener
 
   @grpc_server_id Orchard.Node.GRPCServer
 
@@ -30,6 +30,7 @@ defmodule Orchard.Node.Supervisor do
         {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor}
       ]
       |> maybe_add_runtime_grpc_listener()
+      |> maybe_add_worker_recovery_control_listener()
       |> Kernel.++([Orchard.Node.WorkerRecoveryShutdown])
 
     Supervisor.init(children, strategy: :rest_for_one)
@@ -38,20 +39,50 @@ defmodule Orchard.Node.Supervisor do
   def grpc_server_id, do: @grpc_server_id
 
   def grpc_server_opts do
+    if Orchard.Node.runtime_grpc_listener_enabled?() do
+      runtime_grpc_server_opts()
+    else
+      recovery_grpc_server_opts()
+    end
+  end
+
+  defp runtime_grpc_server_opts do
     listen_address = Orchard.Node.listen_address()
 
     [
-      endpoint: grpc_endpoint(),
+      endpoint: Endpoint,
       port: listen_address[:port] || raise("missing orchard_node_agent listen port"),
       start_server: true,
       adapter_opts: grpc_adapter_opts(listen_address)
     ]
   end
 
+  defp recovery_grpc_server_opts do
+    case WorkerRecoveryControlListener.server_options() do
+      {:ok, opts} ->
+        opts
+
+      {:error, :worker_recovery_control_identity_unavailable} ->
+        raise "worker recovery control requires registered mTLS identity"
+
+      {:error, :worker_recovery_control_configuration_invalid} ->
+        raise "worker recovery control configuration is invalid"
+    end
+  end
+
   defp maybe_add_runtime_grpc_listener(children) do
-    if Orchard.Node.runtime_grpc_listener_enabled?() or WorkerRecoveryControlListener.enabled?() do
+    if Orchard.Node.runtime_grpc_listener_enabled?() do
       children ++
         [Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)]
+    else
+      children
+    end
+  end
+
+  defp maybe_add_worker_recovery_control_listener(children) do
+    if WorkerRecoveryControlListener.enabled?() and
+         not Orchard.Node.runtime_grpc_listener_enabled?() do
+      children ++ [{WorkerRecoveryControlListener, []}]
     else
       children
     end
@@ -66,17 +97,7 @@ defmodule Orchard.Node.Supervisor do
     end
   end
 
-  defp grpc_endpoint do
-    if Orchard.Node.runtime_grpc_listener_enabled?(),
-      do: Endpoint,
-      else: WorkerRecoveryControlEndpoint
-  end
-
-  defp grpc_credential do
-    if grpc_endpoint() == WorkerRecoveryControlEndpoint,
-      do: {:ok, WorkerRecoveryControlListener.credential!()},
-      else: RuntimeTLS.server_credential()
-  end
+  defp grpc_credential, do: RuntimeTLS.server_credential()
 
   defp listen_ip({_, _, _, _} = ip), do: ip
   defp listen_ip({_, _, _, _, _, _, _, _} = ip), do: ip

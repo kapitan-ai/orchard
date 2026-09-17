@@ -1419,7 +1419,7 @@ if config_env() == :prod do
         env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", true)
 
       grpc_security =
-        if node_runtime_endpoint_transport == :grpc or worker_recovery_control_enabled?,
+        if node_runtime_endpoint_transport == :grpc,
           do: :mutual_tls,
           else: :plaintext_compatibility
 
@@ -1463,6 +1463,7 @@ if config_env() == :prod do
       end
 
       if grpc_security == :plaintext_compatibility and
+           (not worker_recovery_control_enabled? or node_runtime_endpoint_transport == :grpc) and
            not loopback_listen_host?.(node_agent_listen_host) do
         raise "ORCHARD_NODE_AGENT_LISTEN_HOST=#{node_agent_listen_host} exposes an unauthenticated plaintext gRPC runtime endpoint on a non-loopback interface; set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc for mutual TLS or bind the node agent to a loopback host"
       end
@@ -1772,7 +1773,6 @@ if config_env() == :dev do
     config :orchard_node_agent, :runtime,
       worker_recovery_control_enabled: true,
       worker_recovery_control_endpoint: endpoint,
-      grpc_security: :mutual_tls,
       runtime_grpc_listener_enabled: runtime_endpoint_transport == :grpc
   end
 

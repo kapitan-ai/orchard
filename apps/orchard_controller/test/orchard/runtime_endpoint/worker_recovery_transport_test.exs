@@ -24,7 +24,6 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
   }
 
   alias Orchard.Node.Endpoint, as: NodeEndpoint
-  alias Orchard.Node.GRPCServer, as: NodeGRPCServer
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.Nodes.Node
   alias Orchard.NodeTrust.Store
@@ -427,7 +426,7 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
     assert opts[:adapter_opts][:cred]
     assert WorkerRecoveryControlListener.enabled?()
     assert {:ok, {_flags, children}} = NodeSupervisor.init([])
-    assert Enum.any?(children, &(&1.id == NodeGRPCServer))
+    assert Enum.any?(children, &(&1.id == WorkerRecoveryControlListener))
     assert List.last(children).id == WorkerRecoveryShutdown
     start_supervised!({GRPC.Server.Supervisor, opts})
     {:ok, channel} = GRPC.Stub.connect("127.0.0.1:#{opts[:port]}", cred: credential)

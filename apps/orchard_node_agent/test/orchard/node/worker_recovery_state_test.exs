@@ -51,6 +51,15 @@ defmodule Orchard.Node.WorkerRecoveryStateTest do
     assert {^entry, []} = State.take_superseded_effects(entry)
   end
 
+  test "SPEC §12.2 bare await cleanup blocks admission with a deterministic recovery reason" do
+    entry = State.new("epoch") |> State.hydrate(:absent) |> State.checkpoint([:await_cleanup])
+
+    assert State.refusal(entry) == :placement_recovery_required
+
+    assert %{eligible: false, reason: "placement_recovery_required", state: "recovery_required"} =
+             State.projection(entry)
+  end
+
   test "SPEC §12.2 fresh epochs retain nonclean checkpoints without rebasing clocks" do
     entry =
       State.new("old") |> State.hydrate(:absent) |> State.transition({:admit, "worker"}, -9_000)

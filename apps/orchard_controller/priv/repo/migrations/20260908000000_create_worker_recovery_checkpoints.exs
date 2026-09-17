@@ -3,10 +3,13 @@ defmodule Orchard.Repo.Migrations.CreateWorkerRecoveryCheckpoints do
 
   def change do
     create table(:worker_recovery_checkpoints, primary_key: false) do
-      add(:node_id, references(:nodes, type: :binary_id, on_delete: :restrict), primary_key: true)
+      add(:node_id, references(:nodes, type: :binary_id, on_delete: :delete_all),
+        primary_key: true
+      )
+
       add(:runtime_model_id, :text, primary_key: true)
       add(:version, :text, primary_key: true)
-      add(:model_id, references(:models, type: :binary_id, on_delete: :restrict), null: false)
+      add(:model_id, references(:models, type: :binary_id, on_delete: :delete_all), null: false)
       add(:epoch, :text, null: false)
       add(:revision, :bigint, null: false)
       add(:transition_id, :text, null: false)

@@ -202,6 +202,7 @@ defmodule Orchard.Node.WorkerRecoveryState do
 
   defp intentional_effect_pending?(effects) do
     Enum.any?(effects, fn
+      :await_cleanup -> true
       {:ordinary_unload, _request} -> true
       {:operator_cleanup, _command_id} -> true
       {:operator_reset, _command_id} -> true

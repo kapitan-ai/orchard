@@ -124,20 +124,20 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     refute runtime[:force_full_model_verification]
   end
 
-  test "SPEC §12.2 packaged defaults configure recovery-only mutual TLS" do
+  test "SPEC §12.2 packaged defaults configure recovery control without changing inference credentials" do
     runtime =
       read_runtime_config!(%{})
       |> Keyword.fetch!(:orchard_node_agent)
       |> Keyword.fetch!(:runtime)
 
-    assert runtime[:grpc_security] == :mutual_tls
+    assert runtime[:grpc_security] == :plaintext_compatibility
     assert runtime[:worker_recovery_control_enabled]
     assert runtime[:worker_recovery_control_endpoint] == "127.0.0.1:50073"
     refute runtime[:runtime_grpc_listener_enabled]
   end
 
-  test "SPEC §12.2 all-in-one source dev defaults the matching recovery listener" do
-    config = read_dev_config!(%{"ORCHARD_SOURCE_DEV_ROLE" => "all_in_one"})
+  test "SPEC §12.2 runtime.exs owns the all-in-one source-dev recovery defaults" do
+    config = read_runtime_config!(%{"ORCHARD_SOURCE_DEV_ROLE" => "all_in_one"}, :dev)
 
     runtime =
       config
@@ -152,7 +152,19 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
            ]
   end
 
-  test "SPEC §12.2 BEAM recovery control selects registered mTLS identity without enabling gRPC inference" do
+  test "dev.exs does not parse recovery control runtime settings" do
+    config = read_dev_config!(%{"ORCHARD_SOURCE_DEV_ROLE" => "all_in_one"})
+
+    runtime =
+      config
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    refute runtime[:worker_recovery_control_enabled]
+    assert is_nil(Keyword.fetch!(config, :orchard_controller)[:worker_recovery])
+  end
+
+  test "SPEC §12.2 BEAM recovery control preserves ordinary inference credentials" do
     for env <- [:prod] do
       runtime =
         read_runtime_config!(
@@ -167,7 +179,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
         |> Keyword.fetch!(:orchard_node_agent)
         |> Keyword.fetch!(:runtime)
 
-      assert runtime[:grpc_security] == :mutual_tls
+      assert runtime[:grpc_security] == :plaintext_compatibility
       assert runtime[:worker_recovery_control_enabled]
       refute runtime[:runtime_grpc_listener_enabled]
       assert runtime[:worker_recovery_control_endpoint] == "10.0.0.10:50072"

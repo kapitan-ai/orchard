@@ -183,11 +183,11 @@ defmodule Orchard.Metrics.Catalog do
       name: "orchard_audit_events_total",
       type: :counter,
       labels: [:action, :outcome],
-      ceiling: 36
+      ceiling: 33
     }
   ]
 
-  @worksheet_total 2_829
+  @worksheet_total 2_826
   @series_ceiling 5_000
 
   @spec descriptors() :: [map()]
@@ -201,7 +201,7 @@ defmodule Orchard.Metrics.Catalog do
     end
   end
 
-  @spec worksheet_total() :: 2_829
+  @spec worksheet_total() :: 2_826
   def worksheet_total, do: @worksheet_total
 
   @spec series_ceiling() :: 5_000

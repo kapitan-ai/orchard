@@ -8,17 +8,17 @@ defmodule Orchard.WorkerRecovery.ControlListener do
   while a publicly routable bind is refused.
   """
 
+  use GenServer
+
   alias Orchard.NodeTrust
   alias Orchard.WorkerRecovery.ControlEndpoint
 
   @invalid {:error, :worker_recovery_control_configuration_invalid}
+  @retry_interval 1_000
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
-    case server_options(opts) do
-      {:ok, server_options} -> GRPC.Server.Supervisor.start_link(server_options)
-      {:error, reason} -> {:error, reason}
-    end
+    GenServer.start_link(__MODULE__, opts)
   end
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -26,8 +26,27 @@ defmodule Orchard.WorkerRecovery.ControlListener do
     %{
       id: __MODULE__,
       start: {__MODULE__, :start_link, [opts]},
-      type: :supervisor
+      type: :worker
     }
+  end
+
+  @impl true
+  def init(opts) do
+    {:ok, server_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    send(self(), :start_listener)
+    {:ok, %{opts: opts, server_supervisor: server_supervisor}}
+  end
+
+  @impl true
+  def handle_info(:start_listener, state) do
+    case start_server(state) do
+      :ok ->
+        {:noreply, state}
+
+      :retry ->
+        Process.send_after(self(), :start_listener, @retry_interval)
+        {:noreply, state}
+    end
   end
 
   @spec server_options(keyword()) ::
@@ -46,6 +65,20 @@ defmodule Orchard.WorkerRecovery.ControlListener do
          start_server: true,
          adapter_opts: [ip: ip, cred: credential]
        ]}
+    end
+  end
+
+  defp start_server(state) do
+    with {:ok, server_options} <- server_options(state.opts),
+         {:ok, _pid} <-
+           DynamicSupervisor.start_child(
+             state.server_supervisor,
+             {GRPC.Server.Supervisor, server_options}
+           ) do
+      :ok
+    else
+      {:error, {:already_started, _pid}} -> :ok
+      _unavailable -> :retry
     end
   end
 
@@ -82,5 +115,9 @@ defmodule Orchard.WorkerRecovery.ControlListener do
       _unavailable ->
         {:error, :worker_recovery_control_identity_unavailable}
     end
+  rescue
+    _exception -> {:error, :worker_recovery_control_identity_unavailable}
+  catch
+    _kind, _reason -> {:error, :worker_recovery_control_identity_unavailable}
   end
 end

@@ -604,6 +604,23 @@ defmodule OrchardApplicationTest do
     assert recovery_listener_specs(Orchard.Application.child_specs()) == []
   end
 
+  test "SPEC.md §12.2 recovery control waits for NodeTrust without blocking Controller boot" do
+    Application.put_env(:orchard_controller, :worker_recovery,
+      control_listener: [host: "127.0.0.1", port: 50_072]
+    )
+
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+    assert is_pid(Process.whereis(Orchard.Supervisor))
+
+    assert {WorkerRecoveryControlListener, pid, :worker, [WorkerRecoveryControlListener]} =
+             Supervisor.which_children(Orchard.Supervisor)
+             |> Enum.find(fn {id, _pid, _type, _modules} ->
+               id == WorkerRecoveryControlListener
+             end)
+
+    assert is_pid(pid)
+  end
+
   test "SPEC.md §12.2 the recovery listener serves checkpoint control without grant control" do
     assert WorkerRecoveryControlEndpoint.__meta__(:servers) == [
              Orchard.WorkerRecovery.ControlServer

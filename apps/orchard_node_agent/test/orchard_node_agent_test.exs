@@ -39,6 +39,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
   alias Orchard.Node.WorkerProcessLifecycle
+  alias Orchard.Node.WorkerRecoveryControlListener
   alias Orchard.Node.WorkerSupervisor
   alias Orchard.NodeAgent.Supervisor, as: NodeAgentSupervisor
   alias Orchard.RuntimeEndpoint.ModelRef, as: RuntimeModelRef
@@ -1384,6 +1385,35 @@ defmodule OrchardNodeAgentTest do
            ]
 
     refute NodeSupervisor.grpc_server_id() in child_ids
+  end
+
+  test "node supervisor lazily adds recovery control without replacing the ordinary listener" do
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime,
+        worker_recovery_control_enabled: true,
+        runtime_grpc_listener_enabled: false,
+        grpc_security: :plaintext_compatibility,
+        listen_address: [host: "127.0.0.1", port: 50_071],
+        node_identity_root: nil
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+    end)
+
+    assert {:ok, {_flags, child_specs}} = NodeSupervisor.init([])
+    child_ids = Enum.map(child_specs, & &1.id)
+
+    assert WorkerRecoveryControlListener in child_ids
+    refute NodeSupervisor.grpc_server_id() in child_ids
+
+    assert {:error, :worker_recovery_control_identity_unavailable} =
+             WorkerRecoveryControlListener.server_options()
   end
 
   test "node agent application supervisor is running" do
