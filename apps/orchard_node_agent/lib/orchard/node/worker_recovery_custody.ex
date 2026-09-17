@@ -1,6 +1,19 @@
 defmodule Orchard.Node.WorkerRecoveryCustody do
-  @moduledoc "Affirmative host-boot and current runtime cleanup proofs for SPEC §12.2."
+  @moduledoc """
+  Affirmative host-boot and runtime cleanup proofs for SPEC §12.2.
+
+  `runtime_custody/1` records the evidence a later epoch needs to resolve prior
+  ownership: the host boot identity, plus either affirmative exit proof or the
+  runtime process whose exit is not proven yet. `resolve_prior_worker_ownership/2`
+  replays that record, so a runtime process that outlives a Node Agent restart
+  resolves once it exits — including when an operator kills it through host
+  controls — instead of waiting for the host to reboot.
+  """
   alias Orchard.Node.RuntimeProcessReaper
+  alias Orchard.Node.WorkerProcessLifecycle
+
+  @absent_boot "none"
+  @exited "exited"
 
   @spec boot_identity() :: String.t() | nil
   def boot_identity do
@@ -24,20 +37,68 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
     end
   end
 
-  @spec resolve_prior_worker_ownership(term(), String.t() | nil) :: :resolved | :unresolved
-  def resolve_prior_worker_ownership(_key, previous_boot) do
-    current_boot = boot_identity()
-    previous_boot = if is_binary(previous_boot), do: normalize(previous_boot)
+  @doc "Records durable custody evidence for the runtime incarnation owned by `owner_pid`."
+  @spec runtime_custody(pid() | nil) :: String.t() | nil
+  def runtime_custody(owner_pid) when is_pid(owner_pid),
+    do: encode(boot_identity(), RuntimeProcessReaper.owner_custody(owner_pid))
 
-    if is_binary(previous_boot) and is_binary(current_boot) and previous_boot != current_boot,
-      do: :resolved,
-      else: :unresolved
+  def runtime_custody(_owner_pid), do: boot_identity()
+
+  @spec resolve_prior_worker_ownership(term(), String.t() | nil) :: :resolved | :unresolved
+  def resolve_prior_worker_ownership(_key, previous_custody) do
+    custody = decode(previous_custody)
+
+    if custody.exited? or host_boot_ended?(custody.boot) or
+         prior_runtime_exited?(custody.os_pid),
+       do: :resolved,
+       else: :unresolved
   end
 
   @spec resolve_current(pid()) :: :resolved | :unresolved
   def resolve_current(owner) do
     if RuntimeProcessReaper.ownership_resolved?(owner), do: :resolved, else: :unresolved
   end
+
+  defp encode(boot, :unknown), do: boot
+  defp encode(boot, :resolved), do: Enum.join([boot_segment(boot), @exited], "/")
+
+  defp encode(boot, {:runtime_process, os_pid}),
+    do: Enum.join([boot_segment(boot), os_pid], "/")
+
+  defp boot_segment(nil), do: @absent_boot
+  defp boot_segment(boot), do: boot
+
+  defp decode(value) when is_binary(value) do
+    case String.split(value, "/") do
+      [boot] -> custody(normalize(boot), false, nil)
+      [boot, @exited] -> custody(normalize(boot), true, nil)
+      [boot, os_pid] -> custody(normalize(boot), false, parse_os_pid(os_pid))
+      _unrecognized -> custody(nil, false, nil)
+    end
+  end
+
+  defp decode(_value), do: custody(nil, false, nil)
+
+  defp custody(boot, exited?, os_pid), do: %{boot: boot, exited?: exited?, os_pid: os_pid}
+
+  defp parse_os_pid(value) do
+    case Integer.parse(value) do
+      {os_pid, ""} when os_pid > 0 -> os_pid
+      _unrecognized -> nil
+    end
+  end
+
+  defp host_boot_ended?(nil), do: false
+
+  defp host_boot_ended?(previous_boot) do
+    current_boot = boot_identity()
+    is_binary(current_boot) and current_boot != previous_boot
+  end
+
+  defp prior_runtime_exited?(nil), do: false
+
+  defp prior_runtime_exited?(os_pid),
+    do: WorkerProcessLifecycle.os_process_status(os_pid) == :not_alive
 
   defp normalize(value) do
     value = String.trim(value)

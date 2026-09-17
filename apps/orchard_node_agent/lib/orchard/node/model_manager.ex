@@ -1191,14 +1191,28 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp operator_recovery_ownership(state, key, entry) do
-    phase =
-      if recovery_cleanup_resolved?(state, key), do: "operator_terminated", else: "cleanup"
+    cond do
+      is_nil(entry.ownership["incarnation"]) ->
+        Map.put(entry.ownership, "phase", "resolved")
 
-    ownership = Map.put(entry.ownership, "phase", phase)
+      recovery_cleanup_resolved?(state, key) ->
+        Map.put(entry.ownership, "phase", "operator_terminated")
 
-    if is_nil(ownership["incarnation"]),
-      do: Map.put(ownership, "phase", "resolved"),
-      else: ownership
+      true ->
+        cleanup_ownership(entry, entry.last_worker_pid)
+    end
+  end
+
+  defp interrupted_ownership(entry) do
+    if entry.ownership["incarnation"],
+      do: cleanup_ownership(entry, entry.last_worker_pid),
+      else: Map.put(entry.ownership, "phase", "resolved")
+  end
+
+  defp cleanup_ownership(entry, owner_pid) do
+    entry.ownership
+    |> Map.put("phase", "cleanup")
+    |> Map.put("custody", WorkerRecoveryCustody.runtime_custody(owner_pid))
   end
 
   defp operator_conflict?(state, key, "clear") do
@@ -1474,8 +1488,7 @@ defmodule Orchard.Node.ModelManager do
     entry = state.recovery[key]
     was_operator? = RecoveryCommand.active?(entry.command)
     entry = Recovery.transition(entry, :interrupt, recovery_now(), effects)
-    phase = if entry.ownership["incarnation"], do: "cleanup", else: "resolved"
-    entry = %{entry | ownership: Map.put(entry.ownership, "phase", phase)}
+    entry = %{entry | ownership: interrupted_ownership(entry)}
 
     entry =
       if was_operator? do
@@ -1694,7 +1707,7 @@ defmodule Orchard.Node.ModelManager do
         entry = %{
           entry
           | last_worker_pid: pid,
-            ownership: Map.put(entry.ownership, "phase", "cleanup")
+            ownership: cleanup_ownership(entry, pid)
         }
 
         {entry, effects} =
@@ -1813,7 +1826,7 @@ defmodule Orchard.Node.ModelManager do
     do: interrupt_recovery(state, key, entry)
 
   defp interrupt_recovery(state, key, entry) do
-    entry = %{entry | ownership: Map.put(entry.ownership, "phase", "cleanup")}
+    entry = %{entry | ownership: cleanup_ownership(entry, entry.last_worker_pid)}
     entry = Recovery.transition(entry, :interrupt, recovery_now(), [:await_cleanup])
     put_recovery(state, key, entry) |> pump_recovery(key)
   end

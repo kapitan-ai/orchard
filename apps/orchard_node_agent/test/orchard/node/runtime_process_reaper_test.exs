@@ -150,6 +150,74 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
+  test "SPEC §12.2 an unconfirmed exit retains custody evidence until that process exits" do
+    private_reaper = start_private_reaper!()
+    {port, os_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+
+    owner = self()
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+    assert {:ok, ref} =
+             GenServer.call(
+               private_reaper,
+               {:watch, owner, os_pid,
+                %{
+                  shutdown_timeout_ms: @short_timeout_ms,
+                  model_ref: "unconfirmed-exit",
+                  os_identity: os_identity,
+                  phase: :loaded
+                }}
+             )
+
+    RuntimeProcessReaper.release(ref)
+    assert wait_until(fn -> :sys.get_state(private_reaper).leases == %{} end, 500)
+
+    assert %{"unconfirmed-exit" => %{os_pid: ^os_pid, owner_pid: ^owner}} =
+             :sys.get_state(private_reaper).pending_resolutions
+
+    refute RuntimeProcessReaper.ownership_resolved?(owner)
+    assert RuntimeProcessReaper.owner_custody(owner) == {:runtime_process, os_pid}
+
+    # SPEC §12.2.2 operator cleanup through host controls happens long after the
+    # escalation budget, so the retained record is the only remaining evidence.
+    CustodyTestHelpers.stop_child(port, os_pid)
+
+    assert RuntimeProcessReaper.ownership_resolved?(owner)
+    assert RuntimeProcessReaper.owner_custody(owner) == :resolved
+    assert :sys.get_state(private_reaper).pending_resolutions == %{}
+  end
+
+  test "SPEC §12.2 a fresh lease supersedes retained custody evidence for its placement" do
+    private_reaper = start_private_reaper!()
+    {port, os_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+    meta = %{
+      shutdown_timeout_ms: @short_timeout_ms,
+      model_ref: "superseded",
+      os_identity: os_identity,
+      phase: :loaded
+    }
+
+    assert {:ok, ref} = GenServer.call(private_reaper, {:watch, self(), os_pid, meta})
+    RuntimeProcessReaper.release(ref)
+
+    assert wait_until(
+             fn ->
+               Map.has_key?(:sys.get_state(private_reaper).pending_resolutions, "superseded")
+             end,
+             500
+           )
+
+    assert {:ok, _ref} = GenServer.call(private_reaper, {:watch, self(), os_pid, meta})
+    assert :sys.get_state(private_reaper).pending_resolutions == %{}
+  end
+
   test "watch returns an error when the reaper name is unavailable" do
     reaper_pid = Process.whereis(RuntimeProcessReaper)
     assert is_pid(reaper_pid)
