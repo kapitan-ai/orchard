@@ -1560,9 +1560,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             end
 
           {:error, reason} ->
-            if WorkerRecoveryEligibility.refusal?(reason),
-              do: recovery_refusal_result(caller_ref, timer_ref),
-              else: {:error, {:dispatch_failed, reason}}
+            {:error, {:dispatch_failed, reason}}
 
           _invalid ->
             {:error, {:dispatch_failed, :runtime_endpoint_protocol_error}}
@@ -1575,18 +1573,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp recovery_refusal_result,
     do: {:error, {:dispatch_failed, :worker_recovery_refused}}
-
-  defp recovery_refusal_result(caller_ref, timer_ref) do
-    if caller_disconnected?(caller_ref) do
-      {:error, {:dispatch_failed, :caller_disconnect}}
-    else
-      receive do
-        {:dispatch_timeout, ^timer_ref} -> {:error, {:dispatch_failed, :dispatch_timeout}}
-      after
-        0 -> recovery_refusal_result()
-      end
-    end
-  end
 
   defp caller_disconnected?(caller_ref) do
     receive do
@@ -1615,9 +1601,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         stream_done_result(loop_ctx, events, metrics)
 
       {:runtime_endpoint_done, ^task_ref, {:error, reason}} ->
-        unless WorkerRecoveryEligibility.refusal?(reason),
-          do: mark_transport_failure(target, reason)
-
+        mark_transport_failure(target, reason)
         stream_error_result(loop_ctx, events, metrics, reason)
 
       {:dispatch_timeout, ^timer_ref} ->
@@ -1740,22 +1724,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     loop_ctx = record_delivery(loop_ctx, failed_event)
     metrics = update_metrics_for_terminal(metrics, failed_event, :stream)
     stream_terminal_result(loop_ctx, [failed_event | events], metrics)
-  end
-
-  defp stream_error_result(
-         %{
-           accepted?: false,
-           terminal_event: nil,
-           conformance_defect: :none,
-           cancellation_started_before_acceptance?: false
-         } = loop_ctx,
-         [],
-         _metrics,
-         reason
-       ) do
-    if WorkerRecoveryEligibility.refusal?(reason),
-      do: recovery_refusal_result(loop_ctx.caller_ref, loop_ctx.timer_ref),
-      else: {:error, {:dispatch_failed, reason}}
   end
 
   defp stream_error_result(_loop_ctx, _events, _metrics, reason),

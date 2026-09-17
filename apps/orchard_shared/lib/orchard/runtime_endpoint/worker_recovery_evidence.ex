@@ -36,18 +36,6 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidence do
     end
   end
 
-  @doc "Requires JSON-string state and reason values at API-facing evidence boundaries."
-  @spec json_string_values?(term()) :: boolean()
-  def json_string_values?(value) when is_map(value) do
-    is_binary(value(value, :state)) and
-      case value(value, :reason) do
-        nil -> true
-        reason -> is_binary(reason)
-      end
-  end
-
-  def json_string_values?(_value), do: false
-
   @doc "Validates the state, eligibility, and reason triple plus the exact placement key."
   @spec validate(term()) :: {:ok, evidence()} | {:error, :invalid_worker_recovery_evidence}
   def validate(value) when is_map(value) do

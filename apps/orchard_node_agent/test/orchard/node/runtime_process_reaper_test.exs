@@ -117,6 +117,39 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert :sys.get_state(RuntimeProcessReaper).leases == %{}
   end
 
+  test "SPEC §12.2 an ambiguous custody probe is never recorded as resolved ownership" do
+    private_reaper = start_private_reaper!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    # PID 1 is launchd/init: owned by root, so `kill -0` reports EPERM rather
+    # than "No such process", which is ambiguous rather than proof of exit.
+    assert WorkerProcessLifecycle.os_process_status(1) == :unknown
+
+    owner = self()
+
+    for {os_pid, model_ref} <- [{1, "ambiguous"}, {control_pid, "alive"}] do
+      assert {:ok, ref} =
+               GenServer.call(
+                 private_reaper,
+                 {:watch, owner, os_pid,
+                  %{
+                    shutdown_timeout_ms: @short_timeout_ms,
+                    model_ref: model_ref,
+                    os_identity: @stale_identity,
+                    phase: :loaded
+                  }}
+               )
+
+      RuntimeProcessReaper.release(ref)
+    end
+
+    assert wait_until(fn -> :sys.get_state(private_reaper).leases == %{} end, 500)
+    assert :sys.get_state(private_reaper).resolved_owners == %{}
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
   test "watch returns an error when the reaper name is unavailable" do
     reaper_pid = Process.whereis(RuntimeProcessReaper)
     assert is_pid(reaper_pid)

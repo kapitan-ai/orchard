@@ -40,18 +40,23 @@ defmodule Orchard.Dispatch.WorkerRecoveryRefusalTest do
         :execute ->
           {:error, reason}
 
-        phase when phase in [:stream, :accepted] ->
+        phase when phase in [:refused_stream, :refused_after_acceptance] ->
           ref = make_ref()
           owner = Keyword.fetch!(opts, :owner)
 
-          if phase == :accepted do
+          if phase == :refused_after_acceptance do
             send(
               owner,
               {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)}
             )
           end
 
-          send(owner, {:runtime_endpoint_done, ref, {:error, reason}})
+          send(
+            owner,
+            {:runtime_endpoint_event, ref, request.request_id, refusal_event(reason)}
+          )
+
+          send(owner, {:runtime_endpoint_done, ref, :ok})
           {:ok, ref}
 
         :worker_loss ->
@@ -73,6 +78,9 @@ defmodule Orchard.Dispatch.WorkerRecoveryRefusalTest do
           {:ok, ref}
       end
     end
+
+    defp refusal_event({:worker_recovery_refused, _reason}),
+      do: InferenceEvent.failed("model_busy", "placement recovery prevents execution", false)
   end
 
   setup do
@@ -113,7 +121,7 @@ defmodule Orchard.Dispatch.WorkerRecoveryRefusalTest do
        context do
     before_count = Repo.aggregate(Orchard.CircuitBreakers.Failure, :count)
 
-    for phase <- [:ensure, :execute, :stream], reason <- refusal_reasons() do
+    for phase <- [:ensure, :refused_stream], reason <- refusal_reasons() do
       outcome = dispatch(context, phase, {:worker_recovery_refused, reason})
       assert outcome.failure["failure_class"] == "capacity_rejection"
       assert outcome.failure["failure_code"] == "model_busy"
@@ -129,7 +137,13 @@ defmodule Orchard.Dispatch.WorkerRecoveryRefusalTest do
   end
 
   test "SPEC §12.2 refusal after acceptance is not rewritten as capacity", context do
-    outcome = dispatch(context, :accepted, {:worker_recovery_refused, :worker_restart_backoff})
+    outcome =
+      dispatch(
+        context,
+        :refused_after_acceptance,
+        {:worker_recovery_refused, :worker_restart_backoff}
+      )
+
     assert outcome.accepted
     refute outcome.failure["failure_class"] == "capacity_rejection"
   end

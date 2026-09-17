@@ -331,13 +331,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           Process.cancel_timer(lease.timer_ref, info: false)
         end
 
-        resolved_owners =
-          if is_binary(lease.os_identity) and
-               not WorkerProcessLifecycle.os_process_alive?(lease.os_pid) do
-            Map.put(state.resolved_owners, lease.model_ref, lease.owner_pid)
-          else
-            Map.delete(state.resolved_owners, lease.model_ref)
-          end
+        resolved_owners = lease_ownership(state.resolved_owners, lease)
 
         %{
           state
@@ -345,6 +339,15 @@ defmodule Orchard.Node.RuntimeProcessReaper do
             owner_monitors: owner_monitors,
             resolved_owners: resolved_owners
         }
+    end
+  end
+
+  defp lease_ownership(resolved_owners, lease) do
+    if is_binary(lease.os_identity) and
+         WorkerProcessLifecycle.os_process_status(lease.os_pid) == :not_alive do
+      Map.put(resolved_owners, lease.model_ref, lease.owner_pid)
+    else
+      Map.delete(resolved_owners, lease.model_ref)
     end
   end
 

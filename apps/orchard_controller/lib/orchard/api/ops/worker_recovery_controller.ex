@@ -140,8 +140,7 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
   end
 
   defp validate_evidence({:ok, evidence}, _node_id, %{key: key}) when is_map(evidence) do
-    with true <- WorkerRecoveryEvidence.json_string_values?(evidence),
-         {:ok, evidence} <- WorkerRecoveryEvidence.validate(evidence),
+    with {:ok, evidence} <- WorkerRecoveryEvidence.validate(evidence),
          ^key <- evidence.key do
       {:ok, Map.take(evidence, @evidence_fields)}
     else

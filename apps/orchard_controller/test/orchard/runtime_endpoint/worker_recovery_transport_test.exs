@@ -517,6 +517,49 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryTransportTest do
              WorkerRecoveryControlListener.server_options()
   end
 
+  test "SPEC §12.2 a busy recovery listener address retries on capped backoff", %{
+    material: material
+  } do
+    {identity_root, _credential} = registered_identity!(material)
+
+    {:ok, occupied} = :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false])
+    {:ok, {_address, port}} = :inet.sockname(occupied)
+    on_exit(fn -> :gen_tcp.close(occupied) end)
+
+    runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      runtime
+      |> Keyword.put(:runtime_grpc_listener_enabled, false)
+      |> Keyword.put(:grpc_security, :plaintext_compatibility)
+      |> Keyword.put(:runtime_tls_identity, nil)
+      |> Keyword.put(:worker_recovery_control_enabled, true)
+      |> Keyword.put(:node_identity_root, identity_root)
+      |> Keyword.put(:listen_address, host: "127.0.0.1", port: port)
+    )
+
+    assert {:ok, _opts} = WorkerRecoveryControlListener.server_options()
+
+    listener = start_supervised!({WorkerRecoveryControlListener, []})
+
+    blocked = :sys.get_state(listener)
+    assert blocked.start_failure_streak == 1
+    refute blocked.configuration_invalid_logged?
+    assert DynamicSupervisor.which_children(blocked.server_supervisor) == []
+
+    send(listener, :start_listener)
+    assert :sys.get_state(listener).start_failure_streak == 2
+
+    assert :ok = :gen_tcp.close(occupied)
+    send(listener, :start_listener)
+
+    started = :sys.get_state(listener)
+    assert started.start_failure_streak == 0
+    assert [_server] = DynamicSupervisor.which_children(started.server_supervisor)
+  end
+
   for mode <- [:peer_grant, :shared_cookie] do
     @tag recovery_binding_mode: mode
     test "SPEC §12.2 configured #{mode} BEAM client uses registered pinned mTLS control", %{

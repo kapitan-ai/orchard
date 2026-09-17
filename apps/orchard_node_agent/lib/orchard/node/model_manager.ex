@@ -355,32 +355,8 @@ defmodule Orchard.Node.ModelManager do
   end
 
   def handle_call({:unload_model, %UnloadModelRequest{} = request}, from, state) do
-    key = model_key(request.model_id, request.version)
-
-    cond do
-      active_request_count_for_model(state.active_requests, key) > 0 and not request.force ->
-        {:reply, %Ack{ok: false, message: "model has active requests"}, state}
-
-      not Map.has_key?(state.recovery, key) ->
-        {:noreply, hydrate_recovery(state, key, {:unload, request, from})}
-
-      not state.recovery[key].hydrated? or state.recovery[key].prior? ->
-        {:reply, %Ack{ok: false, message: "recovery ownership unresolved"}, state}
-
-      true ->
-        state = stop_recovery_intent(state, key, [{:ordinary_unload, request}])
-        entry = state.recovery[key]
-
-        entry = %{
-          entry
-          | stop_waiters: [
-              new_stop_waiter(state, key, from, %Ack{ok: true, message: "unload accepted"})
-              | entry.stop_waiters
-            ]
-        }
-
-        {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
-    end
+    deadline = System.monotonic_time(:millisecond) + @ordinary_unload_stop_deadline_ms
+    handle_unload_model(request, from, deadline, state)
   end
 
   def handle_call(
@@ -654,9 +630,12 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  def handle_info({:recovery_hydration_ready, epoch, _key, {:unload, request, from}}, state)
+  def handle_info(
+        {:recovery_hydration_ready, epoch, _key, {:unload, request, from, deadline}},
+        state
+      )
       when epoch == state.recovery_epoch do
-    case handle_call({:unload_model, request}, from, state) do
+    case handle_unload_model(request, from, deadline, state) do
       {:reply, response, state} ->
         GenServer.reply(from, response)
         {:noreply, state}
@@ -1244,6 +1223,35 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
+  defp handle_unload_model(%UnloadModelRequest{} = request, from, deadline, state) do
+    key = model_key(request.model_id, request.version)
+
+    cond do
+      active_request_count_for_model(state.active_requests, key) > 0 and not request.force ->
+        {:reply, %Ack{ok: false, message: "model has active requests"}, state}
+
+      not Map.has_key?(state.recovery, key) ->
+        {:noreply, hydrate_recovery(state, key, {:unload, request, from, deadline})}
+
+      not state.recovery[key].hydrated? or state.recovery[key].prior? ->
+        {:reply, %Ack{ok: false, message: "recovery ownership unresolved"}, state}
+
+      true ->
+        state = stop_recovery_intent(state, key, [{:ordinary_unload, request}])
+        entry = state.recovery[key]
+        accepted = %Ack{ok: true, message: "unload accepted"}
+
+        entry = %{
+          entry
+          | stop_waiters: [
+              new_stop_waiter(state, key, from, deadline, accepted) | entry.stop_waiters
+            ]
+        }
+
+        {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
+    end
+  end
+
   defp hydrate_recovery(state, key, waiter) do
     case Map.get(state.recovery_hydrations, key) do
       nil -> start_recovery_hydration(state, key, waiter)
@@ -1285,7 +1293,7 @@ defmodule Orchard.Node.ModelManager do
     })
   end
 
-  defp reply_recovery_unavailable({:unload, _request, from}),
+  defp reply_recovery_unavailable({:unload, _request, from, _deadline}),
     do: GenServer.reply(from, %Ack{ok: false, message: "recovery checkpoint unavailable"})
 
   defp reply_recovery_unavailable({:inspect, from}),
@@ -1368,14 +1376,14 @@ defmodule Orchard.Node.ModelManager do
     end)
   end
 
-  defp new_stop_waiter(state, key, from, response) do
+  defp new_stop_waiter(state, key, from, deadline, response) do
     id = make_ref()
 
     timer_ref =
       Process.send_after(
         self(),
         {:ordinary_unload_deadline, state.recovery_epoch, key, id},
-        @ordinary_unload_stop_deadline_ms
+        max(deadline - System.monotonic_time(:millisecond), 0)
       )
 
     {id, from, response, timer_ref}

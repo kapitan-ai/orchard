@@ -16,21 +16,27 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
   alias Orchard.Node.Supervisor, as: NodeSupervisor
 
+  @public_unload_call_timeout_ms 11_000
+
   defmodule Checkpoints do
     use Agent
 
     def start_link(_),
       do: Agent.start_link(fn -> %{rows: %{}, mode: :ok, calls: []} end, name: __MODULE__)
 
-    def read(key),
-      do:
-        Agent.get(__MODULE__, fn state ->
-          if state.mode == :read_unavailable,
-            do: {:error, :unavailable},
-            else: {:ok, Map.get(state.rows, key, :absent)}
-        end)
+    def read(key) do
+      delay = Agent.get(__MODULE__, &Map.get(&1, :read_delay, 0))
+      if delay > 0, do: Process.sleep(delay)
+
+      Agent.get(__MODULE__, fn state ->
+        if state.mode == :read_unavailable,
+          do: {:error, :unavailable},
+          else: {:ok, Map.get(state.rows, key, :absent)}
+      end)
+    end
 
     def mode(mode), do: Agent.update(__MODULE__, &%{&1 | mode: mode})
+    def read_delay(ms), do: Agent.update(__MODULE__, &Map.put(&1, :read_delay, ms))
     def calls, do: Agent.get(__MODULE__, & &1.calls)
     def now, do: Agent.get(__MODULE__, &Map.get(&1, :now, System.monotonic_time(:millisecond)))
     def time(now), do: Agent.update(__MODULE__, &Map.put(&1, :now, now))
@@ -729,6 +735,42 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     eventually(fn -> :sys.get_state(ModelManager).recovery[ctx.key].stop_waiters == [] end)
     send(ModelManager, {:ordinary_unload_deadline, epoch, ctx.key, waiter_id})
     assert Process.alive?(Process.whereis(ModelManager))
+  end
+
+  test "SPEC §12.2 the bounded unload deadline is anchored at the call, not after hydration",
+       ctx do
+    Checkpoints.read_delay(2_000)
+    Checkpoints.mode(:write_unavailable)
+    called_at = System.monotonic_time(:millisecond)
+
+    unload =
+      Task.async(fn ->
+        ModelManager.unload_model(%UnloadModelRequest{
+          model_id: ctx.request.model_id,
+          version: ctx.request.version
+        })
+      end)
+
+    {epoch, waiter_id, timer_ref} =
+      eventually_value(fn ->
+        case :sys.get_state(ModelManager).recovery[ctx.key] do
+          %{stop_waiters: [{waiter_id, _from, _ack, timer_ref}]} = entry ->
+            {entry.epoch, waiter_id, timer_ref}
+
+          _other ->
+            nil
+        end
+      end)
+
+    remaining = Process.read_timer(timer_ref)
+    hydration_ms = System.monotonic_time(:millisecond) - called_at
+
+    assert is_integer(remaining)
+    assert hydration_ms >= 2_000
+    assert hydration_ms + remaining < @public_unload_call_timeout_ms
+
+    send(ModelManager, {:ordinary_unload_deadline, epoch, ctx.key, waiter_id})
+    assert %{ok: false, message: "recovery checkpoint unavailable"} = Task.await(unload, 5_000)
   end
 
   test "SPEC §12.2 duplicate recovery waits for its durable completion checkpoint", ctx do

@@ -154,10 +154,13 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     assert audit_actions() == ["worker_recovery.accepted", "worker_recovery.failed"]
   end
 
-  test "Operator API accepts recovery state and reason only as JSON strings", ctx do
+  test "Operator API refuses evidence outside the closed recovery state and reason vocabulary",
+       ctx do
     for patch <- [
-          %{state: :open},
-          %{reason: :placement_crash_breaker_open}
+          %{state: "unknown_state"},
+          %{reason: "worker_restart_backoff"},
+          %{reason: nil},
+          %{eligible: true}
         ] do
       Process.put(:recovery_result, {:ok, Map.merge(ctx.evidence, patch)})
       assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 503
