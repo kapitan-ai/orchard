@@ -525,6 +525,41 @@ defmodule Orchard.API.ResponsesControllerTest do
              "Inference failed: model emitted tool call outside required function lookup_weather"
   end
 
+  test "SPEC.md §7.5.3a hides reasoning conformance details in sync Responses errors" do
+    worker_message = "<think>worker marker bytes and model output</think>"
+
+    for code <- [
+          "reasoning_parser_conformance_failed",
+          "reasoning_policy_conformance_failed"
+        ] do
+      canonical = stub_responses_canonical(false)
+
+      stub_responses_orchestrator(
+        prepare: {:ok, canonical, %{}},
+        execute:
+          {:ok, canonical,
+           [
+             InferenceEvent.accepted(1_710_000_123_000),
+             InferenceEvent.failed(code, worker_message, false)
+           ]}
+      )
+
+      conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello"})
+
+      assert conn.status == 500
+
+      assert Jason.decode!(conn.resp_body)["error"] == %{
+               "code" => "internal_error",
+               "message" => "Internal error",
+               "param" => nil,
+               "type" => "api_error"
+             }
+
+      refute conn.resp_body =~ code
+      refute conn.resp_body =~ worker_message
+    end
+  end
+
   test "SPEC 7.5.5 sync terminal conformance failure is a generic 500" do
     canonical = stub_responses_canonical(false)
 
@@ -1705,6 +1740,46 @@ defmodule Orchard.API.ResponsesControllerTest do
     request = Requests.get_request_by_public_id(request_id)
     assert request.state == :failed
     assert_tool_serializer_failure!(request)
+  end
+
+  test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Responses errors" do
+    worker_message = "<think>worker marker bytes and model output</think>"
+
+    for code <- [
+          "reasoning_parser_conformance_failed",
+          "reasoning_policy_conformance_failed"
+        ] do
+      stub_responses_orchestrator(
+        prepare: {:ok, stub_responses_canonical(true), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.failed(code, worker_message, false)
+        ],
+        execute: {:ok, stub_responses_canonical(true), []}
+      )
+
+      conn =
+        post_responses(%{
+          "model" => "stub-tool-model@v1",
+          "input" => "hello",
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_typed_sse_events(conn)
+      assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+      assert List.last(events).data["response"]["error"] == %{
+               "code" => "internal_error",
+               "message" => "Internal error",
+               "param" => nil,
+               "type" => "server_error"
+             }
+
+      refute String.contains?(collect_chunked_body(conn), "[DONE]")
+      refute String.contains?(collect_chunked_body(conn), code)
+      refute String.contains?(collect_chunked_body(conn), worker_message)
+    end
   end
 
   test "SPEC 7.5.5 streaming terminal conformance failure emits response.failed" do
