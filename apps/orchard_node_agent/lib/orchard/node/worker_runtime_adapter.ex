@@ -576,6 +576,19 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
             {:error, reason}
         end
 
+      {:error, :process_not_alive} ->
+        cleanup_failed_runtime(%{
+          channel: nil,
+          os_identity: params.os_identity,
+          os_pid: params.os_pid,
+          port: params.port,
+          reaper_ref: nil,
+          shutdown_timeout_ms: params.shutdown_timeout_ms,
+          socket_path: params.socket_path
+        })
+
+        {:error, launch_identity_failure_reason(params.port)}
+
       {:error, reason} ->
         cleanup_failed_runtime(%{
           channel: nil,
@@ -612,6 +625,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          }}
 
       {:error, reason} ->
+        reason = load_failure_before_cleanup(channel, port, reason)
+
         cleanup_failed_runtime(%{
           channel: channel,
           os_identity: params.os_identity,
@@ -625,6 +640,24 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         {:error, reason}
     end
   end
+
+  defp load_failure_before_cleanup(channel, port, reason) do
+    cond do
+      not port_open?(port) -> {:worker_exited, :during_load}
+      current_channel_lost?(channel) -> {:worker_exited, :current_channel_lost}
+      true -> reason
+    end
+  end
+
+  defp current_channel_lost?(%{adapter_payload: %{conn_pid: pid}}) when is_pid(pid) do
+    receive do
+      {:gun_down, ^pid, _protocol, _reason, _streams} -> true
+    after
+      0 -> not Process.alive?(pid)
+    end
+  end
+
+  defp current_channel_lost?(_channel), do: false
 
   defp resolve_model_path(%ModelRef{model_id: model_id, version: version}, models_root)
        when is_binary(model_id) and is_binary(version) do

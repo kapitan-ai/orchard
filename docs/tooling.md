@@ -218,8 +218,12 @@ mise exec -- mix proto.gen.worker
   pinned `protoc-gen-elixir` escript. Install the escript through the pinned
   Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
 - `mix proto.gen` generates Elixir controller ↔ node-agent cluster modules from
-  `proto/cluster/v1/{common,events,peer_grant,runtime}.proto` into
+  `proto/cluster/v1/{common,events,peer_grant,runtime,worker_recovery}.proto` into
   `apps/orchard_shared/lib/cluster/v1/`.
+- `mix proto.gen` does not format what it writes. Run
+  `mise exec -- mix format apps/orchard_shared/lib/cluster/v1/*.pb.ex` afterwards,
+  because the committed modules are formatted and repo-wide
+  `mix format --check-formatted` gates required validation.
 - `proto/orchard/worker/v1/worker_runtime.proto` is the sole authoritative Worker Runtime schema.
 - `mix proto.gen.worker` generates committed Python messages and gRPC stubs under `native/orchard_worker_mlx/src/orchard_worker_mlx/generated/`, the committed Elixir messages, service, and stub at `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex`, and the descriptor-set golden beside the canonical schema.
 - Worker generation uses the provider-neutral Python tool environment and lock under `proto/orchard/worker/tooling/` and requires `protoc-gen-elixir` 0.16.0.

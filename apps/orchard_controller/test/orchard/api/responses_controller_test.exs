@@ -24,6 +24,11 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
 
+  alias Orchard.TestSupport.{
+    WorkerRecoveryCheckpointClient,
+    WorkerRecoveryManagerFixtureScheduler
+  }
+
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
       build_conn(:post, "/v1/responses")
@@ -60,6 +65,22 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(previous_inference, :scheduler_impl, WorkerRecoveryManagerFixtureScheduler)
+    )
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(
+        previous_runtime,
+        :worker_recovery_checkpoint_client,
+        WorkerRecoveryCheckpointClient
+      )
+    )
 
     previous_runtime_owner =
       Application.get_env(:orchard_controller, :queue_admission_api_runtime_owner)

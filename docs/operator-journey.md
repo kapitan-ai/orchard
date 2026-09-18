@@ -139,6 +139,10 @@ The current local-file import path is not controller-hosted model distribution.
 For a remote worker, the operator must pre-stage the same model at a usable path or use another worker-reachable source supported by the lower-level acquisition path.
 Console and docs must not claim that one local import distributes the model across the cluster today.
 
+`SPEC.md` §12.2 recovery control also gates model residency, so the first request needs more than a granted model.
+The Node Agent that loads the model must hold its registered Node identity and reach the Controller recovery-control listener, or every load is refused with `placement_recovery_required`.
+See [`packaging/README.md`](../packaging/README.md#operator-bootstrap) for packaged hosts and [`local-dev.md`](local-dev.md#worker-recovery-control) for source development.
+
 ### Current Friction Baseline
 
 The counts below are structural estimates derived from the current one-Controller, one-worker runbooks.

@@ -11,8 +11,8 @@ This directory owns the controller ↔ node-agent cluster RPC contract. It does
 not own the node-agent ↔ worker runtime contract; that lives under
 `../../orchard/worker/v1/`.
 
-`common.proto`, `events.proto`, `peer_grant.proto`, and `runtime.proto` are
-active generated inputs.
+`common.proto`, `events.proto`, `peer_grant.proto`, `runtime.proto`, and
+`worker_recovery.proto` are active generated inputs.
 `membership.proto` is present for the future cluster-join lifecycle slice but is
 excluded from the current generation aliases until that contract is implemented.
 
@@ -66,7 +66,8 @@ protoc \
   proto/cluster/v1/common.proto \
   proto/cluster/v1/events.proto \
   proto/cluster/v1/peer_grant.proto \
-  proto/cluster/v1/runtime.proto
+  proto/cluster/v1/runtime.proto \
+  proto/cluster/v1/worker_recovery.proto
 ```
 
 Notes:
@@ -96,8 +97,8 @@ The alias runs `grpc_tools.protoc` through the provider-neutral locked uv enviro
 with `proto/` as the sole source include path.
 It generates:
 
-- `cluster/v1/*_pb2.py` and `cluster/v1/*_pb2_grpc.py` from this directory's
-  active cluster protos;
+- `cluster/v1/*_pb2.py` and `cluster/v1/*_pb2_grpc.py` from the cluster protos the
+  worker consumes: `common.proto`, `events.proto`, and `runtime.proto`;
 - `orchard/worker/v1/*_pb2.py` and `orchard/worker/v1/*_pb2_grpc.py` from the
   worker runtime proto.
 

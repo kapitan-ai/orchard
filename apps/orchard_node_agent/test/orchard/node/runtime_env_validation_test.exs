@@ -1,6 +1,10 @@
 defmodule Orchard.Node.RuntimeEnvValidationTest do
   use ExUnit.Case, async: false
 
+  unless Code.ensure_loaded?(Orchard.Config.SourceDevBeam) do
+    Code.require_file(Path.expand("../../../../../config/source_dev_beam.exs", __DIR__))
+  end
+
   @config_env_vars [
     "DATABASE_URL",
     "ECTO_IPV6",
@@ -120,19 +124,166 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     refute runtime[:force_full_model_verification]
   end
 
-  test "runtime.exs preserves packaged BEAM default without requiring gRPC identity" do
+  test "SPEC §12.2 packaged defaults configure recovery control without changing inference credentials" do
     runtime =
       read_runtime_config!(%{})
       |> Keyword.fetch!(:orchard_node_agent)
       |> Keyword.fetch!(:runtime)
 
     assert runtime[:grpc_security] == :plaintext_compatibility
-    assert runtime[:runtime_grpc_listener_enabled]
+    assert runtime[:worker_recovery_control_enabled]
+    assert runtime[:worker_recovery_control_endpoint] == "127.0.0.1:50073"
+    refute runtime[:runtime_grpc_listener_enabled]
+  end
+
+  test "SPEC §12.2 runtime.exs owns the all-in-one source-dev recovery defaults" do
+    config = read_runtime_config!(%{"ORCHARD_SOURCE_DEV_ROLE" => "all_in_one"}, :dev)
+
+    runtime =
+      config
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_recovery_control_enabled]
+    assert runtime[:worker_recovery_control_endpoint] == "127.0.0.1:50073"
+
+    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
+             control_listener: [host: "127.0.0.1", port: 50_073]
+           ]
+  end
+
+  test "dev.exs does not parse recovery control runtime settings" do
+    config = read_dev_config!(%{"ORCHARD_SOURCE_DEV_ROLE" => "all_in_one"})
+
+    runtime =
+      config
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    refute runtime[:worker_recovery_control_enabled]
+    assert is_nil(Keyword.fetch!(config, :orchard_controller)[:worker_recovery])
+  end
+
+  test "SPEC §12.2 BEAM recovery control preserves ordinary inference credentials" do
+    for env <- [:prod] do
+      runtime =
+        read_runtime_config!(
+          %{
+            "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT" => "10.0.0.10:50072",
+            "ORCHARD_NODE_AGENT_LISTEN_HOST" => "10.0.0.20"
+          },
+          env
+        )
+        |> Keyword.fetch!(:orchard_node_agent)
+        |> Keyword.fetch!(:runtime)
+
+      assert runtime[:grpc_security] == :plaintext_compatibility
+      assert runtime[:worker_recovery_control_enabled]
+      refute runtime[:runtime_grpc_listener_enabled]
+      assert runtime[:worker_recovery_control_endpoint] == "10.0.0.10:50072"
+    end
+  end
+
+  test "SPEC §12.2 recovery control reuses parsed whitespace-padded gRPC transport" do
+    for env <- [:prod] do
+      runtime =
+        read_runtime_config!(
+          %{
+            "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => " grpc ",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true",
+            "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT" => "10.0.0.10:50072"
+          },
+          env
+        )
+        |> Keyword.fetch!(:orchard_node_agent)
+        |> Keyword.fetch!(:runtime)
+
+      assert runtime[:runtime_grpc_listener_enabled]
+    end
+  end
+
+  test "SPEC §12.2 source-dev recovery control wires the Controller listener" do
+    config =
+      read_runtime_config!(
+        %{
+          "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "10.0.0.10",
+          "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+        },
+        :dev
+      )
+
+    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
+             control_listener: [host: "10.0.0.10", port: 50_072]
+           ]
+  end
+
+  test "SPEC §12.2 split-role recovery control requires a listener port with its host" do
+    assert_raise RuntimeError, ~r/CONTROL_PORT is required/, fn ->
+      read_runtime_config!(
+        %{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "10.0.0.10"
+        },
+        :dev
+      )
+    end
+  end
+
+  test "SPEC §12.2 recovery control accepts a loopback listener host in source dev" do
+    config =
+      read_runtime_config!(
+        %{
+          "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => "127.0.0.1",
+          "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+        },
+        :dev
+      )
+
+    assert Keyword.fetch!(config, :orchard_controller)[:worker_recovery] == [
+             control_listener: [host: "127.0.0.1", port: 50_072]
+           ]
+  end
+
+  test "SPEC §12.2 recovery control refuses a wildcard or publicly routable listener host" do
+    for {host, message} <- [
+          {"0.0.0.0", ~r/must not be a wildcard address/},
+          {"8.8.8.8", ~r/must be a loopback or private IPv4 address/},
+          {"203.0.113.7", ~r/must be a loopback or private IPv4 address/},
+          {"::1", ~r/requires an IPv4 literal/},
+          {"localhost", ~r/requires an IPv4 literal/}
+        ] do
+      assert_raise RuntimeError, message, fn ->
+        read_runtime_config!(
+          %{
+            "ORCHARD_WORKER_RECOVERY_CONTROL_HOST" => host,
+            "ORCHARD_WORKER_RECOVERY_CONTROL_PORT" => "50072"
+          },
+          :dev
+        )
+      end
+    end
+  end
+
+  test "SPEC §12.2 split-role recovery setup refuses a missing checkpoint endpoint" do
+    assert_raise RuntimeError, ~r/CONTROL_ENDPOINT is required/, fn ->
+      read_runtime_config!(
+        %{
+          "ORCHARD_SOURCE_DEV_ROLE" => "node_agent",
+          "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true"
+        },
+        :dev
+      )
+    end
   end
 
   test "runtime.exs rejects plaintext gRPC bound to a non-loopback listen host" do
     assert_raise RuntimeError, ~r/exposes an unauthenticated plaintext gRPC/, fn ->
-      read_runtime_config!(%{"ORCHARD_NODE_AGENT_LISTEN_HOST" => "0.0.0.0"})
+      read_runtime_config!(%{
+        "ORCHARD_NODE_AGENT_LISTEN_HOST" => "0.0.0.0",
+        "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "false"
+      })
     end
   end
 

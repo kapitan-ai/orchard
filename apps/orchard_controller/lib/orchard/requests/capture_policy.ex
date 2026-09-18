@@ -47,6 +47,7 @@ defmodule Orchard.Requests.CapturePolicy do
     runtime_status_unavailable
     status_failed
     transport_failure_newer
+    worker_recovery_ineligible
   )
   @heartbeat_invalid_reasons ~w(
     duplicate_placement_model_ref

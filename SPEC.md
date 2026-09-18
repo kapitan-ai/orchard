@@ -1157,7 +1157,7 @@ Rules:
 
 Each successful authenticated, non-stale observation of a trusted target SHALL append one `node_heartbeats` row in the same transaction that advances `nodes.last_heartbeat_at`, re-derives Node health, and refreshes aggregate DispatchCapacity evidence. Failure of any write rolls back all effects. A standby Controller writes nothing on this path, and a transport failure SHALL NOT create a synthetic successful heartbeat row.
 
-`node_heartbeats.payload` SHALL use Controller-produced schema version `1` with a closed top-level allowlist: `schema_version`, `validity`, optional `invalid_reason`, `endpoint_id`, `target`, `availability`, `worker_state`, `aggregate_active_request_count`, `aggregate_max_concurrency`, `aggregate_capacity_evidence`, `placements`, `runtime_memory_budgets`, `runtime_prefix_cache_statuses`, `worker_crash_counters`, and `supports_prompt_token_ids`. The row columns remain canonical for trusted `node_id` and `observed_at`. `target` is limited to `id`, `transport`, `address`, and `node_id`; each placement is limited to `model_ref`, `state`, `capacity`, and `last_used_at`; each model reference to `model_id` and `version`; each Placement Capacity to `active_request_count`, `max_concurrency`, `status`, and `source`; aggregate capacity evidence to `runtime_concurrency_limit`, `active_request_count`, and `validity`; and each worker-crash counter to `model_id`, `count`, and `counter_version`, capped at 4 entries per payload. Maps and lists are capped at 40 entries, nesting at depth 4, and otherwise-unbounded strings at 512 bytes; narrower domain, numeric, and status-vocabulary bounds take precedence. The complete encoded JSON is capped by validated `node_heartbeat_payload_max_bytes`, default **262144 bytes**.
+`node_heartbeats.payload` SHALL use Controller-produced schema version `1` with a closed top-level allowlist: `schema_version`, `validity`, optional `invalid_reason`, `endpoint_id`, `target`, `availability`, `worker_state`, `aggregate_active_request_count`, `aggregate_max_concurrency`, `aggregate_capacity_evidence`, `placements`, `runtime_memory_budgets`, `runtime_prefix_cache_statuses`, `worker_crash_counters`, `worker_recovery_epoch`, and `supports_prompt_token_ids`. The row columns remain canonical for trusted `node_id` and `observed_at`. `target` is limited to `id`, `transport`, `address`, and `node_id`; each placement is limited to `model_ref`, `state`, `capacity`, `last_used_at`, and the §12.2 `worker_recovery` projection; each `worker_recovery` projection to `key`, `epoch`, `owner_epoch`, `revision`, `state`, `hydrated`, `eligible`, and `reason`, with `worker_recovery_epoch` and projected recovery epoch strings capped at 128 bytes; each model reference to `model_id` and `version`; each Placement Capacity to `active_request_count`, `max_concurrency`, `status`, and `source`; aggregate capacity evidence to `runtime_concurrency_limit`, `active_request_count`, and `validity`; and each worker-crash counter to `model_id`, `count`, and `counter_version`, capped at 4 entries per payload. Maps and lists are capped at 40 entries, nesting at depth 4, and otherwise-unbounded strings at 512 bytes; narrower domain, numeric, and status-vocabulary bounds take precedence. The complete encoded JSON is capped by validated `node_heartbeat_payload_max_bytes`, default **262144 bytes**.
 
 Memory-budget entries SHALL use `Orchard.Runtime.MemoryBudget.normalize/1`, and prefix-cache entries SHALL use `Orchard.Runtime.PrefixCacheStatus.normalize/1`, not scheduler-specific normalization. Persisted prefix-cache data SHALL exclude raw fingerprint sets while retaining only sanitized status, fingerprint count, and warmth information. Unknown fields are dropped. An unknown schema, malformed required envelope, or payload still over the byte cap after normalization SHALL commit as a minimal bounded version-1 `validity = "invalid"` envelope with a stable `invalid_reason`; it cannot produce a positive scheduler candidate and maps to `dispatch_capacity_facts_unavailable`. The payload SHALL NOT contain credentials or secrets, DSNs, prompt or response bodies, raw tokens, tenant identifiers, raw metadata or diagnostics, local paths or evidence, tool/session identifiers, Controller policy, Controller-accounted Allocation, quarantine, authority decisions, acquirability, or another derived eligibility result.
 
@@ -2762,6 +2762,8 @@ POST   /ops/v1/dispatch-capacity/enforcement-cutover
 GET    /ops/v1/requests/:request_id
 POST   /ops/v1/requests/:request_id/cancel
 POST   /ops/v1/requests/:request_id/retry
+GET    /ops/v1/worker-recovery/nodes/:node_id/models/:model_id
+POST   /ops/v1/worker-recovery/nodes/:node_id/models/:model_id
 GET    /ops/v1/scheduler/explanations/:request_id
 POST   /ops/v1/nodes/:node_id/diagnostics
 ```
@@ -2899,7 +2901,7 @@ Reason codes SHALL be shared by Operator API, CLI, Console, and tests.
 Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
 Rejected candidates SHALL include at least one stable rejection reason code.
 Skipped candidates SHALL be represented in `skipped_candidates` outside the rejected-candidate list and SHALL include at least one stable skip reason code.
-The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_degraded`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, `unknown_capacity`, `dispatch_capacity_facts_unavailable`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_phase_policy_mismatch`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, `dispatch_ceiling_not_approved`, and `previous_attempt_node_excluded`.
+The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_degraded`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, `unknown_capacity`, `dispatch_capacity_facts_unavailable`, `controller_dispatch_ceiling_missing`, `controller_dispatch_ceiling_invalid`, `controller_dispatch_ceiling_zero`, `controller_dispatch_ceiling_exhausted`, `runtime_concurrency_limit_unknown`, `runtime_concurrency_limit_exhausted`, `dispatch_headroom_exhausted`, `placement_capacity_exhausted`, `dispatch_capacity_revalidation_failed`, `dispatch_capacity_phase_policy_mismatch`, `runtime_endpoint_management_class_missing`, `runtime_endpoint_management_class_invalid`, `dispatch_ceiling_shadow_mismatch`, `dispatch_ceiling_not_approved`, `previous_attempt_node_excluded`, `worker_recovery_evidence_unavailable`, `worker_restart_backoff`, `worker_restart_in_progress`, `placement_crash_breaker_open`, and `placement_recovery_required`.
 `previous_attempt_node_excluded` SHALL be used only for a candidate removed by the §5.5 hard `exclude_node_ids` filter during an Automatic Attempt Retry alternate scheduling decision.
 The scheduler rejection vocabulary SHALL additionally accept every stable capacity reason code when a shared dispatch-capacity evaluation excludes a candidate.
 The initial scheduler skip vocabulary SHALL include `lower_tier_not_considered`, `not_scored_after_selection`, `not_applicable_to_request`, and `candidate_limit_reached`.
@@ -5693,6 +5695,146 @@ Recovery:
 
 * operator can clear breaker
 * forced reload or model unload/reload
+
+#### 12.2.1 Crash identity and recovery timing
+
+The §12.2 placement breaker is the Node-owned crash breaker, distinct from the
+Controller-owned §5.10 placement-level breaker.
+The Node Agent SHALL own this policy per `(stable node_id, model_id, version)`;
+worker/process incarnations, transport addresses, and Controller §5.10 breaker
+keys SHALL NOT replace that identity. Different versions and Nodes are isolated.
+A qualifying crash is an unexpected loss of an admitted managed worker while
+loading or loaded, including loss of its current runtime process or current
+runtime channel that makes that worker unusable. Each worker incarnation SHALL
+count at most once, even when exit, channel, and load-completion reports overlap.
+Intentional unload, eviction, replacement, cancellation/timeout cleanup, and
+agent shutdown SHALL NOT count. Artifact, validation, capacity, spawn-before-worker,
+and ordinary load errors without unexpected worker loss are not crashes.
+
+The Node SHALL timestamp accepted crash observations with its monotonic clock.
+At time `t`, the rolling window is `(t - 600 seconds, t]`. The fifth qualifying
+crash in that window SHALL open the breaker before any new restart is admitted.
+The restart delay for successive crashes since the last recovery reset SHALL be
+1, 2, 4, 8, 16, then 30 seconds, remaining capped at 30 seconds. The delay starts
+at crash observation; elapsed window time alone SHALL NOT reset its index.
+Ten continuous minutes loaded without a crash SHALL reset history and the delay
+index; loading time and backoff SHALL NOT count as stable operation. The Node
+SHALL apply this reset before processing a crash at the stability boundary.
+An open breaker SHALL NOT expire or probe automatically.
+
+Automatic recovery restores model residency only, never an inference Request.
+It SHALL retain an explicit recovery residency owner, use the ordinary authorized
+load pipeline, and reserve one model residency slot while waiting or restarting
+without double-counting an in-flight load. Opening the breaker or stopping
+recovery SHALL release that slot only after worker/load cleanup resolves.
+A non-crash automatic restart failure SHALL stop automation with
+`placement_recovery_required`, retain crash history and delay index, and require
+explicit recovery; it SHALL NOT manufacture a crash or busy-loop. An actual
+worker loss during that attempt SHALL instead use the qualifying-crash rule.
+An unacknowledged pre-effect checkpoint SHALL instead defer automatic restart,
+retaining its due time and single reserved slot; it is neither a crash nor a
+non-crash restart failure. Resume only after confirming the same current fenced
+checkpoint, never by blindly repeating an effect. A stability reset not yet
+checkpointed SHALL be included atomically with the next crash transition.
+
+#### 12.2.2 Explicit recovery and state loss
+
+Recovery state SHALL survive ordinary load/ensure/reconciliation activity and
+ordinary internal reset SHALL NOT clear it. Reset SHALL fence pending work and
+leave interrupted recovery placements requiring explicit recovery, retaining known open
+breakers and crash history. ModelManager or Node Agent state loss SHALL NOT be
+implicit recovery. A bounded per-placement recovery checkpoint SHALL persist in
+Postgres through the authenticated Active Controller; the Node remains the local
+policy/admission authority and SHALL NOT use a local file journal or direct
+database credentials. Only the Node SHALL originate checkpoint mutations;
+the Controller SHALL execute its authenticated compare-and-set requests.
+Operator API handlers SHALL validate/forward commands without pre-claiming or
+mutating the checkpoint. Before admitting a worker or recovery effect, the Node
+SHALL durably mark that exact placement's in-progress ownership and revision;
+failed checkpoint acknowledgement SHALL prevent that effect. Clean stop and
+stable-operation reset SHALL checkpoint their resolved state before discarding
+prior recovery evidence.
+
+After state loss, checkpointed open and recovery-required states SHALL remain
+such regardless of crash history. Backoff, restarting, interrupted work,
+nonempty crash history, a nonzero backoff index, or uncertain completion SHALL require explicit recovery
+for that affected placement; monotonic timestamps from an old epoch SHALL NOT
+be rebased or interpreted as elapsed healthy time. A proven clean checkpoint
+means armed state with empty history/index and checkpointed resolved worker,
+load, and recovery-operation ownership; committed loaded ownership alone is not
+a clean stop. A proven clean checkpoint or
+an authoritatively absent checkpoint SHALL allow normal load admission after
+normal identity/resource checks. New installations and unrelated healthy keys
+SHALL NOT require startup re-arm. If checkpoint hydration is unavailable, the
+Node SHALL defer new admissions until authoritative state is available rather
+than assume missing local memory is clean. Existing Request/occupancy and
+Postgres-unavailable rules remain in force. Lagging observation snapshots SHALL
+NOT replace this checkpoint authority.
+
+Prior-epoch ownership SHALL be resolved during explicit recovery using the
+existing runtime custody/cleanup boundary: no current worker/load for the key
+and affirmative termination/nonexistence proof for the recorded prior runtime
+incarnation, or proof that its host boot ended. Empty current memory or a reused
+PID alone is not proof. Unknown cleanup SHALL return unavailable and require
+operator cleanup through existing host/runtime controls before recovery can be
+retried; it SHALL NOT falsely mark prior ownership resolved.
+
+Operator recovery SHALL route through the authenticated Active Controller
+Operator API to the identity-bound Runtime Endpoint, targeting the exact key
+and current recovery epoch/revision. Clear/reset acknowledgement and fresh load
+admission SHALL follow the corresponding durable checkpoint; a lost command
+acknowledgement SHALL NOT authorize automatic repetition of destructive work.
+The operation SHALL support clear,
+non-forced unload, and forced reload. Clear cancels pending automatic work and
+re-arms an absent/failed placement without loading it; a loaded or caller-loading
+placement SHALL reject clear as a conflict rather than silently interrupt it.
+Successful recovery-operation unload, including an already absent placement, SHALL clear
+history and backoff so a subsequent normal load is allowed. Non-forced unload
+SHALL refuse while active executions exist, without clearing state. Forced reload
+SHALL resolve forced-unload cleanup, clear, and admit one fresh load as one
+serialized recovery operation; success means loaded, not merely clear accepted.
+Cleanup uncertainty SHALL remain fail-closed. A failed fresh load SHALL leave
+explicit recovery required unless a qualifying crash has already established
+backoff or an open breaker. Neither recovery nor its failure SHALL replay an
+inference Request or change its terminalization/retry rules.
+
+Apart from the §12.2.1 stable-operation reset, only this operator-authorized
+recovery intent may clear state. An operator-issued ordinary unload remains an
+ordinary unload, not a recovery command. A normal ensure,
+preload, reconciliation unload/load pair, internal reset, or `force` flag on an
+ordinary load/unload request SHALL NOT confer recovery authority. Recovery
+commands and all asynchronous effects SHALL be fenced by epoch, revision, and
+worker/load identity as applicable; duplicates and stale work SHALL NOT clear,
+count, load, or terminate a newer incarnation. Clearing §12.2 SHALL NOT clear
+§5.10, or vice versa.
+
+#### 12.2.3 Eligibility, evidence, and accounting
+
+Backoff, restarting, open, and recovery-required placements SHALL refuse ordinary
+load and execution admission, even through a loaded fast path. The Node SHALL
+retain and report these states without a live worker; the Controller SHALL
+preserve their identity/freshness and reject affected candidates before ranking,
+capacity acquisition, and final dispatch acceptance. Missing, stale, conflicting,
+or old-epoch recovery evidence SHALL NOT establish eligibility. Node-side checks
+remain authoritative if Controller observations lag. A targeted read-only recovery
+status query SHALL hydrate and report clean exact-key evidence for new/cold
+placements without requiring a prior load or operator re-arm; omission from a
+loaded-model list is not positive recovery evidence. Other placements and Node
+health SHALL NOT be suppressed solely by this placement's recovery state.
+
+Structured admission refusals SHALL distinguish `worker_restart_backoff`,
+`worker_restart_in_progress`, `placement_crash_breaker_open`, and
+`placement_recovery_required` from an actually attempted model-load failure.
+Before an attempt starts, they are eligibility rejection, not an attempt. After
+an attempt starts, a proven pre-execution refusal SHALL normalize to existing
+`capacity_rejection` with stable `model_busy`, no model-load category, and normal
+execution-resolution/capacity-release evidence. This uses the existing closed
+retry gates and contributes to neither §5.10 breaker. Unresolved occupancy or
+identity SHALL retain their existing failure classification instead. An actual
+failed load or worker-loss attempt SHALL retain its existing §5.10 attribution;
+automatic residency recovery without a Request attempt SHALL NOT create an
+attempt or a Controller breaker event. §5.10 thresholds, attribution, and Request
+retry policy are unchanged.
 
 ### 12.3 Model load failure
 

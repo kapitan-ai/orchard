@@ -4,9 +4,11 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.CircuitBreakers
+  alias Orchard.ClusterManagement.ReasonCodes
   alias Orchard.DispatchCapacity.Evaluator
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.SingleNode
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   defmodule RuntimeEndpointStubClient do
     @moduledoc false
@@ -27,10 +29,21 @@ defmodule Orchard.Scheduler.SingleNodeTest do
 
     def status(_target, _opts) do
       case Process.get(:single_node_status) do
-        nil -> {:error, :unavailable}
-        response -> {:ok, response}
+        nil ->
+          {:error, :unavailable}
+
+        response ->
+          response =
+            Map.put_new(response, :node_metadata, %{
+              node_id: WorkerRecoveryFixtures.node_id()
+            })
+
+          {:ok, WorkerRecoveryFixtures.status(response)}
       end
     end
+
+    def inspect_worker_recovery(target, ref, _opts),
+      do: WorkerRecoveryFixtures.inspect(target, ref)
 
     def disconnect(_channel), do: :ok
   end
@@ -45,7 +58,13 @@ defmodule Orchard.Scheduler.SingleNodeTest do
 
     def status(channel, _opts) do
       send(Process.get({__MODULE__, :owner}), {:single_node_status, channel})
-      {:ok, %{active_request_count: 0, max_concurrency: 1}}
+
+      {:ok,
+       WorkerRecoveryFixtures.status(%{
+         active_request_count: 0,
+         max_concurrency: 1,
+         node_metadata: %{node_id: WorkerRecoveryFixtures.node_id()}
+       })}
     end
 
     def disconnect(_channel), do: :ok
@@ -442,15 +461,24 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert loaded_schedule.selected_tier == "loaded"
   end
 
-  test "SPEC.md §9.1 an unreachable single-node probe reports the cold tier" do
-    assert {:ok, schedule} =
+  test "SPEC.md §12.2 refuses an unreachable single-node probe without labelling it recovery" do
+    assert {:error, :model_busy, decision} =
              SingleNode.default_schedule(
                canonical_request("single-unreachable-tier-model"),
                SingleNode.target(),
                status_client: StubClient
              )
 
-    assert schedule.selected_tier == "cold"
+    assert decision.selected_node_id == nil
+    assert decision.scored_candidates == []
+    assert [rejected] = decision.rejected_candidates
+    assert rejected.reason_codes == ["transport_unreachable"]
+    assert rejected.diagnostics.fact == "status_probe_unavailable"
+
+    assert Enum.all?(
+             rejected.reason_codes,
+             &(&1 in ReasonCodes.scheduler_rejection_codes())
+           )
   end
 
   test "uses one conservative unmanaged slot when aggregate capacity is missing" do
@@ -561,6 +589,53 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert result.placement_capacity == :not_applicable
     refute result.eligible?
     assert :runtime_concurrency_limit_exhausted in result.reason_codes
+  end
+
+  test "SPEC.md §12.2 acquisition and post-load providers refuse freshly ineligible recovery" do
+    model_id = "single-fresh-recovery-model"
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: []
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request(model_id),
+               SingleNode.target(),
+               status_client: StubClient
+             )
+
+    assert is_map(schedule.dispatch_capacity_acquisition_input_provider.())
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: [
+        placement(model_id, "v1", active_request_count: 0, max_concurrency: 1)
+        |> Map.put(
+          :worker_recovery_json,
+          Jason.encode!(%{
+            key: %{
+              node_id: WorkerRecoveryFixtures.node_id(),
+              model_id: model_id,
+              version: "v1"
+            },
+            epoch: WorkerRecoveryFixtures.epoch(),
+            owner_epoch: WorkerRecoveryFixtures.epoch(),
+            revision: 3,
+            state: "open",
+            hydrated: true,
+            eligible: false,
+            reason: "placement_crash_breaker_open"
+          })
+        )
+      ]
+    })
+
+    assert schedule.dispatch_capacity_acquisition_input_provider.() == nil
+    assert schedule.dispatch_capacity_input_provider.() == nil
   end
 
   test "SPEC.md §5.9 post-load provider rejects missing matching Placement Capacity" do

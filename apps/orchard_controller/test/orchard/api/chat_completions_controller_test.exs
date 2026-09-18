@@ -57,6 +57,11 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Requests
   alias Orchard.Requests.{Idempotency, Request}
 
+  alias Orchard.TestSupport.{
+    WorkerRecoveryCheckpointClient,
+    WorkerRecoveryManagerFixtureScheduler
+  }
+
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
   # We simulate the merge explicitly.
@@ -118,6 +123,22 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     previous_orchestrator = Application.get_env(:orchard_controller, :api_chat_orchestrator_impl)
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(previous_inference, :scheduler_impl, WorkerRecoveryManagerFixtureScheduler)
+    )
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(
+        previous_runtime,
+        :worker_recovery_checkpoint_client,
+        WorkerRecoveryCheckpointClient
+      )
+    )
 
     previous_runtime_owner =
       Application.get_env(:orchard_controller, :queue_admission_api_runtime_owner)

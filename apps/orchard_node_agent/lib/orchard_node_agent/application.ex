@@ -7,6 +7,7 @@ defmodule Orchard.NodeAgent.Application do
     BeamPeerGrantBootstrap,
     BeamPeerGrantStartupVerifier,
     Identity,
+    ModelManager,
     SentryTelemetryBridge
   }
 
@@ -81,6 +82,19 @@ defmodule Orchard.NodeAgent.Application do
 
   defp attach_sentry_telemetry_bridge do
     SentryTelemetryBridge.attach()
+  end
+
+  @impl true
+  def prep_stop(state) do
+    checkpoint_intentional_stop()
+    state
+  end
+
+  # Missing acknowledgement leaves the prior nonclean checkpoint authoritative.
+  defp checkpoint_intentional_stop do
+    ModelManager.prepare_shutdown()
+  catch
+    :exit, _reason -> :ok
   end
 
   @impl true

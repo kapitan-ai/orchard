@@ -23,6 +23,12 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   The budget always fits the supervisor shutdown budget, and every signal is
   gated on the identity snapshot so a recycled PID belonging to an unrelated
   process is never targeted.
+
+  A kill the reaper cannot confirm within its escalation budget leaves a pending
+  resolution record instead of discarding the lease evidence. Callers re-probe it
+  through `ownership_resolved?/1` and `owner_custody/1`, so a runtime process that
+  exits after the budget — or one an operator kills through host controls per
+  SPEC §12.2.2 — still resolves custody for its placement.
   """
 
   use GenServer
@@ -53,9 +59,22 @@ defmodule Orchard.Node.RuntimeProcessReaper do
           timer_ref: reference() | nil
         }
 
+  @type pending_resolution :: %{
+          model_ref: term(),
+          os_identity: WorkerProcessLifecycle.custody_identity(),
+          os_pid: pos_integer(),
+          owner_pid: pid()
+        }
+
+  @type owner_custody :: :resolved | :unknown | {:runtime_process, pos_integer()}
+
   # Kept below the 5_000ms child_spec shutdown budget so the sweep can never be
   # cut short by a brutal kill from the supervisor.
   @sweep_budget_ms 4_000
+
+  # Cleanup records custody resolution only from a settled process, so the
+  # escalation spends a bounded wait confirming the kill it just requested.
+  @escalation_exit_budget_ms 1_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -72,18 +91,16 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   @spec watch(pid(), pos_integer(), lease_meta()) :: {:ok, lease_ref()} | {:error, atom()}
   def watch(owner_pid, os_pid, meta)
       when is_pid(owner_pid) and is_integer(os_pid) and os_pid > 0 do
-    if Process.whereis(__MODULE__) do
-      try do
-        GenServer.call(__MODULE__, {:watch, owner_pid, os_pid, meta})
-      catch
-        :exit, _reason -> {:error, :reaper_unavailable}
-      end
-    else
-      {:error, :reaper_unavailable}
-    end
+    if Process.whereis(__MODULE__),
+      do: watch_after_reaper_check(owner_pid, os_pid, meta),
+      else: {:error, :reaper_unavailable}
   end
 
   def watch(_, _, _), do: {:error, :invalid_lease}
+
+  @doc "Records a BEAM-only stub owner, which cannot create an OS subprocess."
+  @spec watch_beam_only(pid(), term()) :: :ok
+  def watch_beam_only(owner, key), do: GenServer.call(__MODULE__, {:watch_beam_only, owner, key})
 
   @spec release(lease_ref()) :: :ok
   def release(ref) do
@@ -95,6 +112,33 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     GenServer.cast(__MODULE__, {:reap, ref, reason})
   end
 
+  @doc """
+  Reports affirmative cleanup of this runtime owner in the current reaper lifetime.
+
+  Each call re-probes that owner's pending resolution records, so an exit the
+  escalation budget could not confirm still resolves once it happens.
+  """
+  @spec ownership_resolved?(pid()) :: boolean()
+  def ownership_resolved?(owner_pid) do
+    GenServer.call(__MODULE__, {:ownership_resolved, owner_pid})
+  catch
+    :exit, _reason -> false
+  end
+
+  @doc """
+  Reports the custody evidence this reaper holds for `owner_pid`.
+
+  `:resolved` is affirmative exit proof, `{:runtime_process, os_pid}` names the
+  runtime process whose exit is not proven yet, and `:unknown` means this reaper
+  never held OS custody for that owner.
+  """
+  @spec owner_custody(pid()) :: owner_custody()
+  def owner_custody(owner_pid) do
+    GenServer.call(__MODULE__, {:owner_custody, owner_pid})
+  catch
+    :exit, _reason -> :unknown
+  end
+
   @impl true
   def init(_opts) do
     # The reaper itself must be resilient to supervisor exit signals; it is never
@@ -104,11 +148,39 @@ defmodule Orchard.Node.RuntimeProcessReaper do
     {:ok,
      %{
        leases: %{},
-       owner_monitors: %{}
+       owner_monitors: %{},
+       pending_resolutions: %{},
+       resolved_owners: %{},
+       beam_owners: %{}
      }}
   end
 
   @impl true
+  def handle_call({:ownership_resolved, owner_pid}, _from, state) do
+    state = reprobe_pending_resolutions(state, owner_pid)
+    {:reply, owner_resolved?(state, owner_pid), state}
+  end
+
+  def handle_call({:owner_custody, owner_pid}, _from, state) do
+    state = reprobe_pending_resolutions(state, owner_pid)
+    {:reply, custody_evidence(state, owner_pid), state}
+  end
+
+  def handle_call({:record_prewatch_nonexistence, owner_pid, model_ref}, _from, state) do
+    {:reply, :ok, resolve_custody(state, model_ref, owner_pid)}
+  end
+
+  def handle_call({:watch_beam_only, owner, key}, {owner, _tag}, state) do
+    monitor = Process.monitor(owner)
+
+    state = %{
+      supersede_custody(state, key)
+      | beam_owners: Map.put(state.beam_owners, monitor, {owner, key})
+    }
+
+    {:reply, :ok, state}
+  end
+
   def handle_call({:watch, owner_pid, os_pid, meta}, _from, state) do
     ref = make_ref()
     monitor_ref = Process.monitor(owner_pid)
@@ -128,6 +200,7 @@ defmodule Orchard.Node.RuntimeProcessReaper do
 
     state =
       state
+      |> supersede_custody(lease.model_ref)
       |> put_in([Access.key(:leases), ref], lease)
       |> put_in([Access.key(:owner_monitors), monitor_ref], ref)
 
@@ -144,6 +217,13 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   @impl true
+  def handle_info({:DOWN, ref, :process, owner, _reason}, %{beam_owners: owners} = state)
+      when is_map_key(owners, ref) do
+    {{^owner, key}, owners} = Map.pop(owners, ref)
+
+    {:noreply, resolve_custody(%{state | beam_owners: owners}, key, owner)}
+  end
+
   def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
     {ref, owner_monitors} = Map.pop(state.owner_monitors, monitor_ref)
 
@@ -164,9 +244,15 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         {:noreply, state}
 
       %{os_pid: os_pid, os_identity: os_identity} = _lease ->
-        if WorkerProcessLifecycle.os_process_alive?(os_pid) do
-          _ = WorkerProcessLifecycle.kill_owned_process_tree(os_pid, os_identity)
-        end
+        now = System.monotonic_time(:millisecond)
+
+        _ =
+          WorkerProcessLifecycle.escalate_owned_exit(
+            os_pid,
+            os_identity,
+            now,
+            now + @escalation_exit_budget_ms
+          )
 
         {:noreply, cleanup_lease(state, ref)}
     end
@@ -289,7 +375,83 @@ defmodule Orchard.Node.RuntimeProcessReaper do
         end
 
         %{state | leases: leases, owner_monitors: owner_monitors}
+        |> record_lease_custody(lease)
     end
+  end
+
+  defp record_lease_custody(state, lease) do
+    cond do
+      proven_exit?(lease) -> resolve_custody(state, lease.model_ref, lease.owner_pid)
+      is_binary(lease.os_identity) -> retain_pending_resolution(state, lease)
+      true -> supersede_custody(state, lease.model_ref)
+    end
+  end
+
+  defp retain_pending_resolution(state, lease) do
+    pending = %{
+      model_ref: lease.model_ref,
+      os_identity: lease.os_identity,
+      os_pid: lease.os_pid,
+      owner_pid: lease.owner_pid
+    }
+
+    %{
+      state
+      | pending_resolutions: Map.put(state.pending_resolutions, lease.model_ref, pending),
+        resolved_owners: Map.delete(state.resolved_owners, lease.model_ref)
+    }
+  end
+
+  defp reprobe_pending_resolutions(state, owner_pid) do
+    state.pending_resolutions
+    |> Enum.filter(fn {_model_ref, pending} -> pending.owner_pid == owner_pid end)
+    |> Enum.reduce(state, fn {model_ref, pending}, acc ->
+      if proven_exit?(pending),
+        do: resolve_custody(acc, model_ref, pending.owner_pid),
+        else: acc
+    end)
+  end
+
+  defp proven_exit?(%{os_identity: os_identity, os_pid: os_pid}) do
+    is_binary(os_identity) and WorkerProcessLifecycle.os_process_status(os_pid) == :not_alive
+  end
+
+  defp resolve_custody(state, model_ref, owner_pid) do
+    %{
+      state
+      | pending_resolutions: Map.delete(state.pending_resolutions, model_ref),
+        resolved_owners: Map.put(state.resolved_owners, model_ref, owner_pid)
+    }
+  end
+
+  defp supersede_custody(state, model_ref) do
+    %{
+      state
+      | pending_resolutions: Map.delete(state.pending_resolutions, model_ref),
+        resolved_owners: Map.delete(state.resolved_owners, model_ref)
+    }
+  end
+
+  defp owner_resolved?(state, owner_pid) do
+    Enum.any?(state.resolved_owners, fn {_key, owner} -> owner == owner_pid end) and
+      not Enum.any?(state.leases, fn {_ref, lease} -> lease.owner_pid == owner_pid end) and
+      not Enum.any?(state.beam_owners, fn {_ref, {owner, _key}} -> owner == owner_pid end)
+  end
+
+  defp custody_evidence(state, owner_pid) do
+    case owned_runtime_process(state, owner_pid) do
+      nil -> if owner_resolved?(state, owner_pid), do: :resolved, else: :unknown
+      os_pid -> {:runtime_process, os_pid}
+    end
+  end
+
+  defp owned_runtime_process(state, owner_pid) do
+    state.leases
+    |> Stream.map(fn {_ref, lease} -> lease end)
+    |> Stream.concat(Map.values(state.pending_resolutions))
+    |> Enum.find_value(fn record ->
+      if record.owner_pid == owner_pid and is_binary(record.os_identity), do: record.os_pid
+    end)
   end
 
   defp log_orphan_reap(lease, {:owner_down, reason}) do
@@ -305,6 +467,40 @@ defmodule Orchard.Node.RuntimeProcessReaper do
   end
 
   defp log_orphan_reap(_lease, _reason), do: :ok
+
+  defp watch_after_reaper_check(owner_pid, os_pid, meta) do
+    case prewatch_custody_proof(os_pid) do
+      :ok ->
+        call_reaper({:watch, owner_pid, os_pid, meta})
+
+      {:error, :process_not_alive} ->
+        record_prewatch_nonexistence(owner_pid, meta)
+
+      {:error, :process_status_unavailable} = error ->
+        error
+    end
+  end
+
+  defp record_prewatch_nonexistence(owner_pid, meta) do
+    case call_reaper({:record_prewatch_nonexistence, owner_pid, Map.get(meta, :model_ref)}) do
+      :ok -> {:error, :process_not_alive}
+      {:error, :reaper_unavailable} = error -> error
+    end
+  end
+
+  defp call_reaper(request) do
+    GenServer.call(__MODULE__, request)
+  catch
+    :exit, _reason -> {:error, :reaper_unavailable}
+  end
+
+  defp prewatch_custody_proof(os_pid) do
+    case WorkerProcessLifecycle.os_process_status(os_pid) do
+      :alive -> :ok
+      :not_alive -> {:error, :process_not_alive}
+      :unknown -> {:error, :process_status_unavailable}
+    end
+  end
 
   defp lease_identity(meta) do
     case Map.get(meta, :os_identity) do

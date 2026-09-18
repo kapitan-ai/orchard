@@ -811,8 +811,9 @@ Runtime Endpoint disconnect cleanup is best-effort and does not define the dispa
 _Avoid_: Scheduler Decision
 
 **Circuit Breaker**:
-A scheduler suppression rule for repeatedly failing nodes or placements.
-_Avoid_: Node health
+A Controller-owned scheduler suppression rule for repeatedly failing nodes or placements.
+It is separate from the Node-owned placement crash breaker that stops automatic worker restarts for one exact placement under `SPEC.md` §12.2; clearing one never clears the other.
+_Avoid_: Node health, placement crash breaker
 
 **Queue**:
 A controller-owned wait path used after Admission when work cannot be immediately granted because live Runtime Endpoint, node, or placement capacity is unavailable, placement or aggregate runtime concurrency is exhausted, or tenant active concurrency is exhausted.

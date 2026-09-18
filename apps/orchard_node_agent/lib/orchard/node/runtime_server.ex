@@ -16,11 +16,13 @@ defmodule Orchard.Node.RuntimeServer do
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusRequest
   alias Orchard.Cluster.V1.UnloadModelRequest
+  alias Orchard.ClusterManagement.ReasonCodes
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
   alias Orchard.Node
   alias Orchard.Node.Status
   alias Orchard.SentryContext
 
+  @worker_recovery_reason_atoms ReasonCodes.worker_recovery_reason_atoms()
   @known_failure_reasons MapSet.new([
                            :model_busy,
                            :model_not_loaded,
@@ -127,6 +129,10 @@ defmodule Orchard.Node.RuntimeServer do
     :ok
   end
 
+  defp normalize_failure_reason({:worker_recovery_refused, reason})
+       when reason in @worker_recovery_reason_atoms,
+       do: {"model_busy", "placement recovery prevents execution"}
+
   defp normalize_failure_reason(:model_busy),
     do: {"model_busy", "model already has an active request"}
 
@@ -147,6 +153,10 @@ defmodule Orchard.Node.RuntimeServer do
 
   @doc false
   @spec safe_failure_reason_code(term()) :: String.t()
+  def safe_failure_reason_code({:worker_recovery_refused, reason})
+      when reason in @worker_recovery_reason_atoms,
+      do: "model_busy"
+
   def safe_failure_reason_code(reason) when is_atom(reason) do
     if MapSet.member?(@known_failure_reasons, reason) do
       Atom.to_string(reason)

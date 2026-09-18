@@ -146,6 +146,26 @@ loopback_listen_host? = fn host ->
   end
 end
 
+recovery_control_host! = fn host ->
+  ip =
+    case :inet.parse_ipv4strict_address(String.to_charlist(host)) do
+      {:ok, {0, 0, 0, 0}} ->
+        raise "ORCHARD_WORKER_RECOVERY_CONTROL_HOST must not be a wildcard address, got: #{inspect(host)}"
+
+      {:ok, ip} ->
+        ip
+
+      {:error, _reason} ->
+        raise "ORCHARD_WORKER_RECOVERY_CONTROL_HOST requires an IPv4 literal, got: #{inspect(host)}"
+    end
+
+  if loopback_ip?.(ip) or private_ipv4?.(ip) do
+    host
+  else
+    raise "ORCHARD_WORKER_RECOVERY_CONTROL_HOST must be a loopback or private IPv4 address, got: #{inspect(host)}"
+  end
+end
+
 parse_trusted_proxy_cidr! = fn cidr ->
   with [ip_string, prefix_string] <- String.split(cidr, "/", parts: 2),
        {:ok, ip_tuple} <- :inet.parse_address(String.to_charlist(ip_string)),
@@ -1357,6 +1377,21 @@ if config_env() == :prod do
                  cors_origins: cors_origins
                ] ++ check_origin_config ++ ca_endpoint_config
 
+      recovery_control_host =
+        env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") || "127.0.0.1"
+
+      recovery_control_port =
+        case env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") do
+          nil -> 50_073
+          port -> env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)
+        end
+
+      config :orchard_controller, :worker_recovery,
+        control_listener: [
+          host: recovery_control_host!.(recovery_control_host),
+          port: recovery_control_port
+        ]
+
     "orchard_cli" ->
       database_url = System.get_env("DATABASE_URL")
 
@@ -1380,10 +1415,27 @@ if config_env() == :prod do
       node_runtime_endpoint_transport =
         runtime_endpoint_transport.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT", :beam)
 
+      worker_recovery_control_enabled? =
+        env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", true)
+
       grpc_security =
         if node_runtime_endpoint_transport == :grpc,
           do: :mutual_tls,
           else: :plaintext_compatibility
+
+      worker_recovery_control_runtime =
+        if worker_recovery_control_enabled? do
+          endpoint =
+            env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") || "127.0.0.1:50073"
+
+          [
+            worker_recovery_control_enabled: true,
+            worker_recovery_control_endpoint: endpoint,
+            runtime_grpc_listener_enabled: node_runtime_endpoint_transport == :grpc
+          ]
+        else
+          []
+        end
 
       node_agent_listen_host = System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
 
@@ -1410,7 +1462,7 @@ if config_env() == :prod do
         raise "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR requires BEAM Runtime Endpoint transport"
       end
 
-      if grpc_security == :plaintext_compatibility and
+      if grpc_security == :plaintext_compatibility and not worker_recovery_control_enabled? and
            not loopback_listen_host?.(node_agent_listen_host) do
         raise "ORCHARD_NODE_AGENT_LISTEN_HOST=#{node_agent_listen_host} exposes an unauthenticated plaintext gRPC runtime endpoint on a non-loopback interface; set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc for mutual TLS or bind the node agent to a loopback host"
       end
@@ -1603,6 +1655,7 @@ if config_env() == :prod do
                 )
               )
           )
+          |> Keyword.merge(worker_recovery_control_runtime)
 
     _other_release ->
       :ok
@@ -1694,5 +1747,55 @@ if config_env() == :dev do
       private_ipv4: membership_private_ipv4,
       scope: membership_scope,
       source_dev_address_policy: source_dev_address_policy
+  end
+
+  # SPEC §12.2 uses registered identities, never Node database credentials.
+  # All-in-one source dev defaults to a loopback-only recovery listener. Split
+  # roles remain explicit because a loopback Controller is not their authority.
+  default_recovery_profile? = source_dev_role == :all_in_one
+
+  recovery_control_enabled? =
+    source_dev_role in [:all_in_one, :node_agent] and
+      env_bool.("ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED", default_recovery_profile?)
+
+  if recovery_control_enabled? do
+    endpoint =
+      env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT") ||
+        if(default_recovery_profile?,
+          do: "127.0.0.1:50073",
+          else:
+            raise(
+              "ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT is required for split-role worker recovery control"
+            )
+        )
+
+    config :orchard_node_agent, :runtime,
+      worker_recovery_control_enabled: true,
+      worker_recovery_control_endpoint: endpoint,
+      runtime_grpc_listener_enabled: runtime_endpoint_transport == :grpc
+  end
+
+  recovery_listener_host =
+    env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_HOST") ||
+      if(default_recovery_profile?, do: "127.0.0.1")
+
+  if recovery_listener_host do
+    recovery_listener_port =
+      case env_optional_string.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT") do
+        nil when default_recovery_profile? ->
+          50_073
+
+        nil ->
+          raise "ORCHARD_WORKER_RECOVERY_CONTROL_PORT is required with ORCHARD_WORKER_RECOVERY_CONTROL_HOST"
+
+        port ->
+          env_port.("ORCHARD_WORKER_RECOVERY_CONTROL_PORT", port)
+      end
+
+    config :orchard_controller, :worker_recovery,
+      control_listener: [
+        host: recovery_control_host!.(recovery_listener_host),
+        port: recovery_listener_port
+      ]
   end
 end

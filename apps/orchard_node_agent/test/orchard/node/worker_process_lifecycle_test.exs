@@ -9,6 +9,27 @@ defmodule Orchard.Node.WorkerProcessLifecycleTest do
   @missing_pid 2_147_483_647
   @stale_identity "0 Thu Jan 1 00:00:00 1970"
 
+  # SPEC.md §12.2: proven_exit?/1 and prior_runtime_exited?/1 resolve custody only
+  # on :not_alive, so that verdict must not depend on the operating system
+  # emitting an English diagnostic.
+  test "SPEC §12.2 proven exit does not depend on localized kill diagnostics" do
+    dir = Path.join(System.tmp_dir!(), "oc-kill-stub-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    stub = Path.join(dir, "kill")
+    File.write!(stub, "#!/bin/sh\necho 'Aucun processus de ce type' 1>&2\nexit 1\n")
+    File.chmod!(stub, 0o755)
+
+    previous_path = System.get_env("PATH")
+    System.put_env("PATH", dir <> ":" <> previous_path)
+
+    on_exit(fn ->
+      System.put_env("PATH", previous_path)
+      File.rm_rf!(dir)
+    end)
+
+    assert WorkerProcessLifecycle.os_process_status(@missing_pid) == :not_alive
+  end
+
   test "TERM delivery succeeds for a live resistant child" do
     root = Path.join("/tmp", "oc-signal-#{System.unique_integer([:positive, :monotonic])}")
     marker_path = Path.join(root, "events.log")
@@ -99,6 +120,7 @@ defmodule Orchard.Node.WorkerProcessLifecycleTest do
     assert log =~ "worker custody identity unavailable"
     assert log =~ "os_pid=#{os_pid}"
     assert WorkerProcessLifecycle.os_process_alive?(os_pid)
+    assert :not_alive = WorkerProcessLifecycle.os_process_status(@missing_pid)
     assert {:error, :identity_unavailable} = WorkerProcessLifecycle.process_identity(@missing_pid)
   end
 
