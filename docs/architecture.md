@@ -240,7 +240,7 @@ See `SPEC.md` §4.6.2 and `docs/decisions/0013-controller-dispatch-capacity-auth
 
 Runtime Endpoint and worker runtime contracts are separate:
 
-- `proto/cluster/v1/` describes the current controller ↔ node-agent gRPC runtime-operations compatibility transport plus the certificate-authenticated `ControllerPeerGrantService` BEAM Peer Grant delivery control path.
+- `proto/cluster/v1/` describes the current controller ↔ node-agent gRPC runtime-operations compatibility transport, the certificate-authenticated `ControllerPeerGrantService` BEAM Peer Grant delivery control path, and the certificate-authenticated `ControllerWorkerRecoveryService` and `NodeWorkerRecoveryService` SPEC §12.2 worker-recovery control paths.
 - Runtime Endpoint domain structs describe the Controller-facing scheduler and dispatch contract.
 - `Orchard.RuntimeEndpoint.BeamClient` and `Orchard.Node.RuntimeEndpoint` provide the split-role source-dev default first-party BEAM adapter and Node Agent facade.
 - `proto/orchard/worker/v1/` owns the provider-neutral node-agent ↔ worker protocol source, descriptor golden, and conformance fixtures.

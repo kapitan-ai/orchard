@@ -168,7 +168,9 @@ When running from a source checkout (`make dev`, `mise exec -- bin/dev`, or
 - Node-agent gRPC listens on `127.0.0.1:50071` (avoids packaged BEAM on 50061)
 - Public `/v1/*` API routes require `Authorization: Bearer <api-token>`
 - CORS is disabled (empty allowlist in `config/dev.exs`)
-- No TLS setup is required
+- No TLS setup is required for the surfaces above, but model loading still needs the
+  registered identity material that SPEC §12.2 recovery control uses; see
+  [Worker recovery control](#worker-recovery-control)
 
 All `curl` examples in this document use plain HTTP because they target the source dev controller.
 API examples assume `ORCHARD_API_KEY` contains a tenant-direct API Token or a service-account-owned API Token whose API Client has the `inference_client` Access Level for the Workspace.

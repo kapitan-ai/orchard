@@ -116,6 +116,7 @@ Set up https://github.com/kapitan-ai/orchard on this Mac.
 Clone the repository if needed, read AGENTS.md, docs/tooling.md, and docs/local-dev.md, and inspect the machine and any existing Orchard installation.
 Install and configure prerequisites using the pinned toolchain and repository setup, including the optional MLX dependencies.
 Start source development in an interactive session using the default single-node runtime.
+Read the SPEC section 12.2 worker recovery control prerequisites in docs/local-dev.md before loading a model, and report a load refused with placement_recovery_required as that fail-closed gate rather than a setup error.
 Prepare a compatible model bundle, create a Workspace and API token, grant explicit model access, and verify a real API response.
 If testing the Playground, grant Playground access explicitly.
 Keep credentials private, preserve existing data, and report the Console URL plus the commands to stop and restart.
