@@ -142,6 +142,8 @@ The Console is available at `http://localhost:4000` and the source-development N
 The extra `uv sync` installs the optional MLX worker dependencies needed for real inference on the Mac.
 
 Starting the service does not make it inference-ready.
+SPEC §12.2 recovery control gates model residency on every profile, including this quick start: the Node Agent reads a placement's recovery checkpoint before it admits a load, so an enrolled Node identity and a reachable Controller recovery listener are prerequisites for any model load.
+Without them every load is refused with `placement_recovery_required`, which is fail-closed rather than a bug; see [Worker recovery control](docs/local-dev.md#worker-recovery-control).
 This all-in-one quick start uses Orchard's explicitly unmanaged source-development compatibility target while trusted admitted or active Node inventory is empty.
 That local-only fallback does not create production Node inventory or grant production scheduling authority.
 In the running IEx session, import and activate a Model Bundle, create a Workspace and direct API Token, then grant the Workspace access to the model.

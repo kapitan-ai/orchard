@@ -37,3 +37,45 @@ Pre-attempt recovery rejection SHALL remain an eligibility outcome under existin
 - **WHEN** operator recovery clears the Node §12.2 state
 - **THEN** an existing Controller §5.10 suppression remains effective
 - **AND** clearing §5.10 does not authorize a Node with open §12.2 state to load
+
+## MODIFIED Requirements
+
+### Requirement: Production scheduling does not probe status inline
+Production candidate construction and final dispatch revalidation SHALL use durable
+observations and current Controller-owned facts without status-probing Runtime Endpoints on
+the production scheduling path.
+Database unavailability, incomplete reads, or absence of usable facts MUST NOT use stale
+process memory or the unmanaged compatibility branch.
+Initial allocation/legacy-claim acquisition and final acceptance-gated ADR 0013
+revalidation SHALL remain mandatory.
+Worker recovery admission SHALL decide from the durable observation and its placement
+projections on that path.
+A placement that is not loaded holds no recovery state to resolve, so a fresh authenticated
+recovery epoch SHALL admit it, while a loaded placement without exact current-epoch evidence
+SHALL remain refused.
+Only the bounded unmanaged-compatibility wave MAY resolve a cold placement with a targeted
+read-only recovery query, and a transport that cannot answer that query SHALL fall back to
+epoch-only evidence rather than be treated as unrecovered.
+This requirement refines `SPEC.md` §4.6.2, §5.9, and §12.2.3.
+
+#### Scenario: Production snapshot is available
+- **WHEN** fresh intersected production candidates exist
+- **THEN** MultiNode filters and ranks them without a Runtime Endpoint status call
+
+#### Scenario: Facts change after selection
+- **WHEN** newer observation or Controller facts remove authority before execution
+- **THEN** final revalidation refuses `ExecuteInference`
+- **AND** pre-acceptance authority is released exactly once under existing retry/queue rules
+
+#### Scenario: Cold production candidate is admitted without a recovery query
+- **WHEN** a production candidate reports a fresh recovery epoch and no loaded placement for
+  the requested model
+- **THEN** recovery admission accepts it with no Runtime Endpoint status or inspection call
+- **AND** a loaded placement lacking exact current-epoch evidence is still refused without a
+  reprobe
+
+#### Scenario: Uninspectable transport does not imply unrecovered state
+- **WHEN** the bounded unmanaged-compatibility wave reaches a transport that cannot answer a
+  recovery query
+- **THEN** admission uses the authenticated epoch alone
+- **AND** the candidate is not refused for missing recovery evidence

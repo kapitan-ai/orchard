@@ -71,3 +71,74 @@ A Node SHALL refuse ordinary ensure and execution for backoff, restarting, open,
 - **WHEN** recovery refusal is accompanied by unresolved identity or runtime occupancy
 - **THEN** existing uncertainty classification and cancellation/deadline precedence remain authoritative
 - **AND** the Controller does not falsely report resolved capacity rejection or release
+
+## MODIFIED Requirements
+
+### Requirement: Versioned bounded heartbeat candidate payload
+`node_heartbeats.payload` SHALL use Controller-produced schema version `1` with a closed
+allowlist.
+The row columns SHALL own canonical trusted `node_id` and `observed_at`.
+The JSON envelope SHALL contain `schema_version`, `validity`, and optional
+`invalid_reason`.
+Allowed observation keys SHALL be `endpoint_id`, `target`, `availability`,
+`worker_state`, `aggregate_active_request_count`, `aggregate_max_concurrency`,
+`aggregate_capacity_evidence`, `placements`, `runtime_memory_budgets`,
+`runtime_prefix_cache_statuses`, `supports_prompt_token_ids`, and
+`worker_recovery_epoch`.
+Nested keys SHALL use the existing `Target`, `ModelRef`, `Placement`,
+`PlacementCapacity`, `MemoryBudget`, and `PrefixCacheStatus` vocabulary described by
+ADR 0017, extended by the `worker_recovery` placement projection defined for
+`SPEC.md` §12.2.3.
+`worker_recovery_epoch` SHALL be the Node's current authenticated recovery epoch
+string, and the nested `worker_recovery` projection SHALL carry exact-key
+identity, epoch, revision, state, hydration validity, eligibility, and refusal
+reason.
+Neither field is a derived eligibility boolean: admission SHALL still be decided
+by the Scheduler from this evidence.
+This requirement refines `SPEC.md` §4.6.1 and §8.
+
+Maps and lists MUST be capped at 40 entries, nesting at depth 4, and otherwise-unbounded
+strings at 512 bytes.
+Existing narrower domain bounds and numeric/status vocabularies MUST take precedence.
+The encoded payload MUST be capped by validated
+`node_heartbeat_payload_max_bytes`, default 262144 bytes.
+Memory-budget entries SHALL use `MemoryBudget.normalize/1`.
+Prefix-cache entries SHALL use `PrefixCacheStatus.normalize/1` and MUST NOT persist raw
+`prefix_cache_fingerprints`.
+
+An unknown schema, malformed required envelope, or payload still over the byte cap after
+normalization SHALL produce a minimal versioned `validity = "invalid"` envelope with a
+stable `invalid_reason`.
+Such a row MUST NOT produce a positive scheduler candidate.
+Unknown fields SHALL be dropped.
+
+The payload MUST NOT contain credentials, certificate/API secrets, DSNs, prompt or response
+bodies, raw tokens, tenant identifiers, raw prefix-cache fingerprint sets, raw
+metadata/diagnostics, local paths/evidence, tool session identifiers, Controller policy,
+Controller-accounted Allocation, quarantine, authority decisions, issue #128 acquirability,
+or any derived eligibility boolean.
+
+#### Scenario: Valid observation uses canonical bounded fields
+- **WHEN** an accepted observation contains supported candidate evidence
+- **THEN** Orchard persists only schema-version-1 allowlisted canonical fields
+- **AND** every structural, string, numeric, status, and total-byte bound is enforced
+
+#### Scenario: Oversize payload becomes invalid evidence
+- **WHEN** normalized JSON still exceeds `node_heartbeat_payload_max_bytes`
+- **THEN** Orchard commits a bounded minimal invalid envelope atomically with the Node and
+  aggregate capacity updates
+- **AND** candidate evaluation uses `dispatch_capacity_facts_unavailable`
+
+#### Scenario: Sensitive and raw fingerprint data is excluded
+- **WHEN** an observation contains prohibited fields or raw prefix-cache fingerprints
+- **THEN** those fields are not persisted
+- **AND** only sanitized prefix-cache status, fingerprint count, and warmth indicator may
+  remain
+
+#### Scenario: Recovery evidence travels inside the closed allowlist
+- **WHEN** an accepted observation reports a worker recovery epoch and per-placement
+  recovery projection
+- **THEN** Orchard persists both inside schema version `1` under the same entry, depth,
+  string, and byte bounds
+- **AND** a candidate snapshot read reproduces them without widening the allowlist to any
+  other new key
