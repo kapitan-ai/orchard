@@ -123,6 +123,12 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     def record_runtime_custody(_previous, owner_pid), do: "runtime-custody:#{inspect(owner_pid)}"
   end
 
+  defmodule ResolvedCustody do
+    defdelegate resolve_current(owner), to: Custody
+    defdelegate record_runtime_custody(previous, owner_pid), to: Custody
+    def resolve_prior_worker_ownership(_key, _custody), do: :resolved
+  end
+
   defmodule LoadingExitAdapter do
     defdelegate unload_model(state, opts), to: RuntimeAdapter.Unimplemented
     defdelegate get_status(state, opts), to: RuntimeAdapter.Unimplemented
@@ -254,6 +260,40 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
              ModelManager.recover_worker_placement(command(ctx, after_restart, "clear"))
 
     assert :sys.get_state(ModelManager).workers == %{}
+  end
+
+  test "SPEC §12.2.2 a graceful stop leaves an unresolved prior-epoch checkpoint intact", ctx do
+    assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
+             :PLACEMENT_STATE_LOADED
+
+    :ok = stop_supervised(ModelManager)
+    start_supervised!(ModelManager)
+    assert {:ok, %{state: "recovery_required"}} = inspect_key(ctx)
+    assert :sys.get_state(ModelManager).recovery[ctx.key].prior?
+    {:ok, before} = Checkpoints.read(checkpoint_key(ctx))
+    writes = length(Checkpoints.calls())
+
+    assert :ok = ModelManager.prepare_shutdown()
+
+    assert {:ok, ^before} = Checkpoints.read(checkpoint_key(ctx))
+    assert length(Checkpoints.calls()) == writes
+    assert :sys.get_state(ModelManager).recovery[ctx.key].prior?
+
+    :ok = stop_supervised(ModelManager)
+    start_supervised!(ModelManager)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(Node.runtime_config(), :worker_recovery_custody, ResolvedCustody)
+    )
+
+    assert {:ok, %{state: "recovery_required"} = evidence} = inspect_key(ctx)
+    assert evidence.owner_epoch == before.epoch
+    assert evidence.revision == before.revision
+
+    assert {:ok, %{state: "armed", eligible: true}} =
+             ModelManager.recover_worker_placement(command(ctx, evidence, "clear"))
   end
 
   test "SPEC §12.2 cold load checkpoints ownership before spawn and loaded before eligibility",

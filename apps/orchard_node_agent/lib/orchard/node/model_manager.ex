@@ -282,7 +282,10 @@ defmodule Orchard.Node.ModelManager do
 
     state =
       Enum.reduce(Map.keys(state.recovery), state, fn key, acc ->
-        stop_recovery_intent(acc, key, [:await_cleanup]) |> pump_recovery(key)
+        case acc.recovery[key] do
+          %{prior?: true} -> acc
+          _current_epoch -> stop_recovery_intent(acc, key, [:await_cleanup]) |> pump_recovery(key)
+        end
       end)
 
     state = cancel_all_inflight_loads(state, :reset)
@@ -747,7 +750,7 @@ defmodule Orchard.Node.ModelManager do
     resolved? =
       Enum.all?(state.recovery, fn {_key, entry} ->
         is_nil(entry.pending) and is_nil(entry.desired) and
-          entry.ownership["phase"] in ["resolved", "operator_terminated"]
+          (entry.prior? or entry.ownership["phase"] in ["resolved", "operator_terminated"])
       end)
 
     cond do

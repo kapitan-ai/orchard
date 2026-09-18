@@ -22,12 +22,14 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
       end
     end
 
-    def inspect_worker_recovery(connection, ref, _opts) do
+    def inspect_worker_recovery(connection, ref, opts) do
+      send(self(), {:recovery_deadline, :inspect, opts[:timeout]})
       send(self(), {:inspect_recovery, connection.node_id, ref})
       Process.get(:recovery_result)
     end
 
-    def recover_worker_placement(_connection, command, _opts) do
+    def recover_worker_placement(_connection, command, opts) do
+      send(self(), {:recovery_deadline, command.action, opts[:timeout]})
       send(self(), {:recover, command})
       Process.get(:recovery_result)
     end
@@ -197,6 +199,26 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     assert command.load_request.model_ref == ModelRef.new!(ctx.model.model_id, ctx.model.version)
     assert command.load_request.deadline_unix_ms > System.system_time(:millisecond)
     assert audit_actions() == ["worker_recovery.accepted", "worker_recovery.completed"]
+  end
+
+  test "SPEC §12.2 only a forced reload spends the model load budget on the endpoint", ctx do
+    configure(
+      :inference,
+      Keyword.merge(Application.get_env(:orchard_controller, :inference, []),
+        model_load_timeout_ms: 90_000
+      )
+    )
+
+    assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 200
+    assert_received {:recovery_deadline, :inspect, 2_000}
+
+    for action <- ["clear", "unload"] do
+      assert request(:post, ctx.path, ctx.token, body(action)).status == 200
+      assert_received {:recovery_deadline, ^action, 2_000}
+    end
+
+    assert request(:post, ctx.path, ctx.token, body("reload")).status == 200
+    assert_received {:recovery_deadline, "reload", 90_000}
   end
 
   test "clear and unload never build a load request", ctx do
