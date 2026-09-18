@@ -116,8 +116,8 @@ Set up https://github.com/kapitan-ai/orchard on this Mac.
 Clone the repository if needed, read AGENTS.md, docs/tooling.md, and docs/local-dev.md, and inspect the machine and any existing Orchard installation.
 Install and configure prerequisites using the pinned toolchain and repository setup, including the optional MLX dependencies.
 Start source development in an interactive session using the default single-node runtime.
-Read the SPEC section 12.2 worker recovery control prerequisites in docs/local-dev.md before loading a model, and report a load refused with placement_recovery_required as that fail-closed gate rather than a setup error.
-Prepare a compatible model bundle, create a Workspace and API token, grant explicit model access, and verify a real API response.
+Read the SPEC section 12.2 worker recovery control prerequisites in docs/local-dev.md first: this plain-HTTP single-node profile cannot enroll a Node identity, so every model load is refused with placement_recovery_required.
+Prepare a compatible model bundle, create a Workspace and API token, grant explicit model access, then run the inference check and report that refusal as the fail-closed gate rather than working around it.
 If testing the Playground, grant Playground access explicitly.
 Keep credentials private, preserve existing data, and report the Console URL plus the commands to stop and restart.
 ```
@@ -143,8 +143,11 @@ The Console is available at `http://localhost:4000` and the source-development N
 The extra `uv sync` installs the optional MLX worker dependencies needed for real inference on the Mac.
 
 Starting the service does not make it inference-ready.
-SPEC §12.2 recovery control gates model residency on every profile, including this quick start: the Node Agent reads a placement's recovery checkpoint before it admits a load, so an enrolled Node identity and a reachable Controller recovery listener are prerequisites for any model load.
-Without them every load is refused with `placement_recovery_required`, which is fail-closed rather than a bug; see [Worker recovery control](docs/local-dev.md#worker-recovery-control).
+SPEC §12.2 recovery control gates model residency on every profile, including this quick start: the Node Agent reads a placement's recovery checkpoint over an identity-bound path before it admits a load, so an enrolled Node identity and a reachable Controller recovery listener are prerequisites for any model load.
+This all-in-one quick start cannot meet that prerequisite and therefore cannot currently load a model.
+Enrollment bundle issuance requires a configured Controller HTTPS endpoint and its public CA certificate, and the quick start runs the Controller on plain HTTP on localhost, so no Node identity can be enrolled here.
+Every load is refused with `placement_recovery_required`, which is the fail-closed gate rather than a bug or a local setup mistake.
+Reaching a loaded model needs a profile with Controller HTTPS configured; see [Worker recovery control](docs/local-dev.md#worker-recovery-control) and [Node enrollment](docs/local-dev.md#two-node-source-dev-cluster-testing).
 This all-in-one quick start uses Orchard's explicitly unmanaged source-development compatibility target while trusted admitted or active Node inventory is empty.
 That local-only fallback does not create production Node inventory or grant production scheduling authority.
 In the running IEx session, import and activate a Model Bundle, create a Workspace and direct API Token, then grant the Workspace access to the model.
