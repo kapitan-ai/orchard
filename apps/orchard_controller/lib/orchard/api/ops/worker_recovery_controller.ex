@@ -10,6 +10,7 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
 
   @fields ~w(version action expected_epoch expected_revision command_id reason)
   @bounded_read_timeout_ms 2_000
+  @recovery_command_margin_ms 15_000
   @evidence_fields ~w(key epoch owner_epoch revision state hydrated eligible reason)a
 
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -117,7 +118,7 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
     with {:ok, connection} <- client.connect(target) do
       try do
         client
-        |> apply(operation, [connection, input, [timeout: operation_timeout_ms(input)]])
+        |> apply(operation, [connection, input, [timeout: operation_timeout_ms(operation)]])
         |> validate_evidence(target.node_id, input)
       after
         disconnect_after_operation(client, connection)
@@ -127,10 +128,10 @@ defmodule Orchard.API.Ops.WorkerRecoveryController do
     :exit, _reason -> {:error, :unavailable}
   end
 
-  defp operation_timeout_ms(%{load_request: %Operation.EnsureModelLoadedRequest{}}),
-    do: Inference.model_load_timeout_ms()
+  defp operation_timeout_ms(:inspect_worker_recovery), do: @bounded_read_timeout_ms
 
-  defp operation_timeout_ms(_input), do: @bounded_read_timeout_ms
+  defp operation_timeout_ms(:recover_worker_placement),
+    do: Inference.model_load_timeout_ms() + @recovery_command_margin_ms
 
   # Transport cleanup cannot change the acknowledged operation outcome.
   defp disconnect_after_operation(client, connection) do

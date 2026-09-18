@@ -25,13 +25,19 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     def inspect_worker_recovery(connection, ref, opts) do
       send(self(), {:recovery_deadline, :inspect, opts[:timeout]})
       send(self(), {:inspect_recovery, connection.node_id, ref})
-      Process.get(:recovery_result)
+      reply_within(opts[:timeout])
     end
 
     def recover_worker_placement(_connection, command, opts) do
       send(self(), {:recovery_deadline, command.action, opts[:timeout]})
       send(self(), {:recover, command})
-      Process.get(:recovery_result)
+      reply_within(opts[:timeout])
+    end
+
+    defp reply_within(deadline) do
+      if Process.get(:recovery_reply_after_ms, 0) > deadline,
+        do: {:error, :unavailable},
+        else: Process.get(:recovery_result)
     end
   end
 
@@ -201,7 +207,8 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     assert audit_actions() == ["worker_recovery.accepted", "worker_recovery.completed"]
   end
 
-  test "SPEC §12.2 only a forced reload spends the model load budget on the endpoint", ctx do
+  test "SPEC §12.2 inspection stays bounded while every recovery command covers the node budget",
+       ctx do
     configure(
       :inference,
       Keyword.merge(Application.get_env(:orchard_controller, :inference, []),
@@ -212,13 +219,20 @@ defmodule Orchard.API.Ops.WorkerRecoveryControllerTest do
     assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 200
     assert_received {:recovery_deadline, :inspect, 2_000}
 
-    for action <- ["clear", "unload"] do
+    for action <- ["clear", "unload", "reload"] do
       assert request(:post, ctx.path, ctx.token, body(action)).status == 200
-      assert_received {:recovery_deadline, ^action, 2_000}
+      assert_received {:recovery_deadline, ^action, 105_000}
     end
+  end
 
-    assert request(:post, ctx.path, ctx.token, body("reload")).status == 200
-    assert_received {:recovery_deadline, "reload", 90_000}
+  test "SPEC §12.2 a recovery command replying after the read bound still audits as completed",
+       ctx do
+    Process.put(:recovery_reply_after_ms, 2_300)
+
+    assert request(:get, ctx.path <> "?version=exact-v1", ctx.token).status == 503
+
+    assert request(:post, ctx.path, ctx.token, body("unload")).status == 200
+    assert audit_actions() == ["worker_recovery.accepted", "worker_recovery.completed"]
   end
 
   test "clear and unload never build a load request", ctx do
