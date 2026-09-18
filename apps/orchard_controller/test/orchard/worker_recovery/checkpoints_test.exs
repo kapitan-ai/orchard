@@ -1,7 +1,6 @@
 defmodule Orchard.WorkerRecovery.CheckpointsTest do
   use Orchard.DataCase, async: false
 
-  alias Orchard.BeamPeerGrants
   alias Orchard.Models.Model
   alias Orchard.Node.{ModelManager, WorkerRecoveryCheckpointClient}
   alias Orchard.Node.Supervisor, as: NodeSupervisor
@@ -200,7 +199,7 @@ defmodule Orchard.WorkerRecovery.CheckpointsTest do
 
     start_supervised!(
       {GRPC.Server.Supervisor,
-       endpoint: BeamPeerGrants.ControlEndpoint,
+       endpoint: Orchard.WorkerRecovery.ControlEndpoint,
        port: port,
        start_server: true,
        adapter_opts: [ip: {127, 0, 0, 1}, cred: credential]}
