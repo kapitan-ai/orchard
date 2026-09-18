@@ -3,9 +3,12 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   Exact-placement admission evidence for SPEC §12.2, independent of §5.10 breakers.
 
   Status supplies `worker_recovery_epoch`; matching placements supply
-  `worker_recovery`. The optional two-argument `worker_recovery_inspector`
-  receives a target and runtime ModelRef and must return authenticated exact-key
-  evidence without loading. Missing loaded evidence never falls back to inspection.
+  `worker_recovery`. Admission decides from that durable evidence alone: the
+  accepted scheduler requirement keeps production candidate construction and
+  final revalidation free of inline Runtime Endpoint status probes, so missing
+  evidence never triggers a recovery query here. A placement that is not loaded
+  has no recovery state to resolve, so a fresh authenticated epoch admits it; a
+  loaded placement without exact evidence stays fail-closed.
   """
 
   require Logger
@@ -29,9 +32,30 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
 
   def evidence(_epoch, _projection), do: {:error, @unknown}
 
-  @doc "Checks an observation before ranking; only cold missing evidence may be inspected."
-  @spec check(term(), map(), map(), keyword()) :: :ok | {:error, atom()}
-  def check(target, observation, model_ref, opts \\ []) do
+  @doc """
+  Checks an observation before ranking using durable evidence only.
+
+  The accepted scheduler requirement keeps production candidate construction and
+  final revalidation free of inline Runtime Endpoint probes, so absent evidence
+  never triggers a recovery query here.
+  """
+  @spec check(term(), map(), map()) :: :ok | {:error, atom()}
+  def check(target, observation, model_ref) do
+    do_check(target, observation, model_ref, :deny, [])
+  end
+
+  @doc """
+  Checks an observation on the bounded unmanaged-compatibility wave.
+
+  That wave is the one accepted exception to the no-inline-probe rule, so a cold
+  placement may be resolved with a targeted authenticated recovery query.
+  """
+  @spec check_with_inspection(term(), map(), map(), keyword()) :: :ok | {:error, atom()}
+  def check_with_inspection(target, observation, model_ref, opts) do
+    do_check(target, observation, model_ref, :allow, opts)
+  end
+
+  defp do_check(target, observation, model_ref, inspection, opts) do
     epoch = value(observation, :worker_recovery_epoch)
     runtime_ref = ModelRef.new!(model_ref.model_id, model_ref.version)
 
@@ -43,9 +67,14 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
       target = %{target | node_id: node_id}
 
       case matching_placements(observation, runtime_ref) do
-        [] -> inspect_evidence(target, runtime_ref, epoch, opts)
-        [placement] -> placement_evidence(target, runtime_ref, epoch, placement, opts)
-        _conflicting -> {:error, @unknown}
+        [] ->
+          cold_or_inspect(target, runtime_ref, epoch, inspection, opts)
+
+        [placement] ->
+          placement_evidence(target, runtime_ref, epoch, placement)
+
+        _conflicting ->
+          {:error, @unknown}
       end
     else
       _invalid -> {:error, @unknown}
@@ -72,28 +101,35 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
     end
   end
 
-  defp placement_evidence(target, model_ref, epoch, placement, opts) do
+  # A placement the Node already reports is durable evidence in itself: absent or
+  # unloaded recovery state resolves from it without a reprobe, which the
+  # accepted "fails closed without reprobe" behavior requires.
+  defp placement_evidence(target, model_ref, epoch, placement) do
     case value(placement, :worker_recovery) do
       nil ->
         if Placement.loaded?(placement),
           do: {:error, @unknown},
-          else: inspect_evidence(target, model_ref, epoch, opts)
+          else: cold_evidence(epoch)
 
       projection ->
         exact_evidence(target, model_ref, epoch, projection)
     end
   end
 
+  defp cold_or_inspect(target, model_ref, epoch, :allow, opts),
+    do: inspect_evidence(target, model_ref, epoch, opts)
+
+  defp cold_or_inspect(_target, _model_ref, epoch, :deny, _opts), do: cold_evidence(epoch)
+
+  # SPEC.md §12.2: a placement that is not loaded holds no recovery state, so a
+  # fresh authenticated epoch admits it without a query.
+  defp cold_evidence(epoch) when is_binary(epoch) and epoch != "", do: :ok
+  defp cold_evidence(_epoch), do: {:error, @unknown}
+
   defp inspect_evidence(target, model_ref, epoch, opts) when is_binary(epoch) and epoch != "" do
-    inspector = Keyword.get(opts, :worker_recovery_inspector)
-
-    result =
-      if is_function(inspector, 2),
-        do: inspector.(target, model_ref),
-        else: inspect_endpoint(target, model_ref, opts)
-
-    case result do
+    case inspect_endpoint(target, model_ref, opts) do
       {:ok, projection} -> exact_evidence(target, model_ref, epoch, projection)
+      :inspection_unsupported -> cold_evidence(epoch)
       _unavailable -> {:error, @unknown}
     end
   end
@@ -101,6 +137,13 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   defp inspect_evidence(_target, _model_ref, _epoch, _opts), do: {:error, @unknown}
 
   defp inspect_endpoint(target, model_ref, opts) do
+    case Keyword.get(opts, :worker_recovery_inspector) do
+      inspector when is_function(inspector, 2) -> inspector.(target, model_ref)
+      _absent -> inspect_client(target, model_ref, opts)
+    end
+  end
+
+  defp inspect_client(target, model_ref, opts) do
     client = Keyword.get(opts, :status_client, Inference.runtime_endpoint_client())
 
     if Code.ensure_loaded?(client) and function_exported?(client, :inspect_worker_recovery, 3) do
@@ -116,19 +159,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
         end
       end
     else
-      {:error, @unknown}
-    end
-  end
-
-  defp exact_evidence(target, model_ref, epoch, projection) do
-    key = value(projection, :key)
-
-    if value(key, :node_id) == target.node_id and
-         value(key, :model_id) == model_ref.model_id and
-         value(key, :version) == model_ref.version do
-      evidence(epoch, projection)
-    else
-      {:error, @unknown}
+      :inspection_unsupported
     end
   end
 
@@ -143,6 +174,18 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
     _kind, _reason ->
       Logger.warning("Recovery inspection disconnect did not complete")
       :ok
+  end
+
+  defp exact_evidence(target, model_ref, epoch, projection) do
+    key = value(projection, :key)
+
+    if value(key, :node_id) == target.node_id and
+         value(key, :model_id) == model_ref.model_id and
+         value(key, :version) == model_ref.version do
+      evidence(epoch, projection)
+    else
+      {:error, @unknown}
+    end
   end
 
   defp fresh?(observation) do

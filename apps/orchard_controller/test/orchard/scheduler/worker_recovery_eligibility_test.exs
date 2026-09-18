@@ -2,7 +2,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
   use ExUnit.Case, async: true
 
   alias Orchard.CanonicalRequest
-  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, Target}
+  alias Orchard.RuntimeEndpoint.{Observation, Placement, Target}
   alias Orchard.Scheduler.{MultiNode, SingleNode, WorkerRecoveryEligibility}
   alias Orchard.TestSupport.DispatchCapacityFixtures
 
@@ -15,30 +15,17 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
     def status(_target, _opts), do: {:ok, Process.get(:recovery_observation)}
   end
 
-  defmodule InspectClient do
-    def connect(target), do: {:ok, {:connected, target}}
+  # SPEC.md §12.2: a placement that is not loaded holds no recovery state, so a
+  # fresh authenticated epoch admits it. The accepted scheduler requirement keeps
+  # the production path free of inline status probes, so admission must not
+  # depend on any client being reachable.
+  test "SPEC §12.2 a cold placement set is admitted on a fresh epoch without probing" do
+    assert :ok = WorkerRecoveryEligibility.check(target(), observation(nil, []), @model)
 
-    def inspect_worker_recovery({:connected, target}, model_ref, _opts) do
-      send(self(), {:inspected, target.node_id, model_ref})
-      {:ok, Process.get(:inspection_result)}
-    end
+    cold_without_epoch = Map.put(observation(nil, []), :worker_recovery_epoch, nil)
 
-    def disconnect({:connected, _target}) do
-      send(self(), :disconnected)
-      raise "disconnect failed after completed inspection"
-    end
-  end
-
-  test "SPEC §12.2 cold inspection uses connection and cleanup is best effort" do
-    Process.put(:inspection_result, clean())
-
-    assert :ok =
-             WorkerRecoveryEligibility.check(target(), observation(nil, []), @model,
-               status_client: InspectClient
-             )
-
-    assert_received {:inspected, @node_id, %ModelRef{model_id: "recovery-model", version: "v1"}}
-    assert_received :disconnected
+    assert {:error, :worker_recovery_evidence_unavailable} =
+             WorkerRecoveryEligibility.check(target(), cold_without_epoch, @model)
   end
 
   test "SPEC §12.2 projection identity must match the exact Node, model and version" do
@@ -52,11 +39,6 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
 
       assert {:error, _} =
                WorkerRecoveryEligibility.check(target(), observation(projection), @model)
-
-      assert {:error, _} =
-               WorkerRecoveryEligibility.check(target(), observation(nil, []), @model,
-                 worker_recovery_inspector: fn _, _ -> {:ok, projection} end
-               )
     end
   end
 
@@ -80,39 +62,16 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
     assert {:error, _} = WorkerRecoveryEligibility.evidence(nil, clean())
   end
 
-  test "SPEC §12.2 all blocked states reject loaded evidence without inspection" do
+  test "SPEC §12.2 all blocked states reject loaded evidence" do
     for {state, reason} <- blocked_states() do
       projection = %{clean() | state: state, eligible: false, reason: reason}
 
       assert {:error, ^reason} =
-               WorkerRecoveryEligibility.check(target(), observation(projection), @model,
-                 worker_recovery_inspector: fn _, _ ->
-                   flunk("blocked evidence must not be replaced")
-                 end
-               )
+               WorkerRecoveryEligibility.check(target(), observation(projection), @model)
 
       assert {:error, _} =
                WorkerRecoveryEligibility.evidence("current", %{projection | eligible: true})
     end
-  end
-
-  test "SPEC §12.2 cold exact-key inspection is positive evidence, not absent fallback" do
-    cold = observation(nil, [])
-    assert {:error, _} = WorkerRecoveryEligibility.check(target(), cold, @model)
-
-    assert :ok =
-             WorkerRecoveryEligibility.check(target(), cold, @model,
-               worker_recovery_inspector: fn received_target, model_ref ->
-                 assert received_target == target()
-                 assert model_ref == ModelRef.new!("recovery-model", "v1")
-                 {:ok, clean()}
-               end
-             )
-
-    assert {:error, _} =
-             WorkerRecoveryEligibility.check(target(), cold, @model,
-               worker_recovery_inspector: fn _, _ -> {:ok, %{clean() | epoch: "old"}} end
-             )
   end
 
   test "SPEC §12.2 missing loaded, duplicate, malformed and old-epoch evidence fail closed" do
@@ -122,12 +81,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
           observation(:invalid),
           observation(clean()) |> Map.update!(:placements, &(&1 ++ &1))
         ] do
-      assert {:error, _} =
-               WorkerRecoveryEligibility.check(target(), status, @model,
-                 worker_recovery_inspector: fn _, _ ->
-                   flunk("must not replace conflicting loaded evidence")
-                 end
-               )
+      assert {:error, _} = WorkerRecoveryEligibility.check(target(), status, @model)
     end
   end
 
@@ -155,12 +109,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
       })
 
     assert :ok =
-             WorkerRecoveryEligibility.check(target(), blocked, %{@model | version: "v2"},
-               worker_recovery_inspector: fn _, ref ->
-                 assert ref.version == "v2"
-                 {:ok, %{clean() | key: %{clean().key | version: "v2"}}}
-               end
-             )
+             WorkerRecoveryEligibility.check(target(), blocked, %{@model | version: "v2"})
   end
 
   test "SPEC §12.2 single-node loaded gate rejects before capacity evaluation" do

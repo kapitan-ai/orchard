@@ -19,8 +19,30 @@ defmodule Orchard.Node.WorkerRecoveryCustody do
   @absent_boot "none"
   @exited "exited"
 
+  @doc """
+  Returns this host's boot identity.
+
+  The value cannot change during this OS process, and the 1 Hz cleanup re-probe
+  consults it for every unresolved placement, so a successful read is cached for
+  the lifetime of the process. A failed read is not cached, leaving a transient
+  failure retryable.
+  """
   @spec boot_identity() :: String.t() | nil
   def boot_identity do
+    case :persistent_term.get({__MODULE__, :boot_identity}, :absent) do
+      :absent -> cache_boot_identity(read_boot_identity())
+      cached -> cached
+    end
+  end
+
+  defp cache_boot_identity(identity) when is_binary(identity) do
+    :persistent_term.put({__MODULE__, :boot_identity}, identity)
+    identity
+  end
+
+  defp cache_boot_identity(identity), do: identity
+
+  defp read_boot_identity do
     case :os.type() do
       {:unix, :darwin} ->
         case System.cmd("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"],

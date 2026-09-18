@@ -37,14 +37,21 @@ defmodule Orchard.Node.WorkerProcessLifecycle do
   def os_process_status(os_pid) when is_integer(os_pid) and os_pid > 0 do
     case System.cmd("kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true) do
       {_output, 0} -> :alive
-      {output, _status} when is_binary(output) -> nonzero_process_status(output)
+      {_output, _status} -> existence_status(os_pid)
     end
   end
 
   def os_process_status(_), do: :unknown
 
-  defp nonzero_process_status(output) do
-    if String.contains?(output, "No such process"), do: :not_alive, else: :unknown
+  # `kill -0` cannot separate ESRCH from EPERM by exit status, and its diagnostic
+  # text is localized, so proving an exit from that text fails on a non-English
+  # host. `ps -p` reports existence by exit status alone: a process that still
+  # exists but cannot be signalled stays unproven.
+  defp existence_status(os_pid) do
+    case System.cmd("ps", ["-p", Integer.to_string(os_pid)], stderr_to_stdout: true) do
+      {_output, 0} -> :unknown
+      {_output, _status} -> :not_alive
+    end
   end
 
   @spec send_signal(non_neg_integer(), String.t()) :: signal_result()

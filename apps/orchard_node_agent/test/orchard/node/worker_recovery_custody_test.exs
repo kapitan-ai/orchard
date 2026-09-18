@@ -112,4 +112,17 @@ defmodule Orchard.Node.WorkerRecoveryCustodyTest do
 
     owner
   end
+
+  # SPEC.md §12.2: the host boot id cannot change during this OS process, and
+  # resolve_prior_worker_ownership/2 consults it on every 1 Hz cleanup re-probe,
+  # so it must be resolved once rather than forked per tick.
+  test "SPEC §12.2 host boot identity is resolved once per OS process" do
+    :persistent_term.erase({WorkerRecoveryCustody, :boot_identity})
+
+    first = WorkerRecoveryCustody.boot_identity()
+
+    assert is_binary(first)
+    assert :persistent_term.get({WorkerRecoveryCustody, :boot_identity}) == first
+    assert WorkerRecoveryCustody.boot_identity() == first
+  end
 end

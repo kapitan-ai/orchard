@@ -245,8 +245,7 @@ defmodule Orchard.Scheduler.SingleNode do
     case WorkerRecoveryEligibility.check(
            target,
            normalize_observation(target, response),
-           request.model_ref,
-           opts
+           request.model_ref
          ) do
       :ok ->
         recovery_eligible_capacity_schedule(schedule, request, target, node, response, opts)
@@ -435,8 +434,7 @@ defmodule Orchard.Scheduler.SingleNode do
              WorkerRecoveryEligibility.check(
                target,
                normalize_observation(target, response),
-               request.model_ref,
-               opts
+               request.model_ref
              ),
            {:ok, input} <- capacity_input(node, target, response, placement_capacity, opts),
            {:ok, input, _reason_codes} <-
@@ -464,8 +462,7 @@ defmodule Orchard.Scheduler.SingleNode do
            WorkerRecoveryEligibility.check(
              target,
              normalize_observation(target, response),
-             request.model_ref,
-             opts
+             request.model_ref
            ),
          placement_capacity <- refreshed_placement_capacity(response, request.model_ref, phase),
          {:ok, input} <-

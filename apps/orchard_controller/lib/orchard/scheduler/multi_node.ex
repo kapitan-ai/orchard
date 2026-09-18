@@ -987,16 +987,32 @@ defmodule Orchard.Scheduler.MultiNode do
     Map.get(candidate, :residency_reason_codes, []) == []
   end
 
+  # SPEC.md §12.2 with ADR 0017: trusted snapshot candidates are annotated from
+  # durable evidence alone. The bounded unmanaged-compatibility wave is the one
+  # accepted exception and may resolve a cold placement with a targeted query,
+  # falling back to epoch-only evidence when the transport cannot be inspected.
+  defp recovery_admission(
+         %{candidate_source: "bounded_compatibility_probe"} = candidate,
+         request,
+         opts
+       ) do
+    WorkerRecoveryEligibility.check_with_inspection(
+      candidate.target,
+      candidate.observation,
+      request.model_ref,
+      opts
+    )
+  end
+
+  defp recovery_admission(candidate, request, _opts) do
+    WorkerRecoveryEligibility.check(candidate.target, candidate.observation, request.model_ref)
+  end
+
   defp annotate_residency_policy(candidate, %CanonicalRequest{} = request, opts) do
     {reason_codes, fact} = residency_decision(candidate, request, opts)
 
     recovery_codes =
-      case WorkerRecoveryEligibility.check(
-             candidate.target,
-             candidate.observation,
-             request.model_ref,
-             opts
-           ) do
+      case recovery_admission(candidate, request, opts) do
         :ok -> []
         {:error, reason} -> [Atom.to_string(reason)]
       end
@@ -1399,13 +1415,7 @@ defmodule Orchard.Scheduler.MultiNode do
           ensure_model_loaded_result
         )
 
-      with :ok <-
-             WorkerRecoveryEligibility.check(
-               candidate.target,
-               candidate.observation,
-               request.model_ref,
-               opts
-             ),
+      with :ok <- recovery_admission(candidate, request, opts),
            %PlacementCapacity{} <- placement_capacity,
            {:ok, input} <-
              dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()) do
@@ -1519,13 +1529,7 @@ defmodule Orchard.Scheduler.MultiNode do
          opts
        ) do
     fn ->
-      with :ok <-
-             WorkerRecoveryEligibility.check(
-               candidate.target,
-               candidate.observation,
-               request.model_ref,
-               opts
-             ),
+      with :ok <- recovery_admission(candidate, request, opts),
            {:ok, input} <-
              dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()),
            {:ok, input, _reason_codes} <-
@@ -1563,8 +1567,7 @@ defmodule Orchard.Scheduler.MultiNode do
            WorkerRecoveryEligibility.check(
              refreshed.target,
              refreshed.observation,
-             request.model_ref,
-             opts
+             request.model_ref
            ),
          refreshed_placement <-
            Map.get(

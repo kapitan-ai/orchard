@@ -619,6 +619,39 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
              :PLACEMENT_STATE_LOADED
   end
 
+  # SPEC.md §12.2.1: deferring a claim behind an unacknowledged pre-effect
+  # checkpoint must stay bounded. Once the write has already failed, the claim
+  # answers immediately instead of re-arming a 50 ms timer until the Controller
+  # load deadline expires.
+  test "SPEC §12.2 a sustained checkpoint outage answers the blocked claim promptly", ctx do
+    exact = %{
+      node_id: ctx.request.node_id,
+      model_id: ctx.request.model_id,
+      version: ctx.request.version
+    }
+
+    Checkpoints.seed(exact, %{
+      epoch: "old-epoch",
+      revision: 4,
+      record: WorkerRecoveryState.record(WorkerRecoveryState.new("old-epoch")),
+      transition_id: "stale-clean-hydration"
+    })
+
+    Checkpoints.mode(:write_unavailable)
+
+    assert %{ok: false, message: "recovery checkpoint unavailable"} =
+             ModelManager.unload_model(%UnloadModelRequest{
+               model_id: ctx.request.model_id,
+               version: ctx.request.version
+             })
+
+    {elapsed_us, response} =
+      :timer.tc(fn -> ModelManager.ensure_model_loaded(ctx.request) end)
+
+    refute response.placement_state == :PLACEMENT_STATE_LOADED
+    assert div(elapsed_us, 1000) < 3_000
+  end
+
   test "SPEC §12.2 the application stop hook checkpoints the intentional stop", ctx do
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
              :PLACEMENT_STATE_LOADED

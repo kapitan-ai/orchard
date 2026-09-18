@@ -478,12 +478,22 @@ defmodule Orchard.Node.ModelManager do
       (inflight[:recovery_wait?] == true or claim_blocked_by_pending_effect?(entry))
   end
 
+  @claim_defer_retry_streak_limit 1
+
   # An unacknowledged pre-effect checkpoint leaves desired/pending set with
   # ownership already resolved. SPEC.md §12.2.1 treats that as neither a crash
   # nor a restart failure, so the claim waits for the effect to settle instead of
   # reporting worker_unavailable, which §5.10 would count as worker_or_node_loss.
+  #
+  # The wait is bounded to a write that has not yet failed: once
+  # WorkerRecoveryState.unavailable/3 has recorded a failed write, the claim is
+  # answered immediately rather than re-arming until the Controller load
+  # deadline, which would hold one attempt for the whole deadline and consume the
+  # request budget that bounded retry needs. One failed write is the transient
+  # hiccup this deferral exists for; a second means the outage is not transient.
   defp claim_blocked_by_pending_effect?(entry) do
     is_nil(entry.policy.incarnation) and
+      entry.retry_streak <= @claim_defer_retry_streak_limit and
       entry.ownership["phase"] in ["resolved", "operator_terminated"] and
       not (is_nil(entry.desired) and is_nil(entry.pending))
   end
