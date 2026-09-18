@@ -157,7 +157,7 @@ The gRPC/mTLS path remains available for enrollment, certificate lifecycle, Peer
 | `apps/orchard_shared/` | Shared generated proto modules, Runtime Endpoint domain structs, helpers, and build metadata. |
 | `native/orchard_tokenizer/` | Python helper for prompt rendering, exact token counts, and safe-tokenization support. |
 | `native/orchard_worker_mlx/` | Current Python MLX Worker Runtime provider implementation and generated Python protocol consumer. |
-| `proto/cluster/v1/` | Controller ↔ node-agent proto source: the current gRPC runtime-operations compatibility transport, the certificate-authenticated BEAM Peer Grant delivery control service, and future-adapter contracts. |
+| `proto/cluster/v1/` | Controller ↔ node-agent proto source: the current gRPC runtime-operations compatibility transport, the certificate-authenticated control services named under [Node and worker runtime](#node-and-worker-runtime), and future-adapter contracts. |
 | `proto/orchard/worker/v1/` | Provider-neutral Node Agent ↔ Worker Runtime schema, descriptor golden, and cross-language compatibility fixtures. |
 | `packaging/` | macOS native distribution profile artifacts and runbooks for `Orchard.app`, DMG, app-owned service lifecycle, payload, launchd, signing, and verification. |
 | `docs/` | Contributor-facing orientation, tooling, process, design, and durable decisions subordinate to `SPEC.md`. |
@@ -234,7 +234,8 @@ ceiling or the cold-start budget is not meaningful.
 When a dispatch cannot resolve whether its runtime execution ended — a cancel drain that times out without a transport-proven clean disconnect and without a durably recorded unreachable or unhealthy Node — the authority quarantines that Node, and every later evaluation for it is treated as unreachable rather than trusted as free capacity.
 The quarantine set lives in `Orchard.DispatchCapacity.QuarantineStore`, a temporary child supervised by the Controller root outside the inference subtree, so an authority restart cannot silently resume dispatch from a clean quarantine set; losing the store itself fails closed for every Node and needs a Controller restart.
 Quarantine has no expiry and no unauthenticated operator-release seam: durable recovery that proves the unresolved execution is absent is a later slice.
-An explicitly classified unmanaged target that cannot be probed stays dispatchable through the same contract: the single-node scheduler attaches an unmanaged capacity input, its evaluation, and refresh providers rather than emitting a bare legacy schedule the dispatcher would reject.
+An explicitly classified unmanaged target that answers a live status probe stays dispatchable through the same contract: the single-node scheduler attaches an unmanaged capacity input, its evaluation, and refresh providers rather than emitting a bare legacy schedule the dispatcher would reject.
+An unmanaged target that cannot be probed, or whose probing is skipped, fails closed as `model_busy` with `transport_unreachable` instead of being dispatched unprobed.
 The durable phase still stays `pre_cutover`, so production-managed targets are authorized by the shared `legacy_pre_cutover` decision and its centrally calculated temporary legacy slots while F11 Effective Dispatch Limit and Dispatch Headroom remain counterfactual `0`; the diagnostics block described above stays read-only.
 See `SPEC.md` §4.6.2 and `docs/decisions/0013-controller-dispatch-capacity-authority.md` for the target authority boundary.
 

@@ -294,7 +294,7 @@ ELIXIR
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address. Set to `0.0.0.0` on a remote node-agent for 2-node testing. |
+| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address. Set to `0.0.0.0` on a remote node-agent for 2-node testing. Under BEAM transport with recovery control enabled, this host and port bind the recovery-control listener instead of the gRPC listener; see [Worker recovery control](#worker-recovery-control). |
 | `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50071` (source dev) / `50061` (packaged) | gRPC listen port |
 | `ORCHARD_NODE_AGENT_ADVERTISE_HOST` | Listen host or `127.0.0.1` | Controller-reachable host persisted during `orchardctl node join`; required when the listen host is wildcard-bound. |
 | `ORCHARD_NODE_AGENT_ADVERTISE_PORT` | Listen port | Controller-reachable gRPC compatibility port persisted during `orchardctl node join`. |
@@ -764,6 +764,8 @@ The BEAM flow uses named distributed BEAM nodes and `ORCHARD_RUNTIME_ENDPOINT_TA
 Do not use `ORCHARD_RUNTIME_CLIENT_TARGETS` for BEAM target selection.
 The accepted two-Mac smoke should include a controller-side node-agent and a remote node-agent when validating local and remote Console reachability.
 Start the node-agents first, then start the controller.
+The launches below configure transport, targets, and cookies only.
+Split roles get no recovery-control defaults, so configure SPEC §12.2 recovery control on both roles before expecting a model to load; see [Worker recovery control](#worker-recovery-control).
 
 Provision the same `tmp/dev/beam.cookie` file on every participating Mac before starting the two-Mac BEAM flow.
 Keep the cookie mode at `0600` or stricter.

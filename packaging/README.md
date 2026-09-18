@@ -655,6 +655,13 @@ orchardctl status
 For an all-in-one host, use `--service all` when initializing environment files.
 For a node-agent host, use `--service node-agent`, configure its BEAM identity and worker settings, then start and verify the selected service.
 
+Model loading has its own prerequisites on every packaged host, including all-in-one.
+SPEC §12.2 recovery control gates model residency: the node agent reads each placement's recovery checkpoint from the controller over mutual TLS before it admits a load, and it authenticates with the Node identity that `orchardctl node join` persists.
+Run `sudo orchardctl nodes trust init` on the controller host, issue an enrollment bundle with `sudo orchardctl nodes enrollment create --output PATH`, and redeem it with `orchardctl node join --enrollment-bundle PATH` on the node-agent host.
+Bundle issuance needs a configured controller HTTPS endpoint and its public CA certificate, so the default `plain_http_localhost` mode cannot produce that identity; see [Transport and TLS](#transport-and-tls).
+Until that identity exists and the recovery-control listener is reachable, every load is refused with `placement_recovery_required` and no model becomes resident.
+[Multi-Mac runtime](#multi-mac-runtime) gives the recovery-control host and endpoint values a multi-Mac install needs.
+
 Before public inference, create an Organization, issue a credential, import and activate a model, and grant that Organization access to the model.
 Model access is deny-by-default.
 
