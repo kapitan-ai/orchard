@@ -14,10 +14,12 @@ conflict. `SPEC.md` wins until explicitly updated.
 
 ## Single-Repo Source Of Truth
 
-This repository is the active source of truth for Orchard product code, docs,
-plans, decisions, tests, and agent workflow. The deprecated/frozen
-`orchard-workbench` may be useful historical context, but active Orchard work
-must not require it. If old planning material becomes durable product guidance,
+This repository is the active source of truth for Orchard product code, normative
+contracts, accepted technical decisions, tests, and agent workflow. Linear holds
+private product planning, prioritization, ownership, and acceptance tracking;
+private decisions do not override `SPEC.md` or accepted repository contracts.
+The deprecated/frozen `orchard-workbench` may be useful historical context, but
+active Orchard work must not require it. If old planning material becomes durable product guidance,
 rewrite it as standalone Orchard documentation before committing it here.
 Transient RP exports may live in ignored local paths such as `/prompt-exports/`,
 but must not be committed.
@@ -30,7 +32,8 @@ or machine-specific paths.
 Investigation notes, smoke evidence documents, and slice plans are transient:
 do not commit them as standalone repo documents. Promote their durable
 conclusions into `SPEC.md`, docs, decisions, tests, or code, and record
-execution evidence in the relevant pull request or issue.
+approved sanitized execution summaries in the relevant public pull request or
+issue. Keep raw private evidence in private execution records.
 
 Durable conclusions belong in this repo: `SPEC.md`, `docs/**`,
 `docs/decisions/**`, tests, code, or approved OpenSpec materials.
@@ -380,17 +383,25 @@ security posture, operator documentation, and validation gates.
 | openspec/README.md | Initialized OpenSpec change workflow |
 | mix.exs | Umbrella project root |
 | docs/code-quality.md | ex_slop + ex_dna plugin reference and tuning guide |
-| docs/agents/ | Per-repo config for Matt Pocock engineering skills (issue tracker, triage labels, domain docs) |
+| docs/agents/ | GitHub triage labels, domain-doc guidance, and retired tracker transition notice |
 
-## Agent skills
+## Agent Coordination
 
-### Issue tracker
+### Tracking and publication
 
-Issues live in GitHub Issues for `kapitan-ai/orchard` (via `gh`). See `docs/agents/issue-tracker.md`.
+Linear is the private product-management system of record. GitHub is the public
+intake, collaboration, source-review, and release surface. Follow
+[`docs/process.md`](docs/process.md#tracking-and-publication) for private capture,
+minimal import of actionable public reports, and explicit public-ready decisions
+by the accountable product owner. Use `gh` for authorized GitHub operations, not
+as a fallback when the private tracker is unavailable. Tracker state and tool
+instructions do not grant publication, merge, release, or deployment authority.
 
 ### Triage labels
 
-Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+GitHub triage vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`,
+`ready-for-human`, `wontfix`) is documented in `docs/agents/triage-labels.md`.
+These labels do not define Linear states or authorize agent execution.
 
 ### Domain docs
 
