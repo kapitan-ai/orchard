@@ -185,6 +185,24 @@ defmodule Orchard.Node.WorkerCrashPolicyTest do
     assert clean == Policy.new()
   end
 
+  # SPEC.md §12.2: delay_index and history must survive a successful automatic
+  # restart so the 5-crashes-in-10-minutes breaker can still count them, but they
+  # must not classify a healthy restarted placement as recovery-required when
+  # capacity evicts it, which would leave it unloadable until an operator acts.
+  test "an interrupt after a successful restart stays armed and keeps its crash history" do
+    record = restarted(first_crash())
+
+    assert record.state == :armed
+    assert record.history != []
+    assert record.delay_index > 0
+
+    {interrupted, _effects} = Policy.transition(record, :interrupt, 60_000)
+
+    assert interrupted.state == :armed
+    assert interrupted.history == record.history
+    assert interrupted.delay_index == record.delay_index
+  end
+
   defp admitted(record, id) do
     {record, [:checkpoint]} = Policy.transition(record, {:admit, id}, 0)
     record

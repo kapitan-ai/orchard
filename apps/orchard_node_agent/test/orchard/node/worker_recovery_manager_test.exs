@@ -1298,4 +1298,23 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
           eventually(fun, attempts - 1)
         )
   end
+
+  # SPEC.md §12.2: a cold entry may be discarded while a load for the same key is
+  # still in flight, so the claim path must tolerate a missing entry instead of
+  # asserting one and taking ModelManager down with it.
+  test "SPEC §12.2 a claim whose recovery entry was discarded does not crash the manager" do
+    key = {"discarded/model", "v1"}
+
+    state = %{
+      inflight_loads: %{
+        key => %{task_pid: self(), worker_pid: nil, request: %{model_id: "discarded/model"}}
+      },
+      recovery: %{},
+      stopping?: false,
+      resetting?: false
+    }
+
+    assert {:reply, {:error, :worker_unavailable}, ^state} =
+             ModelManager.handle_call({:recovery_claim_worker, key}, {self(), make_ref()}, state)
+  end
 end

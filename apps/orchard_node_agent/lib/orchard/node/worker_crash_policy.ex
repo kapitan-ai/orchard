@@ -129,7 +129,11 @@ defmodule Orchard.Node.WorkerCrashPolicy do
         record.state == :open ->
           :open
 
-        record.state != :armed or record.delay_index > 0 or record.history != [] ->
+        # Only unsettled state requires explicit recovery. delay_index and history
+        # persist through a successful restart because SPEC.md §12.2 counts them
+        # for the crash-loop breaker, so they must not classify an evicted but
+        # healthy placement as recovery-required.
+        record.state != :armed ->
           :recovery_required
 
         true ->

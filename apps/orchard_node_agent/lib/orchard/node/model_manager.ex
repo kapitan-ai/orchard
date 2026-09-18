@@ -451,9 +451,16 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
+  # A cold entry can be discarded while this load is still in flight, so a missing
+  # entry answers the claim instead of raising and taking ModelManager down.
   defp handle_recovery_claim(state, key, inflight, request, task_pid, from) do
-    entry = Map.fetch!(state.recovery, key)
+    case Map.fetch(state.recovery, key) do
+      {:ok, entry} -> claim_admission(state, key, entry, inflight, request, task_pid, from)
+      :error -> {:reply, {:error, :worker_unavailable}, state}
+    end
+  end
 
+  defp claim_admission(state, key, entry, inflight, request, task_pid, from) do
     cond do
       state.stopping? or state.resetting? ->
         {:reply, {:error, :worker_unavailable}, state}
@@ -1477,6 +1484,9 @@ defmodule Orchard.Node.ModelManager do
   defp operator_waiter_effect?(:await_cleanup), do: true
   defp operator_waiter_effect?(:reply_operator), do: true
   defp operator_waiter_effect?(_effect), do: false
+
+  defp discard_cold_recovery_entry(state, key) when is_map_key(state.inflight_loads, key),
+    do: state
 
   defp discard_cold_recovery_entry(state, key) do
     case state.recovery[key] do
