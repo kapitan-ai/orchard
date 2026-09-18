@@ -2394,22 +2394,36 @@ def test_batch_generator_runtime_cancel_resets_after_bounded_drain_timeout() -> 
 
     thread_a = threading.Thread(target=run_a)
     thread_b = threading.Thread(target=run_b)
-    thread_a.start()
-    thread_b.start()
 
-    cancel_event_a.set()
-    thread_a.join(timeout=2.0)
-    thread_b.join(timeout=3.0)
+    try:
+        thread_a.start()
+        thread_b.start()
+        assert _wait_until(lambda: len(runtime._active_by_uid) == 2)
 
-    runtime.close()
+        cancel_event_a.set()
+        thread_a.join(timeout=2.0)
+        thread_b.join(timeout=3.0)
 
-    assert thread_a.is_alive() is False
-    assert thread_b.is_alive() is False
-    assert events_a[-1]["kind"] == "failed"
-    assert events_a[-1]["code"] == "cancelled"
-    assert error_b
-    assert error_b[0].code == "generation_failed"
-    assert "reset" in error_b[0].message
+        assert thread_a.is_alive() is False
+        assert thread_b.is_alive() is False
+        assert [
+            event["kind"] for event in events_a if event["kind"] in {"failed", "completed"}
+        ] == ["failed"]
+        assert events_a[-1]["code"] == "cancelled"
+        assert [
+            event["kind"] for event in events_b if event["kind"] in {"failed", "completed"}
+        ] == []
+        assert len(error_b) == 1
+        assert error_b[0].code == "generation_failed"
+        assert "reset" in error_b[0].message
+        assert runtime._active_by_uid == {}
+        assert runtime._requests_by_id == {}
+        assert runtime._active_detokenizer_ids == set()
+    finally:
+        cancel_event_a.set()
+        runtime.close()
+        thread_a.join(timeout=2.0)
+        thread_b.join(timeout=2.0)
 
 
 def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
