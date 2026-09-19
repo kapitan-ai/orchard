@@ -513,6 +513,10 @@ The execute control stays disabled until every confirmation requirement is satis
 When one page offers several previewable actions, show one open preview panel at a time so review context stays unambiguous.
 
 Nodes uses Inventory, Admission Review, Runtime, and Diagnostics as page-local sections.
+Inventory begins with a local-machine summary using the installation-selected registered Node identity store.
+The positive headline is **This machine’s Node is connected and healthy.** only when installed identity, trusted inventory target, current observed identity, Node health and existing heartbeat freshness agree.
+Unknown identity, stale heartbeat and current unavailable evidence remain explicit; never infer this machine from its hostname, address or a single Inventory row.
+Keep persisted last-successful observation separate from refresh-attempt time and Node health separate from current model-serving evidence. Label retained health **Last observed Node health**, including when the current probe fails. See SPEC §4.5 and ADR 0034.
 Node detail uses Overview, Evidence, and Actions with shared identity and refresh context.
 Section links update a whitelisted URL parameter and replace the visible section rather than scrolling to another card.
 Inactive sections are hidden from both keyboard navigation and the accessibility tree; the selected navigation link exposes `aria-current`.
