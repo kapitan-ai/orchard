@@ -716,6 +716,31 @@ This requirement traces to `SPEC.md` §5.8, §§12.1-12.3, §12.7, and `docs/dec
 - **AND** normalizes restricted-capture durable evidence to the existing stable Controller-owned terminal failure code
 - **AND** no Automatic Attempt Retry begins
 
+### Requirement: Reasoning conformance failure codes are a closed shared vocabulary
+`reasoning_parser_conformance_failed` and `reasoning_policy_conformance_failed` SHALL be the only Runtime Endpoint `Failed` codes that report a post-execution negotiated reasoning parser or generation-policy conformance failure.
+A producer SHALL emit exactly those spellings and the Controller SHALL recognize exactly those spellings; no other spelling, prefix, synonym, or category pairing SHALL receive reasoning conformance treatment.
+Both codes SHALL classify as the `terminal_conformance` failure class with the stable Controller-owned failure code `internal_error`, and SHALL remain non-retryable.
+The Controller MUST NOT expose the source code, source message, parser control markers, or model output through the synchronous HTTP body, the streaming error event, or durable terminal evidence, and SHALL retain no raw source code for either code under `none`, `metadata`, or `full` capture.
+A reasoning-only conformance failure commits no validated content-bearing output and SHALL record `output_committed = false`.
+This vocabulary is a shared failure-code contract only: it adds no protobuf field, no public reasoning control, and no parser behavior, and it SHALL NOT broaden the `orchestration_error` default that every other `terminal_conformance` code keeps.
+This requirement traces to `SPEC.md` §7.2.7 and §7.5.3a.
+
+#### Scenario: Parser conformance failure stays content-free
+- **WHEN** a negotiated attempt fails post-execution with `reasoning_parser_conformance_failed`
+- **THEN** the synchronous and streaming public errors carry only `internal_error` with a generic message
+- **AND** durable terminal evidence records `terminal_conformance` plus `internal_error` with no raw source code under any capture mode
+- **AND** no Automatic Attempt Retry begins
+
+#### Scenario: Generation-policy conformance failure stays content-free
+- **WHEN** a negotiated attempt fails post-execution with `reasoning_policy_conformance_failed`
+- **THEN** Orchard applies the same content-free `terminal_conformance` plus `internal_error` outcome
+- **AND** the reasoning-only failure records `output_committed = false`
+
+#### Scenario: Reasoning-like code outside the closed pair is not reasoning conformance
+- **WHEN** a Runtime Endpoint `Failed` event carries a reasoning-like code that is not one of the two closed spellings
+- **THEN** Orchard does not apply the reasoning conformance classification or mapping
+- **AND** the code follows the existing unknown-code classification instead
+
 ### Requirement: Execution resolution precedes retry
 The Controller SHALL allow a pre-acceptance failure to qualify for retry only after cleanup and capacity release are affirmatively resolved.
 An accepted pre-commit failure MAY qualify only when a valid terminal event or cancellation drain proves execution termination.
