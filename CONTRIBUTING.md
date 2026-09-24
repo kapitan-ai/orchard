@@ -20,6 +20,21 @@ This repository is the collaborator-facing source of truth.
 If these disagree about product behavior, treat the PR as blocked until the
 branch reconciles the conflict. `SPEC.md` wins until explicitly updated.
 
+## Product Tracking and Public Collaboration
+
+GitHub is Orchard's public intake, collaboration, source-review, and release
+surface. Maintainers use Linear privately for product prioritization, ownership,
+and acceptance tracking; contributors do not need access to it. Actionable public
+reports are linked or minimally imported for private triage, without promising
+implementation or exposing private discussion. Report security concerns through
+[`SECURITY.md`](SECURITY.md).
+
+Private planning material requires an explicit public-ready decision by the
+accountable product owner before publication. Publish only the approved sanitized
+scope. This does not authorize merge, release, or deployment. See
+[`Tracking and Publication`](docs/process.md#tracking-and-publication) for the
+boundary; existing participation and review requirements below remain unchanged.
+
 ## Participation
 
 Issues and feedback are welcome.
@@ -63,7 +78,8 @@ DCO sign-off trailers and a separate contributor license agreement are not requi
 ## Change Workflow
 
 The direct-PR path does not waive the participation requirements above.
-Small changes can go directly through a normal PR:
+Trivial public fixes do not require a Linear issue. Small changes can go directly
+through a normal PR:
 
 - typo and docs clarifications
 - internal refactors with no behavior change
