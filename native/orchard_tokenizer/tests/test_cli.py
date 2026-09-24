@@ -257,6 +257,63 @@ def test_reasoning_render_contract_requires_an_exact_registered_identity(
     }
 
 
+@pytest.mark.parametrize("content", [None, "Reading:"])
+@pytest.mark.parametrize("arguments", ['{ "path": "雪.txt" }', '{"path":1,"path":2}'])
+def test_spec_7_2_5_negotiated_render_preserves_typed_tool_continuation(
+    tmp_path, capsys, monkeypatch, content, arguments
+):
+    template = tmp_path / "chat_template.jinja"
+    template.write_text(
+        "{% for message in messages %}{{ message.content }}"
+        "{% for call in message.get('tool_calls', []) %}"
+        "{{ call.id }}:{{ call.function.name }}:{{ call.function.arguments.path }};"
+        "{% endfor %}{{ message.get('tool_call_id', '') }}{% endfor %}"
+    )
+    digest = hashlib.sha256(template.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        reasoning_contracts,
+        "REASONING_RENDER_CONTRACTS",
+        {
+            ("a" * 64, digest): {
+                ("disabled", "final_only", None): synthetic_registration(
+                    template_arguments={"enable_thinking": False}
+                )
+            }
+        },
+    )
+    payload = reasoning_tokenization_payload(
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        tokenizer_config_path=write_tokenizer_config(tmp_path),
+        chat_template_path=template,
+    )
+    payload["request"]["input_items"] = [
+        {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [
+                {
+                    "id": "call_z",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": arguments},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_z", "content": "exact\nresult"},
+    ]
+    original = deepcopy(payload)
+    code = main(["--request-json", json.dumps(payload)])
+    response = json.loads(capsys.readouterr().out)
+    if arguments == '{"path":1,"path":2}':
+        assert code == 2
+        assert response["error"]["category"] == "invalid_input"
+    else:
+        assert code == 0
+        assert response["result"]["rendered_prompt"] == (
+            (content or "") + "call_z:read:雪.txt;exact\nresultcall_z"
+        )
+    assert payload == original
+
+
 def test_reasoning_render_contract_uses_only_synthetic_registered_template_arguments(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:

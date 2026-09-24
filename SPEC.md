@@ -2596,12 +2596,16 @@ Supported request fields:
 * `tools` (function only; conditional on model capability)
 * `tool_choice`
 * `store`
+* `prompt_cache_key` (string or null compatibility hint; accepted but ignored, never cache identity or authorization)
 
 Tool-calling request rules:
 
 * only function tools are supported in v1
 * base v1 Responses tool calling is client-executed passthrough unless a later phased extension explicitly enables server-side execution
-* each request `tools` entry MAY be either an inline function definition or `{"type":"function","ref":"tool://<name>@<version>"}`
+* canonical inline definitions use `{"type":"function","name":"...","description":"...","parameters":{...},"strict":true}`; optional `strict` SHALL be preserved, not silently defaulted
+* nested `{"type":"function","function":{...}}` definitions remain an explicit Responses compatibility extension; ambiguous mixed shapes and unknown fields SHALL fail closed
+* each request `tools` entry MAY also use the Orchard extension `{"type":"function","ref":"tool://<name>@<version>"}`
+* Responses SHALL normalize endpoint-locally before shared validation; Chat Completions SHALL retain its independent nested dialect
 * the controller SHALL resolve registry refs before tokenization and dispatch; the runtime SHALL receive resolved function definitions only, never `tool://...` placeholders
 * inline request tools SHALL remain client-executed; they SHALL NOT be executed server-side unless first resolved from an approved registry entry explicitly marked as server-hostable
 * unresolved, inactive, or malformed registry refs SHALL be rejected as `400 invalid_request_error`
@@ -2611,7 +2615,15 @@ Tool-calling request rules:
   * `"none"` disables tool calling even if `tools` is supplied
   * `"auto"` allows the model to choose text or tool calls
   * `"required"` requires one or more tool calls or the request SHALL fail
-  * `{"type":"function","function":{"name":"..."}}` requires emitted tool calls to use that function name
+  * `{"type":"function","name":"..."}` requires emitted tool calls to use that function name; the nested `function` form remains a compatibility extension
+
+Responses `input` MAY include `function_call` items with `call_id`, `name` and
+JSON-object-string `arguments`, and `function_call_output` items with the same
+`call_id` and string `output`. Canonical history SHALL preserve IDs, argument and
+result bytes, and input order. Duplicate call IDs, orphan or duplicate results,
+malformed arguments and unknown item kinds SHALL fail before dispatch. Assistant
+message content MAY use `output_text` parts. Controller, Node, Worker and provider
+SHALL NOT execute these client tools.
 
 Supported output object subset:
 
@@ -2635,9 +2647,11 @@ Tool-calling response rules:
 
 * sync responses MAY include `function_call` output items in `output`
 * `output_text` SHALL include only text output content and MAY be empty when the response consists only of tool calls
-* the platform SHALL NOT introduce incremental Responses function-call SSE events in v1
-* streaming function-call data SHALL appear only in terminal `response.completed` or `response.failed` payloads
+* successful streaming calls SHALL emit `response.output_item.added`, `response.function_call_arguments.delta`, `response.function_call_arguments.done`, and `response.output_item.done` before `response.completed`
+* item IDs, call IDs, arguments and output indices SHALL correlate across lifecycle events and terminal output; public text occupies the first output item when present, followed by calls in first-observed order
+* call lifecycle publication SHALL be buffered until selected-attempt completion so failed or interrupted attempts do not publish executable calls; the argument delta MAY contain the complete buffered arguments
 * terminal payloads that include partial tool calls due to interruption or cancellation SHALL mark the response as incomplete or failed rather than presenting the tool call as complete
+* a stream closing without a terminal inference event SHALL fail rather than synthesize successful completion
 * if a later phased extension enables controller-managed server-side tool execution, `/v1/responses` SHALL be the first target endpoint and Orchard SHALL keep the controller-governs / node-executes split defined in §1.6
 
 Streaming behavior:
