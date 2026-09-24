@@ -16,6 +16,7 @@ defmodule OrchardConsole.NodesLive do
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.RuntimeEndpoint.Target
+  alias OrchardConsole.LocalNodeSummary
   alias OrchardConsole.NodesPageData
 
   @default_refresh_interval_ms 5_000
@@ -115,6 +116,9 @@ defmodule OrchardConsole.NodesLive do
             Refresh now
           </.button>
         </div>
+      <div hidden={@section != :inventory}>
+        <OrchardConsole.LocalNodeCard.local_node_card summary={@local_node_summary} loading={@last_refreshed_at == nil} />
+      </div>
       <%!-- Inventory Summary --%>
       <div id="nodes-summary-card" hidden={@section != :inventory}>
       <.card>
@@ -575,9 +579,15 @@ defmodule OrchardConsole.NodesLive do
     safe_tokenization_counters = fetch_safe_tokenization_counters()
     control_plane = fetch_control_plane_status()
 
+    local_identity =
+      :orchard_controller
+      |> Application.get_env(:local_node_identity_root)
+      |> Orchard.LocalNodeIdentity.read()
+
     assign(socket,
       cluster: cluster,
       inventory: inventory,
+      local_node_summary: LocalNodeSummary.build(local_identity, inventory, cluster),
       pending_admissions: pending_admissions,
       safe_tokenization_counters: safe_tokenization_counters,
       control_plane: control_plane,
@@ -587,6 +597,7 @@ defmodule OrchardConsole.NodesLive do
 
   defp assign_loading_state(socket) do
     assign(socket,
+      local_node_summary: LocalNodeSummary.build({:error, :not_configured}, %{}, %{}),
       inventory: %{
         status: :loading,
         rows: [],
