@@ -23,6 +23,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
+  alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
@@ -389,6 +390,76 @@ defmodule Orchard.API.ResponsesControllerTest do
                "status" => "completed"
              }
            ]
+  end
+
+  test "SPEC 7.5.2 non-stream preserves ordered worker-produced argument bytes" do
+    fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+    [weather_arguments, time_arguments] =
+      GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(false), %{}},
+      execute:
+        {:ok, stub_responses_canonical(false),
+         [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello"
+      })
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => weather_arguments,
+               "status" => "completed"
+             },
+             %{
+               "type" => "function_call",
+               "id" => "call_1",
+               "call_id" => "call_1",
+               "name" => "lookup_time",
+               "arguments" => time_arguments,
+               "status" => "completed"
+             }
+           ]
+  end
+
+  test "SPEC 7.5.2 non-stream withholds an earlier valid block after a later invalid block" do
+    fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(false), %{}},
+      execute:
+        {:ok, stub_responses_canonical(false),
+         [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello"
+      })
+
+    assert conn.status == 500
+
+    assert Jason.decode!(conn.resp_body) == %{
+             "error" => %{
+               "message" => "Inference failed: model emitted an unrequested function",
+               "type" => "server_error",
+               "param" => nil,
+               "code" => "internal_error"
+             }
+           }
   end
 
   test "valid ref-backed request succeeds without API shape changes" do
@@ -1399,6 +1470,88 @@ defmodule Orchard.API.ResponsesControllerTest do
                "name" => "lookup_weather",
                "arguments" => "{\"city\":\"Singapore\"}",
                "status" => "completed"
+             }
+           ]
+  end
+
+  test "SPEC 7.5.2 stream preserves ordered worker-produced argument bytes" do
+    fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+    [weather_arguments, time_arguments] =
+      GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.completed"]
+
+    assert List.last(events).data["response"]["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => weather_arguments,
+               "status" => "completed"
+             },
+             %{
+               "type" => "function_call",
+               "id" => "call_1",
+               "call_id" => "call_1",
+               "name" => "lookup_time",
+               "arguments" => time_arguments,
+               "status" => "completed"
+             }
+           ]
+  end
+
+  test "SPEC 7.5.2 stream retains an earlier valid block before a later invalid block" do
+    fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+    [weather_arguments] =
+      GeneratedToolArgumentFixture.arguments!("valid_then_invalid_block")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    terminal_response = List.last(events).data["response"]
+    assert terminal_response["status"] == "failed"
+    assert terminal_response["error"]["code"] == "tool_call_parse_failed"
+
+    assert terminal_response["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => weather_arguments,
+               "status" => "incomplete"
              }
            ]
   end
