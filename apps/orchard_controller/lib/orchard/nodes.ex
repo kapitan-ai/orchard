@@ -440,6 +440,37 @@ defmodule Orchard.Nodes do
   @spec observe_status(keyword() | Target.t(), map() | struct(), DateTime.t(), keyword()) ::
           {:ok, Node.t()} | :noop
   def observe_status(target, status_response, observed_at, opts \\ []) do
+    case ControlPlane.authorize_write_path(:node_lifecycle) do
+      :ok -> observe_authorized_status(target, status_response, observed_at, opts)
+      {:error, _reason} -> clear_denied_status_queue_capacity_sources(target, observed_at, opts)
+    end
+  rescue
+    _ -> :noop
+  end
+
+  @doc """
+  Persists unauthenticated Runtime Endpoint observation evidence as an admission candidate only.
+
+  Used by controller discovery bootstrap for configured BEAM targets. This path never
+  updates Node rows, never refreshes queue capacity sources, and never clears capacity
+  sources. Invalid or conflicting evidence returns `:noop`.
+  """
+  @spec observe_admission_candidate(keyword() | Target.t(), map() | struct(), DateTime.t()) ::
+          :ok | :noop
+  def observe_admission_candidate(target, status_response, observed_at) do
+    with true <- repo_available?(),
+         :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
+         {:ok, observation} <- normalize_observation(target, status_response, observed_at),
+         {:ok, :candidate_persisted} <- execute_candidate_only_observe(observation) do
+      :ok
+    else
+      _other -> :noop
+    end
+  rescue
+    _ -> :noop
+  end
+
+  defp observe_authorized_status(target, status_response, observed_at, opts) do
     if repo_available?() do
       case normalize_observation(target, status_response, observed_at) do
         {:ok, observation} ->
@@ -458,29 +489,6 @@ defmodule Orchard.Nodes do
     else
       :noop
     end
-  rescue
-    _ -> :noop
-  end
-
-  @doc """
-  Persists unauthenticated Runtime Endpoint observation evidence as an admission candidate only.
-
-  Used by controller discovery bootstrap for configured BEAM targets. This path never
-  updates Node rows, never refreshes queue capacity sources, and never clears capacity
-  sources. Invalid or conflicting evidence returns `:noop`.
-  """
-  @spec observe_admission_candidate(keyword() | Target.t(), map() | struct(), DateTime.t()) ::
-          :ok | :noop
-  def observe_admission_candidate(target, status_response, observed_at) do
-    with true <- repo_available?(),
-         {:ok, observation} <- normalize_observation(target, status_response, observed_at),
-         {:ok, :candidate_persisted} <- execute_candidate_only_observe(observation) do
-      :ok
-    else
-      _other -> :noop
-    end
-  rescue
-    _ -> :noop
   end
 
   @doc """
@@ -1359,6 +1367,37 @@ defmodule Orchard.Nodes do
       clear_dispatch_capacity_sources(node.id)
     end
   end
+
+  defp clear_denied_status_queue_capacity_sources(target, observed_at, opts) do
+    with true <- repo_available?(),
+         %DateTime{} <- observed_at,
+         {:ok, target_lookup} <- target_lookup(target),
+         %Node{} = node <- lookup_node_by_target_lookup(target_lookup),
+         true <- denied_status_cleanup_fresh?(node, observed_at) do
+      clear_dispatch_capacity_sources(node.id,
+        queue_manager: denied_status_queue_manager(opts),
+        promote?: false
+      )
+    end
+
+    :noop
+  end
+
+  defp denied_status_cleanup_fresh?(%Node{last_heartbeat_at: nil}, %DateTime{}), do: true
+
+  defp denied_status_cleanup_fresh?(
+         %Node{last_heartbeat_at: %DateTime{} = last_heartbeat_at},
+         %DateTime{} = observed_at
+       ) do
+    DateTime.compare(last_heartbeat_at, observed_at) == :lt
+  end
+
+  defp denied_status_cleanup_fresh?(_node, _observed_at), do: false
+
+  defp denied_status_queue_manager(opts) when is_list(opts),
+    do: Keyword.get(opts, :queue_manager, Orchard.Inference.queue_manager())
+
+  defp denied_status_queue_manager(_opts), do: Orchard.Inference.queue_manager()
 
   defp stale_target_observation?(
          %Node{last_heartbeat_at: %DateTime{} = last_heartbeat_at},
