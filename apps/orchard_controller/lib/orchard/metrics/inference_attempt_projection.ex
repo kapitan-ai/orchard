@@ -48,7 +48,7 @@ defmodule Orchard.Metrics.InferenceAttemptProjection do
   defp build_observation(started, terminal, attempt) do
     with true <- valid_order?(started, terminal),
          {:ok, result} <-
-           InferenceAttemptResult.new(terminal.event_type, attempt, terminal.result),
+           InferenceAttemptResult.from_persisted(terminal.event_type, attempt, terminal.result),
          {:ok, duration_seconds} <- duration_seconds(result) do
       {:ok,
        %{

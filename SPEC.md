@@ -1588,6 +1588,8 @@ Queue lane capacity SHALL be the configured base lane capacity plus live capacit
 
 Identity rejection, transport failure, heartbeat-age demotion, lifecycle, health, or freshness loss, malformed or unavailable capacity facts, failed observation commit, and evaluator or consumer failure SHALL clear affected sources. BEAM observations may refresh them only when the target resolves to the same persisted trusted active Node; address-only or mismatched observations, Runtime Endpoint Admission Candidates, and explicitly unmanaged compatibility probes SHALL NOT publish production Node-owned sources. QueueManager or Controller restart starts with no Node-owned source contributions; no heartbeat-history replay or request snapshot reconstructs them, and only a later accepted eligible observation may repopulate them.
 
+On Controller write-authority refusal, generic Runtime Endpoint status observation SHALL make no durable observation write or positive capacity publication. It MAY invalidate only the aggregate, placement, and cold sources owned by the Node safely resolved from the original target when the Controller observation time is strictly newer than that Node's persisted heartbeat, or when no heartbeat exists; the invalidation SHALL not invoke queue promotion. Older, equal, invalid, or unordered observation times and unavailable target ownership SHALL not invalidate sources. A status payload that claims another Node SHALL NOT determine source ownership or authorize invalidation of that claimed Node; only the safely resolved original target's sources MAY be invalidated under the preceding freshness condition. Candidate-only observation remains queue-inert whether accepted or refused. Invalidation neither releases an Allocation nor grants dispatch authority.
+
 Configured base lane capacity remains separate. Neither it nor a live capacity source authorizes production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
 
 ### 5.5 Eligibility filter
@@ -3779,7 +3781,7 @@ Automatic Attempt Retry SHALL run its second wave fresh rather than reusing atte
 
 The proof is carried by unary `PrepareInference` before negotiated execution. It SHALL return the authoritative complete-tuple and worker-incarnation proof plus an opaque single-use authorization bound to the Request, tuple, loaded binding, and current loaded worker instance. The Controller SHALL redeem the authorization only through the matching execution Request. Expiry, cancellation, duplicate redemption, worker restart, or loaded-instance replacement invalidates the authorization. A failed preparation leaves invocation, content, and usage at zero. Node Agent ownership of `Accepted` remains unchanged; negotiated `Accepted` follows successful preparation redemption.
 
-The additive terminal wire contract SHALL preserve presence-aware exact cumulative totals: a present zero is known zero and absent `Failed.usage` is missing evidence, never zero. Issue #327 owns that wire representation. Durable `output_usage_status` persistence and Controller-synthesized lower-bound usage remain #328 work. Reasoning-token subsets remain Worker-internal.
+The additive terminal wire contract SHALL preserve presence-aware exact cumulative totals: a present zero is known zero and absent `Failed.usage` is missing evidence, never zero. Issue #327 owns that wire representation. Durable `output_usage_status` persistence and Controller-synthesized lower-bound usage remain #329 work. Reasoning-token subsets remain Worker-internal.
 
 Automatic retry SHALL pin all eleven tuple fields but not worker incarnation, selected profile, preparation identity, or authorization. Operator retry SHALL reuse `requests.canonical_request["reasoning"]` only when full capture retained a valid value; otherwise it SHALL fail closed with `retry_source_unavailable` and SHALL NOT rerender historical messages, renegotiate, downgrade, or add a persistence column. Production tuple registries SHALL remain empty and no production tuple may be advertised or selected until parser, accounting, and capture guarantees plus model-qualification governance accept the exact tuple. For a selected-effort tuple, the model-qualification-governance prerequisite means that the governance contract can classify the exact tuple; it MUST NOT be read as requiring an approved semantic qualification record or support claim for technical advertisement, selection, preparation, or dispatch.
 
@@ -3794,10 +3796,15 @@ Tool argument byte preservation applies after provider normalization under §7.5
 Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
 That failure MUST NOT fall back to raw blended output, expose the ambiguous bytes through an error, reclassify them as final text, or pass them to tool parsing.
+Ambiguity here is a property of the streaming seam rather than of the bytes, so a trailing partial-marker prefix retained at a chunk boundary is ambiguous only while further decoded output can still complete it.
+At the non-truncating `completed` and `stop` terminals only, and only when parser state is otherwise definitively final because no reasoning frame is open, such a retained prefix SHALL resolve as ordinary final-answer text rather than as a framing fragment.
+Genuinely open, incomplete, malformed, ambiguous, or otherwise unsatisfied reasoning state SHALL still fail closed, including an opened and unclosed reasoning frame, a prefix still retained at the truncating `length` terminal, and any state that cannot satisfy the pinned contract or the negotiated generation policy.
 The terminal failure SHALL be deterministic and non-retryable unless the failure occurred before model execution and independently satisfies the closed retry gates in §5.8.
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
+Whitespace-only decoded reasoning is framing rather than valid reasoning content and SHALL NOT satisfy that rule.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+That no-selected-output guarantee binds the parser terminal itself rather than only a later projection or API boundary, so a negotiated `enabled` stream SHALL withhold final-answer output until valid reasoning content is observed and SHALL emit no final-answer delta when the stream never observes it.
 The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
 Runtime advertisement of a non-`nil` tier proves only that the exact tuple has a qualified renderer mapping and that the provider passes the provider-neutral protocol conformance in §7.5.2a.
 Those fixtures are model-agnostic protocol artifacts, so advertisement SHALL NOT be read as asserting any per-artifact semantic property of a tier, and this specification defines no runtime producer for such an assertion.
@@ -4406,6 +4413,7 @@ create table requests (
   scheduler_decision jsonb,
   input_tokens integer not null default 0,
   output_tokens integer not null default 0,
+  output_usage_status text check (output_usage_status is null or output_usage_status in ('exact', 'lower_bound')),
   reserved_output_tokens integer not null default 0,
   first_token_at timestamptz,
   completed_at timestamptz,
@@ -4536,6 +4544,10 @@ create table node_admission_decisions (
   inserted_at timestamptz not null default now()
 );
 ```
+
+`requests.output_usage_status` SHALL be a nullable expand-migration column with no default and no backfill.
+A null status SHALL mean output-usage classification is not recorded (unclassified), not that the row predates persistence or a deployment cutover.
+Orchard MUST NOT infer row age or cutover from a null status, or infer, backfill, or present `exact` or `lower_bound` for such a row from its counts, lifecycle state, timestamps, or deployment version.
 
 `node_admission_candidates` SHALL store first-observed Runtime Endpoint metadata before it is reconciled to a trusted Node.
 Rows MAY also link review state for provisioned placeholders or registered Nodes through `node_id`, but `admission_category` remains derived review state, not a `node_state` lifecycle enum.
