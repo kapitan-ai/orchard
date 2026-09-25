@@ -397,7 +397,7 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
 def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, Any]:
     _require_exact_keys(payload, {"contract_version", "command", "assets", "request"}, "payload")
     assets = require_mapping(payload, "assets")
-    request = require_mapping(payload, "request")
+    request = normalize_tool_history(require_mapping(payload, "request"))
     _require_exact_keys(
         assets,
         {
@@ -496,7 +496,7 @@ def _execute_render_and_count_reasoning(payload: dict[str, Any]) -> dict[str, An
             2,
         )
 
-    messages = normalize_messages(request)
+    messages = normalize_messages_preserving_message_fields(request)
     tools = normalize_optional_tools(request["tools"])
     tool_choice = request["tool_choice"]
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]

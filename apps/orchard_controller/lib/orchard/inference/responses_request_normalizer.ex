@@ -6,6 +6,32 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.ChatRequestNormalizer
 
+  @doc "Converts Responses tools to the internal Chat-shaped representation after shape validation."
+  @spec normalize_tooling(map()) :: map()
+  def normalize_tooling(params) do
+    params
+    |> normalize_tools()
+    |> normalize_tool_choice()
+  end
+
+  defp normalize_tools(%{"tools" => tools} = params) when is_list(tools) do
+    Map.put(params, "tools", Enum.map(tools, &normalize_tool/1))
+  end
+
+  defp normalize_tools(params), do: params
+
+  defp normalize_tool(%{"type" => "function", "name" => _} = tool) do
+    %{"type" => "function", "function" => Map.delete(tool, "type")}
+  end
+
+  defp normalize_tool(tool), do: tool
+
+  defp normalize_tool_choice(%{"tool_choice" => %{"type" => "function", "name" => name}} = params) do
+    Map.put(params, "tool_choice", %{"type" => "function", "function" => %{"name" => name}})
+  end
+
+  defp normalize_tool_choice(params), do: params
+
   @spec normalize(map(), keyword()) :: {:ok, CanonicalRequest.t()}
   def normalize(params, opts \\ []) when is_map(params) do
     public_id = Keyword.get(opts, :public_id, "resp_" <> Ecto.UUID.generate())
@@ -26,6 +52,7 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
 
     {:ok, canonical} =
       params
+      |> normalize_tooling()
       |> build_chat_params()
       |> ChatRequestNormalizer.normalize(normalizer_opts)
 
@@ -64,12 +91,32 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
   end
 
   defp normalize_input(input) when is_list(input) do
-    Enum.map(input, fn item ->
-      %{
-        "role" => Map.get(item, "role"),
-        "content" => normalize_content(Map.get(item, "content"))
-      }
-    end)
+    Enum.map(input, &normalize_input_item/1)
+  end
+
+  defp normalize_input_item(%{"type" => "function_call"} = item) do
+    %{
+      "role" => "assistant",
+      "content" => nil,
+      "tool_calls" => [
+        %{
+          "id" => item["call_id"],
+          "type" => "function",
+          "function" => %{"name" => item["name"], "arguments" => item["arguments"]}
+        }
+        |> put_optional("responses_item_id", item["id"])
+      ]
+    }
+  end
+
+  defp normalize_input_item(%{"type" => "function_call_output"} = item) do
+    %{"role" => "tool", "tool_call_id" => item["call_id"], "content" => item["output"]}
+    |> put_optional("responses_item_id", item["id"])
+  end
+
+  defp normalize_input_item(item) do
+    %{"role" => item["role"], "content" => normalize_content(item["content"])}
+    |> put_optional("responses_item_id", item["id"])
   end
 
   defp normalize_content(content) when is_binary(content), do: content
@@ -77,6 +124,7 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
   defp normalize_content(content) when is_list(content) do
     Enum.map(content, fn
       %{"type" => "input_text", "text" => text} -> %{"type" => "text", "text" => text}
+      %{"type" => "output_text", "text" => text} -> %{"type" => "text", "text" => text}
       %{"type" => "text", "text" => text} -> %{"type" => "text", "text" => text}
     end)
   end

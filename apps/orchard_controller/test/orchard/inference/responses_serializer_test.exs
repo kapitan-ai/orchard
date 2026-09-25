@@ -30,6 +30,8 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
 
     assert payload.output == [
              %{
+               id: "msg_resp_test",
+               status: "completed",
                type: "message",
                role: "assistant",
                content: [%{type: "output_text", text: "Hello world", annotations: []}]
@@ -84,6 +86,23 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
     assert attrs.response_preview_source == :tool_call
     assert attrs.response_payload.output_text == ""
     assert attrs.response_payload.usage == %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
+  end
+
+  test "SPEC §7.2.5 invalid calls cannot become a successful persisted replay" do
+    canonical = build_canonical()
+
+    for {name, arguments} <- [{"unknown", "{}"}, {"lookup_weather", "[]"}] do
+      events = [
+        tool_call_event("call_bad", %{
+          index: 0,
+          function: %{name: name, arguments_delta: arguments}
+        }),
+        InferenceEvent.completed(:finish_reason_tool_calls, nil)
+      ]
+
+      assert ResponsesSerializer.success_persistence_attrs(canonical, events) ==
+               {:error, :invalid_tool_call}
+    end
   end
 
   test "restricted capture drops function-call previews while full keeps a bounded preview" do
@@ -182,6 +201,8 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
 
     assert event.response.output == [
              %{
+               id: "msg_resp_stream",
+               status: "completed",
                type: "message",
                role: "assistant",
                content: [%{type: "output_text", text: "Hello world", annotations: []}]
@@ -246,6 +267,12 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
       rendered_prompt: "hello",
       input_token_count: 3,
       stream?: true,
+      tooling: %{
+        tools:
+          Enum.map(["lookup_weather", "private_tool"], fn name ->
+            %{"type" => "function", "function" => %{"name" => name}}
+          end)
+      },
       metadata: %{"trace" => "abc"}
     }
 

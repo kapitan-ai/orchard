@@ -5668,7 +5668,13 @@ def test_spec_7_5_2_worker_events_match_shared_generated_argument_fixture(
     scenario: str,
     model_text: str,
     finish_reason: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Pin identifier entropy for golden wire bytes; cross-turn uniqueness is tested separately.
+    monkeypatch.setattr(
+        "orchard_worker_mlx.tool_calling.uuid4",
+        MagicMock(side_effect=[SimpleNamespace(hex="0"), SimpleNamespace(hex="1")]),
+    )
     fixture = json.loads(_GENERATED_TOOL_ARGUMENT_FIXTURE.read_text())[scenario]
     events = _generated_tool_argument_events(model_text, finish_reason)
 
@@ -5709,7 +5715,7 @@ def test_tool_choice_auto_emits_parsed_tool_call_and_tool_calls_finish_reason() 
         "tool_call_delta",
         "completed",
     ]
-    assert visible_events[0]["tool_call_id"] == "call_0"
+    assert visible_events[0]["tool_call_id"].startswith("call_")
     assert visible_events[0]["delta"] == {
         "index": 0,
         "type": "function",
