@@ -6,9 +6,9 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   `worker_recovery`. Admission decides from that durable evidence alone: the
   accepted scheduler requirement keeps production candidate construction and
   final revalidation free of inline Runtime Endpoint status probes, so missing
-  evidence never triggers a recovery query here. A placement that is not loaded
-  has no recovery state to resolve, so a fresh authenticated epoch admits it; a
-  loaded placement without exact evidence stays fail-closed.
+  evidence never triggers a recovery query on that path. A valid projection
+  below its bound can establish a cold absence; capped absence and loaded
+  placements without exact evidence stay fail-closed.
   """
 
   require Logger
@@ -108,11 +108,10 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
     end
   end
 
-  defp complete_placement_projection?(observation) do
+  defp valid_placement_projection?(observation) do
     case value(observation, :placements) do
       placements when is_list(placements) ->
-        length(placements) < ObservationBounds.placement_limit() and
-          Enum.all?(placements, &valid_placement_record?/1)
+        Enum.all?(placements, &valid_placement_record?/1)
 
       _invalid ->
         false
@@ -143,32 +142,41 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   end
 
   defp cold_or_inspect(target, model_ref, epoch, :allow, opts),
-    do: inspect_evidence(target, model_ref, epoch, opts)
+    do: inspect_evidence(target, model_ref, epoch, opts, cold_evidence(epoch))
 
   defp cold_or_inspect(_target, _model_ref, epoch, :deny, _opts), do: cold_evidence(epoch)
 
   defp absent_placement_evidence(target, model_ref, epoch, observation, inspection, opts) do
-    if complete_placement_projection?(observation) do
-      cold_or_inspect(target, model_ref, epoch, inspection, opts)
-    else
-      {:error, @unknown}
+    cond do
+      not valid_placement_projection?(observation) ->
+        {:error, @unknown}
+
+      length(value(observation, :placements)) < ObservationBounds.placement_limit() ->
+        cold_or_inspect(target, model_ref, epoch, inspection, opts)
+
+      inspection == :allow and
+          length(value(observation, :placements)) == ObservationBounds.placement_limit() ->
+        inspect_evidence(target, model_ref, epoch, opts, {:error, @unknown})
+
+      true ->
+        {:error, @unknown}
     end
   end
 
-  # SPEC.md §12.2: a placement that is not loaded holds no recovery state, so a
-  # fresh authenticated epoch admits it without a query.
+  # Callers must establish complete cold evidence before using the epoch alone.
   defp cold_evidence(epoch) when is_binary(epoch) and epoch != "", do: :ok
   defp cold_evidence(_epoch), do: {:error, @unknown}
 
-  defp inspect_evidence(target, model_ref, epoch, opts) when is_binary(epoch) and epoch != "" do
+  defp inspect_evidence(target, model_ref, epoch, opts, unsupported)
+       when is_binary(epoch) and epoch != "" do
     case inspect_endpoint(target, model_ref, opts) do
       {:ok, projection} -> exact_evidence(target, model_ref, epoch, projection)
-      :inspection_unsupported -> cold_evidence(epoch)
+      :inspection_unsupported -> unsupported
       _unavailable -> {:error, @unknown}
     end
   end
 
-  defp inspect_evidence(_target, _model_ref, _epoch, _opts), do: {:error, @unknown}
+  defp inspect_evidence(_target, _model_ref, _epoch, _opts, _unsupported), do: {:error, @unknown}
 
   defp inspect_endpoint(target, model_ref, opts) do
     case Keyword.get(opts, :worker_recovery_inspector) do

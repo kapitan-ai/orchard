@@ -153,6 +153,41 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
              WorkerRecoveryEligibility.check(target(), observation(nil, [invalid]), @model)
   end
 
+  test "SPEC §12.2 capped unmanaged observations require exact inspection, never absence fallback" do
+    placements =
+      Enum.map(1..40, fn index ->
+        Placement.new(%{model_ref: %{model_id: "other-#{index}", version: "v1"}})
+        |> Map.put(:worker_recovery, %{clean() | key: %{clean().key | model_id: "other-#{index}"}})
+      end)
+
+    status = observation(nil, placements)
+
+    for {reply, expected} <- [
+          {{:ok, clean()}, :ok},
+          {{:ok, %{clean() | epoch: "old"}}, {:error, :worker_recovery_evidence_unavailable}},
+          {{:ok, %{clean() | key: %{clean().key | version: "other"}}},
+           {:error, :worker_recovery_evidence_unavailable}},
+          {{:ok,
+            %{clean() | state: :open, eligible: false, reason: :placement_crash_breaker_open}},
+           {:error, :placement_crash_breaker_open}},
+          {:inspection_unsupported, {:error, :worker_recovery_evidence_unavailable}}
+        ] do
+      inspector = fn inspected_target, ref ->
+        assert inspected_target.node_id == @node_id
+        assert ref.model_id == @model.model_id
+        assert ref.version == @model.version
+        reply
+      end
+
+      assert WorkerRecoveryEligibility.check_with_inspection(target(), status, @model,
+               worker_recovery_inspector: inspector
+             ) == expected
+    end
+
+    assert {:error, :worker_recovery_evidence_unavailable} =
+             WorkerRecoveryEligibility.check(target(), status, @model)
+  end
+
   test "SPEC §12.2 single-node loaded gate rejects before capacity evaluation" do
     Process.put(
       :recovery_observation,

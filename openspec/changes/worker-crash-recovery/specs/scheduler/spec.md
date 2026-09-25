@@ -50,12 +50,15 @@ Initial allocation/legacy-claim acquisition and final acceptance-gated ADR 0013
 revalidation SHALL remain mandatory.
 Worker recovery admission SHALL decide from the durable observation and its placement
 projections on that path.
-A placement that is not loaded holds no recovery state to resolve, so a fresh authenticated
-recovery epoch SHALL admit it, while a loaded placement without exact current-epoch evidence
-SHALL remain refused.
+An omitted placement in a valid projection below its bound may be treated as cold, so a fresh
+authenticated recovery epoch SHALL admit it, while a loaded placement without exact
+current-epoch evidence SHALL remain refused.
 Only the bounded unmanaged-compatibility wave MAY resolve a cold placement with a targeted
 read-only recovery query, and a transport that cannot answer that query SHALL fall back to
-epoch-only evidence rather than be treated as unrecovered.
+epoch-only evidence only when a valid placement projection is below its bound.
+At the bound, an omitted key SHALL require exact current-epoch inspection evidence on that
+wave; unsupported or unavailable inspection SHALL remain fail-closed. Production scheduling
+SHALL NOT perform an inline query to resolve that omission.
 This requirement refines `SPEC.md` §4.6.2, §5.9, and §12.2.3.
 
 #### Scenario: Production snapshot is available
@@ -69,13 +72,21 @@ This requirement refines `SPEC.md` §4.6.2, §5.9, and §12.2.3.
 
 #### Scenario: Cold production candidate is admitted without a recovery query
 - **WHEN** a production candidate reports a fresh recovery epoch and no loaded placement for
-  the requested model
+  the requested model in a valid projection below its bound
 - **THEN** recovery admission accepts it with no Runtime Endpoint status or inspection call
 - **AND** a loaded placement lacking exact current-epoch evidence is still refused without a
   reprobe
 
 #### Scenario: Uninspectable transport does not imply unrecovered state
 - **WHEN** the bounded unmanaged-compatibility wave reaches a transport that cannot answer a
-  recovery query
+  recovery query and its valid placement projection is below the bound
 - **THEN** admission uses the authenticated epoch alone
 - **AND** the candidate is not refused for missing recovery evidence
+
+#### Scenario: Exact inspection resolves capped unmanaged evidence
+- **WHEN** the bounded unmanaged-compatibility wave omits a requested key from an otherwise
+  valid placement projection at its bound
+- **THEN** a targeted inspection may establish eligibility only for the exact Node/model/version
+  with hydrated current-epoch evidence
+- **AND** wrong-key, stale-epoch, blocked, unavailable or unsupported inspection cannot admit it
+- **AND** the production durable-snapshot path remains refused without an inline query

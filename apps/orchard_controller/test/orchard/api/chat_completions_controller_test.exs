@@ -1122,11 +1122,21 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       }
 
       Process.put(:queue_admission_runtime_pids, [])
-      tasks = Enum.map(1..3, fn _index -> Task.async(fn -> post_chat(params, token) end) end)
+
+      tasks =
+        Enum.map(1..3, fn _index ->
+          Task.async(fn ->
+            receive do
+              :start_queue_request -> post_chat(params, token)
+            end
+          end)
+        end)
 
       try do
+        send(Enum.at(tasks, 0).pid, :start_queue_request)
         {first_pid, first_request_id} = runtime_start_message("chat-queue-capacity2-model")
         remember_runtime_pid(first_pid)
+        send(Enum.at(tasks, 1).pid, :start_queue_request)
         {second_pid, second_request_id} = runtime_start_message("chat-queue-capacity2-model")
         remember_runtime_pid(second_pid)
 
@@ -1138,6 +1148,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         assert placement.active_request_count == 2
         assert placement.max_concurrency == 2
 
+        send(Enum.at(tasks, 2).pid, :start_queue_request)
         assert wait_for_queued_request("chat-queue-capacity2-model@v1")
 
         refute_receive {:queue_admission_runtime_started, _pid, _request_id,
