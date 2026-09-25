@@ -34,6 +34,7 @@ defmodule Orchard.BeamPeerGrantsTest do
     Target
   }
 
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
   alias Orchard.TransportTLS.{CertificateIdentity, PeerVerifier}
 
   defmodule AuthenticatedStatusServer do
@@ -2060,7 +2061,7 @@ defmodule Orchard.BeamPeerGrantsTest do
           }
         ]
       )
-      |> Orchard.TestSupport.WorkerRecoveryFixtures.status()
+      |> WorkerRecoveryFixtures.status()
 
     assert {:ok, _active} =
              Nodes.observe_authenticated_status(
