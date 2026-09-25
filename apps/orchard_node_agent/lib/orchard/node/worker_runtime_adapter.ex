@@ -578,7 +578,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp acknowledge_runtime_custody(params) do
-    case params.on_runtime_custody.() do
+    case Map.get(params, :on_runtime_custody, fn -> :ok end).() do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
       _invalid -> {:error, :invalid_acknowledgement}
