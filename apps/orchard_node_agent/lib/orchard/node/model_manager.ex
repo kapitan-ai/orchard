@@ -1661,7 +1661,10 @@ defmodule Orchard.Node.ModelManager do
           {:ok, pid} ->
             monitor = Process.monitor(pid)
             state = put_worker(state, key, model_ref, pid, monitor)
-            state = put_in(state, [:recovery, key, :last_worker_pid], pid)
+            entry = state.recovery[key]
+            ownership = put_runtime_custody(entry.ownership, pid)
+            entry = %{entry | ownership: ownership, last_worker_pid: pid}
+            state = put_recovery(state, key, entry)
             state = put_in(state, [:inflight_loads, key], %{inflight | worker_pid: pid})
             GenServer.reply(from, {:ok, pid})
             state
@@ -2907,13 +2910,17 @@ defmodule Orchard.Node.ModelManager do
       |> Enum.sort()
       |> Enum.split_with(&match?(%{placement_state: :PLACEMENT_STATE_LOADED}, state.workers[&1]))
 
-    recovery_only =
+    {refused_recovery, eligible_recovery} =
       state.recovery
       |> Map.keys()
       |> Enum.reject(&Map.has_key?(state.workers, &1))
       |> Enum.sort()
+      |> Enum.split_with(&(not is_nil(Recovery.refusal(state.recovery[&1]))))
 
-    Enum.take(loaded ++ other_workers ++ recovery_only, @runtime_model_placement_limit)
+    Enum.take(
+      loaded ++ refused_recovery ++ other_workers ++ eligible_recovery,
+      @runtime_model_placement_limit
+    )
   end
 
   defp runtime_memory_budget(%ModelRef{} = model_ref, budget) do

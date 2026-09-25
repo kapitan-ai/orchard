@@ -6,11 +6,10 @@ defmodule Orchard.Scheduler.SingleNode do
   capacity to advertise `:queue_lane_capacity` or return `{:error, :model_busy}`
   only for proven requested-model path saturation.
 
-  Targets fail closed with stable reason-coded explanations when no live
-  authorized capacity input can be built — probe failure, skipped probing,
-  missing Controller-owned facts, or authorization denial. An unavailable
-  target reports `transport_unreachable`, whether or not it resolves to a known
-  Node; that is not evidence of a worker-recovery failure.
+  Known Nodes fail closed with stable reason-coded explanations when no live
+  authorized capacity input can be built. The bounded unmanaged compatibility
+  path retains its Controller-authorized unprobed dispatch semantics; the Node's
+  recovery gate still independently refuses residency without trusted evidence.
 
   Configured-target non-saturation failures return `cluster_busy` with a
   scheduler explanation so operators are not left with a bare 503.
@@ -558,7 +557,7 @@ defmodule Orchard.Scheduler.SingleNode do
   defp normalize_observation(target, response),
     do: GrpcCompatibilityMapper.observation_from_status(Target.normalize(target), response)
 
-  defp unavailable_schedule(schedule, target, node, opts) do
+  defp unavailable_schedule(schedule, target, node, opts) when not is_nil(node) do
     request = Keyword.get(opts, :canonical_request) || synthetic_request(schedule)
 
     schedule_failure(
@@ -569,6 +568,89 @@ defmodule Orchard.Scheduler.SingleNode do
       ["transport_unreachable"],
       %{fact: "status_probe_unavailable", selected_tier: Map.get(schedule, :selected_tier)}
     )
+  end
+
+  defp unavailable_schedule(schedule, target, nil, opts) do
+    capacity_target = capacity_target(target)
+    request = Keyword.get(opts, :canonical_request) || synthetic_request(schedule)
+
+    case unprobed_unmanaged_input(capacity_target, opts) do
+      {:ok, input} ->
+        authorize_unprobed_unmanaged(schedule, request, capacity_target, input, opts)
+
+      {:error, _reason} ->
+        schedule_failure(
+          request,
+          target,
+          nil,
+          :model_busy,
+          ["dispatch_capacity_facts_unavailable"],
+          %{fact: "unmanaged_capacity_input_unavailable"}
+        )
+    end
+  end
+
+  defp authorize_unprobed_unmanaged(schedule, request, capacity_target, input, opts) do
+    authority = Keyword.get(opts, :dispatch_capacity_authority, AllocationAuthority)
+    result = safe_unmanaged_evaluation(authority, input)
+
+    if Consumer.authorized?(result) do
+      provider = fn -> unprobed_unmanaged_input_or_nil(capacity_target, opts) end
+
+      authorized_schedule =
+        schedule
+        |> Map.put(:queue_lane_capacity, result.available_slots)
+        |> Map.put(:dispatch_capacity_input, input)
+        |> Map.put(:dispatch_capacity_acquisition_input_provider, provider)
+        |> Map.put(:dispatch_capacity_input_provider, provider)
+        |> Map.put(:dispatch_capacity_evaluation, result)
+        |> Consumer.put_authority(opts)
+
+      {:ok, authorized_schedule}
+    else
+      reason_codes =
+        case result do
+          %{reason_codes: codes} when is_list(codes) and codes != [] ->
+            Enum.map(codes, &to_string/1)
+
+          _other ->
+            ["dispatch_capacity_facts_unavailable"]
+        end
+
+      schedule_failure(
+        request,
+        capacity_target,
+        nil,
+        :model_busy,
+        reason_codes,
+        %{fact: "unmanaged_dispatch_capacity_unauthorized"}
+      )
+    end
+  end
+
+  defp safe_unmanaged_evaluation(authority, input) do
+    evaluate_dispatch_capacity(authority, nil, input)
+  catch
+    :exit, _reason -> nil
+  end
+
+  defp unprobed_unmanaged_input_or_nil(capacity_target, opts) do
+    case unprobed_unmanaged_input(capacity_target, opts) do
+      {:ok, input} -> input
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp unprobed_unmanaged_input(capacity_target, opts) do
+    input_opts = [placement_capacity: :not_applicable, now: DateTime.utc_now()]
+
+    input_opts =
+      case Keyword.fetch(opts, :controller_mode) do
+        {:ok, controller_mode} -> Keyword.put(input_opts, :controller_mode, controller_mode)
+        :error -> input_opts
+      end
+
+    Authorization.unmanaged_input(capacity_target, %{}, input_opts)
   end
 
   defp capacity_target(target) do

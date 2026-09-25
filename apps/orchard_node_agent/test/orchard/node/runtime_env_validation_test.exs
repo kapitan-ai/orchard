@@ -287,11 +287,23 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     end
   end
 
+  test "SPEC §12.2 runtime.exs rejects an invalid recovery listener host at boot" do
+    for host <- ["0.0.0.0", "8.8.8.8", "localhost", "::1"] do
+      assert_raise RuntimeError, fn ->
+        read_runtime_config!(%{
+          "ORCHARD_NODE_AGENT_LISTEN_HOST" => host,
+          "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "true"
+        })
+      end
+    end
+  end
+
   test "runtime.exs allows a non-loopback listen host under gRPC mutual TLS" do
     runtime =
       read_runtime_config!(%{
         "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc",
-        "ORCHARD_NODE_AGENT_LISTEN_HOST" => "0.0.0.0"
+        "ORCHARD_NODE_AGENT_LISTEN_HOST" => "0.0.0.0",
+        "ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED" => "false"
       })
       |> Keyword.fetch!(:orchard_node_agent)
       |> Keyword.fetch!(:runtime)

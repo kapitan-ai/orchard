@@ -228,6 +228,6 @@ defmodule Orchard.Node.WorkerRecoveryState do
     }
   end
 
-  defp projection_state(:armed, :placement_recovery_required), do: :recovery_required
+  defp projection_state(_state, :placement_recovery_required), do: :recovery_required
   defp projection_state(state, _reason), do: state
 end

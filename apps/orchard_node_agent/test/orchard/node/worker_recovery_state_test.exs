@@ -81,6 +81,19 @@ defmodule Orchard.Node.WorkerRecoveryStateTest do
              State.projection(entry)
   end
 
+  test "SPEC §12.2 recovery-required ownership overrides every policy-state projection" do
+    entry =
+      State.new("epoch")
+      |> State.hydrate(:absent)
+      |> put_in([:policy, :state], :backoff)
+      |> put_in([:ownership, "phase"], "cleanup")
+
+    assert State.refusal(entry) == :placement_recovery_required
+
+    assert %{eligible: false, reason: "placement_recovery_required", state: "recovery_required"} =
+             State.projection(entry)
+  end
+
   test "SPEC §12.2 fresh epochs retain nonclean checkpoints without rebasing clocks" do
     entry =
       State.new("old") |> State.hydrate(:absent) |> State.transition({:admit, "worker"}, -9_000)

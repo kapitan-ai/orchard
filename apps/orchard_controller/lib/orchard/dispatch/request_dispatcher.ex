@@ -67,6 +67,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   require Logger
 
   @maximum_cancel_drain_timeout_ms 5_000
+  @reasoning_conformance_codes InferenceAttemptFailure.reasoning_conformance_codes()
 
   @doc "Revalidates a recognized dispatch claim through the production QueueManager seam."
   @spec revalidate_dispatch_capacity(
@@ -532,6 +533,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               "request_client_disconnect"
             ],
        do: %{category: :cancellation, code: code}
+
+  defp failure_source(code) when code in @reasoning_conformance_codes,
+    do: %{category: :terminal_conformance, code: code}
 
   defp failure_source(code)
        when code in [

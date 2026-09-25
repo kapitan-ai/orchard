@@ -679,7 +679,7 @@ defmodule OrchardApplicationTest do
     refute is_pid(Process.whereis(Orchard.Supervisor))
   end
 
-  test "SPEC.md §7.5.0 grant-control mode is non-distributed and starts no runtime dispatch" do
+  test "SPEC.md §7.5.0 grant-control starts the admission policy gate without runtime dispatch" do
     Application.put_env(:orchard_controller, :start_metrics, true)
 
     Application.put_env(:orchard_controller, :beam_peer_grants,
@@ -696,6 +696,26 @@ defmodule OrchardApplicationTest do
     children = Orchard.Application.child_specs()
     refute Orchard.Inference in children
     refute Orchard.RuntimeEndpoint.ActivationProbe in children
+
+    capacity_children = Enum.filter(children, &(&1 in [QuarantineStore, AllocationAuthority]))
+    assert capacity_children == [QuarantineStore, AllocationAuthority]
+    Enum.each(capacity_children, &start_supervised!/1)
+
+    assert {:ok, :policy_written} =
+             Orchard.DispatchCapacity.with_policy_mutation_gate(Ecto.UUID.generate(), fn ->
+               {:ok, :policy_written}
+             end)
+
+    refute is_pid(Process.whereis(Orchard.Inference))
+    refute is_pid(Process.whereis(QueueManager))
+    refute is_pid(Process.whereis(Orchard.Requests.Supervisor))
+
+    stop_supervised!(AllocationAuthority)
+
+    assert {:error, :dispatch_capacity_authority_unavailable} =
+             Orchard.DispatchCapacity.with_policy_mutation_gate(Ecto.UUID.generate(), fn ->
+               flunk("admission must remain fail-closed without its authority")
+             end)
 
     refute Enum.any?(children, fn
              {Orchard.BeamPeerGrants.ControllerStartupVerifier, _opts} -> true

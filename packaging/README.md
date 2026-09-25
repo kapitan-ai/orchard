@@ -178,6 +178,7 @@ Optional controller variables:
 | `ORCHARD_NODE_TRUST_ROOT` | `/Library/Application Support/Orchard/config/node-trust` | Controller root for internal Node trust material initialized by `orchardctl nodes trust init` |
 | `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | `127.0.0.1` | Bind host for the SPEC §12.2 recovery-control listener that node agents use for worker-recovery checkpoint reads and commits. It accepts a loopback or private IPv4 literal only; a multi-Mac install needs the controller's private address. |
 | `ORCHARD_WORKER_RECOVERY_CONTROL_PORT` | `50073` | TCP port for the recovery-control listener. |
+| `ORCHARD_LOCAL_NODE_IDENTITY_ROOT` | unset; generated for `env init --service all` | Display-only association to this host's registered Node Join store. All-in-one generation uses `support_root/config/node-identity`; a custom Node store requires the same explicit Controller path. Never point it to a remote Node copy. No trust, admission or serving authority is granted. Missing or mismatched identity displays unknown. |
 | `POOL_SIZE` | `10` | Ecto connection pool size |
 | `ECTO_IPV6` | - | Set to `true` for IPv6 socket options |
 
@@ -185,6 +186,13 @@ Transport, TLS, and CORS variables are listed in
 [Controller transport environment](#controller-transport-environment).
 
 ### Node identity environment variables
+
+Existing Controller environment files are not rewritten to add local association.
+For an existing all-in-one installation, an operator may explicitly configure
+`ORCHARD_LOCAL_NODE_IDENTITY_ROOT` to the local registered Node store after
+verifying its custody. The Console reads registered metadata only, not private
+keys. It does not use the legacy `data/node-id` compatibility identity, and a
+successful status probe alone does not establish a trusted local Node.
 
 Set these node-agent overrides only when the Orchard support-root layout is intentionally changed.
 Defaults are relative to `ORCHARD_SUPPORT_ROOT`, default `/Library/Application Support/Orchard`.

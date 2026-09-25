@@ -573,6 +573,68 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert loaded.capacity.max_concurrency > 0
   end
 
+  test "SPEC §12.2 refused recovery evidence precedes clean cold evidence at the status cap" do
+    :sys.replace_state(ModelManager, fn state ->
+      eligible =
+        Map.new(1..40, fn index ->
+          entry =
+            state.recovery_epoch
+            |> WorkerRecoveryState.new()
+            |> WorkerRecoveryState.hydrate(:absent)
+
+          {{"eligible/#{index}", "v1"}, entry}
+        end)
+
+      refused =
+        state.recovery_epoch
+        |> WorkerRecoveryState.new()
+        |> WorkerRecoveryState.hydrate(:absent)
+        |> put_in([:policy, :state], :open)
+
+      %{state | recovery: Map.put(eligible, {"zz-refused", "v1"}, refused)}
+    end)
+
+    status = ModelManager.current()
+    assert length(status.runtime_model_placements) == 40
+
+    assert Enum.any?(status.runtime_model_placements, fn placement ->
+             placement.model_ref.model_id == "zz-refused"
+           end)
+  end
+
+  test "SPEC §12.2 inspect cannot discard custody while a co-hydrated ensure is inflight", ctx do
+    BlockingLoadAdapter.owner(self())
+    Checkpoints.read_delay(100)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(Node.runtime_config(), :runtime_adapter_impl, BlockingLoadAdapter)
+    )
+
+    inspect_task =
+      Task.async(fn ->
+        ModelManager.inspect_worker_recovery(ctx.request.model_id, ctx.request.version)
+      end)
+
+    Process.sleep(20)
+    load_task = Task.async(fn -> ModelManager.ensure_model_loaded(ctx.request) end)
+    assert_receive {:recovery_load_blocked, adapter_pid}, 5_000
+    assert {:ok, %{eligible: true}} = Task.await(inspect_task)
+
+    state = :sys.get_state(ModelManager)
+    assert Map.has_key?(state.inflight_loads, ctx.key)
+    assert Map.has_key?(state.recovery, ctx.key)
+
+    assert state.recovery[ctx.key].ownership["custody"] ==
+             Custody.record_runtime_custody(nil, state.inflight_loads[ctx.key].worker_pid)
+
+    send(adapter_pid, :finish_recovery_load)
+
+    assert Task.await(load_task, 5_000).placement_state == :PLACEMENT_STATE_LOADED
+    assert Process.alive?(Process.whereis(ModelManager))
+  end
+
   test "SPEC §12.2 a rejected stale hydration checkpoint replies to its waiter before rehydrating",
        ctx do
     exact = %{
@@ -1100,11 +1162,13 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
              "placement_recovery_required"
 
-    assert {:ok, %{state: "open"}} = inspect_key(ctx)
+    assert {:ok, %{state: "recovery_required", reason: "placement_recovery_required"}} =
+             inspect_key(ctx)
+
     status = ModelManager.current()
     assert status.loaded_models == []
     assert [%{worker_recovery_json: json}] = status.runtime_model_placements
-    assert Jason.decode!(json)["state"] == "open"
+    assert Jason.decode!(json)["state"] == "recovery_required"
   end
 
   test "SPEC §12.2 prior loaded ownership is not clean and unknown custody refuses clear", ctx do

@@ -116,7 +116,11 @@ defmodule Orchard.Application do
 
   defp maybe_add_inference_stack(children) do
     if peer_grant_control_mode?() do
-      children
+      children ++
+        [
+          Orchard.DispatchCapacity.QuarantineStore,
+          Orchard.DispatchCapacity.AllocationAuthority
+        ]
     else
       children ++
         [
