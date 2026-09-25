@@ -1336,7 +1336,15 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
              )
 
     assert_received {:peer_grant_connect, "10.0.0.10:50072",
-                     [cred: :credential, adapter_opts: [transport_opts: [timeout: 321]]]}
+                     [
+                       cred: :credential,
+                       connect_timeout: 321,
+                       adapter_opts: [
+                         connect_timeout: 321,
+                         tls_handshake_timeout: 321,
+                         await_timeout: 321
+                       ]
+                     ]}
 
     assert_received {:bounded_peer_grant_rpc, ^request, [timeout: 654]}
     assert_received :bounded_peer_grant_disconnect
