@@ -122,6 +122,15 @@ For each worker Mac, the operator currently:
 This sequence does not execute the target `provisioned -> registered -> admitted -> active` trust flow.
 The shared cookie is current transport access material and must not be described as Node identity or Node Enrollment.
 
+It establishes transport reachability, not permission to load a model.
+Before inference, configure Controller HTTPS and internal Node trust, issue and
+redeem a Node Enrollment bundle, configure authenticated recovery control in both
+directions, and complete admission and authenticated activation for managed
+scheduling. See [Worker recovery control](local-dev.md#worker-recovery-control).
+Missing identity or unavailable recovery authority keeps model loads refused
+with `placement_recovery_required`; the seven steps above alone are not a
+complete inference or worker-recovery acceptance procedure.
+
 ### Workspace, Model, And First Inference
 
 After Console is reachable, the operator currently:

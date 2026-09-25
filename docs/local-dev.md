@@ -882,6 +882,17 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 
 ### Verification
 
+The shared-cookie launch commands above establish transport reachability only.
+Before checking inference, configure Controller HTTPS, initialize Node trust,
+issue and redeem an enrollment bundle for each worker, and configure the
+authenticated recovery-control endpoints in both directions as described in
+[Worker recovery control](#worker-recovery-control). Managed scheduling also
+requires administrator admission and fresh authenticated activation evidence.
+A reachable BEAM target or an observed admission candidate does not satisfy
+these prerequisites. Until they are met, expect `placement_recovery_required`
+rather than successful model residency; transport-only results are not inference
+or crash-recovery acceptance evidence.
+
 1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
 3. `GET /v1/models` should return `200` and list the Models granted to the calling Tenant.
