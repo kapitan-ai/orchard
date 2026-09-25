@@ -3,6 +3,29 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-09-20
+
+### Breaking changes
+
+_None this week._
+
+### Features
+
+- Cluster operators can now retry an eligible terminal full-capture Request through `POST /ops/v1/requests/:id/retry`. Retries revalidate current Model access, preserve the original deadline, narrow capture and routing budgets, and are capped at three descendants per original Request; retained negotiated-reasoning Requests remain ineligible until their reconstruction contract ships. ([#423](https://github.com/kapitan-ai/orchard/pull/423))
+
+### Bug fixes
+
+- Generic Runtime Endpoint status and candidate observations now respect Controller Node-lifecycle write authority: refused observations cannot persist lifecycle evidence or publish positive queue capacity, and may clear only fresh capacity sources safely owned by the original target without waking queued work. ([#443](https://github.com/kapitan-ai/orchard/pull/443))
+
+### Improvements
+
+- Provider-neutral reasoning parsing now has a dormant, chunk-invariant conformance implementation and corpus for tagged-pair and prompt-opened output, including fail-closed malformed, truncation, cancellation, and hidden-reasoning cases; no production parser registration or model support claim is activated. ([#420](https://github.com/kapitan-ai/orchard/pull/420))
+- Canonical `low`, `medium`, and `high` reasoning-effort tiers now flow through exact artifact- and template-bound renderer contracts with fail-closed metadata checks and content-free runtime-incompatibility errors. Production registrations and public controls remain unavailable pending qualification and later protocol work. ([#425](https://github.com/kapitan-ai/orchard/pull/425))
+- Console Request detail now leads with the logical outcome, adjacent TTFT and total time, a shared-scale attempt timeline, expandable attempt diagnostics, and keyboard-accessible retained-JSON copying without treating missing timing or usage as zero. ([#426](https://github.com/kapitan-ai/orchard/pull/426))
+- Mint was upgraded from 1.9.3 to 1.10.0, adding bounded HTTP/1 parsing that remediates the applicable memory- and CPU-exhaustion advisories; unchanged Gun and Cowlib advisory metadata remains outside this update. ([#440](https://github.com/kapitan-ai/orchard/pull/440))
+- Contributor guidance now distinguishes private Linear planning from public GitHub intake, review, and release work, requires explicit public-ready approval for private material, and retires the former tracker adapter without changing merge, release, or deployment authority. ([#445](https://github.com/kapitan-ai/orchard/pull/445))
+- The tokenizer helper now resolves tokenizers 0.23.2, bringing upstream performance and maintenance improvements while preserving Orchard's existing tokenizer and helper protocol contracts. ([#441](https://github.com/kapitan-ai/orchard/pull/441))
+
 ## 2026-09-13
 
 ### Breaking changes
