@@ -469,7 +469,8 @@ defmodule Orchard.Scheduler.SingleNodeTest do
              )
 
     assert schedule.selected_tier == "cold"
-    assert schedule.dispatch_capacity_evaluation.authorized
+    assert schedule.dispatch_capacity_evaluation.eligible?
+    assert schedule.dispatch_capacity_evaluation.available_slots == 1
   end
 
   test "uses one conservative unmanaged slot when aggregate capacity is missing" do

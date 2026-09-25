@@ -8,6 +8,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
   alias Orchard.RuntimeEndpoint.{
     ModelRef,
     Observation,
+    ObservationBounds,
     Placement,
     PlacementCapacity,
     Target,
@@ -341,7 +342,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
   defp placement_model_ref_key(_placement), do: :error
 
   defp ensure_placement_limit(placements) do
-    if length(placements) <= Orchard.RuntimeEndpoint.ObservationBounds.placement_limit() do
+    if length(placements) <= ObservationBounds.placement_limit() do
       :ok
     else
       {:error, :placement_entry_overflow}
@@ -475,7 +476,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
 
   defp normalize_entries(entries, normalizer) when is_list(entries) do
     entries
-    |> Enum.take(Orchard.RuntimeEndpoint.ObservationBounds.placement_limit())
+    |> Enum.take(ObservationBounds.placement_limit())
     |> Enum.map(normalizer)
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&stringify_keys/1)

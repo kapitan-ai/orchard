@@ -41,6 +41,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Node.WorkerRecoveryCustody
   alias Orchard.Node.WorkerRecoveryState, as: Recovery
   alias Orchard.Node.WorkerSupervisor
+  alias Orchard.RuntimeEndpoint.ObservationBounds
 
   @type worker_entry :: %{
           model_ref: ModelRef.t(),
@@ -2966,7 +2967,7 @@ defmodule Orchard.Node.ModelManager do
 
     Enum.take(
       loaded ++ refused_recovery ++ other_workers ++ eligible_recovery,
-      Orchard.RuntimeEndpoint.ObservationBounds.placement_limit()
+      ObservationBounds.placement_limit()
     )
   end
 

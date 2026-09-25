@@ -14,6 +14,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
 
   alias Orchard.RuntimeEndpoint.{
     ModelRef,
+    ObservationBounds,
     Placement,
     PlacementCapacity,
     Target,
@@ -550,7 +551,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
       duplicate_placement_model_refs?(normalized) ->
         {:error, "dispatch_capacity_facts_unavailable", :duplicate_placement_model_ref}
 
-      length(placements) > Orchard.RuntimeEndpoint.ObservationBounds.placement_limit() ->
+      length(placements) > ObservationBounds.placement_limit() ->
         {:error, "dispatch_capacity_facts_unavailable", :placement_entry_overflow}
 
       true ->

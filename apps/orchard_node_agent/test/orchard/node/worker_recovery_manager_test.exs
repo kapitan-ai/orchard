@@ -2,7 +2,14 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   use ExUnit.Case, async: false
 
   alias Orchard.ArtifactBundle
-  alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, UnloadModelRequest}
+
+  alias Orchard.Cluster.V1.{
+    EnsureModelLoadedRequest,
+    ExecuteInferenceRequest,
+    ModelRef,
+    UnloadModelRequest
+  }
+
   alias Orchard.Node
 
   alias Orchard.Node.{
@@ -99,7 +106,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     defp unavailable_write?(:custody_unavailable, record),
       do:
         record["ownership"]["phase"] == "loading" and
-          is_binary(record["ownership"]["custody"])
+          String.starts_with?(record["ownership"]["custody"] || "", "runtime-custody:")
 
     defp unavailable_write?(:interrupt_unavailable, record),
       do: record["ownership"]["phase"] == "cleanup" and is_nil(record["command"])
@@ -665,7 +672,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert {:error, :worker_unavailable} =
              ModelManager.checkpoint_runtime_custody(
                ModelManager,
-               %Orchard.Cluster.V1.ModelRef{
+               %ModelRef{
                  model_id: ctx.request.model_id,
                  version: ctx.request.version
                },

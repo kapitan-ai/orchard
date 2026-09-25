@@ -15,6 +15,7 @@ defmodule Orchard.Node.WorkerProcess do
 
   alias Orchard.Node.{
     FakeRuntimeAdapter,
+    ModelManager,
     RuntimeAdapter,
     RuntimeProcessReaper,
     WorkerCapabilityEvidence
@@ -260,7 +261,7 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   defp checkpoint_runtime_custody(state) do
-    Orchard.Node.ModelManager.checkpoint_runtime_custody(
+    ModelManager.checkpoint_runtime_custody(
       state.manager,
       state.model_ref,
       self()

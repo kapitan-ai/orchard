@@ -14,6 +14,7 @@ defmodule Orchard.Node.WorkerProcessTest do
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
+  alias Orchard.Node.WorkerManagerStub
   alias Orchard.Node.WorkerProcess
 
   test "SPEC §12.2 stale generation-unavailable reports cannot kill the current worker" do
@@ -163,11 +164,12 @@ defmodule Orchard.Node.WorkerProcessTest do
 
   defp start_worker_process! do
     model_ref = %ModelRef{model_id: "test/buffer-model", version: "v1"}
+    manager = start_supervised!({WorkerManagerStub, self()}, id: make_ref())
 
     {:ok, pid} =
       WorkerProcess.start_link(
         model_ref: model_ref,
-        manager: self()
+        manager: manager
       )
 
     pid

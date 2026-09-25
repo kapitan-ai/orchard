@@ -75,11 +75,7 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
 
       case matching_placements(observation, runtime_ref) do
         [] ->
-          if complete_placement_projection?(observation) do
-            cold_or_inspect(target, runtime_ref, epoch, inspection, opts)
-          else
-            {:error, @unknown}
-          end
+          absent_placement_evidence(target, runtime_ref, epoch, observation, inspection, opts)
 
         [placement] ->
           placement_evidence(target, runtime_ref, epoch, placement)
@@ -150,6 +146,14 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
     do: inspect_evidence(target, model_ref, epoch, opts)
 
   defp cold_or_inspect(_target, _model_ref, epoch, :deny, _opts), do: cold_evidence(epoch)
+
+  defp absent_placement_evidence(target, model_ref, epoch, observation, inspection, opts) do
+    if complete_placement_projection?(observation) do
+      cold_or_inspect(target, model_ref, epoch, inspection, opts)
+    else
+      {:error, @unknown}
+    end
+  end
 
   # SPEC.md §12.2: a placement that is not loaded holds no recovery state, so a
   # fresh authenticated epoch admits it without a query.
