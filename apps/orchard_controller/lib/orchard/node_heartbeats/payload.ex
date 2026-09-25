@@ -17,7 +17,6 @@ defmodule Orchard.NodeHeartbeats.Payload do
   @schema_version 1
   @default_max_bytes 262_144
   @minimum_max_bytes 128
-  @entry_limit 40
   @string_limit_bytes 512
   @model_ref_limit 160
   @status_limit 80
@@ -342,7 +341,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
   defp placement_model_ref_key(_placement), do: :error
 
   defp ensure_placement_limit(placements) do
-    if length(placements) <= @entry_limit do
+    if length(placements) <= Orchard.RuntimeEndpoint.ObservationBounds.placement_limit() do
       :ok
     else
       {:error, :placement_entry_overflow}
@@ -476,7 +475,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
 
   defp normalize_entries(entries, normalizer) when is_list(entries) do
     entries
-    |> Enum.take(@entry_limit)
+    |> Enum.take(Orchard.RuntimeEndpoint.ObservationBounds.placement_limit())
     |> Enum.map(normalizer)
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&stringify_keys/1)

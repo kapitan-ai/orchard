@@ -101,7 +101,6 @@ defmodule Orchard.Node.ModelManager do
   @score_prefix_cache_local_timeout_grace_ms 50
   @prompt_token_ids_support_probe_max_timeout_ms 1_000
   @worker_crash_model_limit 4
-  @runtime_model_placement_limit 40
   @ordinary_unload_stop_deadline_ms 10_000
   @ordinary_unload_call_timeout_ms @ordinary_unload_stop_deadline_ms + 1_000
 
@@ -170,6 +169,16 @@ defmodule Orchard.Node.ModelManager do
   @spec unload_model(UnloadModelRequest.t()) :: Ack.t()
   def unload_model(%UnloadModelRequest{} = request) do
     GenServer.call(__MODULE__, {:unload_model, request}, @ordinary_unload_call_timeout_ms)
+  end
+
+  @doc false
+  @spec checkpoint_runtime_custody(GenServer.server(), ModelRef.t(), pid()) ::
+          :ok | {:error, term()}
+  def checkpoint_runtime_custody(manager, %ModelRef{} = model_ref, worker_pid) do
+    key = model_key(model_ref.model_id, model_ref.version)
+    GenServer.call(manager, {:checkpoint_runtime_custody, key, worker_pid}, 5_000)
+  catch
+    :exit, reason -> {:error, reason}
   end
 
   @spec prepare_request(ExecuteInferenceRequest.t(), pid()) :: :ok | {:error, term()}
@@ -325,6 +334,22 @@ defmodule Orchard.Node.ModelManager do
     case Map.get(state.inflight_loads, key) do
       %{task_pid: ^task_pid, worker_pid: nil, request: request} = inflight ->
         handle_recovery_claim(state, key, inflight, request, task_pid, from)
+
+      _stale ->
+        {:reply, {:error, :worker_unavailable}, state}
+    end
+  end
+
+  def handle_call({:checkpoint_runtime_custody, key, worker_pid}, from, state) do
+    case {state.inflight_loads[key], state.recovery[key]} do
+      {%{worker_pid: ^worker_pid, recovery_incarnation: incarnation},
+       %{policy: %{incarnation: incarnation}, ownership: %{"phase" => "loading"}} = entry}
+      when not is_nil(incarnation) ->
+        ownership = put_runtime_custody(entry.ownership, worker_pid)
+        entry = %{entry | ownership: ownership}
+        effect = {:runtime_custody, worker_pid, incarnation, from}
+        entry = Recovery.checkpoint(entry, [effect])
+        {:noreply, put_recovery(state, key, entry) |> pump_recovery(key)}
 
       _stale ->
         {:reply, {:error, :worker_unavailable}, state}
@@ -1416,6 +1441,9 @@ defmodule Orchard.Node.ModelManager do
   defp reply_superseded_checkpoint_effect_waiter({:spawn_worker, _task_pid, from}),
     do: GenServer.reply(from, {:error, :worker_unavailable})
 
+  defp reply_superseded_checkpoint_effect_waiter({:runtime_custody, _pid, _incarnation, from}),
+    do: GenServer.reply(from, {:error, :worker_unavailable})
+
   defp reply_superseded_checkpoint_effect_waiter({:hydration_complete, waiters}) do
     Enum.each(waiters, &reply_recovery_unavailable/1)
   end
@@ -1662,8 +1690,7 @@ defmodule Orchard.Node.ModelManager do
             monitor = Process.monitor(pid)
             state = put_worker(state, key, model_ref, pid, monitor)
             entry = state.recovery[key]
-            ownership = put_runtime_custody(entry.ownership, pid)
-            entry = %{entry | ownership: ownership, last_worker_pid: pid}
+            entry = %{entry | last_worker_pid: pid}
             state = put_recovery(state, key, entry)
             state = put_in(state, [:inflight_loads, key], %{inflight | worker_pid: pid})
             GenServer.reply(from, {:ok, pid})
@@ -1699,6 +1726,19 @@ defmodule Orchard.Node.ModelManager do
         end
 
       _stale ->
+        state
+    end
+  end
+
+  defp apply_recovery_effect(state, key, {:runtime_custody, worker_pid, incarnation, from}) do
+    case {state.inflight_loads[key], state.recovery[key]} do
+      {%{worker_pid: ^worker_pid, recovery_incarnation: ^incarnation},
+       %{policy: %{incarnation: ^incarnation}, ownership: %{"phase" => "loading"}}} ->
+        GenServer.reply(from, :ok)
+        state
+
+      _superseded ->
+        GenServer.reply(from, {:error, :worker_unavailable})
         state
     end
   end
@@ -1742,7 +1782,7 @@ defmodule Orchard.Node.ModelManager do
       |> apply_recovery_effect(key, :reply_stopped)
       |> apply_recovery_effect(key, :reply_operator)
     else
-      Process.send_after(self(), {:recovery_cleanup, state.recovery_epoch, key}, 1_000)
+      Process.send_after(self(), {:recovery_cleanup, state.recovery_epoch, key}, 10)
       state
     end
   end
@@ -1772,6 +1812,7 @@ defmodule Orchard.Node.ModelManager do
           end
 
         entry = Recovery.transition(entry, {:crash, incarnation}, recovery_now(), effects)
+        entry = %{entry | last_worker_pid: nil}
 
         put_recovery(state, key, entry) |> pump_recovery(key)
 
@@ -2919,7 +2960,7 @@ defmodule Orchard.Node.ModelManager do
 
     Enum.take(
       loaded ++ refused_recovery ++ other_workers ++ eligible_recovery,
-      @runtime_model_placement_limit
+      Orchard.RuntimeEndpoint.ObservationBounds.placement_limit()
     )
   end
 

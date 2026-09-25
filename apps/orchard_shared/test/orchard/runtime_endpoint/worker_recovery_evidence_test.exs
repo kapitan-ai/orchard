@@ -45,7 +45,9 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidenceTest do
 
   test "SPEC §12.2 conflicting atom and string recovery evidence fails closed" do
     evidence = projection("armed") |> Map.put(:state, "open")
-    assert nil == WorkerRecoveryEvidence.normalize(evidence)
+
+    assert %{"invalid" => "worker_recovery_evidence"} =
+             WorkerRecoveryEvidence.normalize(evidence)
 
     conflicting_key =
       projection("armed")
@@ -56,7 +58,27 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidenceTest do
         version: "v1"
       })
 
-    assert nil == WorkerRecoveryEvidence.normalize(conflicting_key)
+    assert %{"invalid" => "worker_recovery_evidence"} =
+             WorkerRecoveryEvidence.normalize(conflicting_key)
+  end
+
+  test "SPEC §12.2 attach preserves invalid records as incomplete evidence" do
+    valid_ref_invalid_projection = %{
+      model_ref: %{model_id: "recovery/model", version: "v1"},
+      worker_recovery_json: Jason.encode!(%{"state" => "armed"})
+    }
+
+    invalid_ref = %{
+      model_ref: %{model_id: "", version: "v1"},
+      worker_recovery_json: Jason.encode!(projection("armed"))
+    }
+
+    assert [valid, invalid] =
+             WorkerRecoveryEvidence.attach([], [valid_ref_invalid_projection, invalid_ref])
+
+    assert valid.worker_recovery == %{"invalid" => "worker_recovery_evidence"}
+    assert invalid.model_ref == nil
+    assert invalid.worker_recovery == %{"invalid" => "worker_recovery_model_ref"}
   end
 
   defp projection(state) do

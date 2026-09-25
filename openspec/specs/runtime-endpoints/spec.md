@@ -149,6 +149,16 @@ This preserves and generalizes the incoming `gnhf/objective-fully-impl-369718` `
 - **WHEN** matching Placement Capacity reports `active_request_count >= max_concurrency`
 - **THEN** the Scheduler treats that placement as currently unavailable for new work
 
+#### Scenario: Bounded recovery projection omits an exact key
+- **WHEN** a placement projection has reached its 40-entry bound and omits the requested model reference
+- **THEN** Orchard treats that absence as incomplete rather than proof of a cold placement
+- **AND** valid exact-key recovery evidence included at the bound remains usable
+
+#### Scenario: Invalid recovery record cannot become absence
+- **WHEN** a projected recovery record has a valid model reference but invalid recovery evidence, or has an invalid model reference
+- **THEN** Orchard preserves an invalid indication and fails eligibility closed
+- **AND** it does not silently drop the record into cold-placement absence
+
 
 ### Requirement: EnsureModelLoaded Placement Capacity evidence
 Orchard SHALL support optional Node-owned Placement Capacity on a successful `EnsureModelLoaded` result for the exact requested model reference.

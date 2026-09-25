@@ -290,6 +290,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     start_time = System.monotonic_time(:millisecond)
 
     owner_pid = Keyword.get(opts, :owner, self())
+    on_runtime_custody = Keyword.get(opts, :on_runtime_custody, fn -> :ok end)
 
     result =
       with :ok <- validate_socket_path(socket_path),
@@ -300,6 +301,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            :ok <- WorkerProcessLifecycle.remove_owned_socket(socket_path) do
         start_runtime(%{
           owner_pid: owner_pid,
+          on_runtime_custody: on_runtime_custody,
           model_ref: model_ref,
           model_path: resolved_model_path,
           executable: resolved_executable,
@@ -558,50 +560,59 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
     case RuntimeProcessReaper.watch(params.owner_pid, params.os_pid, reaper_meta) do
       {:ok, reaper_ref} ->
-        case wait_for_worker_ready(params.socket_path, params.port, params.ready_timeout_ms) do
-          {:ok, channel} ->
-            load_model_or_cleanup(channel, params.port, params.os_pid, reaper_ref, params)
-
-          {:error, reason} ->
-            cleanup_failed_runtime(%{
-              channel: nil,
-              os_identity: params.os_identity,
-              os_pid: params.os_pid,
-              port: params.port,
-              reaper_ref: reaper_ref,
-              shutdown_timeout_ms: params.shutdown_timeout_ms,
-              socket_path: params.socket_path
-            })
-
-            {:error, reason}
+        case acknowledge_runtime_custody(params) do
+          :ok -> start_ready_runtime(params, reaper_ref)
+          {:error, reason} -> custody_checkpoint_failure(params, reaper_ref, reason)
         end
 
       {:error, :process_not_alive} ->
-        cleanup_failed_runtime(%{
-          channel: nil,
-          os_identity: params.os_identity,
-          os_pid: params.os_pid,
-          port: params.port,
-          reaper_ref: nil,
-          shutdown_timeout_ms: params.shutdown_timeout_ms,
-          socket_path: params.socket_path
-        })
+        cleanup_failed_runtime(runtime_cleanup_state(params, nil))
 
         {:error, launch_identity_failure_reason(params.port)}
 
       {:error, reason} ->
-        cleanup_failed_runtime(%{
-          channel: nil,
-          os_identity: params.os_identity,
-          os_pid: params.os_pid,
-          port: params.port,
-          reaper_ref: nil,
-          shutdown_timeout_ms: params.shutdown_timeout_ms,
-          socket_path: params.socket_path
-        })
+        cleanup_failed_runtime(runtime_cleanup_state(params, nil))
 
         {:error, reason}
     end
+  end
+
+  defp acknowledge_runtime_custody(params) do
+    case params.on_runtime_custody.() do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+      _invalid -> {:error, :invalid_acknowledgement}
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp start_ready_runtime(params, reaper_ref) do
+    case wait_for_worker_ready(params.socket_path, params.port, params.ready_timeout_ms) do
+      {:ok, channel} ->
+        load_model_or_cleanup(channel, params.port, params.os_pid, reaper_ref, params)
+
+      {:error, reason} ->
+        cleanup_failed_runtime(runtime_cleanup_state(params, reaper_ref))
+        {:error, reason}
+    end
+  end
+
+  defp custody_checkpoint_failure(params, reaper_ref, reason) do
+    cleanup_failed_runtime(runtime_cleanup_state(params, reaper_ref))
+    {:error, {:runtime_custody_checkpoint_failed, reason}}
+  end
+
+  defp runtime_cleanup_state(params, reaper_ref) do
+    %{
+      channel: nil,
+      os_identity: params.os_identity,
+      os_pid: params.os_pid,
+      port: params.port,
+      reaper_ref: reaper_ref,
+      shutdown_timeout_ms: params.shutdown_timeout_ms,
+      socket_path: params.socket_path
+    }
   end
 
   defp load_model_or_cleanup(channel, port, os_pid, reaper_ref, params) do

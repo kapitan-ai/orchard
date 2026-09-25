@@ -128,7 +128,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
     assert placement.worker_recovery["key"]["node_id"] == node.id
     assert placement.worker_recovery["revision"] == 5
 
-    assert nil ==
+    assert %{"invalid" => "worker_recovery_evidence"} ==
              WorkerRecoveryEvidence.normalize(%{
                evidence
                | reason: %{prompt: "secret"}

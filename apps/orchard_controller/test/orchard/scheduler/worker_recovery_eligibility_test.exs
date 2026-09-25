@@ -112,6 +112,47 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibilityTest do
              WorkerRecoveryEligibility.check(target(), blocked, %{@model | version: "v2"})
   end
 
+  test "SPEC §12.2 bounded placement absence is not complete cold proof" do
+    other = fn index ->
+      Placement.new(%{model_ref: %{model_id: "other-#{index}", version: "v1"}, state: :failed})
+      |> Map.put(:worker_recovery, %{clean() | key: %{clean().key | model_id: "other-#{index}"}})
+    end
+
+    assert :ok =
+             WorkerRecoveryEligibility.check(
+               target(),
+               observation(nil, Enum.map(1..39, other)),
+               @model
+             )
+
+    assert {:error, :worker_recovery_evidence_unavailable} =
+             WorkerRecoveryEligibility.check(
+               target(),
+               observation(nil, Enum.map(1..40, other)),
+               @model
+             )
+
+    included =
+      Placement.new(%{model_ref: @model, state: :unknown})
+      |> Map.put(:worker_recovery, clean())
+
+    assert :ok =
+             WorkerRecoveryEligibility.check(
+               target(),
+               observation(nil, [included | Enum.map(1..39, other)]),
+               @model
+             )
+  end
+
+  test "SPEC §12.2 invalid projected recovery cannot become cold absence" do
+    invalid =
+      Placement.new(%{model_ref: %{model_id: "other", version: "v1"}, state: :unknown})
+      |> Map.put(:worker_recovery, %{"invalid" => "worker_recovery_evidence"})
+
+    assert {:error, :worker_recovery_evidence_unavailable} =
+             WorkerRecoveryEligibility.check(target(), observation(nil, [invalid]), @model)
+  end
+
   test "SPEC §12.2 single-node loaded gate rejects before capacity evaluation" do
     Process.put(
       :recovery_observation,

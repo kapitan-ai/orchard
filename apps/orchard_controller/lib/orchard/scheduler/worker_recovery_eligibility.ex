@@ -14,7 +14,14 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
   require Logger
 
   alias Orchard.Inference
-  alias Orchard.RuntimeEndpoint.{ModelRef, Placement, Target, WorkerRecoveryEvidence}
+
+  alias Orchard.RuntimeEndpoint.{
+    ModelRef,
+    ObservationBounds,
+    Placement,
+    Target,
+    WorkerRecoveryEvidence
+  }
 
   @unknown :worker_recovery_evidence_unavailable
 
@@ -68,7 +75,11 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
 
       case matching_placements(observation, runtime_ref) do
         [] ->
-          cold_or_inspect(target, runtime_ref, epoch, inspection, opts)
+          if complete_placement_projection?(observation) do
+            cold_or_inspect(target, runtime_ref, epoch, inspection, opts)
+          else
+            {:error, @unknown}
+          end
 
         [placement] ->
           placement_evidence(target, runtime_ref, epoch, placement)
@@ -99,6 +110,25 @@ defmodule Orchard.Scheduler.WorkerRecoveryEligibility do
       _invalid ->
         :invalid
     end
+  end
+
+  defp complete_placement_projection?(observation) do
+    case value(observation, :placements) do
+      placements when is_list(placements) ->
+        length(placements) < ObservationBounds.placement_limit() and
+          Enum.all?(placements, &valid_placement_record?/1)
+
+      _invalid ->
+        false
+    end
+  end
+
+  defp valid_placement_record?(placement) do
+    match?(%ModelRef{}, value(placement, :model_ref)) and
+      case value(placement, :worker_recovery) do
+        nil -> true
+        evidence -> match?({:ok, _}, WorkerRecoveryEvidence.validate(evidence))
+      end
   end
 
   # A placement the Node already reports is durable evidence in itself: absent or

@@ -95,10 +95,12 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidence do
 
   @doc "Retains only validated, bounded recovery evidence for observations."
   @spec normalize(term()) :: map() | nil
+  def normalize(nil), do: nil
+
   def normalize(value) do
     case validate(value) do
       {:ok, evidence} -> stringify(evidence)
-      {:error, :invalid_worker_recovery_evidence} -> nil
+      {:error, :invalid_worker_recovery_evidence} -> %{"invalid" => "worker_recovery_evidence"}
     end
   end
 
@@ -106,18 +108,10 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidence do
   @spec attach([Placement.t()], [map()]) :: [Placement.t()]
   def attach(loaded, records) do
     projected =
-      Enum.flat_map(records, fn record ->
-        with {:ok, ref} <- ModelRef.new(value(record, :model_ref)),
-             {:ok, evidence} <- decode(value(record, :worker_recovery_json)) do
-          [
-            Placement.new(%{
-              model_ref: ref,
-              state: placement_state(evidence),
-              worker_recovery: stringify(evidence)
-            })
-          ]
-        else
-          _invalid -> []
+      Enum.map(records, fn record ->
+        case ModelRef.new(value(record, :model_ref)) do
+          {:ok, ref} -> recovery_placement(ref, value(record, :worker_recovery_json))
+          {:error, :invalid_model_ref} -> invalid_model_ref_placement()
         end
       end)
 
@@ -138,6 +132,32 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidence do
       end)
 
     mapped ++ Enum.reject(projected, &MapSet.member?(loaded_keys, key(&1.model_ref)))
+  end
+
+  defp recovery_placement(ref, json) do
+    case decode(json) do
+      {:ok, evidence} ->
+        Placement.new(%{
+          model_ref: ref,
+          state: placement_state(evidence),
+          worker_recovery: stringify(evidence)
+        })
+
+      {:error, :invalid_worker_recovery_evidence} ->
+        Placement.new(%{
+          model_ref: ref,
+          state: :unknown,
+          worker_recovery: %{"invalid" => "worker_recovery_evidence"}
+        })
+    end
+  end
+
+  defp invalid_model_ref_placement do
+    %Placement{
+      model_ref: nil,
+      state: :unknown,
+      worker_recovery: %{"invalid" => "worker_recovery_model_ref"}
+    }
   end
 
   defp valid_evidence?(evidence) do
@@ -205,7 +225,8 @@ defmodule Orchard.RuntimeEndpoint.WorkerRecoveryEvidence do
   defp placement_state(%{state: "restarting"}), do: :loading
   defp placement_state(_evidence), do: :unknown
 
-  defp key(ref), do: {ref.model_id, ref.version}
+  defp key(%ModelRef{} = ref), do: {ref.model_id, ref.version}
+  defp key(_ref), do: :invalid
 
   defp value(map, key) when is_map(map) do
     case {Map.fetch(map, key), Map.fetch(map, Atom.to_string(key))} do

@@ -96,6 +96,11 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     defp unavailable_write?(:loaded_unavailable, record),
       do: record["ownership"]["phase"] == "loaded"
 
+    defp unavailable_write?(:custody_unavailable, record),
+      do:
+        record["ownership"]["phase"] == "loading" and
+          is_binary(record["ownership"]["custody"])
+
     defp unavailable_write?(:interrupt_unavailable, record),
       do: record["ownership"]["phase"] == "cleanup" and is_nil(record["command"])
 
@@ -166,7 +171,8 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     def owner(pid), do: :persistent_term.put({__MODULE__, :owner}, pid)
     def clear, do: :persistent_term.erase({__MODULE__, :owner})
 
-    def load_model(_ref, _opts) do
+    def load_model(_ref, opts) do
+      :ok = Keyword.fetch!(opts, :on_runtime_custody).()
       send(:persistent_term.get({__MODULE__, :owner}), {:recovery_load_blocked, self()})
 
       receive do
@@ -301,11 +307,12 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
              :PLACEMENT_STATE_LOADED
 
-    assert {:ok, %{eligible: true, revision: 2, key: exact}} = inspect_key(ctx)
+    assert {:ok, %{eligible: true, revision: 3, key: exact}} = inspect_key(ctx)
     assert exact.node_id == ctx.request.node_id
     records = Checkpoints.calls() |> Enum.reverse() |> Enum.map(&elem(&1, 1))
-    assert Enum.map(records, & &1["ownership"]["phase"]) == ["loading", "loaded"]
+    assert Enum.map(records, & &1["ownership"]["phase"]) == ["loading", "loading", "loaded"]
     assert hd(records)["ownership"]["incarnation"] != nil
+    assert Enum.at(records, 1)["ownership"]["custody"] =~ "runtime-custody:"
   end
 
   test "SPEC §12.2 death while loaded acknowledgement is unavailable cannot publish success",
@@ -322,7 +329,11 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     worker = :sys.get_state(ModelManager).workers[ctx.key].pid
     Process.exit(worker, :kill)
-    eventually(fn -> match?({:ok, %{state: "backoff", eligible: false}}, inspect_key(ctx)) end)
+
+    eventually(fn ->
+      match?({:ok, %{state: "recovery_required", eligible: false}}, inspect_key(ctx))
+    end)
+
     Checkpoints.mode(:ok)
     refute Task.await(task, 5_000).placement_state == :PLACEMENT_STATE_LOADED
     assert length(:sys.get_state(ModelManager).recovery[ctx.key].policy.history) == 1
@@ -341,6 +352,19 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     [first, second | _] = Enum.reverse(Checkpoints.calls())
     assert elem(first, 0) == elem(second, 0)
     assert elem(second, 2) - elem(first, 2) >= 1_000
+  end
+
+  test "SPEC §12.2 unavailable runtime custody checkpoint cleans loading without a crash", ctx do
+    Checkpoints.mode(:custody_unavailable)
+
+    response = ModelManager.ensure_model_loaded(ctx.request)
+
+    refute response.placement_state == :PLACEMENT_STATE_LOADED
+    eventually(fn -> worker_pid(ctx) == :error end)
+
+    entry = :sys.get_state(ModelManager).recovery[ctx.key]
+    assert entry.policy.history == []
+    assert entry.policy.delay_index == 0
   end
 
   test "SPEC §12.2 a matching ensure joins the pending admission checkpoint without spawning early",
@@ -375,7 +399,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     eventually(fn -> match?({:ok, %{state: "backoff"}}, inspect_key(ctx)) end)
 
     assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
-             "placement_recovery_required"
+             "worker_restart_backoff"
 
     other = %{ctx.request | model_id: "recovery/other"}
     assert ModelManager.ensure_model_loaded(other).failure_code == "model_capacity_exhausted"
@@ -1160,15 +1184,15 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert :error = worker_pid(ctx)
 
     assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
-             "placement_recovery_required"
+             "placement_crash_breaker_open"
 
-    assert {:ok, %{state: "recovery_required", reason: "placement_recovery_required"}} =
+    assert {:ok, %{state: "open", reason: "placement_crash_breaker_open"}} =
              inspect_key(ctx)
 
     status = ModelManager.current()
     assert status.loaded_models == []
     assert [%{worker_recovery_json: json}] = status.runtime_model_placements
-    assert Jason.decode!(json)["state"] == "recovery_required"
+    assert Jason.decode!(json)["state"] == "open"
   end
 
   test "SPEC §12.2 prior loaded ownership is not clean and unknown custody refuses clear", ctx do
@@ -1233,9 +1257,9 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
              :PLACEMENT_STATE_LOADED
 
-    assert {:ok, %{eligible: true, revision: 10}} = inspect_key(ctx)
+    assert {:ok, %{eligible: true, revision: 11}} = inspect_key(ctx)
 
-    assert ["resolved", "loading", "loaded"] ==
+    assert ["resolved", "loading", "loading", "loaded"] ==
              Checkpoints.calls()
              |> Enum.reverse()
              |> Enum.map(fn {_, r, _} -> r["ownership"]["phase"] end)

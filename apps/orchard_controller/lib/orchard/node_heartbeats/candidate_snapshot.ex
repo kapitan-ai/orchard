@@ -22,7 +22,6 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
 
   @candidate_source "monitor_snapshot"
   @eligible_health [:healthy, :degraded]
-  @placement_limit 40
 
   defmodule Candidate do
     @moduledoc "Positive scheduler-candidate evidence from one durable observation."
@@ -551,7 +550,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshot do
       duplicate_placement_model_refs?(normalized) ->
         {:error, "dispatch_capacity_facts_unavailable", :duplicate_placement_model_ref}
 
-      length(placements) > @placement_limit ->
+      length(placements) > Orchard.RuntimeEndpoint.ObservationBounds.placement_limit() ->
         {:error, "dispatch_capacity_facts_unavailable", :placement_entry_overflow}
 
       true ->

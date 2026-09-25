@@ -160,6 +160,7 @@ defmodule Orchard.Node.WorkerProcess do
 
     case state.adapter.load_model(state.model_ref,
            owner: self(),
+           on_runtime_custody: fn -> checkpoint_runtime_custody(state) end,
            load_timeout_ms: load_timeout_ms
          ) do
       {:ok, adapter_state} ->
@@ -256,6 +257,14 @@ defmodule Orchard.Node.WorkerProcess do
     response = score_prefix_cache_for_state(state, request, timeout_ms)
 
     {:reply, response, state}
+  end
+
+  defp checkpoint_runtime_custody(state) do
+    Orchard.Node.ModelManager.checkpoint_runtime_custody(
+      state.manager,
+      state.model_ref,
+      self()
+    )
   end
 
   @impl true
