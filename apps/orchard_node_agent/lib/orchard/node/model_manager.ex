@@ -171,7 +171,7 @@ defmodule Orchard.Node.ModelManager do
     GenServer.call(__MODULE__, {:unload_model, request}, @ordinary_unload_call_timeout_ms)
   end
 
-  @doc false
+  @doc "Acknowledges runtime custody before the admitted worker starts model loading."
   @spec checkpoint_runtime_custody(GenServer.server(), ModelRef.t(), pid()) ::
           :ok | {:error, term()}
   def checkpoint_runtime_custody(manager, %ModelRef{} = model_ref, worker_pid) do
@@ -340,7 +340,11 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  def handle_call({:checkpoint_runtime_custody, key, worker_pid}, from, state) do
+  def handle_call(
+        {:checkpoint_runtime_custody, key, worker_pid},
+        {worker_pid, _tag} = from,
+        state
+      ) do
     case {state.inflight_loads[key], state.recovery[key]} do
       {%{worker_pid: ^worker_pid, recovery_incarnation: incarnation},
        %{policy: %{incarnation: incarnation}, ownership: %{"phase" => "loading"}} = entry}
@@ -355,6 +359,9 @@ defmodule Orchard.Node.ModelManager do
         {:reply, {:error, :worker_unavailable}, state}
     end
   end
+
+  def handle_call({:checkpoint_runtime_custody, _key, _worker_pid}, _from, state),
+    do: {:reply, {:error, :worker_unavailable}, state}
 
   def handle_call({:ensure_model_loaded, %EnsureModelLoadedRequest{} = request}, from, state) do
     key = model_key(request.model_id, request.version)
@@ -1782,7 +1789,7 @@ defmodule Orchard.Node.ModelManager do
       |> apply_recovery_effect(key, :reply_stopped)
       |> apply_recovery_effect(key, :reply_operator)
     else
-      Process.send_after(self(), {:recovery_cleanup, state.recovery_epoch, key}, 10)
+      Process.send_after(self(), {:recovery_cleanup, state.recovery_epoch, key}, 1_000)
       state
     end
   end
@@ -1812,7 +1819,6 @@ defmodule Orchard.Node.ModelManager do
           end
 
         entry = Recovery.transition(entry, {:crash, incarnation}, recovery_now(), effects)
-        entry = %{entry | last_worker_pid: nil}
 
         put_recovery(state, key, entry) |> pump_recovery(key)
 

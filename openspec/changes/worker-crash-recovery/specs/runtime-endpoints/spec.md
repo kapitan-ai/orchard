@@ -19,6 +19,16 @@ Runtime Endpoint observations SHALL retain exact-key worker recovery state, curr
 - **THEN** its loaded placement data cannot establish recovery eligibility
 - **AND** fresh authenticated current evidence is required rather than a legacy-loaded fallback
 
+#### Scenario: Bounded recovery projection omits an exact key
+- **WHEN** a placement projection has reached its 40-entry bound and omits the requested model reference
+- **THEN** Orchard treats that absence as incomplete rather than proof of a cold placement
+- **AND** valid exact-key recovery evidence included at the bound remains usable
+
+#### Scenario: Invalid recovery record cannot become absence
+- **WHEN** a projected recovery record has a valid model reference but invalid recovery evidence, or has an invalid model reference
+- **THEN** Orchard preserves an invalid indication and fails eligibility closed
+- **AND** it does not silently drop the record into cold-placement absence
+
 ### Requirement: Authorized recovery and checkpoint operations
 
 The Runtime Endpoint control boundary SHALL support exact-key `RecoverWorkerPlacement` and authenticated recovery checkpoint hydration/write semantics under `SPEC.md` §12.2.2. Operator recovery SHALL route through the authenticated Active Controller Operator API; ordinary load/unload callers MUST NOT acquire recovery authority by setting flags. Node-to-Controller checkpoint operations SHALL restrict writes to the authenticated Node's exact keys and current epoch/revision. Only the Node SHALL originate mutations; the Controller SHALL execute transactional CAS on Node request, while Operator API forwarding SHALL NOT pre-claim or mutate the checkpoint. No direct Node database access is required.

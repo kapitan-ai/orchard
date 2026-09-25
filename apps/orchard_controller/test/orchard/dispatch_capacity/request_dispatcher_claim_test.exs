@@ -2881,33 +2881,31 @@ defmodule Orchard.DispatchCapacity.RequestDispatcherClaimTest do
     assert AllocationAuthority.claim_count(authority, node.id) == 0
   end
 
-  test "SPEC 12.2 unprobed unmanaged scheduling fails closed without recovery labelling" do
+  test "SPEC 5.9 an unprobed unmanaged schedule stays dispatchable end to end" do
     authority = start_supervised!({AllocationAuthority, name: nil})
-    node_id = claim_node_id()
-    configured_target = Inference.runtime_client_target()
+    request_id = "request-unprobed-unmanaged"
 
-    target =
-      Target.grpc_compat(
-        host: Keyword.fetch!(configured_target, :host),
-        port: Keyword.fetch!(configured_target, :port),
-        node_id: node_id
-      )
-
-    assert {:error, :model_busy,
-            %{
-              rejected_candidates: [
-                %{
-                  reason_codes: ["transport_unreachable"],
-                  diagnostics: %{fact: "status_probe_unavailable"}
-                }
-              ]
-            }} =
+    assert {:ok, schedule} =
              SingleNode.default_schedule(
                canonical_request(),
-               target,
+               Inference.runtime_client_target(),
                probe_status?: false,
                dispatch_capacity_authority: authority
              )
+
+    assert is_nil(schedule.node_id)
+    assert %Input{} = schedule.dispatch_capacity_input
+    assert %Evaluator.Result{eligible?: true} = schedule.dispatch_capacity_evaluation
+
+    _events =
+      assert_dispatch_success(
+        dispatch_with_deadline(
+          Map.put(schedule, :request_id, request_id),
+          execute_request(request_id),
+          model_load_request("unmanaged"),
+          client_impl: @gate_client
+        )
+      )
   end
 
   test "SPEC 5.9 a held acceptance gate fails dispatch bounded instead of blocking" do

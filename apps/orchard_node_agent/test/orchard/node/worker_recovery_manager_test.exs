@@ -391,6 +391,8 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
   test "SPEC §12.2 crashed residency restarts without request waiters and retains one slot",
        ctx do
+    freeze_recovery_clock()
+
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
              :PLACEMENT_STATE_LOADED
 
@@ -403,6 +405,8 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     other = %{ctx.request | model_id: "recovery/other"}
     assert ModelManager.ensure_model_loaded(other).failure_code == "model_capacity_exhausted"
+
+    Checkpoints.time(recovery_policy(ctx).due_ms)
 
     eventually(fn ->
       case worker_pid(ctx) do
@@ -418,6 +422,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
   test "SPEC §12.2 explicit absent clear is durable and duplicates cannot clear a later crash",
        ctx do
+    freeze_recovery_clock()
     assert {:ok, evidence} = inspect_key(ctx)
     command = command(ctx, evidence, "clear")
     assert {:ok, %{eligible: true}} = ModelManager.recover_worker_placement(command)
@@ -652,6 +657,20 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     assert state.recovery[ctx.key].ownership["custody"] ==
              Custody.record_runtime_custody(nil, state.inflight_loads[ctx.key].worker_pid)
+
+    assert {:ok, %{record: loading_record}} = Checkpoints.read(checkpoint_key(ctx))
+    assert loading_record["ownership"]["phase"] == "loading"
+    assert loading_record["ownership"]["custody"] == state.recovery[ctx.key].ownership["custody"]
+
+    assert {:error, :worker_unavailable} =
+             ModelManager.checkpoint_runtime_custody(
+               ModelManager,
+               %Orchard.Cluster.V1.ModelRef{
+                 model_id: ctx.request.model_id,
+                 version: ctx.request.version
+               },
+               adapter_pid
+             )
 
     send(adapter_pid, :finish_recovery_load)
 
@@ -1051,6 +1070,8 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   end
 
   test "SPEC §12.2 ordinary unload fences backoff without clearing policy", ctx do
+    freeze_recovery_clock()
+
     assert ModelManager.ensure_model_loaded(ctx.request).placement_state ==
              :PLACEMENT_STATE_LOADED
 
@@ -1183,6 +1204,8 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
 
     assert :error = worker_pid(ctx)
 
+    eventually(fn -> match?({:ok, %{state: "open"}}, inspect_key(ctx)) end)
+
     assert ModelManager.ensure_model_loaded(ctx.request).recovery_refusal ==
              "placement_crash_breaker_open"
 
@@ -1287,6 +1310,7 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
   end
 
   test "SPEC §12.2 actual loading exit counts once, ordinary runtime load error does not", ctx do
+    freeze_recovery_clock()
     runtime = Node.runtime_config()
 
     Application.put_env(
@@ -1359,6 +1383,16 @@ defmodule Orchard.Node.WorkerRecoveryManagerTest do
       action: action,
       reason: "operator diagnosis"
     }
+
+  defp freeze_recovery_clock do
+    Checkpoints.time(0)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(Node.runtime_config(), :worker_recovery_clock, &Checkpoints.now/0)
+    )
+  end
 
   defp eventually_value(fun, attempts \\ 120)
   defp eventually_value(_fun, 0), do: flunk("expected a recovery value")
