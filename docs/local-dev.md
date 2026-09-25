@@ -168,7 +168,10 @@ When running from a source checkout (`make dev`, `mise exec -- bin/dev`, or
 - Node-agent gRPC listens on `127.0.0.1:50071` (avoids packaged BEAM on 50061)
 - Public `/v1/*` API routes require `Authorization: Bearer <api-token>`
 - CORS is disabled (empty allowlist in `config/dev.exs`)
-- No TLS setup is required
+- No TLS setup is required for the surfaces above, but model loading needs the
+  registered Node identity that SPEC §12.2 recovery control uses, which this
+  plain-HTTP profile cannot enroll; see
+  [Worker recovery control](#worker-recovery-control)
 
 All `curl` examples in this document use plain HTTP because they target the source dev controller.
 API examples assume `ORCHARD_API_KEY` contains a tenant-direct API Token or a service-account-owned API Token whose API Client has the `inference_client` Access Level for the Workspace.
@@ -291,7 +294,7 @@ ELIXIR
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address. Set to `0.0.0.0` on a remote node-agent for 2-node testing. |
+| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address. Set to `0.0.0.0` on a remote node-agent for 2-node testing. Under BEAM transport with recovery control enabled, this host and port bind the recovery-control listener instead of the gRPC listener; see [Worker recovery control](#worker-recovery-control). |
 | `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50071` (source dev) / `50061` (packaged) | gRPC listen port |
 | `ORCHARD_NODE_AGENT_ADVERTISE_HOST` | Listen host or `127.0.0.1` | Controller-reachable host persisted during `orchardctl node join`; required when the listen host is wildcard-bound. |
 | `ORCHARD_NODE_AGENT_ADVERTISE_PORT` | Listen port | Controller-reachable gRPC compatibility port persisted during `orchardctl node join`. |
@@ -384,6 +387,29 @@ For a default BEAM controller launch, `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is effe
 | `ORCHARD_BEAM_DIST_PORT_MIN` | `52171` for controller, `52172` for node-agent | Lower bound for the BEAM distribution listener port range. Set both min and max together when overriding. |
 | `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` for controller, `52172` for node-agent | Upper bound for the BEAM distribution listener port range. Set both min and max together when overriding. |
 | `ORCHARD_BEAM_EPMD_PORT` | `4369` | EPMD port for source-dev node discovery. |
+
+#### Worker recovery control
+
+SPEC §12.2 recovery control is an identity-bound mTLS path. The supported all-in-one source-dev and packaged profiles default the Controller listener and Node Agent endpoint to `127.0.0.1:50073`; `50071` remains source-dev gRPC compatibility and `50072` remains Peer Grant control, so the recovery-only listener does not collide with either. Split roles have no cross-host default authority: set the endpoint on the Node Agent and the listener host and port on the Controller explicitly.
+
+The Controller serves recovery control on its own listener and endpoint. It exposes checkpoint read/commit only — never grant control. The default still requires a registered trust identity; missing identity material or unreachable configured authority is fail-closed. Configuration does not start a model, alter a live worker, or make an unmanaged target recoverable.
+
+Recovery control gates model residency on every profile. The Node Agent reads the placement's §12.2 checkpoint through this path before it admits a load for any placement it is not already tracking, and while that read fails it refuses each load with `placement_recovery_required` and re-reads at most once per second. Leaving `ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED` unset on a split-role Node Agent is not a bypass: an unconfigured endpoint is unavailable, which is fail-closed too. The Node Agent authenticates with the registered Node identity that `orchardctl node join` persists under `ORCHARD_NODE_IDENTITY_ROOT`, and the Controller listener uses the trust material that `orchardctl nodes trust init` creates, so both must exist before any placement loads. Issuing the enrollment bundle that `orchardctl node join` redeems requires a configured Controller HTTPS endpoint, so the default `plain_http_localhost` source-dev profile cannot produce that identity and cannot load a model at all; see [Two-Node Source-Dev Cluster Testing](#two-node-source-dev-cluster-testing).
+
+| Variable | Required when | Description |
+|----------|---------------|-------------|
+| `ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED=true` | Split-role Node Agent recovery control is enabled | Defaults to `true` for supported all-in-one source-dev and packaged profiles. Requires a registered Node identity and forces the dedicated listener to use mTLS. In BEAM mode it exposes only recovery control, not the gRPC inference facade. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT` | Split-role Node Agent recovery control is enabled | Defaults to `127.0.0.1:50073` for supported all-in-one source-dev and packaged profiles. Exact Controller recovery-control `host:port` used only for authenticated checkpoint hydration/CAS. Missing or unreachable control authority keeps the affected placement fail-closed. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | Split-role Controller hosts the recovery-control listener | Defaults to `127.0.0.1` for supported all-in-one source-dev and packaged profiles. Bind host for the authenticated Controller checkpoint listener. Must be a loopback or private IPv4 literal; a wildcard or publicly routable address is refused at configuration time. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_PORT` | Split-role Controller sets the listener host | Defaults to `50073` with the supported profile defaults. TCP port for the authenticated Controller checkpoint listener. |
+
+The Operator API exposes `GET /ops/v1/worker-recovery/nodes/:node_id/models/:model_id?version=<exact-version>` for bounded state inspection and `POST` to the same path for `clear`, non-forced `unload`, or forced `reload`. `POST` requires JSON-string `version`, `action`, `expected_epoch`, `command_id`, and `reason`, plus non-negative JSON-number `expected_revision`. It returns only the exact key, epoch/revision, state, hydration/eligibility flags, optional owner epoch, and reason.
+
+Recovery inspection and operator commands travel the opposite direction from checkpoint hydration. For both the scheduler's cold-placement evidence check and an operator `clear`, `unload`, or `reload`, the Controller dials the Node Agent's registered runtime endpoint address from Node inventory with pinned mTLS, so the Node must be `admitted` or `active` and its advertised address must be Controller-reachable under BEAM transport as well as under gRPC compatibility. Under gRPC compatibility the existing node-agent listener serves recovery control; in BEAM mode the Node Agent starts the recovery-only listener on `ORCHARD_NODE_AGENT_LISTEN_HOST` and `ORCHARD_NODE_AGENT_LISTEN_PORT`.
+
+The allowlisted recovery reason codes are `worker_restart_backoff`, `worker_restart_in_progress`, `placement_crash_breaker_open`, and `placement_recovery_required`. The Controller rejects a candidate whose exact recovery evidence cannot be proven with the scheduler reason code `worker_recovery_evidence_unavailable`, which persisted scheduler explanations report. An unmanaged, unprobed, stale, ambiguous, malformed, or identity-mismatched target is unavailable and fail-closed; it is not evidence of a recovery failure and does not authorize a clear, load, or fallback host lookup. Operators must inspect a newly returned exact epoch/revision before retrying a command after `409` or `503`.
+
+Hot-path recovery inspection caching, batching, and ranking redesign remains deferred as a Draft activation blocker. Mixed-version clusters where an older Node Agent omits recovery evidence lose that candidate until a coordinated rollout restores exact evidence. The default mTLS wiring is configuration and test coverage only: live source-dev and packaged mTLS activation and the two-host crash proof remain pending evidence, not support claims.
 
 The split-role scripts print non-secret startup diagnostics for the BEAM node name, cookie file path, EPMD port, and distribution port range.
 They never print cookie contents.
@@ -567,6 +593,8 @@ Worker Unix domain sockets default to `/tmp/od-<hash>/ws`, outside the repo tree
 | GET | `/health/live` | Liveness probe |
 | GET | `/health/ready` | Status-only readiness probe (`{"status":"ok"}` or `{"status":"error"}`) |
 | GET | `/ops/v1/health` | Detailed readiness and observations; cluster Operator/admin Bearer token required |
+| GET | `/ops/v1/worker-recovery/nodes/:node_id/models/:model_id?version=<exact-version>` | Exact bounded worker-recovery status; cluster Operator/admin Bearer token required |
+| POST | `/ops/v1/worker-recovery/nodes/:node_id/models/:model_id` | Exact `clear`, non-forced `unload`, or forced `reload` recovery command; cluster Operator/admin Bearer token required |
 | GET | `/metrics` | Prometheus exposition on the same listener; cluster Operator/admin Bearer token required; `503` when valid exposition cannot be produced |
 | GET | `/v1/models` | List active models granted to the calling Tenant; Bearer token required |
 | POST | `/v1/chat/completions` | Chat completion; stream + non-stream; Bearer token required |
@@ -666,8 +694,10 @@ operator workflow, permission expectations, and external certificate setup.
 ## Two-Node Source-Dev Cluster Testing
 
 Single-node all-in-one remains available through `bin/dev`.
-The README quick start uses the explicitly unmanaged static compatibility target and does not require Node enrollment or admission.
+The README quick start uses the explicitly unmanaged static compatibility target for scheduling and does not require Node admission.
 That fallback is available only when static fallback is enabled, trusted admitted or active inventory is confirmed empty, and the target matches the configured source-development target; it never becomes production inventory or production authority.
+SPEC §12.2 recovery control still gates model residency there, and the quick start cannot satisfy it: bundle issuance needs the Controller HTTPS inputs described below, which its default `plain_http_localhost` transport does not provide, so that profile cannot enroll a Node identity and cannot load a model.
+See [Worker recovery control](#worker-recovery-control) for the gate itself.
 Use the BEAM Runtime Endpoint flow for the default split-role source-dev cluster path.
 Use the gRPC compatibility flow only when you intentionally opt out with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` or need side-by-side comparison.
 
@@ -734,6 +764,8 @@ The BEAM flow uses named distributed BEAM nodes and `ORCHARD_RUNTIME_ENDPOINT_TA
 Do not use `ORCHARD_RUNTIME_CLIENT_TARGETS` for BEAM target selection.
 The accepted two-Mac smoke should include a controller-side node-agent and a remote node-agent when validating local and remote Console reachability.
 Start the node-agents first, then start the controller.
+The launches below configure transport, targets, and cookies only.
+Split roles get no recovery-control defaults, so configure SPEC §12.2 recovery control on both roles before expecting a model to load; see [Worker recovery control](#worker-recovery-control).
 
 Provision the same `tmp/dev/beam.cookie` file on every participating Mac before starting the two-Mac BEAM flow.
 Keep the cookie mode at `0600` or stricter.
@@ -850,6 +882,17 @@ Run this before the first Topology B / two-Mac BEAM smoke on macOS.
 
 ### Verification
 
+The shared-cookie launch commands above establish transport reachability only.
+Before checking inference, configure Controller HTTPS, initialize Node trust,
+issue and redeem an enrollment bundle for each worker, and configure the
+authenticated recovery-control endpoints in both directions as described in
+[Worker recovery control](#worker-recovery-control). Managed scheduling also
+requires administrator admission and fresh authenticated activation evidence.
+A reachable BEAM target or an observed admission candidate does not satisfy
+these prerequisites. Until they are met, expect `placement_recovery_required`
+rather than successful model residency; transport-only results are not inference
+or crash-recovery acceptance evidence.
+
 1. Console Nodes should show the configured Runtime Endpoint targets with distinct display names and reachable status.
 2. The BEAM smoke should include both the controller-side node-agent and the remote node-agent when validating local and remote reachability.
 3. `GET /v1/models` should return `200` and list the Models granted to the calling Tenant.
@@ -875,6 +918,7 @@ BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evi
 | Console boot warns `Sentry.LiveViewHook` unavailable / LiveView crashes lack Sentry context | Sentry was compiled without LiveView on the compile path | Console still mounts. To restore LiveView Sentry context: `mix deps.compile phoenix_live_view` then `mix deps.compile sentry --force`, restart controller. Issue #191. |
 | Live Cluster healthy but Node Inventory shows zero entries while `pending_observed` candidates exist | Configured-target observation creates admission candidates but does not register or admit Nodes automatically | Complete Node enrollment and `orchardctl node join` first, then review and admit the resulting registered Node through the normal admission path. If no candidate appears, verify configured-target reachability and ActivationProbe evidence. |
 | Model load fails with missing `tokenizer.json` or `artifact_hash_mismatch` | Incomplete artifact copy on controller or worker | Re-import a complete bundle and sync the full artifact directory to the worker path. |
+| Every model load is refused with `placement_recovery_required` | The Node Agent cannot read its SPEC §12.2 recovery checkpoint, so it fails closed instead of assuming clean state — a missing endpoint, a missing registered Node identity, or an unreachable Controller listener | Expected on the default `plain_http_localhost` profile, which cannot enroll a Node identity at all; there is no local fix. On a profile with Controller HTTPS configured, follow [Worker recovery control](#worker-recovery-control): confirm `ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT`, the Controller listener host and port, the Node identity from `orchardctl node join`, and the Controller trust material from `orchardctl nodes trust init`. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
 | BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ipv4` or uses the wrong role service | Use `orchard_controller@<controller-ipv4>` for the controller and exactly `orchard_node_agent@<node-ipv4>` for node-agents. |
 | BEAM cookie validation fails | Cookie file is missing, empty, or group/world-readable | Create or copy the cookie file, then run `chmod 600 tmp/dev/beam.cookie`. |
@@ -1326,6 +1370,9 @@ mise exec -- iex -S mix phx.server
   `reverse_proxy` or `direct_https` (see [Transport Modes](#transport-modes))
 - Source dev gRPC uses port 50071; app-installed releases use port 50061
 - Source-dev node-agent gRPC remains loopback and non-TLS
+- The default `plain_http_localhost` profile cannot enroll a Node identity, so
+  SPEC §12.2 recovery control refuses every model load there (see
+  [Worker recovery control](#worker-recovery-control))
 - Public `/v1/*` API routes require Bearer API Tokens.
   Tenant-direct API Tokens remain supported, and service-account-owned API Tokens require an enabled API Client with tenant-scoped `inference_client` access.
   Full quota policy remains incomplete

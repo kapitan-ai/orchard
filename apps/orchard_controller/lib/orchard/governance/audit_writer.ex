@@ -127,6 +127,7 @@ defmodule Orchard.Governance.AuditWriter do
   defp action_domain("node_enrollment." <> _rest), do: {:ok, "node_admission"}
   defp action_domain("node_trust." <> _rest), do: {:ok, "node_admission"}
   defp action_domain("node_lifecycle." <> _rest), do: {:ok, "node_lifecycle"}
+  defp action_domain("worker_recovery." <> _rest), do: {:ok, "node_lifecycle"}
   defp action_domain("circuit_breaker." <> _rest), do: {:ok, "circuit_breaker"}
   defp action_domain("portal_user." <> _rest), do: {:ok, "portal_user"}
   defp action_domain("provisioning_batch." <> _rest), do: {:ok, "service_account"}

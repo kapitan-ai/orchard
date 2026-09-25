@@ -122,6 +122,15 @@ For each worker Mac, the operator currently:
 This sequence does not execute the target `provisioned -> registered -> admitted -> active` trust flow.
 The shared cookie is current transport access material and must not be described as Node identity or Node Enrollment.
 
+It establishes transport reachability, not permission to load a model.
+Before inference, configure Controller HTTPS and internal Node trust, issue and
+redeem a Node Enrollment bundle, configure authenticated recovery control in both
+directions, and complete admission and authenticated activation for managed
+scheduling. See [Worker recovery control](local-dev.md#worker-recovery-control).
+Missing identity or unavailable recovery authority keeps model loads refused
+with `placement_recovery_required`; the seven steps above alone are not a
+complete inference or worker-recovery acceptance procedure.
+
 ### Workspace, Model, And First Inference
 
 After Console is reachable, the operator currently:
@@ -138,6 +147,10 @@ After Console is reachable, the operator currently:
 The current local-file import path is not controller-hosted model distribution.
 For a remote worker, the operator must pre-stage the same model at a usable path or use another worker-reachable source supported by the lower-level acquisition path.
 Console and docs must not claim that one local import distributes the model across the cluster today.
+
+`SPEC.md` §12.2 recovery control also gates model residency, so the first request needs more than a granted model.
+The Node Agent that loads the model must hold its registered Node identity and reach the Controller recovery-control listener, or every load is refused with `placement_recovery_required`.
+See [`packaging/README.md`](../packaging/README.md#operator-bootstrap) for packaged hosts and [`local-dev.md`](local-dev.md#worker-recovery-control) for source development.
 
 ### Current Friction Baseline
 

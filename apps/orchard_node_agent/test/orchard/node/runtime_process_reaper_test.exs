@@ -93,6 +93,131 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
   end
 
+  test "SPEC §12.2 pre-watch non-existence proof records resolved production reaper custody" do
+    owner =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(owner), do: Process.exit(owner, :kill)
+    end)
+
+    assert {:error, :process_not_alive} =
+             RuntimeProcessReaper.watch(owner, 2_147_483_647, %{
+               shutdown_timeout_ms: @short_timeout_ms,
+               model_ref: "prewatch-nonexistence",
+               os_identity: nil,
+               phase: :loading
+             })
+
+    assert RuntimeProcessReaper.ownership_resolved?(owner)
+    assert :sys.get_state(RuntimeProcessReaper).leases == %{}
+  end
+
+  test "SPEC §12.2 an ambiguous custody probe is never recorded as resolved ownership" do
+    private_reaper = start_private_reaper!()
+    {control_port, control_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(control_port, control_pid) end)
+
+    # PID 1 is launchd/init: owned by root, so `kill -0` reports EPERM rather
+    # than "No such process", which is ambiguous rather than proof of exit.
+    assert WorkerProcessLifecycle.os_process_status(1) == :unknown
+
+    owner = self()
+
+    for {os_pid, model_ref} <- [{1, "ambiguous"}, {control_pid, "alive"}] do
+      assert {:ok, ref} =
+               GenServer.call(
+                 private_reaper,
+                 {:watch, owner, os_pid,
+                  %{
+                    shutdown_timeout_ms: @short_timeout_ms,
+                    model_ref: model_ref,
+                    os_identity: @stale_identity,
+                    phase: :loaded
+                  }}
+               )
+
+      RuntimeProcessReaper.release(ref)
+    end
+
+    assert wait_until(fn -> :sys.get_state(private_reaper).leases == %{} end, 500)
+    assert :sys.get_state(private_reaper).resolved_owners == %{}
+    assert WorkerProcessLifecycle.os_process_alive?(control_pid)
+  end
+
+  test "SPEC §12.2 an unconfirmed exit retains custody evidence until that process exits" do
+    private_reaper = start_private_reaper!()
+    {port, os_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+
+    owner = self()
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+    assert {:ok, ref} =
+             GenServer.call(
+               private_reaper,
+               {:watch, owner, os_pid,
+                %{
+                  shutdown_timeout_ms: @short_timeout_ms,
+                  model_ref: "unconfirmed-exit",
+                  os_identity: os_identity,
+                  phase: :loaded
+                }}
+             )
+
+    RuntimeProcessReaper.release(ref)
+    assert wait_until(fn -> :sys.get_state(private_reaper).leases == %{} end, 500)
+
+    assert %{"unconfirmed-exit" => %{os_pid: ^os_pid, owner_pid: ^owner}} =
+             :sys.get_state(private_reaper).pending_resolutions
+
+    refute RuntimeProcessReaper.ownership_resolved?(owner)
+    assert RuntimeProcessReaper.owner_custody(owner) == {:runtime_process, os_pid}
+
+    # SPEC §12.2.2 operator cleanup through host controls happens long after the
+    # escalation budget, so the retained record is the only remaining evidence.
+    CustodyTestHelpers.stop_child(port, os_pid)
+
+    assert RuntimeProcessReaper.ownership_resolved?(owner)
+    assert RuntimeProcessReaper.owner_custody(owner) == :resolved
+    assert :sys.get_state(private_reaper).pending_resolutions == %{}
+  end
+
+  test "SPEC §12.2 a fresh lease supersedes retained custody evidence for its placement" do
+    private_reaper = start_private_reaper!()
+    {port, os_pid} = CustodyTestHelpers.start_control_child!()
+
+    on_exit(fn -> CustodyTestHelpers.stop_child(port, os_pid) end)
+
+    {:ok, os_identity} = WorkerProcessLifecycle.process_identity(os_pid)
+
+    meta = %{
+      shutdown_timeout_ms: @short_timeout_ms,
+      model_ref: "superseded",
+      os_identity: os_identity,
+      phase: :loaded
+    }
+
+    assert {:ok, ref} = GenServer.call(private_reaper, {:watch, self(), os_pid, meta})
+    RuntimeProcessReaper.release(ref)
+
+    assert wait_until(
+             fn ->
+               Map.has_key?(:sys.get_state(private_reaper).pending_resolutions, "superseded")
+             end,
+             500
+           )
+
+    assert {:ok, _ref} = GenServer.call(private_reaper, {:watch, self(), os_pid, meta})
+    assert :sys.get_state(private_reaper).pending_resolutions == %{}
+  end
+
   test "watch returns an error when the reaper name is unavailable" do
     reaper_pid = Process.whereis(RuntimeProcessReaper)
     assert is_pid(reaper_pid)
@@ -197,6 +322,7 @@ defmodule Orchard.Node.RuntimeProcessReaperTest do
     CustodyTestHelpers.assert_os_pid_dead!(os_pid, 2_000)
     assert WorkerProcessLifecycle.os_process_alive?(control_pid)
     CustodyTestHelpers.assert_reaper_empty!(1_000)
+    assert RuntimeProcessReaper.ownership_resolved?(self())
   end
 
   test "release cancels a pending resistant-process escalation and clears monitors" do

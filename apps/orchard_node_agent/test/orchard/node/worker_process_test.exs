@@ -14,7 +14,34 @@ defmodule Orchard.Node.WorkerProcessTest do
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
+  alias Orchard.Node.WorkerManagerStub
   alias Orchard.Node.WorkerProcess
+
+  test "SPEC §12.2 stale generation-unavailable reports cannot kill the current worker" do
+    state = %{requests: %{"active" => %{generation_ref: make_ref(), subscriber: self()}}}
+
+    assert {:noreply, ^state} =
+             WorkerProcess.handle_info(
+               {:runtime_adapter_done, make_ref(), :worker_unavailable},
+               state
+             )
+  end
+
+  test "SPEC §12.2 channel loss is fenced by the current connection identity" do
+    current = self()
+    old = spawn(fn -> :ok end)
+
+    state = %{
+      adapter_state: %{channel: %{adapter_payload: %{conn_pid: current}}},
+      capability_snapshot: %{service_incarnation: "current"}
+    }
+
+    assert {:noreply, ^state} =
+             WorkerProcess.handle_info({:gun_down, old, :http2, :closed, []}, state)
+
+    assert {:stop, :runtime_worker_exited, %{capability_snapshot: nil}} =
+             WorkerProcess.handle_info({:gun_down, current, :http2, :closed, []}, state)
+  end
 
   defmodule ConcurrentRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
@@ -137,11 +164,12 @@ defmodule Orchard.Node.WorkerProcessTest do
 
   defp start_worker_process! do
     model_ref = %ModelRef{model_id: "test/buffer-model", version: "v1"}
+    manager = start_supervised!({WorkerManagerStub, self()}, id: make_ref())
 
     {:ok, pid} =
       WorkerProcess.start_link(
         model_ref: model_ref,
-        manager: self()
+        manager: manager
       )
 
     pid

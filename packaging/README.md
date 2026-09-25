@@ -176,6 +176,8 @@ Optional controller variables:
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | unset | gRPC compatibility fallback only. Comma-separated node-agent `host:port` values. |
 | `ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK` | `false` | Compatibility escape hatch. When `true`, the controller schedules `ORCHARD_RUNTIME_CLIENT_TARGETS` while no enrolled Node is admitted; the supported path leaves this `false` and derives targets from trusted Node inventory. |
 | `ORCHARD_NODE_TRUST_ROOT` | `/Library/Application Support/Orchard/config/node-trust` | Controller root for internal Node trust material initialized by `orchardctl nodes trust init` |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` | `127.0.0.1` | Bind host for the SPEC §12.2 recovery-control listener that node agents use for worker-recovery checkpoint reads and commits. It accepts a loopback or private IPv4 literal only; a multi-Mac install needs the controller's private address. |
+| `ORCHARD_WORKER_RECOVERY_CONTROL_PORT` | `50073` | TCP port for the recovery-control listener. |
 | `ORCHARD_LOCAL_NODE_IDENTITY_ROOT` | unset; generated for `env init --service all` | Display-only association to this host's registered Node Join store. All-in-one generation uses `support_root/config/node-identity`; a custom Node store requires the same explicit Controller path. Never point it to a remote Node copy. No trust, admission or serving authority is granted. Missing or mismatched identity displays unknown. |
 | `POOL_SIZE` | `10` | Ecto connection pool size |
 | `ECTO_IPV6` | - | Set to `true` for IPv6 socket options |
@@ -245,7 +247,15 @@ For the shared-cookie first cut:
 - Configure the same EPMD port across participating hosts.
 - Restrict EPMD and BEAM distribution ports to the trusted network.
 - Configure controller Runtime Endpoint targets for the admitted worker nodes.
+- Set `ORCHARD_WORKER_RECOVERY_CONTROL_HOST` to the controller's private address, and set `ORCHARD_WORKER_RECOVERY_CONTROL_ENDPOINT` on each node-agent Mac to `<controller-private-address>:50073`.
+- Restrict the recovery-control port to the trusted network.
 - Do not expose EPMD, BEAM distribution, or node-agent gRPC to the public internet.
+
+A node agent that cannot reach the recovery-control listener loads no models.
+SPEC §12.2 checkpoint hydration is fail-closed, and the `127.0.0.1:50073` defaults only fit a single-Mac install.
+`ORCHARD_WORKER_RECOVERY_CONTROL_ENABLED` defaults to `true` on the node agent; setting it to `false` removes the configured endpoint rather than the requirement, so placements stay fail-closed.
+Both sides need their registered identities first: the node identity from `orchardctl node join` and the controller trust material from `orchardctl nodes trust init`.
+Recovery evidence checks and operator recovery commands travel the opposite direction, from the controller to the node agent's registered advertised address, so that address must be controller-reachable under BEAM transport as well as under gRPC compatibility.
 
 See [`../docs/local-dev.md`](../docs/local-dev.md) for the current validated source-development topology.
 
@@ -652,6 +662,13 @@ orchardctl status
 
 For an all-in-one host, use `--service all` when initializing environment files.
 For a node-agent host, use `--service node-agent`, configure its BEAM identity and worker settings, then start and verify the selected service.
+
+Model loading has its own prerequisites on every packaged host, including all-in-one.
+SPEC §12.2 recovery control gates model residency: the node agent reads each placement's recovery checkpoint from the controller over mutual TLS before it admits a load, and it authenticates with the Node identity that `orchardctl node join` persists.
+Run `sudo orchardctl nodes trust init` on the controller host, issue an enrollment bundle with `sudo orchardctl nodes enrollment create --output PATH`, and redeem it with `orchardctl node join --enrollment-bundle PATH` on the node-agent host.
+Bundle issuance needs a configured controller HTTPS endpoint and its public CA certificate, so the default `plain_http_localhost` mode cannot produce that identity; see [Transport and TLS](#transport-and-tls).
+Until that identity exists and the recovery-control listener is reachable, every load is refused with `placement_recovery_required` and no model becomes resident.
+[Multi-Mac runtime](#multi-mac-runtime) gives the recovery-control host and endpoint values a multi-Mac install needs.
 
 Before public inference, create an Organization, issue a credential, import and activate a model, and grant that Organization access to the model.
 Model access is deny-by-default.

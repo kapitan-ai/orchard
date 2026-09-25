@@ -9,7 +9,7 @@ defmodule Orchard.Node.RuntimeEndpoint do
 
   alias Orchard.InferenceEvent
   alias Orchard.Node.{RuntimeEndpointMapper, RuntimeServer, Status}
-  alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Target}
+  alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Target, WorkerRecoveryEvidence}
 
   @task_supervisor Orchard.Node.RuntimeEndpointTaskSupervisor
 
@@ -19,14 +19,17 @@ defmodule Orchard.Node.RuntimeEndpoint do
   end
 
   @spec ensure_model_loaded(Operation.EnsureModelLoadedRequest.t(), keyword()) ::
-          {:ok, Operation.EnsureModelLoadedResult.t()}
+          {:ok, Operation.EnsureModelLoadedResult.t()} | {:error, term()}
   def ensure_model_loaded(%Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     response =
       request
       |> GrpcMapping.ensure_model_loaded_request_to_proto()
       |> Status.ensure_model_loaded()
 
-    {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
+    case response.recovery_refusal do
+      "" -> {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
+      refusal -> recovery_refusal(refusal)
+    end
   end
 
   @spec unload_model(Operation.UnloadModelRequest.t(), keyword()) :: {:ok, Operation.Ack.t()}
@@ -67,6 +70,13 @@ defmodule Orchard.Node.RuntimeEndpoint do
       |> Status.score_prefix_cache()
 
     {:ok, RuntimeEndpointMapper.prefix_cache_score_result_from_response(response)}
+  end
+
+  defp recovery_refusal(refusal) do
+    case WorkerRecoveryEvidence.refusal_reason(refusal) do
+      {:ok, reason} -> {:error, {:worker_recovery_refused, reason}}
+      :error -> {:error, :invalid_worker_recovery_refusal}
+    end
   end
 
   defp execute_stream(request, owner, stream_ref) do

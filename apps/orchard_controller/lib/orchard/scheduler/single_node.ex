@@ -6,15 +6,11 @@ defmodule Orchard.Scheduler.SingleNode do
   capacity to advertise `:queue_lane_capacity` or return `{:error, :model_busy}`
   only for proven requested-model path saturation.
 
-  Managed targets fail closed with stable reason-coded explanations when the
-  target resolves to a known Node and no live authorized capacity input can be
-  built — probe failure, skipped probing, missing Controller-owned facts, or
-  authorization denial. Explicitly classified unmanaged targets stay
-  dispatchable: they carry an unmanaged capacity input, its evaluation, and
-  refresh providers so the dispatcher authorizes them through the same shared
-  contract.
+  Known Nodes fail closed with stable reason-coded explanations when no live
+  authorized capacity input can be built. The bounded unmanaged compatibility
+  path retains its Controller-authorized unprobed dispatch semantics; the Node's
+  recovery gate still independently refuses residency without trusted evidence.
 
-  `model_busy` is reserved for proven requested-model capacity exhaustion.
   Configured-target non-saturation failures return `cluster_busy` with a
   scheduler explanation so operators are not left with a bare 503.
   """
@@ -30,6 +26,7 @@ defmodule Orchard.Scheduler.SingleNode do
   alias Orchard.Nodes.ExclusionSet
   alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, ModelRef, Observation, Target}
   alias Orchard.Scheduler.CircuitBreakerEligibility
+  alias Orchard.Scheduler.WorkerRecoveryEligibility
 
   @type schedule_result ::
           {:ok, map()} | {:error, term()} | {:error, term(), map()}
@@ -244,6 +241,22 @@ defmodule Orchard.Scheduler.SingleNode do
   end
 
   defp capacity_schedule(schedule, request, target, node, response, opts) do
+    case WorkerRecoveryEligibility.check(
+           target,
+           normalize_observation(target, response),
+           request.model_ref
+         ) do
+      :ok ->
+        recovery_eligible_capacity_schedule(schedule, request, target, node, response, opts)
+
+      {:error, reason} ->
+        schedule_failure(request, target, node, :model_busy, [Atom.to_string(reason)], %{
+          fact: "worker_recovery_ineligible"
+        })
+    end
+  end
+
+  defp recovery_eligible_capacity_schedule(schedule, request, target, node, response, opts) do
     placement_capacity = model_placement_capacity_for(response, request.model_ref)
     schedule = Map.put(schedule, :selected_tier, selected_tier(response, request.model_ref))
 
@@ -416,7 +429,13 @@ defmodule Orchard.Scheduler.SingleNode do
          opts
        ) do
     fn ->
-      with {:ok, input} <- capacity_input(node, target, response, placement_capacity, opts),
+      with :ok <-
+             WorkerRecoveryEligibility.check(
+               target,
+               normalize_observation(target, response),
+               request.model_ref
+             ),
+           {:ok, input} <- capacity_input(node, target, response, placement_capacity, opts),
            {:ok, input, _reason_codes} <-
              CircuitBreakerEligibility.apply(
                input,
@@ -438,6 +457,12 @@ defmodule Orchard.Scheduler.SingleNode do
     with {:ok, node} <- resolve_node(target, opts),
          true <- capacity_identity_matches?(node, expected_node_id),
          {:ok, response} <- fresh_status(target, opts),
+         :ok <-
+           WorkerRecoveryEligibility.check(
+             target,
+             normalize_observation(target, response),
+             request.model_ref
+           ),
          placement_capacity <- refreshed_placement_capacity(response, request.model_ref, phase),
          {:ok, input} <-
            capacity_input(

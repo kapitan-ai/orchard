@@ -25,6 +25,11 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests.Request
   alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
+  alias Orchard.TestSupport.{
+    WorkerRecoveryCheckpointClient,
+    WorkerRecoveryManagerFixtureScheduler
+  }
+
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
       build_conn(:post, "/v1/responses")
@@ -61,6 +66,22 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(previous_inference, :scheduler_impl, WorkerRecoveryManagerFixtureScheduler)
+    )
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(
+        previous_runtime,
+        :worker_recovery_checkpoint_client,
+        WorkerRecoveryCheckpointClient
+      )
+    )
 
     previous_runtime_owner =
       Application.get_env(:orchard_controller, :queue_admission_api_runtime_owner)
@@ -881,11 +902,21 @@ defmodule Orchard.API.ResponsesControllerTest do
     }
 
     Process.put(:queue_admission_runtime_pids, [])
-    tasks = Enum.map(1..3, fn _index -> Task.async(fn -> post_responses(params, token) end) end)
+
+    tasks =
+      Enum.map(1..3, fn _index ->
+        Task.async(fn ->
+          receive do
+            :start_queue_request -> post_responses(params, token)
+          end
+        end)
+      end)
 
     try do
+      send(Enum.at(tasks, 0).pid, :start_queue_request)
       {first_pid, first_request_id} = runtime_start_message("responses-queue-capacity2-model")
       remember_runtime_pid(first_pid)
+      send(Enum.at(tasks, 1).pid, :start_queue_request)
       {second_pid, second_request_id} = runtime_start_message("responses-queue-capacity2-model")
       remember_runtime_pid(second_pid)
 
@@ -897,6 +928,7 @@ defmodule Orchard.API.ResponsesControllerTest do
       assert placement.active_request_count == 2
       assert placement.max_concurrency == 2
 
+      send(Enum.at(tasks, 2).pid, :start_queue_request)
       assert wait_for_queued_request("responses-queue-capacity2-model@v1")
 
       refute_receive {:queue_admission_runtime_started, _pid, _request_id,

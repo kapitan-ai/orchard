@@ -49,6 +49,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Nodes.ExclusionSet
   alias Orchard.Scheduler.CircuitBreakerEligibility
   alias Orchard.Scheduler.MultiNode.CompatibilityProbeRunner
+  alias Orchard.Scheduler.WorkerRecoveryEligibility
 
   alias Orchard.RuntimeEndpoint.{
     BeamIdentity,
@@ -924,7 +925,7 @@ defmodule Orchard.Scheduler.MultiNode do
   defp candidate_key(candidate), do: {candidate.node_id, explanation_target_ref(candidate)}
 
   defp rejection_reason_codes(candidate) do
-    if dispatch_capacity_eligible?(candidate) and residency_eligible?(candidate) do
+    if schedule_eligible?(candidate) do
       []
     else
       ineligible_reason_codes(candidate)
@@ -949,6 +950,7 @@ defmodule Orchard.Scheduler.MultiNode do
       end
 
     residency_reason_codes = Map.get(candidate, :residency_reason_codes, [])
+    recovery_reason_codes = Map.get(candidate, :worker_recovery_reason_codes, [])
 
     legacy_reason_codes =
       [
@@ -967,6 +969,7 @@ defmodule Orchard.Scheduler.MultiNode do
       breaker_reason_codes ++
         capacity_reason_codes ++
         residency_reason_codes ++
+        recovery_reason_codes ++
         legacy_reason_codes
     )
   end
@@ -976,17 +979,46 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp schedule_eligible?(candidate) do
-    dispatch_capacity_eligible?(candidate) and residency_eligible?(candidate)
+    dispatch_capacity_eligible?(candidate) and residency_eligible?(candidate) and
+      Map.get(candidate, :worker_recovery_reason_codes) == []
   end
 
   defp residency_eligible?(candidate) do
     Map.get(candidate, :residency_reason_codes, []) == []
   end
 
+  # SPEC.md §12.2 with ADR 0017: trusted snapshot candidates are annotated from
+  # durable evidence alone. The bounded unmanaged-compatibility wave is the one
+  # accepted exception and may resolve a cold placement with a targeted query,
+  # falling back to epoch-only evidence when the transport cannot be inspected.
+  defp recovery_admission(
+         %{candidate_source: "bounded_compatibility_probe"} = candidate,
+         request,
+         opts
+       ) do
+    WorkerRecoveryEligibility.check_with_inspection(
+      candidate.target,
+      candidate.observation,
+      request.model_ref,
+      opts
+    )
+  end
+
+  defp recovery_admission(candidate, request, _opts) do
+    WorkerRecoveryEligibility.check(candidate.target, candidate.observation, request.model_ref)
+  end
+
   defp annotate_residency_policy(candidate, %CanonicalRequest{} = request, opts) do
     {reason_codes, fact} = residency_decision(candidate, request, opts)
 
+    recovery_codes =
+      case recovery_admission(candidate, request, opts) do
+        :ok -> []
+        {:error, reason} -> [Atom.to_string(reason)]
+      end
+
     candidate
+    |> Map.put(:worker_recovery_reason_codes, recovery_codes)
     |> Map.put(:residency_reason_codes, reason_codes)
     |> maybe_put_residency_fact(fact)
   end
@@ -1096,7 +1128,8 @@ defmodule Orchard.Scheduler.MultiNode do
         placements: snapshot_candidate.placements,
         runtime_memory_budgets: snapshot_candidate.runtime_memory_budgets,
         runtime_prefix_cache_statuses: snapshot_candidate.runtime_prefix_cache_statuses,
-        supports_prompt_token_ids: snapshot_candidate.supports_prompt_token_ids
+        supports_prompt_token_ids: snapshot_candidate.supports_prompt_token_ids,
+        worker_recovery_epoch: snapshot_candidate.worker_recovery_epoch
       })
 
     %{
@@ -1382,7 +1415,8 @@ defmodule Orchard.Scheduler.MultiNode do
           ensure_model_loaded_result
         )
 
-      with %PlacementCapacity{} <- placement_capacity,
+      with :ok <- recovery_admission(candidate, request, opts),
+           %PlacementCapacity{} <- placement_capacity,
            {:ok, input} <-
              dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()) do
         input
@@ -1495,7 +1529,8 @@ defmodule Orchard.Scheduler.MultiNode do
          opts
        ) do
     fn ->
-      with {:ok, input} <-
+      with :ok <- recovery_admission(candidate, request, opts),
+           {:ok, input} <-
              dispatch_capacity_input(candidate, placement_capacity, opts, DateTime.utc_now()),
            {:ok, input, _reason_codes} <-
              CircuitBreakerEligibility.apply(
@@ -1528,6 +1563,12 @@ defmodule Orchard.Scheduler.MultiNode do
            snapshot_candidate
            |> snapshot_candidate(request)
            |> enrich_candidate(request),
+         :ok <-
+           WorkerRecoveryEligibility.check(
+             refreshed.target,
+             refreshed.observation,
+             request.model_ref
+           ),
          refreshed_placement <-
            Map.get(
              refreshed,

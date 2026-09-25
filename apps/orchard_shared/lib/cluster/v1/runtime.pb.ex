@@ -144,6 +144,7 @@ defmodule Orchard.Cluster.V1.RuntimeModelPlacement do
   field(:model_ref, 1, type: Orchard.Cluster.V1.ModelRef, json_name: "modelRef")
   field(:active_request_count, 2, type: :uint32, json_name: "activeRequestCount")
   field(:max_concurrency, 3, type: :uint32, json_name: "maxConcurrency")
+  field(:worker_recovery_json, 4, type: :string, json_name: "workerRecoveryJson")
 end
 
 defmodule Orchard.Cluster.V1.WorkerCrashCounter do
@@ -227,6 +228,8 @@ defmodule Orchard.Cluster.V1.StatusResponse do
     type: Orchard.Cluster.V1.WorkerCrashCounter,
     json_name: "workerCrashCounters"
   )
+
+  field(:worker_recovery_epoch, 14, type: :string, json_name: "workerRecoveryEpoch")
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do
@@ -281,6 +284,8 @@ defmodule Orchard.Cluster.V1.EnsureModelLoadedResponse do
     type: Orchard.Cluster.V1.RuntimeModelPlacement,
     json_name: "placementCapacity"
   )
+
+  field(:recovery_refusal, 8, type: :string, json_name: "recoveryRefusal")
 end
 
 defmodule Orchard.Cluster.V1.UnloadModelRequest do

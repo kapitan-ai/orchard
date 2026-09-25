@@ -702,6 +702,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
   alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   def connect(target), do: {:ok, target}
 
@@ -714,8 +715,21 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
         {:error, :unavailable}
 
       response ->
+        response = WorkerRecoveryFixtures.status(response)
         DispatchCapacityFixtures.record_authenticated_probe_evidence(response)
         {:ok, response}
+    end
+  end
+
+  def inspect_worker_recovery(target, model_ref, _opts) do
+    key = {Keyword.fetch!(target.address, :host), Keyword.fetch!(target.address, :port)}
+
+    case Process.get({__MODULE__, key}) do
+      %{node_metadata: %{node_id: node_id}} ->
+        {:ok, WorkerRecoveryFixtures.evidence(node_id, model_ref)}
+
+      _missing ->
+        {:error, :unavailable}
     end
   end
 
@@ -1158,6 +1172,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.TestSupport.TerminalCardinality
 
+  alias Orchard.TestSupport.{
+    WorkerRecoveryCheckpointClient,
+    WorkerRecoveryFixtures,
+    WorkerRecoveryRequestOrchestratorFixtureScheduler
+  }
+
   setup :setup_sentry_context
 
   setup do
@@ -1166,6 +1186,26 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     bundle = stage_test_bundle!()
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(
+        previous_inference,
+        :scheduler_impl,
+        WorkerRecoveryRequestOrchestratorFixtureScheduler
+      )
+    )
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.put(
+        previous_runtime,
+        :worker_recovery_checkpoint_client,
+        WorkerRecoveryCheckpointClient
+      )
+    )
 
     previous_runtime_events =
       Application.get_env(:orchard_node_agent, :request_orchestrator_test_runtime_events)
@@ -1200,6 +1240,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+
       restore_runtime_events(previous_runtime_events)
       restore_pre_await_queue_result(previous_pre_await_queue_result)
       restore_live_capacity_owner(previous_live_capacity_owner)
@@ -2938,6 +2979,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     bundle: bundle
   } do
     put_capturing_runtime_adapter_config()
+    :ok = Supervisor.terminate_child(Node.Supervisor, ModelManager)
+    {:ok, _pid} = Supervisor.restart_child(Node.Supervisor, ModelManager)
     put_runtime_events([InferenceEvent.completed(:finish_reason_stop, nil)])
 
     model = create_active_model!(bundle, "request-orchestrator-delivery-cancel")
@@ -5398,12 +5441,13 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   end
 
   defp put_function_clause_runtime_client_config do
+    put_multi_node_scheduler_config()
+
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
-      |> Keyword.merge(
-        runtime_endpoint_client_impl:
-          Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseRuntimeClient,
-        scheduler_impl: Orchard.Scheduler.SingleNode
+      |> Keyword.put(
+        :runtime_endpoint_client_impl,
+        Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseRuntimeClient
       )
 
     Application.put_env(:orchard_controller, :inference, inference)

@@ -72,3 +72,4 @@
 - [ ] 9.5 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate define-worker-crash-recovery --type change --strict --no-interactive` before implementation handoff.
 - [ ] 9.6 Obtain an exact-worktree RepoPrompt architecture review and reconcile every finding against current repository truth.
 - [ ] 9.7 After archive or sync, run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive` and remove placeholder prose such as `Purpose TBD` from generated main specs.
+- [ ] 9.8 Before activation, complete the deferred hot-path recovery-inspection caching, batching, and ranking redesign; coordinate a rollout that preserves exact recovery evidence; and obtain live source-dev/package mTLS activation plus two-host crash proof. Until then, record these as pending evidence, not support claims.

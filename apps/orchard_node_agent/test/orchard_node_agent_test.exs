@@ -1,6 +1,8 @@
 defmodule OrchardNodeAgentTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef, as: CanonicalModelRef
@@ -39,6 +41,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.Node.Worker.V1.{WorkerCapabilities, WorkerCapabilityProfile}
   alias Orchard.Node.WorkerProcessLifecycle
+  alias Orchard.Node.WorkerRecoveryControlListener
   alias Orchard.Node.WorkerSupervisor
   alias Orchard.NodeAgent.Supervisor, as: NodeAgentSupervisor
   alias Orchard.RuntimeEndpoint.ModelRef, as: RuntimeModelRef
@@ -1147,6 +1150,7 @@ defmodule OrchardNodeAgentTest do
 
     :ok = NodeStatus.reset()
     wait_until(fn -> worker_count() == 0 end)
+    restart_model_manager!()
 
     # Create a real test bundle at both the cache path and a source path.
     # The async ModelManager pipeline runs acquisition which checks cache hash.
@@ -1382,6 +1386,101 @@ defmodule OrchardNodeAgentTest do
            ]
 
     refute NodeSupervisor.grpc_server_id() in child_ids
+  end
+
+  test "SPEC §12.2 a supervised sibling crash leaves model loading enabled" do
+    refute :sys.get_state(ModelManager).stopping?
+
+    {_id, crashed, _type, _modules} =
+      NodeSupervisor
+      |> Supervisor.which_children()
+      |> Enum.find(fn {id, _pid, _type, _modules} -> id == NodeSupervisor.grpc_server_id() end)
+
+    monitor = Process.monitor(crashed)
+    Process.exit(crashed, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^crashed, :killed}, 2_000
+
+    wait_until(fn ->
+      Enum.any?(Supervisor.which_children(NodeSupervisor), fn {id, pid, _type, _modules} ->
+        id == NodeSupervisor.grpc_server_id() and is_pid(pid) and pid != crashed
+      end)
+    end)
+
+    request = %EnsureModelLoadedRequest{
+      node_id: "node-local",
+      model_id: "sibling-crash-#{System.unique_integer([:positive])}",
+      version: "v1",
+      artifact_sha256: String.duplicate("a", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      artifact_source_uri: ""
+    }
+
+    result = NodeStatus.ensure_model_loaded(request)
+
+    assert result.recovery_refusal == ""
+    assert result.failure_code == "missing_artifact_source_uri"
+    assert ModelManager.current().worker_state == :WORKER_STATE_IDLE
+  end
+
+  test "node supervisor lazily adds recovery control without replacing the ordinary listener" do
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime,
+        worker_recovery_control_enabled: true,
+        runtime_grpc_listener_enabled: false,
+        grpc_security: :plaintext_compatibility,
+        listen_address: [host: "127.0.0.1", port: 50_071],
+        node_identity_root: nil
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+    end)
+
+    assert {:ok, {_flags, child_specs}} = NodeSupervisor.init([])
+    child_ids = Enum.map(child_specs, & &1.id)
+
+    assert WorkerRecoveryControlListener in child_ids
+    refute NodeSupervisor.grpc_server_id() in child_ids
+
+    assert {:error, :worker_recovery_control_identity_unavailable} =
+             WorkerRecoveryControlListener.server_options()
+  end
+
+  test "node recovery listener logs permanent configuration invalidity once without retrying" do
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime,
+        worker_recovery_control_enabled: true,
+        runtime_grpc_listener_enabled: false,
+        listen_address: [host: "0.0.0.0", port: 50_071],
+        node_identity_root: nil
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+    end)
+
+    log =
+      capture_log(fn ->
+        listener = start_supervised!({WorkerRecoveryControlListener, []})
+        send(listener, :start_listener)
+        state = :sys.get_state(listener)
+
+        assert Map.has_key?(state.logged_outcomes, :configuration_invalid)
+        assert DynamicSupervisor.which_children(state.server_supervisor) == []
+      end)
+
+    assert length(String.split(log, "worker recovery control listener configuration invalid")) ==
+             2
   end
 
   test "node agent application supervisor is running" do
@@ -1794,6 +1893,7 @@ defmodule OrchardNodeAgentTest do
 
   test "worker_status_error never supplies or caches placement capacity", %{bundle: bundle} do
     with_runtime_adapter(WorkerStatusErrorRuntimeAdapter, fn ->
+      restart_model_manager!()
       request = ensure_model_loaded_request(bundle)
 
       first = Task.async(fn -> NodeStatus.ensure_model_loaded(request) end)
@@ -1966,8 +2066,12 @@ defmodule OrchardNodeAgentTest do
 
       assert absent.ensure == malformed.ensure
       assert absent.ensure == valid.ensure
-      assert absent.status == malformed.status
-      assert absent.status == valid.status
+
+      assert without_worker_recovery_revision(absent.status) ==
+               without_worker_recovery_revision(malformed.status)
+
+      assert without_worker_recovery_revision(absent.status) ==
+               without_worker_recovery_revision(valid.status)
 
       assert %StatusResponse{
                runtime_health: %{ready: true, health_code: ""},
@@ -2565,11 +2669,12 @@ defmodule OrchardNodeAgentTest do
         assert placement.active_request_count == 1
         assert placement.max_concurrency == 1
 
-        refute Enum.any?(
-                 response.runtime_model_placements,
-                 &(&1.model_ref.model_id == blocked_bundle.model_id and
-                     &1.model_ref.version == blocked_bundle.version)
-               )
+        blocked_placement =
+          runtime_model_placement!(response, blocked_bundle.model_id, blocked_bundle.version)
+
+        assert blocked_placement.active_request_count == 0
+        assert blocked_placement.max_concurrency == 0
+        assert blocked_placement.worker_recovery_json != ""
 
         send(blocking_pid, :finish_load)
 
@@ -5766,6 +5871,16 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  defp without_worker_recovery_revision(%StatusResponse{} = status) do
+    placements =
+      Enum.map(status.runtime_model_placements, fn placement ->
+        evidence = Jason.decode!(placement.worker_recovery_json) |> Map.delete("revision")
+        %{placement | worker_recovery_json: Jason.encode!(evidence)}
+      end)
+
+    %{status | runtime_model_placements: placements}
+  end
+
   defp worker_capabilities(overrides \\ []) do
     struct!(
       %WorkerCapabilities{
@@ -5790,6 +5905,12 @@ defmodule OrchardNodeAgentTest do
       },
       overrides
     )
+  end
+
+  defp restart_model_manager! do
+    :ok = Supervisor.terminate_child(NodeSupervisor, ModelManager)
+    {:ok, _pid} = Supervisor.restart_child(NodeSupervisor, ModelManager)
+    :ok
   end
 
   defp with_real_worker_runtime(fun) when is_function(fun, 0) do
