@@ -35,6 +35,8 @@ The top-level value cannot be `null`. `enabled` is required and is not coerced. 
 
 Object presence selects `projection = final_only` and `source = explicit_public`. `enabled = false` selects `generation_policy = disabled`; `enabled = true` selects `generation_policy = enabled`. The public object has no representation for `explicit_public + model_default`. A selected tier is valid only with `enabled = true`.
 
+This is a prospective, unactivated mapping. Today, `ChatRequestValidator` and `ResponsesRequestValidator` omit `reasoning` from their supported-field sets, which is the existing public gate. The lower shared `CanonicalRequest` validator still permits `explicit_public + model_default + final_only + nil`; that dormant representational allowance predates this concrete public shape and does not make the field accepted. Issue #326 must narrow `validate_reasoning_combination!/5` and test the rejected combination before either public validator admits the field. This package does not modify runtime code.
+
 The shape exposes no provider values or renderer parameters. `xhigh` remains outside public vocabulary even when an exact closed renderer mapping uses it internally. No model name, family, publisher, or template convention changes normalization.
 
 ### 2. Validation precedes persistence and capability decisions
@@ -70,7 +72,7 @@ No reasoning item, reasoning delta, raw token channel, usage subset, or control 
 
 ### 5. Acceptance does not authorize activation
 
-The public field remains disabled until the canonical/render, runtime-proof, parser/projection, and usage/retry/capture implementations owned by #326-#329 are merged. The PR #421 reader bridge must be deployed and attested everywhere required before #329 classified writers activate. PRs #425, #431, and #434 retain their existing ownership and are not duplicated here.
+The public field remains disabled until the canonical/render, runtime-proof, parser/projection, and usage/retry/capture implementations owned by #326-#329 are merged. In particular, #326 must reconcile the shared constructor's current `explicit_public + model_default` allowance with Decision 1 before public decoding activates. The PR #421 reader bridge must be deployed and attested everywhere required before #329 classified writers activate. PRs #425, #431, and #434 retain their existing ownership and are not duplicated here.
 
 Mixed-version behavior remains fail-closed: an explicit request MUST NOT be sent to a binding that lacks the complete negotiation required by §13.1 and MUST NOT be silently downgraded. Omission continues to use the legacy binding behavior.
 

@@ -56,6 +56,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{Idempotency, Request}
+  alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
@@ -706,6 +707,73 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
              ]
     end
 
+    test "SPEC 7.5.2 non-stream preserves ordered worker-produced argument bytes" do
+      fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+      [weather_arguments, time_arguments] =
+        GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute:
+          {:ok, stub_chat_canonical(false),
+           [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 200
+      [choice] = Jason.decode!(conn.resp_body)["choices"]
+
+      assert choice["message"]["tool_calls"] == [
+               %{
+                 "id" => "call_0",
+                 "type" => "function",
+                 "function" => %{
+                   "name" => "lookup_weather",
+                   "arguments" => weather_arguments
+                 }
+               },
+               %{
+                 "id" => "call_1",
+                 "type" => "function",
+                 "function" => %{"name" => "lookup_time", "arguments" => time_arguments}
+               }
+             ]
+    end
+
+    test "SPEC 7.5.2 non-stream withholds an earlier valid block after a later invalid block" do
+      fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute:
+          {:ok, stub_chat_canonical(false),
+           [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 500
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => %{
+                 "message" => "Inference failed: model emitted an unrequested function",
+                 "type" => "server_error",
+                 "param" => nil,
+                 "code" => "internal_error"
+               }
+             }
+    end
+
     test "returns mixed text and tool-call non-stream payload when both are emitted" do
       stub_chat_orchestrator(
         prepare: {:ok, stub_chat_canonical(false), %{}},
@@ -898,6 +966,45 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
       assert body["error"]["message"] ==
                "Inference failed: model did not emit any required tool calls"
+    end
+
+    test "SPEC.md §7.5.3a hides reasoning conformance details in sync Chat errors" do
+      worker_message = "<think>worker marker bytes and model output</think>"
+
+      for code <- [
+            "reasoning_parser_conformance_failed",
+            "reasoning_policy_conformance_failed"
+          ] do
+        canonical = stub_chat_canonical(false)
+
+        stub_chat_orchestrator(
+          prepare: {:ok, canonical, %{}},
+          execute:
+            {:ok, canonical,
+             [
+               InferenceEvent.accepted(1_710_000_123_000),
+               InferenceEvent.failed(code, worker_message, false)
+             ]}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}]
+          })
+
+        assert conn.status == 500
+
+        assert Jason.decode!(conn.resp_body)["error"] == %{
+                 "code" => "internal_error",
+                 "message" => "Internal error",
+                 "param" => nil,
+                 "type" => "api_error"
+               }
+
+        refute conn.resp_body =~ code
+        refute conn.resp_body =~ worker_message
+      end
     end
 
     test "SPEC 7.5.5 non-stream terminal conformance failure is a generic 500" do
@@ -1752,6 +1859,91 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert done_events == [{:done, nil}]
     end
 
+    test "SPEC 7.5.2 stream preserves ordered worker-produced argument bytes" do
+      fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+      [weather_arguments, time_arguments] =
+        GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+      data_events = Enum.filter(events, fn {type, _payload} -> type == :data end)
+
+      assert [first_call, second_call] =
+               data_events
+               |> Enum.flat_map(fn {:data, data} ->
+                 data["choices"]
+                 |> Enum.flat_map(fn choice -> choice["delta"]["tool_calls"] || [] end)
+               end)
+
+      assert first_call == %{
+               "index" => 0,
+               "id" => "call_0",
+               "type" => "function",
+               "function" => %{
+                 "name" => "lookup_weather",
+                 "arguments" => weather_arguments
+               }
+             }
+
+      assert second_call == %{
+               "index" => 1,
+               "id" => "call_1",
+               "type" => "function",
+               "function" => %{"name" => "lookup_time", "arguments" => time_arguments}
+             }
+
+      assert List.last(events) == {:done, nil}
+    end
+
+    test "SPEC 7.5.2 stream retains an earlier valid block before a later invalid block" do
+      fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+      [weather_arguments] =
+        GeneratedToolArgumentFixture.arguments!("valid_then_invalid_block")
+
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+
+      assert Enum.any?(events, fn
+               {:data, %{"choices" => [%{"delta" => %{"tool_calls" => [call]}}]}} ->
+                 call["function"]["arguments"] == weather_arguments
+
+               _event ->
+                 false
+             end)
+
+      assert [{:error, payload}] = Enum.filter(events, fn {type, _payload} -> type == :error end)
+      assert payload["error"]["code"] == "tool_call_parse_failed"
+      refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+    end
+
     test "malformed tool-call delta after stream start emits SSE error envelope and no [DONE]" do
       stub_chat_orchestrator(
         prepare: {:ok, stub_chat_canonical(), %{}},
@@ -1830,6 +2022,48 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       request = Requests.get_request_by_public_id(request_id)
       assert request.state == :failed
       assert_tool_serializer_failure!(request)
+    end
+
+    test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Chat errors" do
+      worker_message = "<think>worker marker bytes and model output</think>"
+
+      for code <- [
+            "reasoning_parser_conformance_failed",
+            "reasoning_policy_conformance_failed"
+          ] do
+        stub_chat_orchestrator(
+          prepare: {:ok, stub_chat_canonical(), %{}},
+          events: [
+            InferenceEvent.accepted(1_710_000_123_000),
+            InferenceEvent.failed(code, worker_message, false)
+          ],
+          execute: {:ok, stub_chat_canonical(), []}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}],
+            "stream" => true
+          })
+
+        assert conn.status == 200
+        events = parse_sse_body(conn.resp_body)
+
+        assert [{:error, payload}] =
+                 Enum.filter(events, fn {type, _payload} -> type == :error end)
+
+        assert payload["error"] == %{
+                 "code" => "internal_error",
+                 "message" => "Internal error",
+                 "param" => nil,
+                 "type" => "server_error"
+               }
+
+        refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+        refute conn.resp_body =~ code
+        refute conn.resp_body =~ worker_message
+      end
     end
 
     test "SPEC 7.5.5 streaming terminal conformance failure emits one generic SSE error" do

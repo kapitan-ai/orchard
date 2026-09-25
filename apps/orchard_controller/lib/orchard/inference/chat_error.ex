@@ -10,6 +10,9 @@ defmodule Orchard.Inference.ChatError do
 
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
+  alias Orchard.Requests.InferenceAttemptFailure
+
+  @reasoning_conformance_codes InferenceAttemptFailure.reasoning_conformance_codes()
 
   @type kind ::
           :missing_required_field
@@ -20,6 +23,7 @@ defmodule Orchard.Inference.ChatError do
           | :context_overflow
           | :tooling_not_supported
           | :tokenization_invalid_request
+          | :tokenization_runtime_incompatible
           | :tokenization_internal
           | :model_load_failed
           | :model_busy
@@ -31,6 +35,7 @@ defmodule Orchard.Inference.ChatError do
           | :request_cancelled
           | :request_interrupted
           | :request_failed
+          | :reasoning_conformance
           | :runtime_endpoint_conformance
           | :orchestration_crash
           | :internal
@@ -97,6 +102,9 @@ defmodule Orchard.Inference.ChatError do
   def from_prepare_reason({:tokenization, {category, message}})
       when is_binary(message) and category in [:invalid_input, :unsupported_tokenizer],
       do: build(:tokenization_invalid_request, detail: message)
+
+  def from_prepare_reason({:tokenization, {:runtime_incompatible, _message}}),
+    do: build(:tokenization_runtime_incompatible, [])
 
   def from_prepare_reason({:tokenization, {_category, message}}) when is_binary(message),
     do: build(:tokenization_internal, detail: message)
@@ -244,6 +252,16 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def api_mapping(%__MODULE__{kind: :tokenization_runtime_incompatible}) do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: "runtime_incompatible",
+      message: "Runtime is incompatible",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: :tokenization_internal, detail: detail}) do
     %{
       status: :internal_server_error,
@@ -355,6 +373,16 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def api_mapping(%__MODULE__{kind: :reasoning_conformance}) do
+    %{
+      status: :internal_server_error,
+      type: "api_error",
+      code: "internal_error",
+      message: "Internal error",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: :runtime_endpoint_conformance}) do
     %{
       status: :internal_server_error,
@@ -409,6 +437,15 @@ defmodule Orchard.Inference.ChatError do
       type: "server_error",
       code: "request_cancelled",
       message: "Request was cancelled",
+      param: nil
+    }
+  end
+
+  def sse_mapping(%__MODULE__{kind: :reasoning_conformance}) do
+    %{
+      type: "server_error",
+      code: "internal_error",
+      message: "Internal error",
       param: nil
     }
   end
@@ -546,6 +583,15 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def terminal_attrs(%__MODULE__{kind: :reasoning_conformance}) do
+    %{
+      state: :failed,
+      http_status: 500,
+      error_code: "internal_error",
+      error_message: "Internal error"
+    }
+  end
+
   def terminal_attrs(%__MODULE__{kind: :runtime_endpoint_conformance} = error) do
     %{
       state: :failed,
@@ -611,6 +657,9 @@ defmodule Orchard.Inference.ChatError do
   defp failed_event_kind(code)
        when code in ["request_client_disconnect", "request_caller_disconnect"],
        do: :request_cancelled
+
+  defp failed_event_kind(code) when code in @reasoning_conformance_codes,
+    do: :reasoning_conformance
 
   defp failed_event_kind(code)
        when code in [

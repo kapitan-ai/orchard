@@ -36,6 +36,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
   defp maybe_put_reasoning(serialized, %CanonicalRequest.Reasoning{
          generation_policy: generation_policy,
          projection: projection,
+         reasoning_effort: nil,
          source: source,
          effective_contract: %{mode: :legacy}
        })

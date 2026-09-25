@@ -2,6 +2,10 @@ import Config
 
 require Logger
 
+config :orchard_controller,
+       :local_node_identity_root,
+       System.get_env("ORCHARD_LOCAL_NODE_IDENTITY_ROOT")
+
 env_int = fn env_name, default ->
   case System.get_env(env_name) || default do
     value when is_integer(value) ->

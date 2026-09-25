@@ -33,6 +33,8 @@ This change amends `SPEC.md` sections 3.4, 7.2.1, 7.2.4, 7.2.5, and 7.2.7. `SPEC
 
 This is a contract-only child of issue #190 and merged contract PR #325. It satisfies only the concrete public-input acceptance deferred by `define-reasoning-output-contract` and `define-qualified-reasoning-effort`.
 
+The current public request validators are the activation boundary: neither endpoint accepts `reasoning`, so no public decoder can currently produce `source = explicit_public`. The shared `CanonicalRequest` validator nevertheless still accepts the dormant `explicit_public + model_default + final_only + nil` combination. This proposal narrows the future public contract without claiming that implementation already conforms; issue #326 must close that constructor gap and add regression coverage before activation. Changing that runtime code in this contract-only change is explicitly excluded.
+
 PR #425 retains qualified effort and exact renderer-mapping ownership. PR #431 retains negotiated runtime schema, live proof, and preparation ownership. PR #434 retains post-invocation conformance mapping ownership. This change references those boundaries and does not duplicate or complete their implementation.
 
 Public activation remains blocked until issues #326, #327, #328, and #329 have each completed and merged their required implementation. Before #329 classified usage writers required for activation are enabled, the reader bridge merged by PR #421 must be deployed to every Controller and background reader and that deployment must be explicitly attested. A merged contract, green CI, static fixture, or compatible reader alone is not activation or deployment evidence.

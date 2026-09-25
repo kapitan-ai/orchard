@@ -78,8 +78,17 @@ defmodule Orchard.API.ResponsesController do
             |> ChatError.api_mapping()
             |> send_response_error(conn)
 
-          _other ->
-            json(conn, ResponsesSerializer.response_payload(canonical, events, created))
+          %{event: %InferenceEvent.Completed{}} ->
+            send_completed_response(conn, canonical, events, created)
+
+          nil ->
+            send_error(
+              conn,
+              :internal_server_error,
+              "Stream ended without a terminal event",
+              "server_error",
+              code: "incomplete_stream"
+            )
         end
 
       {:replay, request} ->
@@ -90,6 +99,19 @@ defmodule Orchard.API.ResponsesController do
 
       {:error, reason} ->
         InferenceControllerSupport.send_execute_error(conn, reason)
+    end
+  end
+
+  defp send_completed_response(conn, canonical, events, created) do
+    payload = ResponsesSerializer.response_payload(canonical, events, created)
+    calls = Enum.filter(payload.output, &(&1.type == "function_call"))
+
+    if ResponsesSerializer.valid_function_calls?(calls, canonical) do
+      json(conn, payload)
+    else
+      send_error(conn, :internal_server_error, "Invalid completed tool call", "server_error",
+        code: "invalid_tool_call"
+      )
     end
   end
 
@@ -140,6 +162,7 @@ defmodule Orchard.API.ResponsesController do
       serializer_failed: false,
       output_done_sent: false,
       output_delta_sent: false,
+      sequence_number: 1,
       output_chunks: [],
       usage: nil,
       tool_call_accumulator: ToolCallAccumulator.new()
@@ -178,12 +201,37 @@ defmodule Orchard.API.ResponsesController do
     end
   end
 
+  defp handle_stream_event(
+         state,
+         %InferenceEvent{event: %InferenceEvent.OutputTextDelta{delta: ""}},
+         _canonical,
+         _created
+       ),
+       do: state
+
   defp handle_stream_event(state, event, canonical, created) do
+    if InferenceEvent.kind(event) == :completed and
+         not ResponsesSerializer.valid_function_calls?(
+           tool_call_items(state, :completed),
+           canonical
+         ) do
+      failure = InferenceEvent.failed("invalid_tool_call", "Invalid completed tool call", false)
+
+      state
+      |> do_handle_stream_event(failure, canonical, created)
+      |> Map.put(:serializer_failed, true)
+    else
+      do_handle_stream_event(state, event, canonical, created)
+    end
+  end
+
+  defp do_handle_stream_event(state, event, canonical, created) do
     case InferenceEvent.kind(event) do
       :output_text_delta ->
         delta = event.event.delta
 
         state
+        |> maybe_emit_message_added(canonical)
         |> Map.update!(:output_chunks, &[delta | &1])
         |> Map.put(:output_delta_sent, true)
         |> emit_event(
@@ -205,6 +253,8 @@ defmodule Orchard.API.ResponsesController do
         state
         |> Map.put(:usage, usage)
         |> maybe_emit_output_done(canonical, output_text)
+        |> maybe_emit_message_done(canonical, output_text)
+        |> emit_function_calls(function_call_items, output_text)
         |> emit_event(
           "response.completed",
           ResponsesSerializer.completed_event(
@@ -266,6 +316,34 @@ defmodule Orchard.API.ResponsesController do
     state.output_chunks |> Enum.reverse() |> Enum.join("")
   end
 
+  defp maybe_emit_message_added(%{output_delta_sent: true} = state, _canonical), do: state
+
+  defp maybe_emit_message_added(state, canonical) do
+    emit_event(
+      state,
+      "response.output_item.added",
+      ResponsesSerializer.message_event(canonical.public_id, "", :added)
+    )
+  end
+
+  defp maybe_emit_message_done(%{output_delta_sent: false} = state, _canonical, _text), do: state
+
+  defp maybe_emit_message_done(state, canonical, text) do
+    emit_event(
+      state,
+      "response.output_item.done",
+      ResponsesSerializer.message_event(canonical.public_id, text, :done)
+    )
+  end
+
+  defp emit_function_calls(state, items, output_text) do
+    offset = if output_text == "", do: 0, else: 1
+
+    items
+    |> ResponsesSerializer.function_call_events(offset)
+    |> Enum.reduce(state, fn payload, acc -> emit_event(acc, payload.type, payload) end)
+  end
+
   defp latest_usage(state, event) do
     case event.event do
       %InferenceEvent.Completed{usage: nil} -> state.usage
@@ -291,8 +369,10 @@ defmodule Orchard.API.ResponsesController do
     if state.closed do
       state
     else
+      payload = Map.put(payload, :sequence_number, state.sequence_number)
+
       case SSE.send_event(state.conn, event_type, payload) do
-        {:ok, conn} -> %{state | conn: conn}
+        {:ok, conn} -> %{state | conn: conn, sequence_number: state.sequence_number + 1}
         {:error, :closed} -> %{state | closed: true}
       end
     end
@@ -423,16 +503,22 @@ defmodule Orchard.API.ResponsesController do
 
   defp finalize_stream(state, {:ok, _canonical, _events}, canonical, created) do
     output_text = collected_text(state)
-    function_call_items = tool_call_items(state, :completed)
+    function_call_items = tool_call_items(state, :incomplete)
 
     state
     |> maybe_emit_output_done(canonical, output_text)
     |> emit_event(
-      "response.completed",
-      ResponsesSerializer.completed_event(
+      "response.failed",
+      ResponsesSerializer.failed_event(
         canonical,
         output_text,
         state.usage,
+        %{
+          type: "server_error",
+          code: "incomplete_stream",
+          message: "Stream ended without a terminal event",
+          param: nil
+        },
         created,
         function_call_items
       )

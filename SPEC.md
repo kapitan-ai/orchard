@@ -537,11 +537,12 @@ The currently valid source, generation, and projection combinations are closed:
 * `omitted_public` requires `model_default + legacy_blended`
 * `console_default` requires `disabled + final_only`
 * `console_explicit` may select `model_default`, `disabled`, or `enabled` only with `final_only`
-* `explicit_public` may select `disabled` or `enabled` only with `final_only`, and only through the concrete public input contract in §7.2.1
+* before the public contract in §7.2.1 is implemented and activated, the dormant shared canonical constructor may still represent `explicit_public + model_default + final_only`; no public decoder may produce that combination
+* upon that activation, `explicit_public` may select `disabled` or `enabled` only with `final_only`, and only through the concrete public input contract in §7.2.1; `explicit_public + model_default` SHALL then be rejected before the first Request write
 * `reasoning_structured` remains unavailable until its separate public contract expands this matrix
 
 For the canonical `reasoning_effort` axis, `omitted_public` and `console_default` require `nil`; `console_explicit` and `explicit_public` may select a non-`nil` tier only with `enabled + final_only`; and every other valid generation/projection combination requires `nil`.
-The public `reasoning` object defined in §7.2.1 maps `enabled = false` to `disabled + final_only`, maps `enabled = true` to `enabled + final_only`, and has no representation for `explicit_public + model_default`.
+The public `reasoning` object defined in §7.2.1 maps `enabled = false` to `disabled + final_only`, maps `enabled = true` to `enabled + final_only`, and has no representation for `explicit_public + model_default`; this prospective public rule does not claim that the currently shared canonical constructor already enforces the narrowed matrix.
 An omitted or explicitly `null` public effort maps to canonical `nil` without selecting a default tier.
 Every other combination SHALL fail before the first Request write and MUST NOT reach scheduling or dispatch.
 
@@ -1032,6 +1033,26 @@ Re-admission after rejection SHALL require current trusted registration state pl
 ### 4.5 Node health model
 
 Health is orthogonal to lifecycle state.
+
+For Console local-machine display, installation configuration MAY explicitly select
+the existing registered Node identity store through `ORCHARD_LOCAL_NODE_IDENTITY_ROOT`.
+All-in-one environment generation SHALL select the local store; Controller-only
+generation SHALL leave this association unset. Existing environment files SHALL
+not be silently rewritten. The Controller SHALL read only the current registered
+generation's non-secret identity metadata, never create another Node identity or
+read Node private keys for this display. Host administrators own this co-location
+assertion; hostname, loopback addresses, browser location and inventory size SHALL
+NOT establish it. The association SHALL confer no trust, admission or dispatch authority.
+
+The Console local summary SHALL match the installed Node, enrollment and certificate
+identities against trusted inventory targets and match current Runtime metadata to
+that Node. Missing, insecure, unregistered or conflicting identity SHALL fail closed.
+“This machine’s Node is connected and healthy.” SHALL require a successful matching
+current observation, fresh persisted heartbeat and healthy Node/runtime evidence.
+Stale or unavailable evidence SHALL not retain a positive headline. Last successful
+observation and refresh-attempt time SHALL remain distinct; unavailable current model
+state SHALL not be replaced by historical loaded models. Node health SHALL remain
+separate from model-serving readiness and SHALL use the existing rules below.
 
 Valid health values:
 
@@ -1589,6 +1610,8 @@ Scheduler wake-up triggers:
 Queue lane capacity SHALL be the configured base lane capacity plus live capacity sources. Node-owned live sources are process-local scheduling hints owned by accepted-observation ingestion after the observation transaction commits; a MultiNode request snapshot SHALL NOT publish, rebuild, or clear them. The ingestion consumer SHALL rerun the shared capacity evaluation before refreshing matching source-scoped loaded/cold contributions, and positive contributions remain bounded by its available slots and by one unreserved cold slot per lane per node observation. Live refreshes MAY wake queued requests without a new admission event.
 
 Identity rejection, transport failure, heartbeat-age demotion, lifecycle, health, or freshness loss, malformed or unavailable capacity facts, failed observation commit, and evaluator or consumer failure SHALL clear affected sources. BEAM observations may refresh them only when the target resolves to the same persisted trusted active Node; address-only or mismatched observations, Runtime Endpoint Admission Candidates, and explicitly unmanaged compatibility probes SHALL NOT publish production Node-owned sources. QueueManager or Controller restart starts with no Node-owned source contributions; no heartbeat-history replay or request snapshot reconstructs them, and only a later accepted eligible observation may repopulate them.
+
+On Controller write-authority refusal, generic Runtime Endpoint status observation SHALL make no durable observation write or positive capacity publication. It MAY invalidate only the aggregate, placement, and cold sources owned by the Node safely resolved from the original target when the Controller observation time is strictly newer than that Node's persisted heartbeat, or when no heartbeat exists; the invalidation SHALL not invoke queue promotion. Older, equal, invalid, or unordered observation times and unavailable target ownership SHALL not invalidate sources. A status payload that claims another Node SHALL NOT determine source ownership or authorize invalidation of that claimed Node; only the safely resolved original target's sources MAY be invalidated under the preceding freshness condition. Candidate-only observation remains queue-inert whether accepted or refused. Invalidation neither releases an Allocation nor grants dispatch authority.
 
 Configured base lane capacity remains separate. Neither it nor a live capacity source authorizes production dispatch unless the shared capacity authority decision is `legacy_pre_cutover` with positive centrally calculated legacy slots or `f11_enforcing` with positive Dispatch Headroom at allocation time.
 
@@ -2592,12 +2615,16 @@ Supported request fields:
 * `tool_choice`
 * `store`
 * `reasoning` only with the object and semantics defined in §7.2.1
+* `prompt_cache_key` (string or null compatibility hint; accepted but ignored, never cache identity or authorization)
 
 Tool-calling request rules:
 
 * only function tools are supported in v1
 * base v1 Responses tool calling is client-executed passthrough unless a later phased extension explicitly enables server-side execution
-* each request `tools` entry MAY be either an inline function definition or `{"type":"function","ref":"tool://<name>@<version>"}`
+* canonical inline definitions use `{"type":"function","name":"...","description":"...","parameters":{...},"strict":true}`; optional `strict` SHALL be preserved, not silently defaulted
+* nested `{"type":"function","function":{...}}` definitions remain an explicit Responses compatibility extension; ambiguous mixed shapes and unknown fields SHALL fail closed
+* each request `tools` entry MAY also use the Orchard extension `{"type":"function","ref":"tool://<name>@<version>"}`
+* Responses SHALL normalize endpoint-locally before shared validation; Chat Completions SHALL retain its independent nested dialect
 * the controller SHALL resolve registry refs before tokenization and dispatch; the runtime SHALL receive resolved function definitions only, never `tool://...` placeholders
 * inline request tools SHALL remain client-executed; they SHALL NOT be executed server-side unless first resolved from an approved registry entry explicitly marked as server-hostable
 * unresolved, inactive, or malformed registry refs SHALL be rejected as `400 invalid_request_error`
@@ -2607,7 +2634,15 @@ Tool-calling request rules:
   * `"none"` disables tool calling even if `tools` is supplied
   * `"auto"` allows the model to choose text or tool calls
   * `"required"` requires one or more tool calls or the request SHALL fail
-  * `{"type":"function","function":{"name":"..."}}` requires emitted tool calls to use that function name
+  * `{"type":"function","name":"..."}` requires emitted tool calls to use that function name; the nested `function` form remains a compatibility extension
+
+Responses `input` MAY include `function_call` items with `call_id`, `name` and
+JSON-object-string `arguments`, and `function_call_output` items with the same
+`call_id` and string `output`. Canonical history SHALL preserve IDs, argument and
+result bytes, and input order. Duplicate call IDs, orphan or duplicate results,
+malformed arguments and unknown item kinds SHALL fail before dispatch. Assistant
+message content MAY use `output_text` parts. Controller, Node, Worker and provider
+SHALL NOT execute these client tools.
 
 Supported output object subset:
 
@@ -2631,9 +2666,11 @@ Tool-calling response rules:
 
 * sync responses MAY include `function_call` output items in `output`
 * `output_text` SHALL include only text output content and MAY be empty when the response consists only of tool calls
-* the platform SHALL NOT introduce incremental Responses function-call SSE events in v1
-* streaming function-call data SHALL appear only in terminal `response.completed` or `response.failed` payloads
+* successful streaming calls SHALL emit `response.output_item.added`, `response.function_call_arguments.delta`, `response.function_call_arguments.done`, and `response.output_item.done` before `response.completed`
+* item IDs, call IDs, arguments and output indices SHALL correlate across lifecycle events and terminal output; public text occupies the first output item when present, followed by calls in first-observed order
+* call lifecycle publication SHALL be buffered until selected-attempt completion so failed or interrupted attempts do not publish executable calls; the argument delta MAY contain the complete buffered arguments
 * terminal payloads that include partial tool calls due to interruption or cancellation SHALL mark the response as incomplete or failed rather than presenting the tool call as complete
+* a stream closing without a terminal inference event SHALL fail rather than synthesize successful completion
 * if a later phased extension enables controller-managed server-side tool execution, `/v1/responses` SHALL be the first target endpoint and Orchard SHALL keep the controller-governs / node-executes split defined in §1.6
 
 Streaming behavior:
@@ -3818,10 +3855,15 @@ Tool argument byte preservation applies after provider normalization under §7.5
 Unknown or unqualified output in omitted `legacy_blended` mode SHALL remain undifferentiated raw content under the existing pipeline.
 An explicit `final_only` or `reasoning_structured` request SHALL fail closed when parser state is malformed, ambiguous, or cannot satisfy the pinned contract.
 That failure MUST NOT fall back to raw blended output, expose the ambiguous bytes through an error, reclassify them as final text, or pass them to tool parsing.
+Ambiguity here is a property of the streaming seam rather than of the bytes, so a trailing partial-marker prefix retained at a chunk boundary is ambiguous only while further decoded output can still complete it.
+At the non-truncating `completed` and `stop` terminals only, and only when parser state is otherwise definitively final because no reasoning frame is open, such a retained prefix SHALL resolve as ordinary final-answer text rather than as a framing fragment.
+Genuinely open, incomplete, malformed, ambiguous, or otherwise unsatisfied reasoning state SHALL still fail closed, including an opened and unclosed reasoning frame, a prefix still retained at the truncating `length` terminal, and any state that cannot satisfy the pinned contract or the negotiated generation policy.
 The terminal failure SHALL be deterministic and non-retryable unless the failure occurred before model execution and independently satisfies the closed retry gates in §5.8.
 For a negotiated Request with `generation_policy = disabled`, any observed reasoning frame or reasoning content SHALL terminalize as a generation-policy conformance failure.
 For a negotiated Request with `generation_policy = enabled`, terminal completion without valid non-empty reasoning content SHALL terminalize as a generation-policy conformance failure.
+Whitespace-only decoded reasoning is framing rather than valid reasoning content and SHALL NOT satisfy that rule.
 Both failures SHALL use the post-execution `terminal_conformance + internal_error` mapping in §7.2.7, expose no selected output or parser content, and remain non-retryable.
+That no-selected-output guarantee binds the parser terminal itself rather than only a later projection or API boundary, so a negotiated `enabled` stream SHALL withhold final-answer output until valid reasoning content is observed and SHALL emit no final-answer delta when the stream never observes it.
 The enabled-conformance rule applies identically to every selected reasoning-effort tier and SHALL NOT be relaxed, tier-scoped, or absorbed as a normal completion for a minimal tier.
 Runtime advertisement of a non-`nil` tier proves only that the exact tuple has a qualified renderer mapping and that the provider passes the provider-neutral protocol conformance in §7.5.2a.
 Those fixtures are model-agnostic protocol artifacts, so advertisement SHALL NOT be read as asserting any per-artifact semantic property of a tier, and this specification defines no runtime producer for such an assertion.
