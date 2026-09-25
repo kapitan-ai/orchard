@@ -8,6 +8,7 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
   alias Orchard.Cluster.V1.ScorePrefixCacheRequest
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.UnloadModelRequest
+  alias Orchard.InferenceEvent.{Completed, Failed, ToolCallDelta}
   alias Orchard.Node.Worker.V1.LoadModelRequest
   alias Orchard.Node.Worker.V1.WorkerCapabilities
   alias Orchard.Node.Worker.V1.WorkerCapabilityProfile
@@ -17,6 +18,7 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
   alias Orchard.Node.Worker.V1.WorkerRuntimeService.Stub
   alias Orchard.Node.Worker.V1.WorkerStatusRequest
   alias Orchard.Node.Worker.V1.WorkerStatusResponse
+  alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
   @repo_root Path.expand("../../../../..", __DIR__)
   @fixture_root Path.join(@repo_root, "proto/orchard/worker/v1/fixtures")
@@ -141,6 +143,72 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
 
     assert Protobuf.encode(message) ==
              File.read!(Path.join(@fixture_root, "elixir_load_model_request.pb"))
+  end
+
+  test "SPEC.md section 7.5.2 decodes worker-produced generated argument fixtures" do
+    [first, second, completed] =
+      GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+    [first_arguments, second_arguments] =
+      GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+    assert %Orchard.InferenceEvent{
+             event: %ToolCallDelta{tool_call_id: "call_0", delta_json: first_delta}
+           } = first
+
+    assert %Orchard.InferenceEvent{
+             event: %ToolCallDelta{tool_call_id: "call_1", delta_json: second_delta}
+           } = second
+
+    assert %Orchard.InferenceEvent{
+             event: %Completed{finish_reason: :finish_reason_tool_calls}
+           } = completed
+
+    assert Jason.decode!(first_delta) == %{
+             "index" => 0,
+             "type" => "function",
+             "function" => %{
+               "name" => "lookup_weather",
+               "arguments_delta" => first_arguments
+             }
+           }
+
+    assert Jason.decode!(second_delta) == %{
+             "index" => 1,
+             "type" => "function",
+             "function" => %{
+               "name" => "lookup_time",
+               "arguments_delta" => second_arguments
+             }
+           }
+
+    assert first_arguments =~ "9007199254740993"
+    assert second_arguments =~ "-9007199254740993"
+
+    [earlier_valid, later_failed] =
+      GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+    assert %Orchard.InferenceEvent{event: %ToolCallDelta{tool_call_id: "call_0"}} = earlier_valid
+
+    assert %Orchard.InferenceEvent{
+             event: %Failed{code: "tool_call_parse_failed", retryable: false}
+           } = later_failed
+
+    for scenario <- ~w(
+          valid_and_invalid_same_block
+          unknown_name
+          non_object_arguments
+          malformed_object
+          malformed_array
+          truncated_object
+          truncated_array
+        ) do
+      assert [
+               %Orchard.InferenceEvent{
+                 event: %Failed{code: "tool_call_parse_failed", retryable: false}
+               }
+             ] = GeneratedToolArgumentFixture.events!(scenario)
+    end
   end
 
   defp field_signatures(module) do
