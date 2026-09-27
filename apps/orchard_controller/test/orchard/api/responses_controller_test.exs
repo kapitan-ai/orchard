@@ -23,6 +23,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
+  alias Orchard.TestSupport.GeneratedToolArgumentFixture
 
   defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
     conn =
@@ -391,6 +392,128 @@ defmodule Orchard.API.ResponsesControllerTest do
            ]
   end
 
+  test "SPEC 7.5.2 non-stream preserves ordered worker-produced argument bytes" do
+    fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+    [weather_arguments, time_arguments] =
+      GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(false), %{}},
+      execute:
+        {:ok, stub_responses_canonical(false),
+         [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello"
+      })
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => weather_arguments,
+               "status" => "completed"
+             },
+             %{
+               "type" => "function_call",
+               "id" => "call_1",
+               "call_id" => "call_1",
+               "name" => "lookup_time",
+               "arguments" => time_arguments,
+               "status" => "completed"
+             }
+           ]
+  end
+
+  test "SPEC 7.5.2 non-stream withholds an earlier valid block after a later invalid block" do
+    fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(false), %{}},
+      execute:
+        {:ok, stub_responses_canonical(false),
+         [InferenceEvent.accepted(1_710_000_123_000) | fixture_events]}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello"
+      })
+
+    assert conn.status == 500
+
+    assert Jason.decode!(conn.resp_body) == %{
+             "error" => %{
+               "message" => "Inference failed: model emitted an unrequested function",
+               "type" => "server_error",
+               "param" => nil,
+               "code" => "internal_error"
+             }
+           }
+  end
+
+  test "SPEC §7.2.5 sync calls reject malformed arguments, names and tool-choice violations" do
+    for {name, arguments, choice} <- [
+          {nil, "{}", "auto"},
+          {"unknown", "{}", "auto"},
+          {"lookup_weather", "{", "auto"},
+          {"lookup_weather", "[]", "auto"},
+          {"lookup_weather", "{}", "none"},
+          {"lookup_weather", "{}", %{"type" => "function", "function" => %{"name" => "first"}}}
+        ] do
+      canonical = stub_responses_canonical(false)
+      canonical = %{canonical | tooling: %{canonical.tooling | tool_choice: choice}}
+
+      stub_responses_orchestrator(
+        prepare: {:ok, canonical, %{}},
+        events: [
+          tool_call_event("call_bad", %{
+            index: 0,
+            function: %{name: name, arguments_delta: arguments}
+          }),
+          InferenceEvent.completed(:finish_reason_tool_calls, nil)
+        ]
+      )
+
+      conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hi"})
+      assert conn.status == 500
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_tool_call"
+    end
+  end
+
+  test "SPEC §7.2.5 required and named choices cannot finish without a call" do
+    for stream? <- [false, true],
+        choice <- ["required", %{"type" => "function", "function" => %{"name" => "first"}}] do
+      canonical = stub_responses_canonical(stream?)
+      canonical = %{canonical | tooling: %{canonical.tooling | tool_choice: choice}}
+
+      stub_responses_orchestrator(
+        prepare: {:ok, canonical, %{}},
+        events: [InferenceEvent.completed(:finish_reason_stop, nil)]
+      )
+
+      conn =
+        post_responses(%{"model" => "stub-tool-model@v1", "input" => "hi", "stream" => stream?})
+
+      if stream? do
+        assert List.last(parse_typed_sse_events(conn)).type == "response.failed"
+      else
+        assert conn.status == 500
+        assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_tool_call"
+      end
+    end
+  end
+
   test "valid ref-backed request succeeds without API shape changes" do
     %{tenant: tenant, token: token} = create_api_key_with_token!("responses-ref-success")
     create_tool!("lookup_weather", "2026-04-10")
@@ -459,6 +582,116 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert body["error"]["message"] =~ "tool://lookup_weather@2026-04-10"
   end
 
+  test "SPEC §7.2.5 canonical tools and continuation cross real preparation without a relay" do
+    %{tenant: tenant, token: token} = create_api_key_with_token!("responses-canonical")
+    executable = write_tokenizer_executable!()
+    on_exit(fn -> File.rm(executable) end)
+
+    model =
+      create_model!(%{
+        state: :active,
+        capabilities: ["chat", "tool_calling"],
+        artifact_uri: "file://#{fixture_bundle_path()}",
+        artifact_source_uri: "file://#{fixture_bundle_path()}"
+      })
+
+    grant_active_models!(tenant)
+    definition = function_definition("lookup_weather")["function"] |> Map.put("strict", true)
+
+    params = %{
+      "model" => "#{model.model_id}@#{model.version}",
+      "input" => "Weather?",
+      "tools" => [Map.put(definition, "type", "function")],
+      "tool_choice" => %{"type" => "function", "name" => "lookup_weather"},
+      "stream" => true
+    }
+
+    with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: executable], fn ->
+      stub_responses_orchestrator(
+        prepare_real: true,
+        capture_execute_pid: self(),
+        events: [
+          tool_call_event("call_roundtrip", %{
+            index: 0,
+            function: %{name: "lookup_weather", arguments_delta: "{\"query\":\"Singapore\"}"}
+          }),
+          InferenceEvent.completed(:finish_reason_tool_calls, nil)
+        ]
+      )
+
+      events = post_responses(params, token) |> parse_typed_sse_events()
+      assert List.last(events).type == "response.completed"
+      [call] = List.last(events).data["response"]["output"]
+      assert_receive {:captured_execute_canonical, canonical, _}
+      assert canonical.tooling.tools == [%{"type" => "function", "function" => definition}]
+
+      assert canonical.tooling.execution_snapshot.entries == [
+               %{
+                 "name" => "lookup_weather",
+                 "provenance" => "inline",
+                 "disposition" => "client_passthrough",
+                 "execution_mode" => "client_only"
+               }
+             ]
+
+      stub_responses_orchestrator(
+        prepare_real: true,
+        capture_execute_pid: self(),
+        events: [
+          InferenceEvent.output_text_delta("29 degrees"),
+          InferenceEvent.completed(:finish_reason_stop, nil)
+        ]
+      )
+
+      continuation = %{
+        params
+        | "tool_choice" => "auto",
+          "input" => [
+            %{"role" => "user", "content" => "Weather?"},
+            call,
+            %{
+              "type" => "function_call_output",
+              "call_id" => call["call_id"],
+              "output" => "29 degrees"
+            }
+          ]
+      }
+
+      continued = post_responses(continuation, token) |> parse_typed_sse_events()
+      assert List.last(continued).data["response"]["output_text"] == "29 degrees"
+      assert_receive {:captured_execute_canonical, canonical, _}
+
+      assert List.last(canonical.input_items) == %{
+               "role" => "tool",
+               "tool_call_id" => "call_roundtrip",
+               "content" => "29 degrees"
+             }
+    end)
+  end
+
+  test "SPEC §7.2.5 malformed canonical requests reject before execute" do
+    stub_responses_orchestrator(prepare_real: true, capture_execute_pid: self())
+
+    for extra <- [
+          %{"tools" => [%{"type" => "function", "name" => "read", "strict" => "yes"}]},
+          %{"tools" => [%{"type" => "web_search"}]},
+          %{
+            "input" => [
+              %{"type" => "function_call_output", "call_id" => "orphan", "output" => "x"}
+            ]
+          }
+        ] do
+      conn =
+        post_responses(
+          Map.merge(%{"model" => "never-looked-up@v1", "input" => "hi", "stream" => true}, extra)
+        )
+
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "invalid_request_error"
+      refute_received {:captured_execute_canonical, _, _}
+    end
+  end
+
   test "tool-calling request against a model without tool_calling capability returns tooling_not_supported",
        %{bundle: bundle} do
     _model =
@@ -523,6 +756,41 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     assert body["error"]["message"] ==
              "Inference failed: model emitted tool call outside required function lookup_weather"
+  end
+
+  test "SPEC.md §7.5.3a hides reasoning conformance details in sync Responses errors" do
+    worker_message = "<think>worker marker bytes and model output</think>"
+
+    for code <- [
+          "reasoning_parser_conformance_failed",
+          "reasoning_policy_conformance_failed"
+        ] do
+      canonical = stub_responses_canonical(false)
+
+      stub_responses_orchestrator(
+        prepare: {:ok, canonical, %{}},
+        execute:
+          {:ok, canonical,
+           [
+             InferenceEvent.accepted(1_710_000_123_000),
+             InferenceEvent.failed(code, worker_message, false)
+           ]}
+      )
+
+      conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello"})
+
+      assert conn.status == 500
+
+      assert Jason.decode!(conn.resp_body)["error"] == %{
+               "code" => "internal_error",
+               "message" => "Internal error",
+               "param" => nil,
+               "type" => "api_error"
+             }
+
+      refute conn.resp_body =~ code
+      refute conn.resp_body =~ worker_message
+    end
   end
 
   test "SPEC 7.5.5 sync terminal conformance failure is a generic 500" do
@@ -1038,7 +1306,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     end
   end
 
-  test "streaming empty-string text delta still emits output_text.done before terminal" do
+  test "streaming empty-string text delta does not allocate a phantom output item" do
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(true), %{}},
       events: [
@@ -1061,13 +1329,10 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     assert Enum.map(events, & &1.type) == [
              "response.created",
-             "response.output_text.delta",
-             "response.output_text.done",
              "response.completed"
            ]
 
-    assert Enum.at(events, 1).data["delta"] == ""
-    assert Enum.at(events, 2).data["text"] == ""
+    assert List.last(events).data["response"]["output"] == []
   end
 
   @tag :live
@@ -1152,8 +1417,10 @@ defmodule Orchard.API.ResponsesControllerTest do
 
           assert Enum.map(events, & &1.type) == [
                    "response.created",
+                   "response.output_item.added",
                    "response.output_text.delta",
                    "response.output_text.done",
+                   "response.output_item.done",
                    "response.completed"
                  ]
 
@@ -1353,7 +1620,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     end
   end
 
-  test "streaming terminal includes assembled function_call items without new SSE event types" do
+  test "SPEC §7.2.5 streaming calls have correlated lifecycle before completion" do
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(true), %{}},
       events: [
@@ -1384,8 +1651,23 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     assert Enum.map(events, & &1.type) == [
              "response.created",
+             "response.output_item.added",
+             "response.function_call_arguments.delta",
+             "response.function_call_arguments.done",
+             "response.output_item.done",
              "response.completed"
            ]
+
+    [_, added, delta, done, item_done, _] = events
+    assert added.data["item"]["id"] == "call_0"
+    assert added.data["item"]["call_id"] == "call_0"
+    assert added.data["item"]["arguments"] == ""
+    assert added.data["item"]["status"] == "in_progress"
+    assert delta.data["item_id"] == "call_0"
+    assert delta.data["delta"] == "{\"city\":\"Singapore\"}"
+    assert done.data["item_id"] == "call_0"
+    assert done.data["arguments"] == delta.data["delta"]
+    assert Enum.all?([added, delta, done, item_done], &(&1.data["output_index"] == 0))
 
     terminal = List.last(events)
     assert terminal.data["response"]["status"] == "completed"
@@ -1399,6 +1681,194 @@ defmodule Orchard.API.ResponsesControllerTest do
                "name" => "lookup_weather",
                "arguments" => "{\"city\":\"Singapore\"}",
                "status" => "completed"
+             }
+           ]
+
+    assert item_done.data["item"] == hd(terminal.data["response"]["output"])
+  end
+
+  test "SPEC §7.2.5 mixed text and interleaved multiple calls retain terminal indices" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        tool_call_event("call_z", %{
+          index: 3,
+          function: %{name: "first", arguments_delta: "{\"x\":"}
+        }),
+        InferenceEvent.output_text_delta("public text"),
+        tool_call_event("call_a", %{index: 8, function: %{name: "second", arguments_delta: "{}"}}),
+        tool_call_event("call_z", %{index: 3, function: %{arguments_delta: "7}"}}),
+        InferenceEvent.completed(:finish_reason_tool_calls, nil)
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    events =
+      post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello", "stream" => true})
+      |> parse_typed_sse_events()
+
+    terminal = List.last(events).data["response"]
+    assert terminal["output_text"] == "public text"
+    assert [message, first, second] = terminal["output"]
+    assert message["type"] == "message"
+    assert first["call_id"] == "call_z"
+    assert first["arguments"] == "{\"x\":7}"
+    assert second["call_id"] == "call_a"
+    assert second["arguments"] == "{}"
+
+    calls =
+      Enum.filter(
+        events,
+        &(&1.type == "response.output_item.done" and &1.data["item"]["type"] == "function_call")
+      )
+
+    assert Enum.map(calls, & &1.data["output_index"]) == [1, 2]
+    assert Enum.map(calls, & &1.data["item"]) == [first, second]
+    assert Enum.count(events, &(&1.type == "response.function_call_arguments.delta")) == 2
+    assert Enum.map(events, & &1.data["sequence_number"]) == Enum.to_list(0..(length(events) - 1))
+    text_delta = Enum.find(events, &(&1.type == "response.output_text.delta"))
+    assert text_delta.data["item_id"] == message["id"]
+    assert message["status"] == "completed"
+    assert List.last(events).type == "response.completed"
+  end
+
+  test "SPEC §7.2.5 completed malformed or unknown calls fail before executable lifecycle" do
+    for function <- [
+          %{arguments_delta: "{}"},
+          %{name: "lookup_weather", arguments_delta: "{"},
+          %{name: "lookup_weather", arguments_delta: "[]"},
+          %{name: "unrequested", arguments_delta: "{}"}
+        ] do
+      stub_responses_orchestrator(
+        prepare: {:ok, stub_responses_canonical(true), %{}},
+        events: [
+          tool_call_event("call_bad", %{index: 0, function: function}),
+          InferenceEvent.completed(:finish_reason_tool_calls, nil)
+        ],
+        execute: {:ok, stub_responses_canonical(true), []}
+      )
+
+      events =
+        post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello", "stream" => true})
+        |> parse_typed_sse_events()
+
+      assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+      assert hd(List.last(events).data["response"]["output"])["status"] == "incomplete"
+    end
+  end
+
+  test "SPEC §7.2.5 missing terminal event fails without executable call lifecycle" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        tool_call_event("call_0", %{
+          index: 0,
+          function: %{name: "lookup_weather", arguments_delta: "{}"}
+        })
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    events =
+      post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello", "stream" => true})
+      |> parse_typed_sse_events()
+
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+    terminal = List.last(events).data["response"]
+    assert terminal["error"]["code"] == "incomplete_stream"
+    assert hd(terminal["output"])["status"] == "incomplete"
+  end
+
+  test "SPEC 7.5.2 stream preserves ordered worker-produced argument bytes" do
+    fixture_events = GeneratedToolArgumentFixture.events!("successful_ordered_calls")
+
+    [weather_arguments, time_arguments] =
+      GeneratedToolArgumentFixture.arguments!("successful_ordered_calls")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+
+    assert Enum.map(events, & &1.type) == [
+             "response.created",
+             "response.output_item.added",
+             "response.function_call_arguments.delta",
+             "response.function_call_arguments.done",
+             "response.output_item.done",
+             "response.output_item.added",
+             "response.function_call_arguments.delta",
+             "response.function_call_arguments.done",
+             "response.output_item.done",
+             "response.completed"
+           ]
+
+    assert List.last(events).data["response"]["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => weather_arguments,
+               "status" => "completed"
+             },
+             %{
+               "type" => "function_call",
+               "id" => "call_1",
+               "call_id" => "call_1",
+               "name" => "lookup_time",
+               "arguments" => time_arguments,
+               "status" => "completed"
+             }
+           ]
+  end
+
+  test "SPEC 7.5.2 stream retains an earlier valid block before a later invalid block" do
+    fixture_events = GeneratedToolArgumentFixture.events!("valid_then_invalid_block")
+
+    [weather_arguments] =
+      GeneratedToolArgumentFixture.arguments!("valid_then_invalid_block")
+
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [InferenceEvent.accepted(1_710_000_123_000) | fixture_events],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    terminal_response = List.last(events).data["response"]
+    assert terminal_response["status"] == "failed"
+    assert terminal_response["error"]["code"] == "tool_call_parse_failed"
+
+    assert terminal_response["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => weather_arguments,
+               "status" => "incomplete"
              }
            ]
   end
@@ -1707,6 +2177,46 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert_tool_serializer_failure!(request)
   end
 
+  test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Responses errors" do
+    worker_message = "<think>worker marker bytes and model output</think>"
+
+    for code <- [
+          "reasoning_parser_conformance_failed",
+          "reasoning_policy_conformance_failed"
+        ] do
+      stub_responses_orchestrator(
+        prepare: {:ok, stub_responses_canonical(true), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.failed(code, worker_message, false)
+        ],
+        execute: {:ok, stub_responses_canonical(true), []}
+      )
+
+      conn =
+        post_responses(%{
+          "model" => "stub-tool-model@v1",
+          "input" => "hello",
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_typed_sse_events(conn)
+      assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+      assert List.last(events).data["response"]["error"] == %{
+               "code" => "internal_error",
+               "message" => "Internal error",
+               "param" => nil,
+               "type" => "server_error"
+             }
+
+      refute String.contains?(collect_chunked_body(conn), "[DONE]")
+      refute String.contains?(collect_chunked_body(conn), code)
+      refute String.contains?(collect_chunked_body(conn), worker_message)
+    end
+  end
+
   test "SPEC 7.5.5 streaming terminal conformance failure emits response.failed" do
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(true), %{}},
@@ -1992,6 +2502,10 @@ defmodule Orchard.API.ResponsesControllerTest do
       rendered_prompt: "hello",
       input_token_count: 3,
       stream?: stream?,
+      tooling: %{
+        tools:
+          Enum.map(["lookup_weather", "lookup_time", "first", "second"], &function_definition/1)
+      },
       metadata: %{}
     })
   end

@@ -194,6 +194,17 @@ defmodule Orchard.Dispatch.DispatchTest.TerminalContractClient do
     ]
   end
 
+  defp events_for("req-dispatch-reasoning-conformance-" <> code)
+       when code in [
+              "reasoning_parser_conformance_failed",
+              "reasoning_policy_conformance_failed"
+            ] do
+    [
+      InferenceEvent.accepted(0),
+      InferenceEvent.failed(code, "<think>untrusted model output</think>", false)
+    ]
+  end
+
   defp events_for("req-dispatch-preaccept-" <> code),
     do: [InferenceEvent.failed(code, "capacity exhausted", false)]
 
@@ -687,6 +698,33 @@ defmodule Orchard.Dispatch.DispatchTest do
                    "failure_code" => "internal_error"
                  },
                  output_committed: false
+               } =
+                 RequestDispatcher.dispatch(
+                   build_schedule(request_id),
+                   execute_request(request_id),
+                   model_load_request(bundle),
+                   client_impl: Orchard.Dispatch.DispatchTest.TerminalContractClient
+                 )
+      end
+    end
+
+    test "SPEC.md §7.5.3a reasoning conformance is uncommitted terminal evidence", %{
+      bundle: bundle
+    } do
+      for code <- [
+            "reasoning_parser_conformance_failed",
+            "reasoning_policy_conformance_failed"
+          ] do
+        request_id = "req-dispatch-reasoning-conformance-#{code}"
+
+        assert %AttemptOutcome{
+                 attempt_outcome: :failed,
+                 accepted: true,
+                 output_committed: false,
+                 failure: %{
+                   "failure_class" => "terminal_conformance",
+                   "failure_code" => "internal_error"
+                 }
                } =
                  RequestDispatcher.dispatch(
                    build_schedule(request_id),

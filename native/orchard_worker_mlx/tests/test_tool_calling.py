@@ -84,7 +84,11 @@ def test_multiple_parser_results_and_blocks_have_distinct_ordered_ids() -> None:
     second = consume(context, '<tool_call>{"name":"read","arguments":{}}</tool_call>')
     assert finalize(context) is None
     events = first + second
-    assert [event["tool_call_id"] for event in events] == ["call_0", "call_1", "call_2"]
+    ids = [event["tool_call_id"] for event in events]
+    assert len(set(ids)) == 3
+    # SPEC 7.2.5: subsequent turns must coexist in typed continuation history.
+    later = consume(make_context(), '<tool_call>{"name":"read","arguments":{}}</tool_call>')
+    assert later[0]["tool_call_id"] not in ids
     assert [event["delta"]["index"] for event in events] == [0, 1, 2]
     assert [event["delta"]["function"]["name"] for event in events] == ["read", "lookup", "read"]
 
@@ -179,7 +183,7 @@ def test_valid_call_remains_visible_when_a_later_block_fails() -> None:
     assert consume(context, '<tool_call>{"name":"unrequested","arguments":{}}</tool_call>') == []
     assert finalize(context) is not None
     assert context.take_pending_events() == []
-    assert events[0]["tool_call_id"] == "call_0"
+    assert events[0]["tool_call_id"].startswith("call_")
 
 
 @pytest.mark.parametrize(
@@ -222,6 +226,12 @@ def test_consume_response_wraps_text_first_consumption_with_identical_tool_event
         lambda context, text: consume_response(context, SimpleNamespace(text=text)),
     )
     text_events, text_inputs = consume_chunks(consume_text)
+
+    for events in (response_events, text_events):
+        for event in events:
+            if event["kind"] == "tool_call_delta":
+                assert event["tool_call_id"].startswith("call_")
+                event["tool_call_id"] = "call_0"
 
     assert (
         response_events

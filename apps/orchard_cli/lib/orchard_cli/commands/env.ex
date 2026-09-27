@@ -93,6 +93,9 @@ defmodule OrchardCLI.Commands.Env do
 
     targets = targets_for_service(service)
 
+    runtime =
+      Map.put(runtime, :local_node_identity_root, local_identity_root(service, support_root))
+
     with :ok <- validate_executables(targets, support_root) do
       config_dir = Path.join(support_root, "config")
 
@@ -116,6 +119,11 @@ defmodule OrchardCLI.Commands.Env do
   defp targets_for_service("controller"), do: [:controller]
   defp targets_for_service("node-agent"), do: [:node_agent]
   defp targets_for_service("all"), do: [:controller, :node_agent]
+
+  defp local_identity_root("all", support_root),
+    do: Path.join([support_root, "config", "node-identity"])
+
+  defp local_identity_root(_service, _support_root), do: nil
 
   # ── Executable Resolution ───────────────────────────────────────────
 
@@ -209,7 +217,10 @@ defmodule OrchardCLI.Commands.Env do
   end
 
   defp write_rendered_env(:controller, target_path, support_root, _hostname, runtime, status) do
-    controller_settings = build_controller_settings(runtime)
+    controller_settings =
+      runtime
+      |> build_controller_settings()
+      |> Map.put(:local_node_identity_root, runtime[:local_node_identity_root])
 
     content = render_env(:controller, support_root, controller_settings)
     ShellEnv.write_file(target_path, content)
@@ -297,6 +308,10 @@ defmodule OrchardCLI.Commands.Env do
     # ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@10.0.0.21,orchard_node_agent@10.0.0.22"
     # For an all-in-one host with the packaged node-agent service:
     # ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@127.0.0.1"
+
+    # Display-only local Node association. Uses registered Node Join custody,
+    # not hostname or loopback inference. Keep aligned with a custom Node store.
+    #{local_identity_setting(controller_settings.local_node_identity_root)}
 
     # EPMD and BEAM distribution ports. If another EPMD owns 4369, set the
     # same nonstandard ORCHARD_BEAM_EPMD_PORT on every participating Mac.
@@ -388,6 +403,11 @@ defmodule OrchardCLI.Commands.Env do
     # ORCHARD_JOIN_TLS_CA_PATH="/Library/Application Support/Orchard/config/tls/ca.crt"
     """
   end
+
+  defp local_identity_setting(nil), do: "# No local Node association on a Controller-only host."
+
+  defp local_identity_setting(root),
+    do: "ORCHARD_LOCAL_NODE_IDENTITY_ROOT=#{shell_quote(root)}"
 
   defp build_controller_settings(runtime) do
     secret_key_base = generate_secret_key_base(runtime)

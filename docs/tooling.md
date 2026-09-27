@@ -187,7 +187,8 @@ MLX extras remain opt-in because they pull the real inference stack:
 mise exec -- uv sync --locked --directory native/orchard_worker_mlx --extra mlx
 ```
 
-The default `pytest` run above skips `tests/test_mlx_import_smoke.py` because the `mlx` extra is absent.
+The default `pytest` run above skips every test that imports the real MLX stack because the `mlx` extra is absent.
+That covers `tests/test_mlx_import_smoke.py`, the pinned-parser checks in `tests/test_mlx_tool_calling.py`, and the shared tool-argument fixture check in `tests/test_generation.py` that `proto/cluster/v1/README.md` describes.
 When refreshing the `transformers`/`mlx-lm` pins, exercise the import and remote-code security guards with the exact locked extra installed:
 
 ```bash
