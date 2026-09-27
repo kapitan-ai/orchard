@@ -3,6 +3,25 @@
 All notable changes to Orchard are documented here. Entries are grouped by the
 date the change landed on `main`.
 
+## 2026-09-27
+
+### Breaking changes
+
+_None this week._
+
+### Features
+
+- The Responses API now accepts canonical flattened function tools, named tool choices, and ordered function-call/result history, while retaining the nested compatibility form. Successful streams publish correlated function-call lifecycle events after validated completion; tool execution remains client-owned. ([#449](https://github.com/kapitan-ai/orchard/pull/449))
+- Nodes Inventory now identifies this machine's Node from its registered local identity and separates current reachability, persisted health, and model-serving evidence across healthy, stale, unavailable, attention, and unknown states. The association grants no trust, admission, dispatch, or serving authority. ([#442](https://github.com/kapitan-ai/orchard/pull/442))
+
+### Bug fixes
+
+- Negotiated reasoning parser and policy conformance failures now return a generic, content-free `internal_error` through synchronous and streaming APIs, remain non-retryable, and omit raw provider codes, messages, control markers, and model output from durable evidence under every capture mode. ([#434](https://github.com/kapitan-ai/orchard/pull/434))
+
+### Improvements
+
+- Generated tool-argument handling now has shared worker-to-Elixir fixtures and regressions for ordered calls, large integers, malformed or truncated blocks, unknown tools, and safe failure after an earlier valid block. ([#438](https://github.com/kapitan-ai/orchard/pull/438))
+
 ## 2026-09-20
 
 ### Breaking changes
