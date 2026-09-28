@@ -155,6 +155,7 @@ Orchard SHALL use qualified, composable profile kinds so platform support, distr
 * A **distribution profile** binds a platform profile and install roles to deployment artifacts, host lifecycle, paths, credential storage, update and rollback behavior, retained state, and release evidence.
 * A **runtime-provider profile** binds a Node role to a Worker Runtime provider, compatible acceleration and device resources, provider-neutral conformance, and real-runtime acceptance.
 * An **acceptance profile** defines a named topology and the evidence required to prove its participating profiles operate together.
+* An **agentic execution profile** defines provider- and agent-client-neutral protocol conformance, exact-tuple workload qualification, and production-activation gates for a client-owned agent loop over the Public Inference API.
 
 A host-lifecycle adapter is a platform integration boundary, not a profile.
 A deployment artifact is a produced distribution input or output, not a profile.
@@ -176,6 +177,11 @@ No Linux support claim follows from portable compilation alone.
 
 The mixed-platform acceptance profile SHALL prove a portable Controller, including the Linux Controller profile, operating admitted macOS Nodes that satisfy the macOS MLX Node runtime profile.
 Passing that acceptance profile is required before the Linux Controller profile is declared supported and does not turn a Controller Host into a schedulable Node.
+
+An Agentic Execution Profile SHALL preserve request-scoped client tool passthrough: Orchard returns typed tool calls, while the agent client owns loop control, tool authorization, argument validation, execution, result continuation, and loop limits.
+It SHALL be independent of any one runtime provider, model family, or agent client.
+A named client implementation MAY be the first conformance client without becoming the protocol definition or implying support for other clients.
+Protocol conformance, exact model/runtime/client workload qualification, and production activation SHALL remain separate decisions; passing one SHALL NOT imply either later decision.
 
 ### 1.5 First-class runtime
 
@@ -2766,6 +2772,50 @@ It SHALL send only the final-answer channel as assistant history on a later turn
 When an operator explicitly selects public reasoning, the Console MAY render that selected channel as a collapsed secondary disclosure, but it MUST NOT mix the channel into the final answer or silently re-feed it.
 The display-only reasoning heuristic tracked by issue #189 SHALL remain a legacy compatibility fallback for unstructured `legacy_blended` output only.
 That heuristic MUST NOT become generation-policy authority, parser authority, capture authority, replay authority, or assistant-history reconstruction.
+
+#### 7.2.9 Agentic Execution Profile
+
+The Agentic Execution Profile SHALL compose the existing Public Inference, Runtime Endpoint, Worker Runtime, retry, cancellation, capacity, cache-affinity, and model-qualification contracts without replacing them.
+OpenCode is the first named conformance client, not a privileged protocol dialect, broad compatibility claim, or production activation.
+The profile SHALL NOT authorize Orchard to run client tools, add a server-owned agent loop, enable `parallel_tool_calls=true`, or infer support from a provider, model-family, client, or runtime-foundation name.
+
+The profile has three ordered evidence boundaries:
+
+1. **Protocol conformance** SHALL run a deterministic reusable corpus against the public API and a scripted provider-neutral inference fixture. It proves wire shapes, ordering, client-owned continuation, validation ownership, terminal behavior, and error handling without a hardware, model-quality, runtime-provider, or production-support claim.
+2. **Exact-tuple workload qualification** SHALL rerun the applicable corpus and semantic workloads on one immutable qualification identity: model checkpoint and revision, quantization and Artifact Bundle digest, tokenizer and chat-template digests, renderer and parser identities and versions, Worker Runtime provider and dependency versions, Runtime Endpoint contract and transport, Orchard revision, endpoint and stream mode, agent-client name/version/configuration, operating system and hardware, topology, and material generation, context, concurrency, residency, cache, cancellation, retry, and deadline settings. A changed field requires a new qualification identity and review under §6.4 governance.
+3. **Production activation** SHALL require an approved exact-tuple qualification record, an active scoped support claim, every applicable platform/distribution/runtime-provider/acceptance gate, and an explicit operator product decision. Conformance or qualification alone SHALL NOT publish, default, preload, advertise, or activate a model or client profile.
+
+Every executable corpus assertion SHALL record pass or fail against a predeclared expected event trace, terminal outcome, side-effect trace, and usage result. A negative case passes when the contractually expected rejection, failure, cancellation, or quarantine occurs; it SHALL NOT turn the rejected capability into a positive support result. A positive case whose public input contract does not yet exist SHALL remain `dependency_blocked`, SHALL NOT be simulated through an internal canonical field, and SHALL NOT count as a conformance pass.
+
+The corpus SHALL declare the endpoint, streaming mode, and applicable output contract for every case. Its minimum applicability matrix is:
+
+| Behavior | Applicable public mode | Required evidence |
+| --- | --- | --- |
+| typed text and tool-call continuation | Responses sync and stream; Chat sync and stream only when included in the claimed envelope | positive typed lifecycle under each endpoint's existing contract |
+| omitted reasoning control | every tested endpoint/mode | positive preservation of `model_default + legacy_blended`; delimiter-like legacy text is not reclassified |
+| explicit `final_only` reasoning | each endpoint/mode only after its concrete public input contract is accepted | positive negotiated separation; `dependency_blocked` before that contract |
+| public structured reasoning | current Chat and Responses modes | negative rejection until the separately required public contract is accepted |
+| structured JSON object | Chat Completions sync and stream | positive `json_object` behavior under §7.2.4 |
+| structured output on Responses | current Responses modes | negative unsupported-field rejection; no Responses selector is implied |
+
+Within those applicable modes, the corpus SHALL cover at least:
+
+* typed final text, with exact text-item/delta correlation and no tool arguments or reasoning framing reclassified as final text where the applicable endpoint contract defines typed separation; omitted `legacy_blended` behavior remains exempt and byte-preserved;
+* accepted reasoning behavior under the exact negotiated contract, including final-only non-disclosure, required reasoning conformance, and fail-closed unsupported or malformed cases; unavailable public structured reasoning SHALL be tested as rejection rather than represented as support;
+* one and multiple typed function calls, stable call identity, ordered client-supplied results, and a final continuation response, with the side-effect trace proving Orchard executed no client tool;
+* structured output for only the currently accepted output mode, including syntactic JSON validity, exact expected value, and a malformed-output failure; `json_schema` SHALL remain unsupported until a separate public contract accepts it;
+* request validation for both client-generated and directly caller-supplied tool schemas at Orchard's accepted shape boundary, plus client-side semantic validation of generated arguments against the effective caller schema before execution, including rejection that produces no tool side effect;
+* terminal usage per Inference Attempt, requiring exact cumulative totals for Worker-originated terminals and the correct `lower_bound` status and latest validated cumulative count for permitted Controller-synthesized terminals, including known zero versus missing evidence and stream/non-stream agreement where the public endpoint exposes both;
+* exactly one durable terminal outcome per admitted logical Request; at most one deliverable public terminal per public request when the caller connection remains available; and exactly one terminal per conforming Runtime Endpoint execution stream that begins, with no event, usage update, tool call, or text after the relevant terminal. A pre-dispatch rejection has no Runtime Endpoint terminal, a client-owned tool loop applies the rule independently to each public Request, a retry applies it independently to each Inference Attempt stream, a caller disconnect need not receive a public terminal, and a missing runtime terminal is a fault case that SHALL fail rather than synthesize success;
+* caller disconnect cancellation that, as additional Agentic Execution Profile acceptance evidence, proves the runtime provider's native generation operation has stopped and drained before Controller allocation or Node/placement capacity is observed as reusable. The existing §4.6.2 transport-level resolution remains the base product authority, but satisfying it alone SHALL NOT establish this profile gate; a transport close or cancel acknowledgement alone is insufficient profile evidence, and unresolved drain follows the existing quarantine and no-redispatch contracts;
+* cache identity and affinity within the configured fingerprint domain, proving that identical canonical covered prefixes under the same Controller key scope and fingerprint configuration produce the same opaque Controller-derived affinity identity, and that a changed instruction, message, tool definition, call, or tool result changes the identity only when the changed canonical bytes fall within that covered prefix. Changes outside the bounded prefix MAY retain the same identity; `prompt_cache_key` does not control it, and affinity changes ranking only within the existing non-authoritative fail-open rules;
+* retry and error behavior, including pre- versus post-commit failures, the one-automatic-retry bound, pinned negotiated and model identity, no retry after caller disconnect or Output Commitment, no duplicate tool execution, stable public errors, and no alternate-capacity acquisition before execution resolution and capacity release are proved; and
+* explicit rejection of `parallel_tool_calls=true` before dispatch.
+
+The first implementation task SHALL be the deterministic reusable corpus, fixture protocol, assertions, and sanitized result format.
+Real-model, hardware, and named-client qualification SHALL consume that corpus only after its deterministic lane passes.
+An OpenCode result SHALL identify the exact client version and configuration and SHALL remain evidence for that client identity only.
+No result from this profile SHALL activate Qwen3.8, claim general OpenCode or agent-client support, or select TensorFold or any other project as an Orchard runtime foundation.
 
 ---
 
