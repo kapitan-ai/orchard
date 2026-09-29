@@ -5,6 +5,7 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
   alias Orchard.Cluster.V1.CancelInferenceRequest
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.FrozenExecutionInput
+  alias Orchard.Cluster.V1.GenerationParams
   alias Orchard.Cluster.V1.InferenceEvent
   alias Orchard.Cluster.V1.NegotiatedReasoningTuple
   alias Orchard.Cluster.V1.PreparationRedemption
@@ -193,6 +194,16 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
     refute Protobuf.encode(absent_effort) == Protobuf.encode(invalid_effort)
   end
 
+  test "SPEC.md section 7.5.3a keeps frozen input in descriptor parity with execution" do
+    {redemption, execution_input} =
+      ExecuteInferenceRequest
+      |> field_signatures()
+      |> Enum.split_with(fn {_name, number, _type, _repeated?} -> number == 14 end)
+
+    assert redemption == [{"preparation_redemption", 14, PreparationRedemption, false}]
+    assert execution_input == field_signatures(FrozenExecutionInput)
+  end
+
   test "Elixir decodes the previous-revision Python fixture with capabilities absent" do
     encoded = File.read!(Path.join(@fixture_root, "python_worker_status_response.pb"))
 
@@ -223,9 +234,19 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
              File.read!(Path.join(@fixture_root, "elixir_worker_capabilities.pb"))
   end
 
-  test "committed Elixir preparation fixture is produced by the current binding" do
-    assert Protobuf.encode(prepare_inference_request()) ==
-             File.read!(Path.join(@fixture_root, "elixir_prepare_inference_request.pb"))
+  test "preparation fixture round-trips N/N and both N/N-1 execution projections" do
+    encoded = File.read!(Path.join(@fixture_root, "elixir_prepare_inference_request.pb"))
+    expected = prepare_inference_request()
+
+    assert Protobuf.encode(expected) == encoded
+    assert Protobuf.decode(encoded, PrepareInferenceRequest) == expected
+
+    frozen_encoded = Protobuf.encode(expected.input)
+    execution = Protobuf.decode(frozen_encoded, ExecuteInferenceRequest)
+
+    assert execution.preparation_redemption == nil
+    assert Protobuf.encode(execution) == frozen_encoded
+    assert Protobuf.decode(Protobuf.encode(execution), FrozenExecutionInput) == expected.input
   end
 
   test "older and non-advertising projections contain no reasoning additions" do
@@ -414,8 +435,20 @@ defmodule Orchard.Node.WorkerRuntimeProtoContractTest do
         version: "sha256:orchard-fixture",
         rendered_prompt_utf8: "prompt",
         input_tokens: 2,
+        params: %GenerationParams{
+          max_output_tokens: 257,
+          temperature: 0.25,
+          top_p: 0.875,
+          stop_sequences: ["<stop-a>", "<stop-b>"],
+          tools_json: ~s([{"type":"function","name":"lookup"}]),
+          tool_choice_json: ~s({"type":"function","name":"lookup"})
+        },
         deadline_unix_ms: 1_800_000_000_000,
-        metadata_json: "{}"
+        metadata_json: ~s({"tenant":"fixture"}),
+        cache_affinity_fingerprint: "sha256:cache-affinity",
+        prompt_token_ids: [7, 11, 42],
+        return_token_ids: true,
+        return_logprobs: true
       },
       tuple: reasoning_tuple(nil),
       expected_binding: loaded_binding(),

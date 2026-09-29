@@ -240,6 +240,18 @@ def _worker_descriptor(
     )
 
 
+def _file_descriptor(
+    descriptor_set: descriptor_pb2.FileDescriptorSet, name: str
+) -> descriptor_pb2.FileDescriptorProto:
+    return next(descriptor for descriptor in descriptor_set.file if descriptor.name == name)
+
+
+def _message_descriptor(
+    descriptor: descriptor_pb2.FileDescriptorProto, name: str
+) -> descriptor_pb2.DescriptorProto:
+    return next(message for message in descriptor.message_type if message.name == name)
+
+
 def _python_worker_status_fixture() -> worker_runtime_pb2.WorkerStatusResponse:
     return worker_runtime_pb2.WorkerStatusResponse(
         loaded=True,
@@ -375,8 +387,20 @@ def _prepare_inference_request() -> reasoning_pb2.PrepareInferenceRequest:
             version="sha256:orchard-fixture",
             rendered_prompt_utf8=b"prompt",
             input_tokens=2,
+            params=common_pb2.GenerationParams(
+                max_output_tokens=257,
+                temperature=0.25,
+                top_p=0.875,
+                stop_sequences=["<stop-a>", "<stop-b>"],
+                tools_json=b'[{"type":"function","name":"lookup"}]',
+                tool_choice_json=b'{"type":"function","name":"lookup"}',
+            ),
             deadline_unix_ms=1_800_000_000_000,
-            metadata_json=b"{}",
+            metadata_json=b'{"tenant":"fixture"}',
+            cache_affinity_fingerprint="sha256:cache-affinity",
+            prompt_token_ids=[7, 11, 42],
+            return_token_ids=True,
+            return_logprobs=True,
         ),
         tuple=_reasoning_tuple(),
         expected_binding=_loaded_binding(),
@@ -601,6 +625,32 @@ def test_reasoning_schema_uses_the_owner_confirmed_tags_and_presence() -> None:
     assert absent_effort.SerializeToString() != invalid_effort.SerializeToString()
 
 
+def test_frozen_input_descriptor_matches_execution_except_redemption() -> None:
+    descriptor_set = _descriptor_set()
+    reasoning_descriptor = _file_descriptor(descriptor_set, "cluster/v1/reasoning.proto")
+    runtime_descriptor = _file_descriptor(descriptor_set, "cluster/v1/runtime.proto")
+    frozen = _message_descriptor(reasoning_descriptor, "FrozenExecutionInput")
+    execution = _message_descriptor(runtime_descriptor, "ExecuteInferenceRequest")
+
+    redemption = [field for field in execution.field if field.number == 14]
+    execution_input = [field for field in execution.field if field.number != 14]
+
+    assert [_field_signature(field) for field in redemption] == [
+        (
+            "preparation_redemption",
+            14,
+            "TYPE_MESSAGE",
+            "LABEL_OPTIONAL",
+            ".cluster.v1.PreparationRedemption",
+            False,
+            None,
+        )
+    ]
+    assert [_field_signature(field) for field in execution_input] == [
+        _field_signature(field) for field in frozen.field
+    ]
+
+
 def test_python_reasoning_fixture_is_produced_by_the_current_binding() -> None:
     fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response_reasoning.pb"
     expected = _python_worker_status_reasoning_fixture()
@@ -609,12 +659,24 @@ def test_python_reasoning_fixture_is_produced_by_the_current_binding() -> None:
     assert worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes()) == expected
 
 
-def test_python_decodes_elixir_preparation_fixture_with_semantic_equality() -> None:
+def test_preparation_fixture_round_trips_n_and_both_n_minus_one_execution_projections() -> None:
     fixture = PROTO_ROOT / "fixtures" / "elixir_prepare_inference_request.pb"
+    expected = _prepare_inference_request()
+    decoded = reasoning_pb2.PrepareInferenceRequest.FromString(fixture.read_bytes())
 
+    assert decoded == expected
+    assert decoded.SerializeToString(deterministic=True) == fixture.read_bytes()
+
+    frozen_bytes = expected.input.SerializeToString(deterministic=True)
+    execution = runtime_pb2.ExecuteInferenceRequest.FromString(frozen_bytes)
+
+    assert not execution.HasField("preparation_redemption")
+    assert execution.SerializeToString(deterministic=True) == frozen_bytes
     assert (
-        reasoning_pb2.PrepareInferenceRequest.FromString(fixture.read_bytes())
-        == _prepare_inference_request()
+        reasoning_pb2.FrozenExecutionInput.FromString(
+            execution.SerializeToString(deterministic=True)
+        )
+        == expected.input
     )
 
 

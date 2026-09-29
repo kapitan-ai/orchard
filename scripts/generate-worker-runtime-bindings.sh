@@ -20,7 +20,8 @@ generated_output_paths() {
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/runtime_pb2_grpc.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2_grpc.py \
-    proto/orchard/worker/v1/worker_runtime.descriptor.pb
+    proto/orchard/worker/v1/worker_runtime.descriptor.pb \
+    proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb
 }
 
 while [[ $# -gt 0 ]]; do
@@ -144,5 +145,66 @@ done
 
 install_output "$DESCRIPTOR_STAGE" \
   proto/orchard/worker/v1/worker_runtime.descriptor.pb
+
+ELIXIR_FIXTURE_GENERATOR="$STAGE_ROOT/generate_elixir_fixture.exs"
+cat > "$ELIXIR_FIXTURE_GENERATOR" <<'ELIXIR'
+alias Orchard.Cluster.V1.FrozenExecutionInput
+alias Orchard.Cluster.V1.GenerationParams
+alias Orchard.Cluster.V1.NegotiatedReasoningTuple
+alias Orchard.Cluster.V1.PrepareInferenceRequest
+alias Orchard.Cluster.V1.WorkerLoadedBinding
+
+request = %PrepareInferenceRequest{
+  input: %FrozenExecutionInput{
+    request_id: "request-327",
+    controller_session_id: "controller-session",
+    model_id: "mlx-community/Qwen3-4B",
+    version: "sha256:orchard-fixture",
+    rendered_prompt_utf8: "prompt",
+    input_tokens: 2,
+    params: %GenerationParams{
+      max_output_tokens: 257,
+      temperature: 0.25,
+      top_p: 0.875,
+      stop_sequences: ["<stop-a>", "<stop-b>"],
+      tools_json: ~s([{"type":"function","name":"lookup"}]),
+      tool_choice_json: ~s({"type":"function","name":"lookup"})
+    },
+    deadline_unix_ms: 1_800_000_000_000,
+    metadata_json: ~s({"tenant":"fixture"}),
+    cache_affinity_fingerprint: "sha256:cache-affinity",
+    prompt_token_ids: [7, 11, 42],
+    return_token_ids: true,
+    return_logprobs: true
+  },
+  tuple: %NegotiatedReasoningTuple{
+    generation_policy: "enabled",
+    projection: "final_only",
+    model_artifact_digest: "sha256:artifact",
+    chat_template_digest: "sha256:template",
+    render_contract: "orchard_chat",
+    render_contract_version: "1",
+    parser_family: "tagged_pair",
+    parser_version: "1",
+    runtime_contract_version: "1",
+    event_binding_version: "1"
+  },
+  expected_binding: %WorkerLoadedBinding{
+    model_id: "mlx-community/Qwen3-4B",
+    model_version: "sha256:orchard-fixture",
+    artifact_digest: "sha256:artifact",
+    selected_profile_id: "mlx-metal-unified-default"
+  },
+  expected_service_incarnation: "0123456789abcdef0123456789abcdef",
+  expected_loaded_instance_id: <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15>>
+}
+
+output = System.fetch_env!("ORCHARD_PROTO_FIXTURE_OUTPUT")
+File.mkdir_p!(Path.dirname(output))
+File.write!(output, Protobuf.encode(request))
+ELIXIR
+
+ORCHARD_PROTO_FIXTURE_OUTPUT="$OUTPUT_ROOT/proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb" \
+  mise exec -- mix run --no-start "$ELIXIR_FIXTURE_GENERATOR"
 
 printf 'generated Worker Runtime Python and Elixir bindings under %s\n' "$OUTPUT_ROOT"

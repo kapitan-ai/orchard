@@ -40,7 +40,8 @@ DISCOVERED="$GENERATED_ROOT/discovered.txt"
 {
   printf '%s\n' \
     apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex \
-    proto/orchard/worker/v1/worker_runtime.descriptor.pb
+    proto/orchard/worker/v1/worker_runtime.descriptor.pb \
+    proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb
   find "$COMMITTED_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated" \
     -type f \( -name '*_pb2.py' -o -name '*_pb2_grpc.py' \) -print \
     | sed "s#^$COMMITTED_ROOT/##"
