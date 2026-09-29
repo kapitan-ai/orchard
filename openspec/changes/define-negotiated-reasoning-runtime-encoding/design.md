@@ -23,6 +23,24 @@ behavior atomically. A conflicting upstream allocation blocks implementation
 rather than permitting a substitute number or shape. Task 2.2 must not proceed
 on an implementer's own schema judgment; it must reproduce §2.1 unchanged.
 
+### Owner decisions — 2026-09-29
+
+- **D-A — gRPC compatibility remains legacy-only.** The Controller-to-Node
+  `NodeRuntimeService` compatibility binding never advertises negotiated
+  reasoning. `PrepareInference` remains declared only on
+  `orchard.worker.v1.WorkerRuntimeService`; `NodeRuntimeService` gains no such
+  RPC. The additive status messages remain shared wire types, but the gRPC
+  compatibility adapter never emits their reasoning selector or observation.
+  A negotiated Request may be placed only through a binding that can prove
+  preparation, so a gRPC-compatibility-only candidate is non-advertising for
+  the tuple. This follows
+  `deprecate-node-runtime-grpc-compatibility` rather than extending the
+  compatibility transport.
+- **D-B — no manifest typed fields in #327.** This change adds no manifest
+  typed fields. `SPEC.md` §6.4 leaves such fields to a separately accepted
+  extension, so issue #327's earlier “manifest fields” wording is not a closure
+  criterion.
+
 ## 2. Canonical tuple and loaded binding
 
 The advertised and proven reasoning tuple has exactly these eleven equality
@@ -285,8 +303,11 @@ rpc PrepareInference(cluster.v1.PrepareInferenceRequest)
     returns (cluster.v1.PrepareInferenceResponse);
 ```
 
-`NodeRuntimeService` gains no `PrepareInference` RPC. That sentence records
-protobuf service ownership only. `ExecuteInferenceRequest` gains only:
+`NodeRuntimeService` gains no `PrepareInference` RPC. Its gRPC compatibility
+adapter also remains non-advertising: it emits neither the additive reasoning
+selector nor observation even though the shared status messages carry those
+fields for transport-independent Runtime Endpoint use. `ExecuteInferenceRequest`
+gains only:
 
 ```proto
 cluster.v1.PreparationRedemption preparation_redemption = 14;

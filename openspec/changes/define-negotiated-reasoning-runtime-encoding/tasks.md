@@ -12,6 +12,8 @@
 
 - [x] 2.1 Wait for PR #401 to merge; do not start schema or runtime work from an unmerged canonical-identity branch.
 - [ ] 2.2 After this change is accepted, re-confirm the approved field allocations and add the shared reasoning protocol source, protocol declarations, generated bindings, and reciprocal fixtures atomically, reproducing `design.md` §2.1 unchanged. Do not begin that work from this documentation PR.
+- [x] 2.2a Record owner decision D-A: `NodeRuntimeService` remains legacy-only and gains no `PrepareInference`; gRPC-compatibility-only candidates are non-advertising for negotiated reasoning.
+- [x] 2.2b Record owner decision D-B: #327 adds no manifest typed fields, and earlier “manifest fields” wording is not a closure criterion.
 - [ ] 2.3 Preserve legacy operation and event field sets for every older or non-advertising binding; add explicit opt-in reasoning observation coverage.
 - [ ] 2.4 Cover exact `ModelRef` selection on a multi-model Node and request/selected-worker association through both adapters. Wrong version, missing worker, malformed field 9 without field 8, and unattributable results must remain unknown; only complete attributable negatives count toward exhaustion. Preserve legacy N-1 projections and live-only freshness without extra fanout.
 - [ ] 2.5 Cover optional/default frozen inputs, nil versus invalid effort, nested parameters, and future execution-affecting additive/nested fields: bind and compare them or reject without silent decoding/mapping loss. Validate field 14 independently outside frozen input and retain negotiated token/logprob rejection.

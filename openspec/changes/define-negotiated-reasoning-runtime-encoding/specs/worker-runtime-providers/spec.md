@@ -8,6 +8,10 @@ The accepted future encoding lifts the deferred `WorkerCapabilities.loaded_bindi
 
 Load replacement, unload, failed destructive unload, or Worker Runtime teardown SHALL invalidate advertised reasoning evidence and any preparation authorization for the affected loaded instance.
 
+Issue #327 SHALL add no manifest typed fields. Any typed manifest extension for
+reasoning capability requires a separately accepted change under `SPEC.md`
+§6.4 and is not a closure criterion for this change.
+
 #### Scenario: Same worker process reloads an artifact
 
 - **WHEN** the Worker Runtime reloads an artifact without changing `service_incarnation`
