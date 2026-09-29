@@ -15,7 +15,7 @@ defmodule Orchard.Inference.EventUsage do
   def terminal(events) do
     Enum.reduce_while(
       events,
-      %{input_tokens: 0, output_tokens: 0, output_usage_status: "lower_bound"},
+      %{output_tokens: 0, output_usage_status: "lower_bound"},
       fn
         %InferenceEvent{event: %InferenceEvent.Completed{usage: usage}}, acc ->
           {:halt, accumulate(usage, acc, "exact")}
@@ -40,7 +40,11 @@ defmodule Orchard.Inference.EventUsage do
        when is_integer(input) and input >= 0 and input <= 2_147_483_647 and
               is_integer(output) and output >= 0 and output <= 2_147_483_647 and
               total == input + output and output >= acc.output_tokens do
-    %{input_tokens: input, output_tokens: output, output_usage_status: status}
+    if input >= Map.get(acc, :input_tokens, 0) do
+      %{input_tokens: input, output_tokens: output, output_usage_status: status}
+    else
+      acc
+    end
   end
 
   defp accumulate(_usage, acc, _status), do: acc

@@ -7,7 +7,6 @@ defmodule Orchard.Inference.EventUsageTest do
   test "SPEC.md §§3.7.1, 5.3 (#329): missing evidence is not exact zero" do
     for events <- [[], [InferenceEvent.failed("worker_down", "gone", true)]] do
       assert EventUsage.terminal(events) == %{
-               input_tokens: 0,
                output_tokens: 0,
                output_usage_status: "lower_bound"
              }
@@ -20,8 +19,14 @@ defmodule Orchard.Inference.EventUsageTest do
            }
   end
 
-  test "SPEC.md §5.3 (#329): invalid or regressing evidence cannot replace the validated bound" do
-    for invalid <- [usage(-1), usage(2), %{usage(8) | total_tokens: 10}, usage(2_147_483_648)] do
+  test "SPEC.md §§3.7.1, 5.3 (#329): invalid or regressing evidence cannot replace the validated bound" do
+    for invalid <- [
+          usage(-1),
+          usage(2),
+          %{usage(8) | input_tokens: 2, total_tokens: 10},
+          %{usage(8) | total_tokens: 10},
+          usage(2_147_483_648)
+        ] do
       events = [
         InferenceEvent.usage_update(usage(5)),
         %InferenceEvent{event: %InferenceEvent.UsageUpdate{usage: invalid}},

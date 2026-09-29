@@ -2082,7 +2082,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(request.scheduler_decision, "queueing_enabled")
   end
 
-  test "execute/3 terminalizes a validated request when scheduling crashes", %{bundle: bundle} do
+  test "SPEC.md §§3.7.1, 5.3 (#329): scheduling crash preserves canonical input without usage evidence",
+       %{bundle: bundle} do
     put_queue_admission_config(enabled: false)
     put_function_clause_scheduler_config()
 
@@ -2101,6 +2102,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.node_id == nil
     assert request.error_code == "orchestration_error"
     assert request.error_message == "Runtime orchestration failed"
+    assert request.input_tokens == 1
+    assert request.output_tokens == 0
+    assert request.output_usage_status == :lower_bound
     assert :validated in states
     assert :failed in states
     assert state_before?(states, :validated, :failed)
@@ -3041,9 +3045,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert DateTime.compare(request.completed_at, request.first_token_at) in [:gt, :eq]
   end
 
-  test "execute/3 leaves first_token_at nil when dispatch fails before any output delta", %{
-    bundle: bundle
-  } do
+  test "SPEC.md §§3.7.1, 5.3 (#329): dispatch failure preserves canonical input without usage evidence",
+       %{
+         bundle: bundle
+       } do
     put_unreachable_scheduler_config()
 
     model = create_active_model!(bundle, "request-orchestrator-start-failure")
@@ -3065,6 +3070,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request != nil
     assert request.state == :failed
     assert request.first_token_at == nil
+    assert request.input_tokens == 1
+    assert request.output_tokens == 0
+    assert request.output_usage_status == :lower_bound
 
     step_events = Requests.list_request_step_events(request)
 
@@ -3080,6 +3088,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_result["failure_class"] == "pre_acceptance_unavailable"
     assert terminal_result["failure_code"] == "node_unavailable"
     assert terminal_result["retry_decision"] == "identity_unresolved"
+    refute Map.has_key?(terminal_result, "input_tokens")
+    assert terminal_result["output_tokens"] == 0
+    assert terminal_result["output_usage_status"] == "lower_bound"
     refute Enum.any?(step_events, &(&1.attempt == 2))
 
     assert {:ok, node_breaker} =
