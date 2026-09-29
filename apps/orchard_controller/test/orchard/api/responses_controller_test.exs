@@ -2182,6 +2182,7 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     for code <- [
           "made_up_retryable",
+          "request_interrupted/private-detail",
           "reasoning_parser_conformance_failed",
           "reasoning_policy_conformance_failed"
         ] do

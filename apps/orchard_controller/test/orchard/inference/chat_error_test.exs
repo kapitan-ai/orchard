@@ -6,6 +6,28 @@ defmodule Orchard.Inference.ChatErrorTest do
   alias Orchard.InferenceEvent
   alias Orchard.Requests.CapturePolicy
 
+  test "KAP-119 SPEC.md §7.2.9 every SSE passthrough kind sanitizes unknown codes" do
+    for {kind, code, message} <- [
+          {:request_failed, "internal_error", "Internal error"},
+          {:request_interrupted, "internal_error", "Internal error"},
+          {:request_timed_out, "request_timeout", "Request timed out"},
+          {:request_cancelled, "request_cancelled", "Request was cancelled"}
+        ] do
+      error = %ChatError{
+        kind: kind,
+        source_code: "unknown_runtime_code",
+        source_message: "private runtime detail"
+      }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: "server_error",
+               code: code,
+               message: message,
+               param: nil
+             }
+    end
+  end
+
   test "KAP-119 SPEC.md §§3.7.1, 7.2.9 SSE failures retain only recognized codes" do
     for code <- ["made_up_retryable", "worker_down/private-detail"] do
       mapping =

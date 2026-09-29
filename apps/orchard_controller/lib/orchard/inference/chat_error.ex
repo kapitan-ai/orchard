@@ -471,7 +471,8 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
-  def sse_mapping(%__MODULE__{kind: kind}) when kind in [:internal, :request_failed] do
+  def sse_mapping(%__MODULE__{kind: kind})
+      when kind in [:internal, :request_failed, :request_interrupted] do
     %{
       type: "server_error",
       code: "internal_error",
