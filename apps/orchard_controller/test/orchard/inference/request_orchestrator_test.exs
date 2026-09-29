@@ -789,21 +789,34 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
         emit_events(owner, stream_ref, request.request_id, next_execute_events())
         send(owner, {:runtime_endpoint_done, stream_ref, :ok})
 
-      %{before_timeout: before_timeout, during_drain: during_drain} ->
-        emitter = start_timeout_emitter(owner, stream_ref, request, before_timeout, during_drain)
+      %{
+        before_timeout: before_timeout,
+        during_drain: during_drain,
+        wait_for_deadline?: wait_for_deadline?
+      } ->
+        emitter = start_timeout_emitter(owner, stream_ref, request.request_id, during_drain)
 
         Process.put({__MODULE__, :timeout_emitter}, emitter)
+        emit_events(owner, stream_ref, request.request_id, before_timeout)
+        maybe_wait_for_deadline(request.deadline_unix_ms, wait_for_deadline?)
     end
 
     {:ok, stream_ref}
   end
 
-  defp start_timeout_emitter(owner, stream_ref, request, before_timeout, during_drain) do
+  defp start_timeout_emitter(owner, stream_ref, request_id, during_drain) do
     spawn(fn ->
-      emit_events(owner, stream_ref, request.request_id, before_timeout)
-      await_timeout_cancel(owner, stream_ref, request.request_id, during_drain)
+      await_timeout_cancel(owner, stream_ref, request_id, during_drain)
     end)
   end
+
+  defp maybe_wait_for_deadline(deadline_unix_ms, true) do
+    remaining_ms = deadline_unix_ms - System.system_time(:millisecond)
+
+    if remaining_ms > 0, do: Process.sleep(remaining_ms + 1)
+  end
+
+  defp maybe_wait_for_deadline(_deadline_unix_ms, false), do: :ok
 
   defp await_timeout_cancel(owner, stream_ref, request_id, during_drain) do
     receive do
@@ -3423,7 +3436,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal["output_usage_status"] == "lower_bound"
   end
 
-  test "SPEC.md §§3.7.1, 12.4 (#329): buffered Worker completion wins the deadline drain race",
+  test "SPEC.md §§3.7.1, 12.4 (#329): buffered completion proves exact usage without defeating timeout",
        %{bundle: bundle} do
     completed =
       InferenceEvent.completed(
@@ -3440,20 +3453,67 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       )
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
-    assert %InferenceEvent{event: %InferenceEvent.Completed{}} = List.last(events)
+
+    assert %InferenceEvent{event: %InferenceEvent.Failed{code: "request_timeout"}} =
+             List.last(events)
+
+    refute Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Completed{}}, &1))
 
     request = Requests.get_request_by_public_id(canonical.public_id)
-    assert request.state == :completed
-    assert request.http_status == 200
-    assert request.error_code == nil
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "request_timeout"
     assert request.output_tokens == 7
     assert request.output_usage_status == :exact
 
     terminal =
       request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
 
-    assert terminal["attempt_outcome"] == "completed"
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["failure_class"] == "deadline"
+    assert terminal["failure_code"] == "request_timeout"
     assert terminal["output_tokens"] == 7
+    assert terminal["output_usage_status"] == "exact"
+  end
+
+  test "SPEC.md §§3.7.1, 5.3, 5.8 (#329): buffered completion proves exact usage without defeating disconnect",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 6, total_tokens: 7}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-disconnect-buffered-completion",
+        [InferenceEvent.output_text_delta("disconnect")],
+        [completed],
+        wait_for_deadline?: false
+      )
+
+    handler = fn _request_id, event ->
+      if InferenceEvent.kind(event) == :output_text_delta, do: :cancel, else: :ok
+    end
+
+    assert {:error, {:dispatch_failed, :request_caller_disconnect}} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.http_status == 499
+    assert request.error_code == "request_caller_disconnect"
+    assert request.output_tokens == 6
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "cancelled"
+    assert terminal["failure_class"] == "cancellation"
+    assert terminal["failure_code"] == "request_caller_disconnect"
+    assert terminal["output_tokens"] == 6
     assert terminal["output_usage_status"] == "exact"
   end
 
@@ -5459,7 +5519,13 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Process.put({StubRuntimeEndpointClient, :execute_events_queue}, event_lists)
   end
 
-  defp configure_legacy_timeout!(bundle, model_id, before_timeout, during_drain \\ []) do
+  defp configure_legacy_timeout!(
+         bundle,
+         model_id,
+         before_timeout,
+         during_drain \\ [],
+         opts \\ []
+       ) do
     target = [host: "10.0.0.1", port: 50_061]
     node = insert_runtime_node!(target)
 
@@ -5468,7 +5534,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     Process.put(
       {StubRuntimeEndpointClient, :timeout_fixture},
-      %{before_timeout: before_timeout, during_drain: during_drain}
+      %{
+        before_timeout: before_timeout,
+        during_drain: during_drain,
+        wait_for_deadline?: Keyword.get(opts, :wait_for_deadline?, true)
+      }
     )
 
     model = create_active_model!(bundle, model_id)

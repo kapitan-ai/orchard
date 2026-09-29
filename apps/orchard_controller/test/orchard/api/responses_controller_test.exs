@@ -999,6 +999,7 @@ defmodule Orchard.API.ResponsesControllerTest do
       {:model_busy, 503, "server_error", "model_busy"},
       {:queue_full, 429, "rate_limit_error", "queue_full"},
       {:queue_timeout, 504, "server_error", "queue_timeout"},
+      {{:dispatch_failed, :request_timeout}, 504, "server_error", "request_timeout"},
       {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
     ]
 
@@ -2071,7 +2072,8 @@ defmodule Orchard.API.ResponsesControllerTest do
     cases = [
       {:model_busy, "server_error", "model_busy"},
       {:queue_full, "rate_limit_error", "queue_full"},
-      {:queue_timeout, "server_error", "queue_timeout"}
+      {:queue_timeout, "server_error", "queue_timeout"},
+      {{:dispatch_failed, :request_timeout}, "server_error", "request_timeout"}
     ]
 
     for {reason, type, code} <- cases do

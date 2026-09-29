@@ -1245,6 +1245,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         {:model_busy, 503, "server_error", "model_busy"},
         {:queue_full, 429, "rate_limit_error", "queue_full"},
         {:queue_timeout, 504, "server_error", "queue_timeout"},
+        {{:dispatch_failed, :request_timeout}, 504, "server_error", "request_timeout"},
         {:request_caller_disconnect, 499, "server_error", "request_cancelled"}
       ]
 
@@ -2155,6 +2156,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         {:model_busy, "server_error", "model_busy"},
         {:queue_full, "rate_limit_error", "queue_full"},
         {:queue_timeout, "server_error", "queue_timeout"},
+        {{:dispatch_failed, :request_timeout}, "server_error", "request_timeout"},
         {:request_caller_disconnect, "server_error", "request_cancelled"}
       ]
 
@@ -2176,6 +2178,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         assert [{:error, payload}] = events
         assert payload["error"]["type"] == type
         assert payload["error"]["code"] == code
+        assert Map.has_key?(payload["error"], "message")
+        assert Map.has_key?(payload["error"], "param")
         refute Enum.any?(events, fn {event_type, _payload} -> event_type == :done end)
       end
     end
