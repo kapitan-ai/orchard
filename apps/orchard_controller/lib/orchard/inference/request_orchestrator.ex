@@ -1409,6 +1409,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       |> public_dispatch_reason()
       |> ChatError.from_execute_error()
       |> ChatError.terminal_attrs()
+      |> Map.merge(EventUsage.terminal(events))
     end
   end
 
@@ -2384,10 +2385,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
          step_context,
          terminal_persister
        ) do
+    events =
+      case step_context do
+        {_owner, %AttemptContext{}, %AttemptOutcome{events: events}, _decision} -> events
+        nil -> []
+      end
+
     terminal_attrs =
       reason
       |> ChatError.from_execute_error()
       |> ChatError.terminal_attrs()
+      |> Map.merge(EventUsage.terminal(events))
 
     case terminal_persister.(
            db_request,
@@ -2463,7 +2471,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp terminal_attrs_from_events(events) do
-    usage = extract_usage(events)
+    usage = EventUsage.terminal(events)
 
     base_attrs =
       case Enum.find(events, &InferenceEvent.terminal?/1) do
@@ -2670,6 +2678,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     |> maybe_put_result("finish_reason", terminal_finish_reason(events))
     |> maybe_put_result("input_tokens", Map.get(terminal_attrs, :input_tokens))
     |> maybe_put_result("output_tokens", Map.get(terminal_attrs, :output_tokens))
+    |> maybe_put_result("output_usage_status", Map.get(terminal_attrs, :output_usage_status))
     |> maybe_put_result("error_message", Map.get(terminal_attrs, :error_message))
     |> maybe_put_result("http_status", Map.get(terminal_attrs, :http_status))
   end
@@ -2743,16 +2752,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp maybe_put_first_token_at(attrs, nil), do: attrs
   defp maybe_put_first_token_at(attrs, %DateTime{} = ts), do: Map.put(attrs, :first_token_at, ts)
-
-  defp extract_usage(events) do
-    case EventUsage.find(events) do
-      nil ->
-        %{input_tokens: 0, output_tokens: 0}
-
-      usage ->
-        %{input_tokens: usage.input_tokens, output_tokens: usage.output_tokens}
-    end
-  end
 
   defp build_execute_request(canonical, schedule) do
     deadline_ms =

@@ -3160,7 +3160,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert {:ok, :not_candidate} = Requests.classify_missing_terminal_candidate(request)
   end
 
-  test "SPEC 3.7: exact completed usage supersedes cumulative updates",
+  test "SPEC.md §§3.7.1, 5.3 (#329): exact completed usage supersedes cumulative updates",
        %{bundle: bundle} do
     put_capturing_runtime_adapter_config()
 
@@ -3191,12 +3191,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.input_tokens == 1
     assert request.output_tokens == 7
+    assert request.output_usage_status == :exact
 
     terminal_step = Requests.list_request_step_events(request) |> List.last()
     assert terminal_step.result["output_tokens"] == 7
+    assert terminal_step.result["output_usage_status"] == "exact"
   end
 
-  test "SPEC 3.7: execute/3 does not persist a lower bound without its status",
+  test "SPEC.md §§3.7.1, 5.3 (#329): failure preserves the latest cumulative lower bound",
        %{bundle: bundle} do
     put_capturing_runtime_adapter_config()
 
@@ -3233,14 +3235,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :cancelled
-    assert request.input_tokens == 0
-    assert request.output_tokens == 0
+    assert request.input_tokens == 3
+    assert request.output_tokens == 6
+    assert request.output_usage_status == :lower_bound
 
     terminal_step = Requests.list_request_step_events(request) |> List.last()
-    assert terminal_step.result["output_tokens"] == 0
+    assert terminal_step.result["output_tokens"] == 6
+    assert terminal_step.result["output_usage_status"] == "lower_bound"
   end
 
-  test "SPEC 7.5.3a: synthesized terminal does not persist an unqualified lower bound",
+  test "SPEC.md §§3.7.1, 7.5.3a (#329): synthesized terminal persists a qualified lower bound",
        %{bundle: bundle} do
     target = [host: "10.0.0.1", port: 50_061]
     node = insert_runtime_node!(target)
@@ -3286,11 +3290,13 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.state == :failed
-    assert request.input_tokens == 0
-    assert request.output_tokens == 0
+    assert request.input_tokens == 4
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
 
     terminal_step = Requests.list_request_step_events(request) |> List.last()
-    assert terminal_step.result["output_tokens"] == 0
+    assert terminal_step.result["output_tokens"] == 5
+    assert terminal_step.result["output_usage_status"] == "lower_bound"
   end
 
   test "SPEC 7.5.5: execute/3 persists a missing terminal as a durable failure",
@@ -4404,12 +4410,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_result["retry_decision"] == "output_committed"
   end
 
-  test "execute/3 catches success_persistence exception, exit, and throw after commitment",
+  test "SPEC.md §5.3 (#329): persistence exception, exit, and throw preserve cumulative usage",
        %{bundle: bundle} do
     put_capturing_runtime_adapter_config()
 
     put_runtime_events([
       InferenceEvent.output_text_delta("committed"),
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 3,
+        output_tokens: 8,
+        total_tokens: 11
+      }),
       InferenceEvent.completed(:finish_reason_stop, nil)
     ])
 
@@ -4431,11 +4442,15 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
       request = Requests.get_request_by_public_id(canonical.public_id)
       assert request.state == :failed
+      assert request.output_tokens == 8
+      assert request.output_usage_status == :lower_bound
 
       terminal_result = request |> Requests.list_request_step_events() |> List.last()
       assert terminal_result.result["output_committed"]
       assert terminal_result.result["output_commitment_kind"] == "text"
       assert terminal_result.result["retry_decision"] == "output_committed"
+      assert terminal_result.result["output_tokens"] == 8
+      assert terminal_result.result["output_usage_status"] == "lower_bound"
     end)
   end
 
