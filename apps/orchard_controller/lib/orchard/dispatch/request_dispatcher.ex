@@ -1906,6 +1906,16 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
   end
 
+  defp drain_done_result(
+         %{
+           terminal_event: %InferenceEvent{event: %InferenceEvent.Completed{}} = terminal_event
+         } = loop_ctx,
+         events,
+         :timeout
+       ) do
+    drain_terminal_result(loop_ctx, events, terminal_event, :timeout)
+  end
+
   defp drain_done_result(loop_ctx, events, cancel_reason)
        when cancel_reason in [:timeout, :caller_disconnect, :client_disconnect] do
     normalized_reason =
@@ -1919,6 +1929,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
          events,
          cancel_reason
        ) do
+    drain_terminal_result(loop_ctx, events, terminal_event, cancel_reason)
+  end
+
+  defp drain_done_result(loop_ctx, events, cancel_reason),
+    do: synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
+
+  defp drain_terminal_result(loop_ctx, events, terminal_event, cancel_reason) do
     loop_ctx = record_delivery(loop_ctx, terminal_event)
 
     stream_terminal_result(
@@ -1928,9 +1945,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       cancel_reason
     )
   end
-
-  defp drain_done_result(loop_ctx, events, cancel_reason),
-    do: synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
 
   defp cancel_drain_timeout_result(loop_ctx, events, cancel_reason) do
     result =
