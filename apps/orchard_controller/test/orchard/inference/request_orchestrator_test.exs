@@ -1112,6 +1112,7 @@ end
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
+  import ExUnit.CaptureLog
   import Orchard.TestSupport.ModelRequestFixtures
   import Orchard.TestSupport.SentryContextHelpers
 
@@ -4224,6 +4225,63 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       assert terminal_step.result["retry_decision"] == expected_retry_decision
       assert terminal_step.result["error_message"] == request.error_message
       assert terminal_step.result["http_status"] == request.http_status
+    end)
+  end
+
+  test "SPEC.md §§9.3 and 10.10 isolate Worker failure content by capture mode", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+    enable_controller_sentry()
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
+    sentinel = "DIAGNOSTIC_BOUNDARY_SENTINEL model output and hidden reasoning"
+
+    Enum.each([:none, :metadata, :full], fn mode ->
+      clear_sentry_context()
+
+      suffix = "#{mode}-#{System.unique_integer([:positive])}"
+
+      {:ok, tenant} =
+        Governance.create_tenant(%{
+          slug: "request-orchestrator-diagnostic-#{suffix}",
+          name: "Request Orchestrator Diagnostic #{suffix}",
+          request_body_capture_mode: mode
+        })
+
+      model_id = "request-orchestrator-diagnostic-#{suffix}"
+      model = create_active_model!(bundle, model_id)
+      canonical = canonical_request(model_id, stream?: false, tenant_id: tenant.id)
+
+      put_runtime_events([
+        InferenceEvent.failed("prompt_token_ids_length_mismatch", sentinel, false)
+      ])
+
+      log =
+        capture_log([level: :info], fn ->
+          assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+        end)
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+
+      terminal_result =
+        Requests.list_request_step_events(request) |> List.last() |> Map.fetch!(:result)
+
+      assert request.payload_capture_mode == mode
+      assert log =~ ~s(terminal_detail="internal_error")
+      refute log =~ sentinel
+      refute inspect(sentry_context()) =~ sentinel
+
+      if mode == :full do
+        assert request.error_message == sentinel
+        assert terminal_result["error_message"] == sentinel
+      else
+        assert request.error_message == nil
+        refute Map.has_key?(terminal_result, "error_message")
+        refute inspect(request) =~ sentinel
+        refute inspect(terminal_result) =~ sentinel
+      end
     end)
   end
 

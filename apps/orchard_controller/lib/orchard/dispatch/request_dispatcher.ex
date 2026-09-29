@@ -2297,8 +2297,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         %InferenceEvent.Completed{} ->
           %{metrics | terminal_kind: :completed}
 
-        %InferenceEvent.Failed{code: code, message: message} ->
-          %{metrics | terminal_kind: :failed, terminal_detail: "#{code}: #{message}"}
+        %InferenceEvent.Failed{code: code} ->
+          failure = InferenceAttemptFailure.normalize(%{category: :runtime, code: code})
+
+          %{
+            metrics
+            | terminal_kind: :failed,
+              terminal_detail: Map.fetch!(failure, "failure_code")
+          }
 
         _ ->
           metrics
@@ -2322,8 +2328,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
          %Metrics{} = metrics,
          %InferenceEvent{
            event: %InferenceEvent.Failed{
-             code: "prompt_token_ids_length_mismatch",
-             message: message
+             code: "prompt_token_ids_length_mismatch"
            }
          },
          :stream
@@ -2335,8 +2340,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       node_id: metrics.node_id,
       scheduler_strategy: metrics.scheduler_strategy,
       input_tokens: metrics.input_tokens,
-      code: "prompt_token_ids_length_mismatch",
-      worker_message: message
+      code: "prompt_token_ids_length_mismatch"
     })
   end
 
