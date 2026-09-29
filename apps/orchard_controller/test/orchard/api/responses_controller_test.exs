@@ -2177,10 +2177,11 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert_tool_serializer_failure!(request)
   end
 
-  test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Responses errors" do
+  test "KAP-119 SPEC.md §§7.2.9, 7.5.3a normalize unknown and reasoning Responses SSE failures" do
     worker_message = "<think>worker marker bytes and model output</think>"
 
     for code <- [
+          "made_up_retryable",
           "reasoning_parser_conformance_failed",
           "reasoning_policy_conformance_failed"
         ] do
@@ -2203,6 +2204,8 @@ defmodule Orchard.API.ResponsesControllerTest do
       assert conn.status == 200
       events = parse_typed_sse_events(conn)
       assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+      assert List.last(events).data["response"]["status"] == "failed"
 
       assert List.last(events).data["response"]["error"] == %{
                "code" => "internal_error",

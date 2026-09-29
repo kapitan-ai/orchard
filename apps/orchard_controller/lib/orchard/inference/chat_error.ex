@@ -420,6 +420,8 @@ defmodule Orchard.Inference.ChatError do
     :request_interrupted,
     :request_failed
   ]
+  @sse_passthrough_codes InferenceAttemptFailure.stable_error_codes() ++
+                           ~w(invalid_tool_call tool_call_parse_failed tool_choice_not_satisfied)
 
   def sse_mapping(%__MODULE__{kind: :model_load_failed, model_load_failure: failure}) do
     failure
@@ -459,7 +461,8 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
-  def sse_mapping(%__MODULE__{kind: kind} = error) when kind in @sse_passthrough_kinds do
+  def sse_mapping(%__MODULE__{kind: kind, source_code: code} = error)
+      when kind in @sse_passthrough_kinds and code in @sse_passthrough_codes do
     %{
       type: "server_error",
       code: error.source_code,
@@ -468,7 +471,7 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
-  def sse_mapping(%__MODULE__{kind: :internal}) do
+  def sse_mapping(%__MODULE__{kind: kind}) when kind in [:internal, :request_failed] do
     %{
       type: "server_error",
       code: "internal_error",
