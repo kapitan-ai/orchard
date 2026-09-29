@@ -2042,10 +2042,12 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert_tool_serializer_failure!(request)
     end
 
-    test "SPEC.md §7.5.3a hides reasoning conformance details in streaming Chat errors" do
+    test "KAP-119 SPEC.md §§7.2.9, 7.5.3a normalize unknown and reasoning Chat SSE failures" do
       worker_message = "<think>worker marker bytes and model output</think>"
 
       for code <- [
+            "made_up_retryable",
+            "request_interrupted/private-detail",
             "reasoning_parser_conformance_failed",
             "reasoning_policy_conformance_failed"
           ] do
@@ -2070,6 +2072,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
         assert [{:error, payload}] =
                  Enum.filter(events, fn {type, _payload} -> type == :error end)
+
+        assert List.last(events) == {:error, payload}
 
         assert payload["error"] == %{
                  "code" => "internal_error",
