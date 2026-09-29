@@ -784,20 +784,44 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
       send(test_pid, {:runtime_execute_called, request.request_id})
     end
 
-    events = next_execute_events()
+    case Process.get({__MODULE__, :timeout_fixture}) do
+      nil ->
+        emit_events(owner, stream_ref, request.request_id, next_execute_events())
+        send(owner, {:runtime_endpoint_done, stream_ref, :ok})
 
-    send(
-      owner,
-      {:runtime_endpoint_event, stream_ref, request.request_id, InferenceEvent.accepted(0)}
-    )
+      %{before_timeout: before_timeout, during_drain: during_drain} ->
+        emitter = start_timeout_emitter(owner, stream_ref, request, before_timeout, during_drain)
 
-    Enum.each(events, fn event ->
-      send(owner, {:runtime_endpoint_event, stream_ref, request.request_id, event})
-    end)
-
-    send(owner, {:runtime_endpoint_done, stream_ref, :ok})
+        Process.put({__MODULE__, :timeout_emitter}, emitter)
+    end
 
     {:ok, stream_ref}
+  end
+
+  defp start_timeout_emitter(owner, stream_ref, request, before_timeout, during_drain) do
+    spawn(fn ->
+      emit_events(owner, stream_ref, request.request_id, before_timeout)
+      await_timeout_cancel(owner, stream_ref, request.request_id, during_drain)
+    end)
+  end
+
+  defp await_timeout_cancel(owner, stream_ref, request_id, during_drain) do
+    receive do
+      :cancel ->
+        Enum.each(during_drain, fn event ->
+          send(owner, {:runtime_endpoint_event, stream_ref, request_id, event})
+        end)
+
+        send(owner, {:runtime_endpoint_done, stream_ref, :ok})
+    end
+  end
+
+  defp emit_events(owner, stream_ref, request_id, events) do
+    send(owner, {:runtime_endpoint_event, stream_ref, request_id, InferenceEvent.accepted(0)})
+
+    Enum.each(events, fn event ->
+      send(owner, {:runtime_endpoint_event, stream_ref, request_id, event})
+    end)
   end
 
   defp next_execute_events do
@@ -814,7 +838,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
     end
   end
 
-  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts) do
+    case Process.get({__MODULE__, :timeout_emitter}) do
+      emitter when is_pid(emitter) -> send(emitter, :cancel)
+      _missing -> :ok
+    end
+
+    :ok
+  end
 
   def disconnect(_channel), do: :ok
 
@@ -1204,6 +1235,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       restore_pre_await_queue_result(previous_pre_await_queue_result)
       restore_live_capacity_owner(previous_live_capacity_owner)
       Process.delete({StubRuntimeEndpointClient, :ensure_model_loaded_result})
+      Process.delete({StubRuntimeEndpointClient, :timeout_fixture})
+      Process.delete({StubRuntimeEndpointClient, :timeout_emitter})
       QueueManager.reset()
       ModelManager.reset()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
@@ -3310,6 +3343,120 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal_step.result["output_usage_status"] == "lower_bound"
   end
 
+  test "SPEC.md §§3.7.1, 5.8, 12.4 (#329): legacy text before timeout permits zero lower-bound usage",
+       %{bundle: bundle} do
+    {model, canonical} =
+      configure_legacy_timeout!(bundle, "request-orchestrator-timeout-zero-bound", [
+        InferenceEvent.output_text_delta("visible before usage evidence")
+      ])
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+
+    assert %InferenceEvent{event: %InferenceEvent.Failed{code: "request_timeout"}} =
+             List.last(events)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "request_timeout"
+    assert %DateTime{} = request.first_token_at
+    assert request.output_tokens == 0
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["failure_class"] == "deadline"
+    assert terminal["failure_code"] == "request_timeout"
+    assert terminal["output_committed"]
+    assert terminal["output_tokens"] == 0
+    assert terminal["output_usage_status"] == "lower_bound"
+    refute terminal["output_usage_status"] == "exact"
+  end
+
+  test "SPEC.md §§3.7.1, 12.4 (#329): timeout persists the latest positive usage update",
+       %{bundle: bundle} do
+    {model, canonical} =
+      configure_legacy_timeout!(bundle, "request-orchestrator-timeout-positive-bound", [
+        usage_update(4),
+        InferenceEvent.output_text_delta("visible output")
+      ])
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.output_tokens == 4
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["output_tokens"] == 4
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §§3.7.1, 12.4 (#329): invalid and regressing timeout updates keep the prior bound",
+       %{bundle: bundle} do
+    invalid = %InferenceEvent.Usage{input_tokens: 1, output_tokens: 8, total_tokens: 10}
+
+    {model, canonical} =
+      configure_legacy_timeout!(bundle, "request-orchestrator-timeout-rejected-usage", [
+        usage_update(5),
+        %InferenceEvent{event: %InferenceEvent.UsageUpdate{usage: invalid}},
+        usage_update(3),
+        InferenceEvent.output_text_delta("visible output")
+      ])
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §§3.7.1, 12.4 (#329): buffered Worker completion wins the deadline drain race",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 7, total_tokens: 8}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-buffered-completion",
+        [InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert %InferenceEvent{event: %InferenceEvent.Completed{}} = List.last(events)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :completed
+    assert request.http_status == 200
+    assert request.error_code == nil
+    assert request.output_tokens == 7
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "completed"
+    assert terminal["output_tokens"] == 7
+    assert terminal["output_usage_status"] == "exact"
+  end
+
   test "SPEC 7.5.5: execute/3 persists a missing terminal as a durable failure",
        %{bundle: bundle} do
     target = [host: "10.0.0.1", port: 50_061]
@@ -5310,6 +5457,31 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   defp stub_runtime_event_queue(event_lists) when is_list(event_lists) do
     Process.put({StubRuntimeEndpointClient, :execute_events_queue}, event_lists)
+  end
+
+  defp configure_legacy_timeout!(bundle, model_id, before_timeout, during_drain \\ []) do
+    target = [host: "10.0.0.1", port: 50_061]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+
+    Process.put(
+      {StubRuntimeEndpointClient, :timeout_fixture},
+      %{before_timeout: before_timeout, during_drain: during_drain}
+    )
+
+    model = create_active_model!(bundle, model_id)
+    canonical = canonical_request(model_id, stream?: true, admission: %{timeout_ms: 250})
+    {model, canonical}
+  end
+
+  defp usage_update(output_tokens) do
+    InferenceEvent.usage_update(%InferenceEvent.Usage{
+      input_tokens: 1,
+      output_tokens: output_tokens,
+      total_tokens: 1 + output_tokens
+    })
   end
 
   defp configure_alternate_attempt_nodes! do
