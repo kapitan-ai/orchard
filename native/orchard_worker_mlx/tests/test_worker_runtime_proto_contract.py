@@ -4,6 +4,12 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2
 
+from orchard_worker_mlx.generated.cluster.v1 import (
+    common_pb2,
+    events_pb2,
+    reasoning_pb2,
+    runtime_pb2,
+)
 from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
     worker_runtime_pb2_grpc,
@@ -22,16 +28,25 @@ LEGACY_PROTO = (
     / "v1"
     / "worker_runtime.proto"
 )
-EXPECTED_DESCRIPTOR_SET_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
+EXPECTED_DESCRIPTOR_SET_SHA256 = "6504f3f11f2924c9a18416707fc0f8b18297d64d8b5f8dcfc487916b7ed6abc4"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
     "cluster/v1/events.proto",
+    "cluster/v1/reasoning.proto",
     "cluster/v1/runtime.proto",
     "orchard/worker/v1/worker_runtime.proto",
 }
 
 EXPECTED_MESSAGES = {
-    "WorkerStatusRequest": [],
+    "WorkerStatusRequest": [
+        (
+            "reasoning_observation",
+            1,
+            "TYPE_MESSAGE",
+            False,
+            ".cluster.v1.ReasoningObservationRequest",
+        ),
+    ],
     "WorkerMemoryBudgetStatus": [
         ("mode", 1, "TYPE_STRING", False, None),
         ("budget_available", 2, "TYPE_BOOL", False, None),
@@ -90,6 +105,20 @@ EXPECTED_MESSAGES = {
             True,
             ".orchard.worker.v1.WorkerCapabilityProfile",
         ),
+        (
+            "loaded_binding",
+            8,
+            "TYPE_MESSAGE",
+            False,
+            ".cluster.v1.WorkerLoadedBinding",
+        ),
+        (
+            "reasoning_evidence",
+            9,
+            "TYPE_MESSAGE",
+            False,
+            ".cluster.v1.ReasoningEvidenceEnvelope",
+        ),
     ],
     "WorkerStatusResponse": [
         ("loaded", 1, "TYPE_BOOL", False, None),
@@ -128,9 +157,7 @@ EXPECTED_MESSAGES = {
     ],
 }
 
-EXPECTED_RESERVED_RANGES = {message_name: [] for message_name in EXPECTED_MESSAGES} | {
-    "WorkerCapabilities": [(8, 9)]
-}
+EXPECTED_RESERVED_RANGES = {message_name: [] for message_name in EXPECTED_MESSAGES}
 
 EXPECTED_RPCS = [
     (
@@ -165,6 +192,13 @@ EXPECTED_RPCS = [
         "Cancel",
         ".cluster.v1.CancelInferenceRequest",
         ".cluster.v1.Ack",
+        False,
+        False,
+    ),
+    (
+        "PrepareInference",
+        ".cluster.v1.PrepareInferenceRequest",
+        ".cluster.v1.PrepareInferenceResponse",
         False,
         False,
     ),
@@ -285,9 +319,81 @@ def _worker_capabilities_fixture() -> worker_runtime_pb2.WorkerCapabilities:
     )
 
 
+def _reasoning_tuple(
+    effort: reasoning_pb2.ReasoningEffortSelection | None = None,
+) -> reasoning_pb2.NegotiatedReasoningTuple:
+    message = reasoning_pb2.NegotiatedReasoningTuple(
+        generation_policy="enabled",
+        projection="final_only",
+        model_artifact_digest="sha256:artifact",
+        chat_template_digest="sha256:template",
+        render_contract="orchard_chat",
+        render_contract_version="1",
+        parser_family="tagged_pair",
+        parser_version="1",
+        runtime_contract_version="1",
+        event_binding_version="1",
+    )
+    if effort is not None:
+        message.reasoning_effort.CopyFrom(effort)
+    return message
+
+
+def _loaded_binding() -> reasoning_pb2.WorkerLoadedBinding:
+    return reasoning_pb2.WorkerLoadedBinding(
+        model_id="mlx-community/Qwen3-4B",
+        model_version="sha256:orchard-fixture",
+        artifact_digest="sha256:artifact",
+        selected_profile_id="mlx-metal-unified-default",
+    )
+
+
+def _reasoning_capabilities_fixture() -> worker_runtime_pb2.WorkerCapabilities:
+    message = _worker_capabilities_fixture()
+    message.loaded_binding.CopyFrom(_loaded_binding())
+    message.reasoning_evidence.CopyFrom(
+        reasoning_pb2.ReasoningEvidenceEnvelope(
+            tuples=[
+                _reasoning_tuple(
+                    reasoning_pb2.ReasoningEffortSelection(
+                        effort=reasoning_pb2.REASONING_EFFORT_LOW
+                    )
+                )
+            ],
+            loaded_instance_id=bytes(range(16)),
+        )
+    )
+    return message
+
+
+def _prepare_inference_request() -> reasoning_pb2.PrepareInferenceRequest:
+    return reasoning_pb2.PrepareInferenceRequest(
+        input=reasoning_pb2.FrozenExecutionInput(
+            request_id="request-327",
+            controller_session_id="controller-session",
+            model_id="mlx-community/Qwen3-4B",
+            version="sha256:orchard-fixture",
+            rendered_prompt_utf8=b"prompt",
+            input_tokens=2,
+            deadline_unix_ms=1_800_000_000_000,
+            metadata_json=b"{}",
+        ),
+        tuple=_reasoning_tuple(),
+        expected_binding=_loaded_binding(),
+        expected_service_incarnation="0123456789abcdef0123456789abcdef",
+        expected_loaded_instance_id=bytes(range(16)),
+    )
+
+
 def _python_worker_status_capabilities_fixture() -> worker_runtime_pb2.WorkerStatusResponse:
     message = _python_worker_status_fixture()
     message.capabilities.CopyFrom(_worker_capabilities_fixture())
+    return message
+
+
+def _python_worker_status_reasoning_fixture() -> worker_runtime_pb2.WorkerStatusResponse:
+    message = _python_worker_status_fixture()
+    message.capabilities.CopyFrom(_reasoning_capabilities_fixture())
     return message
 
 
@@ -339,6 +445,7 @@ def test_descriptor_golden_covers_the_complete_current_wire_contract() -> None:
     assert list(descriptor.dependency) == [
         "cluster/v1/common.proto",
         "cluster/v1/events.proto",
+        "cluster/v1/reasoning.proto",
         "cluster/v1/runtime.proto",
     ]
     actual_messages = {
@@ -443,3 +550,95 @@ def test_committed_python_capabilities_fixture_is_produced_by_the_generated_bind
     assert worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes()).HasField(
         "capabilities"
     )
+
+
+def test_reasoning_schema_uses_the_owner_confirmed_tags_and_presence() -> None:
+    assert {
+        field.name: field.number
+        for field in reasoning_pb2.NegotiatedReasoningTuple.DESCRIPTOR.fields
+    } == {
+        "generation_policy": 1,
+        "projection": 2,
+        "reasoning_effort": 3,
+        "model_artifact_digest": 4,
+        "chat_template_digest": 5,
+        "render_contract": 6,
+        "render_contract_version": 7,
+        "parser_family": 8,
+        "parser_version": 9,
+        "runtime_contract_version": 10,
+        "event_binding_version": 11,
+    }
+    assert (
+        worker_runtime_pb2.WorkerCapabilities.DESCRIPTOR.fields_by_name["loaded_binding"].number
+        == 8
+    )
+    assert (
+        worker_runtime_pb2.WorkerCapabilities.DESCRIPTOR.fields_by_name["reasoning_evidence"].number
+        == 9
+    )
+    assert (
+        runtime_pb2.ExecuteInferenceRequest.DESCRIPTOR.fields_by_name[
+            "preparation_redemption"
+        ].number
+        == 14
+    )
+    assert events_pb2.Failed.DESCRIPTOR.fields_by_name["usage"].number == 4
+
+    absent_usage = events_pb2.Failed(code="failed")
+    present_zero_usage = events_pb2.Failed(code="failed", usage=common_pb2.TokenUsage())
+    assert not absent_usage.HasField("usage")
+    assert present_zero_usage.HasField("usage")
+    assert absent_usage.SerializeToString() != present_zero_usage.SerializeToString()
+
+    absent_effort = _reasoning_tuple()
+    invalid_effort = _reasoning_tuple(
+        reasoning_pb2.ReasoningEffortSelection(effort=reasoning_pb2.REASONING_EFFORT_UNSPECIFIED)
+    )
+    assert not absent_effort.HasField("reasoning_effort")
+    assert invalid_effort.HasField("reasoning_effort")
+    assert invalid_effort.reasoning_effort.effort == reasoning_pb2.REASONING_EFFORT_UNSPECIFIED
+    assert absent_effort.SerializeToString() != invalid_effort.SerializeToString()
+
+
+def test_python_reasoning_fixture_is_produced_by_the_current_binding() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response_reasoning.pb"
+    expected = _python_worker_status_reasoning_fixture()
+
+    assert fixture.read_bytes() == expected.SerializeToString(deterministic=True)
+    assert worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes()) == expected
+
+
+def test_python_decodes_elixir_preparation_fixture_with_semantic_equality() -> None:
+    fixture = PROTO_ROOT / "fixtures" / "elixir_prepare_inference_request.pb"
+
+    assert (
+        reasoning_pb2.PrepareInferenceRequest.FromString(fixture.read_bytes())
+        == _prepare_inference_request()
+    )
+
+
+def test_older_and_non_advertising_bindings_receive_only_legacy_fields() -> None:
+    legacy_fixture = PROTO_ROOT / "fixtures" / "python_worker_status_response.pb"
+    decoded = worker_runtime_pb2.WorkerStatusResponse.FromString(legacy_fixture.read_bytes())
+
+    assert not decoded.HasField("capabilities")
+    assert worker_runtime_pb2.WorkerStatusRequest().SerializeToString() == b""
+    assert runtime_pb2.StatusRequest().SerializeToString() == b""
+    assert runtime_pb2.ExecuteInferenceRequest(request_id="legacy").SerializeToString() == (
+        b"\x0a\x06legacy"
+    )
+    assert (
+        "PrepareInference"
+        not in runtime_pb2.DESCRIPTOR.services_by_name["NodeRuntimeService"].methods_by_name
+    )
+    assert {field.name: field.number for field in events_pb2.InferenceEvent.DESCRIPTOR.fields} == {
+        "accepted": 1,
+        "output_text_delta": 2,
+        "tool_call_delta": 3,
+        "usage": 4,
+        "completed": 5,
+        "failed": 6,
+        "progress": 7,
+        "token_delta": 8,
+    }

@@ -2,26 +2,22 @@
 
 ## 1. Status, scope, and sequencing
 
-This is a documentation-only contract for issue #327. It records the
-owner-confirmed schema decisions in §2.1. It does not amend `SPEC.md`, and it
-adds no protocol declaration, generated binding, runtime code, persistence,
-qualification data, public control, usage writer, production registry, or live
-qualification. Its only protocol-source edit is a comment-only field 8
-reservation trace in `proto/orchard/worker/v1/worker_runtime.proto`.
+This change records the owner-confirmed schema decisions in §2.1 and implements
+the dormant shared schema, generated bindings, and reciprocal fixtures. It does
+not amend `SPEC.md`, and it adds no runtime behavior, persistence, qualification
+data, public control, usage writer, production registry, or live qualification.
 
 The `SPEC.md` §7.5.3a, §5.6, and §5.5 language this package traces already
 landed on `main`, including the indivisible eleven-field tuple. PR #401 has
 merged, so the canonical request owns the exact reasoning identity this
-contract will later transport. Field availability was re-confirmed at
-`a1421755830811dc5daef77341ae47df2d0b0d71`.
+contract will later transport. Field availability was re-confirmed for this
+slice at `126eb1bcbf89e1ef9bab913407196128b5b71ca4`.
 
-Schema declarations, generated bindings, and runtime implementation remain
-separate and blocked until this change is accepted. After acceptance, a
-separate implementing change must re-confirm source field availability and add
-declarations, generated bindings, reciprocal N/N-1 fixtures, and runtime
-behavior atomically. A conflicting upstream allocation blocks implementation
-rather than permitting a substitute number or shape. Task 2.2 must not proceed
-on an implementer's own schema judgment; it must reproduce §2.1 unchanged.
+Schema declarations, generated bindings, and reciprocal N/N-1 fixtures are the
+first implementation slice. Runtime behavior remains deferred. The slice
+re-confirmed source field availability before adding declarations; a conflicting
+upstream allocation would have blocked implementation rather than permitting a
+substitute number or shape. The schema reproduces §2.1 unchanged.
 
 ### Owner decisions — 2026-09-29
 
@@ -62,9 +58,9 @@ Every comparison is byte-exact after the validated canonical representation is
 formed. `source` is provenance and is not tuple identity. Independent value
 lists are invalid because they could fabricate a supported combination.
 
-At the reviewed base, `WorkerCapabilities` uses fields 1 through 7, reserves
-field 8 explicitly for the deferred `WorkerLoadedBinding`, and has no field 9.
-The accepted future schema allocation is therefore:
+At the reviewed base, `WorkerCapabilities` used fields 1 through 7, reserved
+field 8 explicitly for the deferred `WorkerLoadedBinding`, and had no field 9.
+The accepted schema allocation is therefore:
 
 - lift the reservation and use `WorkerCapabilities.loaded_binding = 8` with the
   four-member shape sourced from D7 of
@@ -75,13 +71,13 @@ The accepted future schema allocation is therefore:
 
 D7 records that four-member shape provisionally and assigns no tag numbers. The
 owner-confirmed §2.1 record supplies the member tags, `string` types, presence,
-artifact/profile linkage, and the outer-incarnation association. This package
-does not lift the field 8 reservation or declare those fields.
+artifact/profile linkage, and the outer-incarnation association. The first
+implementation slice lifts the reservation and declares those fields.
 
-The future schema also introduces `proto/cluster/v1/reasoning.proto` for the
+The schema also introduces `proto/cluster/v1/reasoning.proto` for the
 shared tuple, evidence, preparation, and proof definitions. It prevents either
 the Worker package or Controller transport package from owning cross-boundary
-reasoning types. This contract assigns no source declaration in the present PR.
+reasoning types.
 
 That placement follows the existing precedent in
 `proto/orchard/worker/v1/worker_runtime.proto`, which already imports
@@ -107,10 +103,8 @@ it.
 ## 2.1 Owner-confirmed schema decision record
 
 The owner confirmed the following complete decision record. It is the sole
-schema-decision source for this package. It is reproduced here as proposed
-declarations only and does not add or alter a `.proto` file. Schema
-declarations, generated bindings, and runtime implementation remain separate
-and blocked until this change is accepted.
+schema-decision source for this package. The first implementation slice declares
+it unchanged; runtime behavior remains separate and dormant.
 
 All cross-boundary types below, including `WorkerLoadedBinding`, are declared
 once in `proto/cluster/v1/reasoning.proto` (`package cluster.v1`) and import

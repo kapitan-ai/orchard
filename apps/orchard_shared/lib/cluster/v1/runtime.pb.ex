@@ -5,6 +5,11 @@ defmodule Orchard.Cluster.V1.StatusRequest do
     full_name: "cluster.v1.StatusRequest",
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
+
+  field(:reasoning_observation, 1,
+    type: Orchard.Cluster.V1.ReasoningObservationRequest,
+    json_name: "reasoningObservation"
+  )
 end
 
 defmodule Orchard.Cluster.V1.RuntimeNodeMetadata do
@@ -227,6 +232,11 @@ defmodule Orchard.Cluster.V1.StatusResponse do
     type: Orchard.Cluster.V1.WorkerCrashCounter,
     json_name: "workerCrashCounters"
   )
+
+  field(:reasoning_observation, 14,
+    type: Orchard.Cluster.V1.ReasoningLiveObservation,
+    json_name: "reasoningObservation"
+  )
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do
@@ -348,6 +358,11 @@ defmodule Orchard.Cluster.V1.ExecuteInferenceRequest do
   field(:prompt_token_ids, 11, repeated: true, type: :uint32, json_name: "promptTokenIds")
   field(:return_token_ids, 12, type: :bool, json_name: "returnTokenIds")
   field(:return_logprobs, 13, type: :bool, json_name: "returnLogprobs")
+
+  field(:preparation_redemption, 14,
+    type: Orchard.Cluster.V1.PreparationRedemption,
+    json_name: "preparationRedemption"
+  )
 end
 
 defmodule Orchard.Cluster.V1.CancelInferenceRequest do

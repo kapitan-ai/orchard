@@ -60,6 +60,7 @@ message Failed {
   string code = 1;
   string message = 2;
   bool retryable = 3;
+  TokenUsage usage = 4;
 }
 
 message Progress {

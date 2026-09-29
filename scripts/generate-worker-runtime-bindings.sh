@@ -14,6 +14,8 @@ generated_output_paths() {
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/common_pb2_grpc.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/events_pb2.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/events_pb2_grpc.py \
+    native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/reasoning_pb2.py \
+    native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/reasoning_pb2_grpc.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/runtime_pb2.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/runtime_pb2_grpc.py \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2.py \
@@ -94,6 +96,7 @@ mise exec -- uv run --locked --directory "$PYTHON_TOOLING_ROOT" \
   --include_imports \
   "$REPO_ROOT/proto/cluster/v1/common.proto" \
   "$REPO_ROOT/proto/cluster/v1/events.proto" \
+  "$REPO_ROOT/proto/cluster/v1/reasoning.proto" \
   "$REPO_ROOT/proto/cluster/v1/runtime.proto" \
   "$REPO_ROOT/proto/orchard/worker/v1/worker_runtime.proto"
 
@@ -129,6 +132,8 @@ for relative_path in \
   cluster/v1/common_pb2_grpc.py \
   cluster/v1/events_pb2.py \
   cluster/v1/events_pb2_grpc.py \
+  cluster/v1/reasoning_pb2.py \
+  cluster/v1/reasoning_pb2_grpc.py \
   cluster/v1/runtime_pb2.py \
   cluster/v1/runtime_pb2_grpc.py \
   orchard/worker/v1/worker_runtime_pb2.py \

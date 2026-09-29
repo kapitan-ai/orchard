@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+package cluster.v1;
+
+import "cluster/v1/common.proto";
+
+enum ReasoningEffort {
+  REASONING_EFFORT_UNSPECIFIED = 0;
+  REASONING_EFFORT_LOW = 1;
+  REASONING_EFFORT_MEDIUM = 2;
+  REASONING_EFFORT_HIGH = 3;
+}
+
+message ReasoningEffortSelection {
+  ReasoningEffort effort = 1;
+}
+
+message WorkerLoadedBinding {
+  string model_id = 1;
+  string model_version = 2;
+  string artifact_digest = 3;
+  string selected_profile_id = 4;
+}
+
+message NegotiatedReasoningTuple {
+  string generation_policy = 1;
+  string projection = 2;
+  ReasoningEffortSelection reasoning_effort = 3;
+  string model_artifact_digest = 4;
+  string chat_template_digest = 5;
+  string render_contract = 6;
+  string render_contract_version = 7;
+  string parser_family = 8;
+  string parser_version = 9;
+  string runtime_contract_version = 10;
+  string event_binding_version = 11;
+}
+
+message ReasoningEvidenceEnvelope {
+  repeated NegotiatedReasoningTuple tuples = 1;
+  bytes loaded_instance_id = 2;
+}
+
+message ReasoningObservationRequest {
+  ModelRef model_ref = 1;
+}
+
+message ReasoningEvidence {
+  WorkerLoadedBinding loaded_binding = 1;
+  ReasoningEvidenceEnvelope envelope = 2;
+  string service_incarnation = 3;
+  uint64 remaining_freshness_ms = 4;
+}
+
+message ReasoningNonAdvertising {}
+
+message ReasoningUnknown {}
+
+message ReasoningLiveObservation {
+  oneof result {
+    ReasoningEvidence evidence = 1;
+    ReasoningNonAdvertising non_advertising = 2;
+    ReasoningUnknown unknown = 3;
+  }
+}
+
+message FrozenExecutionInput {
+  string request_id = 1;
+  string controller_session_id = 2;
+  string model_id = 3;
+  string version = 4;
+  bytes rendered_prompt_utf8 = 5;
+  uint32 input_tokens = 6;
+  GenerationParams params = 7;
+  uint64 deadline_unix_ms = 8;
+  bytes metadata_json = 9;
+  string cache_affinity_fingerprint = 10;
+  repeated uint32 prompt_token_ids = 11;
+  bool return_token_ids = 12;
+  bool return_logprobs = 13;
+}
+
+message PrepareInferenceRequest {
+  FrozenExecutionInput input = 1;
+  NegotiatedReasoningTuple tuple = 2;
+  WorkerLoadedBinding expected_binding = 3;
+  string expected_service_incarnation = 4;
+  bytes expected_loaded_instance_id = 5;
+}
+
+message PrepareInferenceProof {
+  string request_id = 1;
+  string controller_session_id = 2;
+  NegotiatedReasoningTuple tuple = 3;
+  WorkerLoadedBinding actual_binding = 4;
+  string service_incarnation = 5;
+  bytes loaded_instance_id = 6;
+}
+
+message PreparationRedemption {
+  bytes authorization = 1;
+}
+
+message PrepareInferenceResponse {
+  PrepareInferenceProof proof = 1;
+  bytes authorization = 2;
+  uint64 authorization_ttl_ms = 3;
+}

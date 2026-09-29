@@ -4,9 +4,12 @@ package orchard.worker.v1;
 
 import "cluster/v1/common.proto";
 import "cluster/v1/events.proto";
+import "cluster/v1/reasoning.proto";
 import "cluster/v1/runtime.proto";
 
-message WorkerStatusRequest {}
+message WorkerStatusRequest {
+  cluster.v1.ReasoningObservationRequest reasoning_observation = 1;
+}
 
 message WorkerMemoryBudgetStatus {
   string mode = 1;
@@ -107,12 +110,8 @@ message WorkerCapabilities {
   string service_incarnation = 6;
   // At most 64 profiles. Empty is valid and proves nothing.
   repeated WorkerCapabilityProfile profiles = 7;
-  // field 8 reserved for a future loaded_binding (WorkerLoadedBinding),
-  // allocated by SPEC.md §7.5.3a. Keep this reservation until the owner-
-  // confirmed #327 schema decision is accepted and a separate implementing
-  // change is authorized to declare the field. Do not substitute a tag or
-  // shape before then.
-  reserved 8;
+  cluster.v1.WorkerLoadedBinding loaded_binding = 8;
+  cluster.v1.ReasoningEvidenceEnvelope reasoning_evidence = 9;
 }
 
 message WorkerStatusResponse {
@@ -145,6 +144,8 @@ service WorkerRuntimeService {
   rpc UnloadModel(cluster.v1.UnloadModelRequest) returns (cluster.v1.Ack);
   rpc Generate(cluster.v1.ExecuteInferenceRequest) returns (stream cluster.v1.InferenceEvent);
   rpc Cancel(cluster.v1.CancelInferenceRequest) returns (cluster.v1.Ack);
+  rpc PrepareInference(cluster.v1.PrepareInferenceRequest)
+      returns (cluster.v1.PrepareInferenceResponse);
   // Phase 4D selected-candidate observe-only score path.
   // Worker accepts only cache_affinity_fingerprint HMAC input in v1; prompt
   // bytes and token IDs are explicitly out of scope for this RPC.
