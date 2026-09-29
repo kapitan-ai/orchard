@@ -1916,7 +1916,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp drain_done_result(
          %{
-           terminal_event: %InferenceEvent{event: %InferenceEvent.Completed{}}
+           terminal_event: %InferenceEvent{event: %InferenceEvent.Completed{}} = terminal_event
          } = loop_ctx,
          events,
          cancel_reason
@@ -1924,6 +1924,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        when cancel_reason in [:timeout, :caller_disconnect, :client_disconnect] do
     normalized_reason =
       if cancel_reason == :timeout, do: :timeout, else: :caller_disconnect
+
+    terminal_usage = EventUsage.terminal(Enum.reverse([terminal_event | events]))
+    loop_ctx = put_in(loop_ctx.metrics.terminal_usage, terminal_usage)
 
     synthesize_cancel_terminal(loop_ctx, events, normalized_reason, "")
   end
@@ -2299,21 +2302,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp track_usage(
          %Metrics{} = metrics,
-         %InferenceEvent{event: %InferenceEvent.Completed{usage: usage}} = event
-       ) do
-    terminal_usage = EventUsage.terminal([event])
-
-    metrics
-    |> put_output_tokens(usage)
-    |> put_exact_terminal_usage(terminal_usage)
-  end
+         %InferenceEvent{event: %InferenceEvent.Completed{usage: usage}}
+       ),
+       do: put_output_tokens(metrics, usage)
 
   defp track_usage(metrics, _event), do: metrics
-
-  defp put_exact_terminal_usage(metrics, %{output_usage_status: "exact"} = usage),
-    do: %{metrics | terminal_usage: usage}
-
-  defp put_exact_terminal_usage(metrics, _usage), do: metrics
 
   defp put_output_tokens(metrics, %{output_tokens: output_tokens})
        when is_integer(output_tokens) and output_tokens >= 0 do

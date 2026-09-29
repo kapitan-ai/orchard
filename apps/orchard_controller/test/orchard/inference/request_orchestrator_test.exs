@@ -3476,6 +3476,71 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal["output_usage_status"] == "exact"
   end
 
+  test "SPEC.md §12.4 (#329): regressing buffered completion keeps the prior timeout bound",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 3, total_tokens: 4}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-regressing-completion",
+        [usage_update(5), InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §12.4 (#329): invalid buffered completion keeps the prior timeout bound",
+       %{bundle: bundle} do
+    completed = %InferenceEvent{
+      event: %InferenceEvent.Completed{
+        finish_reason: :finish_reason_stop,
+        usage: %InferenceEvent.Usage{input_tokens: 1, output_tokens: 8, total_tokens: 10}
+      }
+    }
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-invalid-completion",
+        [usage_update(5), InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
   test "SPEC.md §§3.7.1, 5.3, 5.8 (#329): buffered completion proves exact usage without defeating disconnect",
        %{bundle: bundle} do
     completed =

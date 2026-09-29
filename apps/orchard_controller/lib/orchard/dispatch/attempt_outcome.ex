@@ -44,9 +44,9 @@ defmodule Orchard.Dispatch.AttemptOutcome do
   @type delivery_state :: :pending | :selected | :discarded | :failed
   @type failure :: InferenceAttemptFailure.evidence() | nil
   @type terminal_usage :: %{
-          input_tokens: non_neg_integer(),
-          output_tokens: non_neg_integer(),
-          output_usage_status: String.t()
+          required(:output_tokens) => non_neg_integer(),
+          required(:output_usage_status) => String.t(),
+          optional(:input_tokens) => non_neg_integer()
         }
 
   @type t :: %__MODULE__{
@@ -111,15 +111,19 @@ defmodule Orchard.Dispatch.AttemptOutcome do
 
   defp valid_terminal_usage?(nil), do: true
 
-  defp valid_terminal_usage?(%{
-         input_tokens: input_tokens,
-         output_tokens: output_tokens,
-         output_usage_status: "exact"
-       }) do
-    bounded_non_negative_integer?(input_tokens) and bounded_non_negative_integer?(output_tokens)
+  defp valid_terminal_usage?(%{output_tokens: output_tokens, output_usage_status: status} = usage)
+       when status in ["exact", "lower_bound"] do
+    bounded_non_negative_integer?(output_tokens) and valid_usage_input?(usage)
   end
 
   defp valid_terminal_usage?(_usage), do: false
+
+  defp valid_usage_input?(usage) do
+    case Map.fetch(usage, :input_tokens) do
+      {:ok, input_tokens} -> bounded_non_negative_integer?(input_tokens)
+      :error -> true
+    end
+  end
 
   defp bounded_non_negative_integer?(value),
     do: is_integer(value) and value >= 0 and value <= 2_147_483_647
