@@ -9,7 +9,7 @@ trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 mkdir -p \
   "$FIXTURE_ROOT/apps/orchard_node_agent/lib/orchard/node" \
   "$FIXTURE_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated" \
-  "$FIXTURE_ROOT/proto/orchard/worker/v1"
+  "$FIXTURE_ROOT/proto/orchard/worker/v1/fixtures"
 
 cp "$REPO_ROOT/apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex" \
   "$FIXTURE_ROOT/apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex"
@@ -17,6 +17,8 @@ cp -R "$REPO_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated/." 
   "$FIXTURE_ROOT/native/orchard_worker_mlx/src/orchard_worker_mlx/generated/"
 cp "$REPO_ROOT/proto/orchard/worker/v1/worker_runtime.descriptor.pb" \
   "$FIXTURE_ROOT/proto/orchard/worker/v1/worker_runtime.descriptor.pb"
+cp "$REPO_ROOT/proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb" \
+  "$FIXTURE_ROOT/proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb"
 
 if ! "$REPO_ROOT/scripts/check-worker-runtime-bindings.sh" \
   --committed-root "$FIXTURE_ROOT" >/dev/null; then
