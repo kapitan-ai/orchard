@@ -24,8 +24,9 @@ There are no release or publication workflows, tags, or Makefile targets for app
 **Non-Goals:**
 
 - Deleting or refactoring the Swift app package, payload tooling, signing or verification scripts, or dormant tests.
-- Guarding payload staging or payload signing. These produce the distribution-neutral payload contract, not `Orchard.app` or a DMG, and their credential-free contract tests depend on running them with fake tools.
-  Without the guarded app assembly step there is no supported way to turn a payload into an installable artifact.
+- Guarding payload staging or payload signing in code. These produce the distribution-neutral payload contract, not `Orchard.app` or a DMG, and their credential-free contract tests depend on running them with fake tools.
+  Credentialed Developer ID payload signing is release-only by policy and is not performed while paused.
+- Treating the guard as a security boundary. It prevents accidental distribution through the supported entrypoints; it does not defend against deliberately editing the checkout or running an entrypoint through a custom interpreter.
 - Guarding read-only verifiers such as `scripts/verify-app-signing.sh` and `scripts/verify-payload-signing.sh`.
 - Changing branch protection, the required check name, workflow triggers, or adding workflow-level path filtering.
 - Recording who may approve inside code. Approval is enforced by pull-request review, not by the script.
@@ -45,6 +46,20 @@ It accepts distribution as active only for a regular, non-symlink, readable file
 Everything else resolves to paused with a stated reason.
 The library is Bash 3.2 compatible because the entrypoints run under `/bin/bash` on macOS.
 
+### Shell-environment hardening for direct execution
+
+The entrypoints use `#!/bin/bash -p`.
+Privileged mode ignores `BASH_ENV` and shell functions imported from the environment, so a startup file or an exported `source`, `cd`, `dirname`, or guard function cannot stub the check.
+The repository root is derived with `${BASH_SOURCE[0]%/*}`, `builtin cd -P`, and `builtin pwd -P` after `unset CDPATH`, so a `PATH` command or `CDPATH` cannot point the guard at another checkout.
+Alternatives considered: `unset -f` of known names (incomplete, and `unset` itself can be shadowed) and a compiled launcher (a broad refactor).
+Invoking an entrypoint as `bash script.sh` bypasses the shebang and is outside normal supported direct execution.
+
+### DMG cleanup starts only after outputs are confirmed absent
+
+`build-dmg.sh` previously installed its `EXIT` cleanup before argument parsing, so help, usage errors, a missing option value, or an existing-output refusal could delete a file already at `--output`.
+The trap is now installed after the existing-output check, which is the first point where every path it removes is known to belong to this run.
+The pause refusal no longer needs to clear the trap.
+
 ### Refuse after argument parsing, before any validation or tool use
 
 Each entrypoint keeps its existing argument loop, so `--help` exits successfully and unknown options still exit with usage status `64`.
@@ -54,9 +69,10 @@ A paused refusal exits with status `78` (`EX_CONFIG`), which none of the three e
 
 ### Tests use copied fixture trees, not overrides
 
-`scripts/test-distribution-control.sh` copies the guarded entrypoints and the library into temporary fixture repositories with fixture control files, and prepends fake `swift`, `ditto`, `codesign`, `hdiutil`, `amore`, `xcrun`, `jq`, `plutil`, and `shasum` tools that record any invocation.
-It proves refusal, no tool invocation, and no output for the committed paused state and for every fail-closed control shape, proves environment claims do not resume distribution, proves `--help` still works, and proves an `active` fixture reaches the entrypoint's own argument validation.
-It also asserts the committed control is paused, so the pause cannot be lifted without updating that test in the same reviewed change.
+`scripts/test-distribution-control.sh` copies the guarded entrypoints and the library into temporary fixture repositories with fixture control files, and prepends fake `swift`, `ditto`, `codesign`, `hdiutil`, `amore`, `xcrun`, `jq`, `plutil`, `shasum`, and `mise` tools that record any invocation and exit nonzero.
+It proves refusal, no tool invocation, and no output for a paused fixture and for every fail-closed control shape, proves Orchard environment claims, `PATH` redirection, `CDPATH`, `BASH_ENV`, and exported functions do not resume distribution, proves `--help` still works, proves `build-dmg.sh` preserves a pre-existing `--output` file on every early exit, and proves an `active` fixture reaches the entrypoint's own argument validation.
+One labeled committed-state block asserts the committed control is paused and the real entrypoints refuse, so the pause cannot be lifted without updating that block in the same reviewed change.
+`scripts/ci/test-app-distribution-lane.sh` uses paused and active fixtures for lane selection and gate evaluation, and derives its committed-control expectation from the control itself, so it passes unchanged after an approved resume.
 The test needs only Bash and POSIX tools, so it runs in the always-on Linux classification job.
 
 ### A separate, dormant assembly lane
@@ -77,13 +93,14 @@ The macOS native distribution profile design is unchanged, so no decision record
 
 - [A future distribution entrypoint is added without the guard] → The spec delta requires every app or DMG entrypoint to consume the control, and the guard test enumerates the guarded entrypoints so reviewers see the list.
 - [Someone edits a guarded script to drop the guard] → That is a reviewable code change; the guard test fails when an entrypoint no longer refuses.
-- [Payload Developer ID signing stays available] → It produces no installable artifact on its own; the app assembly and app signing steps that would consume it are paused.
+- [Payload Developer ID signing stays technically available] → `SPEC.md` §11.0 and the runbook make it release-only and forbidden while paused; it produces no installable artifact on its own, and the app assembly and app signing steps that would consume it are guarded.
+- [The dormant assembly lane lacks a dependency when resumed] → The lane installs the pinned mise toolchain that `verify-app-signing.sh` needs, and the lane test asserts that step precedes the assembly tests.
 - [Dormant assembly tests rot while paused] → The resume change re-enables the assembly lane in the same pull request, so drift surfaces before distribution resumes.
 - [Local runs of the former Swift workflow assembly steps now fail] → `AGENTS.md` and `docs/tooling.md` replace them with the guard test while paused and state the expected exit status.
 
 ## Migration Plan
 
 1. Land the control as `state=paused`, the guards, the lane split, the tests, and the documentation together.
-2. To resume, open a pull request that sets `state=active`, updates the committed-state assertion in `scripts/test-distribution-control.sh`, restores the paused wording in the documents listed in `packaging/dmg/README.md`, and obtains the accountable product owner's explicit approval.
+2. To resume, open a pull request that sets `state=active`, updates the committed-state block in `scripts/test-distribution-control.sh`, restores the paused wording in the documents listed in `packaging/dmg/README.md`, and obtains the accountable product owner's explicit approval.
    The assembly lane then runs on that pull request.
 3. Rollback of this change is a revert; no persisted state or installed host is touched.

@@ -7,7 +7,10 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+unset CDPATH
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[[ "$SCRIPT_DIR" != "${BASH_SOURCE[0]}" ]] || SCRIPT_DIR=.
+REPO_ROOT="$(builtin cd -P -- "$SCRIPT_DIR/../.." && builtin pwd -P)"
 # shellcheck source=scripts/lib/distribution-control.sh
 source "$REPO_ROOT/scripts/lib/distribution-control.sh"
 

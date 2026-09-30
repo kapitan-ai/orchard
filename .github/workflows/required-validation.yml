@@ -359,6 +359,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # verify-app-signing.sh runs the payload closure check through
+      # `mise exec`, so the pinned toolchain is required here.
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          version: 2026.9.2
+          cache: false
+
       - name: Test Orchard.app assembly, signing, and DMG handoff
         run: |
           scripts/test-build-app.sh

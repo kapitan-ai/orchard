@@ -11,7 +11,10 @@ A pause that lives only in conversation can be bypassed by habit or by an agent 
 - Guard every entrypoint that produces or signs `Orchard.app` or produces, notarizes, staples, or publishes a DMG: `scripts/build-app.sh`, `scripts/sign-app.sh`, and `scripts/build-dmg.sh`.
   While paused they refuse before any build, signing, image, or network step, with a dedicated exit status and a message that names the control and the re-enable procedure.
   `--help` remains available.
-  No environment variable, flag, or tool substitution resumes distribution.
+  No Orchard environment variable or flag resumes distribution, and during normal direct execution `PATH` commands, `CDPATH`, `BASH_ENV`, and imported shell functions cannot redirect or stub the guard.
+  The pause prevents accidental distribution; it is not a security boundary against deliberately editing the checkout.
+- Make `scripts/build-dmg.sh` install its output cleanup only after every output path is confirmed absent, so early exits never delete a pre-existing `--output` file.
+- Keep payload staging and credential-free payload signing contract tests available, and state that credentialed Developer ID payload signing is release-only and not performed while paused.
 - Split the CI macOS packaging lane.
   The retained packaging-contract lane keeps payload, payload-signing-contract, Swift format/build/unit/coverage, relocated-root app service lifecycle, and packaged `orchardctl` checks.
   A new app-and-DMG assembly lane runs `scripts/test-build-app.sh`, `scripts/test-app-signing.sh`, and `scripts/test-build-dmg.sh` only when packaging is affected and the committed control is active.

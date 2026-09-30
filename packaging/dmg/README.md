@@ -14,15 +14,22 @@ The rest of this runbook describes the approved design and the dormant tooling t
 While paused, `scripts/build-app.sh`, `scripts/sign-app.sh`, and `scripts/build-dmg.sh` refuse with exit status `78` after argument parsing and before any build, signing, image, notarization, stapling, or publication step.
 `--help` still works.
 A missing, symlinked, unreadable, duplicated, or malformed control also counts as paused.
-No environment variable or flag resumes distribution.
+No Orchard environment variable or flag resumes distribution.
+The entrypoints run as `#!/bin/bash -p` and derive the repository root with shell builtins, so during normal direct execution `PATH` commands, `CDPATH`, `BASH_ENV`, and imported shell functions cannot redirect or stub the guard.
+The pause prevents accidental distribution; it is not a security boundary against deliberately editing the checkout or running an entrypoint through a custom interpreter.
+`scripts/build-dmg.sh` installs its output cleanup only after every output path is confirmed absent, so help, usage errors, a pause refusal, or an existing output never remove a file that already exists at `--output`.
 CI skips the `Orchard.app and DMG assembly validation` job, and the required gate treats that skip as expected.
 
 These stay available while paused because they produce no installable app or DMG:
 
-- `scripts/build-payload.sh` and the payload signing and verification scripts
+- `scripts/build-payload.sh` for unsigned payload staging, and the credential-free payload signing contract tests (`scripts/test-build-payload.sh`, `scripts/test-payload-signing-contracts.sh`)
+- `scripts/verify-payload-signing.sh`
 - `scripts/verify-app-signing.sh`
 - the Swift package build and unit tests, and `scripts/test-app-service-lifecycle.sh` in a relocated root
 - the packaged `orchardctl` wrapper tests
+
+Credentialed Developer ID payload signing, through `scripts/sign-payload.sh` or `ORCHARD_PAYLOAD_SIGNING_IDENTITY` with `scripts/build-payload.sh`, is a release-only operation.
+Do not perform it while distribution is paused.
 
 `scripts/test-distribution-control.sh` proves the guards with fixture trees and fake tools.
 It never assembles an app or a DMG.
@@ -33,7 +40,7 @@ Only Najib Ninaba, the accountable product owner, can approve resuming distribut
 
 1. Get Najib's explicit approval to resume.
 2. Open a pull request that changes `packaging/distribution-control` to `state=active`.
-   In the same pull request, update the committed-state assertion in `scripts/test-distribution-control.sh` and the paused wording in `SPEC.md` §1, §1.4, §11.0, and the milestone acceptance lists, and in `AGENTS.md`, `docs/tooling.md`, `docs/process.md`, `docs/local-dev.md`, `docs/operator-journey.md`, `docs/README.md`, `docs/architecture.md`, `README.md`, `SECURITY.md`, `packaging/README.md`, and this runbook.
+   In the same pull request, update the committed-state block in `scripts/test-distribution-control.sh` and the paused wording in `SPEC.md` §1, §1.4, §11.0, and the milestone acceptance lists, and in `AGENTS.md`, `docs/tooling.md`, `docs/process.md`, `docs/local-dev.md`, `docs/operator-journey.md`, `docs/README.md`, `docs/architecture.md`, `README.md`, `SECURITY.md`, `packaging/README.md`, and this runbook.
 3. Record Najib's approval in that pull request.
    CI then runs the `Orchard.app and DMG assembly validation` job, and it must pass.
 4. Merge only after review.

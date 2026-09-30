@@ -352,7 +352,8 @@ See `docs/local-dev.md` for full environment setup and configuration.
 The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`.
 That distribution is paused until Najib explicitly lifts the pause: `packaging/distribution-control` is committed as `state=paused`, `scripts/build-app.sh`, `scripts/sign-app.sh`, and `scripts/build-dmg.sh` refuse with exit status `78`, and CI skips the Orchard.app and DMG assembly lane.
 Source development (`make dev`, `docs/local-dev.md`) is the current active installation path.
-Do not build, sign, notarize, staple, or publish an `Orchard.app` or DMG, even for validation, and do not describe native app or DMG distribution as currently available.
+Do not build, sign, notarize, staple, or publish an `Orchard.app` or DMG, even for validation, do not perform credentialed Developer ID payload signing, and do not describe native app or DMG distribution as currently available.
+Credential-free payload staging and payload signing contract tests remain available.
 The packaging code and dormant tests stay in the repository; see `packaging/dmg/README.md` for the re-enable procedure.
 Do not describe Orchard as having a supported public binary, and do not treat source availability as a licensing change.
 `SPEC.md` §11 owns the source-availability contract and `packaging/dmg/README.md` owns the release gates.

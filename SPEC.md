@@ -5513,12 +5513,14 @@ While paused:
 
 * source development, as documented in `docs/local-dev.md`, SHALL be the current active Orchard installation path
 * every repository entrypoint that assembles or signs `Orchard.app`, or assembles, notarizes, staples, or publishes a DMG, SHALL refuse before any build, signing, image, credential, or network step with exit status `78`, and MAY still print help
-* no environment variable, command-line flag, or substituted tool SHALL resume distribution
+* no Orchard-defined or Orchard-consumed environment variable or command-line flag SHALL resume distribution, and during normal direct execution of those entrypoints the guard SHALL NOT depend on PATH-resolved commands, shell startup files such as `BASH_ENV`, or shell functions imported from the environment
 * required validation SHALL skip the Orchard.app and DMG assembly lane and SHALL treat it as inapplicable, while payload, payload signing-contract, Swift package, relocated-root service-lifecycle, packaged `orchardctl`, macOS native-helper, portable, conformance, MLX, and OpenSpec validation continue unchanged
 * §11.1 through §11.4, §11.7, and §11.8 remain the approved design for any resumed distribution, but no artifact under them is produced, and documentation SHALL NOT present native app or DMG distribution as currently available
 
 The Swift app package, shared payload, signing and verification tooling, and dormant assembly tests SHALL remain in the repository rather than being removed.
-Payload staging and credential-free payload signing contracts remain available because they produce no installable `Orchard.app` or DMG.
+Payload staging and credential-free payload signing contract tests remain available because they produce no installable `Orchard.app` or DMG.
+Credentialed Developer ID payload signing is a release-only operation and SHALL NOT be performed while distribution is paused.
+The pause is a process control that prevents accidental distribution through the supported entrypoints; it is not a security boundary against deliberately editing the checkout or invoking an entrypoint through a custom interpreter.
 Resuming distribution SHALL require a reviewed pull request that sets `state=active` with the accountable product owner's explicit approval; that change also re-enables the assembly lane.
 Resuming SHALL NOT by itself satisfy the public binary release decision or any release gate in this section.
 

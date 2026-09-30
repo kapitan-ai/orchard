@@ -17,8 +17,16 @@
 - [x] 3.1 Amend `SPEC.md` §1, §1.1, §1.4, §11.0, Milestone 0, and Milestone 8 wording, and verify no remaining text presents app or DMG distribution as currently active
 - [x] 3.2 Update `AGENTS.md`, `docs/tooling.md`, `docs/process.md`, `docs/local-dev.md`, `docs/operator-journey.md`, `docs/README.md`, `docs/architecture.md`, `README.md`, `SECURITY.md`, `packaging/README.md`, and `packaging/dmg/README.md`, and verify re-enable instructions require the accountable product owner's approval and a reviewed control change
 
-## 4. Validation
+## 4. Review repairs
 
-- [x] 4.1 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate pause-app-dmg-distribution --type change --strict --no-interactive` and the all-specs strict validation, and verify both pass
-- [x] 4.2 Run the CI routing, gate, classifier, resolver, and guard tests plus ShellCheck and workflow YAML parsing, and verify all pass without assembling an app or DMG
-- [ ] 4.3 After merge and acceptance, archive or sync this change and review generated main specs for placeholder prose such as `Purpose TBD`
+- [x] 4.1 Run the entrypoints as `#!/bin/bash -p` and derive the repository root with builtins after `unset CDPATH`, and verify fixture cases for `PATH` redirection, `CDPATH`, `BASH_ENV`, and exported functions refuse with `78`
+- [x] 4.2 Install the `build-dmg.sh` cleanup trap only after output paths are confirmed absent, and verify pre-existing `--output` files survive help, unknown options, missing values, missing mode, pause, existing output, and invalid identity exits
+- [x] 4.3 Make `scripts/ci/test-app-distribution-lane.sh` use paused and active fixtures plus gate evaluation, and verify it passes with the committed control temporarily set to `active`
+- [x] 4.4 Install the pinned mise toolchain in the dormant assembly lane, and verify the lane test asserts it precedes the assembly tests
+- [x] 4.5 Narrow override wording to Orchard variables and flags during normal direct execution, and state that credentialed Developer ID payload signing is release-only while paused
+
+## 5. Validation
+
+- [x] 5.1 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate pause-app-dmg-distribution --type change --strict --no-interactive` and the all-specs strict validation, and verify both pass
+- [x] 5.2 Run the CI routing, gate, classifier, resolver, and guard tests plus ShellCheck and workflow YAML parsing, and verify all pass without assembling an app or DMG
+- [ ] 5.3 After merge and acceptance, archive or sync this change and review generated main specs for placeholder prose such as `Purpose TBD`

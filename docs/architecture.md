@@ -135,7 +135,7 @@ Core design rules from `SPEC.md`:
 - worker runtimes are local subprocesses, not public services;
 - Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling, and request state.
 
-The current app-installed multi-Mac first cut remains transitional.
+The existing app-installed multi-Mac rehearsal first cut remains transitional.
 It still uses one manually distributed shared cookie and explicit Controller target entries until the enrolled production Peer Grant path is implemented and passes release-install acceptance.
 The source-development shared-cookie model remains separately documented and does not establish production Node identity or authorization.
 
@@ -256,8 +256,8 @@ The loaded-model binding inside the envelope is still deferred in source (field 
 ### Persistence and coordination
 
 Postgres is the sole persistence and coordination layer. In the target product,
-managed Postgres is one supported topology; in the current app-installed flow,
-controller-bearing installs require operator-provided external Postgres and the
+managed Postgres is one supported topology; in existing app-installed rehearsal
+installations and in source development, controller-bearing installs require operator-provided external Postgres and the
 managed Postgres helper remains a guard only.
 
 Terminal inference-turn steps persist `finish_reason` for every observed `Completed` event.
