@@ -5217,6 +5217,7 @@ Current source-development and packaged first-cut shared-cookie behavior SHALL r
 
 The experimental Linux Node candidate SHALL use only this private-network certificate and Peer Grant model.
 Its source qualification SHALL use certificate-authenticated control for enrollment, credential lifecycle, Peer Grant delivery and recovery, and diagnostics, plus Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM membership.
+Every participant in that test mesh, including the macOS Controller, SHALL be a source or test instance with no production BEAM membership, production credentials, or production data, so the mesh never bridges a source-revision Node into production trust.
 That source-qualification evidence SHALL remain distinct from production BEAM eligibility and support, and executing it SHALL NOT require building a package, `Orchard.app`, or a DMG.
 The candidate SHALL NOT substitute shared-cookie Distribution, make gRPC compatibility its default Runtime Endpoint transport, or add a new Runtime Endpoint transport, an outbound-only Runtime Endpoint session, an Internet-exposed Node listener, NAT traversal, a tunnel or relay that substitutes for private-network reachability, automatic transport fallback, or replay of an ambiguously accepted inference operation.
 Reconnect SHALL revalidate current certificate, Node, admission, target, Peer Grant, and generation authority before accepting new work.
@@ -6239,7 +6240,7 @@ Deliver:
 * private-network enrollment, credential lifecycle, Peer Grant rotation, reconnect, and stale-connection failure behavior using certificate-authenticated control and the controlled source-development Peer Grant TLS Distribution test mesh outside production BEAM membership
 * redacted health, logs, metrics, inventory, and lifecycle diagnostics through retained generic diagnostic surfaces
 * model-free Linux process-group custody and mixed-version compatibility only after separately accepted contracts define request-slot release, native cessation, and worker-unit and resource-allocation targeting
-* a distinct `macos_controller_linux_node_model_free` acceptance profile using a qualified macOS Controller `N` and the Linux Node candidate at `N` and `N-1`, with independently captured evidence from every participating host
+* a distinct `macos_controller_linux_node_model_free` acceptance profile using a qualified macOS Controller `N` and the Linux Node candidate at `N` and `N-1`, with independently captured evidence from every participating host, where every participant, including the macOS Controller, is a source or test instance with no production BEAM membership, production credentials, or production data
 * a separately gated one-H100 runtime-provider pilot only after every provider-neutral prerequisite passes
 
 Acceptance:

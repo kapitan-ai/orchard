@@ -90,6 +90,7 @@ This requirement changes `SPEC.md` §§4.9 and 13.4.
 
 The candidate SHALL use only the accepted private-network certificate and Peer Grant model.
 Its source qualification SHALL use certificate-authenticated control for enrollment, credential lifecycle, Peer Grant delivery and recovery, and diagnostics, plus Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM membership.
+Every participant in that test mesh, including the macOS Controller, SHALL be a source or test instance with no production BEAM membership, production credentials, or production data, so the mesh never bridges a source-revision Node into production trust.
 That source-qualification evidence SHALL remain distinct from production BEAM eligibility and support.
 The candidate SHALL NOT substitute shared-cookie Distribution, make gRPC compatibility its default Runtime Endpoint transport, or add a new Runtime Endpoint transport, an outbound-only Runtime Endpoint session, an Internet-exposed Node listener, NAT traversal, a tunnel or relay that substitutes for private-network reachability, automatic transport fallback, or replay of an ambiguously accepted inference operation.
 Reconnect SHALL revalidate current certificate, Node, admission, target, Peer Grant, and generation authority before accepting new work.
@@ -107,6 +108,12 @@ This requirement changes `SPEC.md` §10.6.
 - **WHEN** candidate source qualification exercises Runtime Endpoint behavior
 - **THEN** it uses Peer Grant-authorized TLS Distribution in the controlled model-free source-development test mesh
 - **AND** the run neither joins production BEAM membership nor falls back to shared-cookie Distribution or gRPC compatibility
+
+#### Scenario: Production Controller is proposed for the test mesh
+
+- **WHEN** a Controller with production BEAM membership, production credentials, or production data is proposed as a test-mesh participant
+- **THEN** it is not admitted to the source-qualification test mesh
+- **AND** no run that included it counts as candidate evidence
 
 #### Scenario: Node is reachable only through a relay
 
@@ -178,6 +185,7 @@ This requirement changes `SPEC.md` §§1.4 and Milestone 9.
 ### Requirement: Mixed-Platform Acceptance Includes The Linux Node And A Designated Predecessor
 
 The `macos_controller_linux_node_model_free` acceptance profile SHALL pair a qualified macOS Controller `N` with candidate Node Agent versions `N` and `N-1`.
+Every participant, including the macOS Controller, SHALL be a source or test instance with no production BEAM membership, production credentials, or production data.
 It SHALL prove enrollment, admission, authenticated observation, exact worker-unit and resource-allocation targeting under separately accepted contracts, cancellation, drain, Agent restart, orphan handling, and peer isolation for both pairings with model-free fixtures and independently captured evidence from every participating host.
 The profile SHALL remain unmet until those targeting contracts are defined and their implementation is accepted.
 The `N-1` side SHALL use an exact predecessor Node Agent revision, identified by commit and tree, whose Product Version is earlier than and distinct from `N` and which governed previous-line evidence designates as the logical `N-1` of `SPEC.md` §13.1.

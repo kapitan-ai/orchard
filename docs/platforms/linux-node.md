@@ -16,7 +16,7 @@ The Apple Silicon macOS platform profile remains the only supported platform pro
 | Init and cgroups | systemd 255 or newer as the system service manager, unified cgroup v2 | OpenRC, SysV init, user service managers, cgroup v1, containers used as the Node host |
 | Privilege | root-administered setup; dedicated unprivileged non-login Agent identity | rootless installation, an Agent running as root or with sudo, or a shared interactive account |
 | Filesystem | local POSIX filesystem with ownership, mode, and atomic rename enforcement for the Node Identity Root | network filesystems or filesystems that cannot enforce ownership and atomic publication |
-| Network | operator-controlled private network with production BEAM TLS Distribution and certificate-authenticated gRPC control | Internet-exposed Node listeners, NAT traversal, tunnels or relays, outbound-only sessions, automatic transport fallback |
+| Network | operator-controlled private network; certificate-authenticated control plus Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM | Internet-exposed Node listeners, NAT traversal, tunnels or relays, outbound-only sessions, automatic transport fallback |
 | Roles on the host | Node Agent and its Worker Runtimes only | Controller, Console, or database roles on the candidate host |
 
 ## Installation path
@@ -46,6 +46,7 @@ Source upgrade and rollback follow cordon, accepted drain, stop, switch to anoth
 
 Source qualification uses certificate-authenticated control for enrollment, credential lifecycle, Peer Grant delivery and recovery, and diagnostics.
 Runtime Endpoint evidence uses Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM membership, as the [source-development BEAM Peer Grant tracer](../local-dev.md#source-dev-beam-peer-grant-tracer-experimental) does.
+Every test-mesh participant, including the macOS Controller, is a source or test instance with no production BEAM membership, production credentials, or production data, so the mesh never bridges the candidate into production trust.
 Shared-cookie Distribution is not a substitute, gRPC compatibility is not the default Runtime Endpoint transport, and no new transport, outbound-only session, tunnel, relay, NAT traversal, or automatic fallback is added.
 Production BEAM stays limited to signed first-party releases on admitted Macs under `SPEC.md` §7.5.0, and the candidate stays outside it.
 
@@ -73,7 +74,7 @@ Candidate source qualification requires every applicable gate below on an exact 
 4. provider-neutral inventory accuracy on representative CPU-only, NVIDIA, and AMD hosts without changing device configuration;
 5. credential renewal and revocation, Peer Grant rotation, and private-network reconnect under the accepted transport contract, excluding shared-cookie runs;
 6. redacted diagnostics through retained generic surfaces;
-7. model-free custody and mixed-version tests after the required release and targeting contracts are accepted; and
+7. model-free custody and mixed-version tests after the required request-slot and resource release and targeting contracts are accepted; and
 8. the `macos_controller_linux_node_model_free` profile for both `N`/`N` and `N`/`N-1`, including exact worker-unit and resource-allocation targeting under separately accepted contracts.
 
 The `N-1` side is an exact commit and tree whose Product Version is earlier than and distinct from `N` and which governed previous-line evidence designates as the logical `N-1`.
