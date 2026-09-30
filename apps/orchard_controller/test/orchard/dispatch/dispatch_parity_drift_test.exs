@@ -102,7 +102,9 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
     :ok
   end
 
-  test "SPEC.md §§9.3 and 10.10 exclude Worker failure content from diagnostics" do
+  # SPEC.md §§7.5.5, 9.3, and 10.10: parity telemetry carries structured metadata
+  # and the stable failure code, never Worker-supplied message text.
+  test "SPEC.md §§7.5.5, 9.3, and 10.10 exclude Worker failure content from diagnostics" do
     attach_ref = attach_telemetry(@event)
     enable_controller_sentry()
     previous_level = Logger.level()
@@ -178,7 +180,7 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
     refute_receive {^attach_ref, @event, _measurements, _metadata}, 200
   end
 
-  test "SPEC.md §9.3 parity telemetry rejects Worker message content" do
+  test "SPEC.md §§7.5.5 and 9.3 parity telemetry rejects Worker message content" do
     attach_ref = attach_telemetry(@event)
 
     assert :ok =
