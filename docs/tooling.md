@@ -219,15 +219,16 @@ mise exec -- mix proto.gen.worker
   pinned `protoc-gen-elixir` escript. Install the escript through the pinned
   Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
 - `mix proto.gen` generates Elixir controller ↔ node-agent cluster modules from
-  `proto/cluster/v1/{common,events,peer_grant,runtime}.proto` into
+  `proto/cluster/v1/{common,events,peer_grant,reasoning,runtime}.proto` into
   `apps/orchard_shared/lib/cluster/v1/`.
 - `proto/orchard/worker/v1/worker_runtime.proto` is the sole authoritative Worker Runtime schema.
-- `mix proto.gen.worker` generates committed Python messages and gRPC stubs under `native/orchard_worker_mlx/src/orchard_worker_mlx/generated/`, the committed Elixir messages, service, and stub at `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex`, and the descriptor-set golden beside the canonical schema.
+- `mix proto.gen.worker` generates committed Python messages and gRPC stubs under `native/orchard_worker_mlx/src/orchard_worker_mlx/generated/`, the committed Elixir messages, service, and stub at `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex`, the shared Elixir cluster modules under `apps/orchard_shared/lib/cluster/v1/` (byte-identical to `mix proto.gen`), the descriptor-set golden beside the canonical schema, and the Elixir preparation wire fixture encoded from `scripts/support/worker-runtime-preparation-fixture.exs`.
 - Worker generation uses the provider-neutral Python tool environment and lock under `proto/orchard/worker/tooling/` and requires `protoc-gen-elixir` 0.16.0.
   Install the Elixir generator through the pinned Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
-- `mix proto.check.worker` regenerates every committed output into a temporary root and fails when any output is missing or byte-different.
+- `mix proto.check.worker` regenerates every committed output into a temporary root, including the shared Elixir cluster modules that encode the preparation fixture, and fails when any output is missing or byte-different.
   `scripts/test-worker-runtime-binding-drift.sh` proves that deliberate drift is rejected without modifying the checkout.
 - Descriptor and reciprocal Python/Elixir semantic fixtures live under `proto/orchard/worker/v1/` and are exercised by provider-neutral validation.
+  `fixtures/n_minus_1/worker_runtime.descriptor.pb` is a pinned, hand-maintained N-1 golden: the descriptor set from the last pre-reasoning revision of `main`. It is not a generator output; replace it only when the supported N-1 revision changes.
 
 ## Node Policy
 

@@ -7,7 +7,12 @@ OUTPUT_ROOT="$REPO_ROOT"
 PYTHON_TOOLING_ROOT="$REPO_ROOT/proto/orchard/worker/tooling"
 PROTOC_GEN_ELIXIR_VERSION="0.16.0"
 
+SHARED_PROTOS=(common events peer_grant reasoning runtime)
+
 generated_output_paths() {
+  for proto in "${SHARED_PROTOS[@]}"; do
+    printf 'apps/orchard_shared/lib/cluster/v1/%s.pb.ex\n' "$proto"
+  done
   printf '%s\n' \
     apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex \
     native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/common_pb2.py \
@@ -108,6 +113,21 @@ mise exec -- uv run --locked --directory "$PYTHON_TOOLING_ROOT" \
   --elixir_out="plugins=grpc,package_prefix=Orchard:$ELIXIR_STAGE" \
   "$REPO_ROOT/proto/orchard/worker/v1/worker_runtime.proto"
 
+SHARED_STAGE="$STAGE_ROOT/shared"
+mkdir -p "$SHARED_STAGE"
+SHARED_PROTO_PATHS=()
+for proto in "${SHARED_PROTOS[@]}"; do
+  SHARED_PROTO_PATHS+=("$REPO_ROOT/proto/cluster/v1/$proto.proto")
+done
+
+mise exec -- uv run --locked --directory "$PYTHON_TOOLING_ROOT" \
+  python -m grpc_tools.protoc \
+  -I "$REPO_ROOT/proto" \
+  --plugin="protoc-gen-elixir=$PLUGIN_PATH" \
+  --elixir_out="plugins=grpc,package_prefix=Orchard:$SHARED_STAGE" \
+  "${SHARED_PROTO_PATHS[@]}"
+mise exec -- mix format "$SHARED_STAGE"/cluster/v1/*.pb.ex
+
 RAW_ELIXIR="$ELIXIR_STAGE/orchard/worker/v1/worker_runtime.pb.ex"
 COMPAT_ELIXIR="$STAGE_ROOT/worker_runtime.pb.ex"
 sed \
@@ -124,6 +144,11 @@ install_output() {
   mkdir -p "$(dirname "$destination")"
   install -m 0644 "$source" "$destination"
 }
+
+for proto in "${SHARED_PROTOS[@]}"; do
+  install_output "$SHARED_STAGE/cluster/v1/$proto.pb.ex" \
+    "apps/orchard_shared/lib/cluster/v1/$proto.pb.ex"
+done
 
 install_output "$COMPAT_ELIXIR" \
   apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex
@@ -146,65 +171,13 @@ done
 install_output "$DESCRIPTOR_STAGE" \
   proto/orchard/worker/v1/worker_runtime.descriptor.pb
 
-ELIXIR_FIXTURE_GENERATOR="$STAGE_ROOT/generate_elixir_fixture.exs"
-cat > "$ELIXIR_FIXTURE_GENERATOR" <<'ELIXIR'
-alias Orchard.Cluster.V1.FrozenExecutionInput
-alias Orchard.Cluster.V1.GenerationParams
-alias Orchard.Cluster.V1.NegotiatedReasoningTuple
-alias Orchard.Cluster.V1.PrepareInferenceRequest
-alias Orchard.Cluster.V1.WorkerLoadedBinding
-
-request = %PrepareInferenceRequest{
-  input: %FrozenExecutionInput{
-    request_id: "request-327",
-    controller_session_id: "controller-session",
-    model_id: "mlx-community/Qwen3-4B",
-    version: "sha256:orchard-fixture",
-    rendered_prompt_utf8: "prompt",
-    input_tokens: 2,
-    params: %GenerationParams{
-      max_output_tokens: 257,
-      temperature: 0.25,
-      top_p: 0.875,
-      stop_sequences: ["<stop-a>", "<stop-b>"],
-      tools_json: ~s([{"type":"function","name":"lookup"}]),
-      tool_choice_json: ~s({"type":"function","name":"lookup"})
-    },
-    deadline_unix_ms: 1_800_000_000_000,
-    metadata_json: ~s({"tenant":"fixture"}),
-    cache_affinity_fingerprint: "sha256:cache-affinity",
-    prompt_token_ids: [7, 11, 42],
-    return_token_ids: true,
-    return_logprobs: true
-  },
-  tuple: %NegotiatedReasoningTuple{
-    generation_policy: "enabled",
-    projection: "final_only",
-    model_artifact_digest: "sha256:artifact",
-    chat_template_digest: "sha256:template",
-    render_contract: "orchard_chat",
-    render_contract_version: "1",
-    parser_family: "tagged_pair",
-    parser_version: "1",
-    runtime_contract_version: "1",
-    event_binding_version: "1"
-  },
-  expected_binding: %WorkerLoadedBinding{
-    model_id: "mlx-community/Qwen3-4B",
-    model_version: "sha256:orchard-fixture",
-    artifact_digest: "sha256:artifact",
-    selected_profile_id: "mlx-metal-unified-default"
-  },
-  expected_service_incarnation: "0123456789abcdef0123456789abcdef",
-  expected_loaded_instance_id: <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15>>
-}
-
-output = System.fetch_env!("ORCHARD_PROTO_FIXTURE_OUTPUT")
-File.mkdir_p!(Path.dirname(output))
-File.write!(output, Protobuf.encode(request))
-ELIXIR
-
+# The preparation fixture is encoded by the checkout's shared Elixir bindings.
+# Those bindings are generated outputs above, so the drift check covers the
+# encoder as well as the encoded bytes.
 ORCHARD_PROTO_FIXTURE_OUTPUT="$OUTPUT_ROOT/proto/orchard/worker/v1/fixtures/elixir_prepare_inference_request.pb" \
-  mise exec -- mix run --no-start "$ELIXIR_FIXTURE_GENERATOR"
+  mise exec -- mix run --no-start -e '
+    Code.require_file("scripts/support/worker-runtime-preparation-fixture.exs")
+    Orchard.WorkerRuntimePreparationFixture.write!(System.fetch_env!("ORCHARD_PROTO_FIXTURE_OUTPUT"))
+  '
 
 printf 'generated Worker Runtime Python and Elixir bindings under %s\n' "$OUTPUT_ROOT"
