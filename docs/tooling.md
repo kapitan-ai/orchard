@@ -18,7 +18,8 @@ Dependency compilation on the current macOS profile still requires a working hos
 Swift, DMG assembly, Developer ID signing, notarization, stapling, launchd, and Keychain steps apply to the macOS native distribution profile, and MLX steps apply to the macOS MLX Node runtime profile.
 
 Required validation runs broad portable Orchard control-plane core compilation, static analysis, tests, coverage, tokenizer validation, and provider-neutral conformance on Linux.
-Separate macOS lanes prove host lifecycle, Orchard.app/DMG behavior, and MLX runtime behavior.
+Separate macOS lanes prove host lifecycle, packaging contracts, Orchard.app and DMG assembly, and MLX runtime behavior.
+Native Orchard.app and DMG distribution is paused under `SPEC.md` §11.0, so `scripts/ci/resolve-app-distribution-lane.sh` reads the committed `packaging/distribution-control` and reports `app_distribution=false`; CI then skips the assembly lane, and the gate expects that skip.
 `scripts/ci/classify-required-validation-paths.sh` selects which lanes a pull request runs from its changed paths, unknown paths select every lane, and `scripts/ci/evaluate-required-validation.sh` backs the single required `Required Orchard validation gate` check by demanding success from every selected lane and `skipped` from every unselected one.
 Credential-free signing-contract validation may run in normal CI, while Developer ID signing, notarization, stapling, and publication remain credentialed release-only operations.
 
@@ -167,12 +168,13 @@ swift build --package-path packaging/app
 swift test --package-path packaging/app
 swift test --package-path packaging/app --enable-code-coverage
 scripts/test-app-service-lifecycle.sh
-scripts/test-build-app.sh
-scripts/test-app-signing.sh
-scripts/test-build-dmg.sh
+scripts/test-distribution-control.sh
 ```
 
-The last command uses the deterministic local Amore substitute by default.
+The last command proves the distribution pause guards with fixture trees and fake tools, and never assembles an app or DMG.
+While `packaging/distribution-control` is paused, do not run `scripts/test-build-app.sh`, `scripts/test-app-signing.sh`, or `scripts/test-build-dmg.sh`; they assemble an app bundle and a disk image, and the guarded entrypoints refuse with exit status `78`.
+After an approved resume, run them after the commands above.
+`scripts/test-build-dmg.sh` uses the deterministic local Amore substitute by default.
 Set `ORCHARD_TEST_REAL_AMORE=1` only for the credential-free local Amore DMG assembly smoke.
 Developer ID signing, notarization, stapling, draft publication, and system-root lifecycle changes require their separately documented credentials or interactive authorization.
 

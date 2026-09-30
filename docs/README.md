@@ -49,6 +49,7 @@ large spec sections.
 ### I want to package or install Orchard
 
 The approved macOS native distribution profile uses `Orchard.app` inside a DMG.
+That distribution is currently paused (`SPEC.md` §11.0); use [`local-dev.md`](local-dev.md) for the current source-development installation path.
 Native PKG is not supported; restoring it requires a fresh OpenSpec proposal and implementing PR.
 
 - [`operator-journey.md`](operator-journey.md) - current and target operator journeys, friction baseline, recovery points, and ordered improvement slices.

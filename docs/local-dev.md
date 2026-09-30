@@ -195,6 +195,9 @@ The output CSV contains `organization`, `api_client`, `external_ref`, `key_name`
 
 ### Orchard.app install
 
+Native `Orchard.app` and DMG distribution is paused (`SPEC.md` §11.0), so the source-development setup in this guide is the current active installation path.
+The notes below describe the approved app lifecycle for existing packaged rehearsal installations and for use after distribution is resumed.
+
 When installed through the macOS app lifecycle:
 
 - Controller defaults to degraded **loopback HTTP** (`plain_http_localhost`) until an operator chooses a transport mode

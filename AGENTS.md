@@ -97,7 +97,7 @@ Rules:
 - **Database**: Postgres (sole persistence + coordination layer)
 - **APIs**: `/v1/responses` (canonical abstraction), `/v1/chat/completions` (compatibility facade)
 - **Internal comms**: BEAM-first Runtime Endpoints for admitted first-party services; certificate-authenticated gRPC control and compatibility paths
-- **Packaging**: approved macOS native distribution profile using a signed `Orchard.app` inside a DMG plus launchd; native PKG is not a supported current distribution channel
+- **Packaging**: approved macOS native distribution profile using a signed `Orchard.app` inside a DMG plus launchd, currently paused under `SPEC.md` §11.0 so source development is the active installation path; native PKG is not a supported current distribution channel
 - **Clustering**: Postgres advisory locks + authenticated Runtime Endpoint observations (Active/Standby control plane)
 - **Inference**: MLX-LM runtime adapter managed by the node agent (Apple Silicon native)
 
@@ -285,11 +285,12 @@ Run these from the umbrella root:
 4. `swift test --package-path packaging/app`
 5. `swift test --package-path packaging/app --enable-code-coverage`
 6. `scripts/test-app-service-lifecycle.sh`
-7. `scripts/test-build-app.sh`
-8. `scripts/test-app-signing.sh`
-9. `scripts/test-build-dmg.sh`
+7. `scripts/test-distribution-control.sh`
 
-Run `ORCHARD_TEST_REAL_AMORE=1 scripts/test-build-dmg.sh` only for the credential-free local Amore assembly smoke.
+While `packaging/distribution-control` is paused (`SPEC.md` §11.0), do not run `scripts/test-build-app.sh`, `scripts/test-app-signing.sh`, or `scripts/test-build-dmg.sh`: they assemble an app bundle and a disk image, and the guarded entrypoints they call refuse with exit status `78`.
+CI skips that assembly lane while paused.
+Do not edit the control, remove a guard, or add an override to get around the pause; resuming needs a reviewed control change approved by the accountable product owner.
+When distribution is resumed, run those three scripts after step 7, and run `ORCHARD_TEST_REAL_AMORE=1 scripts/test-build-dmg.sh` only for the credential-free local Amore assembly smoke.
 Developer ID signing, notarization, stapling, publication, and system-root lifecycle mutations remain explicit credential or authorization gates.
 
 ### Coverage expectations
@@ -349,6 +350,11 @@ See `docs/local-dev.md` for full environment setup and configuration.
 ## macOS Distribution
 
 The approved macOS native distribution profile uses a signed and notarized DMG containing `Orchard.app`.
+That distribution is paused until Najib explicitly lifts the pause: `packaging/distribution-control` is committed as `state=paused`, `scripts/build-app.sh`, `scripts/sign-app.sh`, and `scripts/build-dmg.sh` refuse with exit status `78`, and CI skips the Orchard.app and DMG assembly lane.
+Source development (`make dev`, `docs/local-dev.md`) is the current active installation path.
+Do not build, sign, notarize, staple, or publish an `Orchard.app` or DMG, even for validation, do not perform credentialed Developer ID payload signing, and do not describe native app or DMG distribution as currently available.
+Credential-free payload staging and payload signing contract tests remain available.
+The packaging code and dormant tests stay in the repository; see `packaging/dmg/README.md` for the re-enable procedure.
 Do not describe Orchard as having a supported public binary, and do not treat source availability as a licensing change.
 `SPEC.md` §11 owns the source-availability contract and `packaging/dmg/README.md` owns the release gates.
 Use the Swift/macOS app workflow above and `packaging/dmg/README.md` for current build and verification guidance.
