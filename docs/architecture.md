@@ -67,7 +67,7 @@ Profile kinds are qualified and composable:
 
 | Profile kind | Current or accepted Orchard profile | Scope |
 |---|---|---|
-| Platform | Supported Apple Silicon macOS platform profile; accepted Linux Controller profile | Host operating system, architecture, roles, and platform acceptance |
+| Platform | Supported Apple Silicon macOS platform profile; accepted Linux Controller profile; proposed experimental Linux Node candidate | Host operating system, architecture, roles, and platform acceptance |
 | Distribution | macOS native distribution profile | Orchard.app, DMG, host lifecycle, paths, credential storage, rollback, retained state, and release evidence |
 | Runtime-provider | macOS MLX Node runtime profile | A Node role pairing the portable Node Agent with Apple Silicon, Metal, MLX-LM, the tokenizer stack, conformance, and real-runtime qualification |
 | Acceptance | mixed-platform acceptance profile | Evidence that a portable Controller, including Linux, operates admitted macOS MLX Nodes |
@@ -83,6 +83,7 @@ Packaged multi-Mac operation remains a first-cut rehearsal path with unresolved 
 The accepted Linux Controller profile is headless, uses external Postgres, and does not imply a local Node Agent, accelerator runtime, or Apple dependency.
 The mixed-platform acceptance profile becomes satisfied only after Milestone 8 build, conformance, packaging, upgrade, rollback, security, and topology acceptance passes.
 Until then, the Linux Controller profile remains an accepted target rather than a current support claim.
+The proposed experimental `ubuntu_24_04_x86_64_node` Linux Node candidate uses source development, defines no distribution artifact, and is not supported; see [`platforms/linux-node.md`](platforms/linux-node.md).
 
 The approved macOS native distribution design remains `Orchard.app` inside a DMG, and its distribution is paused by the committed `packaging/distribution-control`.
 `SPEC.md` §11 owns the source-availability, supported public binary, and licensing contract for that profile.

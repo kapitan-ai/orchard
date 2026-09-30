@@ -179,6 +179,15 @@ It SHALL use operator-provided external Postgres and SHALL NOT require a local N
 Its final distribution format and host manager remain deferred.
 No Linux support claim follows from portable compilation alone.
 
+The proposed `ubuntu_24_04_x86_64_node` profile is an experimental Linux Node platform profile candidate, not a supported profile.
+It SHALL target Ubuntu Server 24.04 LTS on x86_64 with a Linux kernel 6.8 or newer from an Ubuntu 24.04 kernel line, glibc 2.39 or newer within that release, systemd 255 or newer as the host service manager, and unified cgroup v2.
+Ubuntu 26.04 LTS, every other Ubuntu release, other distributions, other architectures, other libc implementations, other init systems, containers used as the Node host, and WSL remain unqualified.
+Its current installation path is source development of the Node-only role of the portable Node Agent from an exact source revision with the pinned toolchain, and no distribution profile or deployment artifact is defined for it.
+The candidate SHALL remain separate from the Linux Controller profile and from every CUDA, ROCm, vLLM, model, and runtime-provider qualification.
+It defines a standalone Node only and SHALL NOT define a Linux Controller, local Postgres, or single-host composition on the candidate host.
+Defining, implementing, installing from source, or testing the candidate SHALL NOT establish Linux Node, distribution, or runtime-provider support.
+ADR 0035 records the proposed candidate decision.
+
 The mixed-platform acceptance profile SHALL prove a portable Controller, including the Linux Controller profile, operating admitted macOS Nodes that satisfy the macOS MLX Node runtime profile.
 Passing that acceptance profile is required before the Linux Controller profile is declared supported and does not turn a Controller Host into a schedulable Node.
 
@@ -911,6 +920,9 @@ A Node is an explicitly managed resource representing an admitted host that runs
 A Node is not defined solely by operating system or processor vendor.
 The current supported Nodes are Apple Silicon macOS hosts under the supported Apple Silicon macOS platform profile and macOS MLX Node runtime profile.
 Future Node support requires separate platform, distribution, runtime-provider, trust, and real-runtime acceptance evidence as applicable.
+The experimental `ubuntu_24_04_x86_64_node` candidate does not become schedulable from source installation, service-manager state, process identity, heartbeat, PID, cgroup, or inventory evidence.
+Its CPU, memory, disk, OS, kernel, network, and accelerator facts remain bounded observations until the existing Node admission, lifecycle, health, capability, and capacity contracts independently authorize use.
+NVIDIA/CUDA and AMD/ROCm observations SHALL retain distinct evidence provenance, and neither observation family SHALL imply a runtime-provider qualification.
 
 A node record SHALL include:
 
@@ -1468,6 +1480,12 @@ Node agent SHALL:
 * report immediate state changes
 * collect diagnostics
 * cancel orphaned requests when controller session disappears
+
+For the experimental Linux Node candidate, each Node Agent SHALL hold a process-lifetime exclusive owner-only lock in its durable Node Identity Root and SHALL reject duplicate ownership before enrollment, Runtime Endpoint activation, or Worker Runtime startup.
+Candidate qualification SHALL run the Agent as a dedicated unprivileged non-login identity without sudo, package-mutation, database-credential, device-reset, or device-reconfiguration authority.
+Candidate lifecycle qualification SHALL use one systemd system service unit that supervises exactly one Node Agent and its Worker Runtime descendants for one Node Identity Root.
+systemd, cgroup, PID, heartbeat, runtime-directory, and device observations SHALL NOT independently prove Orchard custody, native cessation, request-slot release, resource release, or scheduling authority.
+Linux host lifecycle and capability mechanics SHALL remain behind platform adapters and MUST NOT add Linux or provider branches to the portable Node Agent contract.
 
 ### 4.10 Local worker contract
 
@@ -3352,7 +3370,10 @@ Static target overrides MAY remain for documented source-development and explici
 
 Distributed Erlang membership is a high-trust code boundary, not a per-function capability sandbox.
 A scoped Peer Grant reduces credential blast radius and cross-Node impersonation, but it does not restrict an authenticated peer to individual Runtime Endpoint functions.
-Production BEAM SHALL therefore be limited to signed first-party Orchard releases on operator-controlled admitted Macs inside restricted private networks.
+Production BEAM SHALL therefore be limited to signed first-party Orchard releases on operator-controlled admitted hosts inside restricted private networks whose exact platform profile has passed its release-provenance, credential-custody, host-control, network, and mixed-platform acceptance gates.
+The currently qualified hosts at this boundary remain admitted Macs.
+The experimental Linux Node candidate SHALL NOT join production BEAM until an exact first-party Orchard release for that candidate proves release authenticity, protected certificate and Peer Grant custody, trusted names, network restriction, service-manager and Node Identity Root controls, and the `macos_controller_linux_node_model_free` acceptance profile.
+Source-development revisions of the candidate are not signed first-party releases and SHALL NOT satisfy that gate.
 External providers, third-party adapters, tenant-controlled compute, and partially trusted machines SHALL remain outside the BEAM mesh.
 
 The initial stable operator-facing production BEAM failure vocabulary SHALL include:
@@ -5192,6 +5213,11 @@ Production first-party BEAM Distribution SHALL additionally enforce the BEAM Pee
 Certificate identity alone SHALL NOT authorize a production OTP distribution connection.
 Current source-development and packaged first-cut shared-cookie behavior SHALL remain visibly transitional until the enrolled Production BEAM Operating Model passes its required packaged acceptance.
 
+The experimental Linux Node candidate SHALL use only this private-network certificate, Peer Grant, production BEAM, and certificate-authenticated gRPC control model.
+It SHALL NOT add a new Runtime Endpoint transport, an outbound-only Runtime Endpoint session, an Internet-exposed Node listener, NAT traversal, a tunnel or relay that substitutes for private-network reachability, automatic transport fallback, or replay of an ambiguously accepted inference operation.
+Reconnect SHALL revalidate current certificate, Node, admission, target, Peer Grant, and generation authority before accepting new work.
+Transitional shared-cookie operation SHALL NOT count as candidate trust or qualification evidence.
+
 The internal node-trust initialization operation SHALL remain separate from `orchardctl cluster init`, which is credential-only per §11.9.
 
 Node cert lifetime default:
@@ -5489,6 +5515,11 @@ Generic Product Version, provenance, trust, secret-free artifact, role, rollback
 The accepted Linux Controller profile uses operator-provided external Postgres and contains only portable applications and assets compatible with that profile.
 Its final distribution format, host manager, paths, service integration, and publication contract remain deferred to a separate change.
 No Linux distribution is supported by this contract-only amendment.
+
+The experimental `ubuntu_24_04_x86_64_node` candidate defines no distribution profile, package, container image, or other deployment artifact.
+Its current installation path is source development of the Node-only role from an exact source revision with the pinned toolchain, consistent with §11.0.
+A future Linux Node package, including any fixed filesystem layout, package-created service identity, package-owned service unit, closed dependency manifest, or air-gapped media, SHALL require a fresh accepted OpenSpec proposal, a separate implementing pull request, and the accountable product owner's approval before any artifact is built.
+Candidate source installation or qualification evidence SHALL NOT authorize publication, a release, or a Linux support claim.
 
 The macOS native distribution profile SHALL use a signed and notarized **DMG** containing `Orchard.app` for interactive installation and the app-owned root-authorized service lifecycle.
 The initial source-availability transition SHALL be source-only under the Apache License, Version 2.0, for covered Orchard-authored software and technical documentation, with Copyright 2026 AI Singapore.
@@ -5973,6 +6004,12 @@ The Controller `N` support window for Node Agent versions `N` and `N-1` provides
 It does not authorize concurrent Node Agent processes to share one Node Identity Root and does not define a zero-overlap replacement protocol.
 Any future managed handover guarantee requires a fresh accepted OpenSpec proposal and a separate implementing pull request.
 
+The experimental Linux Node candidate SHALL apply the same sequential cordon, accepted drain, stop, replace, start, reconcile, verify, and uncordon ordering through its Linux host lifecycle adapter.
+For the candidate, replacement SHALL switch the Node-only source installation to another exact clean source revision with its matching dependency locks and pinned toolchain while preserving the Node Identity Root.
+Upgrade or rollback SHALL keep the Node unschedulable when exact Agent or Worker Runtime exit, Node Identity Root exclusion, installed source identity, restart, current transport authority, or reconciliation cannot be proved.
+Controller `N` compatibility with Node Agent `N` and `N-1` SHALL remain a reader and behavior compatibility window only.
+An operation whose safe meaning depends on a worker-unit, resource-allocation, runtime-incarnation, residency, or control-generation target SHALL fail closed when either participant cannot preserve the complete target and SHALL NOT downgrade to ambiguous Node or model targeting.
+
 ### 13.5 Worker upgrade
 
 Workers are bundled with node agent.
@@ -6182,6 +6219,38 @@ Acceptance:
 * the mixed-platform acceptance profile proves a Linux Controller with external Postgres operating an admitted macOS Node under the macOS MLX Node runtime profile across trust, Runtime Endpoint observation, scheduling, streaming, cancellation, restart, and failure behavior
 * production BEAM admission for the Linux Controller profile satisfies ADR 0012 provenance, identity, host-control, network, and mixed-platform acceptance gates
 * `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before the Linux Controller profile is declared supported
+
+### Milestone 9 - Experimental Linux Node qualification
+
+This milestone defines qualification work for the experimental `ubuntu_24_04_x86_64_node` candidate.
+It does not declare general Linux, Linux Node, CUDA, ROCm, vLLM, model, or runtime-provider support, and it defines no distribution artifact.
+It does not change the Milestone 8 Linux Controller profile.
+
+Deliver:
+
+* a Node-only source-development path for the portable Node Agent on the candidate host from an exact source revision with the pinned toolchain
+* closed-matrix preflight, exclusive Node Identity Root ownership, a least-privilege Agent identity, and one systemd-supervised Agent behind a Linux host lifecycle adapter with relocated-root tests
+* provider-neutral bounded host inventory with distinct NVIDIA and AMD observation provenance
+* private-network enrollment, credential lifecycle, Peer Grant rotation, reconnect, and stale-connection failure behavior under existing transport contracts
+* redacted health, logs, metrics, inventory, and lifecycle diagnostics through retained generic diagnostic surfaces
+* model-free Linux process-group custody and mixed-version compatibility only after separately accepted contracts define request-slot release, native cessation, and worker-unit and resource-allocation targeting
+* a distinct `macos_controller_linux_node_model_free` acceptance profile using a qualified macOS Controller `N` and the Linux Node candidate at `N` and `N-1`, with independently captured evidence from every participating host
+* a separately authorized runtime-provider pilot only after every provider-neutral prerequisite passes
+
+Acceptance:
+
+* every qualification record binds to the exact source commit and tree, clean-checkout proof, dependency locks, pinned toolchain identity, and passing generated-output drift checks, and dirty or drifted checkouts produce implementation evidence only
+* the candidate qualification host runs exactly one supervised Agent for one persistent Node Identity Root, and unqualified hosts fail before mutation
+* start, stop, restart, crash, reboot, source upgrade, and source rollback preserve identity ownership and fail closed on uncertain survivors
+* inventory accurately reports bounded host and stable accelerator observations without creating scheduling or allocation authority
+* credential renewal, revocation, Peer Grant rotation, reconnect, local secret permissions, and stale-connection behavior pass failure-path tests, and shared-cookie runs are excluded from evidence
+* diagnostics are redacted, add no support-bundle or archive format, and are incapable of reconstructing or erasing commitments
+* compatible readers accept additive old observations as missing evidence, while incompatible old writers fail closed for targeted work
+* model-free custody distinguishes public terminal, native cessation, request-slot release, and resource release under accepted contracts
+* the `macos_controller_linux_node_model_free` profile proves enrollment, admission, authenticated observation, exact targeting, cancellation, drain, Agent restart, orphan handling, and peer isolation for both the `N`/`N` and `N`/`N-1` pairings
+* the `N`/`N-1` pairing uses an exact governed predecessor Node Agent revision identified by Product Version, source commit, and tree, and missing predecessor or macOS host evidence leaves the profile unmet rather than waived
+* real-provider qualification, if separately authorized, remains one exact immutable hardware, provider, model, and profile tuple at concurrency one with no sibling or broader support claim
+* `SPEC.md`, decisions, OpenSpec specs, tests, documentation, and implementation agree before any Linux Node support claim
 
 ---
 
