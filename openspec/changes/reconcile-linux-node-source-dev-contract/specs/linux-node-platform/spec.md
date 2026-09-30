@@ -68,7 +68,7 @@ This requirement changes `SPEC.md` §4.9.
 
 ### Requirement: Qualified Lifecycle Uses One Supervised Agent Without Creating Authority
 
-Candidate lifecycle qualification SHALL satisfy the single supervised Agent, single qualification-host Agent, and foreground-session evidence rules in `SPEC.md` §4.9 and Milestone 9, with the Agent and its Worker Runtime descendants in that unit's cgroup.
+Candidate lifecycle qualification SHALL satisfy the single supervised Agent, single qualification-host Agent, and foreground-session evidence rules in `SPEC.md` §4.9 and Milestone 9, with the Agent and its Worker Runtime descendants in the supervising systemd unit's cgroup.
 systemd, cgroup, PID, heartbeat, runtime-directory, and device observations SHALL NOT prove Orchard custody, native cessation, request-slot release, resource release, dispatch authority, or scheduling authority.
 This requirement changes `SPEC.md` §§4.9 and 13.4.
 
@@ -109,7 +109,7 @@ This requirement changes `SPEC.md` §10.6.
 
 ### Requirement: Linux Node Candidate Stays Outside Production BEAM
 
-The candidate SHALL remain outside the Mac-only production BEAM boundary in `SPEC.md` §7.5.0 and SHALL require the separately accepted amendment, release and trust profile, and owner decision in `SPEC.md` §§1.4 and 7.5.0 before any Linux Node production BEAM eligibility or support claim.
+The candidate SHALL remain outside the Mac-only production BEAM boundary in `SPEC.md` §7.5.0 and SHALL require the separately accepted amendment, release and trust profile, exact provenance and reverification, and owner decision in `SPEC.md` §§1.4 and 7.5.0 before any Linux Node production BEAM eligibility or support claim.
 This contract SHALL NOT widen that boundary.
 Source-qualification evidence, portable compilation, a successful transport probe, or certificate identity alone SHALL NOT satisfy that future gate.
 This requirement changes `SPEC.md` §§1.4, 7.5.0, and Milestone 9.
@@ -156,7 +156,7 @@ This requirement changes `SPEC.md` §13.4.
 
 ### Requirement: Runtime-Provider Qualification Remains Separate
 
-Linux Node platform qualification SHALL remain separate from every runtime-provider, acceleration, model, and workload qualification, as `SPEC.md` §1.4 requires, and any one-H100 pilot SHALL follow the separately gated single-tuple bounds in `SPEC.md` Milestone 9.
+Linux Node platform qualification SHALL remain separate from every runtime-provider, acceleration, model, and workload qualification, consistent with `SPEC.md` §1.4, and any one-H100 pilot SHALL follow the separately gated single-tuple bounds in `SPEC.md` Milestone 9.
 A successful candidate install, inventory check, or lifecycle test SHALL NOT qualify CUDA, ROCm, vLLM, a model, or a runtime-provider profile.
 This requirement changes `SPEC.md` §§1.4 and Milestone 9.
 
@@ -168,7 +168,7 @@ This requirement changes `SPEC.md` §§1.4 and Milestone 9.
 
 ### Requirement: Mixed-Platform Acceptance Includes The Linux Node And A Designated Predecessor
 
-The `macos_controller_linux_node_model_free` acceptance profile SHALL satisfy the `N`/`N` and `N`/`N-1` pairing, non-production participant, model-free proof, independent host evidence, exact worker-unit and resource-allocation targeting, and exact earlier-distinct-Product-Version predecessor requirements in `SPEC.md` Milestone 9 and §13.1, and SHALL remain unmet until those targeting contracts are defined and their implementation is accepted.
+The `macos_controller_linux_node_model_free` acceptance profile SHALL satisfy the `N`/`N` and `N`/`N-1` pairing, non-production participant, model-free proof with model-free fixtures, independent host evidence, exact worker-unit and resource-allocation targeting, and exact earlier-distinct-Product-Version predecessor requirements in `SPEC.md` Milestone 9 and §13.1, and SHALL remain unmet until those targeting contracts are defined and their implementation is accepted.
 This contract SHALL NOT define that designation, and until accepted release-line governance defines it the `N-1` pairing SHALL remain unmet.
 Missing predecessor or macOS host evidence SHALL leave the profile unmet, and no support-window floor, first-release exemption, or synthetic predecessor SHALL waive the `N-1` pairing.
 This requirement changes `SPEC.md` Milestone 9.
