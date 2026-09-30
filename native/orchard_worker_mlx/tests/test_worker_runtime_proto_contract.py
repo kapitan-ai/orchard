@@ -2,7 +2,7 @@ import tomllib
 from hashlib import sha256
 from pathlib import Path
 
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory, unknown_fields
 
 from orchard_worker_mlx.generated.cluster.v1 import (
     common_pb2,
@@ -28,6 +28,11 @@ LEGACY_PROTO = (
     / "v1"
     / "worker_runtime.proto"
 )
+# N-1 golden: the Worker Runtime descriptor set from the merge base with main
+# before negotiated reasoning (126eb1bc). Messages built from it decode across a
+# real schema revision rather than the current bindings.
+N_MINUS_1_DESCRIPTOR = PROTO_ROOT / "fixtures" / "n_minus_1" / "worker_runtime.descriptor.pb"
+N_MINUS_1_DESCRIPTOR_SHA256 = "6e51e68783dc7e5768d80c559616feaea3df1797ab38a3d5c7c4ef0e94fc27d9"
 EXPECTED_DESCRIPTOR_SET_SHA256 = "6504f3f11f2924c9a18416707fc0f8b18297d64d8b5f8dcfc487916b7ed6abc4"
 EXPECTED_DESCRIPTOR_FILES = {
     "cluster/v1/common.proto",
@@ -378,7 +383,25 @@ def _reasoning_capabilities_fixture() -> worker_runtime_pb2.WorkerCapabilities:
     return message
 
 
+def _n_minus_1_class(full_name: str) -> type:
+    pool = descriptor_pool.DescriptorPool()
+    for file in descriptor_pb2.FileDescriptorSet.FromString(N_MINUS_1_DESCRIPTOR.read_bytes()).file:
+        pool.Add(file)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName(full_name))
+
+
+def _unknown(message) -> list[tuple[int, int, bytes]]:
+    return [
+        (field.field_number, field.wire_type, field.data)
+        for field in unknown_fields.UnknownFieldSet(message)
+    ]
+
+
 def _prepare_inference_request() -> reasoning_pb2.PrepareInferenceRequest:
+    # Wire coverage only; mirrors scripts/support/worker-runtime-preparation-fixture.exs.
+    # It sets return_token_ids and return_logprobs, which negotiated execution
+    # rejects, and its cache_affinity_fingerprint is not the hmac-sha256 form.
+    # Later slices must not reuse it as a happy-path preparation.
     return reasoning_pb2.PrepareInferenceRequest(
         input=reasoning_pb2.FrozenExecutionInput(
             request_id="request-327",
@@ -659,7 +682,7 @@ def test_python_reasoning_fixture_is_produced_by_the_current_binding() -> None:
     assert worker_runtime_pb2.WorkerStatusResponse.FromString(fixture.read_bytes()) == expected
 
 
-def test_preparation_fixture_round_trips_n_and_both_n_minus_one_execution_projections() -> None:
+def test_preparation_fixture_round_trips_and_frozen_input_maps_onto_current_execution() -> None:
     fixture = PROTO_ROOT / "fixtures" / "elixir_prepare_inference_request.pb"
     expected = _prepare_inference_request()
     decoded = reasoning_pb2.PrepareInferenceRequest.FromString(fixture.read_bytes())
@@ -704,3 +727,129 @@ def test_older_and_non_advertising_bindings_receive_only_legacy_fields() -> None
         "progress": 7,
         "token_delta": 8,
     }
+
+
+def test_n_minus_1_golden_is_the_pre_reasoning_merge_base_descriptor() -> None:
+    assert sha256(N_MINUS_1_DESCRIPTOR.read_bytes()).hexdigest() == N_MINUS_1_DESCRIPTOR_SHA256
+
+    def numbers(full_name: str) -> list[int]:
+        return [field.number for field in _n_minus_1_class(full_name).DESCRIPTOR.fields]
+
+    assert numbers("cluster.v1.ExecuteInferenceRequest") == list(range(1, 14))
+    assert numbers("cluster.v1.Failed") == [1, 2, 3]
+    assert numbers("cluster.v1.StatusRequest") == []
+    assert 14 not in numbers("cluster.v1.StatusResponse")
+    assert numbers("orchard.worker.v1.WorkerStatusRequest") == []
+    assert numbers("orchard.worker.v1.WorkerCapabilities") == list(range(1, 8))
+
+
+def test_n_minus_1_execution_decodes_field_14_and_current_decodes_n_minus_1_execution() -> None:
+    old_execution = _n_minus_1_class("cluster.v1.ExecuteInferenceRequest")
+    frozen = _prepare_inference_request().input
+    frozen_bytes = frozen.SerializeToString(deterministic=True)
+    redemption = reasoning_pb2.PreparationRedemption(authorization=b"\xa5" * 32)
+    current = runtime_pb2.ExecuteInferenceRequest.FromString(frozen_bytes)
+    current.preparation_redemption.CopyFrom(redemption)
+    current_bytes = current.SerializeToString(deterministic=True)
+
+    old_view = old_execution.FromString(current_bytes)
+    assert _unknown(old_view) == [(14, 2, redemption.SerializeToString())]
+    assert old_view.SerializeToString(deterministic=True) == current_bytes
+    old_view.DiscardUnknownFields()
+    assert old_view.SerializeToString(deterministic=True) == frozen_bytes
+
+    frozen_view = reasoning_pb2.FrozenExecutionInput.FromString(current_bytes)
+    assert _unknown(frozen_view) == [(14, 2, redemption.SerializeToString())]
+    frozen_view.DiscardUnknownFields()
+    assert frozen_view == frozen
+
+    old_bytes = old_execution.FromString(frozen_bytes).SerializeToString(deterministic=True)
+    assert old_bytes == frozen_bytes
+    decoded = runtime_pb2.ExecuteInferenceRequest.FromString(old_bytes)
+    assert not decoded.HasField("preparation_redemption")
+    assert decoded.params == frozen.params
+    assert reasoning_pb2.FrozenExecutionInput.FromString(old_bytes) == frozen
+
+
+def test_n_minus_1_failed_keeps_usage_unknown_and_current_reads_missing_usage() -> None:
+    old_failed = _n_minus_1_class("cluster.v1.Failed")
+    present_zero = events_pb2.Failed(code="failed", retryable=True, usage=common_pb2.TokenUsage())
+
+    old_view = old_failed.FromString(present_zero.SerializeToString())
+    assert (old_view.code, old_view.retryable) == ("failed", True)
+    assert _unknown(old_view) == [(4, 2, b"")]
+
+    old_bytes = old_failed(code="failed", retryable=True).SerializeToString()
+    assert not events_pb2.Failed.FromString(old_bytes).HasField("usage")
+
+
+def test_n_minus_1_capabilities_ignore_fields_8_9_and_current_reads_non_advertising() -> None:
+    old_status = _n_minus_1_class("orchard.worker.v1.WorkerStatusResponse")
+    reasoning_bytes = (
+        PROTO_ROOT / "fixtures" / "python_worker_status_response_reasoning.pb"
+    ).read_bytes()
+
+    old_view = old_status.FromString(reasoning_bytes)
+    assert [number for number, _wire, _data in _unknown(old_view.capabilities)] == [8, 9]
+    old_view.DiscardUnknownFields()
+    legacy_bytes = old_view.SerializeToString(deterministic=True)
+    assert legacy_bytes == _python_worker_status_capabilities_fixture().SerializeToString(
+        deterministic=True
+    )
+
+    current_view = worker_runtime_pb2.WorkerStatusResponse.FromString(legacy_bytes)
+    assert current_view == _python_worker_status_capabilities_fixture()
+    assert not current_view.capabilities.HasField("loaded_binding")
+    assert not current_view.capabilities.HasField("reasoning_evidence")
+
+
+def test_opt_in_observation_selector_and_live_variants_cross_n_and_n_minus_1() -> None:
+    selector = reasoning_pb2.ReasoningObservationRequest(
+        model_ref=common_pb2.ModelRef(
+            model_id="mlx-community/Qwen3-4B", version="sha256:orchard-fixture"
+        )
+    )
+    for current_class, old_name in [
+        (worker_runtime_pb2.WorkerStatusRequest, "orchard.worker.v1.WorkerStatusRequest"),
+        (runtime_pb2.StatusRequest, "cluster.v1.StatusRequest"),
+    ]:
+        request_bytes = current_class(reasoning_observation=selector).SerializeToString()
+        assert current_class.FromString(request_bytes).reasoning_observation == selector
+        old_view = _n_minus_1_class(old_name).FromString(request_bytes)
+        assert _unknown(old_view) == [(1, 2, selector.SerializeToString())]
+        assert _n_minus_1_class(old_name)().SerializeToString() == b""
+        assert not current_class.FromString(b"").HasField("reasoning_observation")
+
+    old_status = _n_minus_1_class("cluster.v1.StatusResponse")
+    capabilities = _reasoning_capabilities_fixture()
+    variants = {
+        "evidence": reasoning_pb2.ReasoningLiveObservation(
+            evidence=reasoning_pb2.ReasoningEvidence(
+                loaded_binding=capabilities.loaded_binding,
+                envelope=capabilities.reasoning_evidence,
+                service_incarnation=capabilities.service_incarnation,
+                remaining_freshness_ms=1_500,
+            )
+        ),
+        "non_advertising": reasoning_pb2.ReasoningLiveObservation(
+            non_advertising=reasoning_pb2.ReasoningNonAdvertising()
+        ),
+        "unknown": reasoning_pb2.ReasoningLiveObservation(unknown=reasoning_pb2.ReasoningUnknown()),
+    }
+    encoded = set()
+    for variant, observation in variants.items():
+        response_bytes = runtime_pb2.StatusResponse(
+            max_concurrency=4, reasoning_observation=observation
+        ).SerializeToString(deterministic=True)
+        decoded = runtime_pb2.StatusResponse.FromString(response_bytes)
+        assert decoded.reasoning_observation.WhichOneof("result") == variant
+        assert decoded.reasoning_observation == observation
+
+        old_view = old_status.FromString(response_bytes)
+        assert old_view.max_concurrency == 4
+        assert [number for number, _wire, _data in _unknown(old_view)] == [14]
+        encoded.add(response_bytes)
+
+    assert len(encoded) == 3
+    old_bytes = old_status(max_concurrency=4).SerializeToString()
+    assert not runtime_pb2.StatusResponse.FromString(old_bytes).HasField("reasoning_observation")
