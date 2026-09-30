@@ -11,18 +11,19 @@ The Apple Silicon macOS platform profile remains the only supported platform pro
 | --- | --- | --- |
 | Distribution | Ubuntu Server 24.04 LTS | Ubuntu 26.04 LTS, every other Ubuntu release, Debian, RHEL-family, Fedora, SUSE, Arch, immutable or image-based systems |
 | Architecture | x86_64 | arm64, ppc64le, s390x, RISC-V |
-| Kernel | 6.8 or newer from an Ubuntu 24.04 kernel line | custom kernels without the required systemd or cgroup behavior, WSL kernels |
+| Kernel | 6.8 or newer within the Ubuntu 24.04 hardware-enablement line | custom kernels without the required systemd or cgroup behavior, WSL kernels |
 | libc | glibc 2.39 or newer within Ubuntu 24.04 | musl and other libc implementations |
 | Init and cgroups | systemd 255 or newer as the system service manager, unified cgroup v2 | OpenRC, SysV init, user service managers, cgroup v1, containers used as the Node host |
-| Privilege | dedicated unprivileged non-login Agent identity | root, sudo, or a shared interactive account |
+| Privilege | root-administered setup; dedicated unprivileged non-login Agent identity | rootless installation, an Agent running as root or with sudo, or a shared interactive account |
 | Filesystem | local POSIX filesystem with ownership, mode, and atomic rename enforcement for the Node Identity Root | network filesystems or filesystems that cannot enforce ownership and atomic publication |
 | Network | operator-controlled private network with production BEAM TLS Distribution and certificate-authenticated gRPC control | Internet-exposed Node listeners, NAT traversal, tunnels or relays, outbound-only sessions, automatic transport fallback |
 | Roles on the host | Node Agent and its Worker Runtimes only | Controller, Console, or database roles on the candidate host |
 
 ## Installation path
 
-The candidate's current installation path is source development of the Node-only role from an exact source revision with the pinned toolchain in `mise.toml`.
-No Debian package, other package, container image, or other deployment artifact is defined.
+The candidate's proposed target installation path is source development of the Node-only role from an exact source revision with the pinned toolchain in `mise.toml`.
+That path is not yet operable on a candidate host.
+No Debian package, other package, container image, or other deployment artifact is defined, and executing source qualification requires no package, `Orchard.app`, or DMG build.
 A future Linux Node package, fixed filesystem layout, package-created service identity, package-owned unit, closed dependency manifest, or air-gapped media requires a fresh accepted OpenSpec proposal, a separate implementing pull request, and owner approval.
 The Distribution Pause in `SPEC.md` §11.0 is unaffected.
 Making the Node-only source path operable on a candidate host is future implementation work, and [`local-dev.md`](../local-dev.md) does not yet describe it.
@@ -41,6 +42,13 @@ A foreground developer session produces implementation evidence only.
 Unit, cgroup, PID, heartbeat, and runtime-directory facts are observations and never prove custody, release, or scheduling authority.
 Source upgrade and rollback follow cordon, accepted drain, stop, switch to another exact clean revision, start, reconcile, verify, and uncordon, and uncertain survivors keep the Node unschedulable.
 
+## Connectivity
+
+Source qualification uses certificate-authenticated control for enrollment, credential lifecycle, Peer Grant delivery and recovery, and diagnostics.
+Runtime Endpoint evidence uses Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM membership, as the [source-development BEAM Peer Grant tracer](../local-dev.md#source-dev-beam-peer-grant-tracer-experimental) does.
+Shared-cookie Distribution is not a substitute, gRPC compatibility is not the default Runtime Endpoint transport, and no new transport, outbound-only session, tunnel, relay, NAT traversal, or automatic fallback is added.
+Production BEAM stays limited to signed first-party releases on admitted Macs under `SPEC.md` §7.5.0, and the candidate stays outside it.
+
 ## Compatibility
 
 Controller `N` to Node Agent `N` and `N-1` is a reader and behavior compatibility window, not shared Node Identity Root authority.
@@ -57,7 +65,7 @@ Inventory never creates schedulable capacity, allocation, device binding, runtim
 
 ## Qualification gates
 
-Support requires every applicable gate on an exact clean source revision:
+Candidate source qualification requires every applicable gate below on an exact clean source revision:
 
 1. closed-matrix preflight that fails before mutation on unqualified hosts;
 2. Node Identity Root ownership and secret-permission checks;
@@ -65,9 +73,13 @@ Support requires every applicable gate on an exact clean source revision:
 4. provider-neutral inventory accuracy on representative CPU-only, NVIDIA, and AMD hosts without changing device configuration;
 5. credential renewal and revocation, Peer Grant rotation, and private-network reconnect under the accepted transport contract, excluding shared-cookie runs;
 6. redacted diagnostics through retained generic surfaces;
-7. model-free custody and mixed-version tests after the required release and targeting contracts are accepted;
-8. first-party release authenticity plus protected credential custody, trusted names, network restriction, and host controls before production BEAM admission; and
-9. the `macos_controller_linux_node_model_free` profile for both `N`/`N` and `N`/`N-1`, where `N-1` is an exact governed predecessor revision and missing predecessor or macOS host evidence leaves the gate unmet.
+7. model-free custody and mixed-version tests after the required release and targeting contracts are accepted; and
+8. the `macos_controller_linux_node_model_free` profile for both `N`/`N` and `N`/`N-1`, including exact worker-unit and resource-allocation targeting under separately accepted contracts.
 
-Runtime-provider work, such as CUDA, ROCm, or vLLM, needs its own separately authorized qualification of one exact hardware, provider, model, and profile tuple.
-Until every applicable gate passes, documentation and diagnostics call the profile experimental and do not claim Linux Node, distribution, CUDA, ROCm, vLLM, or model support.
+The `N-1` side is an exact commit and tree whose Product Version is earlier than and distinct from `N` and which governed previous-line evidence designates as the logical `N-1`.
+An older commit with the same Product Version or an arbitrary earlier version does not qualify, and missing designation, predecessor, or macOS host evidence leaves the gate unmet with no waiver.
+
+Passing source qualification does not make the candidate eligible for production BEAM or supported.
+Either outcome needs a future separately accepted release and trust profile, exact provenance and reverification, and the accountable product owner's decision.
+A one-H100 vLLM pilot needs its own separately authorized qualification of one immutable H100, vLLM, model, and serving-configuration tuple at concurrency one.
+Until those steps complete, documentation and diagnostics call the profile experimental and do not claim Linux Node, distribution, CUDA, ROCm, vLLM, or model support.

@@ -24,13 +24,14 @@ Broad claims such as Linux, CUDA, or vLLM support would also combine unrelated p
 ### Host matrix
 
 Define `ubuntu_24_04_x86_64_node` as an experimental Linux Node platform profile candidate.
-Its host baseline is Ubuntu Server 24.04 LTS on x86_64, a Linux kernel 6.8 or newer from an Ubuntu 24.04 kernel line, glibc 2.39 or newer within that release, systemd 255 or newer, and unified cgroup v2.
-Ubuntu 26.04 LTS, every other Ubuntu release, other distributions, other architectures, other libc implementations, other init systems, containers used as hosts, and WSL remain unqualified.
+Its host baseline is Ubuntu Server 24.04 LTS on x86_64, Linux kernel 6.8 or newer within the Ubuntu 24.04 hardware-enablement line, glibc 2.39 or newer within that release, systemd 255 or newer, and unified cgroup v2.
+Other Ubuntu releases, including Ubuntu 26.04 LTS, other distributions, architectures, libc implementations, init systems, containers-as-hosts, WSL, and rootless installation remain unqualified.
 
 ### Source development, not a package
 
-The candidate's current installation path is source development of the Node-only role of the portable Node Agent from an exact source revision with the pinned toolchain.
-No Debian package, other package, container image, or other deployment artifact is defined.
+The candidate's proposed target installation path is source development of the Node-only role of the portable Node Agent from an exact source revision with the pinned toolchain.
+That path is not yet operable on the candidate host, and qualification hosts run no Controller, Console, or database role.
+No Debian package, other package, container image, or other deployment artifact is defined, and executing source qualification requires no package, `Orchard.app`, or DMG build.
 Fixed filesystem layout, a package-created service identity, a package-owned unit, a bundled release runtime, a closed dependency manifest, air-gapped media, and package removal semantics are deferred to a future packaging contract that requires a fresh accepted proposal, a separate implementing pull request, and owner approval.
 
 ### Evidence binding
@@ -49,12 +50,13 @@ Linux lifecycle mechanics stay behind a Linux host lifecycle adapter with reloca
 
 ### Trust and connectivity
 
-The candidate uses only the accepted private-network model: certificate-backed enrollment, production BEAM TLS Distribution with Peer Grants, and certificate-authenticated gRPC for enrollment, credential lifecycle, Peer Grant delivery and recovery, diagnostics, and explicit compatibility.
-It adds no transport, outbound-only session, public Node listener, NAT traversal, tunnel or relay substitute, automatic fallback, or replay of an ambiguously accepted inference operation.
-Transitional shared-cookie operation is not candidate evidence.
-Because distributed Erlang is a high-trust code boundary, the candidate cannot join production BEAM until an exact first-party release for it proves release authenticity, protected credential custody, trusted names, restricted networking, host controls, and the named mixed-platform acceptance profile.
-Source-development revisions cannot satisfy that gate.
-This extends the [ADR 0012](0012-scoped-beam-peer-grants.md) evidence standard without declaring the candidate accepted or supported.
+The candidate uses only the accepted private-network certificate and Peer Grant model.
+Source qualification uses certificate-authenticated control for enrollment, credential lifecycle, Peer Grant delivery and recovery, and diagnostics, plus Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM membership.
+It substitutes no shared-cookie Distribution, does not make gRPC compatibility its default Runtime Endpoint transport, and adds no transport, outbound-only session, public Node listener, NAT traversal, tunnel or relay substitute, automatic fallback, or replay of an ambiguously accepted inference operation.
+Shared-cookie runs are not candidate evidence.
+The candidate stays outside production BEAM, and this decision does not change [ADR 0012](0012-scoped-beam-peer-grants.md) or its Mac-only production BEAM boundary.
+Source-qualification evidence is distinct from production BEAM eligibility and support.
+Production BEAM eligibility or a Linux Node support claim requires a future separately accepted release and trust profile that amends that boundary, exact provenance and reverification, and the accountable product owner's decision, and this decision does not formulate those future gates.
 
 ### Inventory and targeting
 
@@ -66,9 +68,11 @@ Operations that depend on worker-unit, resource-allocation, runtime-incarnation,
 ### Provider separation and acceptance
 
 Linux platform qualification stays separate from every runtime-provider, model, and workload qualification.
-Any runtime-provider pilot needs separate authorization and qualifies only one exact immutable hardware, provider, model, and profile tuple at concurrency one.
+A one-H100 runtime-provider pilot needs separate authorization and qualifies only one immutable H100, vLLM, model, and serving-configuration tuple at concurrency one.
 The `macos_controller_linux_node_model_free` acceptance profile pairs a qualified macOS Controller `N` with candidate Node Agent `N` and `N-1` using model-free fixtures and independently captured evidence from every participating host.
-The `N-1` side must be an exact governed predecessor revision, and missing predecessor or macOS evidence leaves the profile unmet rather than waived.
+It includes exact worker-unit and resource-allocation targeting and stays unmet until separately accepted contracts define that targeting and its implementation is accepted.
+The `N-1` side must be an exact commit and tree whose Product Version is earlier than and distinct from `N` and which governed previous-line evidence designates as the logical `N-1`, not merely an older commit or an arbitrary earlier version.
+This decision does not define that designation, and until accepted release-line governance does, or whenever predecessor or macOS evidence is missing, the profile stays unmet rather than waived.
 
 ### Scope boundary
 
@@ -79,7 +83,8 @@ A coordinated single-host composition requires its own accepted contract reconci
 ## Alternatives considered
 
 - Replay the package-first contract unchanged: rejected because it restores a distribution goal that `SPEC.md` §11 and §11.0 do not permit without fresh approval.
-- Apply a host-wide canonical source installation rule to every Linux Node: rejected because it would constrain developer worktrees and ordinary Nodes; evidence binding achieves provenance without it.
+- Apply a host-wide canonical source installation rule to the standalone candidate Node: rejected because it would constrain developer worktrees and ordinary Nodes, and evidence binding achieves provenance without it; a coordinated single-host composition may define its own installation rule under its own accepted contract, and this decision does not overrule it.
+- Generalize the production BEAM boundary to any host profile that passes evidence gates: rejected because it would widen the ADR 0012 trust boundary, which stays Mac-only.
 - Waive the `N-1` pairing for the first Linux revision: rejected because no predecessor would have exercised the compatibility window.
 - Add a relay or outbound-only session for hard-to-reach Nodes: rejected because it bypasses the private-network product boundary.
 
@@ -87,7 +92,8 @@ A coordinated single-host composition requires its own accepted contract reconci
 
 Later slices can implement a Linux adapter, identity ownership, inventory, and diagnostics without activating scheduling, packaging, or a runtime provider.
 Relocated-root tests give deterministic evidence, while real systemd, reboot, and source upgrade and rollback evidence still require a separately authorized host exercise.
-The `N`/`N-1` acceptance pairing remains unmet until an exact governed predecessor exists.
+The `N`/`N-1` acceptance pairing remains unmet until governed previous-line evidence designates an earlier distinct Product Version as the logical `N-1`.
+Source-qualification evidence does not by itself make the candidate eligible for production BEAM or support.
 Diagnostics use retained generic surfaces because support bundles are retired.
 Another distribution, architecture, or Ubuntu release requires its own evidence and an explicit contract update.
 

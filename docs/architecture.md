@@ -70,7 +70,7 @@ Profile kinds are qualified and composable:
 | Platform | Supported Apple Silicon macOS platform profile; accepted Linux Controller profile; proposed experimental Linux Node candidate | Host operating system, architecture, roles, and platform acceptance |
 | Distribution | macOS native distribution profile | Orchard.app, DMG, host lifecycle, paths, credential storage, rollback, retained state, and release evidence |
 | Runtime-provider | macOS MLX Node runtime profile | A Node role pairing the portable Node Agent with Apple Silicon, Metal, MLX-LM, the tokenizer stack, conformance, and real-runtime qualification |
-| Acceptance | mixed-platform acceptance profile | Evidence that a portable Controller, including Linux, operates admitted macOS MLX Nodes |
+| Acceptance | mixed-platform acceptance profile; proposed `macos_controller_linux_node_model_free` profile | Evidence that a portable Controller, including Linux, operates admitted macOS MLX Nodes; proposed model-free evidence that a macOS Controller operates the Linux Node candidate at `N` and `N-1` |
 
 Host-lifecycle adapters remain platform integration boundaries.
 Orchard.app and DMG remain deployment artifacts.

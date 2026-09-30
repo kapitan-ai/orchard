@@ -4,8 +4,10 @@
 - [x] 1.2 Record proposed ADR 0035 with an unused number, and verify both existing ADR 0034 records are unchanged
 - [x] 1.3 Reconcile `SPEC.md` §1.4, §4.1, §4.9, §7.5.0, §10.6, the §11 preamble, §13.4, and Milestone 9, and verify no text claims Linux Node, distribution, or runtime-provider support
 - [x] 1.4 Add the `linux-node-platform` capability and ADDED requirements for `platform-profiles`, `host-lifecycle-adapters`, and `packaging-deployment`, and verify strict change validation passes
-- [x] 1.5 Add `docs/platforms/linux-node.md` and update orientation references, and verify relative links resolve
-- [ ] 1.6 Obtain independent review and accountable owner acceptance of the exact revision before any task below starts
+- [x] 1.5 Add `docs/platforms/linux-node.md`, update orientation references including the `AGENTS.md` Milestone 9 row and the architecture acceptance-profile row, and verify relative links resolve
+- [x] 1.6 Resolve independent review findings in one bounded revision, restoring the Mac-only production BEAM sentence verbatim and leaving ADR 0012 unchanged
+- [ ] 1.7 Obtain independent re-review and accountable owner acceptance of the exact revision before any task below starts
+- [ ] 1.8 Only after owner acceptance, flip the proposed or pending labels in `SPEC.md` §1.4 and Milestone 9, ADR 0035 status, `docs/decisions/README.md`, `docs/architecture.md`, `docs/README.md`, `docs/local-dev.md`, `docs/platforms/linux-node.md`, and the `AGENTS.md` milestone row, and verify no text claims support
 
 ## 2. Source-development Node path and Linux adapter
 
@@ -23,8 +25,8 @@
 
 ## 4. Trust
 
-- [ ] 4.1 Reconcile the separate credential lifecycle contract into `SPEC.md` through its own reviewed change before implementing credential behavior
-- [ ] 4.2 Prove certificate renewal and revocation, Peer Grant rotation, private-network reconnect, local secret permissions, and stale-connection fail-closed behavior, and verify shared-cookie runs are excluded from evidence
+- [ ] 4.1 Propose a future credential lifecycle OpenSpec change reviewed under `docs/process.md` and reconcile it into `SPEC.md` before implementing credential behavior
+- [ ] 4.2 Prove certificate renewal and revocation, Peer Grant rotation, private-network reconnect, local secret permissions, and stale-connection fail-closed behavior through certificate-authenticated control and the controlled source-development Peer Grant TLS Distribution test mesh, and verify shared-cookie and gRPC compatibility runs are not used as the qualification transport
 - [ ] 4.3 Verify source revisions fail production BEAM admission before distribution membership
 
 ## 5. Custody and compatibility
@@ -34,13 +36,13 @@
 
 ## 6. Mixed-platform acceptance
 
-- [ ] 6.1 Identify an exact governed predecessor Node Agent revision before claiming the `N`/`N-1` pairing, and verify its absence leaves the gate unmet
-- [ ] 6.2 Run `macos_controller_linux_node_model_free` for both pairings with independently captured evidence from every participating host
+- [ ] 6.1 Identify the exact commit and tree whose earlier, distinct Product Version is designated as the logical `N-1` by accepted governed previous-line evidence, and verify that absence of such a designation leaves the gate unmet
+- [ ] 6.2 Run `macos_controller_linux_node_model_free` for both pairings, including exact worker-unit and resource-allocation targeting under accepted contracts, with independently captured evidence from every participating host
 
 ## 7. Provider gate
 
 - [ ] 7.1 Confirm every provider-neutral gate passes before any separately authorized runtime-provider pilot
-- [ ] 7.2 If separately authorized, qualify one exact immutable hardware, provider, model, and profile tuple at concurrency one without broader support claims
+- [ ] 7.2 If separately authorized, qualify one immutable H100, vLLM, model, and serving-configuration tuple at concurrency one without broader support claims
 
 ## 8. Validation
 
