@@ -24,7 +24,7 @@
 <p align="center">
   <a href="https://github.com/kapitan-ai/orchard/actions/workflows/required-validation.yml"><img alt="Orchard CI" src="https://github.com/kapitan-ai/orchard/actions/workflows/required-validation.yml/badge.svg?branch=main"></a>
   <a href="docs/tooling.md"><img alt="Elixir" src="https://img.shields.io/badge/Elixir-1.20.0--otp--29-4B275F?logo=elixir&logoColor=white"></a>
-  <a href="docs/tooling.md"><img alt="Erlang/OTP" src="https://img.shields.io/badge/Erlang%2FOTP-29.0.2-A90533?logo=erlang&logoColor=white"></a>
+  <a href="docs/tooling.md"><img alt="Erlang/OTP" src="https://img.shields.io/badge/Erlang%2FOTP-29.1.1-A90533?logo=erlang&logoColor=white"></a>
   <a href="mise.toml"><img alt="mise pinned" src="https://img.shields.io/badge/toolchain-mise--pinned-0F766E"></a>
   <a href="SPEC.md"><img alt="Spec-traced" src="https://img.shields.io/badge/build-spec--traced-2563EB"></a>
   <a href="openspec/README.md"><img alt="OpenSpec" src="https://img.shields.io/badge/OpenSpec-strict%20validation-2563EB"></a>

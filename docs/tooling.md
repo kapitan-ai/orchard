@@ -40,7 +40,7 @@ The pinned toolchain currently covers:
 
 | Tool | Pin | Purpose |
 |------|-----|---------|
-| Erlang/OTP | `29.0.2` | BEAM runtime, compiler, Dialyzer PLTs, releases |
+| Erlang/OTP | `29.1.1` | BEAM runtime, compiler, Dialyzer PLTs, releases |
 | Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
 | Python | `3.11.15` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
