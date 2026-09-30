@@ -2,12 +2,8 @@
 
 ### Requirement: Linux Node Candidate Defines No Distribution Artifact
 
-The experimental `ubuntu_24_04_x86_64_node` candidate SHALL define no distribution profile, package, container image, or other deployment artifact.
-Its proposed target installation path SHALL be source development consistent with `SPEC.md` §11.0, and that path is not yet operable on the candidate host.
-Executing candidate source qualification SHALL NOT require building a Linux Node package, `Orchard.app`, or a DMG and SHALL NOT add a distribution goal.
-A future Linux Node package, including any fixed filesystem layout, package-created service identity, package-owned service unit, closed dependency manifest, or air-gapped media, SHALL require a fresh accepted OpenSpec proposal, a separate implementing pull request, and the accountable product owner's approval before any artifact is built.
+The experimental `ubuntu_24_04_x86_64_node` candidate SHALL satisfy the no-artifact, not-yet-operable source-development target path, no-build source qualification, future-package approval, and no-publication rules in the `SPEC.md` §11 preamble, consistent with §11.0.
 Earlier package-first candidate material SHALL NOT authorize a Linux Node package build, installation, or distribution goal.
-Candidate source installation or qualification evidence SHALL NOT authorize publication, a release, or a Linux support claim.
 Candidate work SHALL NOT alter the Distribution Pause Control or assemble `Orchard.app` or a DMG.
 This requirement changes `SPEC.md` §11.
 

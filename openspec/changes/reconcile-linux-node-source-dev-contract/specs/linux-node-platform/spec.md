@@ -6,8 +6,7 @@ Defines the bounded experimental `ubuntu_24_04_x86_64_node` Linux Node candidate
 
 ### Requirement: Linux Node Candidate Has A Closed Host Matrix
 
-Orchard SHALL define `ubuntu_24_04_x86_64_node` as an experimental Linux Node platform profile candidate that requires Ubuntu Server 24.04 LTS on x86_64, Linux kernel 6.8 or newer within the Ubuntu 24.04 hardware-enablement line, glibc 2.39 or newer within that release, systemd 255 or newer, and unified cgroup v2.
-Other Ubuntu releases, including Ubuntu 26.04 LTS, other distributions, architectures, libc implementations, init systems, containers-as-hosts, WSL, and rootless installation SHALL remain unqualified.
+The `ubuntu_24_04_x86_64_node` candidate SHALL satisfy the closed experimental host matrix in `SPEC.md` §1.4, under which Ubuntu 26.04 LTS, other Ubuntu releases, and rootless installation remain unqualified.
 Defining, implementing, or testing the candidate SHALL NOT establish Linux Node support.
 This requirement changes `SPEC.md` §1.4.
 
@@ -19,11 +18,8 @@ This requirement changes `SPEC.md` §1.4.
 
 ### Requirement: Linux Node Candidate Targets Source Development
 
-The candidate's proposed target installation path SHALL be source development of the Node-only role of the portable Node Agent from an exact source revision with the pinned repository toolchain.
+The candidate SHALL follow the proposed Node-only source-development target path, no-artifact rule, no-build source qualification, and no Controller, Console, or database role on qualification hosts in `SPEC.md` §§1.4 and 11, and SHALL produce no Debian package or other deployment artifact.
 That path is not yet operable on the candidate host, and making it operable is future implementation work.
-The candidate SHALL NOT define or produce a Debian package, other package, container image, or other deployment artifact.
-Executing candidate source qualification SHALL NOT require building a Linux Node package, `Orchard.app`, or a DMG and SHALL NOT add a distribution goal.
-Candidate qualification hosts SHALL run no Controller, Console, or database role.
 This requirement changes `SPEC.md` §§1.4 and 11.
 
 #### Scenario: Contributor prepares the candidate
@@ -34,7 +30,7 @@ This requirement changes `SPEC.md` §§1.4 and 11.
 
 ### Requirement: Candidate Evidence Binds To An Exact Clean Source Revision
 
-Every candidate qualification record SHALL bind to the exact source commit and tree, clean-checkout proof, dependency lock identities, pinned toolchain identity, passing generated-output drift checks, and the observed host matrix facts.
+Every candidate qualification record SHALL satisfy the exact source evidence binding in `SPEC.md` Milestone 9 and SHALL also bind the observed host matrix facts.
 A dirty, unidentified, or drifted checkout SHALL produce implementation evidence only and SHALL NOT satisfy a qualification gate.
 Evidence binding SHALL NOT impose a host-wide canonical checkout location or single-checkout rule on developer worktrees, macOS hosts, or Nodes outside the candidate qualification host.
 This requirement changes `SPEC.md` Milestone 9.
@@ -47,8 +43,7 @@ This requirement changes `SPEC.md` Milestone 9.
 
 ### Requirement: Linux Node Agent Runs With Least Privilege
 
-Candidate qualification SHALL run the Node Agent as a dedicated unprivileged non-login service identity that owns its Node Identity Root.
-That identity SHALL have no sudo, package-mutation, database-credential, device-reset, or device-reconfiguration authority.
+Candidate qualification SHALL run the Node Agent under the dedicated least-privilege identity in `SPEC.md` §4.9, and that identity SHALL own its Node Identity Root.
 Agent operation as root, with sudo, or under a shared interactive account SHALL remain unqualified.
 Any fixed service-identity name belongs to a future separately approved packaging contract.
 This requirement changes `SPEC.md` §4.9.
@@ -61,8 +56,7 @@ This requirement changes `SPEC.md` §4.9.
 
 ### Requirement: One Agent Exclusively Owns One Node Identity Root
 
-Each candidate Node Agent SHALL hold a process-lifetime exclusive owner-only lock in its durable Node Identity Root and SHALL reject a second owner before enrollment, Runtime Endpoint activation, or Worker Runtime startup.
-Candidate qualification SHALL place that Node Identity Root on a local POSIX filesystem that enforces ownership, mode, and atomic rename.
+Each candidate Node Agent SHALL satisfy the exclusive owner-only Node Identity Root lock and local POSIX filesystem rules in `SPEC.md` §4.9.
 PID, heartbeat, runtime-directory, and process-name evidence SHALL NOT adopt an existing identity or process.
 This requirement changes `SPEC.md` §4.9.
 
@@ -74,9 +68,7 @@ This requirement changes `SPEC.md` §4.9.
 
 ### Requirement: Qualified Lifecycle Uses One Supervised Agent Without Creating Authority
 
-Candidate lifecycle qualification SHALL use one systemd system service unit that supervises exactly one Node Agent for one Node Identity Root, with the Agent and its Worker Runtime descendants in that unit's cgroup.
-The candidate qualification host SHALL run exactly one supervised candidate Agent.
-A foreground developer session SHALL produce implementation evidence only.
+Candidate lifecycle qualification SHALL satisfy the single supervised Agent, single qualification-host Agent, and foreground-session evidence rules in `SPEC.md` §4.9 and Milestone 9, with the Agent and its Worker Runtime descendants in that unit's cgroup.
 systemd, cgroup, PID, heartbeat, runtime-directory, and device observations SHALL NOT prove Orchard custody, native cessation, request-slot release, resource release, dispatch authority, or scheduling authority.
 This requirement changes `SPEC.md` §§4.9 and 13.4.
 
@@ -88,13 +80,7 @@ This requirement changes `SPEC.md` §§4.9 and 13.4.
 
 ### Requirement: Linux Connectivity Uses Existing Private-Network Trust
 
-The candidate SHALL use only the accepted private-network certificate and Peer Grant model.
-Its source qualification SHALL use certificate-authenticated control for enrollment, credential lifecycle, Peer Grant delivery and recovery, and diagnostics, plus Peer Grant-authorized TLS Distribution in a controlled model-free source-development test mesh outside production BEAM membership.
-Every participant in that test mesh, including the macOS Controller, SHALL be a source or test instance with no production BEAM membership, production credentials, or production data, so the mesh never bridges a source-revision Node into production trust.
-That source-qualification evidence SHALL remain distinct from production BEAM eligibility and support.
-The candidate SHALL NOT substitute shared-cookie Distribution, make gRPC compatibility its default Runtime Endpoint transport, or add a new Runtime Endpoint transport, an outbound-only Runtime Endpoint session, an Internet-exposed Node listener, NAT traversal, a tunnel or relay that substitutes for private-network reachability, automatic transport fallback, or replay of an ambiguously accepted inference operation.
-Reconnect SHALL revalidate current certificate, Node, admission, target, Peer Grant, and generation authority before accepting new work.
-Shared-cookie runs SHALL NOT count as candidate trust or qualification evidence.
+The candidate SHALL satisfy the private-network certificate and Peer Grant model in `SPEC.md` §10.6, including its source-qualification transport, its non-production test-mesh participants including the macOS Controller, the separation of that evidence from production BEAM eligibility and support, its prohibited transports, fallbacks, and replay, reconnect revalidation, and the exclusion of shared-cookie runs from evidence.
 This requirement changes `SPEC.md` §10.6.
 
 #### Scenario: Private-network session reconnects
@@ -123,9 +109,8 @@ This requirement changes `SPEC.md` §10.6.
 
 ### Requirement: Linux Node Candidate Stays Outside Production BEAM
 
-The candidate SHALL remain outside the production BEAM boundary, which `SPEC.md` §7.5.0 limits to signed first-party Orchard releases on operator-controlled admitted Macs inside restricted private networks.
+The candidate SHALL remain outside the Mac-only production BEAM boundary in `SPEC.md` §7.5.0 and SHALL require the separately accepted amendment, release and trust profile, and owner decision in `SPEC.md` §§1.4 and 7.5.0 before any Linux Node production BEAM eligibility or support claim.
 This contract SHALL NOT widen that boundary.
-Any production BEAM eligibility or support claim for a Linux Node SHALL require a separately accepted amendment of that boundary with an explicit release and trust profile, exact provenance and reverification, and the accountable product owner's decision.
 Source-qualification evidence, portable compilation, a successful transport probe, or certificate identity alone SHALL NOT satisfy that future gate.
 This requirement changes `SPEC.md` §§1.4, 7.5.0, and Milestone 9.
 
@@ -171,9 +156,8 @@ This requirement changes `SPEC.md` §13.4.
 
 ### Requirement: Runtime-Provider Qualification Remains Separate
 
-Linux Node platform qualification SHALL remain separate from every runtime-provider, acceleration, model, and workload qualification.
+Linux Node platform qualification SHALL remain separate from every runtime-provider, acceleration, model, and workload qualification, as `SPEC.md` §1.4 requires, and any one-H100 pilot SHALL follow the separately gated single-tuple bounds in `SPEC.md` Milestone 9.
 A successful candidate install, inventory check, or lifecycle test SHALL NOT qualify CUDA, ROCm, vLLM, a model, or a runtime-provider profile.
-A one-H100 runtime-provider pilot SHALL require separate authorization after every provider-neutral candidate gate passes and SHALL qualify only one immutable H100, vLLM, model, and serving-configuration tuple at concurrency one without implying broader support.
 This requirement changes `SPEC.md` §§1.4 and Milestone 9.
 
 #### Scenario: Candidate passes model-free qualification
@@ -184,12 +168,7 @@ This requirement changes `SPEC.md` §§1.4 and Milestone 9.
 
 ### Requirement: Mixed-Platform Acceptance Includes The Linux Node And A Designated Predecessor
 
-The `macos_controller_linux_node_model_free` acceptance profile SHALL pair a qualified macOS Controller `N` with candidate Node Agent versions `N` and `N-1`.
-Every participant, including the macOS Controller, SHALL be a source or test instance with no production BEAM membership, production credentials, or production data.
-It SHALL prove enrollment, admission, authenticated observation, exact worker-unit and resource-allocation targeting under separately accepted contracts, cancellation, drain, Agent restart, orphan handling, and peer isolation for both pairings with model-free fixtures and independently captured evidence from every participating host.
-The profile SHALL remain unmet until those targeting contracts are defined and their implementation is accepted.
-The `N-1` side SHALL use an exact predecessor Node Agent revision, identified by commit and tree, whose Product Version is earlier than and distinct from `N` and which governed previous-line evidence designates as the logical `N-1` of `SPEC.md` §13.1.
-An older commit, a revision sharing `N`'s Product Version, or an arbitrary earlier version SHALL NOT qualify as `N-1`.
+The `macos_controller_linux_node_model_free` acceptance profile SHALL satisfy the `N`/`N` and `N`/`N-1` pairing, non-production participant, model-free proof, independent host evidence, exact worker-unit and resource-allocation targeting, and exact earlier-distinct-Product-Version predecessor requirements in `SPEC.md` Milestone 9 and §13.1, and SHALL remain unmet until those targeting contracts are defined and their implementation is accepted.
 This contract SHALL NOT define that designation, and until accepted release-line governance defines it the `N-1` pairing SHALL remain unmet.
 Missing predecessor or macOS host evidence SHALL leave the profile unmet, and no support-window floor, first-release exemption, or synthetic predecessor SHALL waive the `N-1` pairing.
 This requirement changes `SPEC.md` Milestone 9.
@@ -214,8 +193,7 @@ This requirement changes `SPEC.md` Milestone 9.
 
 ### Requirement: Standalone Node Contract Defines No Single-Host Composition
 
-This contract SHALL define only a standalone candidate Node.
-It SHALL NOT define, authorize, or qualify a Linux Controller, a managed or local Postgres, or a composition that places a Controller, Postgres, and Node on one candidate host.
+This contract SHALL define only the standalone candidate Node in `SPEC.md` §1.4 and SHALL NOT define, authorize, or qualify a Linux Controller, a managed or local Postgres, or a composition that places a Controller, Postgres, and Node on one candidate host.
 A coordinated single-host composition SHALL require its own accepted contract reconciled into `SPEC.md` before implementation.
 This requirement changes `SPEC.md` §§1.4 and 11.
 
