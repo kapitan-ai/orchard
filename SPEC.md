@@ -6,7 +6,9 @@ It is intended for a coding agent that will build the system incrementally.
 “SHOULD” is a strong recommendation.
 
 The Apple Silicon macOS platform profile is the only currently supported platform profile.
-Within that profile, the app-installed all-in-one topology and the validated source-development split-role topology are current, while packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps.
+Within that profile, source development, including the validated source-development split-role topology, is the current active installation path.
+The app-installed all-in-one topology is the approved macOS native distribution topology, but new `Orchard.app` and DMG distribution is paused under §11.0 and produces no artifacts while that pause holds.
+Packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps.
 Current Controller-bearing installations require operator-provided external Postgres, Managed Database Mode remains future Milestone 6 work, and Active/Standby operation remains a Milestone 7 target.
 The first accepted platform-expansion target is a Linux Controller Host with operator-provided external Postgres dispatching to admitted macOS Apple Silicon Nodes using the MLX runtime provider.
 That Linux Controller profile SHALL NOT be represented as supported until the Milestone 8 acceptance contract passes.
@@ -29,7 +31,8 @@ Current and accepted deployment modes:
 
 1. **All-in-one single node**
 
-   * current app-installed topology
+   * approved app-installed topology; new `Orchard.app` and DMG distribution is paused under §11.0
+   * source-development single-node operation is the current active installation path
    * 1 Mac runs:
 
      * control plane
@@ -164,6 +167,7 @@ Defining or accepting a profile does not declare it supported; a support claim r
 
 The current Apple Silicon macOS platform profile SHALL preserve the accepted Controller and Node behavior of the all-in-one and split-role topologies at their documented support status.
 The macOS native distribution profile SHALL use `Orchard.app` inside a DMG and SHALL preserve launchd, Keychain, app-owned lifecycle, rollback, retained-state, signing, notarization, and stapling requirements.
+Distribution under that profile is currently paused by the committed control defined in §11.0.
 The macOS MLX Node runtime profile SHALL qualify a Node role that pairs the portable Node Agent with Apple Silicon, Metal, the MLX-LM runtime provider, the tokenizer stack, provider-neutral conformance, and real MLX runtime acceptance.
 The Node Agent SHALL remain part of the portable Orchard control-plane core and MUST NOT become provider-specific through a runtime-provider profile.
 Managed local Postgres mode SHALL remain target behavior of the macOS native distribution profile using Apple Silicon-compatible local containerization, with Apple’s Containerization project or the open-source `container` implementation as the supported local runtime path.
@@ -5499,6 +5503,25 @@ Any future native package or additional distribution channel SHALL require a fre
 
 Apple recommends notarization for directly distributed macOS software, and a signed DMG is a preferred direct-distribution format outside the App Store. ([Apple Developer][8])
 
+### 11.0 Distribution Pause
+
+Native `Orchard.app` and DMG distribution is paused until the accountable product owner explicitly lifts the pause.
+The committed Distribution Pause Control `packaging/distribution-control` is the only switch.
+Distribution SHALL be treated as active only when that control is a regular, readable, non-symlink file that declares exactly one `state=active` line; any other content or state SHALL be treated as paused.
+
+While paused:
+
+* source development, as documented in `docs/local-dev.md`, SHALL be the current active Orchard installation path
+* every repository entrypoint that assembles or signs `Orchard.app`, or assembles, notarizes, staples, or publishes a DMG, SHALL refuse before any build, signing, image, credential, or network step with exit status `78`, and MAY still print help
+* no environment variable, command-line flag, or substituted tool SHALL resume distribution
+* required validation SHALL skip the Orchard.app and DMG assembly lane and SHALL treat it as inapplicable, while payload, payload signing-contract, Swift package, relocated-root service-lifecycle, packaged `orchardctl`, macOS native-helper, portable, conformance, MLX, and OpenSpec validation continue unchanged
+* §11.1 through §11.4, §11.7, and §11.8 remain the approved design for any resumed distribution, but no artifact under them is produced, and documentation SHALL NOT present native app or DMG distribution as currently available
+
+The Swift app package, shared payload, signing and verification tooling, and dormant assembly tests SHALL remain in the repository rather than being removed.
+Payload staging and credential-free payload signing contracts remain available because they produce no installable `Orchard.app` or DMG.
+Resuming distribution SHALL require a reviewed pull request that sets `state=active` with the accountable product owner's explicit approval; that change also re-enables the assembly lane.
+Resuming SHALL NOT by itself satisfy the public binary release decision or any release gate in this section.
+
 ### 11.1 Installed components
 
 Required installed artifacts:
@@ -5991,8 +6014,8 @@ Acceptance:
 
 * controller starts on macOS
 * node agent starts on macOS
-* `Orchard.app` assembles as a valid app bundle and passes sandboxed service-lifecycle rollback and retention tests
-* the verified app assembles into a mountable DMG without nested signature or entitlement drift
+* `Orchard.app` assembles as a valid app bundle and passes sandboxed service-lifecycle rollback and retention tests; bundle assembly evidence is suspended while §11.0 pauses distribution, and the relocated-root lifecycle rollback and retention tests continue
+* the verified app assembles into a mountable DMG without nested signature or entitlement drift; this evidence is suspended while §11.0 pauses distribution
 * the app-owned lifecycle installs launchd services correctly
 
 ### Milestone 1 - Single-node inference MVP
@@ -6148,9 +6171,9 @@ Deliver:
 Acceptance:
 
 * portable Orchard control-plane core applications compile, lint, test, and produce coverage in the required Linux portability lane without Xcode, launchd, MLX, CUDA, or Darwin native-helper compilation
-* macOS host-lifecycle, Orchard.app/DMG, and MLX validation run as separate applicable macOS lanes
+* macOS host-lifecycle, Orchard.app/DMG, and MLX validation run as separate applicable macOS lanes, with the Orchard.app and DMG assembly lane inapplicable while §11.0 pauses distribution
 * credential-free signing-contract validation remains distinct from release-only Developer ID signing, notarization, stapling, and publication
-* macOS all-in-one, split-role, Orchard.app, DMG, launchd, retained-state, air-gap, and MLX acceptance remain green
+* macOS all-in-one, split-role, Orchard.app, DMG, launchd, retained-state, air-gap, and MLX acceptance remain green, except that Orchard.app and DMG assembly acceptance is suspended rather than regressed while §11.0 pauses distribution
 * the Controller release does not load CLI implementation to obtain Controller authority
 * the portable CLI does not require direct Repo authority or Darwin native compilation for normal Controller-state operations
 * Worker Runtime contracts have provider-neutral ownership, generated bindings, version negotiation, drift checks, and conformance coverage

@@ -77,13 +77,14 @@ Orchard.app and DMG remain deployment artifacts.
 Neither is a profile.
 The portable Node Agent stays inside the portable Orchard control-plane core and does not become provider-specific under a runtime-provider profile.
 
-The supported v1 Apple Silicon macOS platform profile covers the current app-installed all-in-one path and the validated source-development split-role path.
+The supported v1 Apple Silicon macOS platform profile covers the approved app-installed all-in-one path and the validated source-development split-role path.
+Native `Orchard.app` and DMG distribution is currently paused under `SPEC.md` §11.0, so source development is the current active installation path.
 Packaged multi-Mac operation remains a first-cut rehearsal path with unresolved production acceptance gaps, and Active/Standby operation remains a Milestone 7 target.
 The accepted Linux Controller profile is headless, uses external Postgres, and does not imply a local Node Agent, accelerator runtime, or Apple dependency.
 The mixed-platform acceptance profile becomes satisfied only after Milestone 8 build, conformance, packaging, upgrade, rollback, security, and topology acceptance passes.
 Until then, the Linux Controller profile remains an accepted target rather than a current support claim.
 
-The approved macOS native distribution design remains `Orchard.app` inside a DMG.
+The approved macOS native distribution design remains `Orchard.app` inside a DMG, and its distribution is paused by the committed `packaging/distribution-control`.
 `SPEC.md` §11 owns the source-availability, supported public binary, and licensing contract for that profile.
 
 A Controller Host is the machine that runs a Controller release.

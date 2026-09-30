@@ -4,6 +4,41 @@ The approved macOS native distribution profile uses a DMG whose primary interact
 The app owns the root-authorized service lifecycle and installs the shared distribution-neutral payload.
 Source availability does not promise a supported public binary or bypass the release gates documented below.
 
+## Distribution pause
+
+Native `Orchard.app` and DMG distribution is paused (`SPEC.md` §11.0).
+Source development, documented in [`docs/local-dev.md`](../../docs/local-dev.md), is the current active installation path.
+The rest of this runbook describes the approved design and the dormant tooling that returns when the pause is lifted; none of it is a currently available distribution.
+
+`packaging/distribution-control` is the only switch and is committed as `state=paused`.
+While paused, `scripts/build-app.sh`, `scripts/sign-app.sh`, and `scripts/build-dmg.sh` refuse with exit status `78` after argument parsing and before any build, signing, image, notarization, stapling, or publication step.
+`--help` still works.
+A missing, symlinked, unreadable, duplicated, or malformed control also counts as paused.
+No environment variable or flag resumes distribution.
+CI skips the `Orchard.app and DMG assembly validation` job, and the required gate treats that skip as expected.
+
+These stay available while paused because they produce no installable app or DMG:
+
+- `scripts/build-payload.sh` and the payload signing and verification scripts
+- `scripts/verify-app-signing.sh`
+- the Swift package build and unit tests, and `scripts/test-app-service-lifecycle.sh` in a relocated root
+- the packaged `orchardctl` wrapper tests
+
+`scripts/test-distribution-control.sh` proves the guards with fixture trees and fake tools.
+It never assembles an app or a DMG.
+
+### Re-enable procedure
+
+Only Najib Ninaba, the accountable product owner, can approve resuming distribution.
+
+1. Get Najib's explicit approval to resume.
+2. Open a pull request that changes `packaging/distribution-control` to `state=active`.
+   In the same pull request, update the committed-state assertion in `scripts/test-distribution-control.sh` and the paused wording in `SPEC.md` §1, §1.4, §11.0, and the milestone acceptance lists, and in `AGENTS.md`, `docs/tooling.md`, `docs/process.md`, `docs/local-dev.md`, `docs/operator-journey.md`, `docs/README.md`, `docs/architecture.md`, `README.md`, `SECURITY.md`, `packaging/README.md`, and this runbook.
+3. Record Najib's approval in that pull request.
+   CI then runs the `Orchard.app and DMG assembly validation` job, and it must pass.
+4. Merge only after review.
+   Resuming does not approve a public binary release; every release decision and gate below still applies.
+
 The first productization slice proves app assembly, install/update/uninstall behavior in a relocated root, inner-first signing, local Amore DMG assembly, mounted-app verification, and nested-signature preservation.
 Sparkle, broad updater UX, managed-device deployment, and destructive host installation remain outside this slice.
 
@@ -130,5 +165,6 @@ A failure before that verification point removes the partial DMG and sidecar out
 ## Validation
 
 Run the Swift and integration workflow documented in `AGENTS.md` and `docs/tooling.md`.
-Use `ORCHARD_TEST_REAL_AMORE=1 scripts/test-build-dmg.sh` for the local installed-Amore smoke without credentials or upload.
+While distribution is paused, that workflow skips the app and DMG assembly tests.
+After distribution is resumed, use `ORCHARD_TEST_REAL_AMORE=1 scripts/test-build-dmg.sh` for the local installed-Amore smoke without credentials or upload.
 Run `spctl` and stapler validation only against a real Developer ID signed and notarized artifact.

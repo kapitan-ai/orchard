@@ -2,6 +2,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DISTRIBUTION_CONTROL_LIB="$REPO_ROOT/scripts/lib/distribution-control.sh"
+if [[ ! -f "$DISTRIBUTION_CONTROL_LIB" ]]; then
+  printf 'build-dmg: distribution control library is missing; refusing\n' >&2
+  exit 78
+fi
+# shellcheck source=scripts/lib/distribution-control.sh
+source "$DISTRIBUTION_CONTROL_LIB"
 VERIFY_MODE=""
 IDENTITY=""
 NOTARY_PROFILE=""
@@ -111,6 +118,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# A paused refusal must not run cleanup, which removes the --output path.
+if ! orchard_require_distribution_active "$REPO_ROOT" build-dmg; then
+  trap - EXIT INT TERM
+  exit "$ORCHARD_DISTRIBUTION_PAUSED_STATUS"
+fi
 
 if [[ -z "$VERIFY_MODE" || ! -d "$INPUT" || -z "$OUTPUT" ]]; then
   usage >&2

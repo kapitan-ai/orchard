@@ -1,0 +1,16 @@
+# Orchard Distribution Pause Control for the macOS native distribution profile.
+#
+# state=paused makes scripts/build-app.sh, scripts/sign-app.sh, and
+# scripts/build-dmg.sh refuse with exit status 78 before building, signing,
+# assembling, notarizing, stapling, or publishing anything, and CI skips the
+# Orchard.app and DMG assembly lane. Source development is the current active
+# installation path while paused.
+#
+# Only exactly one "state=active" line resumes distribution. A missing,
+# symlinked, unreadable, duplicated, or malformed state fails closed as paused.
+# No environment variable or command-line flag overrides this file.
+#
+# Resuming requires a reviewed pull request that changes this line with the
+# explicit approval of Najib Ninaba, the accountable product owner.
+# See packaging/dmg/README.md, "Distribution pause".
+state=paused

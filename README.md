@@ -245,6 +245,7 @@ Current limits:
 - There is no supported public binary.
 
 The approved native macOS distribution design is a signed and notarized DMG containing `Orchard.app` with launchd-managed services.
+That distribution is currently paused (`SPEC.md` §11.0), so source development in [`docs/local-dev.md`](docs/local-dev.md) is the current installation path.
 Any public binary requires a separate release decision and completion of its build, verification, signing, notarization, stapling, and publication gates.
 See [`packaging/dmg/README.md`](packaging/dmg/README.md) for those gates.
 
