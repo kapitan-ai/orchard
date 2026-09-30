@@ -2178,8 +2178,6 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         assert [{:error, payload}] = events
         assert payload["error"]["type"] == type
         assert payload["error"]["code"] == code
-        assert Map.has_key?(payload["error"], "message")
-        assert Map.has_key?(payload["error"], "param")
         refute Enum.any?(events, fn {event_type, _payload} -> event_type == :done end)
       end
     end

@@ -44,6 +44,26 @@ defmodule Orchard.Inference.EventUsageTest do
     end
   end
 
+  test "SPEC.md §12.4 (#329): regressing input rejects otherwise non-regressing output" do
+    events = [
+      InferenceEvent.usage_update(%InferenceEvent.Usage{
+        input_tokens: 3,
+        output_tokens: 5,
+        total_tokens: 8
+      }),
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 2, output_tokens: 5, total_tokens: 7}
+      )
+    ]
+
+    assert EventUsage.terminal(events) == %{
+             input_tokens: 3,
+             output_tokens: 5,
+             output_usage_status: "lower_bound"
+           }
+  end
+
   defp usage(output),
     do: %InferenceEvent.Usage{input_tokens: 3, output_tokens: output, total_tokens: 3 + output}
 end

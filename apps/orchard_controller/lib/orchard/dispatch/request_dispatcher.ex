@@ -1695,9 +1695,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp stream_error_result(
          %{accepted?: true, cancellation_started_before_acceptance?: false} = loop_ctx,
          events,
-         metrics,
+         _metrics,
          reason
        ) do
+    loop_ctx = put_completed_usage(loop_ctx, events)
+    metrics = loop_ctx.metrics
+
     failed_event =
       InferenceEvent.failed(
         "stream_error",
@@ -1909,44 +1912,18 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     drain_until_terminal_or_done(loop_ctx, events, reason, deadline)
   end
 
-  defp drain_done_result(%{conformance_defect: defect} = loop_ctx, events, _cancel_reason)
+  defp drain_done_result(%{conformance_defect: defect} = loop_ctx, events, _reason)
        when defect != :none do
     synthesize_terminal_contract_failure(loop_ctx, events, loop_ctx.metrics, defect)
   end
 
-  defp drain_done_result(
-         %{
-           terminal_event: %InferenceEvent{event: %InferenceEvent.Completed{}} = terminal_event
-         } = loop_ctx,
-         events,
-         cancel_reason
-       )
-       when cancel_reason in [:timeout, :caller_disconnect, :client_disconnect] do
-    normalized_reason =
-      if cancel_reason == :timeout, do: :timeout, else: :caller_disconnect
-
-    terminal_usage = EventUsage.terminal(Enum.reverse([terminal_event | events]))
-    loop_ctx = put_in(loop_ctx.metrics.terminal_usage, terminal_usage)
-
-    synthesize_cancel_terminal(loop_ctx, events, normalized_reason, "")
-  end
-
-  defp drain_done_result(
-         %{
-           terminal_event: %InferenceEvent{event: %InferenceEvent.Completed{}} = terminal_event
-         } = loop_ctx,
-         events,
-         cancel_reason
-       ) do
-    drain_terminal_result(loop_ctx, events, terminal_event, cancel_reason)
-  end
-
   defp drain_done_result(loop_ctx, events, cancel_reason)
        when cancel_reason in [:timeout, :caller_disconnect, :client_disconnect] do
-    normalized_reason =
-      if cancel_reason == :timeout, do: :timeout, else: :caller_disconnect
+    normalized_reason = if cancel_reason == :timeout, do: :timeout, else: :caller_disconnect
 
-    synthesize_cancel_terminal(loop_ctx, events, normalized_reason, "")
+    loop_ctx
+    |> put_completed_usage(events)
+    |> synthesize_cancel_terminal(events, normalized_reason, "")
   end
 
   defp drain_done_result(
@@ -1954,13 +1931,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
          events,
          cancel_reason
        ) do
-    drain_terminal_result(loop_ctx, events, terminal_event, cancel_reason)
-  end
-
-  defp drain_done_result(loop_ctx, events, cancel_reason),
-    do: synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
-
-  defp drain_terminal_result(loop_ctx, events, terminal_event, cancel_reason) do
     loop_ctx = record_delivery(loop_ctx, terminal_event)
 
     stream_terminal_result(
@@ -1971,6 +1941,25 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     )
   end
 
+  defp drain_done_result(loop_ctx, events, cancel_reason),
+    do: synthesize_cancel_terminal(loop_ctx, events, cancel_reason, "")
+
+  # SPEC.md §12.4: once the stream closes, a buffered Completed can prove exact
+  # usage only when it validates against the attempt's full cumulative history.
+  defp put_completed_usage(
+         %{terminal_event: %InferenceEvent{event: %InferenceEvent.Completed{}} = completed} =
+           loop_ctx,
+         events
+       ) do
+    terminal_usage = EventUsage.terminal(Enum.reverse([completed | events]))
+    put_in(loop_ctx.metrics.terminal_usage, terminal_usage)
+  end
+
+  defp put_completed_usage(loop_ctx, _events), do: loop_ctx
+
+  # A Completed buffered before the drain deadline does not prove exact usage while
+  # the stream is still open, so the synthesized terminal keeps the latest validated
+  # lower bound (SPEC.md §12.4 "when proven").
   defp cancel_drain_timeout_result(loop_ctx, events, cancel_reason) do
     result =
       case loop_ctx.conformance_defect do

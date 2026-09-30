@@ -701,7 +701,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
 
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
-  alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.TestSupport.{DispatchCapacityFixtures, DispatchDeadline}
 
   def connect(target), do: {:ok, target}
 
@@ -789,45 +789,19 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
         emit_events(owner, stream_ref, request.request_id, next_execute_events())
         send(owner, {:runtime_endpoint_done, stream_ref, :ok})
 
-      %{
-        before_timeout: before_timeout,
-        during_drain: during_drain,
-        wait_for_deadline?: wait_for_deadline?
-      } ->
-        emitter = start_timeout_emitter(owner, stream_ref, request.request_id, during_drain)
-
-        Process.put({__MODULE__, :timeout_emitter}, emitter)
-        emit_events(owner, stream_ref, request.request_id, before_timeout)
-        maybe_wait_for_deadline(request.deadline_unix_ms, wait_for_deadline?)
+      %{before_cancel: before_cancel, trigger: trigger} = fixture ->
+        Process.put({__MODULE__, :cancel_drain}, {owner, stream_ref, request.request_id, fixture})
+        emit_events(owner, stream_ref, request.request_id, before_cancel)
+        fire_cancel_trigger(trigger)
     end
 
     {:ok, stream_ref}
   end
 
-  defp start_timeout_emitter(owner, stream_ref, request_id, during_drain) do
-    spawn(fn ->
-      await_timeout_cancel(owner, stream_ref, request_id, during_drain)
-    end)
-  end
-
-  defp maybe_wait_for_deadline(deadline_unix_ms, true) do
-    remaining_ms = deadline_unix_ms - System.system_time(:millisecond)
-
-    if remaining_ms > 0, do: Process.sleep(remaining_ms + 1)
-  end
-
-  defp maybe_wait_for_deadline(_deadline_unix_ms, false), do: :ok
-
-  defp await_timeout_cancel(owner, stream_ref, request_id, during_drain) do
-    receive do
-      :cancel ->
-        Enum.each(during_drain, fn event ->
-          send(owner, {:runtime_endpoint_event, stream_ref, request_id, event})
-        end)
-
-        send(owner, {:runtime_endpoint_done, stream_ref, :ok})
-    end
-  end
+  # The pre-cancel events are already queued, so the deadline cannot beat them.
+  defp fire_cancel_trigger({:deadline, session}), do: DispatchDeadline.fire(session)
+  defp fire_cancel_trigger({:caller_exit, caller}), do: send(caller, :exit)
+  defp fire_cancel_trigger(:event_handler), do: :ok
 
   defp emit_events(owner, stream_ref, request_id, events) do
     send(owner, {:runtime_endpoint_event, stream_ref, request_id, InferenceEvent.accepted(0)})
@@ -852,9 +826,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
   end
 
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts) do
-    case Process.get({__MODULE__, :timeout_emitter}) do
-      emitter when is_pid(emitter) -> send(emitter, :cancel)
-      _missing -> :ok
+    case Process.delete({__MODULE__, :cancel_drain}) do
+      {owner, stream_ref, request_id, %{during_drain: during_drain, done_result: done_result}} ->
+        Enum.each(during_drain, fn event ->
+          send(owner, {:runtime_endpoint_event, stream_ref, request_id, event})
+        end)
+
+        send(owner, {:runtime_endpoint_done, stream_ref, done_result})
+
+      nil ->
+        :ok
     end
 
     :ok
@@ -1200,6 +1181,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.RequestServer
   alias Orchard.RuntimeEndpoint.Target
+  alias Orchard.TestSupport.DispatchDeadline
   alias Orchard.TestSupport.TerminalCardinality
 
   setup :setup_sentry_context
@@ -1248,8 +1230,6 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       restore_pre_await_queue_result(previous_pre_await_queue_result)
       restore_live_capacity_owner(previous_live_capacity_owner)
       Process.delete({StubRuntimeEndpointClient, :ensure_model_loaded_result})
-      Process.delete({StubRuntimeEndpointClient, :timeout_fixture})
-      Process.delete({StubRuntimeEndpointClient, :timeout_emitter})
       QueueManager.reset()
       ModelManager.reset()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
@@ -3385,7 +3365,6 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal["output_committed"]
     assert terminal["output_tokens"] == 0
     assert terminal["output_usage_status"] == "lower_bound"
-    refute terminal["output_usage_status"] == "exact"
   end
 
   test "SPEC.md §§3.7.1, 12.4 (#329): timeout persists the latest positive usage update",
@@ -3555,7 +3534,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
         "request-orchestrator-disconnect-buffered-completion",
         [InferenceEvent.output_text_delta("disconnect")],
         [completed],
-        wait_for_deadline?: false
+        trigger: :event_handler
       )
 
     handler = fn _request_id, event ->
@@ -3579,6 +3558,114 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert terminal["failure_class"] == "cancellation"
     assert terminal["failure_code"] == "request_caller_disconnect"
     assert terminal["output_tokens"] == 6
+    assert terminal["output_usage_status"] == "exact"
+  end
+
+  test "SPEC.md §§3.7.1, 5.3, 5.8 (#329): buffered completion proves exact usage when the caller process exits",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 6, total_tokens: 7}
+      )
+
+    caller = spawn_link(fn -> receive do: (:exit -> :ok) end)
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-caller-exit-buffered-completion",
+        [usage_update(2), InferenceEvent.output_text_delta("caller exit")],
+        [completed],
+        trigger: {:caller_exit, caller}
+      )
+
+    assert {:ok, ^canonical, events} =
+             RequestOrchestrator.execute(canonical, model, caller: caller)
+
+    assert %InferenceEvent{event: %InferenceEvent.Failed{code: "request_caller_disconnect"}} =
+             List.last(events)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.http_status == 499
+    assert request.error_code == "request_caller_disconnect"
+    assert request.output_tokens == 6
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "cancelled"
+    assert terminal["failure_code"] == "request_caller_disconnect"
+    assert terminal["output_tokens"] == 6
+    assert terminal["output_usage_status"] == "exact"
+  end
+
+  test "SPEC.md §12.4 (#329): buffered completion with regressing input keeps the prior timeout bound",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 2, output_tokens: 7, total_tokens: 9}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-regressing-input-completion",
+        [usage_update(5, 3), InferenceEvent.output_text_delta("complete")],
+        [completed]
+      )
+
+    assert {:ok, ^canonical, _events} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.output_tokens == 5
+    assert request.output_usage_status == :lower_bound
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 5
+    assert terminal["output_usage_status"] == "lower_bound"
+  end
+
+  test "SPEC.md §12.4 (#329): buffered completion remains exact when the stream closes with an error",
+       %{bundle: bundle} do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 7, total_tokens: 8}
+      )
+
+    {model, canonical} =
+      configure_legacy_timeout!(
+        bundle,
+        "request-orchestrator-timeout-completion-stream-error",
+        [usage_update(5), InferenceEvent.output_text_delta("complete")],
+        [completed],
+        done_result: {:error, :stream_failed}
+      )
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    refute Enum.any?(events, &match?(%InferenceEvent{event: %InferenceEvent.Completed{}}, &1))
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "request_timeout"
+    assert request.output_tokens == 7
+    assert request.output_usage_status == :exact
+
+    terminal =
+      request |> Requests.list_request_step_events() |> List.last() |> Map.fetch!(:result)
+
+    assert terminal["attempt_outcome"] == "timed_out"
+    assert terminal["output_tokens"] == 7
     assert terminal["output_usage_status"] == "exact"
   end
 
@@ -5587,7 +5674,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   defp configure_legacy_timeout!(
          bundle,
          model_id,
-         before_timeout,
+         before_cancel,
          during_drain \\ [],
          opts \\ []
        ) do
@@ -5597,25 +5684,31 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     put_auto_runtime_endpoint_scheduler_config([target])
     stub_runtime_status(target, runtime_status(node.id, target))
 
+    trigger =
+      case Keyword.get(opts, :trigger, :deadline) do
+        :deadline -> {:deadline, DispatchDeadline.capture()}
+        trigger -> trigger
+      end
+
     Process.put(
       {StubRuntimeEndpointClient, :timeout_fixture},
       %{
-        before_timeout: before_timeout,
+        before_cancel: before_cancel,
         during_drain: during_drain,
-        wait_for_deadline?: Keyword.get(opts, :wait_for_deadline?, true)
+        done_result: Keyword.get(opts, :done_result, :ok),
+        trigger: trigger
       }
     )
 
     model = create_active_model!(bundle, model_id)
-    canonical = canonical_request(model_id, stream?: true, admission: %{timeout_ms: 250})
-    {model, canonical}
+    {model, canonical_request(model_id, stream?: true)}
   end
 
-  defp usage_update(output_tokens) do
+  defp usage_update(output_tokens, input_tokens \\ 1) do
     InferenceEvent.usage_update(%InferenceEvent.Usage{
-      input_tokens: 1,
+      input_tokens: input_tokens,
       output_tokens: output_tokens,
-      total_tokens: 1 + output_tokens
+      total_tokens: input_tokens + output_tokens
     })
   end
 

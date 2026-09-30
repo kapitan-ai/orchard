@@ -271,6 +271,64 @@ defmodule Orchard.Dispatch.DispatchTest.HoldAfterAcceptClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.Dispatch.DispatchTest.BufferedCompletionClient do
+  @moduledoc false
+
+  alias Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+  alias Orchard.InferenceEvent
+  alias Orchard.InferenceEvent.Usage
+  alias Orchard.RuntimeEndpoint.Operation
+
+  defdelegate connect(target), to: DisconnectRaisingClient
+  defdelegate status(channel, opts), to: DisconnectRaisingClient
+  defdelegate ensure_model_loaded(channel, request, opts), to: DisconnectRaisingClient
+
+  def disconnect(_channel), do: {:ok, :disconnected}
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.fetch!(opts, :owner)
+    ref = make_ref()
+    Process.put({__MODULE__, :stream}, {owner, ref, request.request_id})
+
+    send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
+
+    send(
+      owner,
+      {:runtime_endpoint_event, ref, request.request_id,
+       InferenceEvent.usage_update(%Usage{input_tokens: 1, output_tokens: 5, total_tokens: 6})}
+    )
+
+    send(
+      owner,
+      {:runtime_endpoint_event, ref, request.request_id,
+       InferenceEvent.output_text_delta("streaming")}
+    )
+
+    if request.request_id == "req-dispatch-completed-stream-error" do
+      emit_completion(owner, ref, request.request_id)
+      send(owner, {:runtime_endpoint_done, ref, {:error, :stream_failed}})
+    end
+
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []) do
+    {owner, ref, request_id} = Process.get({__MODULE__, :stream})
+    emit_completion(owner, ref, request_id)
+    :ok
+  end
+
+  defp emit_completion(owner, ref, request_id) do
+    completed =
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %Usage{input_tokens: 1, output_tokens: 7, total_tokens: 8}
+      )
+
+    send(owner, {:runtime_endpoint_event, ref, request_id, completed})
+  end
+end
+
 defmodule Orchard.Dispatch.DispatchTest.DeadlineCapturingClient do
   @moduledoc false
 
@@ -327,6 +385,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   alias Orchard.DispatchCapacity.{AllocationAuthority, ConformanceFixture, Evaluator}
   alias Orchard.DispatchCapacity.Evaluator.Input
   alias Orchard.Inference
+  alias Orchard.Inference.EventUsage
 
   alias Orchard.InferenceEvent
   alias Orchard.Node
@@ -621,6 +680,58 @@ defmodule Orchard.Dispatch.DispatchTest do
 
       assert Process.get({Orchard.Dispatch.DispatchTest.TerminalContractClient, :late_refusal}) ==
                nil
+    end
+
+    test "SPEC.md §12.4 (#329): an open drain cannot prove buffered completion usage", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-open-drain-completion"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.BufferedCompletionClient,
+          cancel_drain_timeout_ms: 20,
+          event_handler: fn
+            _request_id, %InferenceEvent{event: %InferenceEvent.OutputTextDelta{}} -> :cancel
+            _request_id, _event -> :ok
+          end
+        )
+
+      assert outcome.attempt_outcome == :cancelled
+      assert outcome.terminal_usage == nil
+      assert outcome.output_committed
+
+      assert EventUsage.terminal(outcome.events) == %{
+               input_tokens: 1,
+               output_tokens: 5,
+               output_usage_status: "lower_bound"
+             }
+    end
+
+    test "SPEC.md §12.4 (#329): completion followed by stream error keeps exact usage", %{
+      bundle: bundle
+    } do
+      request_id = "req-dispatch-completed-stream-error"
+
+      outcome =
+        RequestDispatcher.dispatch(
+          build_schedule(request_id),
+          execute_request(request_id),
+          model_load_request(bundle),
+          client_impl: Orchard.Dispatch.DispatchTest.BufferedCompletionClient
+        )
+
+      assert outcome.attempt_outcome == :failed
+      assert outcome.failure["failure_code"] == "internal_error"
+
+      assert outcome.terminal_usage == %{
+               input_tokens: 1,
+               output_tokens: 7,
+               output_usage_status: "exact"
+             }
     end
 
     @tag :pre_acceptance_refusal
