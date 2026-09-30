@@ -4,17 +4,27 @@ package cluster.v1;
 
 import "cluster/v1/common.proto";
 
+// Shared negotiated reasoning wire types (SPEC.md §7.5.3a). Dormant: no
+// production binding advertises or selects a tuple until activation is
+// authorized. Message-typed fields below are presence-aware: an absent message
+// is distinct from a present message whose members are all defaults.
+
 enum ReasoningEffort {
+  // Invalid inside a present ReasoningEffortSelection.
   REASONING_EFFORT_UNSPECIFIED = 0;
   REASONING_EFFORT_LOW = 1;
   REASONING_EFFORT_MEDIUM = 2;
   REASONING_EFFORT_HIGH = 3;
 }
 
+// Absent wrapper means the negotiated nil effort. A present wrapper must carry
+// LOW, MEDIUM, or HIGH; present UNSPECIFIED is invalid. A selected tier is
+// valid only for generation_policy = enabled and projection = final_only.
 message ReasoningEffortSelection {
   ReasoningEffort effort = 1;
 }
 
+// Every string is required and non-empty when the binding is present.
 message WorkerLoadedBinding {
   string model_id = 1;
   string model_version = 2;
@@ -22,6 +32,8 @@ message WorkerLoadedBinding {
   string selected_profile_id = 4;
 }
 
+// Indivisible eleven-field tuple. Every string is required and non-empty;
+// reasoning_effort follows ReasoningEffortSelection presence.
 message NegotiatedReasoningTuple {
   string generation_policy = 1;
   string projection = 2;
@@ -37,14 +49,22 @@ message NegotiatedReasoningTuple {
 }
 
 message ReasoningEvidenceEnvelope {
+  // 0..16 complete, unique, non-conflicting tuples. A valid empty list is
+  // confirmed non-support.
   repeated NegotiatedReasoningTuple tuples = 1;
+  // Required, exactly 16 raw bytes.
   bytes loaded_instance_id = 2;
 }
 
+// Opt-in live observation selector. Absent means the legacy projection.
+// Emitted only for an explicit negotiated Request to a compatible binding.
 message ReasoningObservationRequest {
+  // Required, with non-empty model_id and version.
   ModelRef model_ref = 1;
 }
 
+// All four members are required when present. remaining_freshness_ms must be
+// positive to prove selection.
 message ReasoningEvidence {
   WorkerLoadedBinding loaded_binding = 1;
   ReasoningEvidenceEnvelope envelope = 2;
@@ -56,6 +76,8 @@ message ReasoningNonAdvertising {}
 
 message ReasoningUnknown {}
 
+// Exactly one result is set. An unset result is incomplete and classifies as
+// unknown.
 message ReasoningLiveObservation {
   oneof result {
     ReasoningEvidence evidence = 1;
@@ -64,6 +86,9 @@ message ReasoningLiveObservation {
   }
 }
 
+// Frozen snapshot of ExecuteInferenceRequest fields 1-13, matching name, tag,
+// type, and cardinality. Members keep their existing optional/default
+// semantics. ExecuteInferenceRequest field 14 is excluded.
 message FrozenExecutionInput {
   string request_id = 1;
   string controller_session_id = 2;
@@ -80,6 +105,8 @@ message FrozenExecutionInput {
   bool return_logprobs = 13;
 }
 
+// Every outer member is required; strings are non-empty and
+// expected_loaded_instance_id is exactly 16 raw bytes.
 message PrepareInferenceRequest {
   FrozenExecutionInput input = 1;
   NegotiatedReasoningTuple tuple = 2;
@@ -88,6 +115,8 @@ message PrepareInferenceRequest {
   bytes expected_loaded_instance_id = 5;
 }
 
+// Every member is required; strings are non-empty and loaded_instance_id is
+// exactly 16 raw bytes.
 message PrepareInferenceProof {
   string request_id = 1;
   string controller_session_id = 2;
@@ -97,12 +126,17 @@ message PrepareInferenceProof {
   bytes loaded_instance_id = 6;
 }
 
+// Absent on legacy execution. Required for negotiated execution and validated
+// independently of the frozen input.
 message PreparationRedemption {
+  // Exactly 32 worker-issued bytes; never logged or persisted.
   bytes authorization = 1;
 }
 
 message PrepareInferenceResponse {
   PrepareInferenceProof proof = 1;
+  // Exactly 32 worker-issued bytes; never logged or persisted.
   bytes authorization = 2;
+  // Positive, Worker-monotonic.
   uint64 authorization_ttl_ms = 3;
 }

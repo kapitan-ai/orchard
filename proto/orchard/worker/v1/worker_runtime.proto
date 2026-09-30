@@ -92,7 +92,12 @@ message WorkerCapabilityProfile {
 // a zero or empty required value is malformed. protocol_minor may be 0.
 // Non-gating: observe-only in this slice: capability evidence MUST NOT alter
 // readiness, request admission, model admission, placement capacity, scheduler
-// eligibility, retry, or Runtime Endpoint projection.
+// eligibility, retry, or Runtime Endpoint projection. The sole exception is
+// field 9 reasoning evidence under SPEC.md §7.5.3a: for an explicit negotiated
+// Request only, a fresh exact tuple from the opt-in live observation may feed
+// that section's narrow reasoning-specific eligibility predicate over already
+// loaded placements. That exception does not make fields 1-8 or generic
+// capability evidence authoritative for any of the decisions above.
 message WorkerCapabilities {
   // Required, >= 1. Only the major is a compatibility input.
   uint32 protocol_major = 1;
@@ -110,7 +115,11 @@ message WorkerCapabilities {
   string service_incarnation = 6;
   // At most 64 profiles. Empty is valid and proves nothing.
   repeated WorkerCapabilityProfile profiles = 7;
+  // Presence-aware. Omitting fields 8 and 9 means a non-advertising binding.
+  // Field 9 present without field 8 is malformed and classifies as unknown.
   cluster.v1.WorkerLoadedBinding loaded_binding = 8;
+  // SPEC.md §7.5.3a live-only evidence. Never persisted in heartbeats or
+  // durable observations; forwarding does not refresh it.
   cluster.v1.ReasoningEvidenceEnvelope reasoning_evidence = 9;
 }
 

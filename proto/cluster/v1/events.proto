@@ -60,6 +60,9 @@ message Failed {
   string code = 1;
   string message = 2;
   bool retryable = 3;
+  // Presence-aware exact cumulative totals (SPEC.md §7.5.3a). Absent means
+  // missing terminal-usage evidence, never zero. Present with all counters
+  // zero means known zero. Legacy workers may omit it.
   TokenUsage usage = 4;
 }
 
