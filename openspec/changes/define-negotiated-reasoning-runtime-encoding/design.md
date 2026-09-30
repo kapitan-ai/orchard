@@ -36,6 +36,11 @@ substitute number or shape. The schema reproduces §2.1 unchanged.
   typed fields. `SPEC.md` §6.4 leaves such fields to a separately accepted
   extension, so issue #327's earlier “manifest fields” wording is not a closure
   criterion.
+- **D-C — schema lands separately from runtime work.** The owner approved the
+  #327 slice plan on 2026-09-29. Slice 1 lands the dormant shared schema,
+  generated bindings, and reciprocal N/N-1 fixtures by themselves. Advertising,
+  selection, proof validation, Worker preparation, redemption, and retry
+  behavior land in later slices. The declared schema alone activates nothing.
 
 ## 2. Canonical tuple and loaded binding
 
