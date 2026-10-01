@@ -65,6 +65,9 @@ defmodule Orchard.Node.LinuxHostInventory.Accelerators do
       malformed > 0 ->
         build(base, :error, "malformed_output", [], context)
 
+      Enum.any?(devices, &(&1.evidence.state == :HOST_EVIDENCE_STATE_PARTIAL)) ->
+        build(base, :partial, "incomplete_entries", devices, context)
+
       visibility_invalid? ->
         build(base, :partial, "invalid_value", devices, context)
 

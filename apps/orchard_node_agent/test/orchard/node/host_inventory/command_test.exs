@@ -5,6 +5,7 @@ defmodule Orchard.Node.HostInventory.CommandTest do
   use ExUnit.Case, async: true
 
   alias Orchard.Node.HostInventory.Command
+  alias Orchard.TestSupport.GnuTimeoutGuardian
 
   @moduletag :tmp_dir
 
@@ -44,12 +45,29 @@ defmodule Orchard.Node.HostInventory.CommandTest do
     assert Command.guardian([corrupt]) == {:error, :guardian_unavailable}
   end
 
+  test "guarded probe setup fails actionably without a verified GNU guardian", %{tmp_dir: dir} do
+    uutils = script!(dir, "uutils-timeout", "echo 'timeout (uutils coreutils) 0.2.2'")
+
+    for candidate <- [nil, uutils, Path.join(dir, "absent")] do
+      error =
+        assert_raise ExUnit.AssertionError, fn ->
+          GnuTimeoutGuardian.verified!(candidate)
+        end
+
+      assert error.message =~ "GNU coreutils `timeout` is required"
+      assert error.message =~ "/usr/bin/timeout"
+      assert error.message =~ "brew install coreutils"
+    end
+  end
+
   describe "guarded probes" do
     @describetag :gnu_timeout
 
     setup do
-      {:ok, guardian} =
-        Command.guardian([Application.fetch_env!(:orchard_node_agent, :test_gnu_timeout)])
+      guardian =
+        :orchard_node_agent
+        |> Application.fetch_env!(:test_gnu_timeout)
+        |> GnuTimeoutGuardian.verified!()
 
       %{guardian: guardian}
     end

@@ -327,6 +327,32 @@ defmodule Orchard.Node.LinuxHostInventoryTest do
   end
 
   describe "AMD observations" do
+    test "older rocm-smi lowercase card series is the display name and card model is not" do
+      {:ok, legacy} = fixture("rocm-smi-legacy.json")
+      [_nvidia, amd] = amd_raw(legacy).accelerator_providers
+
+      assert evidence(amd) == {:HOST_EVIDENCE_STATE_OBSERVED, ""}
+
+      assert [%{stable_id: "0x1234", model_name: "AMD Fixture Accelerator"} = device] =
+               amd.devices
+
+      assert evidence(device) == {:HOST_EVIDENCE_STATE_OBSERVED, ""}
+    end
+
+    test "a card with only a device-ID card model keeps identity with partial name evidence" do
+      card = %{
+        "Unique ID" => "0x1234",
+        "Card Model" => "0x740f",
+        "VRAM Total Memory (B)" => "1024"
+      }
+
+      [_nvidia, amd] = amd_with(%{"card0" => card}).accelerator_providers
+
+      assert evidence(amd) == {:HOST_EVIDENCE_STATE_PARTIAL, "incomplete_entries"}
+      assert [%{stable_id: "0x1234", model_name: ""} = device] = amd.devices
+      assert evidence(device) == {:HOST_EVIDENCE_STATE_PARTIAL, "model_name_absent"}
+    end
+
     test "an enabled vendor reports its unique identity and ROCm runtime evidence" do
       [nvidia, amd] = observe(accelerators: [:amd]).accelerator_providers
 
@@ -363,6 +389,16 @@ defmodule Orchard.Node.LinuxHostInventoryTest do
       assert evidence(partial) == {:HOST_EVIDENCE_STATE_PARTIAL, "malformed_entries"}
       assert Enum.map(partial.devices, & &1.stable_id) == ["0x1234"]
     end
+  end
+
+  defp amd_raw(output) do
+    observe(
+      accelerators: [:amd],
+      run: fn
+        :rocm_smi, _args -> {:ok, output}
+        tool, args -> fixture_run(tool, args)
+      end
+    )
   end
 
   defp amd_with(entries) do

@@ -18,6 +18,9 @@ defmodule Orchard.Node.LinuxHostInventory.Amd do
   @vendor :ACCELERATOR_VENDOR_AMD
   @source "rocm-smi"
   @runtime_source "/opt/rocm/.info/version"
+  # rocm-smi prints the display name as "Card Series" (ROCm 6.2+) or "Card series"
+  # (earlier). "Card Model"/"Card model" is the DRM device ID, never a name.
+  @model_name_keys ["Card Series", "Card series"]
   @args [
     "--showuniqueid",
     "--showbus",
@@ -55,11 +58,11 @@ defmodule Orchard.Node.LinuxHostInventory.Amd do
          ordinal when is_integer(ordinal) <- ordinal(key),
          memory when is_integer(memory) and memory > 0 <-
            Values.uint64(value(entry, ["VRAM Total Memory (B)"])),
-         {:ok, model} <- Values.text(value(entry, ["Card Series", "Card Model"])),
+         {:ok, model} <- Values.text(value(entry, @model_name_keys)),
          {:ok, driver} <- Values.text(driver) do
       {:ok,
        %AcceleratorObservation{
-         evidence: Values.evidence(:observed, @source, context.now_ms),
+         evidence: device_evidence(model, context),
          vendor: @vendor,
          stable_id: stable_id,
          identity_kind: "amd_unique_id",
@@ -75,6 +78,12 @@ defmodule Orchard.Node.LinuxHostInventory.Amd do
   end
 
   defp parse_device(_entry, _driver, _context), do: :error
+
+  # The display name is optional; its absence is partial device evidence.
+  defp device_evidence("", context),
+    do: Values.evidence(:partial, @source, context.now_ms, "model_name_absent")
+
+  defp device_evidence(_model, context), do: Values.evidence(:observed, @source, context.now_ms)
 
   defp value(entry, keys) when is_map(entry) do
     Enum.find_value(keys, fn key ->
