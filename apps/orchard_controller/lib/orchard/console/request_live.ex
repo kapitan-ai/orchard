@@ -38,6 +38,11 @@ defmodule OrchardConsole.RequestLive do
   @impl true
   def handle_params(%{"public_id" => public_id}, _uri, socket) do
     socket =
+      if socket.assigns.public_id == public_id,
+        do: socket,
+        else: assign(socket, :selected_evidence, nil)
+
+    socket =
       socket
       |> assign(public_id: public_id, page_title: "Request #{public_id}")
 
@@ -59,6 +64,21 @@ defmodule OrchardConsole.RequestLive do
   @impl true
   def handle_event("refresh_request", _params, socket) do
     {:noreply, refresh_request(socket)}
+  end
+
+  def handle_event("select_evidence", %{"event" => seq}, socket) do
+    event = Enum.find(socket.assigns.events, &(to_string(&1.seq) == seq))
+    selection = if event, do: {:event, event.seq}, else: socket.assigns.selected_evidence
+    {:noreply, assign(socket, :selected_evidence, selection)}
+  end
+
+  def handle_event("select_evidence", %{"attempt" => step_id}, socket) do
+    attempt = Enum.find(RequestEvidence.attempts(socket.assigns.events), &(&1.step_id == step_id))
+
+    selection =
+      if attempt, do: {:attempt, attempt.step_id}, else: socket.assigns.selected_evidence
+
+    {:noreply, assign(socket, :selected_evidence, selection)}
   end
 
   # ===========================================================================
@@ -104,7 +124,10 @@ defmodule OrchardConsole.RequestLive do
         <% :ok -> %>
           <.request_summary request={@request} attempts={@attempts} />
           <.request_errors request={@request} />
-          <.request_timeline request={@request} events={@events} attempts={@attempts} />
+          <.request_timeline request={@request} events={@events} attempts={@attempts}
+            selected_evidence={@selected_evidence} />
+          <.evidence_inspector request={@request} events={@events} attempts={@attempts}
+            selection={@selected_evidence} />
           <.request_usage request={@request} />
           <.disclosure_section id="request-more-evidence" title="More evidence">
             <div class="space-y-6">
@@ -742,6 +765,7 @@ defmodule OrchardConsole.RequestLive do
   attr(:events, :list, required: true)
   attr(:request, :map, required: true)
   attr(:attempts, :list, required: true)
+  attr(:selected_evidence, :any, required: true)
 
   defp request_timeline(assigns) do
     assigns =
@@ -767,7 +791,7 @@ defmodule OrchardConsole.RequestLive do
         <div class="space-y-4">
           <.duration_bar request={@request} started_at={@request.inserted_at}
             ended_at={@request.completed_at} label="Logical Request" outcome={format_state(@request.state)} />
-          <.request_attempts request={@request} attempts={@attempts} />
+          <.request_attempts request={@request} attempts={@attempts} selected_evidence={@selected_evidence} />
         </div>
         <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Gaps do not identify queue, loading, or cleanup phases.
@@ -796,6 +820,10 @@ defmodule OrchardConsole.RequestLive do
                     fallback_id={"request-event-empty-#{event.seq}"} fallback_text="No retained payload." />
                 </div>
               </details>
+              <.evidence_selection_button kind="event" value={event.seq}
+                selected={@selected_evidence == {:event, event.seq}}>
+                Inspect event #{event.seq}
+              </.evidence_selection_button>
             </li>
           </ol>
           <p :if={@events == []} class="text-sm text-slate-500 dark:text-slate-400">No lifecycle events recorded yet.</p>
@@ -845,6 +873,7 @@ defmodule OrchardConsole.RequestLive do
 
   attr(:attempts, :list, required: true)
   attr(:request, :map, required: true)
+  attr(:selected_evidence, :any, required: true)
 
   defp request_attempts(assigns) do
     ~H"""
@@ -878,11 +907,161 @@ defmodule OrchardConsole.RequestLive do
                 fallback_id={"attempt-empty-#{attempt.turn}-#{attempt.number}"} fallback_text="No terminal result recorded." />
             </details>
             </details>
+            <.evidence_selection_button kind="attempt" value={attempt.step_id}
+              selected={@selected_evidence == {:attempt, attempt.step_id}}>
+              Inspect Turn {attempt.turn} · Attempt {attempt.number}
+            </.evidence_selection_button>
           </li>
         </ol>
     </div>
     """
   end
+
+  attr(:kind, :string, required: true)
+  attr(:value, :any, required: true)
+  attr(:selected, :boolean, required: true)
+  slot(:inner_block, required: true)
+
+  defp evidence_selection_button(assigns) do
+    ~H"""
+    <button type="button" phx-click="select_evidence" { %{"phx-value-#{@kind}" => @value} }
+      aria-controls="request-evidence-inspector" aria-pressed={to_string(@selected)}
+      class="mt-3 rounded-md border border-slate-200 px-3 py-1.5 text-sm text-navy dark:border-slate-700 dark:text-sky-400">
+      {render_slot(@inner_block)}<span :if={@selected}> · Selected</span>
+    </button>
+    """
+  end
+
+  attr(:request, :map, required: true)
+  attr(:events, :list, required: true)
+  attr(:attempts, :list, required: true)
+  attr(:selection, :any, required: true)
+
+  defp evidence_inspector(assigns) do
+    {attempt, events} = selected_evidence(assigns.selection, assigns.attempts, assigns.events)
+    assigns = assign(assigns, attempt: attempt, selected_events: events)
+
+    ~H"""
+    <section id="request-evidence-inspector" aria-labelledby="request-evidence-heading" class="min-w-0">
+      <.card>
+        <:title><span id="request-evidence-heading">Selected persisted evidence</span></:title>
+        <p id="request-evidence-selection" role="status" class="mb-4 text-sm text-slate-500 dark:text-slate-400">
+          <%= cond do %>
+            <% @selection == nil -> %>
+              Select an attempt or recorded event to inspect its persisted evidence.
+            <% @attempt -> %>
+              Turn {@attempt.turn} · Attempt {@attempt.number} selected.
+            <% @selected_events != [] -> %>
+              Event #{hd(@selected_events).seq} selected.
+            <% true -> %>
+              Selected evidence is no longer available in the loaded Request events.
+          <% end %>
+        </p>
+        <div :if={@selected_events != []} class="min-w-0 space-y-5">
+          <.detail_grid class="grid-cols-1 sm:grid-cols-2">
+            <.detail_field id="inspector-request" label="Request" mono break_all>{@request.public_id}</.detail_field>
+            <.detail_field id="inspector-request-id" label="Request ID" mono break_all>{@request.id}</.detail_field>
+          </.detail_grid>
+          <p class="text-sm text-slate-500 dark:text-slate-400">{capture_description(@request.payload_capture_mode)}</p>
+          <div :if={@attempt} id="inspector-attempt" class="min-w-0 space-y-4">
+            <.detail_grid class="grid-cols-1 sm:grid-cols-2">
+              <.detail_field id="inspector-attempt-step" label="Step ID" mono break_all>{@attempt.step_id}</.detail_field>
+              <.detail_field id="inspector-attempt-outcome" label="Attempt outcome">{@attempt.outcome}</.detail_field>
+              <.detail_field id="inspector-attempt-start" label="Started at" mono>
+                <.local_time value={@attempt.started_at} format={:datetime_second} placeholder="Not recorded" />
+              </.detail_field>
+              <.detail_field id="inspector-attempt-end" label="Ended at" mono>
+                <.local_time value={@attempt.ended_at} format={:datetime_second} placeholder="Not recorded" />
+              </.detail_field>
+            </.detail_grid>
+            <p :if={!RequestEvidence.bar(@request.inserted_at, @request.completed_at, @attempt.started_at, @attempt.ended_at)}
+              class="text-sm text-slate-500 dark:text-slate-400">No bounded timing interval</p>
+            <h4 class="text-sm font-semibold">Retained terminal result</h4>
+            <.json_block data={@attempt.result} content_id="inspector-attempt-result"
+              fallback_id="inspector-attempt-result-empty" fallback_text="No unambiguous retained terminal result available." />
+            <p class="text-sm text-slate-500 dark:text-slate-400">
+              Source events below retain their own sequence, timestamp, and parent identity.
+              Conflicting events are not resolved into a single outcome.
+            </p>
+          </div>
+          <.selected_event :for={event <- @selected_events} event={event} />
+        </div>
+      </.card>
+    </section>
+    """
+  end
+
+  attr(:event, :map, required: true)
+
+  defp selected_event(assigns) do
+    step =
+      case RequestStepEvent.from_request_event(assigns.event) do
+        {:ok, step} -> step
+        {:error, _} -> nil
+      end
+
+    assigns = assign(assigns, :step, step)
+
+    ~H"""
+    <article id={"inspector-event-#{@event.seq}"} class="min-w-0 space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700">
+      <h4 class="break-all text-sm font-semibold">Event #{@event.seq} · {@event.event_type}</h4>
+      <.detail_grid class="grid-cols-1 sm:grid-cols-2">
+        <.detail_field id={"inspector-event-#{@event.seq}-scope"} label="Scope">{event_scope(@event)}</.detail_field>
+        <.detail_field id={"inspector-event-#{@event.seq}-time"} label="Recorded at" mono>
+          <.local_time value={@event.occurred_at} format={:datetime_second} placeholder="Not recorded" />
+        </.detail_field>
+        <.detail_field id={"inspector-event-#{@event.seq}-outcome"} label="Recorded outcome">{event_outcome(@event, @step)}</.detail_field>
+        <.detail_field id={"inspector-event-#{@event.seq}-step"} label="Step ID" mono break_all>{if @step, do: @step.step_id, else: "Not established"}</.detail_field>
+        <.detail_field id={"inspector-event-#{@event.seq}-parent"} label="Parent step ID" mono break_all>{if @step, do: @step.parent_step_id || "Not recorded", else: "Not established"}</.detail_field>
+        <.detail_field id={"inspector-event-#{@event.seq}-boundary"} label="Boundary" mono>{if @step, do: @step.boundary, else: "Not established"}</.detail_field>
+      </.detail_grid>
+      <p :if={!@step && String.starts_with?(@event.event_type, "request_step.")}
+        class="text-sm text-slate-500 dark:text-slate-400">
+        Invalid step envelope. Retained payload does not establish step or parent identity.
+      </p>
+      <details>
+        <summary class="request-evidence-summary">Retained event payload</summary>
+        <div class="mt-3">
+          <.json_block data={@event.payload} content_id={"inspector-event-payload-#{@event.seq}"}
+            fallback_id={"inspector-event-empty-#{@event.seq}"} fallback_text="No retained payload. Absence does not establish expiry or redaction." />
+        </div>
+      </details>
+    </article>
+    """
+  end
+
+  defp selected_evidence({:event, seq}, _attempts, events),
+    do: {nil, Enum.filter(events, &(&1.seq == seq))}
+
+  defp selected_evidence({:attempt, step_id}, attempts, events) do
+    attempt = Enum.find(attempts, &(&1.step_id == step_id))
+
+    events =
+      Enum.filter(events, fn event ->
+        case RequestStepEvent.from_request_event(event) do
+          {:ok, step} -> step.step_id == step_id
+          {:error, _} -> false
+        end
+      end)
+
+    {attempt, events}
+  end
+
+  defp selected_evidence(nil, _attempts, _events), do: {nil, []}
+
+  defp event_outcome(_event, %{result: %{"result_invalid" => _}}),
+    do: "Invalid terminal evidence"
+
+  defp event_outcome(event, %RequestStepEvent{}) do
+    if event.event_type in (RequestStepEvent.terminal_step_event_types() ++
+                              ["request_step.indeterminate"]),
+       do: String.replace_prefix(event.event_type, "request_step.", ""),
+       else: "Not recorded"
+  end
+
+  defp event_outcome(%{event_type: "request_step." <> _}, nil), do: "Not established"
+  defp event_outcome(%{state: nil}, _step), do: "Not recorded"
+  defp event_outcome(event, _step), do: format_state(event.state)
 
   # ===========================================================================
   # Local function components
@@ -928,6 +1107,7 @@ defmodule OrchardConsole.RequestLive do
       request_status: :loading,
       request: nil,
       events: [],
+      selected_evidence: nil,
       scheduler_explanation_status: :loading,
       scheduler_explanation: nil,
       scheduler_explanation_error: nil,
@@ -1279,12 +1459,14 @@ defmodule OrchardConsole.RequestLive do
   defp attempt_icon("failed"), do: "hero-exclamation-triangle"
   defp attempt_icon(_), do: "hero-clock"
 
-  defp event_scope(event) do
+  defp event_scope(%{event_type: "request_step." <> _} = event) do
     case RequestStepEvent.from_request_event(event) do
       {:ok, step} -> "#{step.step_type} · Turn #{step.turn_index} · Attempt #{step.attempt}"
-      _ -> if(event.state, do: "Request", else: "Unclassified event")
+      _ -> "Unclassified event"
     end
   end
+
+  defp event_scope(event), do: if(event.state, do: "Request", else: "Unclassified event")
 
   defp format_bool(true), do: "Yes"
   defp format_bool(false), do: "No"
