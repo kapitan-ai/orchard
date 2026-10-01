@@ -5,7 +5,7 @@ An earlier package-first Linux Node candidate contract was accepted in review bu
 This change proposes a bounded reconciliation of that contract onto current `main` so that later Linux Node implementation slices have one reviewable, source-development-first contract that makes no support claim.
 
 The earlier acceptance applies only to its own revision.
-It does not accept the wording in this change, which remains proposed and pending accountable owner review.
+The accountable owner separately accepted this change's exact reviewed revision on 2026-09-30, and it merged through pull request #464, as ADR 0035 records.
 
 ## What Changes
 
@@ -42,8 +42,8 @@ It does not accept the wording in this change, which remains proposed and pendin
 
 - `SPEC.md` impact: amends §1.4, §4.1, §4.9, §7.5.0, §10.6, the §11 preamble, and §13.4, and adds Milestone 9 for experimental Linux Node qualification.
   The currently supported Apple Silicon macOS platform profile, the macOS native distribution design and its pause, and the Milestone 8 Linux Controller profile are unchanged.
-- Decisions: adds proposed ADR 0035.
+- Decisions: adds ADR 0035.
   Both existing ADR 0034 records are unchanged.
-- Docs: adds `docs/platforms/linux-node.md` and updates orientation references that list current and proposed profiles, including the `AGENTS.md` milestone table row for Milestone 9.
+- Docs: adds `docs/platforms/linux-node.md` and updates orientation references that list current and candidate profiles, including the `AGENTS.md` milestone table row for Milestone 9.
 - Code, packaging, CI, services, databases, and hosts are unchanged.
   No implementation, host qualification, package build, release, publication, or support claim follows from this change.

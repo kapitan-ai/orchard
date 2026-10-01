@@ -114,7 +114,7 @@ Rules:
 | M6 | Security hardening and air-gap |
 | M7 | Upgrade safety and Active/Standby controller |
 | M8 | Portable Orchard control-plane core and Linux Controller profile |
-| M9 | Experimental Linux Node qualification (proposed; not a support claim) |
+| M9 | Experimental Linux Node qualification (accepted experimental candidate; not a support claim) |
 
 ## Conventions
 

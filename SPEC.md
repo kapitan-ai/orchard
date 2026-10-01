@@ -179,7 +179,7 @@ It SHALL use operator-provided external Postgres and SHALL NOT require a local N
 Its final distribution format and host manager remain deferred.
 No Linux support claim follows from portable compilation alone.
 
-The proposed `ubuntu_24_04_x86_64_node` profile is an experimental Linux Node platform profile candidate, not a supported profile.
+The `ubuntu_24_04_x86_64_node` profile is an accepted experimental Linux Node platform profile candidate, not a supported profile.
 It SHALL target Ubuntu Server 24.04 LTS on x86_64 with Linux kernel 6.8 or newer within the Ubuntu 24.04 hardware-enablement line, glibc 2.39 or newer within that release, systemd 255 or newer, and unified cgroup v2.
 Other Ubuntu releases, including Ubuntu 26.04 LTS, other distributions, architectures, libc implementations, init systems, containers-as-hosts, WSL, and rootless installation remain unqualified.
 Its proposed target installation path is source development of the Node-only role of the portable Node Agent from an exact source revision with the pinned toolchain; that path is not yet operable on the candidate host, and no distribution profile or deployment artifact is defined for it.
@@ -187,7 +187,7 @@ Candidate qualification hosts SHALL run no Controller, Console, or database role
 The candidate SHALL remain separate from the Linux Controller profile and from every CUDA, ROCm, vLLM, model, and runtime-provider qualification.
 It defines a standalone Node only and SHALL NOT define a Linux Controller, local Postgres, or single-host composition on the candidate host.
 Defining, implementing, or source-qualifying the candidate SHALL NOT establish production BEAM eligibility or Linux Node, distribution, or runtime-provider support; those require a future separately accepted release and trust profile, exact provenance and reverification, and the accountable product owner's decision.
-ADR 0035 records the proposed candidate decision.
+ADR 0035 records the accepted candidate decision.
 
 The mixed-platform acceptance profile SHALL prove a portable Controller, including the Linux Controller profile, operating admitted macOS Nodes that satisfy the macOS MLX Node runtime profile.
 Passing that acceptance profile is required before the Linux Controller profile is declared supported and does not turn a Controller Host into a schedulable Node.
