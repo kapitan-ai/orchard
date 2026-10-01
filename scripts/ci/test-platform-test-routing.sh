@@ -137,8 +137,21 @@ NODE_GUARDIAN_SUPPORT="$ROOT/apps/orchard_node_agent/test/support/gnu_timeout_gu
 
 grep -Fq 'gnu_timeout' "$LINUX_PORTABLE_TEST" &&
   fail 'Linux portable tests excluded the real host-inventory guardian probe tests'
-grep -Fq '"/usr/bin/timeout"' "$NODE_TEST_HELPER" ||
-  fail 'node test helper does not look for the Linux GNU timeout guardian'
+grep -Fq 'GnuTimeoutGuardian.discover()' "$NODE_TEST_HELPER" ||
+  fail 'node test helper does not discover the GNU timeout guardian'
+for guardian_path in \
+  /usr/bin/timeout \
+  /opt/homebrew/bin/timeout \
+  /usr/local/bin/timeout \
+  /opt/homebrew/bin/gtimeout \
+  /usr/local/bin/gtimeout \
+  /opt/homebrew/opt/coreutils/libexec/gnubin/timeout \
+  /usr/local/opt/coreutils/libexec/gnubin/timeout; do
+  grep -Fq "\"$guardian_path\"" "$NODE_GUARDIAN_SUPPORT" ||
+    fail "GNU timeout guardian discovery does not check $guardian_path"
+done
+grep -Eq 'System\.(find_executable|cmd)' "$NODE_GUARDIAN_SUPPORT" &&
+  fail 'GNU timeout guardian discovery uses PATH lookup or runs unbounded commands'
 grep -Eq 'exclude:.*gnu_timeout' "$NODE_TEST_HELPER" &&
   fail 'node test helper excludes guardian probe tests, so Darwin would not run every test'
 grep -Fq 'GnuTimeoutGuardian.verified!()' "$NODE_GUARDED_PROBE_TEST" ||
