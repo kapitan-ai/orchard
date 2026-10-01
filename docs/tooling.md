@@ -67,7 +67,10 @@ Run `make macos-native-helpers` when source development needs the retained termi
 On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically and run every test; on non-Darwin hosts they skip staging and exclude the retained `macos` tag.
 Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
 Node Agent host-inventory probe tests tagged `gnu_timeout` run real processes under a GNU coreutils `timeout` guardian, so GNU coreutils is a required host test prerequisite on every host.
-The Node Agent test helper looks for GNU `timeout` at `/usr/bin/timeout` (Linux), `/opt/homebrew/bin/timeout`, or `/usr/local/bin/timeout` (`brew install coreutils` on macOS).
+The Node Agent test helper checks fixed absolute paths in order and uses the first one whose `--version` identifies GNU coreutils `timeout`; it never searches `PATH` and installs nothing.
+Linux coreutils provides `/usr/bin/timeout`, which is checked first.
+On macOS, `brew install coreutils` installs g-prefixed tools such as `gtimeout` and a `libexec/gnubin` directory with unprefixed names, and may also link an unprefixed `timeout` into the Homebrew `bin` directory when that does not conflict.
+The helper checks each of these under both `/opt/homebrew` and `/usr/local`: `bin/timeout`, `bin/gtimeout`, and `opt/coreutils/libexec/gnubin/timeout`.
 Those tests always run; without a verified GNU guardian they fail with install guidance rather than being skipped.
 The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
 Payload assembly invokes the same builder before producing the packaged CLI release.
@@ -270,7 +273,8 @@ by mise:
 
 - PostgreSQL local or external service
 - GNU coreutils `timeout` for the Node Agent host-inventory probe tests
-  (Linux coreutils `/usr/bin/timeout`; on macOS `brew install coreutils`)
+  (Linux coreutils `/usr/bin/timeout`; on macOS `brew install coreutils`,
+  found as `timeout`, `gtimeout`, or the coreutils `gnubin` `timeout`)
 - POSIX ACL tools `/usr/bin/getfacl` and `/usr/bin/setfacl` on Linux for CLI
   output-path ACL inspection and its tests (Ubuntu `acl` package)
 - Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
