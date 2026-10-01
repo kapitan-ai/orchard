@@ -271,6 +271,8 @@ by mise:
 - PostgreSQL local or external service
 - GNU coreutils `timeout` for the Node Agent host-inventory probe tests
   (Linux coreutils `/usr/bin/timeout`; on macOS `brew install coreutils`)
+- POSIX ACL tools `/usr/bin/getfacl` and `/usr/bin/setfacl` on Linux for CLI
+  output-path ACL inspection and its tests (Ubuntu `acl` package)
 - Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
   Elixir proto generation
 - Xcode Command Line Tools and macOS distribution tools such as `codesign`,

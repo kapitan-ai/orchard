@@ -571,6 +571,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     trust_root = Path.join(root, "node-trust")
     authorization_root = Path.join(root, "beam-authorization-root")
     File.mkdir_p!(root)
+    File.chmod!(root, 0o700)
     Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
     Application.put_env(:orchard_controller, :node_trust, root: trust_root)
 
