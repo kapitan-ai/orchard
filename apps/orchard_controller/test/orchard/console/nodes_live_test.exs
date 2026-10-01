@@ -625,6 +625,7 @@ defmodule OrchardConsole.NodesLiveTest do
   alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.Inference
   alias Orchard.NodeEnrollments
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, Node}
@@ -1044,14 +1045,25 @@ defmodule OrchardConsole.NodesLiveTest do
              )
 
       assert has_element?(view, "#nodes-inventory-card th", "Last observed Node health")
-      assert has_element?(view, "#nodes-inventory-card th", "Last successful observation")
+      assert has_element?(view, "#nodes-inventory-card th", "Last authenticated observation")
+
+      assert has_element?(
+               view,
+               "#nodes-inventory-card",
+               "Observation times reflect successful authenticated observations, not Console refreshes."
+             )
+
       assert has_element?(view, "#node-#{ctx.node.id}", "healthy")
       assert Repo.get!(Node, ctx.node.id).last_heartbeat_at == ctx.node.last_heartbeat_at
       assert Repo.get!(Node, ctx.node.id).health == :healthy
     end
 
     test "refresh time does not replace stale observation time or persisted health", ctx do
-      observed_at = DateTime.add(DateTime.utc_now(), -60, :second)
+      age_ms =
+        max(Inference.node_freshness_threshold_ms(), Inference.node_unreachable_threshold_ms()) +
+          1_000
+
+      observed_at = DateTime.add(DateTime.utc_now(), -age_ms, :millisecond)
       observed_iso = observed_at |> DateTime.truncate(:second) |> DateTime.to_iso8601()
       ctx.node |> Ecto.Changeset.change(last_heartbeat_at: observed_at) |> Repo.update!()
       {:ok, view, _html} = live(ctx.conn, "/console/nodes")

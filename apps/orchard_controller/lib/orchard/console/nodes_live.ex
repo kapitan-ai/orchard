@@ -218,7 +218,7 @@ defmodule OrchardConsole.NodesLive do
           <div id="nodes-inventory-card" hidden={@section != :inventory}>
           <.card>
             <:title>Node Inventory</:title>
-            <:subtitle>Lifecycle and health are separate. Inspect a Node for admission, observation freshness, and scheduling evidence.</:subtitle>
+            <:subtitle>Lifecycle and health are separate. Observation times reflect successful authenticated observations, not Console refreshes. Inspect a Node for admission, observation freshness, and scheduling evidence.</:subtitle>
 
             <%= cond do %>
               <% @inventory.status == :loading -> %>
@@ -269,7 +269,7 @@ defmodule OrchardConsole.NodesLive do
                     <.badge tone={health_badge_tone(node.health)}>{node.health}</.badge>
                   </:col>
                   <:col :let={node} label="Agent Version" mono>{node.agent_version || "—"}</:col>
-                  <:col :let={node} label="Last successful observation" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} placeholder="Not available" /></:col><:action :let={node}>
+                  <:col :let={node} label="Last authenticated observation" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} placeholder="Not available" /></:col><:action :let={node}>
     <.link navigate={~p"/console/nodes/#{node.id}"} class="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-300 dark:hover:bg-slate-800" aria-label={"Inspect #{node.display_name || node.hostname || node.id}"}>
     Inspect Node <.icon name="hero-arrow-left" class="ml-1 h-4 w-4 rotate-180" />
     </.link>
