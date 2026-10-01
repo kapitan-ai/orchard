@@ -8,6 +8,7 @@ defmodule Orchard.Node.WorkerCustodyTest do
   alias Orchard.Node.CustodyTestHelpers
   alias Orchard.Node.RuntimeProcessReaper
   alias Orchard.Node.Worker.V1.{WorkerRuntimeService, WorkerStatusResponse}
+  alias Orchard.Node.WorkerManagerStub
   alias Orchard.Node.WorkerProcess
   alias Orchard.Node.WorkerProcessLifecycle
   alias Orchard.Node.WorkerRuntimeAdapter
@@ -475,7 +476,8 @@ defmodule Orchard.Node.WorkerCustodyTest do
     end)
 
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
-    assert {:ok, worker_pid} = WorkerSupervisor.start_worker(context.model_ref, manager: self())
+    manager = start_supervised!({WorkerManagerStub, self()})
+    assert {:ok, worker_pid} = WorkerSupervisor.start_worker(context.model_ref, manager: manager)
 
     assert :loaded =
              WorkerProcess.ensure_loaded(worker_pid, %EnsureModelLoadedRequest{},

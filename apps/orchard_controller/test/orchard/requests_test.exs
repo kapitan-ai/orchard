@@ -1208,6 +1208,52 @@ defmodule Orchard.RequestsTest do
       assert rejected["reason_codes"] == ["transport_unreachable"]
     end
 
+    test "SPEC.md §12.2 retains candidates rejected for worker recovery evidence" do
+      request = create_request!(%{public_id: "req_schedule_recovery"})
+
+      decision = %{
+        strategy: :single_node,
+        request_id: request.public_id,
+        selected_node_id: nil,
+        selection_tier: nil,
+        scored_candidates: [],
+        rejected_candidates:
+          Enum.map(
+            [
+              :worker_recovery_evidence_unavailable,
+              :worker_restart_backoff,
+              :worker_restart_in_progress,
+              :placement_crash_breaker_open,
+              :placement_recovery_required
+            ],
+            fn code ->
+              %{
+                node_id: nil,
+                target_ref: "grpc_compat:10.0.0.1:50061",
+                eligible: false,
+                diagnostics: %{fact: "worker_recovery_ineligible"},
+                reason_codes: [code]
+              }
+            end
+          ),
+        skipped_candidates: [],
+        candidate_count: 5
+      }
+
+      assert {:ok, updated} = Requests.record_schedule(request, decision)
+      rejected = updated.scheduler_decision["rejected_candidates"]
+
+      assert Enum.map(rejected, & &1["reason_codes"]) == [
+               ["worker_recovery_evidence_unavailable"],
+               ["worker_restart_backoff"],
+               ["worker_restart_in_progress"],
+               ["placement_crash_breaker_open"],
+               ["placement_recovery_required"]
+             ]
+
+      assert Enum.all?(rejected, &(&1["diagnostics"]["fact"] == "worker_recovery_ineligible"))
+    end
+
     test "rejects scheduler explanations with reason codes outside the accepted vocabulary" do
       request = create_request!(%{public_id: "req_schedule_invalid_reason"})
 

@@ -4,12 +4,20 @@ defmodule Orchard.NodeHeartbeats.Payload do
   """
 
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
-  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    ModelRef,
+    Observation,
+    ObservationBounds,
+    Placement,
+    PlacementCapacity,
+    Target,
+    WorkerRecoveryEvidence
+  }
 
   @schema_version 1
   @default_max_bytes 262_144
   @minimum_max_bytes 128
-  @entry_limit 40
   @string_limit_bytes 512
   @model_ref_limit 160
   @status_limit 80
@@ -101,6 +109,8 @@ defmodule Orchard.NodeHeartbeats.Payload do
         "aggregate_max_concurrency" => aggregate_max_concurrency(observation),
         "aggregate_capacity_evidence" => aggregate_capacity_evidence(observation),
         "placements" => placements,
+        "worker_recovery_epoch" =>
+          bounded_recovery_epoch(value(observation, :worker_recovery_epoch)),
         "runtime_memory_budgets" =>
           normalize_entries(
             value(observation, :runtime_memory_budgets),
@@ -288,6 +298,11 @@ defmodule Orchard.NodeHeartbeats.Payload do
   defp capacity_validity(_active, nil), do: "missing"
   defp capacity_validity(_active, _limit), do: "valid"
 
+  defp bounded_recovery_epoch(epoch) when is_binary(epoch) and byte_size(epoch) in 1..128,
+    do: epoch
+
+  defp bounded_recovery_epoch(_epoch), do: nil
+
   defp normalize_placements(placements) when is_list(placements) do
     with :ok <- ensure_unique_placement_model_refs(placements),
          :ok <- ensure_placement_limit(placements) do
@@ -327,7 +342,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
   defp placement_model_ref_key(_placement), do: :error
 
   defp ensure_placement_limit(placements) do
-    if length(placements) <= @entry_limit do
+    if length(placements) <= ObservationBounds.placement_limit() do
       :ok
     else
       {:error, :placement_entry_overflow}
@@ -345,7 +360,9 @@ defmodule Orchard.NodeHeartbeats.Payload do
             "model_ref" => model_ref,
             "state" => normalize_placement_state(value(placement, :state)),
             "capacity" => normalize_placement_capacity(value(placement, :capacity)),
-            "last_used_at" => normalize_last_used_at(value(placement, :last_used_at))
+            "last_used_at" => normalize_last_used_at(value(placement, :last_used_at)),
+            "worker_recovery" =>
+              WorkerRecoveryEvidence.normalize(value(placement, :worker_recovery))
           }
         ]
 
@@ -459,7 +476,7 @@ defmodule Orchard.NodeHeartbeats.Payload do
 
   defp normalize_entries(entries, normalizer) when is_list(entries) do
     entries
-    |> Enum.take(@entry_limit)
+    |> Enum.take(ObservationBounds.placement_limit())
     |> Enum.map(normalizer)
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&stringify_keys/1)

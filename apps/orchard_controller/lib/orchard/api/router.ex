@@ -87,6 +87,8 @@ defmodule Orchard.API.Router do
 
     get("/health", HealthController, :show)
     post("/requests/:id/retry", RequestRetriesController, :create)
+    get("/worker-recovery/nodes/:node_id/models/:model_id", WorkerRecoveryController, :show)
+    post("/worker-recovery/nodes/:node_id/models/:model_id", WorkerRecoveryController, :recover)
     get("/scheduler/explanations/:request_id", SchedulerExplanationsController, :show)
     get("/circuit-breakers/nodes/:node_id", CircuitBreakersController, :show_node)
     post("/circuit-breakers/nodes/:node_id/clear", CircuitBreakersController, :clear_node)

@@ -1,0 +1,42 @@
+syntax = "proto3";
+package cluster.v1;
+
+import "cluster/v1/runtime.proto";
+
+// SPEC §12.2 control operations. Each listener requires its identity-bound peer.
+service ControllerWorkerRecoveryService {
+  rpc ReadWorkerRecoveryCheckpoint(WorkerRecoveryKey) returns (WorkerRecoveryResult);
+  rpc CommitWorkerRecoveryCheckpoint(WorkerRecoveryMutation) returns (WorkerRecoveryResult);
+}
+service NodeWorkerRecoveryService {
+  rpc InspectWorkerRecoveryPlacement(WorkerRecoveryKey) returns (WorkerRecoveryResult);
+  rpc RecoverWorkerPlacement(WorkerRecoveryCommand) returns (WorkerRecoveryResult);
+}
+message WorkerRecoveryKey {
+  string node_id = 1;
+  string model_id = 2;
+  string version = 3;
+}
+message WorkerRecoveryMutation {
+  WorkerRecoveryKey key = 1;
+  string expected_epoch = 2;
+  uint64 expected_revision = 3;
+  string transition_id = 4;
+  // Allowlisted WorkerRecoveryCheckpoint record, at most 4096 UTF-8 bytes.
+  string record_json = 5;
+}
+message WorkerRecoveryCommand {
+  WorkerRecoveryKey key = 1;
+  string expected_epoch = 2;
+  uint64 expected_revision = 3;
+  string command_id = 4;
+  string action = 5;
+  string reason = 6;
+  EnsureModelLoadedRequest load_request = 7;
+}
+message WorkerRecoveryResult {
+  uint32 status = 1;
+  string reason = 2;
+  // Bounded checkpoint or current recovery projection; empty for absent/error.
+  string record_json = 3;
+}

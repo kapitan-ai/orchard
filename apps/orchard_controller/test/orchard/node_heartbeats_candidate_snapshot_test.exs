@@ -9,7 +9,7 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
   alias Orchard.NodeHeartbeats.Payload
   alias Orchard.Nodes
   alias Orchard.Nodes.{Node, NodeHeartbeat}
-  alias Orchard.RuntimeEndpoint.{Placement, Target}
+  alias Orchard.RuntimeEndpoint.{Placement, Target, WorkerRecoveryEvidence}
 
   @now ~U[2026-08-03 12:00:00.000000Z]
   @freshness_ms 30_000
@@ -81,6 +81,58 @@ defmodule Orchard.NodeHeartbeats.CandidateSnapshotTest do
     end)
 
     :ok
+  end
+
+  test "SPEC §12.2 retained empty-worker recovery evidence survives Postgres observation and snapshot" do
+    node = insert_node!()
+    target = target_for(node)
+
+    evidence = %{
+      key: %{node_id: node.id, model_id: "orchard/model", version: "v1"},
+      epoch: "epoch",
+      owner_epoch: "prior",
+      revision: 5,
+      state: "open",
+      hydrated: true,
+      eligible: false,
+      reason: "placement_crash_breaker_open",
+      prompt: "must-not-persist"
+    }
+
+    heartbeat =
+      append_heartbeat!(node, target, @now, %{
+        worker_recovery_epoch: "epoch",
+        placements: [
+          %{
+            model_ref: %{model_id: "orchard/model", version: "v1"},
+            state: :unknown,
+            worker_recovery: evidence
+          }
+        ]
+      })
+
+    refute inspect(heartbeat.payload) =~ "must-not-persist"
+
+    assert {:ok, snapshot} =
+             NodeHeartbeats.production_candidate_snapshot(
+               [Target.normalize(target)],
+               [target],
+               observed_at: @now
+             )
+
+    assert [%Candidate{worker_recovery_epoch: "epoch", placements: [placement]}] =
+             snapshot.candidates
+
+    assert placement.state == :unknown
+    assert placement.worker_recovery["state"] == "open"
+    assert placement.worker_recovery["key"]["node_id"] == node.id
+    assert placement.worker_recovery["revision"] == 5
+
+    assert %{"invalid" => "worker_recovery_evidence"} ==
+             WorkerRecoveryEvidence.normalize(%{
+               evidence
+               | reason: %{prompt: "secret"}
+             })
   end
 
   test "ADR 0017 returns typed normalized evidence for the exact production intersection" do

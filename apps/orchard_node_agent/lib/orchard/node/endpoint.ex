@@ -4,4 +4,5 @@ defmodule Orchard.Node.Endpoint do
   use GRPC.Endpoint
 
   run(Orchard.Node.RuntimeServer)
+  run(Orchard.Node.WorkerRecoveryControlServer)
 end

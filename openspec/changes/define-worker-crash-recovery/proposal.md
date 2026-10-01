@@ -68,6 +68,12 @@ It does not broaden Automatic Attempt Retry or authorize an independent replay f
 - This PR changes only OpenSpec contract artifacts.
 It does not modify product code, `SPEC.md`, generated bindings, database migrations, routes, CLI behavior, or runtime configuration.
 
+## Activation Evidence And Deferred Work
+
+- Hot-path recovery-inspection caching, batching, and ranking redesign is deferred. It remains a Draft activation blocker and is not implemented by this change.
+- A mixed-version cluster whose older Node Agent omits exact recovery evidence loses the candidate fail-closed. Activation therefore requires a coordinated rollout; missing evidence is never interpreted as a healthy placement.
+- Default recovery-only mTLS endpoint wiring is configuration and test coverage, not live activation evidence. Live source-dev and packaged mTLS activation plus a two-host crash proof remain pending and must not be described as supported operation.
+
 ## Out Of Scope
 
 - Product implementation, database migrations, protocol field allocation, generated bindings, or UI work.

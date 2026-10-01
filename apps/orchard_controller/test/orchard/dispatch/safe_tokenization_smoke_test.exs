@@ -11,6 +11,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{Operation, PlacementCapacity}
   alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
 
   def connect(target) do
     key = target_key(target)
@@ -27,8 +28,19 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
         {:error, :unavailable}
 
       response ->
+        response = WorkerRecoveryFixtures.status(response)
         DispatchCapacityFixtures.record_authenticated_probe_evidence(response)
         {:ok, response}
+    end
+  end
+
+  def inspect_worker_recovery({:stub_channel, target}, model_ref, _opts) do
+    case Process.get({:safe_smoke_status, target_key(target)}) do
+      %{node_metadata: %{node_id: node_id}} ->
+        {:ok, WorkerRecoveryFixtures.evidence(node_id, model_ref)}
+
+      _missing ->
+        {:error, :unavailable}
     end
   end
 
@@ -160,6 +172,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
   alias Orchard.RuntimeEndpoint.Operation
   alias Orchard.Scheduler.MultiNode
   alias Orchard.TestSupport.DispatchCapacityFixtures
+  alias Orchard.TestSupport.WorkerRecoveryFixtures
   alias Orchard.Tokenizer.Client
 
   @moduletag :safe_tokenization_smoke
@@ -205,7 +218,13 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     stub_status(capable_b, status_response(id_b, capable_b, supports_prompt_token_ids: true))
 
     request = canonical_request()
-    assert {:ok, schedule} = MultiNode.schedule(request, status_client: @stub_client)
+
+    assert {:ok, schedule} =
+             MultiNode.schedule(request,
+               status_client: @stub_client,
+               worker_recovery_inspector: &WorkerRecoveryFixtures.inspect/2
+             )
+
     schedule = Map.put(schedule, :timeout_at, DateTime.add(DateTime.utc_now(), 30, :second))
     assert schedule.node_id in [id_a, id_b]
     selected_target = target_key(schedule.runtime_client_target)
@@ -269,7 +288,13 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     )
 
     request = canonical_request()
-    assert {:ok, schedule} = MultiNode.schedule(request, status_client: @stub_client)
+
+    assert {:ok, schedule} =
+             MultiNode.schedule(request,
+               status_client: @stub_client,
+               worker_recovery_inspector: &WorkerRecoveryFixtures.inspect/2
+             )
+
     schedule = Map.put(schedule, :timeout_at, DateTime.add(DateTime.utc_now(), 30, :second))
     assert schedule.node_id == id_capable
     assert target_key(schedule.runtime_client_target) == capable_target

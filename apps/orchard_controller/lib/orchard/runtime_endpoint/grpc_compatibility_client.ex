@@ -14,7 +14,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
     GrpcMapping,
     GrpcMTLS,
     Operation,
-    Target
+    Target,
+    WorkerRecoveryClient
   }
 
   defstruct [:channel, :target, :security]
@@ -59,6 +60,34 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
   end
 
   @impl true
+  def inspect_worker_recovery(connection, model_ref, opts \\ []) do
+    recovery_call(connection, :inspect_worker_recovery_placement, model_ref, opts)
+  end
+
+  @impl true
+  def recover_worker_placement(connection, command, opts \\ []) do
+    recovery_call(connection, :recover_worker_placement, command, opts)
+  end
+
+  defp recovery_call(
+         %__MODULE__{channel: channel, target: target, security: {:mutual_tls, _, _}},
+         operation,
+         input,
+         opts
+       ) do
+    WorkerRecoveryClient.call_channel(
+      channel,
+      target,
+      operation,
+      input,
+      opts
+    )
+  end
+
+  defp recovery_call(%__MODULE__{}, _operation, _input, _opts),
+    do: {:error, :permission_denied}
+
+  @impl true
   def ensure_model_loaded(
         %__MODULE__{channel: channel},
         %Operation.EnsureModelLoadedRequest{} = request,
@@ -67,7 +96,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
     request = GrpcMapping.ensure_model_loaded_request_to_proto(request)
 
     with {:ok, response} <- TransportClient.ensure_model_loaded(channel, request, opts) do
-      {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
+      WorkerRecoveryClient.ensure_result(response)
     end
   end
 

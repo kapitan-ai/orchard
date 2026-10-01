@@ -16,7 +16,7 @@ defmodule Orchard.RuntimeEndpoint.Client do
   """
 
   alias Orchard.InferenceEvent
-  alias Orchard.RuntimeEndpoint.{Observation, Operation, Target}
+  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Operation, Target}
 
   @type connection :: term()
   @type stream_ref :: reference()
@@ -24,6 +24,12 @@ defmodule Orchard.RuntimeEndpoint.Client do
   @callback connect(Target.t() | keyword()) :: {:ok, connection()} | {:error, term()}
   @callback disconnect(connection()) :: :ok
   @callback status(connection(), keyword()) :: {:ok, Observation.t()} | {:error, term()}
+  @callback inspect_worker_recovery(connection(), ModelRef.t(), keyword()) ::
+              {:ok, map()} | {:error, term()}
+  @callback recover_worker_placement(connection(), map(), keyword()) ::
+              {:ok, map()} | {:error, term()}
+  @optional_callbacks inspect_worker_recovery: 3, recover_worker_placement: 3
+
   @callback ensure_model_loaded(connection(), Operation.EnsureModelLoadedRequest.t(), keyword()) ::
               {:ok, Operation.EnsureModelLoadedResult.t()} | {:error, term()}
   @callback unload_model(connection(), Operation.UnloadModelRequest.t(), keyword()) ::

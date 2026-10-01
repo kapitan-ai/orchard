@@ -82,16 +82,9 @@ Each successful authenticated, non-stale trusted observation SHALL append one
 evidence. A transport failure creates no synthetic successful heartbeat.
 
 The Controller-produced JSON payload uses schema version `1` and a closed top-level
-allowlist matching existing domain vocabulary:
-
-- `schema_version`, `validity`, and optional `invalid_reason`;
-- `endpoint_id`, `target`, `availability`, and `worker_state`;
-- `aggregate_active_request_count`, `aggregate_max_concurrency`, and
-  `aggregate_capacity_evidence`;
-- `placements`;
-- `runtime_memory_budgets`;
-- `runtime_prefix_cache_statuses`; and
-- `supports_prompt_token_ids`.
+allowlist matching existing domain vocabulary. `SPEC.md` §4.6.1 owns the exact
+allowlisted key set, the nested field lists, and their bounds; later slices extend
+that allowlist there rather than here.
 
 The row's `node_id` and `observed_at` columns remain the canonical trusted identity and
 observation time. `target`, `placements`, and capacity entries use the canonical

@@ -233,6 +233,52 @@ defmodule Orchard.Nodes do
     trusted_runtime_endpoint_targets_for_states([:active])
   end
 
+  @doc "Resolves certificate-pinned recovery control independently of inference transport."
+  @spec worker_recovery_control_target(Ecto.UUID.t() | Target.t()) ::
+          {:ok, Target.t()} | {:error, :permission_denied | :unavailable}
+  def worker_recovery_control_target(selector) do
+    if repo_available?() do
+      rows = registered_runtime_endpoint_rows([:admitted, :active])
+
+      with {:ok, matches} <- recovery_control_matches(selector, rows),
+           [{node, _enrollment} = row] <- matches,
+           true <- recovery_node_matches?(selector, node.id),
+           [target] <- trusted_runtime_endpoint_target(row) do
+        {:ok, target}
+      else
+        _ -> {:error, :permission_denied}
+      end
+    else
+      {:error, :unavailable}
+    end
+  rescue
+    _error in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, :unavailable}
+  end
+
+  defp recovery_control_matches(node_id, rows) when is_binary(node_id) do
+    with {:ok, node_id} <- Ecto.UUID.cast(node_id) do
+      {:ok, Enum.filter(rows, fn {node, _} -> node.id == node_id end)}
+    end
+  end
+
+  defp recovery_control_matches(%Target{transport: :grpc_compat, node_id: node_id}, rows)
+       when is_binary(node_id),
+       do: recovery_control_matches(node_id, rows)
+
+  defp recovery_control_matches(%Target{transport: :beam} = target, rows) do
+    if BeamPeerGrants.production_enabled?() and
+         target not in trusted_beam_runtime_endpoint_targets([:admitted, :active]) do
+      {:error, :permission_denied}
+    else
+      recovery_control_matches(target.node_id, rows)
+    end
+  end
+
+  defp recovery_control_matches(_, _), do: {:error, :permission_denied}
+
+  defp recovery_node_matches?(%Target{node_id: id}, node_id), do: id == node_id
+  defp recovery_node_matches?(id, node_id), do: id == node_id
+
   @spec authorize_inference_target(Target.t()) ::
           :ok | {:error, :runtime_target_not_active | :node_inventory_unavailable}
   def authorize_inference_target(%Target{} = target) do
@@ -270,6 +316,12 @@ defmodule Orchard.Nodes do
   end
 
   defp trusted_grpc_runtime_endpoint_targets(states) do
+    states
+    |> registered_runtime_endpoint_rows()
+    |> Enum.flat_map(&trusted_runtime_endpoint_target/1)
+  end
+
+  defp registered_runtime_endpoint_rows(states) do
     Node
     |> join(:inner, [node], enrollment in Enrollment, on: enrollment.node_id == node.id)
     |> where([node, _enrollment], node.state in ^states)
@@ -279,7 +331,6 @@ defmodule Orchard.Nodes do
     |> order_by([node, _enrollment], asc: node.id)
     |> select([node, enrollment], {node, enrollment})
     |> Repo.all()
-    |> Enum.flat_map(&trusted_runtime_endpoint_target/1)
   end
 
   defp trusted_beam_runtime_endpoint_targets(states) do

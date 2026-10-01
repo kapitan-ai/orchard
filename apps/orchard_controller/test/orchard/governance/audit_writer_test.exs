@@ -205,6 +205,22 @@ defmodule Orchard.Governance.AuditWriterTest do
     end
   end
 
+  test "SPEC.md §9.1 maps worker recovery audits to node lifecycle without metrics degradation" do
+    Status.recover({:series_admission, :rejected})
+    on_exit(fn -> Status.recover({:series_admission, :rejected}) end)
+    ref = attach_metric()
+
+    for {action, outcome} <- [
+          {"worker_recovery.accepted", "succeeded"},
+          {"worker_recovery.failed", "failed"}
+        ] do
+      assert {:ok, %AuditLog{}} = action |> valid_changeset() |> AuditWriter.insert()
+      assert_receive {^ref, %{value: 1}, %{action: "node_lifecycle", outcome: ^outcome}}
+    end
+
+    refute :ets.member(Status, {:series_admission, :rejected})
+  end
+
   test "SPEC.md §9.1 failed audit writes emit one failed outcome without sensitive labels" do
     ref = attach_metric()
 

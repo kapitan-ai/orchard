@@ -45,8 +45,10 @@ defmodule Orchard.Node.FakeRuntimeAdapter do
     {:error, :simulated_load_failure}
   end
 
-  def load_model(%ModelRef{} = model_ref, _opts) do
-    {:ok, %{model_ref: model_ref, generations: %{}}}
+  def load_model(%ModelRef{} = model_ref, opts) do
+    with :ok <- Keyword.get(opts, :on_runtime_custody, fn -> :ok end).() do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
   end
 
   @impl true

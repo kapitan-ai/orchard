@@ -29,6 +29,8 @@ defmodule Orchard.Node.StatusTest do
     )
 
     :ok = Status.reset()
+    :ok = Supervisor.terminate_child(Orchard.Node.Supervisor, Orchard.Node.ModelManager)
+    {:ok, _pid} = Supervisor.restart_child(Orchard.Node.Supervisor, Orchard.Node.ModelManager)
 
     on_exit(fn ->
       :ok = Status.reset()
@@ -52,7 +54,9 @@ defmodule Orchard.Node.StatusTest do
     assert ensure_response.failure_code == "missing_model_id"
 
     assert Status.prepare_request(inference_request("prepare"), self()) ==
-             {:error, :model_not_loaded}
+             {:error, {:worker_recovery_refused, :placement_recovery_required}}
+
+    {:error, :model_not_loaded}
 
     assert Status.start_request(inference_request("start")) == {:error, :request_not_prepared}
 
