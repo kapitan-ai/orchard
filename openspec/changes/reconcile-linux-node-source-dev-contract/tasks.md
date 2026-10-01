@@ -6,8 +6,8 @@
 - [x] 1.4 Add the `linux-node-platform` capability and ADDED requirements for `platform-profiles`, `host-lifecycle-adapters`, and `packaging-deployment`, and verify strict change validation passes
 - [x] 1.5 Add `docs/platforms/linux-node.md`, update orientation references including the `AGENTS.md` Milestone 9 row and the architecture acceptance-profile row, and verify relative links resolve
 - [x] 1.6 Resolve independent review findings in one bounded revision, restoring the Mac-only production BEAM sentence verbatim and leaving ADR 0012 unchanged
-- [ ] 1.7 Obtain independent re-review and accountable owner acceptance of the exact revision before any task below starts
-- [ ] 1.8 Only after owner acceptance, flip the proposed or pending labels in `SPEC.md` §1.4 and Milestone 9, ADR 0035 status, `docs/decisions/README.md`, `docs/architecture.md`, `docs/README.md`, `docs/local-dev.md`, `docs/platforms/linux-node.md`, and the `AGENTS.md` milestone row, and verify no text claims support
+- [x] 1.7 Obtain independent re-review and accountable owner acceptance of the exact revision before any task below starts (independent re-review completed and the accountable owner accepted the exact reviewed revision on 2026-09-30, which merged through pull request #464 as commit 1b6e9e04d032cce5664c581054e10f052ed9cdb4)
+- [x] 1.8 Only after owner acceptance, flip the proposed or pending labels in `SPEC.md` §1.4 and Milestone 9, ADR 0035 status, `docs/decisions/README.md`, `docs/architecture.md`, `docs/README.md`, `docs/local-dev.md`, `docs/platforms/linux-node.md`, and the `AGENTS.md` milestone row, and verify no text claims support (owner-status labels flipped in those files and in this change's proposal and design, Milestone 9 had no owner-status label, and the unimplemented proposed target installation path wording is unchanged)
 
 ## 2. Source-development Node path and Linux adapter
 

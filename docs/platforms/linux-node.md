@@ -1,7 +1,7 @@
 # Linux Node candidate profile
 
 This document summarizes the experimental `ubuntu_24_04_x86_64_node` Linux Node candidate.
-It is a proposed qualification target, not a support claim.
+It is an accepted experimental qualification target, not a support claim.
 The normative boundaries are [`SPEC.md`](../../SPEC.md) §1.4 and Milestone 9, [ADR 0035](../decisions/0035-experimental-linux-node-source-development.md), and the `reconcile-linux-node-source-dev-contract` OpenSpec change.
 The Apple Silicon macOS platform profile remains the only supported platform profile.
 

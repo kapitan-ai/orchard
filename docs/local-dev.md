@@ -11,7 +11,7 @@ orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
 Source development is currently supported on Apple Silicon macOS.
 The accepted Linux Controller profile is a Milestone 8 target, not an operational setup described by this guide.
-The proposed experimental Linux Node candidate in [`platforms/linux-node.md`](platforms/linux-node.md) is a Milestone 9 qualification target, and this guide does not yet describe a Linux Node setup.
+The accepted experimental Linux Node candidate in [`platforms/linux-node.md`](platforms/linux-node.md) is a Milestone 9 qualification target, and this guide does not yet describe a Linux Node setup.
 Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions remain the macOS implementation baseline and migration inputs rather than portable Orchard control-plane core requirements.
 
 ## Prerequisites

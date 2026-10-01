@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed on 2026-09-30 and pending accountable owner review.
+Accepted target contract on 2026-09-30.
+The accountable product owner accepted the exact reviewed revision, which merged through pull request #464 as commit 1b6e9e04d032cce5664c581054e10f052ed9cdb4.
+Implementation, host qualification, and the `macos_controller_linux_node_model_free` acceptance profile remain pending separately reviewed work.
+The `reconcile-linux-node-source-dev-contract` OpenSpec change remains open with implementation tasks unchecked; acceptance does not archive it or declare it implemented.
 
 This record reconciles an earlier package-first version of the same Linux Node candidate decision that was accepted in review but never merged.
 That earlier acceptance applies only to its own revision and does not accept this wording.

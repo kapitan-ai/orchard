@@ -17,7 +17,7 @@ This design therefore names them only as future targeting concepts and does not 
 
 - Carry forward the earlier contract's host matrix, observation-only inventory, private-network trust, fail-closed targeting, provider separation, and mixed-platform gate.
 - Replace every package-first assumption with the current source-development path and exact source evidence binding.
-- Keep every Linux Node statement proposed, experimental, and free of support claims.
+- Keep every Linux Node statement experimental and free of support claims.
 - Leave the supported macOS profile, the Distribution Pause, and the Linux Controller profile unchanged.
 
 **Non-Goals:**
@@ -132,6 +132,6 @@ Rollback of this change removes only unimplemented contract text.
 
 ## Open Questions
 
-- The accountable owner must review and accept this exact revision before any implementation slice begins.
+- Resolved: the accountable owner accepted this exact reviewed revision on 2026-09-30, and each implementation slice still needs its own review.
 - The future release and trust profile that could make a Linux Node eligible for production BEAM or support is not formulated here and stays open for a later product decision.
 - The dedicated service-identity name and any fixed paths are deferred to a future packaging proposal and do not affect this contract.

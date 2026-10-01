@@ -14,7 +14,7 @@ large spec sections.
 - [`../SPEC.md`](../SPEC.md) — normative product/system contract.
 - [`../README.md`](../README.md) — product overview and current status.
 - [`architecture.md`](architecture.md) — repo/runtime map for contributors.
-- [`platforms/linux-node.md`](platforms/linux-node.md) - proposed experimental Linux Node candidate matrix; not a support claim.
+- [`platforms/linux-node.md`](platforms/linux-node.md) - accepted experimental Linux Node candidate matrix; not a support claim.
 - [`glossary/CONTEXT.md`](glossary/CONTEXT.md) — shared vocabulary and
   glossary.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — human collaborator workflow.
