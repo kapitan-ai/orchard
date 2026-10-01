@@ -621,6 +621,30 @@ They do not identify API Token ownership, the Public Inference Bearer principal,
 Disabling a Portal User does not automatically revoke minted API Tokens, and the existing **Status** column remains the credential-state presentation.
 Render both provenance lines in one noninteractive semantic table cell, use existing neutral light and dark theme tokens, allow the secondary line to wrap, and retain the shared table's local horizontal-scroll behavior on narrow viewports.
 
+### 6.9 Operational Overview
+
+Overview leads with separately scoped Controller readiness and the default Runtime
+Endpoint status, followed by six compact summary metrics, browser-local Quickstart,
+current durable Request states, the default Runtime Endpoint snapshot, Controller
+readiness checks, catalog lifecycle, and links to the operational pages.
+Completed Quickstart remains compact.
+
+Keep source, scope, freshness, and missing/error state visible beside each
+projection. A refresh timestamp records the read attempt; it does not certify every
+source succeeded. A confirmed empty result may be zero; unavailable or unrecorded
+evidence may not. Keep metric definitions behind a keyboard-accessible disclosure.
+Avg TTFT is the existing unwindowed arithmetic mean from Request creation to first
+recorded public output. Avg tok/s is the existing unwindowed arithmetic mean of
+qualifying Request output counts divided by first-output-to-completion seconds; it
+does not establish a provider-native generation rate or throughput trend. Runtime
+facts describe one default target, not fleet health, schedulability, Workspace
+access, or inference readiness.
+
+Preserve independent source failures, pre-connect loading, browser preference
+hydration, disconnect/stale/reconnect treatment, configured polling, and manual
+refresh. Narrow layouts wrap controls and source labels; completed setup does not
+claim current inference qualification.
+
 ---
 
 ## 7. Motion
