@@ -630,6 +630,7 @@ defmodule OrchardConsole.NodesLiveTest do
   alias Orchard.Nodes.{AdmissionCandidate, Node}
   alias Orchard.NodeTrust
   alias Orchard.Repo
+  alias Orchard.RuntimeEndpoint.Target
   alias OrchardConsole.NodesPageData
 
   @moduletag :live
@@ -996,7 +997,7 @@ defmodule OrchardConsole.NodesLiveTest do
       end
 
       target =
-        Orchard.RuntimeEndpoint.Target.beam(node.id,
+        Target.beam(node.id,
           address: "orchard_node_agent@192.0.2.8",
           metadata: %{
             source: :trusted_node_inventory,
