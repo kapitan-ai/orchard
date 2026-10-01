@@ -99,7 +99,7 @@ Support bundles are retired on `main`, so candidate diagnostics use retained gen
 
 ### Recorded deviations from the earlier contract
 
-These deviations are proposed by this revision and are not covered by the earlier acceptance.
+These deviations were introduced by this revision, are not covered by the earlier acceptance, and were accepted with this revision through pull request #464.
 
 - Ubuntu 26.04 LTS is named explicitly as unqualified, which narrows nothing that the closed tuple already covered.
 - The package-owned lifecycle, fixed layout, service-account name, air-gapped media, and removal semantics are deferred to a future packaging contract.
