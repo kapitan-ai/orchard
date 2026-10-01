@@ -57,6 +57,72 @@ defmodule Orchard.Node.HostInventory.CommandTest do
       assert error.message =~ "GNU coreutils `timeout` is required"
       assert error.message =~ "/usr/bin/timeout"
       assert error.message =~ "brew install coreutils"
+      assert error.message =~ "bin/gtimeout"
+      assert error.message =~ "opt/coreutils/libexec/gnubin/timeout"
+    end
+  end
+
+  describe "guardian discovery" do
+    # Homebrew coreutils always installs g-prefixed tools plus a gnubin
+    # directory; the unprefixed `timeout` alias is optional.
+    # https://github.com/kapitan-ai/orchard/pull/466#discussion_r4153089052
+
+    test "a Homebrew install with only the g-prefixed gtimeout is discovered", %{tmp_dir: dir} do
+      for prefix <- ["opt/homebrew", "usr/local"] do
+        root = Path.join(dir, String.replace(prefix, "/", "-"))
+        gtimeout = gnu_timeout!(root, Path.join(prefix, "bin/gtimeout"))
+
+        assert GnuTimeoutGuardian.discover(root) == gtimeout
+      end
+    end
+
+    test "a coreutils gnubin timeout symlinked to the Cellar gtimeout is discovered", %{
+      tmp_dir: dir
+    } do
+      for prefix <- ["opt/homebrew", "usr/local"] do
+        root = Path.join(dir, String.replace(prefix, "/", "-"))
+        cellar = gnu_timeout!(root, Path.join(prefix, "Cellar/coreutils/9.12/bin/gtimeout"))
+        gnubin = Path.join([root, prefix, "opt/coreutils/libexec/gnubin/timeout"])
+        File.mkdir_p!(Path.dirname(gnubin))
+        File.ln_s!(cellar, gnubin)
+
+        assert GnuTimeoutGuardian.discover(root) == gnubin
+      end
+    end
+
+    test "a non-GNU earlier candidate is skipped for a later GNU candidate", %{tmp_dir: dir} do
+      uutils = Path.join(dir, "usr/bin/timeout")
+      File.mkdir_p!(Path.dirname(uutils))
+      script!(Path.dirname(uutils), "timeout", "echo 'timeout (uutils coreutils) 0.2.2'")
+      gtimeout = gnu_timeout!(dir, "opt/homebrew/bin/gtimeout")
+
+      assert GnuTimeoutGuardian.discover(dir) == gtimeout
+    end
+
+    # Each candidate gets the bounded guardian check, so an earlier candidate
+    # that cannot run or never answers `--version` cannot stall discovery.
+    @tag timeout: 15_000
+    test "unusable earlier candidates are skipped for a later GNU candidate", %{tmp_dir: dir} do
+      not_executable = Path.join(dir, "usr/bin/timeout")
+      File.mkdir_p!(Path.dirname(not_executable))
+      File.write!(not_executable, "#!/bin/sh\necho 'timeout (GNU coreutils) 9.12'\n")
+
+      corrupt = Path.join(dir, "opt/homebrew/bin/timeout")
+      File.mkdir_p!(Path.dirname(corrupt))
+      File.write!(corrupt, <<0x7F, "ELF", 0, 1, 2, 3>>)
+      File.chmod!(corrupt, 0o755)
+
+      silent = Path.join(dir, "usr/local/bin/timeout")
+      File.mkdir_p!(Path.dirname(silent))
+      script!(Path.dirname(silent), "timeout", "exec /bin/cat >/dev/null")
+
+      gtimeout = gnu_timeout!(dir, "opt/homebrew/bin/gtimeout")
+
+      assert GnuTimeoutGuardian.discover(dir) == gtimeout
+    end
+
+    test "no candidate is discovered when no GNU timeout is installed", %{tmp_dir: dir} do
+      assert GnuTimeoutGuardian.discover(dir) == nil
     end
   end
 
@@ -179,6 +245,12 @@ defmodule Orchard.Node.HostInventory.CommandTest do
 
   defp os_process_alive?(pid) do
     match?({_output, 0}, System.cmd("/bin/kill", ["-0", pid], stderr_to_stdout: true))
+  end
+
+  defp gnu_timeout!(root, relative_path) do
+    path = Path.join(root, relative_path)
+    File.mkdir_p!(Path.dirname(path))
+    script!(Path.dirname(path), Path.basename(path), "echo 'timeout (GNU coreutils) 9.12'")
   end
 
   defp script!(dir, name, body) do
