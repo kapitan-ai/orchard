@@ -1,0 +1,11 @@
+{
+  "card0": {
+    "Unique ID": "0x1234",
+    "PCI Bus": "0000:41:00.0",
+    "Card Series": "AMD Fixture Accelerator",
+    "VRAM Total Memory (B)": "68719476736"
+  },
+  "system": {
+    "Driver version": "6.8.0-fixture"
+  }
+}

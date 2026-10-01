@@ -66,6 +66,9 @@ Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling th
 Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
 On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically and run every test; on non-Darwin hosts they skip staging and exclude the retained `macos` tag.
 Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
+Node Agent host-inventory probe tests tagged `gnu_timeout` run real processes under a GNU coreutils `timeout` guardian, so GNU coreutils is a required host test prerequisite on every host.
+The Node Agent test helper looks for GNU `timeout` at `/usr/bin/timeout` (Linux), `/opt/homebrew/bin/timeout`, or `/usr/local/bin/timeout` (`brew install coreutils` on macOS).
+Those tests always run; without a verified GNU guardian they fail with install guidance rather than being skipped.
 The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
 Payload assembly invokes the same builder before producing the packaged CLI release.
 Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun clang --version` fails.
@@ -266,6 +269,8 @@ Some dependencies are host services or Apple platform tools and are not managed
 by mise:
 
 - PostgreSQL local or external service
+- GNU coreutils `timeout` for the Node Agent host-inventory probe tests
+  (Linux coreutils `/usr/bin/timeout`; on macOS `brew install coreutils`)
 - Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
   Elixir proto generation
 - Xcode Command Line Tools and macOS distribution tools such as `codesign`,
