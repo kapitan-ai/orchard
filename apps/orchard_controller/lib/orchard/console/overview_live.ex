@@ -24,20 +24,40 @@ defmodule OrchardConsole.OverviewLive do
   @default_refresh_interval_ms 5_000
 
   @quickstart_step_definitions [
-    %{id: :system_healthy, dom_id: "system-healthy", ordinal: 1, title: "System is healthy"},
+    %{
+      id: :system_healthy,
+      dom_id: "system-healthy",
+      ordinal: 1,
+      title: "Controller checks pass",
+      evidence: "This Controller's readiness checks"
+    },
     %{
       id: :import_first_model,
       dom_id: "import-first-model",
       ordinal: 2,
-      title: "Import your first model"
+      title: "Import your first model",
+      evidence: "At least one active catalog Model"
     },
-    %{id: :run_test_request, dom_id: "run-test-request", ordinal: 3, title: "Run a test request"},
-    %{id: :create_api_key, dom_id: "create-api-key", ordinal: 4, title: "Create an API Token"},
+    %{
+      id: :run_test_request,
+      dom_id: "run-test-request",
+      ordinal: 3,
+      title: "Run a test request",
+      evidence: "At least one completed durable Request"
+    },
+    %{
+      id: :create_api_key,
+      dom_id: "create-api-key",
+      ordinal: 4,
+      title: "Create an API Token",
+      evidence: "An active API Token exists; not model-specific access"
+    },
     %{
       id: :connect_your_tools,
       dom_id: "connect-your-tools",
       ordinal: 5,
-      title: "Connect your tools"
+      title: "Connect your tools",
+      evidence: "Guide opened in this browser; connection not verified"
     }
   ]
 
@@ -47,6 +67,7 @@ defmodule OrchardConsole.OverviewLive do
       socket
       |> assign(page_title: "Overview", active_nav: :overview)
       |> assign(build_version: OrchardConsole.display_version())
+      |> assign(quickstart_client_id: "overview-quickstart-client-#{Ecto.UUID.generate()}")
 
     if connected?(socket) do
       {:ok, socket |> load_overview() |> schedule_refresh()}
@@ -104,8 +125,212 @@ defmodule OrchardConsole.OverviewLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="space-y-6">
-      <div id="overview-quickstart" phx-hook="OverviewQuickstart">
+    <div id="overview-command" class="space-y-4">
+      <section id="overview-status" aria-label="Operational status">
+        <.card variant={:primary} padding={:sm}>
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500 dark:text-slate-400">
+            <span class="inline-flex items-center gap-2">
+              Controller readiness <.badge tone={readiness_badge_tone(@readiness.status)}>{readiness_badge_label(@readiness.status)}</.badge>
+            </span>
+            <span class="inline-flex flex-wrap items-center gap-2">
+              Default Runtime Endpoint <.badge tone={runtime_badge_tone(@runtime)}>{runtime_badge_label(@runtime)}</.badge>
+            </span>
+            <span class="font-mono">{@build_version}</span>
+          </div>
+          <p
+            id="overview-hero-status-copy"
+            role="status"
+            aria-live="polite"
+            class={["mt-3 text-sm font-medium", hero_status_copy_class(@readiness, @runtime)]}
+          >
+            {hero_status_copy(@readiness, @runtime)}
+          </p>
+          <div id="overview-freshness" class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-500 dark:text-slate-400">
+            <span :if={@last_updated_at == nil}>Waiting for first live update</span>
+            <span :if={@last_updated_at != nil}>
+              Last refresh <.local_time value={@last_updated_at} format={:time_second} />
+            </span>
+            <span>Auto-refreshing every {refresh_interval_label()}</span>
+            <.button id="overview-refresh-now" variant={:ghost} size={:sm} phx-click="refresh_now">
+              Refresh now
+            </.button>
+          </div>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Point-in-time checks and reads; each source can fail independently. Not fleet or inference readiness.
+          </p>
+        </.card>
+      </section>
+
+      <section id="overview-metrics" aria-label="Current summary metrics" class="space-y-3">
+        <.metric_grid class="grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+          <.overview_metric id="overview-metric-checks-passing" label="Checks passing" value={readiness_metric(@readiness)} source="Controller readiness" evidence={if @readiness.status == :error, do: "Recorded", else: source_evidence(@readiness.status)} />
+          <.overview_metric id="overview-metric-loaded-models" label="Loaded models" value={format_count(runtime_loaded_count(@runtime))} source="Default Runtime Endpoint" evidence={source_evidence(@runtime.status)} />
+          <.overview_metric id="overview-metric-catalog-models" label="Catalog models" value={format_count(@model_catalog.total)} source="Durable catalog" evidence={source_evidence(@model_catalog.status)} />
+          <.overview_metric id="overview-metric-total-requests" label="Total requests" value={format_count(@request_summary.total)} source="Durable Requests" evidence={source_evidence(@request_summary.status)} />
+          <.overview_metric id="overview-metric-avg-ttft" label="Avg TTFT" value={format_duration(@request_performance.avg_ttft_ms)} source="Unwindowed Request mean" evidence={performance_evidence(@request_performance, :avg_ttft_ms)} />
+          <.overview_metric id="overview-metric-avg-tokens-per-second" label="Avg tok/s" value={format_rate(@request_performance.avg_tokens_per_second)} source="Unwindowed Request mean" evidence={performance_evidence(@request_performance, :avg_tokens_per_second)} />
+        </.metric_grid>
+        <.disclosure_section id="overview-metric-definitions" title="Metric definitions and provenance">
+          <dl class="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+            <div>
+              <dt class="font-medium text-slate-900 dark:text-slate-100">Source, scope and freshness</dt>
+              <dd>Controller checks, one default Runtime Endpoint observation, and durable database aggregates are separate reads at the last refresh. Database totals span this installation, without a time-window filter. The refresh time does not certify that every source succeeded.</dd>
+            </div>
+            <div>
+              <dt class="font-medium text-slate-900 dark:text-slate-100">Avg TTFT</dt>
+              <dd>Arithmetic mean from Request creation to first recorded public output, including waiting and earlier attempts. Not client receipt time.</dd>
+            </div>
+            <div>
+              <dt class="font-medium text-slate-900 dark:text-slate-100">Avg tok/s</dt>
+              <dd>Existing unwindowed arithmetic mean of each qualifying Request's output tokens divided by seconds from first recorded public output to completion. Not a provider-native generation rate or throughput trend.</dd>
+            </div>
+            <div>
+              <dt class="font-medium text-slate-900 dark:text-slate-100">Qualifying performance evidence</dt>
+              <dd>Completed Requests with recorded first output and completion, completion after first output, and positive output tokens. No qualifying evidence is Not recorded; a failed read is Unavailable. Neither is zero.</dd>
+            </div>
+          </dl>
+        </.disclosure_section>
+      </section>
+
+      <.quickstart_panel quickstart={@quickstart} client_id={@quickstart_client_id} />
+
+      <section id="overview-requests" aria-label="Current Request states">
+        <.card padding={:sm}>
+          <:title>Current Request states</:title>
+          <:subtitle>Source: durable Request rows · installation-wide · read at last refresh. Current distribution, not history.</:subtitle>
+          <%= cond do %>
+            <% @request_summary.status == :loading -> %>
+              <.state_message id="overview-request-summary-loading" kind={:loading} layout={:compact} title="Loading request summary." />
+            <% @request_summary.status == :ok -> %>
+              <div class="mb-3 flex flex-wrap items-center gap-3">
+                <.badge tone={:info}>{@request_summary.active} active</.badge>
+                <.badge tone={:neutral}>{@request_summary.terminal} terminal</.badge>
+              </div>
+              <dl id="overview-request-counts" class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                <div :for={row <- @request_summary.rows} class="min-w-0 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+                  <dt class="text-xs font-mono text-slate-500 dark:text-slate-400">{row.state}</dt>
+                  <dd class="mt-1 text-lg font-mono text-slate-900 dark:text-slate-100">{row.count}</dd>
+                </div>
+              </dl>
+            <% true -> %>
+              <.state_message id="overview-request-summary-error" kind={:error} layout={:compact} title={@request_summary.message || "Request summary unavailable."} />
+          <% end %>
+        </.card>
+      </section>
+
+      <div class="grid items-start gap-4 lg:grid-cols-2">
+        <section id="overview-runtime" aria-label="Default Runtime Endpoint snapshot" class="min-w-0">
+          <.card padding={:sm}>
+            <:title>Default Runtime Endpoint</:title>
+            <:subtitle>Source: one live snapshot · default target only · observed at last refresh. Not fleet-wide schedulability.</:subtitle>
+            <.detail_grid class="grid-cols-1 sm:grid-cols-2">
+              <.detail_field id="overview-runtime-health" label="Runtime health">{runtime_health_label(@runtime)}</.detail_field>
+              <.detail_field id="overview-worker-state" label="Worker state">{worker_state_badge_label(@runtime)}</.detail_field>
+              <.detail_field id="overview-runtime-node" label="Observed Node" mono break_all>{runtime_node_label(@runtime)}</.detail_field>
+              <.detail_field id="overview-runtime-active-requests" label="Active requests" mono>{if @runtime.status == :ok, do: format_count(@runtime.active_request_count), else: "—"}</.detail_field>
+              <.detail_field id="overview-primary-model" label="Loaded model" mono class="sm:col-span-2">
+                <.model_identity value={primary_loaded_model(@runtime)} />
+              </.detail_field>
+            </.detail_grid>
+            <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Loaded models do not establish Workspace access or inference readiness.</p>
+            <div class="mt-4">
+              <%= cond do %>
+                <% @runtime.status == :loading -> %>
+                  <.state_message id="overview-runtime-loading" kind={:loading} layout={:compact} title="Loading runtime snapshot." />
+                <% @runtime.status == :ok -> %>
+                  <.disclosure_section id="overview-loaded-models" title="Loaded model set">
+                    <.table id="overview-runtime-models" rows={@runtime.loaded_models}>
+                      <:col :let={m} label="Model" mono><.model_identity value={m.model_id} /></:col>
+                      <:col :let={m} label="Version" mono>{m.version}</:col>
+                      <:empty>
+                        <.state_message id="overview-runtime-empty" kind={:empty} layout={:compact} title="No loaded models." />
+                      </:empty>
+                    </.table>
+                  </.disclosure_section>
+                <% true -> %>
+                  <.state_message id="overview-runtime-unavailable" kind={:error} layout={:compact} title="Runtime unavailable." body={@runtime.message} />
+              <% end %>
+            </div>
+          </.card>
+        </section>
+
+        <div class="min-w-0 space-y-4">
+          <section id="overview-controller" aria-label="Controller readiness">
+            <.card padding={:sm}>
+              <:title>Controller readiness</:title>
+              <:subtitle>Source: this Controller · checked at last refresh. Internal orchard.readiness.legacy_m0.v1 predicate; public health responses are status-only.</:subtitle>
+              <dl id="overview-readiness" class="space-y-3">
+                <div :for={row <- @readiness.rows} class="flex flex-wrap items-start justify-between gap-2">
+                  <dt class="min-w-0 flex-1">
+                    <span class="wrap-anywhere font-mono text-xs text-slate-700 dark:text-slate-200">{row.key}</span>
+                    <p :if={row.label} class="text-sm font-medium text-slate-900 dark:text-slate-100">{row.label}</p>
+                    <p :if={row.description} class="text-xs text-slate-500 dark:text-slate-400">{row.description}</p>
+                  </dt>
+                  <dd><.badge tone={check_badge_tone(row.status)}>{check_badge_label(row.status)}</.badge></dd>
+                </div>
+              </dl>
+            </.card>
+          </section>
+          <section id="overview-catalog" aria-label="Catalog lifecycle">
+            <.card padding={:sm}>
+              <:title>Catalog lifecycle</:title>
+              <:subtitle>Source: durable Model catalog · installation-wide · read at last refresh. Lifecycle is not loadedness or access.</:subtitle>
+              <%= cond do %>
+                <% @model_catalog.status == :loading -> %>
+                  <.state_message id="overview-model-catalog-loading" kind={:loading} layout={:compact} title="Loading model catalog." />
+                <% @model_catalog.status == :ok -> %>
+                  <dl id="overview-model-counts" class="space-y-2">
+                    <div :for={row <- @model_catalog.rows} class="flex justify-between gap-3 text-sm font-mono">
+                      <dt class="text-slate-500 dark:text-slate-400">{row.state}</dt>
+                      <dd class="text-slate-900 dark:text-slate-100">{row.count}</dd>
+                    </div>
+                  </dl>
+                <% true -> %>
+                  <.state_message id="overview-model-catalog-error" kind={:error} layout={:compact} title={@model_catalog.message || "Model catalog data unavailable."} />
+              <% end %>
+            </.card>
+          </section>
+        </div>
+      </div>
+
+      <nav aria-label="Overview destinations" class="flex flex-wrap gap-2">
+        <.link :for={{id, label, path} <- [
+          {"playground", "Open Playground", ~p"/console/playground"},
+          {"nodes", "Open Nodes", ~p"/console/nodes"},
+          {"models", "Open Models", ~p"/console/models"},
+          {"requests", "Open Requests", ~p"/console/requests"}
+        ]} id={"overview-open-#{id}"} navigate={path} class={quickstart_cta_class(:pending)}>
+          {label}
+        </.link>
+      </nav>
+    </div>
+    """
+  end
+
+  attr(:id, :string, required: true)
+  attr(:label, :string, required: true)
+  attr(:value, :string, required: true)
+  attr(:source, :string, required: true)
+  attr(:evidence, :string, required: true)
+
+  defp overview_metric(assigns) do
+    ~H"""
+    <div id={@id} class="min-w-0 space-y-1">
+      <.metric_tile density={:compact} label={@label} value={@value} />
+      <p class="text-center text-xs text-slate-500 dark:text-slate-400">{@source}</p>
+      <p class="text-center text-xs text-slate-500 dark:text-slate-400">{@evidence}</p>
+    </div>
+    """
+  end
+
+  attr(:quickstart, :map, required: true)
+  attr(:client_id, :string, required: true)
+
+  defp quickstart_panel(assigns) do
+    ~H"""
+    <div id="overview-quickstart">
+      <%!-- A new LiveView mount must remount the hook to rehydrate browser preferences. --%>
+      <div id={@client_id} phx-hook="OverviewQuickstart">
         <%= case @quickstart.mode do %>
           <% :hydrating -> %>
             <.card>
@@ -121,12 +346,12 @@ defmodule OrchardConsole.OverviewLive do
 
           <% :compact_dismissed -> %>
             <% dismissed_content = dismissed_quickstart_content(@quickstart) %>
-            <.card>
+            <.card padding={:sm}>
               <:title>Quickstart hidden</:title>
               <:subtitle>{dismissed_content.subtitle}</:subtitle>
 
               <div id="overview-quickstart-dismissed" class="space-y-4">
-                <div class="flex items-center justify-between gap-3">
+                <div class="flex flex-wrap items-center justify-between gap-3">
                   <p class="text-sm text-slate-600 dark:text-slate-300">
                     {dismissed_content.body}
                   </p>
@@ -135,7 +360,7 @@ defmodule OrchardConsole.OverviewLive do
                     id="overview-quickstart-recover"
                     type="button"
                     data-quickstart-action="recover"
-                    class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                    class={quickstart_cta_class(:pending)}
                   >
                     {dismissed_content.recover_label}
                   </button>
@@ -150,23 +375,22 @@ defmodule OrchardConsole.OverviewLive do
             </.card>
 
           <% :compact_completed -> %>
-            <.card>
-              <:title>Quickstart complete</:title>
-              <:subtitle>All onboarding steps are complete for this browser and live system state.</:subtitle>
-
-              <div id="overview-quickstart-completed" class="space-y-4">
-                <p class="text-sm text-slate-600 dark:text-slate-300">
-                  Reopen the integration guide at any time without bringing back the full checklist.
-                </p>
-
+            <.card padding={:sm}>
+              <div id="overview-quickstart-completed" class="space-y-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <.icon name="hero-check-circle" class="h-5 w-5 text-forest dark:text-emerald-400" />
+                  <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Quickstart complete</h2>
+                  <span class="text-xs text-slate-500 dark:text-slate-400">Browser preferences + current onboarding evidence</span>
+                </div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Not a check of current inference readiness. The integration guide remains available.</p>
                 <.quickstart_guide guide_seen?={@quickstart.guide_seen?} />
               </div>
             </.card>
 
           <% :full -> %>
-            <.card>
+            <.card padding={:sm}>
               <:title>Quickstart</:title>
-              <:subtitle>Track the first server-derived onboarding steps directly from live system state.</:subtitle>
+              <:subtitle>Current onboarding evidence + browser-local guide and visibility preferences. Not inference readiness.</:subtitle>
 
               <div id="overview-quickstart-full" class="space-y-4">
                 <div class="flex justify-end">
@@ -174,7 +398,7 @@ defmodule OrchardConsole.OverviewLive do
                     id="overview-quickstart-dismiss"
                     type="button"
                     data-quickstart-action="dismiss"
-                    class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                    class={quickstart_cta_class(:pending)}
                   >
                     Dismiss
                   </button>
@@ -198,7 +422,10 @@ defmodule OrchardConsole.OverviewLive do
                           {step.ordinal}
                         <% end %>
                       </span>
-                      <span class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</span>
+                      <div class="min-w-0">
+                        <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</p>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">{step.evidence}</p>
+                      </div>
                     </div>
 
                     <div class="flex items-center gap-2">
@@ -245,214 +472,6 @@ defmodule OrchardConsole.OverviewLive do
             </.card>
         <% end %>
       </div>
-
-      <%!-- System Status (hero card) --%>
-      <.card>
-        <:title>System Status</:title>
-        <:subtitle>Sovereign LLM inference on Apple Silicon.</:subtitle>
-
-        <div class="space-y-4">
-          <div class="flex flex-wrap items-center gap-2">
-            <.badge tone={readiness_badge_tone(@readiness.status)}>
-              {readiness_badge_label(@readiness.status)}
-            </.badge>
-            <.badge tone={runtime_badge_tone(@runtime)}>
-              {runtime_badge_label(@runtime)}
-            </.badge>
-            <span class="text-xs font-mono text-slate-400 dark:text-slate-500">
-              {@build_version}
-            </span>
-          </div>
-
-          <.metric_grid class="sm:grid-cols-2 xl:grid-cols-3">
-            <.metric_tile
-              id="overview-metric-checks-passing"
-              label="Checks passing"
-              value={readiness_metric(@readiness)}
-            />
-            <.metric_tile
-              id="overview-metric-loaded-models"
-              label="Loaded models"
-              value={format_count(runtime_loaded_count(@runtime))}
-            />
-            <.metric_tile
-              id="overview-metric-catalog-models"
-              label="Catalog models"
-              value={format_count(@model_catalog.total)}
-            />
-            <.metric_tile
-              id="overview-metric-total-requests"
-              label="Total requests"
-              value={format_count(@request_summary.total)}
-            />
-            <.metric_tile id="overview-metric-avg-ttft" label="Avg TTFT" value={format_duration(@request_performance.avg_ttft_ms)} />
-            <.metric_tile id="overview-metric-avg-tokens-per-second" label="Avg tok/s" value={format_rate(@request_performance.avg_tokens_per_second)} />
-          </.metric_grid>
-
-          <p id="overview-hero-status-copy" class={["text-sm", hero_status_copy_class(@readiness, @runtime)]}>
-            {hero_status_copy(@readiness, @runtime)}
-          </p>
-
-          <div class="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 dark:border-slate-700/50">
-            <div class="flex flex-wrap items-center gap-4">
-              <div id="overview-primary-model" class="flex items-center gap-2">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Loaded model:</span>
-                <span class="text-sm font-mono text-slate-900 dark:text-slate-100">
-                  {primary_loaded_model(@runtime)}
-                </span>
-              </div>
-              <div id="overview-runtime-node" class="flex items-center gap-2">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Connected node:</span>
-                <span class="text-sm font-mono text-slate-900 dark:text-slate-100">
-                  {runtime_node_label(@runtime)}
-                </span>
-              </div>
-            </div>
-            <div class="ml-auto flex items-center gap-2">
-              <.link
-                id="overview-open-playground"
-                navigate={~p"/console/playground"}
-                class="inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-xs font-medium text-gold-700 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30"
-              >
-                Open Playground
-              </.link>
-              <.link
-                id="overview-open-nodes"
-                navigate={~p"/console/nodes"}
-                class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                Open Nodes
-              </.link>
-              <.link
-                id="overview-open-models"
-                navigate={~p"/console/models"}
-                class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                Open Models
-              </.link>
-            </div>
-          </div>
-
-          <div id="overview-freshness" class="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-            <span :if={@last_updated_at == nil} class="font-mono">Waiting for first live update</span>
-            <span :if={@last_updated_at != nil} class="font-mono">
-              Last updated <.local_time value={@last_updated_at} format={:time_second} />
-            </span>
-            <span :if={@last_updated_at != nil}>· Auto-refreshing every {refresh_interval_label()}</span>
-            <.button
-              id="overview-refresh-now"
-              variant={:ghost}
-              size={:sm}
-              phx-click="refresh_now"
-            >
-              Refresh now
-            </.button>
-          </div>
-        </div>
-      </.card>
-
-      <div class="grid gap-6 lg:grid-cols-2">
-        <%!-- Readiness --%>
-        <.card>
-          <:title>Readiness</:title>
-          <:subtitle>Internal orchard.readiness.legacy_m0.v1 predicate; public health responses are status-only.</:subtitle>
-
-          <.table id="overview-readiness" rows={@readiness.rows}>
-            <:col :let={row} label="Check">
-              <div class="space-y-1">
-                <span class="font-mono text-xs">{row.key}</span>
-                <p :if={row.label} class="text-sm font-medium text-slate-900 dark:text-slate-100">
-                  {row.label}
-                </p>
-                <p :if={row.description} class="text-xs text-slate-500 dark:text-slate-400">
-                  {row.description}
-                </p>
-              </div>
-            </:col>
-            <:col :let={row} label="Status" class="text-right" header_class="text-right">
-              <div class="flex justify-end">
-                <.badge tone={check_badge_tone(row.status)}>
-                  {check_badge_label(row.status)}
-                </.badge>
-              </div>
-            </:col>
-          </.table>
-        </.card>
-
-        <%!-- Runtime Snapshot --%>
-        <.card>
-          <:title>Runtime Snapshot</:title>
-          <:subtitle>Node worker status and loaded model set.</:subtitle>
-
-          <div class="mb-4 flex flex-wrap items-center gap-2">
-            <.badge tone={runtime_badge_tone(@runtime)}>
-              {runtime_badge_label(@runtime)}
-            </.badge>
-            <span :if={@runtime.status == :ok} class="text-xs font-mono text-slate-400 dark:text-slate-500">
-              {@runtime.active_request_count} active request(s)
-            </span>
-          </div>
-
-          <%= cond do %>
-            <% @runtime.status == :loading -> %>
-              <.state_message id="overview-runtime-loading" kind={:loading} layout={:compact} title="Loading runtime snapshot." />
-            <% @runtime.status == :ok -> %>
-              <.table id="overview-runtime-models" rows={@runtime.loaded_models}>
-                <:col :let={m} label="Model" mono>{m.model_id}</:col>
-                <:col :let={m} label="Version" mono>{m.version}</:col>
-                <:empty>
-                  <.state_message id="overview-runtime-empty" kind={:empty} layout={:compact} title="No loaded models." />
-                </:empty>
-              </.table>
-            <% true -> %>
-              <.state_message id="overview-runtime-unavailable" kind={:error} layout={:compact} title="Runtime unavailable." body={@runtime.message} />
-          <% end %>
-        </.card>
-
-        <%!-- Model Catalog --%>
-        <.card>
-          <:title>Model Catalog</:title>
-          <:subtitle>Catalog totals by lifecycle state.</:subtitle>
-
-          <%= cond do %>
-            <% @model_catalog.status == :loading -> %>
-              <.state_message id="overview-model-catalog-loading" kind={:loading} layout={:compact} title="Loading model catalog." />
-            <% @model_catalog.status == :ok -> %>
-              <.table id="overview-model-counts" rows={@model_catalog.rows}>
-                <:col :let={row} label="State" mono>{row.state}</:col>
-                <:col :let={row} label="Count" mono class="text-right" header_class="text-right">
-                  {row.count}
-                </:col>
-              </.table>
-            <% true -> %>
-              <.state_message id="overview-model-catalog-error" kind={:error} layout={:compact} title={@model_catalog.message || "Model catalog data unavailable."} />
-          <% end %>
-        </.card>
-
-        <%!-- Request Counts --%>
-        <.card>
-          <:title>Request Counts</:title>
-          <:subtitle>Durable request rows by lifecycle state.</:subtitle>
-
-          <%= cond do %>
-            <% @request_summary.status == :loading -> %>
-              <.state_message id="overview-request-summary-loading" kind={:loading} layout={:compact} title="Loading request summary." />
-            <% @request_summary.status == :ok -> %>
-              <div class="mb-4 flex flex-wrap items-center gap-3">
-                <.badge tone={:info}>{@request_summary.active} active</.badge>
-                <.badge tone={:neutral}>{@request_summary.terminal} terminal</.badge>
-              </div>
-              <.table id="overview-request-counts" rows={@request_summary.rows}>
-                <:col :let={row} label="State" mono>{row.state}</:col>
-                <:col :let={row} label="Count" mono class="text-right" header_class="text-right">
-                  {row.count}
-                </:col>
-              </.table>
-            <% true -> %>
-              <.state_message id="overview-request-summary-error" kind={:error} layout={:compact} title={@request_summary.message || "Request summary unavailable."} />
-          <% end %>
-        </.card>
-      </div>
     </div>
     """
   end
@@ -466,7 +485,6 @@ defmodule OrchardConsole.OverviewLive do
       phx-hook="QuickstartGuide"
       phx-update="ignore"
       data-guide-seen={to_string(@guide_seen?)}
-      class="border-t border-slate-200 pt-4 dark:border-slate-700"
     >
       <.disclosure_section
         id="overview-quickstart-guide-disclosure"
@@ -583,6 +601,7 @@ defmodule OrchardConsole.OverviewLive do
     }
 
     request_performance = %{
+      status: :loading,
       avg_ttft_ms: nil,
       avg_tokens_per_second: nil
     }
@@ -730,12 +749,14 @@ defmodule OrchardConsole.OverviewLive do
     perf = Requests.performance_summary()
 
     %{
+      status: :ok,
       avg_ttft_ms: perf.avg_ttft_ms,
       avg_tokens_per_second: perf.avg_tokens_per_second
     }
   rescue
     _ ->
       %{
+        status: :error,
         avg_ttft_ms: nil,
         avg_tokens_per_second: nil
       }
@@ -992,8 +1013,31 @@ defmodule OrchardConsole.OverviewLive do
   defp readiness_badge_label(:loading), do: "Loading"
   defp readiness_badge_label(_), do: "Unavailable"
 
+  defp readiness_metric(%{status: :unavailable}), do: "—"
   defp readiness_metric(%{passing: nil}), do: "\u2014"
   defp readiness_metric(%{passing: p, total: t}), do: "#{p}/#{t}"
+
+  defp source_evidence(:ok), do: "Recorded"
+  defp source_evidence(:loading), do: "Loading"
+  defp source_evidence(_), do: "Unavailable"
+
+  defp performance_evidence(%{status: :ok} = performance, field) do
+    if is_nil(Map.fetch!(performance, field)), do: "Not recorded", else: "Recorded"
+  end
+
+  defp performance_evidence(performance, _field), do: source_evidence(performance.status)
+
+  defp runtime_health_label(%{status: :loading}), do: "Loading"
+  defp runtime_health_label(%{status: status}) when status != :ok, do: "Unavailable"
+
+  defp runtime_health_label(runtime) do
+    case runtime_health_level(runtime) do
+      :healthy -> "Healthy"
+      :degraded -> "Degraded"
+      :unhealthy -> "Unhealthy"
+      :unsupported -> "Not recorded"
+    end
+  end
 
   # Classifies runtime health into a closed set for badge/hero decisions.
   # Returns :unsupported when old node-agent omits runtime_health.
@@ -1060,15 +1104,15 @@ defmodule OrchardConsole.OverviewLive do
 
   # Quickstart step row styling by status
   defp quickstart_step_row_class(:current) do
-    "flex items-center justify-between gap-3 rounded-lg border-2 border-gold/40 bg-gold/5 px-4 py-3 shadow-sm dark:border-gold/30 dark:bg-gold/5"
+    "flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-gold/40 bg-gold/5 px-4 py-3 shadow-sm dark:border-gold/30 dark:bg-gold/5"
   end
 
   defp quickstart_step_row_class(:completed) do
-    "flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50/50 px-4 py-3 dark:border-emerald-800/40 dark:bg-emerald-950/20"
+    "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50/50 px-4 py-3 dark:border-emerald-800/40 dark:bg-emerald-950/20"
   end
 
   defp quickstart_step_row_class(:pending) do
-    "flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
+    "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
   end
 
   # Quickstart step indicator (ordinal circle) styling by status
@@ -1086,11 +1130,11 @@ defmodule OrchardConsole.OverviewLive do
 
   # Quickstart CTA styling: current = prominent, pending = secondary
   defp quickstart_cta_class(:current) do
-    "inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-sm font-medium text-gold-700 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30"
+    "inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-sm font-medium text-gold-700 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400/40 dark:focus-visible:ring-offset-slate-800"
   end
 
   defp quickstart_cta_class(_status) do
-    "inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+    "inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400/40 dark:focus-visible:ring-offset-slate-800"
   end
 
   defp quickstart_api_base_url do
@@ -1159,7 +1203,8 @@ defmodule OrchardConsole.OverviewLive do
        when is_binary(id) and id != "",
        do: id
 
-  defp runtime_node_label(%{status: :ok}), do: "Metadata unavailable"
+  defp runtime_node_label(%{status: :ok}), do: "Not recorded"
+  defp runtime_node_label(%{status: :loading}), do: "Loading"
   defp runtime_node_label(_), do: "Runtime unavailable"
 
   defp primary_loaded_model(%{status: :ok, loaded_models: [first | _]}),
@@ -1168,6 +1213,7 @@ defmodule OrchardConsole.OverviewLive do
   defp primary_loaded_model(%{status: :ok, loaded_models: []}),
     do: "No model loaded"
 
+  defp primary_loaded_model(%{status: :loading}), do: "Loading"
   defp primary_loaded_model(_), do: "Runtime unavailable"
 
   defp format_loaded_model(%{model_id: id, version: vsn})
@@ -1178,89 +1224,45 @@ defmodule OrchardConsole.OverviewLive do
   defp format_loaded_model(%{version: vsn}) when is_binary(vsn) and vsn != "", do: vsn
   defp format_loaded_model(_), do: "Unknown model"
 
-  # Deterministic status copy derived from combined readiness + runtime state.
-  # Evaluated on every render — not stored in assigns.
-  #
-  # Precedence: loading → health-aware (when runtime_health present) → worker-state.
   defp hero_status_copy(%{status: :loading}, _),
     do: "Connecting to live controller and runtime status."
 
   defp hero_status_copy(_, %{status: :loading}),
     do: "Connecting to live controller and runtime status."
 
-  # Both readiness and runtime ok — check health first, then worker-state
-  defp hero_status_copy(%{status: :ok} = readiness, %{status: :ok} = runtime) do
-    hero_health_copy(readiness, runtime) || hero_worker_state_copy(readiness, runtime)
+  defp hero_status_copy(readiness, runtime) do
+    controller_status_copy(readiness) <> " " <> runtime_status_copy(runtime)
   end
 
-  # Readiness failing, runtime ok — check health first, then readiness-degraded copy
-  defp hero_status_copy(readiness, %{status: :ok} = runtime) do
-    hero_readiness_health_copy(readiness, runtime) ||
-      hero_readiness_degraded_copy(readiness, runtime)
-  end
+  defp controller_status_copy(%{status: :ok}), do: "Controller checks are passing."
 
-  defp hero_status_copy(_, _),
-    do: "System is degraded: controller readiness is failing and the node runtime is unavailable."
+  defp controller_status_copy(%{status: :error}),
+    do: "Controller readiness checks are failing."
 
-  # -- Health-aware hero copy (returns nil when health is healthy/unsupported) --
+  defp controller_status_copy(_), do: "Controller readiness is unavailable."
 
-  defp hero_health_copy(_readiness, runtime) do
+  defp runtime_status_copy(%{status: :ok} = runtime) do
     case runtime_health_level(runtime) do
       :unhealthy ->
-        "Controller checks are passing, but the node runtime reports unhealthy status and may reject requests."
+        "The default Runtime Endpoint reports unhealthy status."
 
       :degraded ->
-        "Controller checks are passing. The node runtime reports degraded health."
+        "The default Runtime Endpoint reports degraded health."
 
       _ ->
-        nil
+        "The default Runtime Endpoint is reachable. " <> runtime_worker_copy(runtime)
     end
   end
 
-  defp hero_readiness_health_copy(_readiness, runtime) do
-    case runtime_health_level(runtime) do
-      :unhealthy ->
-        "System is degraded: controller readiness is failing and the node runtime reports unhealthy status."
+  defp runtime_status_copy(_), do: "The default Runtime Endpoint is unavailable."
 
-      :degraded ->
-        "Controller readiness checks are failing. The node runtime reports degraded health."
-
-      _ ->
-        nil
-    end
-  end
-
-  # -- Worker-state hero copy (existing logic, extracted) --
-
-  defp hero_worker_state_copy(_readiness, %{worker_state: :idle, loaded_models: [_ | _]}),
-    do: "System ready. Runtime is idle and a model is loaded for operator testing."
-
-  defp hero_worker_state_copy(_readiness, %{worker_state: :busy, loaded_models: [_ | _]}),
-    do: "System ready. Runtime is serving active requests."
-
-  defp hero_worker_state_copy(_readiness, %{loaded_models: []}),
-    do: "System ready, but no model is currently loaded in the runtime."
-
-  defp hero_worker_state_copy(_readiness, %{worker_state: state})
+  defp runtime_worker_copy(%{worker_state: state})
        when state in [:starting, :stopping],
-       do:
-         "Controller checks are passing. Runtime is transitioning and may not accept requests yet."
+       do: "Worker is transitioning."
 
-  defp hero_worker_state_copy(_, _),
-    do: "Controller checks are passing, but the node runtime is unavailable for inference."
+  defp runtime_worker_copy(%{loaded_models: []}), do: "No model is currently loaded."
 
-  # -- Readiness-degraded hero copy (existing logic, extracted) --
-
-  defp hero_readiness_degraded_copy(_readiness, %{worker_state: state})
-       when state in [:idle, :busy],
-       do: "Runtime is reachable, but one or more controller readiness checks are failing."
-
-  defp hero_readiness_degraded_copy(_readiness, %{worker_state: state})
-       when state in [:starting, :stopping],
-       do: "Controller readiness checks are failing. Runtime is transitioning."
-
-  defp hero_readiness_degraded_copy(_, _),
-    do: "System is degraded: controller readiness is failing and the node runtime is unavailable."
+  defp runtime_worker_copy(runtime), do: "Worker state: #{worker_state_badge_label(runtime)}."
 
   # -- Hero copy CSS class --
   # Precedence mirrors hero_status_copy: loading → health → worker-state.

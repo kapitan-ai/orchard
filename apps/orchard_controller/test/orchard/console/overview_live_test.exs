@@ -176,11 +176,89 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "renders overview page with section titles", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "System Status"
-      assert html =~ "Readiness"
-      assert html =~ "Runtime Snapshot"
-      assert html =~ "Model Catalog"
-      assert html =~ "Request Counts"
+      assert html =~ "Operational status"
+      assert html =~ "Controller readiness"
+      assert html =~ "Default Runtime Endpoint"
+      assert html =~ "Catalog lifecycle"
+      assert html =~ "Current Request states"
+    end
+
+    test "orders operational facts before setup and keeps exactly six scoped metrics", %{
+      conn: conn
+    } do
+      {:ok, view, html} = live(conn, "/console")
+
+      ids =
+        ~w(overview-status overview-metrics overview-quickstart overview-requests overview-runtime overview-controller overview-catalog overview-open-playground)
+
+      positions = Enum.map(ids, &:binary.match(html, ~s(id="#{&1}")))
+      assert Enum.all?(positions, &match?({_, _}, &1))
+      assert positions == Enum.sort(positions)
+
+      assert html
+             |> LazyHTML.from_document()
+             |> LazyHTML.query("#overview-metrics .grid > [id]")
+             |> Enum.count() == 6
+
+      assert has_element?(view, ~s(#overview-hero-status-copy[role="status"][aria-live="polite"]))
+      refute has_element?(view, "#overview-metric-definitions details[open]")
+
+      for destination <- ~w(playground nodes models requests) do
+        assert has_element?(
+                 view,
+                 ~s(#overview-open-#{destination}[href="/console/#{destination}"])
+               )
+      end
+    end
+
+    test "retains source, scope and refresh qualifications beside independent evidence", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console")
+
+      for {selector, text} <- [
+            {"#overview-metric-checks-passing", "Controller readiness"},
+            {"#overview-metric-loaded-models", "Default Runtime Endpoint"},
+            {"#overview-metric-catalog-models", "Durable catalog"},
+            {"#overview-metric-total-requests", "Durable Requests"},
+            {"#overview-runtime", "default target only"},
+            {"#overview-runtime", "observed at last refresh"},
+            {"#overview-runtime", "Not fleet-wide schedulability"},
+            {"#overview-controller", "this Controller"},
+            {"#overview-controller", "checked at last refresh"},
+            {"#overview-catalog", "installation-wide"},
+            {"#overview-catalog", "Lifecycle is not loadedness or access"},
+            {"#overview-requests", "durable Request rows"},
+            {"#overview-requests", "Current distribution, not history"},
+            {"#overview-metric-definitions",
+             "refresh time does not certify that every source succeeded"}
+          ] do
+        assert has_element?(view, selector, text)
+      end
+
+      # SPEC §3.1: a recorded failing readiness predicate is not an unavailable read.
+      assert has_element?(view, "#overview-metric-checks-passing", "Recorded")
+      refute has_element?(view, "#overview-metric-checks-passing", "Unavailable")
+    end
+
+    test "pre-connect loading never renders missing evidence as zero", %{conn: conn} do
+      html = get(conn, "/console").resp_body
+
+      for metric <-
+            ~w(checks-passing loaded-models catalog-models total-requests avg-ttft avg-tokens-per-second) do
+        text = fragment_text(html, "#overview-metric-#{metric}")
+        assert text =~ "—"
+        assert text =~ "Loading"
+        refute text =~ "Recorded"
+      end
+
+      assert fragment_text(html, "#overview-runtime-active-requests") =~ "—"
+      assert fragment_text(html, "#overview-runtime-health") =~ "Loading"
+      assert fragment_text(html, "#overview-readiness") =~ "Unknown"
+      assert fragment_text(html, "#overview-freshness") =~ "Waiting for first live update"
+      refute html =~ ~s(id="overview-request-counts")
+      refute html =~ ~s(id="overview-model-counts")
+      assert html =~ ~s(id="overview-quickstart-hydrating")
     end
 
     test "has correct page title with suffix", %{conn: conn} do
@@ -291,11 +369,14 @@ defmodule OrchardConsole.OverviewLiveTest do
 
   describe "runtime snapshot" do
     test "renders runtime data from stub", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console")
+      {:ok, view, html} = live(conn, "/console")
 
       assert html =~ "Idle"
-      assert html =~ "mlx-community/phi-3"
-      assert html =~ "1 active request"
+
+      assert element(view, "#overview-primary-model") |> render() |> visible_text() =~
+               "mlx-community/phi-3@main"
+
+      assert has_element?(view, "#overview-runtime-active-requests dd", "1")
     end
 
     test "renders degraded state when runtime is unavailable", %{conn: conn} do
@@ -312,11 +393,54 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert unavailable =~ "node runtime is unavailable"
     end
 
+    test "failed runtime observation does not erase catalog or Request facts", %{conn: conn} do
+      create_model!(%{state: :active})
+      create_request!(%{state: :running})
+      create_request!(%{state: :completed})
+      create_request!(%{state: :completed})
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert has_element?(view, "#overview-metric-loaded-models", "—")
+      assert has_element?(view, "#overview-metric-loaded-models", "Unavailable")
+      assert has_element?(view, "#overview-runtime-active-requests dd", "—")
+      assert has_element?(view, "#overview-metric-catalog-models .font-mono", "1")
+      assert has_element?(view, "#overview-metric-total-requests .font-mono", "3")
+      assert has_element?(view, "#overview-requests", "1 active")
+      assert has_element?(view, "#overview-requests", "2 terminal")
+      assert has_element?(view, "#overview-model-counts", "active")
+      refute has_element?(view, "#overview-runtime-empty")
+    end
+
+    test "degraded runtime health retains the independently observed Worker state", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeDegradedStub)
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert has_element?(view, "#overview-runtime-health dd", "Degraded")
+      assert has_element?(view, "#overview-worker-state dd", "Busy")
+      assert has_element?(view, "#overview-runtime-active-requests dd", "1")
+      assert has_element?(view, "#overview-metric-loaded-models .font-mono", "1")
+    end
+
+    test "missing runtime health is not healthy and an observed empty model set is zero", %{
+      conn: conn
+    } do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub)
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert has_element?(view, "#overview-runtime-health dd", "Not recorded")
+      assert has_element?(view, "#overview-worker-state dd", "Idle")
+      assert has_element?(view, "#overview-metric-loaded-models .font-mono", "0")
+      assert has_element?(view, "#overview-runtime-active-requests dd", "0")
+      assert has_element?(view, "#overview-runtime-empty")
+    end
+
     test "shows node display name from metadata", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
       node_html = view |> element("#overview-runtime-node") |> render()
-      assert node_html =~ "Connected node:"
+      assert node_html =~ "Observed Node"
       assert node_html =~ "mawarduri"
     end
 
@@ -326,7 +450,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view, _html} = live(conn, "/console")
 
       node_html = view |> element("#overview-runtime-node") |> render()
-      assert node_html =~ "Metadata unavailable"
+      assert node_html =~ "Not recorded"
     end
 
     test "shows 'Runtime unavailable' for node when runtime is down", %{conn: conn} do
@@ -400,7 +524,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "Model Catalog"
+      assert html =~ "Catalog lifecycle"
       assert html =~ "registered"
       assert html =~ "active"
     end
@@ -411,7 +535,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "Request Counts"
+      assert html =~ "Current Request states"
       assert html =~ "running"
       assert html =~ "completed"
       assert html =~ "1 active"
@@ -421,11 +545,90 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "renders zero counts when no data exists", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "Model Catalog"
-      assert html =~ "Request Counts"
+      assert html =~ "Catalog lifecycle"
+      assert html =~ "Current Request states"
       # All states present with zero
       assert html =~ "registered"
       assert html =~ "received"
+    end
+
+    test "database read failures leave the independent runtime observation intact" do
+      previous_repo = Repo.get_dynamic_repo()
+
+      assigns =
+        try do
+          Repo.put_dynamic_repo(:overview_unavailable_repo)
+          overview_assigns()
+        after
+          Repo.put_dynamic_repo(previous_repo)
+        end
+
+      html = render_component(&OrchardConsole.OverviewLive.render/1, assigns)
+
+      for metric <- ~w(catalog-models total-requests avg-ttft avg-tokens-per-second) do
+        assert fragment_text(html, "#overview-metric-#{metric}") =~ "—"
+        assert fragment_text(html, "#overview-metric-#{metric}") =~ "Unavailable"
+        refute fragment_text(html, "#overview-metric-#{metric}") =~ "Not recorded"
+      end
+
+      assert fragment_text(html, "#overview-metric-loaded-models .font-mono") == "1"
+      assert fragment_text(html, "#overview-runtime-health dd") == "Healthy"
+      assert fragment_text(html, "#overview-worker-state dd") == "Idle"
+      assert fragment_text(html, "#overview-model-catalog-error") =~ "unavailable"
+      assert fragment_text(html, "#overview-request-summary-error") =~ "unavailable"
+    end
+
+    test "a failed catalog projection does not collapse a successful Request projection, or vice versa" do
+      create_model!(%{state: :active})
+      create_request!(%{state: :running})
+      create_request!(%{state: :completed})
+      assigns = overview_assigns()
+
+      for {source, missing_metric, retained_metric, retained_value} <- [
+            {:model_catalog, "catalog-models", "total-requests", "2"},
+            {:request_summary, "total-requests", "catalog-models", "1"}
+          ] do
+        failed = assigns[source] |> Map.merge(%{status: :error, total: nil, rows: []})
+
+        html =
+          render_component(
+            &OrchardConsole.OverviewLive.render/1,
+            Map.put(assigns, source, failed)
+          )
+
+        assert fragment_text(html, "#overview-metric-#{missing_metric}") =~ "Unavailable"
+        assert fragment_text(html, "#overview-metric-#{missing_metric} .font-mono") == "—"
+
+        assert fragment_text(html, "#overview-metric-#{retained_metric} .font-mono") ==
+                 retained_value
+
+        assert fragment_text(html, "#overview-runtime-health dd") == "Healthy"
+        assert fragment_text(html, "#overview-metric-avg-ttft") =~ "Not recorded"
+      end
+    end
+
+    test "unavailable Controller evidence is neither a zero count nor failing checks" do
+      assigns = overview_assigns()
+
+      readiness = %{
+        assigns.readiness
+        | status: :unavailable,
+          passing: 0,
+          rows: Enum.map(assigns.readiness.rows, &%{&1 | status: :unknown})
+      }
+
+      html =
+        render_component(&OrchardConsole.OverviewLive.render/1, %{assigns | readiness: readiness})
+
+      assert fragment_text(html, "#overview-metric-checks-passing .font-mono") == "—"
+      assert fragment_text(html, "#overview-metric-checks-passing") =~ "Unavailable"
+
+      assert fragment_text(html, "#overview-hero-status-copy") =~
+               "Controller readiness is unavailable"
+
+      refute fragment_text(html, "#overview-hero-status-copy") =~ "checks are failing"
+      assert fragment_text(html, "#overview-runtime-health dd") == "Healthy"
+      assert fragment_text(html, "#overview-metric-total-requests .font-mono") == "0"
     end
   end
 
@@ -450,6 +653,42 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "run-test-request", "pending")
       assert_quickstart_status(view, "create-api-key", "pending")
       assert_quickstart_status(view, "connect-your-tools", "pending")
+    end
+
+    test "Quickstart labels its actual evidence rather than implying runtime or tool qualification",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+      hydrate_quickstart(view)
+
+      assert has_element?(
+               view,
+               "#overview-quickstart-step-system-healthy",
+               "Controller checks pass"
+             )
+
+      assert has_element?(
+               view,
+               "#overview-quickstart-step-import-first-model",
+               "active catalog Model"
+             )
+
+      assert has_element?(
+               view,
+               "#overview-quickstart-step-run-test-request",
+               "completed durable Request"
+             )
+
+      assert has_element?(
+               view,
+               "#overview-quickstart-step-create-api-key",
+               "not model-specific access"
+             )
+
+      assert has_element?(
+               view,
+               "#overview-quickstart-step-connect-your-tools",
+               "connection not verified"
+             )
     end
 
     test "renders action links for incomplete steps after hydration", %{conn: conn} do
@@ -749,6 +988,29 @@ defmodule OrchardConsole.OverviewLiveTest do
   end
 
   describe "polling refresh" do
+    test "manual refresh cancels the old timer and re-arms the configured poll" do
+      put_console_config(refresh_interval_ms: 60_000)
+
+      {:ok, socket} =
+        OrchardConsole.OverviewLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{
+          transport_pid: self()
+        })
+
+      first_timer = socket.assigns.refresh_timer
+
+      put_console_config(refresh_interval_ms: 50)
+      {:noreply, refreshed} = OrchardConsole.OverviewLive.handle_event("refresh_now", %{}, socket)
+      assert Process.read_timer(first_timer) == false
+      assert refreshed.assigns.refresh_timer != first_timer
+      assert_receive :refresh_overview, 1_000
+
+      create_request!(%{state: :completed})
+      {:noreply, polled} = OrchardConsole.OverviewLive.handle_info(:refresh_overview, refreshed)
+      Process.cancel_timer(polled.assigns.refresh_timer)
+      assert polled.assigns.request_summary.total == 1
+      assert polled.assigns.request_summary.terminal == 1
+    end
+
     test "handle_info(:refresh_overview) updates DOM with new data", %{conn: conn} do
       {:ok, view, html} = live(conn, "/console")
 
@@ -773,7 +1035,11 @@ defmodule OrchardConsole.OverviewLiveTest do
       for bad_value <- ["5000", 1.5, 0, -1, :fast, nil] do
         put_console_config(refresh_interval_ms: bad_value)
         {:ok, _view, html} = live(conn, "/console")
-        assert html =~ "System Status", "crashed with refresh_interval_ms: #{inspect(bad_value)}"
+
+        assert html =~ "Operational status",
+               "crashed with refresh_interval_ms: #{inspect(bad_value)}"
+
+        assert html =~ "Auto-refreshing every 5s"
       end
     end
   end
@@ -799,7 +1065,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "System Status"
+      assert html =~ "Operational status"
     end
   end
 
@@ -848,6 +1114,28 @@ defmodule OrchardConsole.OverviewLiveTest do
   # ===========================================================================
 
   describe "connection banner and freshness" do
+    test "Quickstart hook identity changes per mount but survives hydration and refresh", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console")
+      first_id = :sys.get_state(view.pid).socket.assigns.quickstart_client_id
+      assert has_element?(view, ~s(##{first_id}[phx-hook="OverviewQuickstart"]))
+
+      hydrate_quickstart(view, %{"dismissed" => true, "guide_seen" => true})
+      render_click(view, "refresh_now", %{})
+      assert :sys.get_state(view.pid).socket.assigns.quickstart_client_id == first_id
+      assert_quickstart_dismissed(view)
+
+      # A new LiveView process must remount the browser hook to restore preferences.
+      {:ok, reconnected, _html} = live(conn, "/console")
+      next_id = :sys.get_state(reconnected.pid).socket.assigns.quickstart_client_id
+      assert next_id != first_id
+      assert has_element?(reconnected, ~s(##{next_id}[phx-hook="OverviewQuickstart"]))
+      assert_quickstart_hydrating(reconnected)
+      hydrate_quickstart(reconnected, %{"dismissed" => true, "guide_seen" => true})
+      assert_quickstart_dismissed(reconnected)
+    end
+
     test "shell includes connection banner markup", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
@@ -868,7 +1156,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       assert html =~ "overview-freshness"
       assert html =~ "Auto-refreshing every 60s"
-      assert html =~ "Last updated"
+      assert html =~ "Last refresh"
       assert html =~ ~s(phx-hook="LocalTime")
       assert html =~ ~s(data-local-time-format="time_second")
     end
@@ -900,7 +1188,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       view |> element("#overview-refresh-now") |> render_click()
       html_after = render(view)
 
-      assert html_after =~ "Last updated"
+      assert html_after =~ "Last refresh"
       refute html_before == html_after
     end
   end
@@ -912,10 +1200,10 @@ defmodule OrchardConsole.OverviewLiveTest do
   describe "hero primary model" do
     test "shows loaded model ID and version with correct label", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
-      field = view |> element("#overview-primary-model") |> render()
+      field = view |> element("#overview-primary-model") |> render() |> visible_text()
 
       assert field =~ "mlx-community/phi-3@main"
-      assert field =~ "Loaded model:"
+      assert field =~ "Loaded model"
       refute field =~ "Primary model:"
     end
 
@@ -947,7 +1235,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view, _html} = live(conn, "/console")
       copy = view |> element("#overview-hero-status-copy") |> render()
 
-      assert copy =~ "Runtime is reachable"
+      assert copy =~ "default Runtime Endpoint is reachable"
       assert copy =~ "readiness checks are failing"
     end
 
@@ -957,9 +1245,8 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view, _html} = live(conn, "/console")
       copy = view |> element("#overview-hero-status-copy") |> render()
 
-      assert copy =~ "System is degraded"
-      assert copy =~ "readiness is failing"
-      assert copy =~ "runtime is unavailable"
+      assert copy =~ "Controller readiness checks are failing"
+      assert copy =~ "default Runtime Endpoint is unavailable"
     end
 
     test "applies severity color class based on state", %{conn: conn} do
@@ -982,7 +1269,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       copy = view |> element("#overview-hero-status-copy") |> render()
 
       assert copy =~ "readiness checks are failing"
-      assert copy =~ "Runtime is transitioning"
+      assert copy =~ "Worker is transitioning"
       # Must NOT fall through to unavailable/degraded
       refute copy =~ "runtime is unavailable"
       refute copy =~ "System is degraded"
@@ -1032,7 +1319,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view, _html} = live(conn, "/console")
       copy = view |> element("#overview-hero-status-copy") |> render()
 
-      assert copy =~ "readiness is failing"
+      assert copy =~ "readiness checks are failing"
       assert copy =~ "unhealthy"
       assert copy =~ "text-red-600"
     end
@@ -1054,7 +1341,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       copy = view |> element("#overview-hero-status-copy") |> render()
 
       # Should fall through to worker-state copy (readiness degraded + runtime ok + idle)
-      assert copy =~ "Runtime is reachable"
+      assert copy =~ "default Runtime Endpoint is reachable"
       assert copy =~ "readiness checks are failing"
       refute copy =~ "unhealthy"
       refute copy =~ "degraded health"
@@ -1086,15 +1373,35 @@ defmodule OrchardConsole.OverviewLiveTest do
       :ok
     end
 
-    test "ready + healthy runtime shows system-ready copy", %{conn: conn} do
+    test "passing Controller and healthy runtime remain separately scoped", %{conn: conn} do
       # Default RuntimeStub: idle, loaded model, healthy runtime_health
       {:ok, view, _html} = live(conn, "/console")
       copy = view |> element("#overview-hero-status-copy") |> render()
 
-      assert copy =~ "System ready"
+      assert copy =~ "Controller checks are passing"
+      assert copy =~ "default Runtime Endpoint is reachable"
+      refute copy =~ "System ready"
       assert copy =~ "text-slate-600"
       refute copy =~ "unhealthy"
       refute copy =~ "degraded"
+    end
+
+    test "a failed runtime probe never turns passing Controller checks into failed checks", %{
+      conn: conn
+    } do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert has_element?(view, "#overview-hero-status-copy", "Controller checks are passing")
+
+      assert has_element?(
+               view,
+               "#overview-hero-status-copy",
+               "default Runtime Endpoint is unavailable"
+             )
+
+      refute has_element?(view, "#overview-hero-status-copy", "checks are failing")
+      assert has_element?(view, "#overview-metric-checks-passing .font-mono", "4/4")
     end
 
     test "ready + unhealthy runtime shows health warning", %{conn: conn} do
@@ -1126,7 +1433,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       copy = view |> element("#overview-hero-status-copy") |> render()
 
       # runtime_health is nil -> falls through to worker-state
-      assert copy =~ "no model is currently loaded"
+      assert copy =~ "No model is currently loaded"
       assert copy =~ "text-amber-700"
     end
   end
@@ -1141,9 +1448,42 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       ttft_html = element(view, "#overview-metric-avg-ttft") |> render()
       assert ttft_html =~ "—"
+      assert ttft_html =~ "Not recorded"
+      assert ttft_html =~ "Unwindowed Request mean"
 
       tps_html = element(view, "#overview-metric-avg-tokens-per-second") |> render()
       assert tps_html =~ "—"
+      assert tps_html =~ "Not recorded"
+      assert tps_html =~ "Unwindowed Request mean"
+    end
+
+    test "defines public-output TTFT and arithmetic unwindowed rates without native-rate inference",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+      definitions = element(view, "#overview-metric-definitions") |> render() |> visible_text()
+
+      assert definitions =~ "Request creation to first recorded public output"
+      assert definitions =~ "including waiting and earlier attempts"
+      assert definitions =~ "Not client receipt time"
+      assert definitions =~ "unwindowed arithmetic mean"
+      assert definitions =~ "Not a provider-native generation rate or throughput trend"
+      assert definitions =~ "positive output tokens"
+    end
+
+    test "nonqualifying completed rows count as Requests but not zero performance", %{conn: conn} do
+      create_request!(%{state: :completed, output_tokens: 0})
+
+      create_request!(%{
+        state: :completed,
+        output_tokens: 10,
+        first_token_at: ~U[2026-03-15 12:00:02.000000Z],
+        completed_at: ~U[2026-03-15 12:00:02.000000Z]
+      })
+
+      {:ok, view, _html} = live(conn, "/console")
+      assert has_element?(view, "#overview-metric-total-requests .font-mono", "2")
+      assert has_element?(view, "#overview-metric-avg-ttft", "Not recorded")
+      assert has_element?(view, "#overview-metric-avg-tokens-per-second", "Not recorded")
     end
 
     test "shows formatted average values from completed requests", %{conn: conn} do
@@ -1228,6 +1568,24 @@ defmodule OrchardConsole.OverviewLiveTest do
   defp put_console_config(overrides) do
     current = Application.get_env(:orchard_controller, :console, [])
     Application.put_env(:orchard_controller, :console, Keyword.merge(current, overrides))
+  end
+
+  defp visible_text(html), do: html |> LazyHTML.from_fragment() |> LazyHTML.text()
+
+  defp fragment_text(html, selector) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.text()
+    |> String.trim()
+  end
+
+  defp overview_assigns do
+    {:ok, socket} =
+      OrchardConsole.OverviewLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{transport_pid: self()})
+
+    Process.cancel_timer(socket.assigns.refresh_timer)
+    socket.assigns
   end
 
   defp hydrate_quickstart(view, attrs \\ %{}) do
