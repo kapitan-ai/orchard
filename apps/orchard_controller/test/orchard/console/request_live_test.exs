@@ -1594,6 +1594,123 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   describe "selected persisted evidence" do
+    test "SPEC §3.7.1 candidate hints never replace validated source identity" do
+      request = create_request!(%{state: :completed, payload_capture_mode: :full})
+      append_inspector_step!(request)
+
+      append_inspector_step!(request, %{
+        event_type: "request_step.completed",
+        boundary: "post_observation",
+        result: %{"output_tokens" => 7}
+      })
+
+      [started, completed] = Requests.list_request_events(request)
+      own_id = "inference_turn:t1:a1"
+      other_id = "inference_turn:t1:a2"
+
+      events = [
+        started,
+        %{
+          completed
+          | payload:
+              Map.new(completed.payload, fn {key, value} ->
+                {String.to_existing_atom(key), value}
+              end)
+        },
+        %{
+          started
+          | seq: 3,
+            payload:
+              Map.merge(started.payload, %{
+                :step_id => own_id,
+                "step_id" => other_id,
+                "attempt" => 2
+              })
+        },
+        %{started | seq: 4, payload: Map.put(started.payload, :step_id, other_id)},
+        %{started | seq: 5, payload: Map.put(started.payload, "attempt", 99)},
+        %{started | seq: 6, event_type: "metadata"},
+        %{started | seq: 7, payload: nil},
+        %{started | seq: 8, payload: []},
+        %{started | seq: 9, payload: %{}},
+        %{started | seq: 10, event_type: "request_step.unknown"}
+      ]
+
+      unrelated =
+        for seq <- 11..138 do
+          %{
+            started
+            | seq: seq,
+              payload:
+                Map.merge(started.payload, %{
+                  "step_id" => "inference_turn:t1:a#{seq}",
+                  "attempt" => seq
+                })
+          }
+        end
+
+      {:ok, socket} =
+        OrchardConsole.RequestLive.mount(
+          %{"public_id" => request.public_id},
+          %{},
+          %Phoenix.LiveView.Socket{}
+        )
+
+      {:noreply, socket} = OrchardConsole.RequestLive.handle_event("refresh_request", %{}, socket)
+      events = events ++ unrelated
+
+      socket =
+        Phoenix.Component.assign(socket,
+          events: events,
+          attempts: OrchardConsole.RequestEvidence.attempts(events)
+        )
+
+      {:noreply, socket} =
+        OrchardConsole.RequestLive.handle_event("select_evidence", %{"attempt" => own_id}, socket)
+
+      document =
+        render_component(&OrchardConsole.RequestLive.render/1, socket.assigns)
+        |> LazyHTML.from_fragment()
+
+      assert document
+             |> LazyHTML.query("#request-evidence-inspector article")
+             |> LazyHTML.attribute("id") ==
+               ["inspector-event-1", "inspector-event-2", "inspector-event-4"]
+
+      assert document
+             |> LazyHTML.query("#inspector-attempt-outcome dd")
+             |> LazyHTML.text()
+             |> String.trim() == "completed"
+
+      assert document
+             |> LazyHTML.query("#inspector-attempt-result code")
+             |> LazyHTML.text()
+             |> Jason.decode!() == %{"output_tokens" => 7}
+    end
+
+    test "attempt selection uses the loaded projection and replaces it on refresh", %{conn: conn} do
+      request = create_request!(%{state: :running})
+      append_inspector_step!(request)
+      {:ok, view, _} = live(conn, "/console/requests/#{request.public_id}")
+
+      append_inspector_step!(request, %{step_id: "inference_turn:t1:a2", attempt: 2})
+      render_click(view, "select_evidence", %{"attempt" => "inference_turn:t1:a2"})
+      assert has_element?(view, "#request-evidence-selection", "Select an attempt")
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      view |> element("#request-attempt-1-2 button[phx-click=select_evidence]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "Turn 1 · Attempt 2 selected")
+
+      Repo.delete_all(
+        from(event in RequestEvent, where: event.request_id == ^request.id and event.seq == 2)
+      )
+
+      view |> element("button[phx-click=refresh_request]") |> render_click()
+      assert has_element?(view, "#request-evidence-selection", "no longer available")
+      refute has_element?(view, "#inspector-attempt")
+      refute has_element?(view, "#request-attempt-1-2")
+    end
+
     test "selection uses only loaded events and preserves Request scope", %{conn: conn} do
       request = create_request!(%{state: :completed, payload_capture_mode: :full})
       foreign = create_request!(%{payload_capture_mode: :full})

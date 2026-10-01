@@ -73,7 +73,7 @@ defmodule OrchardConsole.RequestLive do
   end
 
   def handle_event("select_evidence", %{"attempt" => step_id}, socket) do
-    attempt = Enum.find(RequestEvidence.attempts(socket.assigns.events), &(&1.step_id == step_id))
+    attempt = Enum.find(socket.assigns.attempts, &(&1.step_id == step_id))
 
     selection =
       if attempt, do: {:attempt, attempt.step_id}, else: socket.assigns.selected_evidence
@@ -87,8 +87,6 @@ defmodule OrchardConsole.RequestLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, :attempts, RequestEvidence.attempts(assigns.events))
-
     ~H"""
     <div id="request-detail" class="min-w-0 space-y-6">
       <.request_tools_row last_checked_at={@last_checked_at} refresh_mode={@refresh_mode} />
@@ -1038,16 +1036,24 @@ defmodule OrchardConsole.RequestLive do
 
     events =
       Enum.filter(events, fn event ->
-        case RequestStepEvent.from_request_event(event) do
-          {:ok, step} -> step.step_id == step_id
-          {:error, _} -> false
-        end
+        candidate_step_event?(event, step_id) and
+          case RequestStepEvent.from_request_event(event) do
+            {:ok, step} -> step.step_id == step_id
+            {:error, _} -> false
+          end
       end)
 
     {attempt, events}
   end
 
   defp selected_evidence(nil, _attempts, _events), do: {nil, []}
+
+  # Retained keys only narrow the candidates; the envelope still establishes identity.
+  defp candidate_step_event?(%{event_type: "request_step." <> _, payload: payload}, step_id)
+       when is_map(payload),
+       do: payload["step_id"] == step_id or payload[:step_id] == step_id
+
+  defp candidate_step_event?(_event, _step_id), do: false
 
   defp event_outcome(_event, %{result: %{"result_invalid" => _}}),
     do: "Invalid terminal evidence"
@@ -1107,6 +1113,7 @@ defmodule OrchardConsole.RequestLive do
       request_status: :loading,
       request: nil,
       events: [],
+      attempts: [],
       selected_evidence: nil,
       scheduler_explanation_status: :loading,
       scheduler_explanation: nil,
@@ -1128,6 +1135,7 @@ defmodule OrchardConsole.RequestLive do
           request_status: :not_found,
           request: nil,
           events: [],
+          attempts: [],
           scheduler_explanation_status: :not_found,
           scheduler_explanation: nil,
           scheduler_explanation_error: nil,
@@ -1147,6 +1155,7 @@ defmodule OrchardConsole.RequestLive do
           request_status: :ok,
           request: request,
           events: events,
+          attempts: RequestEvidence.attempts(events),
           load_error: nil,
           last_checked_at: now,
           refresh_mode: mode
@@ -1163,6 +1172,7 @@ defmodule OrchardConsole.RequestLive do
         request_status: :error,
         request: nil,
         events: [],
+        attempts: [],
         scheduler_explanation_status: :error,
         scheduler_explanation: nil,
         scheduler_explanation_error: nil,
