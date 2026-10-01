@@ -64,6 +64,16 @@ NVIDIA/CUDA and AMD/ROCm observations remain distinct.
 Missing vendor tooling means evidence is absent, not that a device is healthy or free.
 Inventory never creates schedulable capacity, allocation, device binding, runtime custody, or a runtime-provider qualification.
 
+The Node Agent carries this inventory as the additive `StatusResponse.host_inventory` field on Runtime Endpoint status.
+It is off by default; in source development, `ORCHARD_NODE_HOST_INVENTORY=linux` selects the Linux capability provider, and `ORCHARD_NODE_HOST_INVENTORY_ACCELERATORS=nvidia,amd` separately opts in to each accelerator vendor probe.
+Disk capacity is observed at the configured Node Identity Root.
+Probes run only allowlisted absolute executables with a cleared environment and the `C` locale, under a GNU coreutils `timeout` guardian whose identity is verified before use; a missing tool or guardian yields absent evidence, and another `timeout` implementation counts as missing.
+Each section has its own time budget, so one hung probe affects only its section, and oversized or malformed output becomes error or partial evidence rather than a truncated value.
+Collection is asynchronous and status reads only the last bounded snapshot, which reads as absent once it exceeds its maximum age.
+Controllers drop an inventory outside the observation-only bounds on both BEAM and gRPC status, and inventory is not persisted in heartbeat payloads.
+Across version skew, gRPC status keeps inventory fields added by a newer Node Agent as decoded unknown fields, while a BEAM Runtime Endpoint inventory term that carries fields this Controller does not define fails its bound check and reads as absent.
+This behavior is validated against synthetic fixtures and is not host qualification.
+
 ## Qualification gates
 
 Candidate source qualification requires every applicable gate below on an exact clean source revision:

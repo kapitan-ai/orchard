@@ -19,8 +19,8 @@
 
 ## 3. Inventory and diagnostics
 
-- [ ] 3.1 Implement bounded provider-neutral CPU, memory, disk, OS, kernel, and network observations, and verify malformed and missing input yields absent evidence
-- [ ] 3.2 Implement separate NVIDIA and AMD accelerator observations with stable identities, and verify no capacity, allocation, device binding, or runtime startup follows
+- [x] 3.1 Implement bounded provider-neutral CPU, memory, disk, OS, kernel, and network observations, and verify malformed and missing input yields absent evidence
+- [x] 3.2 Implement separate NVIDIA and AMD accelerator observations with stable identities, and verify no capacity, allocation, device binding, or runtime startup follows
 - [ ] 3.3 Expose redacted health, logs, metrics, inventory, and lifecycle diagnostics through retained generic surfaces, and verify no support-bundle or archive format is introduced
 
 ## 4. Trust

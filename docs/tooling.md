@@ -66,6 +66,9 @@ Ordinary `mix compile` does not build Orchard's Darwin helpers, but compiling th
 Run `make macos-native-helpers` when source development needs the retained terminal-custody or launchd lifecycle helpers in the development CLI application.
 On Darwin hosts the `make test`, `make cover`, and `make check-elixir` workflows stage test helpers automatically and run every test; on non-Darwin hosts they skip staging and exclude the retained `macos` tag.
 Run `make macos-native-test-helpers` first only when invoking `mix test` directly for retained macOS paths.
+Node Agent host-inventory probe tests tagged `gnu_timeout` run real processes under a GNU coreutils `timeout` guardian.
+They run when GNU `timeout` exists at `/usr/bin/timeout` (Linux), `/opt/homebrew/bin/timeout`, or `/usr/local/bin/timeout` (Homebrew `coreutils` on macOS); otherwise the Node Agent test helper prints a notice and excludes them, so a Darwin run without Homebrew `coreutils` does not run every test.
+The Linux portable lane always runs them.
 The explicit builder owns sources under `packaging/macos/native_helpers` and stages binaries into the selected `orchard_cli` application `priv` directory.
 Payload assembly invokes the same builder before producing the packaged CLI release.
 Install the Xcode Command Line Tools with `xcode-select --install` if `xcrun clang --version` fails.

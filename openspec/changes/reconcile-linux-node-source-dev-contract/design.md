@@ -128,6 +128,7 @@ This decision uses the next unused number, 0035.
 The contract lands before behavior and changes no code, packaging, CI, service, or host.
 Later slices proceed in this order: Linux adapter and source-development Node path, observation-only inventory, credential lifecycle reconciliation, diagnostics, model-free custody, mixed-platform acceptance, and any separately authorized provider pilot.
 Every slice stays default-off and additive and needs its own review.
+Observation-only inventory may be implemented and validated against synthetic fixtures before the source-development Node path and lifecycle slices, because it is default-off and creates no authority; real host qualification still requires every source-path, lifecycle, and mixed-platform gate, and that ordering delivers none of those tasks.
 Rollback of this change removes only unimplemented contract text.
 
 ## Open Questions

@@ -1,0 +1,2 @@
+ldd (Fixture GLIBC 2.39-0fixture1) 2.39
+Copyright (C) 2024 Free Software Foundation, Inc.

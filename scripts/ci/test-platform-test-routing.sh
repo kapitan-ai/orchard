@@ -131,4 +131,13 @@ ORCHARD_TEST_MISE_MARKER="$host_stub_marker" PATH="$host_stub_dir:$PATH" \
 [[ ! -e "$host_stub_marker" ]] ||
   fail 'Linux portable test invoked mise on FreeBSD host'
 
+NODE_TEST_HELPER="$ROOT/apps/orchard_node_agent/test/test_helper.exs"
+
+grep -Fq 'gnu_timeout' "$LINUX_PORTABLE_TEST" &&
+  fail 'Linux portable tests excluded the real host-inventory guardian probe tests'
+grep -Fq '"/usr/bin/timeout"' "$NODE_TEST_HELPER" ||
+  fail 'node test helper does not look for the Linux GNU timeout guardian'
+grep -Fq 'exclude: if(gnu_timeout, do: [], else: [:gnu_timeout])' "$NODE_TEST_HELPER" ||
+  fail 'node test helper does not exclude guardian probe tests only when no GNU guardian exists'
+
 printf 'platform test-routing tests passed\n'

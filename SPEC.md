@@ -1218,6 +1218,7 @@ Compatibility and defaulting rules:
 * absent hosted-tool capability/readiness fields SHALL NOT be treated as a status-probe error
 * readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
 * `supports_prompt_token_ids` indicates that the endpoint's loaded worker can accept controller-supplied prompt token IDs on the runtime execution request. Absence or `false` is treated as legacy capability, not as an observation failure. When `tokenizer_safe_mode_prefer_capable=true` and `tokenizer_safe_mode` is not `:off`, this field from a fresh durable scheduler snapshot MAY inform opt-in scheduler preference only; it is not dispatch authority.
+* absent `host_inventory` on a Runtime Endpoint Observation, including an absent `StatusResponse.host_inventory` from an older Node Agent, SHALL mean no host inventory observation is available; every Runtime Endpoint adapter SHALL treat an inventory outside the observation-only schema and size bounds as absent, and host inventory SHALL remain volatile observation evidence outside the persisted heartbeat allowlist, readiness, admission, capacity, and scheduling (§4.1)
 * absent or empty runtime memory budgets on a Runtime Endpoint Observation SHALL mean no memory-budget observation is available
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
 * `runtime_memory_budgets` SHALL remain observe-only telemetry except for the Phase 4E scheduler-ranking guard defined in §5.7 and §7.5.3; it SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, hosted-tool eligibility, public error contracts, queue ordering, or memory-budget enforcement
@@ -3598,6 +3599,140 @@ message WorkerCrashCounter {
   string counter_version = 3;
 }
 
+enum HostEvidenceState {
+  HOST_EVIDENCE_STATE_UNSPECIFIED = 0;
+  HOST_EVIDENCE_STATE_OBSERVED = 1;
+  HOST_EVIDENCE_STATE_ABSENT = 2;
+  HOST_EVIDENCE_STATE_PARTIAL = 3;
+  HOST_EVIDENCE_STATE_ERROR = 4;
+}
+
+enum HostInventoryAuthority {
+  HOST_INVENTORY_AUTHORITY_UNSPECIFIED = 0;
+  HOST_INVENTORY_AUTHORITY_OBSERVATION_ONLY = 1;
+}
+
+enum AcceleratorVendor {
+  ACCELERATOR_VENDOR_UNSPECIFIED = 0;
+  ACCELERATOR_VENDOR_NVIDIA = 1;
+  ACCELERATOR_VENDOR_AMD = 2;
+}
+
+message HostEvidence {
+  HostEvidenceState state = 1;
+  string source = 2;
+  uint64 observed_at_unix_ms = 3;
+  // Stable bounded code only; raw command output is not transported.
+  string error_code = 4;
+}
+
+message HostCpuObservation {
+  HostEvidence evidence = 1;
+  string architecture = 2;
+  uint32 logical_processor_count = 3;
+  uint32 core_count = 4;
+  uint32 socket_count = 5;
+  string vendor_id = 6;
+  string model_name = 7;
+}
+
+message HostMemoryObservation {
+  HostEvidence evidence = 1;
+  uint64 physical_bytes = 2;
+  uint64 available_bytes = 3;
+  uint64 swap_total_bytes = 4;
+  uint64 swap_free_bytes = 5;
+}
+
+message HostDiskObservation {
+  HostEvidence evidence = 1;
+  string mount_point = 2;
+  string filesystem = 3;
+  uint64 total_bytes = 4;
+  uint64 available_bytes = 5;
+}
+
+message HostPlatformObservation {
+  HostEvidence evidence = 1;
+  string os_id = 2;
+  string os_name = 3;
+  string os_version = 4;
+  string kernel_release = 5;
+  string architecture = 6;
+  string libc_name = 7;
+  string libc_version = 8;
+  string systemd_version = 9;
+  string cgroup_mode = 10;
+}
+
+message HostNetworkAddressObservation {
+  string family = 1;
+  string address = 2;
+  uint32 prefix_length = 3;
+  string scope = 4;
+}
+
+message HostNetworkInterfaceObservation {
+  string name = 1;
+  uint32 index = 2;
+  string oper_state = 3;
+  uint32 mtu = 4;
+  string link_type = 5;
+  string hardware_address = 6;
+  repeated HostNetworkAddressObservation addresses = 7;
+}
+
+message HostNetworkObservation {
+  HostEvidence evidence = 1;
+  repeated HostNetworkInterfaceObservation interfaces = 2;
+}
+
+message AcceleratorObservation {
+  HostEvidence evidence = 1;
+  AcceleratorVendor vendor = 2;
+  // Vendor-documented stable identity. Records without one are omitted.
+  string stable_id = 3;
+  string identity_kind = 4;
+  // Topology observations only; none is an Orchard device binding.
+  uint32 device_ordinal = 5;
+  string pci_address = 6;
+  string numa_node = 7;
+  string model_name = 8;
+  uint64 memory_total_bytes = 9;
+  string driver_version = 10;
+}
+
+message AcceleratorRuntimeObservation {
+  HostEvidence evidence = 1;
+  // Installed host tool or runtime evidence only, never provider qualification
+  // or proof that a particular accelerator can execute it.
+  string name = 2;
+  string version = 3;
+}
+
+message AcceleratorProviderObservation {
+  HostEvidence evidence = 1;
+  AcceleratorVendor vendor = 2;
+  repeated AcceleratorObservation devices = 3;
+  // Observed process environment only; never an Orchard allocation or binding.
+  string visibility_filter = 4;
+  AcceleratorRuntimeObservation runtime = 5;
+}
+
+// Bounded observation-only host inventory. It creates no capacity, worker
+// unit, resource allocation, device binding, readiness, or custody fact.
+message HostInventoryObservation {
+  uint32 schema_version = 1;
+  uint64 observed_at_unix_ms = 2;
+  HostInventoryAuthority authority = 3;
+  HostCpuObservation cpu = 4;
+  HostMemoryObservation memory = 5;
+  HostDiskObservation disk = 6;
+  HostPlatformObservation platform = 7;
+  HostNetworkObservation network = 8;
+  repeated AcceleratorProviderObservation accelerator_providers = 9;
+}
+
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
@@ -3615,6 +3750,9 @@ message StatusResponse {
   // Only explicit unmanaged compatibility may normalize absent or zero to 1.
   uint32 max_concurrency = 12;
   repeated WorkerCrashCounter worker_crash_counters = 13;
+  // Additive observation-only host evidence. Absence means not observed and
+  // creates no readiness, scheduling, allocation, provider, or custody fact.
+  HostInventoryObservation host_inventory = 15;
 }
 
 message EnsureModelLoadedRequest {
