@@ -123,7 +123,7 @@ defmodule OrchardConsole.NodesLive do
       <div id="nodes-summary-card" hidden={@section != :inventory}>
       <.card>
         <:title>Inventory Summary</:title>
-        <:subtitle>Persisted node inventory with periodic runtime refresh.</:subtitle>
+        <:subtitle>Last observed inventory health. Counts reflect persisted Node health, not current reachability or model-serving readiness. A new refresh attempt does not make an older observation fresh.</:subtitle>
 
         <div id="nodes-summary" class="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <.summary_tile id="nodes-summary-total" label="Inventory entries" value={format_count(@inventory.summary.total)} tone={:neutral} />
@@ -265,11 +265,11 @@ defmodule OrchardConsole.NodesLive do
                   <:col :let={node} label="Lifecycle">
                     <.badge tone={state_badge_tone(node.state)}>{node.state}</.badge>
                   </:col>
-                  <:col :let={node} label="Health">
+                  <:col :let={node} label="Last observed Node health">
                     <.badge tone={health_badge_tone(node.health)}>{node.health}</.badge>
                   </:col>
                   <:col :let={node} label="Agent Version" mono>{node.agent_version || "—"}</:col>
-                  <:col :let={node} label="Last Seen" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} /></:col><:action :let={node}>
+                  <:col :let={node} label="Last successful observation" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} placeholder="Not available" /></:col><:action :let={node}>
     <.link navigate={~p"/console/nodes/#{node.id}"} class="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-300 dark:hover:bg-slate-800" aria-label={"Inspect #{node.display_name || node.hostname || node.id}"}>
     Inspect Node <.icon name="hero-arrow-left" class="ml-1 h-4 w-4 rotate-180" />
     </.link>
