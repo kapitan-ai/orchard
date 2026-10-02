@@ -81,6 +81,13 @@ defmodule OrchardConsole.NodesLive do
 
   @impl true
   def render(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :inventory_statuses_by_id,
+        Map.new(assigns.inventory.statuses, &{&1.resource.id, &1})
+      )
+
     ~H"""
     <div class="space-y-6">
       <div class="flex justify-end">
@@ -218,7 +225,7 @@ defmodule OrchardConsole.NodesLive do
           <div id="nodes-inventory-card" hidden={@section != :inventory}>
           <.card>
             <:title>Node Inventory</:title>
-            <:subtitle>Successful authenticated status observations come from the background observer or a Console runtime read. Failed refreshes and later refresh-attempt times do not advance this evidence.</:subtitle>
+            <:subtitle>Successful authenticated status observations come from the background observer. Console runtime reads and refresh attempts do not advance this timestamp.</:subtitle>
 
             <%= cond do %>
               <% @inventory.status == :loading -> %>
@@ -272,10 +279,9 @@ defmodule OrchardConsole.NodesLive do
                   </:col>
                   <:col :let={node} label="Agent Version" mono>{node.agent_version || "—"}</:col>
                   <:col :let={node} label="Last authenticated observation" mono>
-                    <% status = Enum.find(@inventory.statuses, &(&1.resource.id == node.id)) %>
                     <.local_time value={node.last_heartbeat_at} format={:datetime_second} placeholder="Not recorded" />
                     <span id={"node-observation-freshness-#{node.id}"} class="mt-1 block font-sans text-xs text-slate-500 dark:text-slate-400">
-                      Freshness: {status.freshness.status}
+                      Freshness: {@inventory_statuses_by_id[node.id].freshness.status}
                     </span>
                   </:col><:action :let={node}>
     <.link navigate={~p"/console/nodes/#{node.id}"} class="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-300 dark:hover:bg-slate-800" aria-label={"Inspect #{node.display_name || node.hostname || node.id}"}>

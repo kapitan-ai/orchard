@@ -1063,7 +1063,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert has_element?(
                view,
                "#nodes-inventory-card",
-               "Successful authenticated status observations come from the background observer or a Console runtime read."
+               "Successful authenticated status observations come from the background observer."
              )
 
       assert has_element?(
@@ -1095,7 +1095,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert has_element?(
                view,
                "#nodes-inventory-card",
-               "Failed refreshes and later refresh-attempt times do not advance this evidence."
+               "Console runtime reads and refresh attempts do not advance this timestamp."
              )
 
       assert has_element?(
@@ -1191,6 +1191,41 @@ defmodule OrchardConsole.NodesLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "inventory table" do
+    test "SPEC 4.5 freshness belongs to each Node in a mixed inventory", %{conn: conn} do
+      with_inference_overrides(
+        [node_freshness_threshold_ms: 120_000, node_unreachable_threshold_ms: 180_000],
+        fn ->
+          now = DateTime.utc_now()
+
+          fresh =
+            insert_node!(
+              display_name: "fresh-node",
+              last_heartbeat_at: DateTime.add(now, -60_000, :millisecond)
+            )
+
+          unknown = insert_node!(display_name: "unknown-node", last_heartbeat_at: nil)
+
+          stale =
+            insert_node!(
+              display_name: "stale-node",
+              last_heartbeat_at: DateTime.add(now, -150_000, :millisecond)
+            )
+
+          {:ok, view, _html} = live(conn, "/console/nodes")
+
+          for {node, category} <- [{fresh, "fresh"}, {unknown, "unknown"}, {stale, "stale"}] do
+            assert has_element?(
+                     view,
+                     "#node-#{node.id} #node-observation-freshness-#{node.id}",
+                     "Freshness: #{category}"
+                   )
+          end
+
+          assert has_element?(view, "#node-#{unknown.id}", "Not recorded")
+        end
+      )
+    end
+
     test "renders persisted rows", %{conn: conn} do
       insert_node!(
         display_name: "test-node",
