@@ -18,5 +18,5 @@
 - [x] 3.1 Prove exact command order, the stop at each failing command, the unsupported-host refusal, a failing capture with output larger than a pipe buffer, interrupts, reporting faults, report completeness, the upload receipt, dangerous output, and report bounds with disposable stubs under bash 5 and macOS bash 3.2.
 - [x] 3.2 Run the existing classifier, aggregate gate, platform routing, distribution lane, and distribution pause proofs.
 - [x] 3.3 Run strict focused and repository-wide OpenSpec validation and review the change prose for placeholders.
-- [ ] 3.4 Run the exact Linux portable lane and aggregate gate in hosted CI.
-- [ ] 3.5 Run exact-head review and the repository required review gate.
+- [x] 3.4 Run the exact Linux portable lane and aggregate gate in hosted CI.
+- [x] 3.5 Run independent exact-head review and confirm the Required Orchard validation gate.

@@ -166,7 +166,7 @@ Facts accumulate in an unpublished staging file.
 The finalize step accepts only the fixed staging vocabulary, then validates, bounds, and redacts the facts and publishes `report.txt` with a single rename.
 The upload runs only when that step succeeded and confirmed `report.txt` is a regular file, so a failed or interrupted finalize uploads nothing.
 `report.result` is `success` only when all ten commands are recorded in order with valid facts and status 0, every suite summary was recognized, every metadata fact is known, and the job had not failed or been cancelled.
-It is `failure` only when a command recorded a known nonzero exit status.
+It is `failure` only when a command recorded a known nonzero exit status and the run was neither interrupted nor cancelled; `tests.result` and `tests.first_failed_step` still record that command outcome.
 An interrupted run, unrecognized output, a malformed or missing fact, or an unexpected key gives `unknown`, and a hard cancellation can leave no artifact at all; treat a missing artifact as unknown too.
 `scripts/ci/test-linux-portable-validation-report.sh` drives the lane script with disposable `uname` and `mise` stubs and proves the exact command order, the stop at each failing command, the host guard, a failing capture `tee`, interrupt handling, report completeness, the upload receipt, report bounds, and redaction on any host.
 Run it in the foreground, because its interrupt cases need a trappable SIGINT, and set `ORCHARD_TEST_BASH=/bin/bash` to repeat it under macOS bash 3.2.

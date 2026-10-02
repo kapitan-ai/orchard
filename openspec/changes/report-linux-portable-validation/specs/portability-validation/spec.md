@@ -12,7 +12,7 @@ The report MUST NOT contain raw command output, assertion payloads, passing-test
 The report SHALL be published only after validation, bounding, and redaction succeed, and an unfinalized report or any path other than the published regular report file MUST NOT be uploaded.
 Keys outside the fixed report vocabulary MUST NOT be published.
 A run that is interrupted, cancelled, missing metadata, missing or malformed per-command or run facts, or whose suite summary is not recognized SHALL report `unknown`, never success.
-Only a known nonzero command exit status SHALL be reported as `failure`, and a missing artifact SHALL be treated as unknown.
+Only a known nonzero command exit status in a run that was neither interrupted nor cancelled SHALL be reported as an overall `failure`, and a missing artifact SHALL be treated as unknown.
 
 #### Scenario: Lane passes with a complete report
 

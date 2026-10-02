@@ -49,6 +49,10 @@ MIN_SCRUB_PATH_BYTES=6
 # gave nothing usable.
 RUNTIMES=(erlang elixir uv python_tokenizer python_worker_mlx)
 
+# Configured toolchain identities (`mise --version` plus `mise current` for
+# mise.toml) that a complete report must name with a known version.
+CONFIGURED_TOOLS=(mise erlang elixir python uv node)
+
 # The lane's command sequence as label:kind. Finalize requires recorded steps
 # to match it in order; scripts/test-linux-portable-core.sh owns the commands.
 STEP_SEQUENCE=(
@@ -693,6 +697,9 @@ metadata_complete() {
   while IFS= read -r key; do
     require_fact "$file" "$key" "$version_pattern" || return 1
   done < <(sed -n 's/^\(toolchain\.configured\.[a-z0-9_]*\)=.*/\1/p' "$file")
+  for entry in "${CONFIGURED_TOOLS[@]}"; do
+    require_fact "$file" "toolchain.configured.$entry" "$version_pattern" || return 1
+  done
 
   for entry in "${RUNTIMES[@]}"; do
     require_fact "$file" "runtime.$entry" "$version_pattern" || return 1
@@ -862,6 +869,7 @@ cmd_finalize() {
   local redacted=0
   local duplicates=0
   local unknown_keys=0
+  local interrupted_run=false
   local seen_keys=$'\n'
   local complete=true
   local tests=unknown
@@ -942,7 +950,15 @@ cmd_finalize() {
   failed_step="$FIRST_FAILED"
   [[ "$RUN_FACTS_COMPLETE" == true ]] || complete=false
 
-  if [[ "$tests" == failure ]]; then
+  # tests.result and tests.first_failed_step keep the recorded command facts.
+  # An interrupted run or a cancelled job is incomplete and never an overall
+  # failure or success: report.result is then unknown.
+  case "$(report_value "$work" run.end_reason)" in
+    signal_*) interrupted_run=true ;;
+  esac
+  if [[ "$interrupted_run" == true || "$job_status" == cancelled ]]; then
+    complete=false
+  elif [[ "$tests" == failure ]]; then
     result=failure
   elif [[ "$tests" == success && "$complete" == true && "$job_status" == success ]]; then
     result=success
@@ -967,7 +983,7 @@ cmd_finalize() {
       printf 'report.complete=false\n'
       printf 'report.oversized=true\n'
       printf 'tests.result=%s\n' "$tests"
-      printf 'report.result=%s\n' "$([[ "$tests" == failure ]] && printf failure || printf unknown)"
+      printf 'report.result=%s\n' "$([[ "$result" == failure ]] && printf failure || printf unknown)"
     } > "$work"
   fi
   printf 'report.finalized=true\n' >> "$work"

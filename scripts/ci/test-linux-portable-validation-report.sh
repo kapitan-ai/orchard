@@ -636,6 +636,10 @@ assert_report_shape "$parse_dir/report.staging"
 
 # --- Finalize: only a complete, successful record is success -------------
 
+# `mise --version` plus `mise current` for the pinned mise.toml.
+CONFIGURED_LINES=('mise 2026.9.2' 'erlang 29.1.1' 'elixir 1.20.0-otp-29' 'python 3.11.15' 'uv 0.11.23'
+  'node 24.17.0')
+
 # The lane's label:kind sequence and one realistic capture per kind.
 LANE_STEPS=(mix-test:exunit mix-test-cover:exunit tokenizer-ruff-format:none tokenizer-ruff-check:none
   tokenizer-pytest:pytest tokenizer-pytest-cov:pytest worker-ruff-format:none worker-ruff-check:none
@@ -674,7 +678,7 @@ full_report() {
       RUNNER_ENVIRONMENT=github-hosted ImageOS=ubuntu24 ImageVersion=20260928.1.0 \
       ${pr_env[@]+"${pr_env[@]}"} "$TEST_BASH" "$HELPER" source "$dir"
     helper lockfiles "$dir" before
-    printf 'mise 2026.9.2\nerlang 29.1.1\nelixir 1.20.0-otp-29\n' | helper tools "$dir"
+    printf '%s\n' "${CONFIGURED_LINES[@]}" | helper tools "$dir"
     printf 'erlang 29.1.1\nelixir 1.20.0\nuv 0.11.23\npython_tokenizer 3.11.15\npython_worker_mlx 3.11.15\n' |
       helper runtime "$dir"
     printf '160010\n' | helper postgres "$dir"
@@ -699,7 +703,7 @@ key_digest="$(printf '%s' 'orchard-dialyzer-plt-v2-Linux-X64-abc123' | shasum -a
 for line in report.complete=true tests.result=success report.result=success report.finalized=true \
   source.repository=example/orchard source.event=pull_request source.run_attempt=1 \
   runner.image_os=ubuntu24 runner.image_version=20260928.1.0 toolchain.configured.mise=2026.9.2 \
-  toolchain.configured.elixir=1.20.0-otp-29 toolchain.configured_count=3 runtime.erlang=29.1.1 \
+  toolchain.configured.elixir=1.20.0-otp-29 toolchain.configured_count=6 runtime.erlang=29.1.1 \
   runtime.elixir=1.20.0 runtime.uv=0.11.23 runtime.python_tokenizer=3.11.15 runtime.python_worker_mlx=3.11.15 \
   postgres.server_version_num=160010 cache.dialyzer_plt=hit "cache.dialyzer_plt.key_sha256=$key_digest" \
   lockfile.mix_lock.changed=false job.status_at_finalize=success; do
@@ -872,6 +876,54 @@ run.interrupted_step|4|unknown
 step.4.exit|3|failure
 EOF
 [[ "$mutation_index" -ge 39 ]] || fail "only $mutation_index run mutations ran"
+
+# Every configured tool identity is required, even when the count is
+# consistent and every probed runtime is healthy.
+tool_index=0
+for tool_case in 'mise 2026.9.2' \
+  'mise 2026.9.2|erlang 29.1.1|elixir 1.20.0-otp-29|python 3.11.15|uv 0.11.23' \
+  'mise 2026.9.2|erlang 29.1.1|elixir 1.20.0-otp-29|python unknown|uv 0.11.23|node 24.17.0'; do
+  tool_index=$((tool_index + 1))
+  final="$TMP_ROOT/final-configured-tools-$tool_index"
+  full_report "$final"
+  grep -v '^toolchain\.' "$final/report.staging" > "$final/edited"
+  mv "$final/edited" "$final/report.staging"
+  printf '%s\n' "$tool_case" | tr '|' '\n' | helper tools "$final"
+  helper finalize "$final" success
+  for line in tests.result=success report.complete=false report.result=unknown runtime.uv=0.11.23; do
+    assert_has "$final/report.txt" "$line"
+  done
+done
+assert_has "$TMP_ROOT/final-configured-tools-1/report.txt" 'toolchain.configured_count=1'
+assert_has "$TMP_ROOT/final-configured-tools-2/report.txt" 'toolchain.configured_count=5'
+
+# An interrupted run or a cancelled job keeps its recorded command facts but
+# is never an overall failure. Case: SIGNAL_EXIT|END_REASON|INTERRUPTED|JOB
+# for a run stopped after step 4 exited 3.
+while IFS='|' read -r run_exit end_reason interrupted job expected; do
+  [[ -n "$run_exit" ]] || continue
+  final="$TMP_ROOT/final-stopped-$end_reason-$job"
+  full_report "$final"
+  mutate_fact "$final/report.staging" step.4.exit 3
+  for gone in 5 6 7 8 9 10; do
+    mutate_fact "$final/report.staging" "step.$gone" --
+  done
+  mutate_fact "$final/report.staging" run.exit "$run_exit"
+  mutate_fact "$final/report.staging" run.end_reason "$end_reason"
+  mutate_fact "$final/report.staging" run.interrupted_step "$interrupted"
+  helper finalize "$final" "$job"
+  for line in tests.result=failure tests.first_failed_step=4 step.4.exit=3 "run.exit=$run_exit" \
+    "run.end_reason=$end_reason" "job.status_at_finalize=$job" "report.result=$expected"; do
+    assert_has "$final/report.txt" "$line"
+  done
+  [[ "$expected" == failure ]] || assert_has "$final/report.txt" 'report.complete=false'
+done <<'EOF'
+130|signal_int|4|cancelled|unknown
+143|signal_term|4|cancelled|unknown
+130|signal_int|4|success|unknown
+3|failed|none|failure|failure
+3|failed|none|cancelled|unknown
+EOF
 
 # A capture failure never hides a known command failure.
 final="$TMP_ROOT/final-capture-failure-with-failure"
