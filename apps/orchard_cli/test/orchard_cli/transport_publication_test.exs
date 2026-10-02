@@ -279,6 +279,8 @@ defmodule OrchardCLI.TransportPublicationTest do
       endpoint = Path.join(public, "endpoint.json")
       write_file!(endpoint, "old\n", 0o640)
       %File.Stat{inode: old_inode} = File.stat!(endpoint)
+      retained = Path.join(root, "retained-old-endpoint")
+      File.ln!(endpoint, retained)
 
       assert {:ok, publication} = prepare(root)
       assert {:ok, []} = TransportPublication.publish(publication, @ca, @endpoint)
@@ -289,6 +291,8 @@ defmodule OrchardCLI.TransportPublicationTest do
       assert File.read!(endpoint) == "old\n"
       assert TransportFixture.mode(endpoint) == 0o640
       refute File.stat!(endpoint).inode == old_inode
+      assert File.stat!(retained).inode == old_inode
+      assert File.read!(retained) == "old\n"
       assert TransportFixture.stage_entries(root) == []
     end
 
