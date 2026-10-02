@@ -295,38 +295,38 @@ byte_count() {
   wc -c <"$1" | tr -d ' '
 }
 
-# Bash withholds coproc descriptors from subshells, so they are duplicated onto plain ones.
+# Named FIFOs on fixed descriptors keep the driver portable to Bash 3.2.
 start_production() {
-  coproc HELPER { exec sudo -n "$PRODUCTION" --protocol 1 2>"$RUN/production.err"; }
-  exec {HELPER_OUT}<&"${HELPER[0]}" {HELPER_IN}>&"${HELPER[1]}"
-  HELPER_PROCESS="$HELPER_PID"
+  rm -f "$RUN/to-helper" "$RUN/from-helper"
+  mkfifo -m 0600 "$RUN/to-helper" "$RUN/from-helper"
+  sudo -n "$PRODUCTION" --protocol 1 <"$RUN/to-helper" >"$RUN/from-helper" 2>"$RUN/production.err" &
+  HELPER_PROCESS=$!
+  exec 8>"$RUN/to-helper" 9<"$RUN/from-helper"
 }
 
 send_frame() {
-  u32_bytes "$(byte_count "$1")" >&"$HELPER_IN"
-  cat "$1" >&"$HELPER_IN"
+  u32_bytes "$(byte_count "$1")" >&8
+  cat "$1" >&8
 }
 
 recv_frame() {
   local b0 b1 b2 b3
-  read -r b0 b1 b2 b3 < <(dd bs=1 count=4 2>/dev/null <&"$HELPER_OUT" | od -An -tu1)
+  read -r b0 b1 b2 b3 < <(dd bs=1 count=4 2>/dev/null <&9 | od -An -tu1)
   [[ -n "${b3:-}" ]] || fail "production helper closed without a reply: $(cat "$RUN/production.err")"
-  dd bs=1 count=$(((b0 << 24) | (b1 << 16) | (b2 << 8) | b3)) 2>/dev/null <&"$HELPER_OUT"
+  dd bs=1 count=$(((b0 << 24) | (b1 << 16) | (b2 << 8) | b3)) 2>/dev/null <&9
 }
 
 request() {
-  local reply
   send_frame "$1"
-  reply="$(recv_frame)"
-  [[ "$reply" =~ $2 ]] || fail "production helper replied '$reply' (expected $2)"
+  recv_frame >"$RUN/reply"
+  REPLY_TEXT="$(cat "$RUN/reply")"
+  [[ "$REPLY_TEXT" =~ $2 ]] || fail "production helper replied '$REPLY_TEXT' (expected $2)"
   pass
-  printf '%s\n' "$reply"
 }
 
 finish_production() {
   local status=0
-  exec {HELPER_IN}>&- {HELPER_OUT}<&-
-  if [[ -n "${HELPER[1]:-}" ]]; then eval "exec ${HELPER[1]}>&- ${HELPER[0]}<&-"; fi
+  exec 8>&- 9<&-
   wait "$HELPER_PROCESS" || status=$?
   [[ "$status" == 0 ]] || fail "production helper exited $status: $(cat "$RUN/production.err")"
   pass
@@ -355,12 +355,12 @@ printf 'ROLLBACK' >"$RUN/rollback.frame"
 printf '{"schema_version":1,"next":true}\n' >"$RUN/endpoint-next.in"
 
 start_production
-reply="$(request "$RUN/prepare.frame" '^OK PREPARED absent absent \.orchard-public-stage-[A-Za-z0-9]+$')"
-stage="${reply##* }"
+request "$RUN/prepare.frame" '^OK PREPARED absent absent \.orchard-public-stage-[A-Za-z0-9]+$'
+stage="${REPLY_TEXT##* }"
 [[ "$(sudo -n stat -c %a "$support/$stage" 2>/dev/null || sudo -n stat -f %Lp "$support/$stage")" == 700 ]] ||
   fail 'production stage is not 0700'
 pass
-request "$(publish_frame "$RUN/endpoint.in")" '^OK PUBLISHED$' >/dev/null
+request "$(publish_frame "$RUN/endpoint.in")" '^OK PUBLISHED$'
 assert_public_profile "$support"
 for path in "$support" "$support/public" "$support/public/ca.crt" "$support/public/endpoint.json"; do
   [[ "$(owner_of "$path")" == 0 ]] || fail "production publication is not root-owned: $path"
@@ -368,20 +368,20 @@ done
 pass
 expect_reader_content "$support/public/ca.crt" "$RUN/ca.in"
 expect_reader_content "$support/public/endpoint.json" "$RUN/endpoint.in"
-request "$RUN/commit.frame" '^OK COMMITTED$' >/dev/null
+request "$RUN/commit.frame" '^OK COMMITTED$'
 finish_production
 
 start_production
-request "$RUN/prepare.frame" '^OK PREPARED existing existing \.orchard-public-stage-[A-Za-z0-9]+$' >/dev/null
-request "$(publish_frame "$RUN/endpoint-next.in")" '^OK PUBLISHED$' >/dev/null
+request "$RUN/prepare.frame" '^OK PREPARED existing existing \.orchard-public-stage-[A-Za-z0-9]+$'
+request "$(publish_frame "$RUN/endpoint-next.in")" '^OK PUBLISHED$'
 expect_reader_content "$support/public/endpoint.json" "$RUN/endpoint-next.in"
 published_inode="$(inode_of "$support/public/endpoint.json")"
-request "$RUN/rollback.frame" '^OK ROLLED_BACK$' >/dev/null
+request "$RUN/rollback.frame" '^OK ROLLED_BACK$'
 expect_reader_content "$support/public/endpoint.json" "$RUN/endpoint.in"
 [[ "$(inode_of "$support/public/endpoint.json")" != "$published_inode" ]] ||
   fail 'rollback reused the published endpoint inode'
 pass
-request "$RUN/commit.frame" '^OK COMMITTED$' >/dev/null
+request "$RUN/commit.frame" '^OK COMMITTED$'
 finish_production
 assert_public_profile "$support"
 expect_reader_content "$support/public/ca.crt" "$RUN/ca.in"
