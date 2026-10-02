@@ -39,6 +39,7 @@ jobs:
       macos: ${{ steps.classify.outputs.macos }}
       mlx: ${{ steps.classify.outputs.mlx }}
       packaging: ${{ steps.classify.outputs.packaging }}
+      app_distribution: ${{ steps.classify.outputs.app_distribution }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,8 +57,12 @@ jobs:
         run: |
           set -o pipefail
 
+          # The committed Distribution Pause Control decides whether the
+          # Orchard.app and DMG assembly lane is applicable (SPEC.md §11.0).
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            printf '%s=true\n' portable conformance macos mlx packaging >> "$GITHUB_OUTPUT"
+            printf '%s=true\n' portable conformance macos mlx packaging \
+              | scripts/ci/resolve-app-distribution-lane.sh \
+              >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -69,6 +74,7 @@ jobs:
 
           printf '%s\n' "$changed_paths" \
             | scripts/ci/classify-required-validation-paths.sh \
+            | scripts/ci/resolve-app-distribution-lane.sh \
             >> "$GITHUB_OUTPUT"
 
       - name: Test validation fan-out and aggregate gate
@@ -76,6 +82,10 @@ jobs:
           scripts/ci/test-classify-required-validation-paths.sh
           scripts/ci/test-required-validation-gate.sh
           scripts/ci/test-platform-test-routing.sh
+          scripts/ci/test-app-distribution-lane.sh
+
+      - name: Test distribution pause guards
+        run: scripts/test-distribution-control.sh
 
   linux-portable:
     name: Linux portable control-plane core
@@ -272,8 +282,10 @@ jobs:
           mise exec -- uv run --locked --directory native/orchard_worker_mlx --extra mlx
           pytest
 
+  # Payload, signing-contract, Swift package, relocated-root lifecycle, and
+  # packaged orchardctl checks. It never assembles Orchard.app or a DMG.
   packaging-validation:
-    name: Orchard.app and DMG validation
+    name: Packaging contract validation
     needs: changes
     if: needs.changes.outputs.packaging == 'true'
     runs-on: macos-15
@@ -318,22 +330,48 @@ jobs:
           scripts/test-build-payload.sh
           scripts/test-payload-signing-contracts.sh
 
-      - name: Test Orchard.app lifecycle and assembly
+      - name: Test Orchard.app package and service lifecycle
         run: |
           xcrun swift-format lint --recursive packaging/app/Sources packaging/app/Tests
           swift build --package-path packaging/app
           swift test --package-path packaging/app
           swift test --package-path packaging/app --enable-code-coverage
           scripts/test-app-service-lifecycle.sh
-          scripts/test-build-app.sh
-          scripts/test-app-signing.sh
-          scripts/test-build-dmg.sh
 
       - name: Test packaged orchardctl
         run: |
           scripts/test-payload-orchardctl-controller-runtime.sh
           scripts/test-payload-orchardctl-console-pty.sh
           scripts/test-payload-orchardctl-controller-release.sh
+
+  # Dormant while packaging/distribution-control is paused (SPEC.md §11.0):
+  # the classifier then reports app_distribution=false and the gate requires
+  # this job to be skipped.
+  app-distribution-validation:
+    name: Orchard.app and DMG assembly validation
+    needs: changes
+    if: needs.changes.outputs.app_distribution == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # verify-app-signing.sh runs the payload closure check through
+      # `mise exec`, so the pinned toolchain is required here.
+      - name: Install pinned toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          version: 2026.9.2
+          cache: false
+
+      - name: Test Orchard.app assembly, signing, and DMG handoff
+        run: |
+          scripts/test-build-app.sh
+          scripts/test-app-signing.sh
+          scripts/test-build-dmg.sh
 
   openspec-validation:
     name: OpenSpec validation
@@ -373,6 +411,7 @@ jobs:
       - macos-host
       - mlx-validation
       - packaging-validation
+      - app-distribution-validation
       - openspec-validation
     if: always()
     runs-on: ubuntu-latest
@@ -385,6 +424,8 @@ jobs:
 
       - name: Evaluate required validation results
         env:
+          APP_DISTRIBUTION_REQUIRED: ${{ needs.changes.outputs.app_distribution }}
+          APP_DISTRIBUTION_RESULT: ${{ needs.app-distribution-validation.result }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           CONFORMANCE_REQUIRED: ${{ needs.changes.outputs.conformance }}
           CONFORMANCE_RESULT: ${{ needs.provider-conformance.result }}
