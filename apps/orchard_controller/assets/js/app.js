@@ -617,6 +617,26 @@ liveSocket.connect()
 // Initial state is set server-side in root.html.heex:
 //   data-lv-connected-once="false"  data-lv-connection-state="connecting"
 
+function pauseOverviewRefresh() {
+  let button = document.querySelector("#overview-command #overview-refresh-now")
+  if (button) liveSocket.execJS(button, button.getAttribute("phx-disconnected"))
+}
+
+function blockUnavailableOverviewRefresh(event) {
+  if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return
+
+  let button = event.target.closest("#overview-command #overview-refresh-now")
+  if (!button) return
+  if (button.getAttribute("aria-disabled") !== "true" && liveSocket.isConnected() &&
+      !button.closest(".phx-error")) return
+
+  event.preventDefault()
+  event.stopImmediatePropagation()
+}
+
+window.addEventListener("click", blockUnavailableOverviewRefresh, true)
+window.addEventListener("keydown", blockUnavailableOverviewRefresh, true)
+
 let rawSocket = liveSocket.socket
 if (rawSocket) {
   rawSocket.onOpen(() => {
@@ -627,12 +647,14 @@ if (rawSocket) {
   rawSocket.onClose(() => {
     if (document.body.dataset.lvConnectedOnce === "true") {
       document.body.dataset.lvConnectionState = "disconnected"
+      pauseOverviewRefresh()
     }
   })
 
   rawSocket.onError(() => {
     if (document.body.dataset.lvConnectedOnce === "true") {
       document.body.dataset.lvConnectionState = "disconnected"
+      pauseOverviewRefresh()
     }
   })
 }

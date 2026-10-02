@@ -451,10 +451,13 @@ body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] .co
   display: none;
 }
 
+#overview-command #overview-refresh-now[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] #overview-command #overview-polling-active,
-body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] #overview-command #overview-refresh-now,
-.phx-error #overview-command #overview-polling-active,
-.phx-error #overview-command #overview-refresh-now {
+.phx-error #overview-command #overview-polling-active {
   display: none;
 }
 

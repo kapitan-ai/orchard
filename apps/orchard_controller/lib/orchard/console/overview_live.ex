@@ -166,7 +166,16 @@ defmodule OrchardConsole.OverviewLive do
             </span>
             <span :if={@last_updated_at != nil} id="overview-polling-active">Auto-refreshing every {refresh_interval_label()}</span>
             <span id="overview-polling-paused" role="status">Paused — reconnecting</span>
-            <.button id="overview-refresh-now" variant={:ghost} size={:sm} phx-click="refresh_now" disabled={@last_updated_at == nil}>
+            <.button
+              id="overview-refresh-now"
+              variant={:ghost}
+              size={:sm}
+              phx-click="refresh_now"
+              phx-disconnected={JS.set_attribute({"aria-disabled", "true"})}
+              phx-connected={JS.set_attribute({"aria-disabled", "false"})}
+              aria-disabled={to_string(@last_updated_at == nil)}
+              disabled={@last_updated_at == nil}
+            >
               Refresh now
             </.button>
           </div>

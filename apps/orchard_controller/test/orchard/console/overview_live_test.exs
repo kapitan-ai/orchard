@@ -260,7 +260,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       assert html
              |> LazyHTML.from_fragment()
-             |> LazyHTML.query("#overview-refresh-now[disabled]")
+             |> LazyHTML.query("#overview-refresh-now[disabled][aria-disabled=true]")
              |> Enum.any?()
 
       refute html =~ ~s(id="overview-request-counts")
@@ -1259,11 +1259,22 @@ defmodule OrchardConsole.OverviewLiveTest do
       refute body =~ ~s(data-local-time-format="time_second")
     end
 
-    test "overview renders manual refresh button", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console")
+    test "manual refresh uses focus-preserving availability commands after connection", %{
+      conn: conn
+    } do
+      {:ok, view, html} = live(conn, "/console")
 
-      assert html =~ "overview-refresh-now"
-      assert html =~ "Refresh now"
+      assert has_element?(view, "#overview-refresh-now[aria-disabled=false]", "Refresh now")
+      refute has_element?(view, "#overview-refresh-now[disabled]")
+
+      button = html |> LazyHTML.from_fragment() |> LazyHTML.query("#overview-refresh-now")
+
+      for {binding, available} <- [{"phx-disconnected", "true"}, {"phx-connected", "false"}] do
+        [command] = LazyHTML.attribute(button, binding)
+
+        # Connection changes must not hide or natively disable the focused control.
+        assert Jason.decode!(command) == [["set_attr", %{"attr" => ["aria-disabled", available]}]]
+      end
     end
 
     test "manual refresh updates overview data", %{conn: conn} do
