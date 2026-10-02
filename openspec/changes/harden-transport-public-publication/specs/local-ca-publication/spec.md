@@ -39,6 +39,12 @@ Unsafe configuration SHALL refuse with nothing changed and SHALL NOT be repaired
 - **WHEN** `controller.env` or a TLS source file is a symlink, is foreign-owned, or is group-writable
 - **THEN** the command refuses before TLS initialization without reading through or modifying the substituted entry
 
+#### Scenario: TLS generation stages inside the private stage
+
+- **WHEN** the command initializes TLS material
+- **THEN** TLS generation creates its temporary directory inside the owner-only private stage rather than inside `config/tls/`
+- **AND** a directory descriptor another UID opened on `config/tls/` before `config/` was narrowed cannot reach any temporary entry
+
 ### Requirement: Private Stage Is Safe From Birth
 
 The publication stage SHALL be created with an explicit `0700` creation mode relative to a validated support-root descriptor, under a random name, without changing the process umask and without later mode repair.

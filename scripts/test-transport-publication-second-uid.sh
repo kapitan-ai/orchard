@@ -169,6 +169,82 @@ for public_state in absent existing; do
   done
 done
 
+# Retained-descriptor control (Linux /proc descriptor links): a reader that opened config/tls/
+# while a legacy group-traversable layout let it reach that directory keeps the descriptor after
+# config/ is narrowed to 0700. A directory born with a permissive mode beneath tls/ is attackable
+# through it; one born beneath the private stage, where Transport runs TLS generation, is not.
+if [[ "$OS" == "Linux" ]]; then
+  root="$(new_support_root 0711)"
+  mkdir -m 0750 "$root/config" "$root/config/tls"
+  sudo -n chgrp "$(id -gn "$READER")" "$root/config" "$root/config/tls"
+  chmod 0750 "$root/config" "$root/config/tls"
+  sync_dir="$RUN/retained-tls"
+  mkdir -m 0700 "$sync_dir"
+  chmod 0777 "$sync_dir"
+  # shellcheck disable=SC2016
+  sudo -n -u "$READER" bash -c '
+    exec 3<"$1"
+    : >"$2/opened"
+    until [[ -e "$2/narrowed" ]]; do sleep 0.01; done
+    stage="$(cat "$2/stage")"
+    result=""
+    if ls "$1" >/dev/null 2>&1; then result+=" path-open"; else result+=" path-denied"; fi
+    if cd /proc/self/fd/3 2>/dev/null && ls . >/dev/null 2>&1; then
+      result+=" fd-open"
+    else
+      result+=" fd-denied"
+    fi
+    if touch .staging-legacy/foreign 2>/dev/null; then
+      result+=" legacy-writable"
+    else
+      result+=" legacy-denied"
+    fi
+    if touch "../../$stage/.staging-probe/foreign" 2>/dev/null; then
+      result+=" stage-relative-writable"
+    else
+      result+=" stage-relative-denied"
+    fi
+    if touch "$3/$stage/.staging-probe/foreign" 2>/dev/null; then
+      result+=" stage-writable"
+    else
+      result+=" stage-denied"
+    fi
+    printf "%s\n" "$result" >"$2/result"
+  ' _ "$root/config/tls" "$sync_dir" "$root" &
+  holder_pid=$!
+  await_file "$sync_dir/opened"
+  chmod 0700 "$root/config"
+  expect_reader_denied ls "$root/config/tls"
+  pauses="$RUN/pause.retained-tls"
+  mkdir -m 0700 "$pauses"
+  (
+    ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE_DIR="$pauses" \
+      ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE=after_stage_mkdir \
+      exec "$TEST_HELPER" --oneshot "$root" "$RUN/ca.in" "$RUN/endpoint.in"
+  ) >"$pauses/out" &
+  helper_pid=$!
+  await_file "$pauses/after_stage_mkdir.ready"
+  stage_name="$(head -n 1 "$pauses/after_stage_mkdir.ready")"
+  (
+    umask 0000
+    mkdir "$root/$stage_name/.staging-probe" "$root/config/tls/.staging-legacy"
+  )
+  printf '%s\n' "$stage_name" >"$sync_dir/stage"
+  : >"$sync_dir/narrowed"
+  wait "$holder_pid" || fail 'retained-descriptor reader failed'
+  result="$(cat "$sync_dir/result")"
+  expected=" path-denied fd-open legacy-writable stage-relative-denied stage-denied"
+  [[ "$result" == "$expected" ]] || fail "retained-descriptor control: '$result' (expected '$expected')"
+  pass
+  [[ -z "$(ls -A "$root/$stage_name/.staging-probe")" ]] || fail 'reader wrote into the private stage'
+  rmdir "$root/$stage_name/.staging-probe"
+  rm -rf "$root/config/tls/.staging-legacy"
+  : >"$pauses/after_stage_mkdir.go"
+  wait "$helper_pid" || fail "helper failed after retained-descriptor control: $(cat "$pauses/out")"
+  grep -qx 'OK PUBLISHED' "$pauses/out" || fail "unexpected helper output: $(cat "$pauses/out")"
+  pass
+fi
+
 # Sends one PREPARE frame to a protocol-mode helper and prints its reply text.
 prepare_once() {
   local helper="$1"

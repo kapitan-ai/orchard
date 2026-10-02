@@ -38,7 +38,11 @@ Any extended or default ACL refuses, including benign entries, and failed inspec
 Unsafe existing paths are never repaired or stripped.
 
 The private TLS and controller environment writers continue to use pathname operations with intermediate mode changes.
-They are safe because the validated ancestry and caller-owned owner-only `config/` mean no other UID can traverse into, create in, or rename within that directory during those intervals; the helper keeps `config/` open and confirms its identity again before publication.
+The controller environment writer is safe because the validated ancestry and caller-owned owner-only `config/` mean no other UID can traverse into, create in, or rename within that directory during those intervals; a descriptor another UID opened on `config/` earlier cannot look up entries once the directory is owner-only, because lookups check the directory's current mode.
+That argument does not cover `config/tls/`: the TLS writer keeps it at `0750`, so a group member who opened `tls/` while a legacy layout let it traverse `config/` can still look up and create entries through that descriptor after `config/` is narrowed.
+Transport therefore runs TLS generation with its temporary directory inside the private stage, which is owner-only from birth and was never reachable by another UID, and renames the finished files into `tls/` on the same device; keys are `0600` before they are renamed, so `tls/` exposes only final public certificates and metadata to such a descriptor.
+Standalone `orchardctl tls init` keeps its existing temporary directory beside its output.
+The helper keeps `config/` open and confirms its identity again before publication.
 This matches the owner-only config directory that `orchardctl env init` already establishes.
 
 The legacy macOS installer creates `config/` and `config/tls/` as `0750` owned by `root:admin`, and `packaging/README.md` documents that layout.
@@ -70,6 +74,7 @@ The helper is an explicit host artifact: the macOS builder and payload stage it 
 - Invalid public paths no longer cause TLS side effects.
 - Paths the command used to repair silently, such as group-writable, ACL-bearing, or setgid directories, now refuse and must be corrected by the operator.
 - A `config/` directory wider than `0700`, or a symlinked or group-writable `controller.env` or TLS source, now refuses before TLS initialization.
+- TLS generation invoked by Transport never creates a temporary directory inside `config/tls/`.
 - Readers may observe the new CA certificate before the new endpoint metadata, and a rollback restores only the endpoint metadata; the two files are not an atomic transaction.
 - A killed helper can leave a private `0700` stage under the support root; it is safe residue and is ignored by later runs.
 - Hosts with the legacy `0750 root:admin` `config/` layout refuse until an operator narrows `config/` to `0700` after an ownership review.

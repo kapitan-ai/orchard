@@ -124,7 +124,7 @@ defmodule OrchardCLI.Commands.Transport do
 
   defp publish_and_configure(config, publication, runtime) do
     with :ok <- reject_tls_overrides(config),
-         {:ok, _tls_message} <- run_tls_init(config, runtime),
+         {:ok, _tls_message} <- run_tls_init(config, publication, runtime),
          {:ok, ca_bytes, ca_certfile, warnings} <- load_public_ca(config, runtime),
          {:ok, endpoint_bytes} <- encode_endpoint_metadata(config, ca_certfile, runtime) do
       case TransportPublication.publish(publication, ca_bytes, endpoint_bytes) do
@@ -210,7 +210,7 @@ defmodule OrchardCLI.Commands.Transport do
     end
   end
 
-  defp run_tls_init(%{host: host, support_root: support_root} = config, runtime) do
+  defp run_tls_init(%{host: host, support_root: support_root} = config, publication, runtime) do
     case existing_generated_tls(config) do
       {:ok, :reusable} ->
         {:ok, "existing generated local-CA TLS material reused"}
@@ -219,12 +219,12 @@ defmodule OrchardCLI.Commands.Transport do
         {:error, message, 1}
 
       :missing ->
-        tls_init = Map.get(runtime, :tls_init, &default_tls_init/2)
-        tls_init.(host, support_root)
+        tls_init = Map.get(runtime, :tls_init, &default_tls_init/3)
+        tls_init.(host, support_root, publication.stage_dir)
     end
   end
 
-  defp default_tls_init(host, support_root) do
+  defp default_tls_init(host, support_root, stage_dir) do
     args = ["init", "--no-trust", "--output-dir", Path.join([support_root, "config", "tls"])]
 
     args =
@@ -234,7 +234,7 @@ defmodule OrchardCLI.Commands.Transport do
         args ++ ["--host", host]
       end
 
-    TLS.run(args)
+    TLS.run_in_private_stage(args, stage_dir)
   end
 
   defp reject_tls_overrides(%{controller_env_path: path}) do

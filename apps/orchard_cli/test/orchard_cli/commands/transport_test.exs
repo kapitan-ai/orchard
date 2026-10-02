@@ -13,7 +13,7 @@ defmodule OrchardCLI.Commands.TransportTest do
         uid: fn -> 0 end,
         publication_opts: [executable: TransportFixture.helper(:production)],
         read_install_role: fn -> {:ok, "all"} end,
-        tls_init: fn host, _support_root -> {:ok, "tls initialized for #{host}"} end,
+        tls_init: fn host, _support_root, _stage_dir -> {:ok, "tls initialized for #{host}"} end,
         now: fn -> ~U[2026-05-18 02:03:04Z] end,
         cmd: fn
           "launchctl", ["print", "system/com.orchard.controller"], _opts ->
@@ -88,7 +88,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _support_root ->
+        tls_init: fn _host, _support_root, _stage_dir ->
           send(parent, :tls_called)
           {:ok, ""}
         end
@@ -116,7 +116,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _support_root ->
+        tls_init: fn _host, _support_root, _stage_dir ->
           send(parent, :tls_called)
           {:ok, ""}
         end
@@ -155,7 +155,9 @@ defmodule OrchardCLI.Commands.TransportTest do
       base_runtime(%{
         uid: fn -> 501 end,
         read_install_role: fn -> {:ok, "node-agent"} end,
-        tls_init: fn _host, _support_root -> flunk("node-agent role must not initialize TLS") end
+        tls_init: fn _host, _support_root, _stage_dir ->
+          flunk("node-agent role must not initialize TLS")
+        end
       })
 
     assert {:ok, message} = Transport.run(["enable-local-https", "--host", "worker"], runtime)
@@ -170,7 +172,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _root ->
+        tls_init: fn _host, _root, _stage_dir ->
           send(parent, :tls_called)
           {:ok, ""}
         end
@@ -196,7 +198,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn host, root ->
+        tls_init: fn host, root, _stage_dir ->
           send(parent, {:tls_init, host, root})
           write_generated_ca(root)
           {:ok, "tls initialized"}
@@ -255,7 +257,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _root ->
+        tls_init: fn _host, _root, _stage_dir ->
           send(parent, :tls_called)
           {:ok, ""}
         end
@@ -285,7 +287,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
+        tls_init: fn _host, root, _stage_dir ->
           write_generated_ca(root)
           {:ok, ""}
         end
@@ -316,7 +318,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
+        tls_init: fn _host, root, _stage_dir ->
           write_generated_ca(root)
           {:ok, ""}
         end,
@@ -347,7 +349,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
+        tls_init: fn _host, root, _stage_dir ->
           write_generated_ca(root)
           {:ok, ""}
         end,
@@ -373,7 +375,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
+        tls_init: fn _host, root, _stage_dir ->
           write_generated_ca(root)
           {:ok, ""}
         end,
@@ -406,7 +408,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
+        tls_init: fn _host, root, _stage_dir ->
           write_generated_ca(root)
           {:ok, ""}
         end
@@ -441,7 +443,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
+        tls_init: fn _host, root, _stage_dir ->
           write_generated_ca(root)
           {:ok, ""}
         end
@@ -489,7 +491,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _root ->
+        tls_init: fn _host, _root, _stage_dir ->
           send(parent, :tls_called)
           {:ok, ""}
         end
@@ -524,7 +526,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _root ->
+        tls_init: fn _host, _root, _stage_dir ->
           send(parent, :tls_called)
           {:ok, ""}
         end
@@ -551,7 +553,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _root ->
+        tls_init: fn _host, _root, _stage_dir ->
           flunk("mismatched existing TLS must not be reused or overwritten")
         end
       })
@@ -610,7 +612,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
+        tls_init: fn _host, root, _stage_dir ->
           write_generated_ca(root)
           {:ok, ""}
         end,
@@ -649,7 +651,7 @@ defmodule OrchardCLI.Commands.TransportTest do
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, _root -> {:error, "Error: tls failed", 1} end
+        tls_init: fn _host, _root, _stage_dir -> {:error, "Error: tls failed", 1} end
       })
 
     try do
@@ -676,7 +678,7 @@ defmodule OrchardCLI.Commands.TransportTest do
         Map.merge(
           %{
             support_root: support_root,
-            tls_init: fn _host, root ->
+            tls_init: fn _host, root, _stage_dir ->
               send(parent, :tls_called)
               write_generated_ca(root)
               {:ok, ""}
@@ -687,14 +689,14 @@ defmodule OrchardCLI.Commands.TransportTest do
       )
     end
 
-    defp assert_public_profile(support_root) do
+    defp assert_public_profile(support_root, ca_contents \\ "public ca cert") do
       public = Path.join(support_root, "public")
       assert TransportFixture.mode(support_root) == 0o711
       assert TransportFixture.mode(public) == 0o755
       assert TransportFixture.mode(Path.join(public, "ca.crt")) == 0o644
       assert TransportFixture.mode(Path.join(public, "endpoint.json")) == 0o644
       assert Enum.sort(File.ls!(public)) == ["ca.crt", "endpoint.json"]
-      assert File.read!(Path.join(public, "ca.crt")) == "public ca cert"
+      assert File.read!(Path.join(public, "ca.crt")) == ca_contents
       assert_endpoint_metadata_has_no_private_material(support_root)
       assert TransportFixture.stage_entries(support_root) == []
     end
@@ -741,6 +743,64 @@ defmodule OrchardCLI.Commands.TransportTest do
         after
           File.rm_rf(support_root)
         end
+      end
+    end
+
+    test "TLS initialization receives the private owner-only publication stage" do
+      support_root = tmp_support_root()
+      parent = self()
+
+      runtime =
+        enabled_runtime(support_root, %{
+          tls_init: fn _host, root, stage_dir ->
+            send(
+              parent,
+              {:tls_stage, stage_dir, TransportFixture.mode(stage_dir), File.ls!(stage_dir)}
+            )
+
+            write_generated_ca(root)
+            {:ok, ""}
+          end
+        })
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+
+        assert {:ok, _message} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        assert_received {:tls_stage, stage_dir, 0o700, []}
+        assert Path.dirname(stage_dir) == support_root
+        assert Path.basename(stage_dir) =~ ~r/\A\.orchard-public-stage-[A-Za-z0-9]+\z/
+        refute File.exists?(stage_dir)
+        assert_public_profile(support_root)
+      after
+        File.rm_rf(support_root)
+      end
+    end
+
+    @tag :integration
+    test "default TLS initialization generates inside the private stage and publishes" do
+      support_root = tmp_support_root()
+      runtime = support_root |> enabled_runtime(%{}) |> Map.delete(:tls_init)
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+
+        assert {:ok, _message} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        tls_dir = Path.join([support_root, "config", "tls"])
+
+        assert Enum.sort(File.ls!(tls_dir)) ==
+                 Enum.sort(~w(ca.key ca.crt controller.key controller.crt .orchard-tls-meta.json))
+
+        assert TransportFixture.mode(Path.join(tls_dir, "ca.key")) == 0o600
+        assert TransportFixture.mode(Path.join(tls_dir, "controller.key")) == 0o600
+
+        assert_public_profile(support_root, File.read!(Path.join(tls_dir, "ca.crt")))
+      after
+        File.rm_rf(support_root)
       end
     end
 
@@ -1049,7 +1109,9 @@ defmodule OrchardCLI.Commands.TransportTest do
       support_root = tmp_support_root()
 
       runtime =
-        enabled_runtime(support_root, %{tls_init: fn _host, _root -> {:error, "tls failed"} end})
+        enabled_runtime(support_root, %{
+          tls_init: fn _host, _root, _stage_dir -> {:error, "tls failed"} end
+        })
 
       try do
         write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")

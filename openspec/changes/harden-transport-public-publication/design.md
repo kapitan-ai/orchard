@@ -52,7 +52,10 @@ The support root must already exist; the command never creates it.
 
 TLS generation and the controller environment update stay pathname-based and keep their intermediate `chmod` steps.
 Their safety rests on the protected ancestor: before TLS initialization the helper requires an existing `config/` to be caller-owned with no group or other access, and an existing `controller.env`, `tls/`, and TLS source files to be non-symlink, caller-owned, not group- or other-writable, ACL-free, and on the support-root device.
-With the ancestry validated and `config/` owner-only, no other UID can traverse into or rename within it during those intervals.
+With the ancestry validated and `config/` owner-only, no other UID can traverse into or rename within it during those intervals; an earlier descriptor on `config/` cannot look up entries once it is owner-only.
+That does not hold for `config/tls/`, which TLS keeps at `0750`: a group member that opened it under a legacy layout keeps lookup and create access through that descriptor after `config/` is narrowed.
+Transport therefore calls TLS generation through an internal entry point that creates its temporary directory inside the private stage, which is owner-only from birth and on the same device, and renames finished files into `tls/` with keys already `0600`.
+Standalone `orchardctl tls init` is unchanged.
 The helper holds the `config/` descriptor and rechecks its identity before publication.
 
 The legacy macOS installer creates `config/` and `config/tls/` as `0750 root:admin`.

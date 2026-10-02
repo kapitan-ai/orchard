@@ -14,7 +14,7 @@ defmodule OrchardCLI.TransportPublication do
   @step_timeout_ms 60_000
 
   @enforce_keys [:port, :public, :endpoint, :public_dir]
-  defstruct [:port, :public, :endpoint, :public_dir]
+  defstruct [:port, :public, :endpoint, :public_dir, :stage_dir]
 
   @type presence :: :absent | :existing
   @type t :: %__MODULE__{
@@ -47,7 +47,7 @@ defmodule OrchardCLI.TransportPublication do
     with {:ok, executable} <- resolve_executable(opts),
          {:ok, port} <- open_port(executable, opts) do
       case request(port, "PREPARE\n" <> support_root, @prepare_timeout_ms) do
-        {:ok, "PREPARED " <> rest} -> prepared(port, rest, Path.join(support_root, "public"))
+        {:ok, "PREPARED " <> rest} -> prepared(port, rest, support_root)
         {:ok, other} -> protocol_failure(port, other)
         {:error, _reason} = error -> error
       end
@@ -234,11 +234,19 @@ defmodule OrchardCLI.TransportPublication do
     error in ErlangError -> {:error, {:helper_failed, Exception.message(error)}}
   end
 
-  defp prepared(port, rest, public_dir) do
-    with [public, endpoint, _stage] <- String.split(rest, " "),
+  defp prepared(port, rest, support_root) do
+    with [public, endpoint, ".orchard-public-stage-" <> suffix = stage] <- String.split(rest, " "),
+         true <- suffix =~ ~r/\A[A-Za-z0-9]+\z/,
          {:ok, public} <- presence(public),
          {:ok, endpoint} <- presence(endpoint) do
-      {:ok, %__MODULE__{port: port, public: public, endpoint: endpoint, public_dir: public_dir}}
+      {:ok,
+       %__MODULE__{
+         port: port,
+         public: public,
+         endpoint: endpoint,
+         public_dir: Path.join(support_root, "public"),
+         stage_dir: Path.join(support_root, stage)
+       }}
     else
       _other -> protocol_failure(port, "PREPARED " <> rest)
     end

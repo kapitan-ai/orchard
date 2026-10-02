@@ -15,6 +15,7 @@
 - [x] 3.3 Validate private `config/`, `controller.env`, and TLS source custody before TLS initialization.
 - [x] 3.4 Document legacy `0750 root:admin` config refusal and operator remediation.
 - [x] 3.5 Keep the stage `0700` through rename, bound the publisher lock wait, and classify visible and unknown publication states.
+- [x] 3.6 Run Transport TLS generation with its temporary directory inside the private stage.
 
 ## 4. Validation
 

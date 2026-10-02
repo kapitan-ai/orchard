@@ -640,6 +640,7 @@ sudo chmod 0700 "/Library/Application Support/Orchard/config"
 ```
 
 The command never changes these modes or grants access for you.
+Narrowing `config/` does not close a directory handle an administrator account already holds on `config/tls/`, so the command generates TLS material inside its own owner-only publication stage and renames only finished files, with keys already `0600`, into `config/tls/`.
 
 TLS files written by `orchardctl tls init`:
 
