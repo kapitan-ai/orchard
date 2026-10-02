@@ -1329,6 +1329,14 @@ defmodule OrchardConsole.RequestLiveTest do
       view |> element("button[phx-click=refresh_request]") |> render_click()
       assert has_element?(view, "#request-freshness", "Auto-refresh stopped")
       assert has_element?(view, "#request-output-tokens", "17")
+
+      assert has_element?(
+               view,
+               ~s(button[phx-click="refresh_request"][phx-disable-with="Checking…"]),
+               "Refresh"
+             )
+
+      refute has_element?(view, "button[phx-click=refresh_request] > *")
     end
 
     test "refresh updates DOM with new data", %{conn: conn} do
@@ -2019,9 +2027,10 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(replay, "#inspector-attempt-result", "7")
     end
 
-    test "event selection survives appended evidence but removed evidence is not cached", %{
-      conn: conn
-    } do
+    test "event selection preserves native disclosure commands on replacement and clears removed evidence",
+         %{
+           conn: conn
+         } do
       request = create_request!(%{payload_capture_mode: :full})
 
       event =
@@ -2037,6 +2046,20 @@ defmodule OrchardConsole.RequestLiveTest do
       assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
       refute has_element?(view, "#inspector-event-2")
       assert has_element?(view, "#inspector-event-payload-1", "selected-payload")
+
+      event =
+        Repo.update!(Ecto.Changeset.change(event, payload: %{"value" => "replacement-payload"}))
+
+      send(view.pid, :refresh_request)
+      render(view)
+      assert has_element?(view, "#request-evidence-selection", "Event #1 selected")
+      assert has_element?(view, "#inspector-event-payload-1", "replacement-payload")
+      refute has_element?(view, "#inspector-event-payload-1", "selected-payload")
+
+      assert has_element?(
+               view,
+               ~s(#inspector-event-1 > details[phx-mounted='[["ignore_attrs",{"attrs":["open"]}]]'])
+             )
 
       Repo.delete!(event)
       send(view.pid, :refresh_request)

@@ -168,7 +168,7 @@ defmodule OrchardConsole.RequestLive do
       <div class="flex flex-wrap items-center gap-3">
       <button type="button" phx-click="refresh_request" phx-disable-with="Checking…"
         class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-        <.icon name="hero-arrow-path" class="h-4 w-4" />Refresh
+        Refresh
       </button>
       <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400">
         <%= cond do %>
@@ -1024,7 +1024,7 @@ defmodule OrchardConsole.RequestLive do
         class="text-sm text-slate-500 dark:text-slate-400">
         Invalid step envelope. Retained payload does not establish step or parent identity.
       </p>
-      <details>
+      <details phx-mounted={JS.ignore_attributes(["open"])}>
         <summary class="request-evidence-summary">Retained event payload</summary>
         <div class="mt-3">
           <.json_block data={@event.payload} content_id={"inspector-event-payload-#{@event.seq}"}
