@@ -405,8 +405,8 @@ that renders as display-ready text (for example, already run through
 
 | Density | Wrapper contract | Label contract | Value contract | Intended use |
 |---------|------------------|----------------|----------------|--------------|
-| `:comfortable` (default) | `rounded-lg px-4 py-3` + tone surface | `text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400` | `mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100` | Dashboard/detail-page metric cards such as Overview and Request Detail. |
-| `:compact` | `rounded-lg border px-3 py-2 text-center` + tone border | `text-xs text-slate-500 dark:text-slate-400` | `text-lg font-semibold font-mono text-slate-900 dark:text-slate-100` | Dense table-summary strips such as Models and Requests. |
+| `:comfortable` (default) | `rounded-lg px-4 py-3` + tone surface | `text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400` | `mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100` | Detail-page metric cards such as Request Detail. |
+| `:compact` | `rounded-lg border px-3 py-2 text-center` + tone border | `text-xs text-slate-500 dark:text-slate-400` | `text-lg font-semibold font-mono text-slate-900 dark:text-slate-100` | Dense summary strips such as Operational Overview, Models, and Requests. |
 
 Comfortable tone contracts:
 
@@ -620,6 +620,44 @@ These values describe mint-time provenance only.
 They do not identify API Token ownership, the Public Inference Bearer principal, current Portal User status, effective access, or revocation state.
 Disabling a Portal User does not automatically revoke minted API Tokens, and the existing **Status** column remains the credential-state presentation.
 Render both provenance lines in one noninteractive semantic table cell, use existing neutral light and dark theme tokens, allow the secondary line to wrap, and retain the shared table's local horizontal-scroll behavior on narrow viewports.
+
+### 6.9 Operational Overview
+
+Overview leads with separately scoped Controller readiness and the default Runtime
+Endpoint status, followed by six compact summary metrics, browser-local Quickstart,
+current durable Request states, the default Runtime Endpoint snapshot, Controller
+readiness checks, catalog lifecycle, and links to the operational pages.
+Completed Quickstart remains compact. A failed prerequisite read is unknown evidence,
+not evidence that setup is unfinished. Show unavailable evidence without a setup
+call to action; an unknown read alone must not reset a completed checklist.
+Dismiss and Recover preserve keyboard focus on the replacement control.
+
+Keep source, scope, freshness, and missing/error state visible beside each
+projection. A refresh timestamp records the read attempt; it does not certify every
+source succeeded. A confirmed empty result may be zero; unavailable or unrecorded
+evidence may not. Use Loading for pending reads, Unavailable for failed reads, and
+Not recorded for absent retained evidence. An active Request's pending timing is
+In progress, while a completed Request with missing timing remains Not recorded.
+Keep each source label visible; successful Recorded evidence may be visually
+subordinate while missing and failed evidence remains explicit. Keep metric
+definitions behind a keyboard-accessible disclosure.
+Avg TTFT is the existing unwindowed arithmetic mean from Request creation to first
+recorded public output. Avg tok/s is the existing unwindowed arithmetic mean of
+qualifying Request output counts divided by first-output-to-completion seconds; it
+does not establish a provider-native generation rate or throughput trend. Runtime
+facts describe one default target, not fleet health, schedulability, Workspace
+access, or inference readiness. Controller checks that fail are Not ready; reserve
+Degraded for reported runtime health. Unreported endpoint health remains neutral.
+The headline must not become less severe when another source worsens, and blocked
+checks have a count and a direct link to their details.
+
+Preserve independent source failures, pre-connect loading, browser preference
+hydration, disconnect/stale/reconnect treatment, configured polling, and manual
+refresh. Before the first live update, Refresh is disabled and polling is not
+claimed. During disconnect, show that refresh is paused while reconnecting. A
+successful reconnect restores polling and the browser's setup preferences.
+Narrow layouts wrap controls and source labels; completed setup does not
+claim current inference qualification.
 
 ---
 
