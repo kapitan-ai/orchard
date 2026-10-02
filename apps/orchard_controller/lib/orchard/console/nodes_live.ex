@@ -123,7 +123,7 @@ defmodule OrchardConsole.NodesLive do
       <div id="nodes-summary-card" hidden={@section != :inventory}>
       <.card>
         <:title>Inventory Summary</:title>
-        <:subtitle>Counts reflect last recorded SPEC §4.5 Node health, not live reachability or model-serving readiness. Unreachable means the heartbeat exceeded its configured threshold when health was last derived.</:subtitle>
+        <:subtitle>Counts reflect last recorded Node health, not live reachability or model-serving readiness. Unreachable means the heartbeat exceeded its configured threshold when health was last derived.</:subtitle>
 
         <div id="nodes-summary" role="group" aria-label="Last observed Node health" class="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <.summary_tile id="nodes-summary-total" label="Inventory entries" value={format_count(@inventory.summary.total)} tone={:neutral} />
@@ -1457,7 +1457,7 @@ defmodule OrchardConsole.NodesLive do
       "rounded-lg px-4 py-3 ring-1",
       summary_tile_classes(@tone)
     ]}>
-      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+      <p class="text-xs font-medium uppercase tracking-wide text-slate-600 dark:text-slate-400">
         {@label}
       </p>
       <p class="mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100">

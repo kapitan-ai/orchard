@@ -1038,6 +1038,8 @@ defmodule OrchardConsole.NodesLiveTest do
       assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
       assert counter_text(html, "nodes-summary-unreachable") == "Unreachable 0"
 
+      assert has_element?(view, "#nodes-summary-healthy p.text-slate-600", "Healthy")
+
       assert has_element?(
                view,
                "#nodes-summary[role='group'][aria-label='Last observed Node health']"
@@ -1046,7 +1048,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert has_element?(
                view,
                "#nodes-summary-card",
-               "Counts reflect last recorded SPEC §4.5 Node health, not live reachability or model-serving readiness."
+               "Counts reflect last recorded Node health, not live reachability or model-serving readiness."
              )
 
       assert has_element?(
