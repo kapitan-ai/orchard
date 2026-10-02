@@ -228,6 +228,15 @@ assert_case controller-asset-lib-lookalike \
 assert_case controller-migration-without-macos \
   'portable=true conformance=true macos=false mlx=false packaging=true ' \
   apps/orchard_controller/priv/repo/migrations/20260101000000_new.exs
+assert_case cli-test-prefix-lookalike \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  apps/orchard_cli/testdata/fixture.txt
+assert_case cli-top-level-file-without-macos \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  apps/orchard_cli/.formatter.exs
+assert_case cli-nested-manifest-without-macos \
+  'portable=true conformance=true macos=false mlx=false packaging=true ' \
+  apps/orchard_cli/tools/mix.exs
 assert_case macos-pty-fixture-stays-off-portable \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   apps/orchard_cli/test/support/orchardctl_delayed_term_fixture.c

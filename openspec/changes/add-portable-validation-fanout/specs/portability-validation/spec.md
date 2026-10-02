@@ -7,7 +7,7 @@ The repository SHALL own an executable classifier that emits independent portabl
 Changes to shared contracts, proto source, root configuration, toolchain, release composition, normative product contracts, accepted OpenSpec contracts, or the required workflow SHALL trigger every consuming lane needed to prove compatibility.
 Documentation-only optimization MUST NOT classify a normative `SPEC.md` or OpenSpec contract change as ordinary prose that skips applicable validation.
 First-party umbrella application source that the packaged release composes MUST select the packaging lane.
-First-party umbrella application source, test source, and child application manifests MUST select the macOS host lane, because retained macOS-tagged tests exercise that code across module and application boundaries; this selection only adds the macOS host lane and MUST NOT clear any other selected lane.
+Changes to `apps/<app>/lib/**`, `apps/<app>/test/**`, and `apps/<app>/mix.exs` MUST select the macOS host lane, because retained macOS-tagged tests exercise that code across module and application boundaries; this selection only adds the macOS host lane and MUST NOT clear any other selected lane.
 Unknown paths MUST select every lane rather than risk missing a dependency edge.
 An empty changed-path set MUST fail classification rather than emit an all-inapplicable decision.
 
@@ -50,9 +50,9 @@ The aggregate decision SHALL be implemented by a repository-owned evaluator with
 
 #### Scenario: Controller-only portable change
 
-- **WHEN** dependency classification proves that no platform implementation or packaging contract is affected
-- **THEN** the required gate omits expensive platform lanes
-- **AND** it still requires the Linux portable and applicable conformance lanes
+- **WHEN** dependency classification selects Linux portable, conformance, macOS host, and packaging validation for a Controller-only source change
+- **THEN** the required gate requires all four selected lanes to pass
+- **AND** the unrelated MLX provider lane must be explicitly skipped
 
 #### Scenario: Applicable lane fails or skips
 
