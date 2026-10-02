@@ -621,6 +621,7 @@ defmodule OrchardConsole.NodesLiveTest do
 
   import Phoenix.LiveViewTest
   import Orchard.TestSupport.RepoHelpers, only: [with_repo_unregistered: 1]
+  import Orchard.TestSupport.ToolRegistryTestSupport, only: [with_inference_overrides: 2]
 
   alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
@@ -750,7 +751,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "/console/nodes/new"
       assert html =~ "Inventory Summary"
       assert html =~ "Node Inventory"
-      assert html =~ "Lifecycle and health are separate"
+      assert html =~ "Successful authenticated status observations"
       assert html =~ "Live Cluster"
       assert html =~ "Control Plane"
     end
@@ -1036,12 +1037,22 @@ defmodule OrchardConsole.NodesLiveTest do
       refute has_element?(view, "#nodes-local-machine", "model(s) reported loaded")
       assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
       assert counter_text(html, "nodes-summary-unreachable") == "Unreachable 0"
-      assert has_element?(view, "#nodes-summary-card", "Last observed inventory health")
+
+      assert has_element?(
+               view,
+               "#nodes-summary[role='group'][aria-label='Last observed Node health']"
+             )
 
       assert has_element?(
                view,
                "#nodes-summary-card",
-               "Counts reflect persisted Node health, not current reachability or model-serving readiness."
+               "Counts reflect last recorded SPEC §4.5 Node health, not live reachability or model-serving readiness."
+             )
+
+      assert has_element?(
+               view,
+               "#nodes-summary-card",
+               "Unreachable means the heartbeat exceeded its configured threshold when health was last derived."
              )
 
       assert has_element?(view, "#nodes-inventory-card th", "Last observed Node health")
@@ -1050,7 +1061,12 @@ defmodule OrchardConsole.NodesLiveTest do
       assert has_element?(
                view,
                "#nodes-inventory-card",
-               "Observation times reflect successful authenticated observations, not Console refreshes."
+               "Successful authenticated status observations come from the background observer or a Console runtime read."
+             )
+
+      assert has_element?(
+               view,
+               "#nodes-table-region[role='region'][tabindex='0'][aria-label='Node inventory'] #nodes-table"
              )
 
       assert has_element?(view, "#node-#{ctx.node.id}", "healthy")
@@ -1076,8 +1092,14 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert has_element?(
                view,
-               "#nodes-summary-card",
-               "A new refresh attempt does not make an older observation fresh."
+               "#nodes-inventory-card",
+               "Failed refreshes and later refresh-attempt times do not advance this evidence."
+             )
+
+      assert has_element?(
+               view,
+               "#node-observation-freshness-#{ctx.node.id}",
+               "Freshness: unreachable"
              )
 
       assert has_element?(
@@ -1095,6 +1117,42 @@ defmodule OrchardConsole.NodesLiveTest do
       assert Repo.get!(Node, ctx.node.id).last_heartbeat_at == observed_at
     end
 
+    test "inventory freshness uses both configured SPEC 4.5 thresholds without changing health",
+         ctx do
+      for {freshness_ms, unreachable_ms} <- [{120_000, 180_000}, {180_000, 120_000}],
+          {age_ms, category} <- [
+            {60_000, "fresh"},
+            {150_000, "stale"},
+            {210_000, "unreachable"}
+          ] do
+        with_inference_overrides(
+          [
+            node_freshness_threshold_ms: freshness_ms,
+            node_unreachable_threshold_ms: unreachable_ms
+          ],
+          fn ->
+            observed_at = DateTime.add(DateTime.utc_now(), -age_ms, :millisecond)
+            observed_iso = observed_at |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+            ctx.node |> Ecto.Changeset.change(last_heartbeat_at: observed_at) |> Repo.update!()
+            {:ok, view, _html} = live(ctx.conn, "/console/nodes")
+            html = view |> element("#nodes-refresh-now") |> render_click()
+
+            assert has_element?(
+                     view,
+                     "#node-observation-freshness-#{ctx.node.id}",
+                     "Freshness: #{category}"
+                   )
+
+            assert has_element?(view, "#node-#{ctx.node.id} time[datetime='#{observed_iso}']")
+            assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
+            assert counter_text(html, "nodes-summary-unreachable") == "Unreachable 0"
+            assert Repo.get!(Node, ctx.node.id).last_heartbeat_at == observed_at
+            assert Repo.get!(Node, ctx.node.id).health == :healthy
+          end
+        )
+      end
+    end
+
     test "unknown local association does not erase independently known inventory", ctx do
       Application.delete_env(:orchard_controller, :local_node_identity_root)
       ctx.node |> Ecto.Changeset.change(last_heartbeat_at: nil) |> Repo.update!()
@@ -1103,9 +1161,15 @@ defmodule OrchardConsole.NodesLiveTest do
       assert has_element?(view, "#nodes-local-status", "not identified yet")
       assert counter_text(html, "nodes-summary-total") == "Inventory entries 1"
       assert counter_text(html, "nodes-summary-healthy") == "Healthy 1"
-      assert has_element?(view, "#nodes-summary-card", "Last observed inventory health")
       assert has_element?(view, "#node-#{ctx.node.id}", "observation-node")
-      assert has_element?(view, "#node-#{ctx.node.id}", "Not available")
+      assert has_element?(view, "#node-#{ctx.node.id}", "Not recorded")
+
+      assert has_element?(
+               view,
+               "#node-observation-freshness-#{ctx.node.id}",
+               "Freshness: unknown"
+             )
+
       refute has_element?(view, "#node-#{ctx.node.id} time[datetime]")
       assert has_element?(view, "#node-#{ctx.node.id} a[href='/console/nodes/#{ctx.node.id}']")
 
