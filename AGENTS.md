@@ -163,6 +163,7 @@ Recommended targets:
 - `make test` — run the default test suite.
 - `make cover` — run the default test suite with coverage.
 - `make macos-native-test-helpers` — stage macOS test helpers for direct `mix test` runs (Darwin hosts only).
+- `make linux-native-test-helpers` — stage the Linux Transport publication helpers for direct `mix test` runs (Linux hosts only).
 - `make check-elixir` — run the full Elixir quality workflow.
 
 `make dev` must remain a foreground/blocking command equivalent to
@@ -215,13 +216,14 @@ Run these in order for Elixir/OTP changes from the umbrella root:
 2. `mise exec -- mix compile --warnings-as-errors`
 3. `mise exec -- mix credo --strict`
 4. `mise exec -- mix dialyzer`
-5. `make macos-native-test-helpers`
+5. `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux)
 6. `mise exec -- mix test`
 7. `mise exec -- mix test --cover`
 
 `make check-elixir` runs the same workflow.
-On Darwin hosts, `make test` and `make cover` stage the macOS test helpers and run every test; on non-Darwin hosts they skip helper staging and exclude tests tagged `macos`.
-Step 5 is required only before a bare `mix test` invocation on Darwin: retained macOS terminal-custody and launchd lifecycle tests resolve their helpers from the `orchard_cli` application `priv` directory, and ordinary portable `mix compile` no longer emits them.
+On Darwin hosts, `make test` and `make cover` stage the macOS test helpers and run every test; on Linux hosts they stage the Linux Transport publication helpers and exclude tests tagged `macos`.
+Step 5 is required before a bare `mix test` invocation: retained macOS terminal-custody, launchd lifecycle, and Transport publication tests resolve their helpers from the `orchard_cli` application `priv` directory, and ordinary portable `mix compile` never emits them.
+`make macos-native-test-helpers` refuses on non-Darwin hosts, so Linux contributors use the Linux target for step 5.
 
 Rules:
 
@@ -344,7 +346,7 @@ the "Source-dev BEAM Peer Grant tracer" section in `docs/local-dev.md`.
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
-- `make test` - test suite (stages the macOS test helpers and runs every test on Darwin; skips helper staging and excludes the `macos` tag on non-Darwin hosts; uses its own DB and defaults to port 15071 via `test.exs`, deliberately below the Linux ephemeral range so the kernel cannot hand the listener port to an unrelated socket; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` first when invoking `mise exec -- mix test` directly on Darwin.
+- `make test` - test suite (stages the macOS test helpers and runs every test on Darwin; stages the Linux Transport publication helpers and excludes the `macos` tag on Linux hosts; uses its own DB and defaults to port 15071 via `test.exs`, deliberately below the Linux ephemeral range so the kernel cannot hand the listener port to an unrelated socket; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port). Run `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux) first when invoking `mise exec -- mix test` directly.
 
 See `docs/local-dev.md` for full environment setup and configuration.
 

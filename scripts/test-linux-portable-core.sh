@@ -14,6 +14,10 @@ EXCLUDES=(
   --exclude mlx_benchmark
 )
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+"$REPO_ROOT/scripts/build-linux-native-helpers.sh" \
+  --output "$REPO_ROOT/_build/test/lib/orchard_cli/priv" --include-test-helper >/dev/null
+
 mise exec -- mix test "${EXCLUDES[@]}"
 mise exec -- mix test --cover "${EXCLUDES[@]}"
 

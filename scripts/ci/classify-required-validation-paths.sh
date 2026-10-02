@@ -59,6 +59,9 @@ while IFS= read -r path; do
       conformance=true
       packaging=true
       ;;
+    packaging/native_helpers/*)
+      enable_macos_consumers
+      ;;
     packaging/*|scripts/build-app.sh|scripts/build-dmg.sh|scripts/build-payload.sh|scripts/sign-app.sh|scripts/test-app-*|scripts/test-build-app.sh|scripts/test-build-dmg.sh|scripts/test-build-payload.sh|scripts/test-payload-*)
       macos=true
       packaging=true
@@ -84,10 +87,10 @@ while IFS= read -r path; do
     apps/orchard_cli/test/support/console_pty_process.ex|apps/orchard_cli/test/support/flock_holder.swift|apps/orchard_cli/test/test_helper.exs|apps/orchard_node_agent/test/test_helper.exs)
       enable_portable_macos_tests
       ;;
-    apps/orchard_cli/test/orchard_cli/commands/cluster_test.exs|apps/orchard_cli/test/orchard_cli/commands/status_test.exs|apps/orchard_controller/test/orchard/beam_peer_grants_test.exs|apps/orchard_controller/test/orchard/tokenizer_client_test.exs|apps/orchard_controller/test/orchard/models/bundle_builder_test.exs|apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs)
+    apps/orchard_cli/test/orchard_cli/commands/transport_test.exs|apps/orchard_cli/test/orchard_cli/transport_publication_test.exs|apps/orchard_cli/test/support/transport_fixture.ex|apps/orchard_cli/test/orchard_cli/commands/cluster_test.exs|apps/orchard_cli/test/orchard_cli/commands/status_test.exs|apps/orchard_controller/test/orchard/beam_peer_grants_test.exs|apps/orchard_controller/test/orchard/tokenizer_client_test.exs|apps/orchard_controller/test/orchard/models/bundle_builder_test.exs|apps/orchard_controller/test/orchard/models/safe_tokenization_preflight_test.exs)
       enable_portable_macos_tests
       ;;
-    apps/orchard_cli/lib/orchard_cli/platform_acl.ex|apps/orchard_cli/lib/orchard_cli/commands/cluster.ex)
+    apps/orchard_cli/lib/orchard_cli/platform_acl.ex|apps/orchard_cli/lib/orchard_cli/commands/cluster.ex|apps/orchard_cli/lib/orchard_cli/commands/transport.ex|apps/orchard_cli/lib/orchard_cli/transport_publication.ex)
       enable_macos_consumers
       ;;
     apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex)

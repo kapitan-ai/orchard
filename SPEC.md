@@ -5402,6 +5402,13 @@ The mapping from operator deployment patterns to runtime state SHALL be:
 
 `/ca.crt` SHALL publish a CA certificate only when `cert_source` is `generated_local_ca`. It SHALL return not found for `operator_provided` and `unknown`. Orchard SHALL NOT publish an operator CA, internal PKI root, proprietary CA, or public CA bundle unless a future explicit operator-CA publication feature is designed and specified.
 
+`orchardctl transport enable-local-https` SHALL publish the generated local-CA certificate and the endpoint metadata sidecar into the support-root `public/` directory through private staging.
+Before TLS initialization it SHALL validate, without following symlinks, that every support-root ancestor is owned by root or the effective UID and is not writable by other UIDs unless it is a root-owned sticky directory, and that the support root, `public/`, and existing public artifacts are caller-owned, not group- or other-writable, not setgid, free of extended or default ACLs, and on a qualified local filesystem; any unsafe or uninspectable path SHALL refuse unchanged.
+Before TLS initialization it SHALL also validate, without following symlinks, that an existing `config/` directory is caller-owned with no group or other access, and that `config/controller.env`, an existing `config/tls/` directory, and its existing TLS source files are caller-owned, not group- or other-writable, ACL-free, and not symlinks; unsafe private configuration SHALL refuse unchanged rather than being repaired.
+The stage SHALL be created with an explicit owner-only creation mode rather than repaired afterward, public artifacts SHALL become world-readable only after their contents are complete, cooperative publishers SHALL serialize, and rollback or cleanup SHALL act only on entries the publisher created.
+Publication of the CA certificate and endpoint metadata is not an atomic multi-file transaction.
+ADR 0036 records the threat model, qualified filesystems, and limits.
+
 Forwarded headers SHALL be trusted only in `reverse_proxy` mode and only from configured trusted proxies. The default trusted proxy set SHALL be loopback only: `127.0.0.1/32` and `::1/128`. Operators MAY configure non-loopback trusted proxy CIDRs with `ORCHARD_TRUSTED_PROXIES`. If reverse-proxy mode binds the backend listener to a non-loopback address without explicit trusted proxies, Orchard SHALL fail closed at preflight or boot. Spoofed `x-forwarded-*` headers from untrusted clients SHALL be ignored or rejected and MUST NOT affect public URL, scheme, host, port, or client IP derivation.
 
 ### 10.8 Secrets at rest

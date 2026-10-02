@@ -134,6 +134,18 @@ assert_case portable-platform-acl \
 assert_case portable-cluster-init \
   'portable=true conformance=true macos=true mlx=false packaging=true ' \
   apps/orchard_cli/lib/orchard_cli/commands/cluster.ex
+assert_case shared-native-helper-source \
+  'portable=true conformance=true macos=true mlx=false packaging=true ' \
+  packaging/native_helpers/orchard_transport_publish.c
+assert_case transport-publication \
+  'portable=true conformance=true macos=true mlx=false packaging=true ' \
+  apps/orchard_cli/lib/orchard_cli/transport_publication.ex \
+  apps/orchard_cli/lib/orchard_cli/commands/transport.ex
+assert_case transport-publication-tests \
+  'portable=true conformance=true macos=true mlx=false packaging=false ' \
+  apps/orchard_cli/test/orchard_cli/transport_publication_test.exs \
+  apps/orchard_cli/test/orchard_cli/commands/transport_test.exs \
+  apps/orchard_cli/test/support/transport_fixture.ex
 assert_case macos-test-helper \
   'portable=true conformance=true macos=true mlx=false packaging=false ' \
   apps/orchard_cli/test/test_helper.exs

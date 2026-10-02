@@ -3,24 +3,15 @@ defmodule OrchardCLI.Commands.TransportTest do
 
   alias OrchardCLI.Commands.Transport
   alias OrchardCLI.ShellEnv
+  alias OrchardCLI.TransportFixture
 
-  defp current_uid do
-    case System.cmd("id", ["-u"], stderr_to_stdout: true) do
-      {output, 0} -> output |> String.trim() |> String.to_integer()
-      _other -> 0
-    end
-  end
-
-  defp tmp_support_root do
-    System.tmp_dir!()
-    |> Path.join("orchard-transport-test-#{System.unique_integer([:positive])}")
-  end
+  defp tmp_support_root, do: TransportFixture.support_root!()
 
   defp base_runtime(overrides \\ %{}) do
     Map.merge(
       %{
         uid: fn -> 0 end,
-        owner_uid: current_uid(),
+        publication_opts: [executable: TransportFixture.helper(:production)],
         read_install_role: fn -> {:ok, "all"} end,
         tls_init: fn host, _support_root -> {:ok, "tls initialized for #{host}"} end,
         now: fn -> ~U[2026-05-18 02:03:04Z] end,
@@ -39,6 +30,7 @@ defmodule OrchardCLI.Commands.TransportTest do
   defp write_controller_env(support_root, contents) do
     config_dir = Path.join(support_root, "config")
     File.mkdir_p!(config_dir)
+    File.chmod!(config_dir, 0o700)
     path = Path.join(config_dir, "controller.env")
     File.write!(path, contents)
     File.chmod!(path, 0o600)
@@ -48,6 +40,7 @@ defmodule OrchardCLI.Commands.TransportTest do
   defp write_generated_ca(support_root) do
     tls_dir = Path.join([support_root, "config", "tls"])
     File.mkdir_p!(tls_dir)
+    File.chmod!(tls_dir, 0o750)
     File.write!(Path.join(tls_dir, "ca.crt"), "public ca cert")
     File.write!(Path.join(tls_dir, "controller.crt"), "public server cert")
     File.write!(Path.join(tls_dir, "controller.key"), "private server key")
@@ -255,14 +248,15 @@ defmodule OrchardCLI.Commands.TransportTest do
     end
   end
 
-  test "unsafe public directory stops before controller env mutation" do
+  test "unsafe public directory stops before TLS or controller env mutation" do
     support_root = tmp_support_root()
+    parent = self()
 
     runtime =
       base_runtime(%{
         support_root: support_root,
-        tls_init: fn _host, root ->
-          write_generated_ca(root)
+        tls_init: fn _host, _root ->
+          send(parent, :tls_called)
           {:ok, ""}
         end
       })
@@ -277,6 +271,8 @@ defmodule OrchardCLI.Commands.TransportTest do
                Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
 
       assert message =~ "group/world writable"
+      refute_received :tls_called
+      assert TransportFixture.mode(Path.join(support_root, "public")) == 0o777
       assert File.read!(Path.join([support_root, "config", "controller.env"])) == original
     after
       File.rm_rf(support_root)
@@ -292,8 +288,7 @@ defmodule OrchardCLI.Commands.TransportTest do
         tls_init: fn _host, root ->
           write_generated_ca(root)
           {:ok, ""}
-        end,
-        copy_public_ca: fn _source, _target -> {:error, "permission denied"} end
+        end
       })
 
     try do
@@ -330,8 +325,10 @@ defmodule OrchardCLI.Commands.TransportTest do
 
     try do
       write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
-      File.mkdir_p!(Path.dirname(endpoint_path))
+      File.mkdir!(Path.dirname(endpoint_path))
+      File.chmod!(Path.dirname(endpoint_path), 0o755)
       File.write!(endpoint_path, old_endpoint)
+      File.chmod!(endpoint_path, 0o644)
 
       assert {:error, message, 1} =
                Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
@@ -380,7 +377,7 @@ defmodule OrchardCLI.Commands.TransportTest do
           write_generated_ca(root)
           {:ok, ""}
         end,
-        copy_public_ca: fn _source, _target -> {:error, "permission denied"} end
+        read_public_ca: fn _source -> {:error, "permission denied"} end
       })
 
     try do
@@ -668,6 +665,334 @@ defmodule OrchardCLI.Commands.TransportTest do
       refute File.exists?(Path.join([support_root, "public", "endpoint.json"]))
     after
       File.rm_rf(support_root)
+    end
+  end
+
+  describe "private-stage publication (SPEC.md §10.7, ADR 0036)" do
+    defp enabled_runtime(support_root, overrides) do
+      parent = self()
+
+      base_runtime(
+        Map.merge(
+          %{
+            support_root: support_root,
+            tls_init: fn _host, root ->
+              send(parent, :tls_called)
+              write_generated_ca(root)
+              {:ok, ""}
+            end
+          },
+          overrides
+        )
+      )
+    end
+
+    defp assert_public_profile(support_root) do
+      public = Path.join(support_root, "public")
+      assert TransportFixture.mode(support_root) == 0o711
+      assert TransportFixture.mode(public) == 0o755
+      assert TransportFixture.mode(Path.join(public, "ca.crt")) == 0o644
+      assert TransportFixture.mode(Path.join(public, "endpoint.json")) == 0o644
+      assert Enum.sort(File.ls!(public)) == ["ca.crt", "endpoint.json"]
+      refute File.read!(Path.join(public, "ca.crt")) =~ "private"
+      refute File.read!(Path.join(public, "endpoint.json")) =~ "private"
+      assert TransportFixture.stage_entries(support_root) == []
+    end
+
+    for umask <- [0o022, 0o077, 0o002, 0o000] do
+      @umask umask
+      test "helper child umask #{Integer.to_string(umask, 8)} still publishes the public read profile" do
+        support_root = tmp_support_root()
+
+        runtime =
+          enabled_runtime(support_root, %{
+            publication_opts: [
+              executable: TransportFixture.helper(:production),
+              wrapper: TransportFixture.umask_wrapper(@umask)
+            ]
+          })
+
+        try do
+          write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+
+          assert {:ok, _message} =
+                   Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+          assert_public_profile(support_root)
+        after
+          File.rm_rf(support_root)
+        end
+      end
+    end
+
+    for mode <- [0o700, 0o750] do
+      @mode mode
+      test "safe existing public directory #{Integer.to_string(mode, 8)} is accepted" do
+        support_root = tmp_support_root()
+        runtime = enabled_runtime(support_root, %{})
+
+        try do
+          write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+          File.mkdir!(Path.join(support_root, "public"))
+          File.chmod!(Path.join(support_root, "public"), @mode)
+
+          assert {:ok, _message} =
+                   Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+          assert_public_profile(support_root)
+        after
+          File.rm_rf(support_root)
+        end
+      end
+    end
+
+    for mode <- [0o775, 0o777] do
+      @mode mode
+      test "unsafe support root #{Integer.to_string(mode, 8)} refuses before TLS" do
+        support_root = tmp_support_root()
+        runtime = enabled_runtime(support_root, %{})
+
+        try do
+          write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+          File.chmod!(support_root, @mode)
+
+          assert {:error, message, 1} =
+                   Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+          assert message =~ "support root is group/world writable"
+          refute_received :tls_called
+          assert TransportFixture.mode(support_root) == @mode
+          refute File.exists?(Path.join(support_root, "public"))
+          refute File.exists?(Path.join([support_root, "config", "tls"]))
+        after
+          File.rm_rf(support_root)
+        end
+      end
+    end
+
+    test "symlinked public directory refuses before TLS without touching the target" do
+      support_root = tmp_support_root()
+      target = tmp_support_root()
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        File.ln_s!(target, Path.join(support_root, "public"))
+
+        assert {:error, message, 1} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        assert message =~ "public endpoint directory is a symlink"
+        refute_received :tls_called
+        assert File.ls!(target) == []
+        assert TransportFixture.mode(target) == 0o700
+      after
+        File.rm_rf(support_root)
+        File.rm_rf(target)
+      end
+    end
+
+    defp assert_refused_unchanged(support_root, runtime, expected) do
+      original = File.read!(Path.join([support_root, "config", "controller.env"]))
+
+      assert {:error, message, 1} =
+               Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+      assert message =~ expected
+      refute_received :tls_called
+      refute File.exists?(Path.join(support_root, "public"))
+      assert TransportFixture.stage_entries(support_root) == []
+      assert File.read!(Path.join([support_root, "config", "controller.env"])) == original
+    end
+
+    for {mode, reason} <- [
+          {0o750, "Orchard config directory is accessible to group or other users"},
+          {0o755, "Orchard config directory is accessible to group or other users"},
+          {0o777, "Orchard config directory is group/world writable"}
+        ] do
+      @mode mode
+      @reason reason
+      test "config directory #{Integer.to_string(mode, 8)} refuses before TLS unchanged" do
+        support_root = tmp_support_root()
+        runtime = enabled_runtime(support_root, %{})
+
+        try do
+          write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+          config_dir = Path.join(support_root, "config")
+          File.chmod!(config_dir, @mode)
+
+          assert_refused_unchanged(support_root, runtime, @reason)
+          assert TransportFixture.mode(config_dir) == @mode
+          refute File.exists?(Path.join(config_dir, "tls"))
+        after
+          File.rm_rf(support_root)
+        end
+      end
+    end
+
+    test "symlinked config directory refuses before TLS without touching the target" do
+      support_root = tmp_support_root()
+      target = tmp_support_root()
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        File.write!(Path.join(target, "controller.env"), "SECRET_KEY_BASE=\"secret\"\n")
+        File.ln_s!(target, Path.join(support_root, "config"))
+
+        assert {:error, message, 1} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        assert message =~ "Orchard config directory is a symlink"
+        refute_received :tls_called
+        assert File.ls!(target) == ["controller.env"]
+        refute File.exists?(Path.join(support_root, "public"))
+      after
+        File.rm_rf(support_root)
+        File.rm_rf(target)
+      end
+    end
+
+    test "symlinked controller.env refuses before TLS without mutating the target" do
+      support_root = tmp_support_root()
+      target_root = tmp_support_root()
+      target = Path.join(target_root, "controller.env")
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        env_path = Path.join([support_root, "config", "controller.env"])
+        File.write!(target, "SECRET_KEY_BASE=\"elsewhere\"\n")
+        File.rm!(env_path)
+        File.ln_s!(target, env_path)
+
+        assert_refused_unchanged(support_root, runtime, "controller.env is a symlink")
+        assert File.read!(target) == "SECRET_KEY_BASE=\"elsewhere\"\n"
+      after
+        File.rm_rf(support_root)
+        File.rm_rf(target_root)
+      end
+    end
+
+    test "group-writable controller.env refuses before TLS unchanged" do
+      support_root = tmp_support_root()
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        env_path = write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        File.chmod!(env_path, 0o660)
+
+        assert_refused_unchanged(support_root, runtime, "controller.env is group/world writable")
+        assert TransportFixture.mode(env_path) == 0o660
+      after
+        File.rm_rf(support_root)
+      end
+    end
+
+    test "world-writable TLS directory refuses before TLS unchanged" do
+      support_root = tmp_support_root()
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        tls_dir = Path.join([support_root, "config", "tls"])
+        File.mkdir!(tls_dir)
+        File.chmod!(tls_dir, 0o777)
+
+        assert_refused_unchanged(support_root, runtime, "TLS directory is group/world writable")
+        assert TransportFixture.mode(tls_dir) == 0o777
+        assert File.ls!(tls_dir) == []
+      after
+        File.rm_rf(support_root)
+      end
+    end
+
+    test "symlinked TLS source refuses before TLS and is never published" do
+      support_root = tmp_support_root()
+      target_root = tmp_support_root()
+      target = Path.join(target_root, "foreign.crt")
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        write_generated_ca(support_root)
+        source = Path.join([support_root, "config", "tls", "ca.crt"])
+        File.write!(target, "foreign certificate")
+        File.rm!(source)
+        File.ln_s!(target, source)
+
+        assert_refused_unchanged(support_root, runtime, "TLS source file is a symlink")
+        assert File.read!(target) == "foreign certificate"
+      after
+        File.rm_rf(support_root)
+        File.rm_rf(target_root)
+      end
+    end
+
+    test "missing publication helper refuses before TLS" do
+      support_root = tmp_support_root()
+      missing = Path.join(support_root, "orchard-transport-publish")
+
+      runtime = enabled_runtime(support_root, %{publication_opts: [executable: missing]})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+
+        assert {:error, message, 1} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        assert message =~ "transport publication helper is unavailable"
+        refute_received :tls_called
+        refute File.exists?(Path.join(support_root, "public"))
+      after
+        File.rm_rf(support_root)
+      end
+    end
+
+    test "TLS failure after prepare removes the private stage" do
+      support_root = tmp_support_root()
+
+      runtime =
+        enabled_runtime(support_root, %{tls_init: fn _host, _root -> {:error, "tls failed"} end})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+
+        assert {:error, message, 1} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        assert message =~ "tls failed"
+        assert TransportFixture.stage_entries(support_root) == []
+        refute File.exists?(Path.join(support_root, "public"))
+      after
+        File.rm_rf(support_root)
+      end
+    end
+
+    test "helper publication failure reports the helper error and leaves env unchanged" do
+      support_root = tmp_support_root()
+
+      runtime =
+        enabled_runtime(support_root, %{
+          publication_opts: [
+            executable: TransportFixture.helper(:test),
+            env: [{"ORCHARD_TRANSPORT_PUBLISH_TEST_FAULT", "rename_error:public"}]
+          ]
+        })
+
+      try do
+        original = "SECRET_KEY_BASE=\"secret\"\n"
+        write_controller_env(support_root, original)
+
+        assert {:error, message, 1} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        assert message =~ "public artifact publication: rename failed (eio)"
+        assert File.read!(Path.join([support_root, "config", "controller.env"])) == original
+        assert TransportFixture.stage_entries(support_root) == []
+        refute File.exists?(Path.join(support_root, "public"))
+      after
+        File.rm_rf(support_root)
+      end
     end
   end
 

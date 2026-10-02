@@ -22,6 +22,7 @@ Existing Homebrew, launchd, Keychain, Xcode, Unix-socket, and MLX instructions r
 | PostgreSQL | ≥ 15 | Local instance |
 | GNU coreutils | any with GNU `timeout` | Required to run the test suite: Node Agent host-inventory probe tests need GNU `timeout` (Linux `/usr/bin/timeout`; macOS `brew install coreutils`, which provides `gtimeout` and a `gnubin` `timeout`) |
 | POSIX ACL tools (Linux only) | any providing `/usr/bin/getfacl` and `/usr/bin/setfacl` | Required to run the test suite on Linux: CLI output-path ACL inspection and its tests call these tools (Ubuntu `sudo apt-get install acl`) |
+| C compiler | host `cc` (or `CC`) | Required for the explicit native-helper builders; on Linux `make test` builds the Transport publication helper with it (Ubuntu `build-essential`) |
 
 See [Tooling](tooling.md) for the pinned runtime versions and standard
 `mise exec --` command forms.
@@ -959,8 +960,14 @@ The application smoke starts the admitted Node with its Runtime Endpoint gRPC li
 ## Testing
 
 On Darwin hosts, `make test` and `make cover` stage the retained macOS native helpers into `_build/test/lib/orchard_cli/priv` before running every test, because ordinary portable `mix compile` no longer emits them.
-On non-Darwin hosts, the same Make targets skip helper staging and exclude tests tagged `macos`.
-Invoke `mix test` directly on Darwin only after `make macos-native-test-helpers`.
+On Linux hosts, the same Make targets stage the Linux Transport publication helpers and exclude tests tagged `macos`.
+Invoke `mix test` directly only after `make macos-native-test-helpers` (Darwin) or `make linux-native-test-helpers` (Linux).
+
+`orchardctl transport enable-local-https` publishes the local CA and endpoint metadata through the `orchard-transport-publish` helper (`SPEC.md` §10.7, ADR 0036).
+Source development needs `make macos-native-helpers` or `make linux-native-helpers` before that command; without the helper it refuses before TLS generation.
+The helper qualifies only local APFS/HFS volumes on Darwin and ext4 on Linux, and refuses ACL-bearing, symlinked, group- or world-writable, or foreign-owned support roots and ancestors unchanged.
+It also refuses before TLS generation when `config/` is wider than `0700` (as `orchardctl env init` creates it) or when `controller.env` or a `config/tls/` source is a symlink, foreign-owned, group-writable, or ACL-bearing.
+Tests place support roots under the canonical temporary directory (`/private/tmp` on Darwin) with explicit `0700` fixture roots; the test-only helper additionally accepts tmpfs.
 
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)
