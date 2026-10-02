@@ -451,10 +451,14 @@ body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] .co
   display: none;
 }
 
-.phx-error #overview-command #overview-polling-active {
+body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] #overview-command #overview-polling-active,
+body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] #overview-command #overview-refresh-now,
+.phx-error #overview-command #overview-polling-active,
+.phx-error #overview-command #overview-refresh-now {
   display: none;
 }
 
+body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] #overview-command #overview-polling-paused,
 .phx-error #overview-command #overview-polling-paused {
   display: inline;
 }
