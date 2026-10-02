@@ -729,8 +729,9 @@ static int stage_holds_only_staged_files(void) {
         expected = 1;
     }
     if (!expected) {
+      fail_detailed("stage", "unexpected_entry", 0, entry->d_name);
       closedir(dir);
-      return fail_detailed("stage", "unexpected_entry", 0, entry->d_name);
+      return -1;
     }
   }
   closedir(dir);

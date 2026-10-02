@@ -346,15 +346,16 @@ defmodule OrchardCLI.TransportPublicationTest do
          %{root: root, public: public} do
       assert {:ok, publication} = prepare(root)
       [stage] = TransportFixture.stage_entries(root)
-      File.write!(Path.join([root, stage, "foreign"]), "x")
+      foreign = "foreign-" <> String.duplicate("entry", 40)
+      File.write!(Path.join([root, stage, foreign]), "x")
 
       assert {:error, %{code: "unexpected_entry", subject: "stage", detail: detail}} =
                TransportPublication.publish(publication, @ca, @endpoint)
 
-      assert detail =~ "foreign"
-      assert detail =~ "cleanup_retained=#{stage}"
+      assert [^foreign | rest] = String.split(detail, " ")
+      assert "cleanup_retained=#{stage}" in rest
       refute File.exists?(public)
-      assert File.ls!(Path.join(root, stage)) == ["foreign"]
+      assert File.ls!(Path.join(root, stage)) == [foreign]
     end
 
     test "existing public publication reports retained stage residue",
