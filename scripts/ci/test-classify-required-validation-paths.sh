@@ -59,6 +59,9 @@ assert_case tokenizer \
 assert_case macos-packaging \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   packaging/app/Sources/OrchardApp/main.swift
+assert_case distribution-pause-control \
+  'portable=false conformance=false macos=true mlx=false packaging=true ' \
+  packaging/distribution-control
 assert_case packaging-contract-readme \
   'portable=false conformance=false macos=true mlx=false packaging=true ' \
   packaging/dmg/README.md
