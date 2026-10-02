@@ -143,12 +143,16 @@ jobs:
           mise exec -- uv sync --locked --directory native/orchard_worker_mlx
 
       # `mise current` reports the configured toolchain; the runtime probes
-      # report what each installed runtime says. The PostgreSQL probe is a
-      # read-only SHOW, and only its numeric value is kept.
+      # report what each installed runtime says. Probes never install tools
+      # or create environments: mise auto-install is off for this step only,
+      # and each package's existing .venv interpreter is run directly (absent
+      # means unknown). The PostgreSQL probe is a read-only SHOW, and only its
+      # numeric value is kept.
       - name: Record setup identity
         if: ${{ !cancelled() }}
         continue-on-error: true
         env:
+          MISE_EXEC_AUTO_INSTALL: "false"
           PGCONNECT_TIMEOUT: "5"
           REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: |
@@ -166,10 +170,14 @@ jobs:
               '{ok, V} = file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])), io:put_chars(string:trim(V)), halt().')"
             printf 'elixir %s\n' "$(probe mise exec -- elixir --short-version)"
             printf 'uv %s\n' "$(probe mise exec -- uv --version | awk '{ print $2 }')"
-            printf 'python_tokenizer %s\n' "$(probe mise exec -- uv run --frozen --no-sync \
-              --directory native/orchard_tokenizer python --version | awk '{ print $2 }')"
-            printf 'python_worker_mlx %s\n' "$(probe mise exec -- uv run --frozen --no-sync \
-              --directory native/orchard_worker_mlx python --version | awk '{ print $2 }')"
+            for package in orchard_tokenizer orchard_worker_mlx; do
+              interpreter="native/$package/.venv/bin/python"
+              version=""
+              if [[ -x "$interpreter" ]]; then
+                version="$(probe "$interpreter" --version | awk '{ print $2 }')"
+              fi
+              printf 'python_%s %s\n' "${package#orchard_}" "$version"
+            done
           } | "$report" runtime "$REPORT_DIR"
           probe psql -X -A -t -c 'SHOW server_version_num' | "$report" postgres "$REPORT_DIR"
 
@@ -217,18 +225,27 @@ jobs:
           ORCHARD_LINUX_PORTABLE_REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
         run: scripts/test-linux-portable-core.sh
 
+      # Writes the publication receipt only after a successful finalize has
+      # published report.txt as a regular, non-symlink file.
       - name: Finalize validation report
+        id: finalize-report
         if: always()
         continue-on-error: true
         env:
           JOB_STATUS: ${{ job.status }}
           REPORT_DIR: ${{ runner.temp }}/orchard-linux-portable-report
-        run: scripts/ci/linux-portable-validation-report.sh finalize "$REPORT_DIR" "$JOB_STATUS"
+        run: |
+          scripts/ci/linux-portable-validation-report.sh finalize "$REPORT_DIR" "$JOB_STATUS"
+          if [[ -f "$REPORT_DIR/report.txt" && ! -L "$REPORT_DIR/report.txt" ]]; then
+            printf 'published=true\n' >> "$GITHUB_OUTPUT"
+          fi
 
-      # Uploads only report.txt, which exists only after a successful finalize.
-      # The staging file and raw output are never uploaded.
+      # Uploads only report.txt, and only when the finalize step itself
+      # succeeded (its outcome, before continue-on-error) and wrote its receipt.
+      # A failed, cancelled, or skipped finalize, or a non-file report.txt,
+      # uploads nothing. The staging file and raw output are never uploaded.
       - name: Upload validation report
-        if: always()
+        if: always() && steps.finalize-report.outcome == 'success' && steps.finalize-report.outputs.published == 'true'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

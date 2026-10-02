@@ -18,7 +18,9 @@ EXCLUDES=(
 # ORCHARD_LINUX_PORTABLE_REPORT_DIR is unset, every command runs exactly as in
 # a plain `set -e` script. When it is set, each command's output still streams
 # to stdout, a private temporary copy is parsed for allowlisted facts and then
-# deleted, and the command's own exit status always decides this script's.
+# deleted, and a command that exits on its own decides this script's status.
+# An interrupt (SIGINT or SIGTERM) in this mode ends the run after the current
+# command with status 130 or 143.
 REPORT_DIR="${ORCHARD_LINUX_PORTABLE_REPORT_DIR:-}"
 REPORT_HELPER="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/ci/linux-portable-validation-report.sh"
 EXPECTED_STEPS=10
@@ -91,7 +93,16 @@ run_step() {
   if [[ -n "$capture_dir" ]]; then
     capture="$capture_dir/step-$step_index.log"
     set +e
-    "$@" | tee "$capture"
+    # The consumer group keeps the pipe open until all output is read: if tee
+    # stops early for any reason, cat drains the rest to stdout, so the
+    # command never sees SIGPIPE from a reporting fault. Bytes tee had read
+    # but not written before failing may be missing from the log.
+    "$@" | (
+      tee -- "$capture"
+      tee_status=$?
+      cat
+      exit "$tee_status"
+    )
     pipe_status=("${PIPESTATUS[@]}")
     set -e
     status="${pipe_status[0]}"

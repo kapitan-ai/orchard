@@ -49,6 +49,21 @@ MIN_SCRUB_PATH_BYTES=6
 # gave nothing usable.
 RUNTIMES=(erlang elixir uv python_tokenizer python_worker_mlx)
 
+# The lane's command sequence as label:kind. Finalize requires recorded steps
+# to match it in order; scripts/test-linux-portable-core.sh owns the commands.
+STEP_SEQUENCE=(
+  mix-test:exunit
+  mix-test-cover:exunit
+  tokenizer-ruff-format:none
+  tokenizer-ruff-check:none
+  tokenizer-pytest:pytest
+  tokenizer-pytest-cov:pytest
+  worker-ruff-format:none
+  worker-ruff-check:none
+  worker-pytest:pytest
+  worker-pytest-cov:pytest
+)
+
 # Committed lockfiles whose identity is recorded before and after setup.
 LOCKFILES=(
   mix_lock:mix.lock
@@ -61,6 +76,8 @@ VALUE_PATTERN='^[][A-Za-z0-9 _.,:/()+|%-]*$'
 SHA_PATTERN='^([0-9a-f]{40}|[0-9a-f]{64})$'
 SHA256_PATTERN='^[0-9a-f]{64}$'
 NUMBER_PATTERN='^[0-9]+$'
+# A process exit status: a decimal 0-255 without leading zeros.
+EXIT_PATTERN='^(0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$'
 FINALIZE_WORK=""
 
 fail_usage() {
@@ -691,6 +708,146 @@ metadata_complete() {
   require_fact "$file" cache.dialyzer_plt.key_sha256 "$SHA256_PATTERN" || return 1
 }
 
+# Prints the anchored pattern of every key the helper may stage. Final-only
+# fields (report.*, tests.*, job.*) are deliberately absent, so a staged copy
+# of one is rejected rather than published.
+staging_key_pattern() {
+  local runtimes
+  local lockfiles=""
+  local entry
+
+  runtimes="$(IFS='|'; printf '%s' "${RUNTIMES[*]}")"
+  for entry in "${LOCKFILES[@]}"; do
+    lockfiles="$lockfiles${lockfiles:+|}${entry%%:*}"
+  done
+  printf '%s' '^(format|report\.started'
+  printf '%s' '|source\.(repository|event|sha|head_sha|base_sha|run_id|run_attempt)'
+  printf '%s' '|runner\.(os|arch|environment|image_os|image_version)'
+  printf '%s' '|toolchain\.configured_count|toolchain\.configured\.[a-z0-9_]+'
+  printf '%s' "|runtime\\.($runtimes)|lockfile\\.($lockfiles)\\.(before|after|changed)"
+  printf '%s' '|postgres\.server_version_num|cache\.dialyzer_plt|cache\.dialyzer_plt\.key_sha256'
+  printf '%s' '|run\.(started|expected_steps|exit|end_reason|interrupted_step)'
+  printf '%s' '|step\.[1-9][0-9]?\.(label|kind|exit|elapsed_ms|capture|parse|seed|totals|coverage_total'
+  printf '%s' '|summary|apps_started|apps_completed|failure_identities|failure_identities_truncated'
+  printf '%s' '|failure\.[1-9][0-9]?'
+  printf '%s' '|app\.[a-z0-9_]+\.(seed|result|failed|totals|coverage_total|coverage_threshold)))$'
+}
+
+# Checks the run and per-step facts against STEP_SEQUENCE and sets:
+#   RUN_FACTS_COMPLETE  true only when every mandatory fact is present, valid,
+#                       and consistent, every recorded step was captured, and
+#                       every recorded test step parsed
+#   TESTS               failure when a recorded step has a known nonzero exit,
+#                       success when all expected steps exited 0, were
+#                       captured, and parsed,
+#                       unknown otherwise (a malformed exit is never failure)
+#   FIRST_FAILED        index of the first known nonzero exit, or empty
+evaluate_run() {
+  local file="$1"
+  local facts=true
+  local all_zero=true
+  local all_parsed=true
+  local all_captured=true
+  local gap=false
+  local recorded=0
+  local steps="${#STEP_SEQUENCE[@]}"
+  local index
+  local entry
+  local label
+  local kind
+  local exit_value
+  local elapsed
+  local capture
+  local parse
+  local run_exit
+  local end_reason
+  local interrupted
+  local failed_exit=""
+
+  RUN_FACTS_COMPLETE=false
+  TESTS=unknown
+  FIRST_FAILED=""
+
+  run_exit="$(report_value "$file" run.exit)"
+  end_reason="$(report_value "$file" run.end_reason)"
+  interrupted="$(report_value "$file" run.interrupted_step)"
+  [[ "$(report_value "$file" run.started)" == true ]] || facts=false
+  [[ "$(report_value "$file" run.expected_steps)" == "$steps" ]] || facts=false
+  [[ "$run_exit" =~ $EXIT_PATTERN ]] || facts=false
+  [[ "$end_reason" =~ ^(completed|failed|signal_int|signal_term)$ ]] || facts=false
+  [[ "$interrupted" =~ ^(none|[1-9][0-9]?)$ ]] || facts=false
+
+  for ((index = 1; index <= MAX_STEPS; index++)); do
+    if ! grep -q "^step\.$index\." "$file"; then
+      gap=true
+      continue
+    fi
+    # Recorded steps must be contiguous, within the sequence, and stop at
+    # the first failure (the lane is fail-fast).
+    if [[ "$gap" == true || "$index" -gt "$steps" || -n "$FIRST_FAILED" ]]; then
+      facts=false
+    fi
+    [[ "$index" -le "$steps" ]] || continue
+    recorded=$((recorded + 1))
+    entry="${STEP_SEQUENCE[$((index - 1))]}"
+    label="$(report_value "$file" "step.$index.label")"
+    kind="$(report_value "$file" "step.$index.kind")"
+    exit_value="$(report_value "$file" "step.$index.exit")"
+    elapsed="$(report_value "$file" "step.$index.elapsed_ms")"
+    capture="$(report_value "$file" "step.$index.capture")"
+    parse="$(report_value "$file" "step.$index.parse")"
+
+    [[ "$label" == "${entry%%:*}" && "$kind" == "${entry#*:}" ]] || facts=false
+    [[ "$elapsed" =~ $NUMBER_PATTERN && "${#elapsed}" -le 12 ]] || facts=false
+    [[ "$capture" =~ ^(ok|failed|unavailable)$ ]] || facts=false
+    # A failed or unavailable capture, for any kind, is never complete.
+    [[ "$capture" == ok ]] || all_captured=false
+    if [[ "${entry#*:}" == none ]]; then
+      [[ "$parse" == not_applicable ]] || facts=false
+    else
+      [[ "$parse" =~ ^(ok|partial|unavailable|failed)$ ]] || facts=false
+      [[ "$parse" == ok ]] || all_parsed=false
+    fi
+    if [[ "$exit_value" =~ $EXIT_PATTERN ]]; then
+      if [[ "$exit_value" != 0 && -z "$FIRST_FAILED" ]]; then
+        FIRST_FAILED="$index"
+        failed_exit="$exit_value"
+      fi
+      [[ "$exit_value" == 0 ]] || all_zero=false
+    else
+      facts=false
+      all_zero=false
+    fi
+  done
+
+  case "$end_reason" in
+    completed)
+      [[ "$run_exit" == 0 && "$interrupted" == none && "$recorded" -eq "$steps" && -z "$FIRST_FAILED" ]] ||
+        facts=false
+      ;;
+    failed)
+      [[ -n "$FIRST_FAILED" && "$run_exit" == "$failed_exit" && "$interrupted" == none &&
+        "$recorded" -eq "$FIRST_FAILED" ]] || facts=false
+      ;;
+    signal_int)
+      [[ "$run_exit" == 130 && "$interrupted" != none ]] || facts=false
+      ;;
+    signal_term)
+      [[ "$run_exit" == 143 && "$interrupted" != none ]] || facts=false
+      ;;
+  esac
+
+  if [[ -n "$FIRST_FAILED" ]]; then
+    TESTS=failure
+  elif [[ "$facts" == true && "$end_reason" == completed && "$all_zero" == true && "$all_parsed" == true &&
+    "$all_captured" == true ]]; then
+    TESTS=success
+  fi
+  if [[ "$facts" == true && "$all_parsed" == true && "$all_captured" == true ]]; then
+    RUN_FACTS_COMPLETE=true
+  fi
+}
+
 cmd_finalize() {
   local dir="$1"
   local job_status="$2"
@@ -704,21 +861,16 @@ cmd_finalize() {
   local dropped=0
   local redacted=0
   local duplicates=0
+  local unknown_keys=0
   local seen_keys=$'\n'
   local complete=true
   local tests=unknown
   local result=unknown
-  local expected
-  local recorded=0
   local failed_step=""
-  local index
-  local step_exit
-  local step_kind
-  local unparsed=false
-  local entry
   local bytes
   local published
   local app_segment
+  local key_pattern
 
   # A stale or partial publication must never survive a failed finalize.
   [[ -n "$dir" ]] || fail_usage 'report directory is required'
@@ -736,6 +888,7 @@ cmd_finalize() {
   while IFS= read -r secret; do
     secrets+=("$secret")
   done < <(scrub_values)
+  key_pattern="$(staging_key_pattern)"
 
   : > "$work"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -744,6 +897,12 @@ cmd_finalize() {
     if [[ "$line" != *=* || "${#line}" -gt "$MAX_LINE_BYTES" || ! "$key" =~ $KEY_PATTERN ]] ||
       ! valid_value "$value"; then
       dropped=$((dropped + 1))
+      continue
+    fi
+    # Only the fixed staging vocabulary is published; anything else is
+    # dropped unread and makes the report incomplete.
+    if [[ ! "$key" =~ $key_pattern ]]; then
+      unknown_keys=$((unknown_keys + 1))
       continue
     fi
     # A collision with a credential or local path value replaces the value,
@@ -775,31 +934,13 @@ cmd_finalize() {
   done < "$file"
 
   metadata_complete "$work" || complete=false
-  [[ "$dropped" -eq 0 && "$redacted" -eq 0 && "$duplicates" -eq 0 ]] || complete=false
+  [[ "$dropped" -eq 0 && "$redacted" -eq 0 && "$duplicates" -eq 0 && "$unknown_keys" -eq 0 ]] ||
+    complete=false
 
-  expected="$(report_value "$work" run.expected_steps)"
-  if [[ "$expected" =~ $NUMBER_PATTERN && "$expected" -ge 1 && "$expected" -le "$MAX_STEPS" ]]; then
-    for ((index = 1; index <= MAX_STEPS; index++)); do
-      step_exit="$(report_value "$work" "step.$index.exit")"
-      [[ -n "$step_exit" ]] || continue
-      recorded=$((recorded + 1))
-      step_kind="$(report_value "$work" "step.$index.kind")"
-      if [[ "$step_kind" != none && "$(report_value "$work" "step.$index.parse")" != ok ]]; then
-        unparsed=true
-      fi
-      if [[ "$step_exit" != 0 && -z "$failed_step" ]]; then
-        failed_step="$index"
-      fi
-    done
-    if [[ -n "$failed_step" ]]; then
-      tests=failure
-    elif [[ "$recorded" -eq "$expected" && -n "$(report_value "$work" "step.$expected.exit")" &&
-      "$unparsed" == false && "$(report_value "$work" run.exit)" == 0 &&
-      "$(report_value "$work" run.end_reason)" == completed ]]; then
-      tests=success
-    fi
-  fi
-  [[ -n "$(report_value "$work" run.exit)" && "$unparsed" == false ]] || complete=false
+  evaluate_run "$work"
+  tests="$TESTS"
+  failed_step="$FIRST_FAILED"
+  [[ "$RUN_FACTS_COMPLETE" == true ]] || complete=false
 
   if [[ "$tests" == failure ]]; then
     result=failure
@@ -811,6 +952,7 @@ cmd_finalize() {
     printf 'report.dropped_lines=%s\n' "$dropped"
     printf 'report.redacted_lines=%s\n' "$redacted"
     printf 'report.duplicate_keys=%s\n' "$duplicates"
+    printf 'report.unknown_keys=%s\n' "$unknown_keys"
     printf 'report.complete=%s\n' "$complete"
     printf 'job.status_at_finalize=%s\n' "$job_status"
     printf 'tests.result=%s\n' "$tests"
@@ -830,6 +972,14 @@ cmd_finalize() {
   fi
   printf 'report.finalized=true\n' >> "$work"
   mv -f -- "$work" "$published"
+
+  # The upload step trusts only a regular, non-symlink file published here.
+  # A symlink is removed; any other unexpected entry is left untouched.
+  if [[ -L "$published" || ! -f "$published" ]]; then
+    [[ ! -L "$published" ]] || rm -f -- "$published"
+    printf "linux-portable-validation-report: published report is not a regular file\n" >&2
+    exit 1
+  fi
   trap - EXIT
 }
 

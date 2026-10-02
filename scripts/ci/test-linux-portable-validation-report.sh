@@ -18,6 +18,14 @@ HELPER="$ROOT/scripts/ci/linux-portable-validation-report.sh"
 WORKFLOW="$ROOT/.github/workflows/required-validation.yml"
 TEST_BASH="${ORCHARD_TEST_BASH:-bash}"
 
+# The interrupt cases need SIGINT to be trappable. A shell that starts with
+# SIGINT ignored (for example a job backgrounded by a non-interactive shell)
+# cannot trap it, so refuse instead of reporting a misleading failure.
+if [[ "$(trap -p INT)" == *"''"* ]]; then
+  printf 'linux portable validation report test: SIGINT is ignored here; run this proof in the foreground\n' >&2
+  exit 1
+fi
+
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchard-portable-report-test.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT INT TERM
 
@@ -231,6 +239,98 @@ assert_has "$report" 'step.1.apps_completed=2'
 if grep -q 'passed in\|\.\.\.\.' "$report"; then
   fail 'report copied raw output or enumerated passing tests'
 fi
+# The helper's fixed step sequence matches the real lane script.
+helper finalize "$reported/report" success
+assert_has "$reported/report/report.txt" 'tests.result=success'
+
+# --- A failing capture tee never changes a command's status ---------------
+
+# A `set -e` bash producer writing more than a pipe buffer gets SIGPIPE and
+# exits 141 if its consumer stops reading. Each tee stub stops early; the
+# draining consumer group must keep every command and its status intact.
+TEE_BIN="$TMP_ROOT/tee-bin"
+mkdir -p "$TEE_BIN"
+cp -p "$STUB_BIN/uname" "$TEE_BIN/uname"
+[[ ! -e "$STUB_BIN/bash" ]] || ln -s "$TEST_BASH" "$TEE_BIN/bash"
+BIG_OUTPUT="$TMP_ROOT/big-output"
+awk 'BEGIN { for (i = 1; i <= 4000; i++) printf "line %05d of a producer output larger than one pipe buffer\n", i }' \
+  > "$BIG_OUTPUT"
+[[ "$(wc -c < "$BIG_OUTPUT" | tr -d ' ')" -gt 131072 ]] || fail 'producer fixture is not larger than the pipe buffer'
+cat > "$TEE_BIN/mise" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+{ for arg in "$@"; do printf '[%s]' "$arg"; done; printf '\n'; } >> "$ORCHARD_STUB_LOG"
+call="$(wc -l < "$ORCHARD_STUB_LOG" | tr -d ' ')"
+cat "$ORCHARD_STUB_BIG"
+if [[ "${ORCHARD_STUB_FAIL_AT:-}" == "$call" ]]; then
+  exit "$ORCHARD_STUB_FAIL_STATUS"
+fi
+EOF
+chmod +x "$TEE_BIN/mise"
+
+# Runs the lane with the bash producer and a tee stub MODE: real, exit (never
+# reads), or partial (reads some input, then exits). Sets RUN_STATUS.
+run_tee_lane() {
+  local case_dir="$1"
+  local mode="$2"
+  local report_mode="$3"
+  local bin="$case_dir/bin"
+  shift 3
+
+  mkdir -p "$case_dir/tmp" "$bin"
+  cp -p "$TEE_BIN"/* "$bin/" 2>/dev/null || true
+  [[ ! -L "$TEE_BIN/bash" ]] || ln -sf "$TEST_BASH" "$bin/bash"
+  case "$mode" in
+    exit) printf '#!/bin/sh\nexit 9\n' > "$bin/tee" ;;
+    partial) printf '#!/bin/sh\nhead -c 1000 >/dev/null\nexit 9\n' > "$bin/tee" ;;
+  esac
+  [[ ! -f "$bin/tee" ]] || chmod +x "$bin/tee"
+  : > "$case_dir/argv.log"
+  RUN_STATUS=0
+  local report_env=(-u ORCHARD_LINUX_PORTABLE_REPORT_DIR)
+  [[ "$report_mode" == plain ]] || report_env=(ORCHARD_LINUX_PORTABLE_REPORT_DIR="$case_dir/report")
+  (
+    cd "$case_dir"
+    env "${report_env[@]}" PATH="$bin:$PATH" TMPDIR="$case_dir/tmp" ORCHARD_STUB_LOG="$case_dir/argv.log" \
+      ORCHARD_STUB_BIG="$BIG_OUTPUT" "$@" "$TEST_BASH" "$SCRIPT"
+  ) > "$case_dir/stdout" 2> "$case_dir/stderr" || RUN_STATUS=$?
+}
+
+for fail_case in 0:: 3:1:3; do
+  IFS=: read -r expected_status fail_at fail_status <<<"$fail_case"
+  calls=10
+  [[ -z "$fail_at" ]] || calls="$fail_at"
+  baseline="$TMP_ROOT/tee-plain-$expected_status"
+  run_tee_lane "$baseline" real plain ORCHARD_STUB_FAIL_AT="$fail_at" ORCHARD_STUB_FAIL_STATUS="${fail_status:-0}"
+  [[ "$RUN_STATUS" -eq "$expected_status" ]] || fail "plain bash producer run exited $RUN_STATUS"
+  for mode in real exit partial; do
+    case_dir="$TMP_ROOT/tee-$mode-$expected_status"
+    run_tee_lane "$case_dir" "$mode" report ORCHARD_STUB_FAIL_AT="$fail_at" ORCHARD_STUB_FAIL_STATUS="${fail_status:-0}"
+    [[ "$RUN_STATUS" -eq "$expected_status" ]] ||
+      fail "tee $mode with producer status $expected_status changed the lane status to $RUN_STATUS"
+    assert_argv_prefix "$case_dir" "$calls"
+    [[ "$(wc -l < "$case_dir/argv.log" | tr -d ' ')" -eq "$calls" ]] ||
+      fail "tee $mode ran the wrong number of commands"
+    staged="$case_dir/report/report.staging"
+    assert_has "$staged" "step.$calls.exit=$expected_status"
+    assert_has "$staged" "run.exit=$expected_status"
+    if [[ "$mode" == real ]]; then
+      assert_has "$staged" 'step.1.capture=ok'
+      cmp -s "$baseline/stdout" "$case_dir/stdout" || fail 'real tee changed the lane stdout'
+    else
+      assert_has "$staged" 'step.1.capture=failed'
+      assert_has "$staged" 'step.1.parse=unavailable'
+      if [[ "$mode" == exit ]]; then
+        # tee read nothing, so the drained stdout is byte-identical.
+        cmp -s "$baseline/stdout" "$case_dir/stdout" || fail 'a non-reading tee lost lane stdout'
+      fi
+      helper finalize "$case_dir/report" success
+      if grep -Fxq 'report.result=success' "$case_dir/report/report.txt"; then
+        fail "tee $mode capture failure produced a success report"
+      fi
+    fi
+  done
+done
 
 # --- Failure at each command stops later commands and keeps its status ----
 
@@ -536,6 +636,17 @@ assert_report_shape "$parse_dir/report.staging"
 
 # --- Finalize: only a complete, successful record is success -------------
 
+# The lane's label:kind sequence and one realistic capture per kind.
+LANE_STEPS=(mix-test:exunit mix-test-cover:exunit tokenizer-ruff-format:none tokenizer-ruff-check:none
+  tokenizer-pytest:pytest tokenizer-pytest-cov:pytest worker-ruff-format:none worker-ruff-check:none
+  worker-pytest:pytest worker-pytest-cov:pytest)
+FULL_CAPTURES="$TMP_ROOT/full-captures"
+mkdir -p "$FULL_CAPTURES"
+printf '==> orchard_shared\nRunning ExUnit with seed: 11, max_cases: 2\n...\nResult: 3 passed (3 tests)\n' \
+  > "$FULL_CAPTURES/exunit.log"
+printf '...\n3 passed in 0.10s\n' > "$FULL_CAPTURES/pytest.log"
+printf 'All checks passed!\n' > "$FULL_CAPTURES/none.log"
+
 LOCK_TREE="$TMP_ROOT/lock-tree"
 mkdir -p "$LOCK_TREE/native/orchard_tokenizer" "$LOCK_TREE/native/orchard_worker_mlx"
 printf 'mix\n' > "$LOCK_TREE/mix.lock"
@@ -559,7 +670,7 @@ full_report() {
     helper start "$dir"
     env -u ORCHARD_REPORT_HEAD_SHA -u ORCHARD_REPORT_BASE_SHA GITHUB_REPOSITORY=example/orchard \
       GITHUB_EVENT_NAME="$event" GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 \
-      GITHUB_RUN_ID=37020481911 GITHUB_RUN_ATTEMPT=1 RUNNER_OS=Linux RUNNER_ARCH=X64 \
+      GITHUB_RUN_ID=123456789 GITHUB_RUN_ATTEMPT=1 RUNNER_OS=Linux RUNNER_ARCH=X64 \
       RUNNER_ENVIRONMENT=github-hosted ImageOS=ubuntu24 ImageVersion=20260928.1.0 \
       ${pr_env[@]+"${pr_env[@]}"} "$TEST_BASH" "$HELPER" source "$dir"
     helper lockfiles "$dir" before
@@ -570,8 +681,10 @@ full_report() {
     helper lockfiles "$dir" after
     helper cache "$dir" dialyzer_plt success true 'orchard-dialyzer-plt-v2-Linux-X64-abc123'
     helper run-start "$dir" 10
-    for step in 1 2 3 4 5 6 7 8 9 10; do
-      helper step "$dir" "$step" "label-$step" none 0 12 '' unavailable
+    step=0
+    for entry in "${LANE_STEPS[@]}"; do
+      step=$((step + 1))
+      helper step "$dir" "$step" "${entry%%:*}" "${entry#*:}" 0 12 "$FULL_CAPTURES/${entry#*:}.log" ok
     done
     helper run-end "$dir" 0 completed none
   )
@@ -612,7 +725,8 @@ mutate_fact() {
   local value="$3"
 
   awk -v key="$key" -v value="$value" '
-    index($0, key "=") == 1 { if (value != "-") print key "=" value; next }
+    value == "--" && index($0, key ".") == 1 { next }
+    index($0, key "=") == 1 { if (value != "-" && value != "--") print key "=" value; next }
     { print }
   ' "$file" > "$file.edited"
   mv "$file.edited" "$file"
@@ -682,9 +796,8 @@ pull_request|cache.dialyzer_plt|unknown
 pull_request|cache.dialyzer_plt|-
 pull_request|cache.dialyzer_plt.key_sha256|unknown
 pull_request|cache.dialyzer_plt.key_sha256|-
-pull_request|step.3.capture|invalid
 EOF
-[[ "$mutation_index" -ge 49 ]] || fail "only $mutation_index metadata mutations ran"
+[[ "$mutation_index" -ge 48 ]] || fail "only $mutation_index metadata mutations ran"
 
 # The same mutations never turn a recorded command failure into anything
 # other than failure.
@@ -695,6 +808,112 @@ mutate_fact "$final/report.staging" source.sha unknown
 helper finalize "$final" success
 assert_has "$final/report.txt" 'tests.result=failure'
 assert_has "$final/report.txt" 'report.result=failure'
+
+# Every per-step or run fact that is missing, malformed, out of sequence, or
+# inconsistent makes the report incomplete. A malformed exit is unknown and
+# never manufactures a failure. Case: KEY|VALUE|EXPECTED tests.result, where
+# VALUE `-` deletes the line and `--` deletes every KEY.* line.
+mutation_index=0
+while IFS='|' read -r key value expected_tests; do
+  [[ -n "$key" ]] || continue
+  mutation_index=$((mutation_index + 1))
+  final="$TMP_ROOT/final-run-mutation-$mutation_index"
+  full_report "$final"
+  mutate_fact "$final/report.staging" "$key" "$value"
+  [[ "$value" == -- || "$value" == - ]] || grep -q "^$key=" "$final/report.staging" ||
+    printf '%s=%s\n' "$key" "$value" >> "$final/report.staging"
+  helper finalize "$final" success
+  for line in "tests.result=$expected_tests" report.complete=false; do
+    grep -Fxq "$line" "$final/report.txt" || fail "run mutation $key=$value did not give $line"
+  done
+  if [[ "$expected_tests" != failure ]]; then
+    assert_has "$final/report.txt" 'tests.first_failed_step=none'
+  fi
+  assert_has "$final/report.txt" "report.result=$([[ "$expected_tests" == failure ]] && printf failure || printf unknown)"
+done <<'EOF'
+step.3.elapsed_ms|-|unknown
+step.3.elapsed_ms|unknown|unknown
+step.3.elapsed_ms|1234567890123|unknown
+step.3.label|-|unknown
+step.3.label|worker-pytest|unknown
+step.3.kind|-|unknown
+step.3.kind|pytest|unknown
+step.3.capture|-|unknown
+step.3.capture|maybe|unknown
+step.3.capture|failed|unknown
+step.3.capture|unavailable|unknown
+step.1.capture|failed|unknown
+step.3.parse|-|unknown
+step.3.parse|ok|unknown
+step.1.parse|partial|unknown
+step.1.parse|-|unknown
+step.3.exit|unknown|unknown
+step.3.exit|invalid|unknown
+step.3.exit|00|unknown
+step.3.exit|256|unknown
+step.3.exit|-|unknown
+step.10.exit|-|unknown
+step.10.label|-|unknown
+step.5|--|unknown
+step.10|--|unknown
+step.11.label|extra|unknown
+run.started|-|unknown
+run.expected_steps|9|unknown
+run.expected_steps|-|unknown
+run.exit|-|unknown
+run.exit|unknown|unknown
+run.exit|1|unknown
+run.end_reason|-|unknown
+run.end_reason|failed|unknown
+run.end_reason|signal_int|unknown
+run.interrupted_step|-|unknown
+run.interrupted_step|unknown|unknown
+run.interrupted_step|4|unknown
+step.4.exit|3|failure
+EOF
+[[ "$mutation_index" -ge 39 ]] || fail "only $mutation_index run mutations ran"
+
+# A capture failure never hides a known command failure.
+final="$TMP_ROOT/final-capture-failure-with-failure"
+full_report "$final"
+mutate_fact "$final/report.staging" step.3.capture failed
+mutate_fact "$final/report.staging" step.3.exit 2
+for gone in 4 5 6 7 8 9 10; do
+  mutate_fact "$final/report.staging" "step.$gone" --
+done
+mutate_fact "$final/report.staging" run.exit 2
+mutate_fact "$final/report.staging" run.end_reason failed
+helper finalize "$final" failure
+for line in tests.result=failure tests.first_failed_step=3 report.result=failure report.complete=false \
+  step.3.exit=2 run.exit=2; do
+  assert_has "$final/report.txt" "$line"
+done
+
+# Keys outside the fixed staging vocabulary, including final-only fields and
+# credential-shaped names, are never published and make the report incomplete.
+for bogus in 'token=ghs_abcdef0123' 'report.result=success' 'tests.result=success' 'job.status_at_finalize=success' \
+  'step.3.bogus=1' 'step.3.app.x.secret=1' 'runtime.node=24.17.0' 'cache.other=hit' 'lockfile.other_lock.before=x'; do
+  final="$TMP_ROOT/final-unknown-key-${bogus%%=*}"
+  full_report "$final"
+  printf '%s\n' "$bogus" >> "$final/report.staging"
+  helper finalize "$final" success
+  case "$bogus" in
+    report.* | tests.* | job.*)
+      # Final-only fields appear once, computed by finalize, never staged.
+      [[ "$(grep -c "^${bogus%%=*}=" "$final/report.txt")" -eq 1 ]] ||
+        fail "staged final-only field $bogus was published"
+      ;;
+    *)
+      assert_lacks_key "$final/report.txt" "${bogus%%=*}"
+      ;;
+  esac
+  if grep -q 'ghs_' "$final/report.txt"; then
+    fail 'a credential-shaped staged key was published'
+  fi
+  assert_has "$final/report.txt" 'report.unknown_keys=1'
+  assert_has "$final/report.txt" 'report.complete=false'
+  assert_has "$final/report.txt" 'report.result=unknown'
+done
 
 # Publication is atomic: a failed write or rename leaves no report.txt, even
 # when a stale published report existed, and a later finalize can recover.
@@ -727,10 +946,11 @@ chmod 700 "$final"
 final="$TMP_ROOT/final-published-directory"
 full_report "$final"
 mkdir "$final/report.txt"
+printf 'SENTINELDIRECTORYLEAK\n' > "$final/report.txt/leak.txt"
 if helper finalize "$final" success 2>/dev/null; then
   fail 'finalize replaced an unexpected report.txt directory'
 fi
-[[ ! -f "$final/report.txt" ]] || fail 'finalize published over an unexpected directory'
+[[ -f "$final/report.txt/leak.txt" ]] || fail 'finalize deleted contents of an unexpected directory'
 
 final="$TMP_ROOT/final-restart"
 full_report "$final"
@@ -973,6 +1193,17 @@ while IFS= read -r psql_line; do
     fail "PostgreSQL probe is not the read-only server_version_num query: $psql_line"
 done <<<"$psql_lines"
 
+# Probes never install tools or create environments.
+grep -Fxq '          MISE_EXEC_AUTO_INSTALL: "false"' <<<"$setup_identity" ||
+  fail 'setup identity probes may auto-install mise tools'
+[[ "$(grep -c 'MISE_EXEC_AUTO_INSTALL' "$WORKFLOW")" -eq 1 ]] ||
+  fail 'mise auto-install must be disabled only for the diagnostic probe step'
+grep -Fq 'interpreter="native/$package/.venv/bin/python"' <<<"$setup_identity" ||
+  fail 'Python probes must run the existing package interpreter directly'
+if grep -Eq 'uv (run|sync)|pip ' <<<"$setup_identity"; then
+  fail 'setup identity probes must not run or sync package environments'
+fi
+
 cache_step="$(step_block "$linux_job" 'Cache Dialyzer PLTs')"
 cache_identity="$(step_block "$linux_job" 'Record cache identity')"
 cache_key="$(sed -n 's/^          key: //p' <<<"$cache_step")"
@@ -991,6 +1222,91 @@ upload_paths="$(awk '/^          path:/ { capture = 1 } capture && /^          [
 [[ "$(grep -c . <<<"$upload_paths")" -eq 1 ]] || fail 'artifact upload must name exactly one path'
 grep -Eq '^          path: [^*?]*/orchard-linux-portable-report/report\.txt$' <<<"$upload_paths" ||
   fail 'artifact upload must contain only the published report file'
+
+# --- Upload gate: only a finalize receipt for a regular file uploads -------
+
+finalize_step="$(step_block "$linux_job" 'Finalize validation report')"
+grep -Fxq '        id: finalize-report' <<<"$finalize_step" || fail 'finalize step lost its receipt id'
+grep -Fxq "        if: always() && steps.finalize-report.outcome == 'success' && steps.finalize-report.outputs.published == 'true'" <<<"$upload" ||
+  fail 'artifact upload is not gated on the finalize receipt'
+[[ "$(grep -c 'GITHUB_OUTPUT' <<<"$linux_job")" -eq 1 ]] ||
+  fail 'only the finalize step may write the publication receipt'
+finalize_script="$(awk '
+  /^        run: \|$/ { capture = 1; next }
+  capture && /^          / { print substr($0, 11); next }
+  capture { exit }
+' <<<"$finalize_step")"
+[[ -n "$finalize_script" ]] || fail 'finalize step has no run block to exercise'
+
+# Runs the workflow finalize step for DIR with PATH_VALUE under the default
+# `bash -e` step shell, then decides the upload as the gated upload step
+# would. Sets UPLOAD to true or false.
+run_finalize_step() {
+  local dir="$1"
+  local path_value="$2"
+  local script="${3:-$finalize_script}"
+  local output="$dir.github-output"
+  local outcome=success
+
+  : > "$output"
+  (cd "$ROOT" && env -i PATH="$path_value" REPORT_DIR="$dir" JOB_STATUS=success GITHUB_OUTPUT="$output" \
+    "$TEST_BASH" -e -c "$script") >/dev/null 2>&1 || outcome=failure
+  # The upload needs the step's own outcome (before continue-on-error) and
+  # the receipt.
+  UPLOAD=false
+  if [[ "$outcome" == success ]] && grep -Fxq 'published=true' "$output"; then
+    UPLOAD=true
+  fi
+}
+
+gate="$TMP_ROOT/gate-success"
+full_report "$gate"
+run_finalize_step "$gate" "$PATH"
+[[ "$UPLOAD" == true && -f "$gate/report.txt" && ! -L "$gate/report.txt" ]] ||
+  fail 'a successful finalize did not produce an upload receipt'
+
+# A receipt from a step that then fails is not admitted.
+gate="$TMP_ROOT/gate-failed-after-receipt"
+full_report "$gate"
+run_finalize_step "$gate" "$PATH" "$finalize_script"$'\nfalse'
+grep -Fxq 'published=true' "$gate.github-output" || fail 'receipt case did not write a receipt'
+[[ "$UPLOAD" == false ]] || fail 'a failed finalize outcome with a receipt would be uploaded'
+
+gate="$TMP_ROOT/gate-directory"
+full_report "$gate"
+mkdir "$gate/report.txt"
+printf 'SENTINELDIRECTORYLEAK\n' > "$gate/report.txt/leak.txt"
+run_finalize_step "$gate" "$PATH"
+[[ "$UPLOAD" == false ]] || fail 'a report.txt directory would be uploaded'
+[[ -f "$gate/report.txt/leak.txt" ]] || fail 'finalize deleted contents of an unexpected directory'
+
+gate="$TMP_ROOT/gate-rename-failure"
+full_report "$gate"
+run_finalize_step "$gate" "$FAIL_BIN:$PATH"
+[[ "$UPLOAD" == false && ! -e "$gate/report.txt" ]] || fail 'a failed rename would be uploaded'
+
+SYMLINK_BIN="$TMP_ROOT/symlink-bin"
+mkdir -p "$SYMLINK_BIN"
+printf 'SENTINELSYMLINKTARGET\n' > "$TMP_ROOT/symlink-target"
+cat > "$SYMLINK_BIN/mv" <<SYMLINK_MV
+#!/bin/sh
+for arg; do dest="\$arg"; done
+ln -s "$TMP_ROOT/symlink-target" "\$dest"
+SYMLINK_MV
+chmod +x "$SYMLINK_BIN/mv"
+gate="$TMP_ROOT/gate-symlink-publish"
+full_report "$gate"
+run_finalize_step "$gate" "$SYMLINK_BIN:$PATH"
+[[ "$UPLOAD" == false && ! -L "$gate/report.txt" && ! -e "$gate/report.txt" ]] ||
+  fail 'a symlinked publication would be uploaded'
+
+gate="$TMP_ROOT/gate-stale-symlink"
+full_report "$gate"
+ln -s "$TMP_ROOT/symlink-target" "$gate/report.txt"
+run_finalize_step "$gate" "$PATH"
+[[ "$UPLOAD" == true && -f "$gate/report.txt" && ! -L "$gate/report.txt" ]] ||
+  fail 'finalize did not replace a stale symlink with a regular report'
+grep -Fxq 'SENTINELSYMLINKTARGET' "$TMP_ROOT/symlink-target" || fail 'finalize wrote through a stale symlink'
 
 [[ "$(grep -c 'uses: actions/cache@' <<<"$linux_job")" -eq 1 ]] || fail 'reporting must not add a cache'
 grep -Fq 'cache: false' <<<"$linux_job" || fail 'linux-portable mise cache setting changed'
