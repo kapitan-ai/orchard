@@ -102,7 +102,7 @@ defmodule OrchardConsole.RequestsLive do
           </details>
 
           <div id="requests-table-region" role="region" aria-label="Recent requests" tabindex="0"
-            class="overflow-x-auto rounded [&_th]:px-3 [&_td]:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400 dark:focus-visible:ring-offset-slate-800">
+            class="overflow-x-auto rounded [&_th]:px-2 [&_td]:px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:focus-visible:ring-sky-400 dark:focus-visible:ring-offset-slate-800">
           <.table id="requests-table" rows={@requests} row_id={&"request-#{&1.public_id}"} class="contents">
             <:col :let={req} label="Created" mono class="whitespace-nowrap"><.local_time value={req.inserted_at} format={:datetime_minute} /></:col>
             <:col :let={req} label="Public ID" mono>
@@ -117,7 +117,7 @@ defmodule OrchardConsole.RequestsLive do
               <.badge tone={state_tone(req.state)}>{req.state}</.badge>
             </:col>
             <:col :let={req} label="Endpoint">{format_endpoint(req.endpoint)}</:col>
-            <:col :let={req} label="Model">
+            <:col :let={req} label="Model" class="min-w-40">
               <span :if={req.requested_model} class="font-mono text-xs"><.model_identity value={req.requested_model} /></span>
               <span :if={is_nil(req.requested_model)}>Not recorded</span>
             </:col>
