@@ -28,6 +28,12 @@ Unsafe configuration SHALL refuse with nothing changed and SHALL NOT be repaired
 - **THEN** the command refuses before TLS initialization
 - **AND** the directory mode and `controller.env` contents are unchanged
 
+#### Scenario: legacy installer config layout
+
+- **WHEN** `config/` has the legacy installer layout `0750` owned by `root:admin`
+- **THEN** the command refuses before TLS initialization without changing modes or granting access
+- **AND** the operator must review ownership and narrow `config/` to `0700` before retrying
+
 #### Scenario: controller.env or TLS source is substituted
 
 - **WHEN** `controller.env` or a TLS source file is a symlink, is foreign-owned, or is group-writable
@@ -50,6 +56,12 @@ A post-create mismatch SHALL retain the entry and report its identity.
 - **WHEN** another local UID attempts to traverse, create in, open for write, change mode of, or set attributes on the stage before, during, or after creation
 - **THEN** every attempt fails
 - **AND** after publication that UID can read `public/ca.crt` and `public/endpoint.json`
+
+#### Scenario: absent public directory is published
+
+- **WHEN** `public/` is absent
+- **THEN** the stage remains `0700` until it is renamed to `public`
+- **AND** only the renamed `public/` becomes `0755`
 
 ### Requirement: Publication Is Staged And Identity Bound
 
@@ -79,6 +91,27 @@ Cleanup and rollback SHALL act only on entries whose identity matches what the p
 - **WHEN** two publishers target the same support root concurrently
 - **THEN** the second waits until the first commits or rolls back
 - **AND** neither removes or rolls back the other's publication
+
+#### Scenario: bounded wait
+
+- **WHEN** the first publisher holds the lock past the bounded wait, or the waiting client disconnects
+- **THEN** the waiting helper refuses with `lock_timeout` or exits, without creating a stage
+
+### Requirement: Publication Failures Report Public State
+
+A failure before any public name changes SHALL remove the owned stage and report a plain error, including when the helper cannot write its reply.
+A failure after a public name has changed SHALL be reported as a visible partial publication.
+A timed-out or lost helper reply during publication or rollback SHALL be reported as an unknown publication state that names the public directory to inspect.
+
+#### Scenario: mode change fails after the rename
+
+- **WHEN** widening `public/` fails after it was renamed into place
+- **THEN** the error reports that public artifacts are visible and must be inspected
+
+#### Scenario: helper lost during publication
+
+- **WHEN** the helper dies or times out before replying to `PUBLISH`
+- **THEN** the CLI reports that the publication state is unknown and names the public directory
 
 ### Requirement: Publication Helper Is An Explicit Host Artifact
 

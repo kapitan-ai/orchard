@@ -375,11 +375,99 @@ defmodule OrchardCLI.TransportPublicationTest do
     test "publish failure removes the private stage", %{root: root, public: public} do
       assert {:ok, publication} = prepare(root, fault("rename_error:public"))
 
-      assert {:error, %{code: "rename_failed", subject: "publication"}} =
+      assert {:error, %{code: "rename_failed", subject: "publication", detail: detail}} =
                TransportPublication.publish(publication, @ca, @endpoint)
 
+      refute "public_state=visible" in String.split(detail, " ")
       assert TransportFixture.stage_entries(root) == []
       refute File.exists?(public)
+    end
+
+    test "absent public publication keeps the stage 0700 until it is renamed",
+         %{base: base, root: root, public: public} do
+      pauses = Path.join(base, "pauses")
+      File.mkdir!(pauses)
+
+      env = [
+        {"ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE_DIR", pauses},
+        {"ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE", "before_public_rename"}
+      ]
+
+      task =
+        Task.async(fn ->
+          {:ok, publication} = prepare(root, helper: :test, env: env)
+          result = TransportPublication.publish(publication, @ca, @endpoint)
+          {result, TransportPublication.commit(publication)}
+        end)
+
+      ready = Path.join(pauses, "before_public_rename.ready")
+      assert wait_until(fn -> File.exists?(ready) end, 1_000)
+      stage = Path.join(root, ready |> File.read!() |> String.trim())
+      assert TransportFixture.mode(stage) == 0o700
+      assert Enum.sort(File.ls!(stage)) == ["ca.crt", "endpoint.json"]
+      File.write!(Path.join(pauses, "before_public_rename.go"), "")
+
+      assert {{:ok, []}, :ok} = Task.await(task)
+      assert TransportFixture.mode(public) == 0o755
+    end
+
+    test "a failure after the public rename reports a visible publication",
+         %{root: root, public: public} do
+      assert {:ok, publication} = prepare(root, fault("mode_error:public"))
+
+      assert {:error, %{code: "mode_failed", subject: "public", detail: detail} = failure} =
+               TransportPublication.publish(publication, @ca, @endpoint)
+
+      assert "public_state=visible" in String.split(detail, " ")
+      assert TransportPublication.format_error(failure) =~ "partial publication"
+      assert File.read!(Path.join(public, "endpoint.json")) == @endpoint
+      assert TransportFixture.stage_entries(root) == []
+    end
+
+    test "an endpoint rename failure after the CA is published reports a visible publication",
+         %{root: root, public: public} do
+      make_public!(public, 0o755)
+      assert {:ok, publication} = prepare(root, fault("rename_error:endpoint.json"))
+
+      assert {:error, %{code: "rename_failed", subject: "publication", detail: detail}} =
+               TransportPublication.publish(publication, @ca, @endpoint)
+
+      assert "public_state=visible" in String.split(detail, " ")
+      assert File.read!(Path.join(public, "ca.crt")) == @ca
+      refute File.exists?(Path.join(public, "endpoint.json"))
+      assert TransportFixture.stage_entries(root) == []
+    end
+
+    test "a helper lost during publish leaves the publication state unknown",
+         %{base: base, root: root, public: public} do
+      pauses = Path.join(base, "pauses")
+      File.mkdir!(pauses)
+      parent = self()
+
+      env = [
+        {"ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE_DIR", pauses},
+        {"ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE", "after_file_protect"}
+      ]
+
+      task =
+        Task.async(fn ->
+          {:ok, publication} = prepare(root, helper: :test, env: env)
+          {:os_pid, os_pid} = Port.info(publication.port, :os_pid)
+          send(parent, {:helper_pid, os_pid})
+          TransportPublication.publish(publication, @ca, @endpoint)
+        end)
+
+      assert_receive {:helper_pid, os_pid}, 5_000
+
+      assert wait_until(
+               fn -> File.exists?(Path.join(pauses, "after_file_protect.ready")) end,
+               1_000
+             )
+
+      {_output, 0} = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)])
+
+      assert {:error, {:publication_state_unknown, _reason, ^public} = unknown} = Task.await(task)
+      assert TransportPublication.format_error(unknown) =~ "Inspect #{public}"
     end
 
     test "helper exit after prepare removes the private stage", %{root: root} do
@@ -390,6 +478,42 @@ defmodule OrchardCLI.TransportPublicationTest do
   end
 
   describe "publisher serialization" do
+    test "a waiting publisher gives up after its bounded lock wait", %{root: root} do
+      assert {:ok, first} = prepare(root)
+
+      assert {:error, %{code: "lock_timeout", subject: "lock"} = failure} =
+               prepare(root,
+                 helper: :test,
+                 env: [{"ORCHARD_TRANSPORT_PUBLISH_TEST_LOCK_WAIT_MS", "200"}]
+               )
+
+      assert TransportPublication.format_error(failure) =~ "another publication"
+      assert length(TransportFixture.stage_entries(root)) == 1
+      assert :ok = TransportPublication.abort(first)
+      assert TransportFixture.stage_entries(root) == []
+    end
+
+    test "a waiting publisher whose client disconnects exits without creating a stage",
+         %{base: base, root: root} do
+      assert {:ok, first} = prepare(root)
+      pidfile = Path.join(base, "waiter.pid")
+      wrapper = ["/bin/sh", "-c", ~s(echo $$ > "#{pidfile}" && exec "$0" "$@")]
+      waiter = Task.async(fn -> prepare(root, wrapper: wrapper) end)
+
+      assert wait_until(fn -> File.exists?(pidfile) and File.read!(pidfile) =~ ~r/\d+\n/ end)
+      pid = pidfile |> File.read!() |> String.trim()
+      assert Task.shutdown(waiter, :brutal_kill) == nil
+
+      assert wait_until(
+               fn -> elem(System.cmd("kill", ["-0", pid], stderr_to_stdout: true), 1) != 0 end,
+               500
+             )
+
+      assert length(TransportFixture.stage_entries(root)) == 1
+      assert :ok = TransportPublication.abort(first)
+      assert TransportFixture.stage_entries(root) == []
+    end
+
     test "a second publisher waits until the first commits", %{root: root, public: public} do
       assert {:ok, first} = prepare(root)
       parent = self()
@@ -433,6 +557,15 @@ defmodule OrchardCLI.TransportPublicationTest do
 
       assert {:error, {:helper_unavailable, ^helper}} =
                TransportPublication.prepare(root, executable: helper)
+    end
+
+    test "a reply that cannot be written removes the private stage", %{root: root} do
+      assert {:error, {:helper_failed, "exited with status 74"}} =
+               prepare(root, fault("write_error:reply"))
+
+      assert TransportFixture.stage_entries(root) == []
+      assert {:ok, publication} = prepare(root)
+      assert :ok = TransportPublication.abort(publication)
     end
 
     test "wrong protocol version exits with usage status" do

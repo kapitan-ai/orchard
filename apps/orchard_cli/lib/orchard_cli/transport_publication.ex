@@ -13,18 +13,27 @@ defmodule OrchardCLI.TransportPublication do
   @prepare_timeout_ms 120_000
   @step_timeout_ms 60_000
 
-  @enforce_keys [:port, :public, :endpoint]
-  defstruct [:port, :public, :endpoint]
+  @enforce_keys [:port, :public, :endpoint, :public_dir]
+  defstruct [:port, :public, :endpoint, :public_dir]
 
   @type presence :: :absent | :existing
-  @type t :: %__MODULE__{port: port(), public: presence(), endpoint: presence()}
+  @type t :: %__MODULE__{
+          port: port(),
+          public: presence(),
+          endpoint: presence(),
+          public_dir: String.t()
+        }
   @type failure :: %{
           code: String.t(),
           errno: String.t(),
           subject: String.t(),
           detail: String.t()
         }
-  @type error :: {:helper_unavailable, String.t()} | {:helper_failed, String.t()} | failure()
+  @type error ::
+          {:helper_unavailable, String.t()}
+          | {:helper_failed, String.t()}
+          | {:publication_state_unknown, String.t(), String.t()}
+          | failure()
 
   @doc """
   Starts the helper and prepares publication under `support_root`.
@@ -38,7 +47,7 @@ defmodule OrchardCLI.TransportPublication do
     with {:ok, executable} <- resolve_executable(opts),
          {:ok, port} <- open_port(executable, opts) do
       case request(port, "PREPARE\n" <> support_root, @prepare_timeout_ms) do
-        {:ok, "PREPARED " <> rest} -> prepared(port, rest)
+        {:ok, "PREPARED " <> rest} -> prepared(port, rest, Path.join(support_root, "public"))
         {:ok, other} -> protocol_failure(port, other)
         {:error, _reason} = error -> error
       end
@@ -48,10 +57,11 @@ defmodule OrchardCLI.TransportPublication do
   @doc """
   Stages and publishes the CA certificate (or `nil`) and endpoint metadata bytes.
 
-  Returns operator warnings for retained private-stage residue. Any error ends the helper.
+  Returns operator warnings for retained private-stage residue. Any error ends the helper; a
+  timeout or lost helper reply leaves the public state unknown.
   """
   @spec publish(t(), binary() | nil, binary()) :: {:ok, [String.t()]} | {:error, error()}
-  def publish(%__MODULE__{port: port}, ca_bytes, endpoint_bytes)
+  def publish(%__MODULE__{port: port} = publication, ca_bytes, endpoint_bytes)
       when (is_binary(ca_bytes) or is_nil(ca_bytes)) and is_binary(endpoint_bytes) do
     ca = ca_bytes || ""
 
@@ -64,12 +74,18 @@ defmodule OrchardCLI.TransportPublication do
         endpoint_bytes
       ])
 
-    expect(port, frame, "PUBLISHED")
+    port
+    |> expect(frame, "PUBLISHED")
+    |> state_unknown_on_lost_reply(publication)
   end
 
   @doc "Restores the previous endpoint metadata while the published inode is still in place."
   @spec rollback(t()) :: {:ok, [String.t()]} | {:error, error()}
-  def rollback(%__MODULE__{port: port}), do: expect(port, "ROLLBACK", "ROLLED_BACK")
+  def rollback(%__MODULE__{port: port} = publication) do
+    port
+    |> expect("ROLLBACK", "ROLLED_BACK")
+    |> state_unknown_on_lost_reply(publication)
+  end
 
   @doc "Ends a published or rolled-back publication and releases the publisher lock."
   @spec commit(t()) :: :ok | {:error, error()}
@@ -89,8 +105,13 @@ defmodule OrchardCLI.TransportPublication do
   def format_error({:helper_failed, reason}),
     do: "transport publication helper failed: #{reason}"
 
+  def format_error({:publication_state_unknown, reason, public_dir}) do
+    "transport publication state is unknown (helper #{reason}); public artifacts may already " <>
+      "be visible. Inspect #{public_dir} before retrying."
+  end
+
   def format_error(%{code: code, errno: errno, subject: subject, detail: detail}) do
-    [describe(subject, code), errno_suffix(errno), detail_suffix(detail)]
+    [describe(subject, code), errno_suffix(errno), detail_suffix(detail), visible_suffix(detail)]
     |> IO.iodata_to_binary()
   end
 
@@ -135,6 +156,9 @@ defmodule OrchardCLI.TransportPublication do
   defp describe(subject, "postcheck_failed"),
     do: "#{subject_label(subject)} failed post-create validation"
 
+  defp describe(subject, "lock_timeout"),
+    do: "#{subject_label(subject)} is still held by another publication; retry when it finishes"
+
   defp describe(subject, "retained"), do: "#{subject_label(subject)} retained foreign entries"
   defp describe(subject, code), do: "#{subject_label(subject)}: #{String.replace(code, "_", " ")}"
 
@@ -159,6 +183,15 @@ defmodule OrchardCLI.TransportPublication do
 
   defp detail_suffix(""), do: ""
   defp detail_suffix(detail), do: ": #{detail}"
+
+  defp visible_suffix(detail) do
+    if "public_state=visible" in String.split(detail, " ") do
+      ". Some public artifacts were already published, so the public directory may hold a " <>
+        "partial publication; inspect it before retrying"
+    else
+      ""
+    end
+  end
 
   defp resolve_executable(opts) do
     path = Keyword.get_lazy(opts, :executable, &default_executable/0)
@@ -201,11 +234,11 @@ defmodule OrchardCLI.TransportPublication do
     error in ErlangError -> {:error, {:helper_failed, Exception.message(error)}}
   end
 
-  defp prepared(port, rest) do
+  defp prepared(port, rest, public_dir) do
     with [public, endpoint, _stage] <- String.split(rest, " "),
          {:ok, public} <- presence(public),
          {:ok, endpoint} <- presence(endpoint) do
-      {:ok, %__MODULE__{port: port, public: public, endpoint: endpoint}}
+      {:ok, %__MODULE__{port: port, public: public, endpoint: endpoint, public_dir: public_dir}}
     else
       _other -> protocol_failure(port, "PREPARED " <> rest)
     end
@@ -223,6 +256,11 @@ defmodule OrchardCLI.TransportPublication do
       {:error, _reason} = error -> error
     end
   end
+
+  defp state_unknown_on_lost_reply({:error, {:helper_failed, reason}}, publication),
+    do: {:error, {:publication_state_unknown, reason, publication.public_dir}}
+
+  defp state_unknown_on_lost_reply(result, _publication), do: result
 
   defp retained_warning(stage) do
     "Warning: private publication stage #{stage} held unexpected entries and was retained " <>

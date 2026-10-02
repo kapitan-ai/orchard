@@ -54,6 +54,10 @@ TLS generation and the controller environment update stay pathname-based and kee
 Their safety rests on the protected ancestor: before TLS initialization the helper requires an existing `config/` to be caller-owned with no group or other access, and an existing `controller.env`, `tls/`, and TLS source files to be non-symlink, caller-owned, not group- or other-writable, ACL-free, and on the support-root device.
 With the ancestry validated and `config/` owner-only, no other UID can traverse into or rename within it during those intervals.
 The helper holds the `config/` descriptor and rechecks its identity before publication.
+
+The legacy macOS installer creates `config/` and `config/tls/` as `0750 root:admin`.
+That layout refuses unchanged: admin-group traverse would expose the TLS writers' temporary-mode windows to administrator accounts.
+The paused installer is not changed; the operator reviews ownership and group reliance on `config/` and narrows it to `0700` before running the command, and the command never repairs modes or grants access.
 Unsafe configuration refuses unchanged; it is not repaired.
 
 ### Strict parent policy
@@ -68,7 +72,7 @@ Benign extended ACLs refuse under this bounded policy rather than being parsed o
 
 ### Staging and publication
 
-`PREPARE` takes an exclusive `flock` on the support-root descriptor, validates existing `public/`, `ca.crt`, and `endpoint.json`, snapshots a safe existing endpoint through a bound descriptor, and creates `.orchard-public-stage-<random>` with `mkdirat(support_fd, leaf, 0700)`.
+`PREPARE` takes an exclusive `flock` on the support-root descriptor, polling non-blockingly for at most 90 seconds and exiting without a stage if its client disconnects while waiting, validates existing `public/`, `ca.crt`, and `endpoint.json`, snapshots a safe existing endpoint through a bound descriptor, and creates `.orchard-public-stage-<random>` with `mkdirat(support_fd, leaf, 0700)`.
 The post-create check confirms mode `0700`, ownership, device and inode against a no-follow lookup, ACL absence, and the filesystem predicate; it is confirmation, not the safety argument.
 A failed post-check retains the entry and reports its identity.
 
@@ -76,8 +80,15 @@ Existing safe `public/` modes `0700`, `0711`, `0750`, and `0755` are accepted; e
 Hardlink count is not checked because a non-root user may hardlink a root-owned `0644` file, and refusing that would let any local user block publication.
 
 `PUBLISH` creates each staged file with `O_CREAT | O_EXCL | O_NOFOLLOW` and mode `0600`, writes and syncs it, then sets `0644`.
-When `public/` is absent, the stage is set to `0755` and renamed to `public` without replacement.
-When `public/` exists, `ca.crt` is renamed in first and `endpoint.json` second, the empty stage is removed by identity, `public/` is set to `0755`, and the support root to `0711`.
+When `public/` is absent, the stage stays `0700` while it is renamed to `public` without replacement; only after the rename is `public/` set to `0755`.
+When `public/` exists, `ca.crt` is renamed in first and `endpoint.json` second, the empty stage is removed by identity, and `public/` is set to `0755`.
+In both cases the support root is then set to `0711`.
+
+### Failure classification
+
+A failure before any public rename, including a reply the helper cannot write, removes the owned stage and reports a plain error.
+A failure after a public rename, such as a failed mode change, adds `public_state=visible`, and the CLI tells the operator the public directory may hold a partial publication.
+Closing the Port does not stop a helper that is mid-rename, so a timed-out or lost reply during `PUBLISH` or `ROLLBACK` is reported as an unknown publication state naming the public directory to inspect.
 
 ### Rollback and cleanup
 

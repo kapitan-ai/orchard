@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -54,6 +55,7 @@
 #define CA_NAME "ca.crt"
 #define ENDPOINT_NAME "endpoint.json"
 #define CONFIG_NAME "config"
+#define LOCK_WAIT_MS 90000L
 
 enum phase { PHASE_INIT, PHASE_PREPARED, PHASE_PUBLISHED, PHASE_ROLLED_BACK };
 
@@ -98,6 +100,8 @@ static size_t snapshot_len;
 static mode_t snapshot_mode;
 static struct identity endpoint_published;
 static int endpoint_was_published;
+static int publication_visible;
+static int protocol_mode;
 static struct stage stage = {.fd = -1};
 static char reply_note[128];
 
@@ -392,7 +396,7 @@ static int check_private_entry(int dirfd, const char *name, const char *subject,
 }
 
 static int check_config(void) {
-  static const char *const tls_sources[] = {"ca.crt", "controller.crt", "controller.key",
+  static const char *const tls_sources[] = {"ca.key", "ca.crt", "controller.crt", "controller.key",
                                             ".orchard-tls-meta.json"};
   struct stat st;
   int tls_fd;
@@ -694,6 +698,7 @@ static int cleanup_stage(void) {
 static void cleanup_after_failure(void) {
   char name[sizeof(stage.name)];
 
+  if (publication_visible) append_detail("public_state=visible");
   memcpy(name, stage.name, sizeof(name));
   if (stage.owned && cleanup_stage() != 0) {
     char detail[128];
@@ -764,6 +769,7 @@ static int install_file(struct staged_file *slot, int existed, struct identity e
   if (renameat(stage.fd, slot->name, public_fd, slot->name) != 0)
     return fail("publication", "rename_failed", errno);
   slot->created = 0;
+  publication_visible = 1;
   if (fstatat(public_fd, slot->name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
       !same_identity(&st, slot->id))
     return fail_detailed("publication", "identity_mismatch", errno, slot->name);
@@ -779,11 +785,54 @@ static void cleanup_published_stage(void) {
 }
 
 static int widen_public_profile(void) {
+  if (fault("mode_error", PUBLIC_NAME)) return fail("public", "mode_failed", EIO);
   if (fchmod(public_fd, 0755) != 0) return fail("public", "mode_failed", errno);
   if (fchmod(support_fd, 0711) != 0) return fail("support_root", "mode_failed", errno);
   (void)fsync(public_fd);
   (void)fsync(support_fd);
   return 0;
+}
+
+static long elapsed_ms(const struct timespec *start) {
+  struct timespec now;
+
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (long)(now.tv_sec - start->tv_sec) * 1000L + (now.tv_nsec - start->tv_nsec) / 1000000L;
+}
+
+static long lock_wait_limit_ms(void) {
+#ifdef ORCHARD_TRANSPORT_PUBLISH_TEST
+  const char *override = getenv("ORCHARD_TRANSPORT_PUBLISH_TEST_LOCK_WAIT_MS");
+  if (override) return strtol(override, NULL, 10);
+#endif
+  return LOCK_WAIT_MS;
+}
+
+/* A protocol client that disconnects while waiting ends the wait before any stage exists. */
+static int exit_if_client_gone(void) {
+  struct pollfd input = {STDIN_FILENO, POLLIN, 0};
+  unsigned char byte;
+  ssize_t got;
+
+  if (!protocol_mode || poll(&input, 1, 0) <= 0) return 0;
+  got = read(STDIN_FILENO, &byte, 1);
+  if (got <= 0) _exit(0);
+  return fail("protocol", "protocol_error", EINVAL);
+}
+
+static int lock_support_root(void) {
+  struct timespec start, delay = {0, 50000000L};
+  long limit = lock_wait_limit_ms();
+
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  for (;;) {
+    if (flock(support_fd, LOCK_EX | LOCK_NB) == 0) return 0;
+    if (errno == EINTR) continue;
+    if (errno != EWOULDBLOCK) return fail("lock", "lock_failed", errno);
+    if (elapsed_ms(&start) >= limit) return fail("lock", "lock_timeout", EWOULDBLOCK);
+    if (exit_if_client_gone() != 0) return -1;
+    nanosleep(&delay, NULL);
+  }
 }
 
 static int prepare(const char *path) {
@@ -793,7 +842,7 @@ static int prepare(const char *path) {
   support_fd = open_support_root(path);
   if (support_fd < 0) return -1;
   if (check_private_directory(support_fd, "support_root", &support_st) != 0) return -1;
-  if (flock(support_fd, LOCK_EX) != 0) return fail("lock", "lock_failed", errno);
+  if (lock_support_root() != 0) return -1;
   if (check_private_directory(support_fd, "support_root", &support_st) != 0) return -1;
   if (check_config() != 0) return -1;
 
@@ -847,12 +896,13 @@ static int publish(const unsigned char *ca, size_t ca_len, const unsigned char *
 
   if (!public_existed) {
     if (stage_holds_only_staged_files() != 0) return -1;
-    if (fchmod(stage.fd, 0755) != 0) return fail("stage", "mode_failed", errno);
+    pause_at("before_public_rename");
     if (fault("rename_error", PUBLIC_NAME)) return fail("publication", "rename_failed", EIO);
     if (rename_noreplace(support_fd, stage.name, support_fd, PUBLIC_NAME) != 0)
       return fail("publication", errno == EEXIST || errno == ENOTEMPTY ? "conflict" : "rename_failed",
                   errno);
     stage.owned = 0;
+    publication_visible = 1;
     if (fstatat(support_fd, PUBLIC_NAME, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
         !same_identity(&st, stage.id))
       return fail("publication", "identity_mismatch", errno);
@@ -941,9 +991,11 @@ static void write_frame(const char *text) {
   size_t length = strlen(text);
   unsigned char header[4] = {(unsigned char)(length >> 24), (unsigned char)(length >> 16),
                              (unsigned char)(length >> 8), (unsigned char)length};
-  if (write_all(STDOUT_FILENO, header, sizeof(header)) != 0 ||
-      write_all(STDOUT_FILENO, (const unsigned char *)text, length) != 0)
+  if (fault("write_error", "reply") || write_all(STDOUT_FILENO, header, sizeof(header)) != 0 ||
+      write_all(STDOUT_FILENO, (const unsigned char *)text, length) != 0) {
+    if (stage.owned) (void)cleanup_stage();
     _exit(74);
+  }
 }
 
 static void reply_error(void) {
@@ -1076,6 +1128,7 @@ int main(int argc, char **argv) {
 #endif
   if (argc != 3 || strcmp(argv[1], "--protocol") != 0 || strcmp(argv[2], PROTOCOL_VERSION) != 0)
     return 64;
+  protocol_mode = 1;
 
   for (;;) {
     unsigned char *frame = NULL;

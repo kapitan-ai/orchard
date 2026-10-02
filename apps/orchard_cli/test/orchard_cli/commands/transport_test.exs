@@ -694,9 +694,28 @@ defmodule OrchardCLI.Commands.TransportTest do
       assert TransportFixture.mode(Path.join(public, "ca.crt")) == 0o644
       assert TransportFixture.mode(Path.join(public, "endpoint.json")) == 0o644
       assert Enum.sort(File.ls!(public)) == ["ca.crt", "endpoint.json"]
-      refute File.read!(Path.join(public, "ca.crt")) =~ "private"
-      refute File.read!(Path.join(public, "endpoint.json")) =~ "private"
+      assert File.read!(Path.join(public, "ca.crt")) == "public ca cert"
+      assert_endpoint_metadata_has_no_private_material(support_root)
       assert TransportFixture.stage_entries(support_root) == []
+    end
+
+    defp assert_endpoint_metadata_has_no_private_material(support_root) do
+      public = Path.join(support_root, "public")
+      tls_dir = Path.join([support_root, "config", "tls"])
+      contents = File.read!(Path.join(public, "endpoint.json"))
+      metadata = Jason.decode!(contents)
+
+      assert metadata["ca_certfile"] == Path.join(public, "ca.crt")
+      refute Enum.any?(Map.keys(metadata), &(&1 =~ ~r/key|secret|cookie/i))
+
+      for forbidden <- [
+            "private server key",
+            "SECRET_KEY_BASE",
+            Path.join(tls_dir, "controller.key"),
+            Path.join(support_root, "config")
+          ] do
+        refute contents =~ forbidden
+      end
     end
 
     for umask <- [0o022, 0o077, 0o002, 0o000] do
@@ -925,6 +944,84 @@ defmodule OrchardCLI.Commands.TransportTest do
       after
         File.rm_rf(support_root)
         File.rm_rf(target_root)
+      end
+    end
+
+    defp write_partial_ca(support_root) do
+      tls_dir = Path.join([support_root, "config", "tls"])
+      File.mkdir!(tls_dir)
+      File.chmod!(tls_dir, 0o700)
+      File.write!(Path.join(tls_dir, "ca.crt"), "public ca cert")
+      ca_key = Path.join(tls_dir, "ca.key")
+      File.write!(ca_key, "private ca key")
+      File.chmod!(ca_key, 0o600)
+      ca_key
+    end
+
+    test "symlinked ca.key in a partially generated TLS directory refuses before TLS" do
+      support_root = tmp_support_root()
+      target_root = tmp_support_root()
+      target = Path.join(target_root, "foreign.key")
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        ca_key = write_partial_ca(support_root)
+        File.write!(target, "foreign key")
+        File.rm!(ca_key)
+        File.ln_s!(target, ca_key)
+
+        assert_refused_unchanged(
+          support_root,
+          runtime,
+          ~r"TLS source file is a symlink.*: ca.key"
+        )
+
+        assert File.read!(target) == "foreign key"
+        assert {:ok, ^target} = File.read_link(ca_key)
+      after
+        File.rm_rf(support_root)
+        File.rm_rf(target_root)
+      end
+    end
+
+    test "group-writable ca.key in a partially generated TLS directory refuses before TLS" do
+      support_root = tmp_support_root()
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        ca_key = write_partial_ca(support_root)
+        File.chmod!(ca_key, 0o660)
+
+        assert_refused_unchanged(
+          support_root,
+          runtime,
+          "TLS source file is group/world writable: ca.key"
+        )
+
+        assert TransportFixture.mode(ca_key) == 0o660
+        assert File.read!(ca_key) == "private ca key"
+      after
+        File.rm_rf(support_root)
+      end
+    end
+
+    test "a safe partially generated TLS directory proceeds to TLS initialization" do
+      support_root = tmp_support_root()
+      runtime = enabled_runtime(support_root, %{})
+
+      try do
+        write_controller_env(support_root, "SECRET_KEY_BASE=\"secret\"\n")
+        write_partial_ca(support_root)
+
+        assert {:ok, _message} =
+                 Transport.run(["enable-local-https", "--host", "mawarduri"], runtime)
+
+        assert_received :tls_called
+        assert_public_profile(support_root)
+      after
+        File.rm_rf(support_root)
       end
     end
 

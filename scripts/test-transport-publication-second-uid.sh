@@ -73,8 +73,16 @@ chmod 0644 "$RUN/ca.in" "$RUN/endpoint.in"
 new_support_root() {
   local root
   root="$(mktemp -d "$RUN/support.XXXXXX")"
-  chmod 0700 "$root"
+  chmod "${1:-0700}" "$root"
   printf '%s\n' "$root"
+}
+
+owner_of() {
+  if [[ "$OS" == "Darwin" ]]; then stat -f %u "$1"; else stat -c %u "$1"; fi
+}
+
+inode_of() {
+  if [[ "$OS" == "Darwin" ]]; then stat -f %i "$1"; else stat -c %i "$1"; fi
 }
 
 await_file() {
@@ -101,34 +109,63 @@ assert_public_profile() {
   expect_reader_denied chmod 0777 "$root/public"
 }
 
-# The stage must deny the reader at every pause point for every child umask.
-for umask_value in 0022 0077 0002 0000; do
-  for point in after_stage_mkdir after_stage_write after_file_protect; do
-    root="$(new_support_root)"
-    pauses="$RUN/pause.$umask_value.$point"
-    mkdir -m 0700 "$pauses"
-    (
-      umask "$umask_value"
-      ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE_DIR="$pauses" \
-        ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE="$point" \
-        exec "$TEST_HELPER" --oneshot "$root" "$RUN/ca.in" "$RUN/endpoint.in"
-    ) > "$pauses/out" &
-    helper_pid=$!
-    await_file "$pauses/$point.ready"
-    stage="$root/$(head -n 1 "$pauses/$point.ready")"
-    [[ -d "$stage" ]] || fail "stage missing at $point"
-    [[ "$(mode_of "$stage")" == "700" ]] || fail "stage mode $(mode_of "$stage") at $point"
-    expect_reader_denied ls "$stage"
-    expect_reader_denied cat "$stage/ca.crt"
-    expect_reader_denied cat "$stage/endpoint.json"
-    expect_reader_denied touch "$stage/foreign"
-    expect_reader_denied mkdir "$stage/foreign-dir"
-    : > "$pauses/$point.go"
-    wait "$helper_pid" || fail "helper failed after $point: $(cat "$pauses/out")"
-    grep -qx 'OK PUBLISHED' "$pauses/out" || fail "unexpected helper output: $(cat "$pauses/out")"
-    assert_public_profile "$root"
-    [[ -z "$(find "$root" -maxdepth 1 -name '.orchard-public-stage-*' -print -quit)" ]] ||
-      fail "stage residue after $point"
+# Outer-blocked control: a 0700 support root alone denies the reader, so stage denials
+# beneath it would prove nothing. The matrix below therefore uses searchable 0711 roots.
+root="$(new_support_root 0700)"
+printf 'control\n' >"$root/control-readable"
+chmod 0644 "$root/control-readable"
+expect_reader_denied cat "$root/control-readable"
+
+# Under a searchable 0711 root the stage must deny the reader at every pause point, for every
+# child umask, whether public/ is absent or an existing 0755 directory. Sibling controls in the
+# same root prove the reader can traverse it and that a writable directory is attackable.
+for public_state in absent existing; do
+  points="after_stage_mkdir after_stage_write after_file_protect"
+  if [[ "$public_state" == "absent" ]]; then points="$points before_public_rename"; fi
+  for umask_value in 0022 0077 0002 0000; do
+    for point in $points; do
+      root="$(new_support_root 0711)"
+      if [[ "$public_state" == "existing" ]]; then mkdir -m 0755 "$root/public"; fi
+      printf 'control\n' >"$root/control-readable"
+      chmod 0644 "$root/control-readable"
+      mkdir -m 0700 "$root/control-unsafe-stage"
+      chmod 0777 "$root/control-unsafe-stage"
+      pauses="$RUN/pause.$public_state.$umask_value.$point"
+      mkdir -m 0700 "$pauses"
+      (
+        umask "$umask_value"
+        ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE_DIR="$pauses" \
+          ORCHARD_TRANSPORT_PUBLISH_TEST_PAUSE="$point" \
+          exec "$TEST_HELPER" --oneshot "$root" "$RUN/ca.in" "$RUN/endpoint.in"
+      ) > "$pauses/out" &
+      helper_pid=$!
+      await_file "$pauses/$point.ready"
+      stage="$root/$(head -n 1 "$pauses/$point.ready")"
+      [[ -d "$stage" ]] || fail "stage missing at $public_state/$umask_value/$point"
+      [[ "$(mode_of "$stage")" == "700" ]] ||
+        fail "stage mode $(mode_of "$stage") at $public_state/$umask_value/$point"
+      expect_reader_allowed cat "$root/control-readable"
+      expect_reader_allowed touch "$root/control-unsafe-stage/foreign"
+      expect_reader_allowed ls "$root/control-unsafe-stage"
+      expect_reader_denied ls "$stage"
+      expect_reader_denied cat "$stage/ca.crt"
+      expect_reader_denied cat "$stage/endpoint.json"
+      expect_reader_denied touch "$stage/foreign"
+      expect_reader_denied mkdir "$stage/foreign-dir"
+      expect_reader_denied chmod 0777 "$stage"
+      expect_reader_denied touch "$root/foreign"
+      if [[ "$public_state" == "existing" ]]; then
+        expect_reader_allowed ls "$root/public"
+        expect_reader_denied touch "$root/public/foreign"
+      fi
+      rm -rf "$root/control-readable" "$root/control-unsafe-stage"
+      : > "$pauses/$point.go"
+      wait "$helper_pid" || fail "helper failed after $point: $(cat "$pauses/out")"
+      grep -qx 'OK PUBLISHED' "$pauses/out" || fail "unexpected helper output: $(cat "$pauses/out")"
+      assert_public_profile "$root"
+      [[ -z "$(find "$root" -maxdepth 1 -name '.orchard-public-stage-*' -print -quit)" ]] ||
+        fail "stage residue after $public_state/$umask_value/$point"
+    done
   done
 done
 
@@ -206,6 +243,15 @@ sudo -n chown "$(id -u)" "$root/config/controller.env"
 [[ "$(cat "$root/config/controller.env")" == 'SECRET_KEY_BASE="fixture"' ]] ||
   fail 'refused controller.env was modified'
 pass
+mkdir -m 0700 "$root/config/tls"
+printf 'private ca key\n' >"$root/config/tls/ca.key"
+chmod 0600 "$root/config/tls/ca.key"
+printf 'public ca cert\n' >"$root/config/tls/ca.crt"
+sudo -n chown "$READER" "$root/config/tls/ca.key"
+expect_refusal "unsafe_owner - tls_source ca.key" "$root"
+sudo -n chown "$(id -u)" "$root/config/tls/ca.key"
+[[ "$(cat "$root/config/tls/ca.key")" == 'private ca key' ]] || fail 'refused ca.key was modified'
+pass
 "$TEST_HELPER" --oneshot "$root" "$RUN/ca.in" "$RUN/endpoint.in" >/dev/null ||
   fail 'publication failed with a private config directory'
 expect_reader_denied ls "$root/config"
@@ -234,9 +280,114 @@ ROOT_FIXTURE="$(sudo -n mktemp -d "$BASE/orchard-transport-root.XXXXXX")"
 sudo -n chmod 0755 "$ROOT_FIXTURE"
 sudo -n mkdir -m 0700 "$ROOT_FIXTURE/support"
 sudo -n "$PRODUCTION" --protocol 1 </dev/null || fail 'production helper rejected an idle session'
-sudo -n "$TEST_HELPER" --oneshot "$ROOT_FIXTURE/support" "$RUN/ca.in" "$RUN/endpoint.in" >/dev/null ||
-  fail 'root publication failed'
-assert_public_profile "$ROOT_FIXTURE/support"
+
+# Root production protocol: drive the production helper's framed protocol through PREPARE,
+# PUBLISH, and COMMIT, then PREPARE, PUBLISH, ROLLBACK, and COMMIT, on the qualified host
+# filesystem that holds the fixture.
+u32_bytes() {
+  local n="$1"
+  # shellcheck disable=SC2059
+  printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $(((n >> 24) & 255)) $(((n >> 16) & 255)) \
+    $(((n >> 8) & 255)) $((n & 255)))"
+}
+
+byte_count() {
+  wc -c <"$1" | tr -d ' '
+}
+
+# Bash withholds coproc descriptors from subshells, so they are duplicated onto plain ones.
+start_production() {
+  coproc HELPER { exec sudo -n "$PRODUCTION" --protocol 1 2>"$RUN/production.err"; }
+  exec {HELPER_OUT}<&"${HELPER[0]}" {HELPER_IN}>&"${HELPER[1]}"
+  HELPER_PROCESS="$HELPER_PID"
+}
+
+send_frame() {
+  u32_bytes "$(byte_count "$1")" >&"$HELPER_IN"
+  cat "$1" >&"$HELPER_IN"
+}
+
+recv_frame() {
+  local b0 b1 b2 b3
+  read -r b0 b1 b2 b3 < <(dd bs=1 count=4 2>/dev/null <&"$HELPER_OUT" | od -An -tu1)
+  [[ -n "${b3:-}" ]] || fail "production helper closed without a reply: $(cat "$RUN/production.err")"
+  dd bs=1 count=$(((b0 << 24) | (b1 << 16) | (b2 << 8) | b3)) 2>/dev/null <&"$HELPER_OUT"
+}
+
+request() {
+  local reply
+  send_frame "$1"
+  reply="$(recv_frame)"
+  [[ "$reply" =~ $2 ]] || fail "production helper replied '$reply' (expected $2)"
+  pass
+  printf '%s\n' "$reply"
+}
+
+finish_production() {
+  local status=0
+  exec {HELPER_IN}>&- {HELPER_OUT}<&-
+  if [[ -n "${HELPER[1]:-}" ]]; then eval "exec ${HELPER[1]}>&- ${HELPER[0]}<&-"; fi
+  wait "$HELPER_PROCESS" || status=$?
+  [[ "$status" == 0 ]] || fail "production helper exited $status: $(cat "$RUN/production.err")"
+  pass
+}
+
+publish_frame() {
+  {
+    printf 'PUBLISH\n'
+    u32_bytes "$(byte_count "$RUN/ca.in")"
+    cat "$RUN/ca.in"
+    u32_bytes "$(byte_count "$1")"
+    cat "$1"
+  } >"$RUN/publish.frame"
+  printf '%s\n' "$RUN/publish.frame"
+}
+
+expect_reader_content() {
+  sudo -n -u "$READER" cat "$1" | cmp -s - "$2" || fail "reader content mismatch: $1"
+  pass
+}
+
+support="$ROOT_FIXTURE/support"
+printf 'PREPARE\n%s' "$support" >"$RUN/prepare.frame"
+printf 'COMMIT' >"$RUN/commit.frame"
+printf 'ROLLBACK' >"$RUN/rollback.frame"
+printf '{"schema_version":1,"next":true}\n' >"$RUN/endpoint-next.in"
+
+start_production
+reply="$(request "$RUN/prepare.frame" '^OK PREPARED absent absent \.orchard-public-stage-[A-Za-z0-9]+$')"
+stage="${reply##* }"
+[[ "$(sudo -n stat -c %a "$support/$stage" 2>/dev/null || sudo -n stat -f %Lp "$support/$stage")" == 700 ]] ||
+  fail 'production stage is not 0700'
+pass
+request "$(publish_frame "$RUN/endpoint.in")" '^OK PUBLISHED$' >/dev/null
+assert_public_profile "$support"
+for path in "$support" "$support/public" "$support/public/ca.crt" "$support/public/endpoint.json"; do
+  [[ "$(owner_of "$path")" == 0 ]] || fail "production publication is not root-owned: $path"
+done
+pass
+expect_reader_content "$support/public/ca.crt" "$RUN/ca.in"
+expect_reader_content "$support/public/endpoint.json" "$RUN/endpoint.in"
+request "$RUN/commit.frame" '^OK COMMITTED$' >/dev/null
+finish_production
+
+start_production
+request "$RUN/prepare.frame" '^OK PREPARED existing existing \.orchard-public-stage-[A-Za-z0-9]+$' >/dev/null
+request "$(publish_frame "$RUN/endpoint-next.in")" '^OK PUBLISHED$' >/dev/null
+expect_reader_content "$support/public/endpoint.json" "$RUN/endpoint-next.in"
+published_inode="$(inode_of "$support/public/endpoint.json")"
+request "$RUN/rollback.frame" '^OK ROLLED_BACK$' >/dev/null
+expect_reader_content "$support/public/endpoint.json" "$RUN/endpoint.in"
+[[ "$(inode_of "$support/public/endpoint.json")" != "$published_inode" ]] ||
+  fail 'rollback reused the published endpoint inode'
+pass
+request "$RUN/commit.frame" '^OK COMMITTED$' >/dev/null
+finish_production
+assert_public_profile "$support"
+expect_reader_content "$support/public/ca.crt" "$RUN/ca.in"
+[[ -z "$(sudo -n find "$support" -maxdepth 1 -name '.orchard-public-stage-*' -print -quit)" ]] ||
+  fail 'production protocol left stage residue'
+pass
 
 # Linux production qualification excludes tmpfs; only the test helper accepts it.
 if [[ "$OS" == "Linux" ]]; then
