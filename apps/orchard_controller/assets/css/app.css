@@ -451,10 +451,10 @@ body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] .co
   display: none;
 }
 
-.phx-disconnected #overview-command #overview-polling-active {
+.phx-error #overview-command #overview-polling-active {
   display: none;
 }
 
-.phx-disconnected #overview-command #overview-polling-paused {
+.phx-error #overview-command #overview-polling-paused {
   display: inline;
 }
